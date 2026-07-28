@@ -1,0 +1,9 @@
+name: plugin_runtime
+description: Internal host-side plugin runtime coordination.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.12.2 <4.0.0"
+
+resolution: workspace

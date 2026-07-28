@@ -1,0 +1,36 @@
+# Dart and Flutter resolution, caches, and output
+.dart_tool/
+.packages
+.flutter-plugins
+.flutter-plugins-dependencies
+build/
+coverage/
+
+# Compiled plugin artifacts and local ADELE state
+*.aot
+*.dill
+*.snapshot
+.adele/
+plugins/**/.adele-build/
+
+# Local credentials and environment configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.iml
+*.swp
+.DS_Store
+Thumbs.db
+
+# Native dependency caches
+app/macos/Pods/
+app/macos/.symlinks/
+app/linux/flutter/ephemeral/
+app/windows/flutter/ephemeral/

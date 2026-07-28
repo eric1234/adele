@@ -1,0 +1,12 @@
+name: workspace_demo_backend
+description: Future AOT backend for the workspace demo plugin.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.12.2 <4.0.0"
+
+resolution: workspace
+
+dependencies:
+  workspace_demo_contract: ^0.1.0

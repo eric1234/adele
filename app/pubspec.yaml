@@ -1,0 +1,21 @@
+name: adele_desktop
+description: The ADELE Flutter desktop application.
+publish_to: none
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.12.2 <4.0.0"
+  flutter: ">=3.44.8"
+
+resolution: workspace
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true

@@ -1,0 +1,12 @@
+name: adele_plugin_api
+description: Experimental public foundational APIs for ADELE plugins.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.12.2 <4.0.0"
+
+resolution: workspace
+
+dev_dependencies:
+  test: ^1.26.0

@@ -1,0 +1,15 @@
+name: adele_workspace
+description: ADELE repository workspace.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.12.2 <4.0.0"
+
+workspace:
+  - app
+  - packages/*
+  - plugins/workspace_demo
+
+dev_dependencies:
+  lints: ^6.0.0

@@ -1,0 +1,9 @@
+# Draft Phase 0 manifest. ADELE does not parse or validate it yet.
+manifestVersion: 1
+id: dev.adele.workspace-demo
+version: 0.1.0
+displayName: Workspace Demo
+packages:
+  contract: packages/contract
+  backend: packages/backend
+  frontend: packages/frontend
