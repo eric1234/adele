@@ -1,8 +1,8 @@
 # ADELE Plugin API
 
 `adele_plugin_api` is an experimental public package for plugin authors. Phase
-0 provides only `PluginId`, `PluginMetadata`, `PluginState`, and `ResourceRef`.
-These APIs are not stable.
+0 provides only `PluginId`, `PluginMetadata`, and `ResourceRef`. These APIs are
+not stable.
 
 ## Dependencies
 
@@ -21,6 +21,8 @@ phase will likely use a semantic-version implementation such as
 `PluginMetadata` does not contain activation, global enablement, configuration,
 profile state, runtime-instance state, or configured provider instances.
 Resources use `Uri` so identity is not tied to local filesystem paths.
+Installation, build, activation, and runtime state remain separate future
+concerns. They should be modeled only when implementation requirements exist.
 
 ## Deferred
 

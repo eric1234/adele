@@ -2,7 +2,7 @@
 
 ## Title
 
-Separate contract frontend and backend packages
+Separate contract, frontend, and backend packages
 
 ## Status
 
@@ -10,12 +10,26 @@ Accepted
 
 ## Context
 
-A plugin contract has consumers on both sides of the frontend/backend boundary. A single package would expose dependencies and implementation concerns that are not appropriate to every consumer.
+A source plugin contains frontend and backend implementations that need to
+share typed declarations and immutable value types without depending directly
+on one another.
 
 ## Decision
 
-In Phase 0, each public plugin contract is represented by separate contract frontend and contract backend packages. The frontend package exposes the caller-facing contract surface, while the backend package exposes the provider-facing contract surface.
+Each source plugin is divided into three packages:
+
+- A shared, pure-Dart contract package.
+- A backend package that depends on the contract package.
+- A frontend package that depends on the contract package.
+
+The frontend and backend packages must not depend on one another. The contract
+package must not depend on Flutter, the frontend package, the backend package,
+or host implementation packages.
 
 ## Consequences
 
-Dependency direction and ownership are explicit, and consumers depend only on their side of a contract. Package publication and compatible versioning must be coordinated, and shared contract definitions must not drift between the two packages.
+- Frontend and backend share one authoritative contract definition.
+- Dependency direction is explicit.
+- The contract package remains usable by both runtimes.
+- Runtime transport and generated bindings remain separate concerns.
+- Contract evolution and compatibility will require later design.

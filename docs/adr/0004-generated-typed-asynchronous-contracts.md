@@ -10,12 +10,22 @@ Proposed
 
 ## Context
 
-Plugin communication crosses the frontend/backend boundary and cannot assume in-process synchronous calls. Hand-maintained bindings would duplicate contract details and allow the two sides to diverge.
+Plugin communication crosses the frontend/backend boundary and cannot assume
+in-process synchronous calls. Hand-maintained bindings may eventually duplicate
+contract details and allow the two sides to diverge.
 
 ## Decision
 
-Propose generating typed, asynchronous frontend and backend APIs from a shared plugin contract definition. Phase 0 will validate the contract definition, generated API shape, and compatibility rules; generation and runtime dispatch are not assumed to be implemented.
+Generated typed, asynchronous frontend and backend APIs from a shared plugin
+contract definition remain proposed. Phase 0 does not validate the contract
+definition shape, generated API shape, compatibility rules, or runtime
+dispatch. Phase 1 will initially use a manually implemented proxy, dispatcher,
+and codec. Evidence from that walking skeleton should inform future generation
+design.
 
 ## Consequences
 
-Callers and providers can receive compile-time guidance while preserving an asynchronous boundary. ADELE must maintain generation tooling, define evolution rules, and represent failures, cancellation, and event streams without leaking transport details.
+Generated bindings could eventually give callers and providers compile-time
+guidance while preserving an asynchronous boundary. Code generation,
+compatibility rules, streams, cancellation, and structured transport errors
+remain future work.
