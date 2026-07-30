@@ -1,11 +1,11 @@
 name: workspace_demo_frontend
-description: Future interpreted Flutter frontend for the workspace demo plugin.
+description: Interpreted Flutter reference frontend for the workspace demo plugin.
 publish_to: none
 version: 0.1.0
 
 environment:
-  sdk: ">=3.12.2 <4.0.0"
-  flutter: ">=3.44.8"
+  sdk: ">=3.10.9 <4.0.0"
+  flutter: ">=3.38.10"
 
 resolution: workspace
 

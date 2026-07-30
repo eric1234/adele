@@ -1,4 +1,5 @@
 /// Internal host-side plugin runtime coordination.
-///
-/// Runtime APIs are deferred until the Phase 1 mechanisms are proven.
 library;
+
+export 'src/backend_connection.dart';
+export 'src/backend_host_protocol.dart';

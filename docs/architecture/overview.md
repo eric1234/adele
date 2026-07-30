@@ -2,11 +2,10 @@
 
 ## Status
 
-ADELE Phase 0 defines boundaries and terminology for an extensible desktop
-agent-development environment. It does not implement or validate plugin
-discovery, compilation, loading, transport, capability routing, profiles, or
-agent execution. Plugin-facing APIs remain experimental during the proof of
-concept stages.
+ADELE's Phase I foundation proves source compilation, typed transport, and
+interpreted frontend execution on Linux x64 Flutter profile mode. It does not
+implement plugin discovery, packaging, capability routing, profiles, sandboxing,
+or agent execution. Plugin-facing APIs remain experimental.
 
 ## System shape
 
@@ -22,6 +21,7 @@ not required:
 | --- | --- |
 | `plugin_runtime` | Plugin discovery, lifecycle, artifact selection, runtime coordination, and failure reporting |
 | `plugin_builder` | Source resolution, contract generation coordination, backend and frontend builds, diagnostics, provenance, and caching |
+| `plugin_backend_host` | Shared child-process entrypoint and one external AOT isolate group per active plugin |
 | `agent_kernel` | Provider-neutral sessions, runs, model/tool coordination, approval, cancellation, persistence, replay, and execution events |
 
 These are internal packages. Plugins must not import them.
@@ -37,14 +37,14 @@ Flutter desktop host (main Flutter isolate)
   |
   +-- generated typed asynchronous transport
   |
-  +-- native Dart AOT backend outside the main Flutter isolate
+  +-- one shared child dartaotruntime process
+        |
+        +-- one native Dart AOT isolate group per active plugin backend
 ```
 
-The interpreted frontend and locally compiled AOT backend are proposed Phase 1
-mechanisms, not working or validated Phase 0 behavior. Backend isolation is
-expected to use a separately loaded isolate group if the toolchain and
-platforms support it, but the launcher and fallback design are intentionally
-uncommitted.
+This shape is proven only on Linux x64 Flutter profile mode. Direct external AOT
+loading inside stock Flutter failed. Backend isolation is not a claim of
+security sandboxing.
 
 Contract source can be shared by the frontend and backend. Future generation
 is intended to hide ports, serialization, request IDs, subscriptions,
@@ -83,7 +83,7 @@ ADELE profiles are planned named collections of plugin activation, optional
 configuration overrides, and provider preferences. They are not implemented.
 Configuration is shared across profiles by default; effective configuration is
 conceptually shared plugin configuration plus optional profile overrides.
-Phase 0 and the initial Phase 1 proof use one implicit development profile
+The maintained development runtime uses one implicit development profile
 without introducing profile-management APIs.
 
 The future `agent_kernel` is a provider-neutral execution substrate. Concrete
@@ -94,19 +94,19 @@ The long-term self-hosting goal is for ADELE to develop ADELE itself. That goal
 does not change the Phase 0 rule to prefer small, working boundaries and avoid
 speculative APIs.
 
-## Phase 1 risk register
+## Remaining runtime validation
 
-Every dual-runtime item below is unproven and must be validated end to end:
+Linux x64 Flutter profile mode proves the core vertical path. Remaining work is:
 
-| Risk | What Phase 1 must establish |
+| Risk | Current status |
 | --- | --- |
-| Local backend AOT compilation | Plugin backend source can be compiled locally and reproducibly with the pinned SDK. |
-| Loading the AOT backend | A compiled backend can be launched outside the main Flutter isolate in profile or release operation. |
-| Eval frontend compilation | Supported frontend source can be compiled into compatible `dart_eval`/`flutter_eval` bytecode. |
-| Rendering interpreted Flutter UI | The host can safely render and lifecycle-manage interpreted plugin widgets. |
-| Frontend/backend communication | Typed async requests, responses, streams, cancellation, and structured errors work across the chosen boundary. |
-| Rebuild and reload | An active development plugin can stop, rebuild, reconnect, and reload without stale artifacts or leaked resources. |
-| Cross-platform behavior | Compilation, loading, communication, and reload behave acceptably on Windows, macOS, and Linux. |
+| Local backend AOT compilation | Proven with the temporary matched SDK. |
+| Shared process-host loading | Proven on Linux x64 profile mode. |
+| Eval compilation and rendering | Proven with pinned eval dependencies and documented workarounds. |
+| Typed request/response communication | Proven manually for the workspace reference fixture. |
+| Rebuild and reload | Proven for three cycles without orphan host processes. |
+| Cross-platform and release behavior | Unproven on Windows, macOS, and release mode. |
+| Packaging and sandboxing | Unproven; process isolation is not a sandbox. |
 
 ## Undefined workspace semantics
 

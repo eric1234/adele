@@ -1,29 +1,29 @@
 # Toolchain Policy
 
-## Exact Phase 0 pin
+## Temporary integrated Phase I pin
 
 | Component | Identity |
 | --- | --- |
-| Flutter | `3.44.8`, framework revision `058e0af2c2` |
-| Dart | `3.12.2`, derived from the pinned Flutter SDK |
+| Flutter | `3.38.10`, framework revision `c6f67dede3d4aa1aa7a69dd56a3494a5cde6cc80` |
+| Engine | `cafcda5721a78a7884db92f13c5e89f7643d52dd` |
+| Dart | `3.10.9`, bundled with the pinned Flutter SDK |
 
 The framework revision is part of the Flutter identity; the semantic version
 alone is not sufficient for reproducible plugin builds. Dart must be the
 version supplied by that Flutter pin where Flutter tooling is involved. ADELE's
 own product version is independent of Dart's semantic version.
 
+The repository tracks `flutter 3.38.10-stable` in `.tool-versions`. This pin is
+temporary. Flutter 3.44.8 with `flutter_eval 0.8.2` is not compatible, and no
+Flutter 3.44 or Dart 3.12 support is claimed. Eval modernization or replacement
+is required before broad third-party interpreted UI support.
+
 ## Local plugin compilation
 
-Source is the canonical plugin distribution format. A future ADELE
-distribution is expected to include or otherwise provision a precisely pinned
-toolchain capable of compiling plugin source locally. The proposed pipeline
-will compile backend source to native Dart AOT and frontend source to
-`dart_eval`/`flutter_eval` bytecode.
-
-That pipeline does not exist in Phase 0. Local AOT compilation and loading,
-eval compilation and interpreted Flutter rendering, typed communication,
-rebuild/reload, and consistent Windows, macOS, and Linux behavior are explicit
-Phase 1 risks rather than validated capabilities.
+Source is the canonical plugin distribution format. The integrated development
+pipeline compiles backend source to native Dart AOT and frontend source to
+`dart_eval`/`flutter_eval` bytecode. End-user SDK provisioning and consistent
+Windows and macOS behavior remain future packaging and validation work.
 
 ## Artifact identity and invalidation
 

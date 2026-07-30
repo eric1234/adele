@@ -3,16 +3,20 @@
 `adele_desktop` is ADELE's single Flutter desktop application and composition
 root. It is an internal application, not a plugin-facing package.
 
-## Phase 0
+## Normal Application
 
 The app owns its shell, theme, and private widgets. It displays only the ADELE
 name and static empty-state messages. "No workspace is open" is UI copy, not a
 definition of future workspace semantics.
 
+The normal application does not display the workspace reference plugin. The
+maintained `lib/development_smoke.dart` entrypoint exercises the plugin runtime
+only through the explicit root smoke command.
+
 ## Dependencies
 
 Allowed dependencies are Flutter, ADELE public packages, and internal host
-implementations required at the composition root. Phase 0 needs only Flutter.
+implementations required at the composition root.
 
 The app must not be a dependency of plugins or reusable core packages. Plugin
 implementations, agent logic, public plugin APIs, and core host logic do not

@@ -1,13 +1,19 @@
 # Workspace Demo Frontend
 
-`workspace_demo_frontend` is the future interpreted Flutter frontend package
-for the workspace demo plugin. It is a plugin implementation package, neither
-an ADELE public API nor an internal host package, and is a placeholder in Phase
-0.
+`workspace_demo_frontend` is the interpreted Flutter reference frontend. It is
+a plugin implementation package, neither an ADELE public API nor an internal
+host package.
 
 It may depend on Flutter, `workspace_demo_contract`, and future public
 plugin-facing UI APIs after those APIs are proven. The sibling backend, ADELE
 internal packages, and `adele_desktop` are prohibited dependencies.
 
-File-tree UI, text rendering, eval compilation, host rendering integration,
-proxies, and reload behavior are deferred to Phase 1.
+The direct compiler API persists this source to EVC. Interpreted code awaits a
+typed directory listing and text read through a small bridge and renders the
+result and supports interactive selection.
+
+Compatibility details remain isolated in the app adapter: explicit
+`Compiler.entrypoints`, `$Value`-preserving wrappers, an interpreted disposal
+flag because `State.mounted` is unavailable, and explicit first/second buttons
+because `dart_eval 0.8.5` miscompiles a captured loop index. These are not public
+plugin contract conventions.

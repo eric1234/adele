@@ -1,0 +1,15 @@
+name: plugin_backend_host
+description: Internal shared process that hosts ADELE plugin backend isolates.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+
+resolution: workspace
+
+dependencies:
+  plugin_runtime: ^0.1.0
+
+dev_dependencies:
+  test: ^1.26.3

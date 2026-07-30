@@ -6,7 +6,7 @@ Split interpreted frontend and AOT backend
 
 ## Status
 
-Proposed
+Accepted in principle; backend launch superseded by ADR 0019
 
 ## Context
 
@@ -16,16 +16,15 @@ runtime would couple their deployment and execution constraints.
 
 ## Decision
 
-Propose an interpreted plugin frontend and an ahead-of-time (AOT) compiled
-plugin backend. Phase 0 records this proposed architecture and its package
-boundaries only. Phase 1 will attempt to validate the interpreted frontend, AOT
-backend, runtime separation, loading mechanism, communication, and reload
-behavior. No interpreter, launcher, isolate-group mechanism, process fallback,
-or transport is currently proven.
+Use an interpreted plugin frontend and an ahead-of-time compiled plugin backend.
+Phase I proved persisted `dart_eval`/`flutter_eval` frontend execution and typed
+asynchronous communication. Direct external AOT loading in stock Flutter
+failed. ADR 0019 defines the proven shared process-hosted backend mechanism.
 
 ## Consequences
 
 Frontend and backend code can be optimized for different constraints, but
 plugins must communicate across an explicit boundary. Contract compatibility,
-error propagation, lifecycle, debugging, and deployment require further design
-and validation.
+error propagation, lifecycle, debugging, and deployment require explicit
+design. Linux x64 profile mode is proven; broader platform and packaging
+validation remains outstanding.
