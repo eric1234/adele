@@ -12,6 +12,7 @@ workspace:
   - packages/capabilities
   - packages/contract
   - packages/plugin_api
+  - packages/plugin_backend_host
   - packages/plugin_builder
   - packages/plugin_runtime
   - plugins/workspace_demo

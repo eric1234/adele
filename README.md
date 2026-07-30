@@ -7,10 +7,11 @@ ADELE to become capable of developing ADELE itself.
 The repository contains the **Phase 1 dual-runtime experiment** on top of the
 Phase 0 shell. Local backend AOT compilation, pure-Dart AOT-host loading, typed
 transport, persisted EVC, interpreted Flutter rendering, and a typed async eval
-bridge were proven. The complete Flutter profile path failed: Flutter's
-`Isolate.spawnUri` ran the application entrypoint rather than the supplied AOT
-backend. Phase 1 therefore has a failed verdict and includes no process
-fallback.
+bridge were proven. Direct Flutter loading failed because `Isolate.spawnUri`
+ran the application entrypoint rather than the supplied AOT backend; that result
+is preserved. A continuation using one shared child `dartaotruntime` backend
+host completes the Linux profile walking skeleton. See
+`docs/experiments/phase-1-backend-host.md`.
 
 ## Toolchain
 

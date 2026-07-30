@@ -5,9 +5,11 @@
 ADELE Phase 1 preserves the Phase 0 boundaries and records a partial
 dual-runtime experiment. Source compilation, typed transport, EVC persistence,
 and interpreted Flutter rendering were proven. Same-process backend loading
-failed in Flutter 3.38.10 Linux profile mode. Discovery, capability routing,
-profiles, and agent execution remain unimplemented. Plugin-facing APIs remain
-experimental.
+failed in Flutter 3.38.10 Linux profile mode. A shared child Dart backend-host
+subsequently completed the Linux profile walking skeleton while keeping one
+isolate group per active plugin. That architecture remains proposed pending
+broader validation. Discovery, capability routing, profiles, and agent execution
+remain unimplemented.
 
 ## System shape
 
@@ -22,6 +24,7 @@ not required:
 | Package | Planned responsibility |
 | --- | --- |
 | `plugin_runtime` | Plugin discovery, lifecycle, artifact selection, runtime coordination, and failure reporting |
+| `plugin_backend_host` | Shared process entrypoint and per-plugin external AOT isolate ownership |
 | `plugin_builder` | Source resolution, contract generation coordination, backend and frontend builds, diagnostics, provenance, and caching |
 | `agent_kernel` | Provider-neutral sessions, runs, model/tool coordination, approval, cancellation, persistence, replay, and execution events |
 

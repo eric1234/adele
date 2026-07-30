@@ -42,9 +42,9 @@ jobs:
       - name: Prove pure-Dart AOT loader
         run: |
           mkdir -p .dart_tool/adele/phase1/ci
-          dart compile aot-snapshot tools/experiments/phase1/aot_spawn_uri/backend.dart -o .dart_tool/adele/phase1/ci/backend.aot
-          dart compile aot-snapshot tools/experiments/phase1/aot_spawn_uri/host.dart -o .dart_tool/adele/phase1/ci/host.aot
-          "$(dirname "$(which dart)")/cache/dart-sdk/bin/dartaotruntime" .dart_tool/adele/phase1/ci/host.aot .dart_tool/adele/phase1/ci/backend.aot
+          dart compile aot-snapshot packages/plugin_backend_host/bin/adele_backend_host.dart -o .dart_tool/adele/phase1/ci/backend-host.aot
+          dart compile aot-snapshot plugins/workspace_demo/packages/backend/bin/workspace_demo_backend.dart -o .dart_tool/adele/phase1/ci/workspace-demo.aot
+          dart run tools/experiments/phase1/backend_host_gate2.dart "$(dirname "$(which flutter)")/cache/dart-sdk/bin/dartaotruntime" .dart_tool/adele/phase1/ci/backend-host.aot .dart_tool/adele/phase1/ci/workspace-demo.aot .
 
       - name: Build Linux desktop profile
         run: dart tools/adele.dart build linux --profile

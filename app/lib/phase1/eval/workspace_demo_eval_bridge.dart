@@ -59,6 +59,11 @@ final class WorkspaceDemoEvalBridge implements EvalPlugin {
     runtime
       ..registerBridgeFunc(
         library,
+        'WorkspaceDemoTextData.',
+        _WorkspaceDemoTextData.construct,
+      )
+      ..registerBridgeFunc(
+        library,
         'loadWorkspaceDemoDirectory',
         _loadDirectory,
       )
@@ -119,7 +124,20 @@ final class _WorkspaceDemoTextData implements $Instance {
 
   static const BridgeClassDef $declaration = BridgeClassDef(
     BridgeClassType($type),
-    constructors: <String, BridgeConstructorDef>{},
+    constructors: <String, BridgeConstructorDef>{
+      '': BridgeConstructorDef(
+        BridgeFunctionDef(
+          returns: BridgeTypeAnnotation($type),
+          params: <BridgeParameter>[
+            BridgeParameter(
+              'value',
+              BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.string)),
+              false,
+            ),
+          ],
+        ),
+      ),
+    },
     getters: <String, BridgeMethodDef>{
       'value': BridgeMethodDef(
         BridgeFunctionDef(
@@ -131,6 +149,12 @@ final class _WorkspaceDemoTextData implements $Instance {
   );
 
   final String value;
+
+  static $Value? construct(
+    Runtime runtime,
+    $Value? target,
+    List<$Value?> arguments,
+  ) => _WorkspaceDemoTextData(arguments.single!.$value as String);
 
   @override
   Object get $reified => this;

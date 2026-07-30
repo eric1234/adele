@@ -17,9 +17,10 @@ diagnostics, and an interpreted widget host. The app owns frontend compilation,
 the temporary workspace-demo proxy/codecs, and the custom eval bridge. Without
 Phase 1 activation it retains the Phase 0 empty shell.
 
-Linux profile build succeeds, but runtime backend loading fails because
-Flutter's `Isolate.spawnUri` executes the Flutter app entrypoint instead of the
-supplied backend AOT snapshot. This is evidence, not a production plugin system.
+Direct Flutter snapshot loading remains failed. The shared backend-host
+continuation succeeds in Linux profile mode by starting one child
+`dartaotruntime` and asking it to load the plugin AOT snapshot. This remains
+experimental evidence, not a production plugin system.
 
 ## Dependencies
 

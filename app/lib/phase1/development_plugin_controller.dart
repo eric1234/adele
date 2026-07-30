@@ -14,6 +14,7 @@ final class Phase1Configuration {
     required this.pluginDirectory,
     required this.developmentDirectory,
     required this.dartExecutable,
+    required this.dartAotRuntimeExecutable,
     required this.flutterExecutable,
   });
 
@@ -32,6 +33,10 @@ final class Phase1Configuration {
         'ADELE_PHASE1_DART_EXECUTABLE' => const String.fromEnvironment(
           'ADELE_PHASE1_DART_EXECUTABLE',
         ),
+        'ADELE_PHASE1_DARTAOTRUNTIME_EXECUTABLE' =>
+          const String.fromEnvironment(
+            'ADELE_PHASE1_DARTAOTRUNTIME_EXECUTABLE',
+          ),
         'ADELE_PHASE1_FLUTTER_EXECUTABLE' => const String.fromEnvironment(
           'ADELE_PHASE1_FLUTTER_EXECUTABLE',
         ),
@@ -53,6 +58,9 @@ final class Phase1Configuration {
         required('ADELE_PHASE1_DEVELOPMENT_DIRECTORY'),
       ).absolute,
       dartExecutable: required('ADELE_PHASE1_DART_EXECUTABLE'),
+      dartAotRuntimeExecutable: required(
+        'ADELE_PHASE1_DARTAOTRUNTIME_EXECUTABLE',
+      ),
       flutterExecutable: required('ADELE_PHASE1_FLUTTER_EXECUTABLE'),
     );
   }
@@ -61,6 +69,7 @@ final class Phase1Configuration {
   final Directory pluginDirectory;
   final Directory developmentDirectory;
   final String dartExecutable;
+  final String dartAotRuntimeExecutable;
   final String flutterExecutable;
 
   void validate() {
@@ -75,6 +84,9 @@ final class Phase1Configuration {
     }
     if (!File(dartExecutable).existsSync()) {
       throw StateError('Dart executable missing.');
+    }
+    if (!File(dartAotRuntimeExecutable).existsSync()) {
+      throw StateError('Dart AOT runtime executable missing.');
     }
     if (!File(flutterExecutable).existsSync()) {
       throw StateError('Flutter executable missing.');
@@ -95,9 +107,11 @@ final class DevelopmentPluginController extends ChangeNotifier {
   String? lastFailure;
   bool busy = false;
   PluginBackendConnection? _connection;
+  PluginBackendHost? _backendHost;
   WorkspaceDemoEvalRuntime? _eval;
 
   Widget? get interpretedWidget => _eval?.widget;
+  int? get backendHostProcessId => _backendHost?.processId;
 
   Future<void> buildAndStart() async {
     if (busy) return;
@@ -122,11 +136,25 @@ final class DevelopmentPluginController extends ChangeNotifier {
         );
       }
       buildId = build.buildId;
+      _stage('backend-host-compilation');
+      final BackendHostBuildResult hostBuild =
+          await const DevelopmentPluginBuilder().buildBackendHost(
+            repositoryRoot: configuration.repositoryRoot,
+            dartExecutable: configuration.dartExecutable,
+          );
+      diagnostics.add(
+        '${hostBuild.diagnostic.stage}: exit ${hostBuild.diagnostic.exitCode}',
+      );
       _stage('backend-launch');
-      _connection = await const PluginBackendLauncher().launch(
+      _backendHost = await PluginBackendHost.start(
+        dartaotruntimeExecutable: configuration.dartAotRuntimeExecutable,
+        hostArtifactPath: hostBuild.artifact.path,
+        onDiagnostic: diagnostics.add,
+      );
+      _connection = await _backendHost!.startPlugin(
+        pluginId: 'dev.adele.workspace-demo',
         artifactUri: build.backendArtifact.uri,
         arguments: <String>[configuration.developmentDirectory.path],
-        onDiagnostic: diagnostics.add,
       );
       backendState = 'running';
       connectionState = 'connected';
@@ -190,6 +218,9 @@ final class DevelopmentPluginController extends ChangeNotifier {
     _connection = null;
     connectionState = 'disconnected';
     if (connection != null) await connection.close();
+    final PluginBackendHost? backendHost = _backendHost;
+    _backendHost = null;
+    if (backendHost != null) await backendHost.close();
     backendState = 'stopped';
   }
 

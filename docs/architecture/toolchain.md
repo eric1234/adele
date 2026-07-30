@@ -25,6 +25,12 @@ independently confirms the same failure. Phase 1 will not patch
 `flutter_eval`; upgrading Flutter and modernizing or contributing upstream
 compatibility is a post-walking-skeleton workstream.
 
+The repository tracks the temporary Flutter validation pin in `.tool-versions`
+for asdf users. This improves repeatability for local sessions but does not make
+asdf mandatory; `toolchain.json` remains the manager-independent identity
+record, and validation still checks the complete framework, engine, and bundled
+Dart identities.
+
 ## Local plugin compilation
 
 Source is the canonical plugin distribution format. A future ADELE

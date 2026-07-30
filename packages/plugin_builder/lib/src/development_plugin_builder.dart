@@ -35,6 +35,16 @@ final class PluginBuildResult {
   final List<PluginBuildDiagnostic> diagnostics;
 }
 
+final class BackendHostBuildResult {
+  const BackendHostBuildResult({
+    required this.artifact,
+    required this.diagnostic,
+  });
+
+  final File artifact;
+  final PluginBuildDiagnostic diagnostic;
+}
+
 final class PluginBuildFailure implements Exception {
   const PluginBuildFailure(this.message, {this.diagnostic});
 
@@ -47,6 +57,29 @@ final class PluginBuildFailure implements Exception {
 
 final class DevelopmentPluginBuilder {
   const DevelopmentPluginBuilder();
+
+  Future<BackendHostBuildResult> buildBackendHost({
+    required Directory repositoryRoot,
+    required String dartExecutable,
+  }) async {
+    final Directory output = Directory(
+      '${repositoryRoot.path}${Platform.pathSeparator}.dart_tool${Platform.pathSeparator}adele${Platform.pathSeparator}phase1${Platform.pathSeparator}backend-host',
+    );
+    await output.create(recursive: true);
+    final File artifact = File(
+      '${output.path}${Platform.pathSeparator}adele_backend_host.aot',
+    );
+    final String entrypoint =
+        '${repositoryRoot.path}${Platform.pathSeparator}packages${Platform.pathSeparator}plugin_backend_host${Platform.pathSeparator}bin${Platform.pathSeparator}adele_backend_host.dart';
+    final PluginBuildDiagnostic diagnostic = await _run(
+      'backend-host-compilation',
+      dartExecutable,
+      <String>['compile', 'aot-snapshot', entrypoint, '-o', artifact.path],
+      repositoryRoot.path,
+    );
+    _requireSuccess(diagnostic);
+    return BackendHostBuildResult(artifact: artifact, diagnostic: diagnostic);
+  }
 
   Future<PluginBuildResult> prepareBackend({
     required Directory repositoryRoot,

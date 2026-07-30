@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:adele_desktop/phase1/eval/workspace_demo_eval_bridge.dart';
@@ -31,32 +32,12 @@ void main() {
     final String frontendSource = File(
       '$repository/plugins/workspace_demo/packages/frontend/lib/workspace_demo_frontend.dart',
     ).readAsStringSync();
-    const String contractSource = '''
-final class WorkspaceDemoViewData {
-  const WorkspaceDemoViewData({required this.names, required this.uris});
-  final List<String> names;
-  final List<String> uris;
-}
-
-final class WorkspaceDemoTextData {
-  const WorkspaceDemoTextData(this.value);
-  final String value;
-}
-
-Future<WorkspaceDemoViewData> loadWorkspaceDemoDirectory() {
-  throw UnsupportedError('Bridge function.');
-}
-
-Future<WorkspaceDemoTextData> loadWorkspaceDemoText(String uri) {
-  throw UnsupportedError('Bridge function.');
-}
-''';
     final Program program = compiler.compile(<String, Map<String, String>>{
       'workspace_demo_frontend': <String, String>{
         'workspace_demo_frontend.dart': frontendSource,
       },
       'workspace_demo_contract': <String, String>{
-        'workspace_demo_contract.dart': contractSource,
+        'workspace_demo_contract.dart': _contractSource,
       },
     });
     final File artifact = File(
@@ -77,19 +58,94 @@ Future<WorkspaceDemoTextData> loadWorkspaceDemoText(String uri) {
         ? widgetValue.$reified
         : widgetValue;
     await tester.pumpWidget(MaterialApp(home: widget! as Widget));
+    expect(find.text('first.txt'), findsOneWidget);
     expect(find.text('notes.txt'), findsOneWidget);
+    await tester.tap(find.text('notes.txt'));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Selected: notes.txt'), findsOneWidget);
     expect(find.text('typed backend text'), findsOneWidget);
     bridge.invalidate();
     await tester.pumpWidget(const SizedBox.shrink());
   });
+
+  testWidgets('ignores a delayed response after interpreted disposal', (
+    WidgetTester tester,
+  ) async {
+    final _DelayedWorkspaceDemoService service = _DelayedWorkspaceDemoService();
+    final WorkspaceDemoEvalBridge bridge = WorkspaceDemoEvalBridge(
+      service: service,
+      developmentRoot: ResourceRef(uri: Uri.parse('file:///demo/')),
+    );
+    final Compiler delayedCompiler = Compiler()
+      ..addPlugin(flutterEvalPlugin)
+      ..addPlugin(bridge)
+      ..entrypoints.add(
+        'package:workspace_demo_frontend/workspace_demo_frontend.dart',
+      );
+    final String repository = Directory.current.parent.path;
+    final Program
+    program = delayedCompiler.compile(<String, Map<String, String>>{
+      'workspace_demo_frontend': <String, String>{
+        'workspace_demo_frontend.dart': File(
+          '$repository/plugins/workspace_demo/packages/frontend/lib/workspace_demo_frontend.dart',
+        ).readAsStringSync(),
+      },
+      'workspace_demo_contract': <String, String>{
+        'workspace_demo_contract.dart': _contractSource,
+      },
+    });
+    final Runtime runtime = Runtime(program.write().buffer.asByteData())
+      ..addPlugin(flutterEvalPlugin)
+      ..addPlugin(bridge);
+    final Object? pending = runtime.executeLib(
+      'package:workspace_demo_frontend/workspace_demo_frontend.dart',
+      'buildWorkspaceDemo',
+    );
+    final Object? value = await (pending! as Future<Object?>);
+    final Widget widget = (value is $Value ? value.$reified : value)! as Widget;
+    await tester.pumpWidget(MaterialApp(home: widget));
+    await tester.tap(find.text('notes.txt'));
+    await tester.pumpWidget(const SizedBox.shrink());
+    service.completeDelayed();
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    bridge.invalidate();
+  });
 }
 
-final class _FakeWorkspaceDemoService implements WorkspaceDemoService {
+const String _contractSource = '''
+final class WorkspaceDemoViewData {
+  const WorkspaceDemoViewData({required this.names, required this.uris});
+  final List<String> names;
+  final List<String> uris;
+}
+
+final class WorkspaceDemoTextData {
+  const WorkspaceDemoTextData(this.value);
+  final String value;
+}
+
+Future<WorkspaceDemoViewData> loadWorkspaceDemoDirectory() {
+  throw UnsupportedError('Bridge function.');
+}
+
+Future<WorkspaceDemoTextData> loadWorkspaceDemoText(String uri) {
+  throw UnsupportedError('Bridge function.');
+}
+''';
+
+class _FakeWorkspaceDemoService implements WorkspaceDemoService {
   @override
   Future<DirectoryListing> listDirectory(ResourceRef directory) async {
     return DirectoryListing(
       directory: directory,
       entries: <DirectoryEntry>[
+        DirectoryEntry(
+          resource: ResourceRef(uri: Uri.parse('file:///demo/first.txt')),
+          name: 'first.txt',
+          kind: DirectoryEntryKind.file,
+        ),
         DirectoryEntry(
           resource: ResourceRef(uri: Uri.parse('file:///demo/notes.txt')),
           name: 'notes.txt',
@@ -101,6 +157,27 @@ final class _FakeWorkspaceDemoService implements WorkspaceDemoService {
 
   @override
   Future<TextFileContents> readTextFile(ResourceRef file) async {
-    return TextFileContents(resource: file, text: 'typed backend text');
+    return TextFileContents(
+      resource: file,
+      text: file.uri.path.endsWith('notes.txt')
+          ? 'typed backend text'
+          : 'first text',
+    );
+  }
+}
+
+final class _DelayedWorkspaceDemoService extends _FakeWorkspaceDemoService {
+  final Completer<TextFileContents> _delayed = Completer<TextFileContents>();
+
+  @override
+  Future<TextFileContents> readTextFile(ResourceRef file) => _delayed.future;
+
+  void completeDelayed() {
+    _delayed.complete(
+      TextFileContents(
+        resource: ResourceRef(uri: Uri.parse('file:///demo/notes.txt')),
+        text: 'late text',
+      ),
+    );
   }
 }

@@ -15,6 +15,14 @@ created an isolate group that ran the Flutter application's `main` rather than
 the separately compiled backend AOT entrypoint. The split remains proposed,
 but its backend launch mechanism requires a separate architectural decision.
 
+Continuation note, 2026-07-29: a shared process-hosted Dart runtime passed the
+complete Linux profile walking skeleton. ADELE starts one AOT backend-host
+process with the matched absolute `dartaotruntime`; that host loads one separate
+plugin isolate group per active plugin using `Isolate.spawnUri`. The interpreted
+frontend evidence remains valid. Stock Flutter still cannot load the external
+plugin snapshot directly. The process-host design remains proposed pending
+broader platform and packaging validation.
+
 ## Context
 
 Plugin frontends need to remain flexible while plugin backends may need

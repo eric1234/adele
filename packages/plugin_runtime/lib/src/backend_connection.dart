@@ -1,5 +1,7 @@
 import 'dart:async';
-import 'dart:isolate';
+import 'dart:io';
+
+import 'backend_host_protocol.dart';
 
 typedef PluginDiagnosticSink = void Function(String message);
 
@@ -27,257 +29,304 @@ final class PluginConnectionClosed implements Exception {
   String toString() => 'PluginConnectionClosed: $message';
 }
 
-final class PluginBackendLauncher {
-  const PluginBackendLauncher({
-    this.startupTimeout = const Duration(seconds: 5),
-    this.shutdownTimeout = const Duration(seconds: 2),
-  });
-
-  final Duration startupTimeout;
-  final Duration shutdownTimeout;
-
-  Future<PluginBackendConnection> launch({
-    required Uri artifactUri,
-    List<String> arguments = const <String>[],
-    PluginDiagnosticSink? onDiagnostic,
-  }) async {
-    final ReceivePort bootstrap = ReceivePort();
-    final ReceivePort responses = ReceivePort();
-    final ReceivePort errors = ReceivePort();
-    final ReceivePort exits = ReceivePort();
-    Isolate? isolate;
-    final Completer<Object?> earlyFailure = Completer<Object?>();
-    final StreamSubscription<Object?> errorSubscription = errors.listen((
-      Object? error,
-    ) {
-      if (!earlyFailure.isCompleted) earlyFailure.complete(error);
-    });
-    final StreamSubscription<Object?> exitSubscription = exits.listen((
-      Object? _,
-    ) {
-      if (!earlyFailure.isCompleted) {
-        earlyFailure.complete(
-          const PluginConnectionClosed('Backend exited before handshake.'),
-        );
-      }
-    });
-    try {
-      isolate = await Isolate.spawnUri(
-        artifactUri,
-        arguments,
-        <String, Object?>{
-          'bootstrapPort': bootstrap.sendPort,
-          'responsePort': responses.sendPort,
-        },
-        onError: errors.sendPort,
-        onExit: exits.sendPort,
-      );
-      final Object? ready = await Future.any(<Future<Object?>>[
-        bootstrap.first,
-        earlyFailure.future.then<Object?>((Object? error) => throw error!),
-      ]).timeout(startupTimeout);
-      if (ready is! Map || ready['commandPort'] is! SendPort) {
-        throw StateError('Invalid backend handshake: $ready');
-      }
-      return PluginBackendConnection._(
-        commandPort: ready['commandPort'] as SendPort,
-        responses: responses,
-        errors: errors,
-        exits: exits,
-        isolate: isolate,
-        ownsIsolate: true,
-        shutdownTimeout: shutdownTimeout,
-        onDiagnostic: onDiagnostic,
-      );
-    } catch (_) {
-      isolate?.kill(priority: Isolate.immediate);
-      bootstrap.close();
-      responses.close();
-      errors.close();
-      exits.close();
-      rethrow;
-    } finally {
-      await errorSubscription.cancel();
-      await exitSubscription.cancel();
-      bootstrap.close();
-    }
-  }
-}
-
-final class PluginBackendConnection {
-  PluginBackendConnection._({
-    required SendPort commandPort,
-    required ReceivePort responses,
-    required ReceivePort errors,
-    required ReceivePort exits,
-    required Isolate isolate,
-    required bool ownsIsolate,
+final class PluginBackendHost {
+  PluginBackendHost._({
+    required Process process,
     required Duration shutdownTimeout,
-    PluginDiagnosticSink? onDiagnostic,
-  }) : _commandPort = commandPort,
-       _responses = responses,
-       _errors = errors,
-       _exits = exits,
-       _isolate = isolate,
-       _ownsIsolate = ownsIsolate,
+    required PluginDiagnosticSink? onDiagnostic,
+  }) : _process = process,
        _shutdownTimeout = shutdownTimeout,
-       _onDiagnostic = onDiagnostic {
-    _responseSubscription = _responses.listen(_handleResponse);
-    _errorSubscription = _errors.listen(_handleBackendError);
-    _exitSubscription = _exits.listen(_handleExit);
-  }
+       _onDiagnostic = onDiagnostic;
 
-  factory PluginBackendConnection.testPeer({
-    required SendPort commandPort,
-    required ReceivePort responses,
-    PluginDiagnosticSink? onDiagnostic,
-  }) {
-    return PluginBackendConnection._(
-      commandPort: commandPort,
-      responses: responses,
-      errors: ReceivePort(),
-      exits: ReceivePort(),
-      isolate: Isolate.current,
-      ownsIsolate: false,
-      shutdownTimeout: const Duration(milliseconds: 50),
-      onDiagnostic: onDiagnostic,
-    );
-  }
-
-  final SendPort _commandPort;
-  final ReceivePort _responses;
-  final ReceivePort _errors;
-  final ReceivePort _exits;
-  final Isolate _isolate;
-  final bool _ownsIsolate;
+  final Process _process;
   final Duration _shutdownTimeout;
   final PluginDiagnosticSink? _onDiagnostic;
-  final Map<int, Completer<Object?>> _pending = <int, Completer<Object?>>{};
-  late final StreamSubscription<Object?> _responseSubscription;
-  late final StreamSubscription<Object?> _errorSubscription;
-  late final StreamSubscription<Object?> _exitSubscription;
+  final BackendHostFrameDecoder _decoder = BackendHostFrameDecoder();
+  final Map<int, Completer<Map<String, Object?>>> _pending =
+      <int, Completer<Map<String, Object?>>>{};
+  final Map<String, PluginBackendConnection> _plugins =
+      <String, PluginBackendConnection>{};
+  late final StreamSubscription<List<int>> _stdoutSubscription;
+  late final StreamSubscription<String> _stderrSubscription;
   int _nextRequestId = 1;
   bool _closed = false;
+  bool _shuttingDown = false;
+
+  static Future<PluginBackendHost> start({
+    required String dartaotruntimeExecutable,
+    required String hostArtifactPath,
+    Duration startupTimeout = const Duration(seconds: 5),
+    Duration shutdownTimeout = const Duration(seconds: 2),
+    PluginDiagnosticSink? onDiagnostic,
+  }) async {
+    final Process process = await Process.start(
+      dartaotruntimeExecutable,
+      <String>[hostArtifactPath],
+      runInShell: false,
+    );
+    final PluginBackendHost host = PluginBackendHost._(
+      process: process,
+      shutdownTimeout: shutdownTimeout,
+      onDiagnostic: onDiagnostic,
+    );
+    final Completer<void> hello = Completer<void>();
+    host._stdoutSubscription = process.stdout.listen(
+      (List<int> bytes) {
+        try {
+          for (final Map<String, Object?> message in host._decoder.add(bytes)) {
+            if (message['kind'] == 'hostHello' && !hello.isCompleted) {
+              if (message['protocolVersion'] != backendHostProtocolVersion) {
+                hello.completeError(
+                  const BackendHostProtocolException(
+                    'Unsupported host protocol.',
+                  ),
+                );
+              } else {
+                hello.complete();
+              }
+              continue;
+            }
+            host._handleMessage(message);
+          }
+        } on Object catch (error, stackTrace) {
+          if (!hello.isCompleted) hello.completeError(error, stackTrace);
+          host._failAll(
+            PluginConnectionClosed('Malformed host output: $error'),
+          );
+        }
+      },
+      onDone: () {
+        if (!hello.isCompleted) {
+          hello.completeError(
+            const PluginConnectionClosed('Backend host exited before hello.'),
+          );
+        }
+      },
+    );
+    host._stderrSubscription = process.stderr
+        .transform(SystemEncoding().decoder)
+        .listen(
+          (String message) => onDiagnostic?.call('backend-host: $message'),
+        );
+    unawaited(
+      process.exitCode.then((int code) {
+        if (host._shuttingDown && host._pending.isEmpty) {
+          host._closed = true;
+          return;
+        }
+        host._failAll(
+          PluginConnectionClosed('Backend host exited with code $code.'),
+        );
+      }),
+    );
+    try {
+      await hello.future.timeout(startupTimeout);
+      return host;
+    } on Object {
+      process.kill();
+      await host._stdoutSubscription.cancel();
+      await host._stderrSubscription.cancel();
+      rethrow;
+    }
+  }
 
   bool get isClosed => _closed;
+  int get processId => _process.pid;
 
-  Future<Object?> request(String method, Map<String, Object?> payload) {
-    if (_closed) {
-      return Future<Object?>.error(
-        const PluginConnectionClosed('The backend connection is closed.'),
+  Future<PluginBackendConnection> startPlugin({
+    required String pluginId,
+    required Uri artifactUri,
+    List<String> arguments = const <String>[],
+  }) async {
+    if (_plugins.containsKey(pluginId)) {
+      throw StateError('Plugin $pluginId is already connected.');
+    }
+    final Map<String, Object?> response = await _command(
+      kind: 'startPlugin',
+      pluginId: pluginId,
+      fields: <String, Object?>{
+        'artifactUri': artifactUri.toString(),
+        'arguments': List<String>.of(arguments, growable: false),
+      },
+    );
+    if (response['kind'] != 'pluginReady') {
+      throw _remoteFailure(response);
+    }
+    final PluginBackendConnection connection = PluginBackendConnection._(
+      host: this,
+      pluginId: pluginId,
+    );
+    _plugins[pluginId] = connection;
+    return connection;
+  }
+
+  Future<void> stopPlugin(String pluginId) async {
+    final PluginBackendConnection? connection = _plugins.remove(pluginId);
+    if (connection == null) return;
+    try {
+      final Map<String, Object?> response = await _command(
+        kind: 'stopPlugin',
+        pluginId: pluginId,
+      );
+      if (response['kind'] != 'pluginStopped') throw _remoteFailure(response);
+    } finally {
+      connection._finish(
+        const PluginConnectionClosed('The plugin connection was stopped.'),
       );
     }
-    final int requestId = _nextRequestId++;
-    final Completer<Object?> completer = Completer<Object?>();
-    _pending[requestId] = completer;
-    _commandPort.send(<String, Object?>{
-      'kind': 'request',
-      'requestId': requestId,
-      'method': method,
-      'payload': payload,
-    });
-    return completer.future;
   }
 
   Future<void> close({bool graceful = true}) async {
     if (_closed) return;
     if (graceful) {
       try {
-        await request(
-          'shutdown',
-          const <String, Object?>{},
-        ).timeout(_shutdownTimeout);
-        await _waitForClosed().timeout(_shutdownTimeout);
-        return;
+        final Future<Map<String, Object?>> stopping = _command(
+          kind: 'shutdownHost',
+        );
+        _shuttingDown = true;
+        final Map<String, Object?> response = await stopping.timeout(
+          _shutdownTimeout,
+        );
+        if (response['kind'] != 'hostStopped') throw _remoteFailure(response);
+        await _process.exitCode.timeout(_shutdownTimeout);
       } on Object catch (error) {
-        _onDiagnostic?.call('Graceful shutdown failed: $error');
-        if (_ownsIsolate) _isolate.kill(priority: Isolate.immediate);
+        _onDiagnostic?.call('Backend host graceful shutdown failed: $error');
+        _process.kill();
       }
-    } else if (_ownsIsolate) {
-      _isolate.kill(priority: Isolate.immediate);
+    } else {
+      _process.kill();
     }
-    await _finish(
-      const PluginConnectionClosed('The backend connection was stopped.'),
+    _failAll(const PluginConnectionClosed('The backend host was stopped.'));
+    await _stdoutSubscription.cancel();
+    await _stderrSubscription.cancel();
+    await _process.stdin.close();
+  }
+
+  Future<Object?> _request(
+    String pluginId,
+    String method,
+    Map<String, Object?> payload,
+  ) async {
+    final Map<String, Object?> response = await _command(
+      kind: 'request',
+      pluginId: pluginId,
+      fields: <String, Object?>{'method': method, 'payload': payload},
     );
+    if (response['ok'] == true) return response['payload'];
+    throw _remoteFailure(response);
   }
 
-  Future<void> _waitForClosed() async {
-    while (!_closed) {
-      await Future<void>.delayed(const Duration(milliseconds: 10));
+  Future<Map<String, Object?>> _command({
+    required String kind,
+    String? pluginId,
+    Map<String, Object?> fields = const <String, Object?>{},
+  }) {
+    if (_closed) {
+      return Future<Map<String, Object?>>.error(
+        const PluginConnectionClosed('The backend host is closed.'),
+      );
     }
+    final int requestId = _nextRequestId++;
+    final Completer<Map<String, Object?>> completer =
+        Completer<Map<String, Object?>>();
+    _pending[requestId] = completer;
+    _process.stdin.add(
+      encodeBackendHostFrame(<String, Object?>{
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': kind,
+        'requestId': requestId,
+        'pluginId': ?pluginId,
+        ...fields,
+      }),
+    );
+    return completer.future;
   }
 
-  void _handleResponse(Object? message) {
-    if (message is! Map || message['kind'] != 'response') {
-      _onDiagnostic?.call('Malformed backend response ignored: $message');
+  void _handleMessage(Map<String, Object?> message) {
+    if (message['kind'] == 'diagnostic') {
+      _onDiagnostic?.call(
+        '${message['stage'] ?? 'backend-host'}: ${message['message']}',
+      );
       return;
     }
     final Object? rawRequestId = message['requestId'];
     if (rawRequestId is! int) {
-      _onDiagnostic?.call('Response without integer request ID ignored.');
+      _onDiagnostic?.call('Host message without request ID ignored: $message');
       return;
     }
-    final Completer<Object?>? completer = _pending.remove(rawRequestId);
+    final Completer<Map<String, Object?>>? completer = _pending.remove(
+      rawRequestId,
+    );
     if (completer == null) {
-      _onDiagnostic?.call('Unknown or duplicate response ID $rawRequestId.');
-      return;
-    }
-    if (message['ok'] == true) {
-      completer.complete(message['payload']);
-      return;
-    }
-    final Object? rawError = message['error'];
-    if (rawError is Map &&
-        rawError['code'] is String &&
-        rawError['message'] is String) {
-      completer.completeError(
-        PluginRemoteFailure(
-          code: rawError['code'] as String,
-          message: rawError['message'] as String,
-          details: _stringMap(rawError['details']),
-        ),
+      _onDiagnostic?.call(
+        'Unknown or duplicate host response ID $rawRequestId.',
       );
       return;
     }
-    completer.completeError(
-      const PluginRemoteFailure(
-        code: 'invalid_response',
-        message: 'The backend returned an invalid error response.',
-      ),
-    );
+    completer.complete(message);
   }
 
-  void _handleBackendError(Object? error) {
-    _onDiagnostic?.call('Backend uncaught error: $error');
-    unawaited(_finish(PluginConnectionClosed('The backend failed: $error')));
-  }
-
-  void _handleExit(Object? _) {
-    _onDiagnostic?.call('Backend exit observed.');
-    unawaited(_finish(const PluginConnectionClosed('The backend exited.')));
-  }
-
-  Future<void> _finish(Object error) async {
-    if (_closed) return;
+  void _failAll(Object error) {
+    if (_closed && _pending.isEmpty && _plugins.isEmpty) return;
     _closed = true;
-    for (final Completer<Object?> completer in _pending.values) {
+    for (final Completer<Map<String, Object?>> completer in _pending.values) {
       if (!completer.isCompleted) completer.completeError(error);
     }
     _pending.clear();
-    await _responseSubscription.cancel();
-    await _errorSubscription.cancel();
-    await _exitSubscription.cancel();
-    _responses.close();
-    _errors.close();
-    _exits.close();
+    for (final PluginBackendConnection connection in _plugins.values) {
+      connection._finish(error);
+    }
+    _plugins.clear();
   }
+}
+
+final class PluginBackendConnection {
+  PluginBackendConnection._({
+    required PluginBackendHost host,
+    required this.pluginId,
+  }) : _host = host;
+
+  final PluginBackendHost _host;
+  final String pluginId;
+  bool _closed = false;
+
+  bool get isClosed => _closed || _host.isClosed;
+
+  Future<Object?> request(String method, Map<String, Object?> payload) {
+    if (isClosed) {
+      return Future<Object?>.error(
+        const PluginConnectionClosed('The plugin connection is closed.'),
+      );
+    }
+    return _host._request(pluginId, method, payload);
+  }
+
+  Future<void> close({bool graceful = true}) => _host.stopPlugin(pluginId);
+
+  void _finish(Object _) => _closed = true;
+}
+
+PluginRemoteFailure _remoteFailure(Map<String, Object?> response) {
+  final Object? rawError = response['error'];
+  if (rawError is Map &&
+      rawError['code'] is String &&
+      rawError['message'] is String) {
+    return PluginRemoteFailure(
+      code: rawError['code'] as String,
+      message: rawError['message'] as String,
+      details: _stringMap(rawError['details']),
+    );
+  }
+  return const PluginRemoteFailure(
+    code: 'invalid_response',
+    message: 'The backend host returned an invalid error response.',
+  );
 }
 
 Map<String, Object?> _stringMap(Object? value) {
   if (value is! Map) return const <String, Object?>{};
-  final Map<String, Object?> result = <String, Object?>{};
-  for (final MapEntry<Object?, Object?> entry in value.entries) {
-    if (entry.key is String) result[entry.key as String] = entry.value;
-  }
-  return result;
+  return <String, Object?>{
+    for (final MapEntry<Object?, Object?> entry in value.entries)
+      if (entry.key is String) entry.key as String: entry.value,
+  };
 }

@@ -14,19 +14,27 @@ Future<void> main(List<String> arguments) async {
       home = Phase1Shell(controller: controller);
       runApp(AdeleApplication(home: home));
       if (arguments.contains('--phase1-smoke')) {
-        await controller.buildAndStart();
+        final Set<String> builds = <String>{};
+        for (int cycle = 1; cycle <= 3; cycle++) {
+          await controller.buildAndStart();
+          if (controller.phase != 'running' ||
+              controller.interpretedWidget == null ||
+              controller.buildId == null ||
+              controller.backendHostProcessId == null) {
+            throw StateError(controller.lastFailure ?? 'Phase 1 smoke failed.');
+          }
+          if (!builds.add(controller.buildId!)) {
+            throw StateError('Build ID was reused: ${controller.buildId}');
+          }
+          stdout.writeln(
+            'ADELE_PHASE1_SMOKE cycle=$cycle build=${controller.buildId} hostPid=${controller.backendHostProcessId} status=running',
+          );
+          await controller.stop();
+          stdout.writeln('ADELE_PHASE1_SMOKE cycle=$cycle status=stopped');
+        }
         for (final String diagnostic in controller.diagnostics) {
           stdout.writeln('ADELE_PHASE1_DIAGNOSTIC $diagnostic');
         }
-        if (controller.phase != 'running' ||
-            controller.interpretedWidget == null) {
-          throw StateError(controller.lastFailure ?? 'Phase 1 smoke failed.');
-        }
-        stdout.writeln(
-          'ADELE_PHASE1_SMOKE build=${controller.buildId} status=running',
-        );
-        await controller.stop();
-        stdout.writeln('ADELE_PHASE1_SMOKE status=stopped');
         exit(0);
       }
       return;

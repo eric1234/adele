@@ -19,6 +19,7 @@ void main() {
         pluginDirectory: root,
         developmentDirectory: root,
         dartExecutable: '${root.path}/dart',
+        dartAotRuntimeExecutable: '${root.path}/dartaotruntime',
         flutterExecutable: '${root.path}/flutter',
       ),
     );

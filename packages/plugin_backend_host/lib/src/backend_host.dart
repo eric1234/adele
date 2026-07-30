@@ -1,0 +1,330 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:isolate';
+
+import 'package:plugin_runtime/plugin_runtime.dart';
+
+typedef BackendHostSend = void Function(Map<String, Object?> message);
+typedef BackendHostDiagnostic = void Function(String message);
+
+final class AdeleBackendHost {
+  AdeleBackendHost({
+    required BackendHostSend send,
+    BackendHostDiagnostic? diagnostic,
+  }) : _send = send,
+       _diagnostic = diagnostic ?? stderr.writeln;
+
+  final BackendHostSend _send;
+  final BackendHostDiagnostic _diagnostic;
+  final Map<String, _PluginIsolate> _plugins = <String, _PluginIsolate>{};
+
+  Future<bool> handle(Map<String, Object?> message) async {
+    final Object? requestId = message['requestId'];
+    if (message['protocolVersion'] != backendHostProtocolVersion) {
+      _error(
+        requestId,
+        null,
+        'unsupported_protocol',
+        'Unsupported protocol version.',
+      );
+      return true;
+    }
+    try {
+      switch (message['kind']) {
+        case 'startPlugin':
+          await _startPlugin(message);
+        case 'stopPlugin':
+          await _stopPlugin(message);
+        case 'request':
+          _forwardRequest(message);
+        case 'shutdownHost':
+          await shutdown(requestId: requestId);
+          return false;
+        default:
+          _error(
+            requestId,
+            _pluginId(message),
+            'unknown_kind',
+            'Unknown host command.',
+          );
+      }
+    } on Object catch (error, stackTrace) {
+      _diagnostic('backend-host command failure: $error\n$stackTrace');
+      _error(
+        requestId,
+        _pluginId(message),
+        'host_command_failed',
+        error.toString(),
+      );
+    }
+    return true;
+  }
+
+  Future<void> shutdown({Object? requestId}) async {
+    for (final _PluginIsolate plugin in _plugins.values.toList()) {
+      await plugin.stop();
+    }
+    _plugins.clear();
+    _send(<String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'hostStopped',
+      if (requestId is int) 'requestId': requestId,
+    });
+  }
+
+  Future<void> _startPlugin(Map<String, Object?> message) async {
+    final String pluginId = _requireString(message, 'pluginId');
+    if (_plugins.containsKey(pluginId)) {
+      throw StateError('Plugin $pluginId is already running.');
+    }
+    final String artifactUri = _requireString(message, 'artifactUri');
+    final Object? rawArguments = message['arguments'];
+    if (rawArguments is! List ||
+        rawArguments.any((Object? value) => value is! String)) {
+      throw const FormatException('Plugin arguments must be strings.');
+    }
+    final _PluginIsolate plugin = await _PluginIsolate.start(
+      pluginId: pluginId,
+      artifactUri: Uri.parse(artifactUri),
+      arguments: rawArguments
+          .map((Object? value) => value! as String)
+          .toList(growable: false),
+      send: _send,
+      diagnostic: _diagnostic,
+    );
+    _plugins[pluginId] = plugin;
+    _send(<String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'pluginReady',
+      'requestId': message['requestId'],
+      'pluginId': pluginId,
+    });
+  }
+
+  Future<void> _stopPlugin(Map<String, Object?> message) async {
+    final String pluginId = _requireString(message, 'pluginId');
+    final _PluginIsolate? plugin = _plugins.remove(pluginId);
+    if (plugin == null) throw StateError('Plugin $pluginId is not running.');
+    await plugin.stop();
+    _send(<String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'pluginStopped',
+      'requestId': message['requestId'],
+      'pluginId': pluginId,
+    });
+  }
+
+  void _forwardRequest(Map<String, Object?> message) {
+    final String pluginId = _requireString(message, 'pluginId');
+    final _PluginIsolate? plugin = _plugins[pluginId];
+    if (plugin == null) throw StateError('Plugin $pluginId is not running.');
+    plugin.request(message);
+  }
+
+  void _error(
+    Object? requestId,
+    String? pluginId,
+    String code,
+    String message,
+  ) {
+    _send(<String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'error',
+      if (requestId is int) 'requestId': requestId,
+      'pluginId': ?pluginId,
+      'error': <String, Object?>{'code': code, 'message': message},
+    });
+  }
+}
+
+final class _PluginIsolate {
+  _PluginIsolate._({
+    required this.pluginId,
+    required Isolate isolate,
+    required SendPort commands,
+    required ReceivePort responses,
+    required ReceivePort errors,
+    required ReceivePort exits,
+    required BackendHostSend send,
+    required BackendHostDiagnostic diagnostic,
+  }) : _isolate = isolate,
+       _commands = commands,
+       _responses = responses,
+       _errors = errors,
+       _exits = exits,
+       _send = send,
+       _diagnostic = diagnostic {
+    _responseSubscription = _responses.listen(_handleResponse);
+    _errorSubscription = _errors.listen(_handleError);
+    _exitSubscription = _exits.listen(_handleExit);
+  }
+
+  final String pluginId;
+  final Isolate _isolate;
+  final SendPort _commands;
+  final ReceivePort _responses;
+  final ReceivePort _errors;
+  final ReceivePort _exits;
+  final BackendHostSend _send;
+  final BackendHostDiagnostic _diagnostic;
+  final Map<int, int> _outerRequestIds = <int, int>{};
+  late final StreamSubscription<Object?> _responseSubscription;
+  late final StreamSubscription<Object?> _errorSubscription;
+  late final StreamSubscription<Object?> _exitSubscription;
+  int _nextPluginRequestId = 1;
+  bool _stopped = false;
+  int? _shutdownRequestId;
+  Completer<void>? _shutdownCompleter;
+
+  static Future<_PluginIsolate> start({
+    required String pluginId,
+    required Uri artifactUri,
+    required List<String> arguments,
+    required BackendHostSend send,
+    required BackendHostDiagnostic diagnostic,
+  }) async {
+    final ReceivePort bootstrap = ReceivePort();
+    final ReceivePort responses = ReceivePort();
+    final ReceivePort errors = ReceivePort();
+    final ReceivePort exits = ReceivePort();
+    Isolate? isolate;
+    try {
+      isolate = await Isolate.spawnUri(
+        artifactUri,
+        arguments,
+        <String, Object?>{
+          'bootstrapPort': bootstrap.sendPort,
+          'responsePort': responses.sendPort,
+        },
+        onError: errors.sendPort,
+        onExit: exits.sendPort,
+      );
+      final Object? ready = await bootstrap.first.timeout(
+        const Duration(seconds: 5),
+      );
+      if (ready is! Map || ready['commandPort'] is! SendPort) {
+        throw StateError('Invalid plugin handshake: $ready');
+      }
+      return _PluginIsolate._(
+        pluginId: pluginId,
+        isolate: isolate,
+        commands: ready['commandPort'] as SendPort,
+        responses: responses,
+        errors: errors,
+        exits: exits,
+        send: send,
+        diagnostic: diagnostic,
+      );
+    } catch (_) {
+      isolate?.kill(priority: Isolate.immediate);
+      responses.close();
+      errors.close();
+      exits.close();
+      rethrow;
+    } finally {
+      bootstrap.close();
+    }
+  }
+
+  void request(Map<String, Object?> message) {
+    if (_stopped) throw StateError('Plugin $pluginId is stopped.');
+    final Object? outerRequestId = message['requestId'];
+    if (outerRequestId is! int) {
+      throw const FormatException('Missing request ID.');
+    }
+    final String method = _requireString(message, 'method');
+    final Object? payload = message['payload'];
+    if (payload is! Map) {
+      throw const FormatException('Request payload must be a map.');
+    }
+    final int pluginRequestId = _nextPluginRequestId++;
+    _outerRequestIds[pluginRequestId] = outerRequestId;
+    _commands.send(<String, Object?>{
+      'kind': 'request',
+      'requestId': pluginRequestId,
+      'method': method,
+      'payload': payload,
+    });
+  }
+
+  Future<void> stop() async {
+    if (_stopped) return;
+    _stopped = true;
+    final int requestId = _nextPluginRequestId++;
+    final Completer<void> stopped = Completer<void>();
+    _shutdownRequestId = requestId;
+    _shutdownCompleter = stopped;
+    _outerRequestIds[requestId] = -1;
+    _commands.send(<String, Object?>{
+      'kind': 'request',
+      'requestId': requestId,
+      'method': 'shutdown',
+      'payload': <String, Object?>{},
+    });
+    try {
+      await stopped.future.timeout(const Duration(seconds: 2));
+    } on Object {
+      _isolate.kill(priority: Isolate.immediate);
+    }
+    await _responseSubscription.cancel();
+    await _errorSubscription.cancel();
+    await _exitSubscription.cancel();
+    _responses.close();
+    _errors.close();
+    _exits.close();
+  }
+
+  void _handleResponse(Object? raw) {
+    if (raw is! Map || raw['requestId'] is! int) {
+      _diagnostic('Malformed response from $pluginId: $raw');
+      return;
+    }
+    final int pluginRequestId = raw['requestId'] as int;
+    if (pluginRequestId == _shutdownRequestId) {
+      final Completer<void>? completer = _shutdownCompleter;
+      if (completer != null && !completer.isCompleted) completer.complete();
+    }
+    final int? outerRequestId = _outerRequestIds.remove(pluginRequestId);
+    if (outerRequestId == null) {
+      _diagnostic('Unknown response ID $pluginRequestId from $pluginId.');
+      return;
+    }
+    if (outerRequestId < 0) return;
+    final Map<String, Object?> response = <String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'response',
+      'requestId': outerRequestId,
+      'pluginId': pluginId,
+      'ok': raw['ok'],
+      if (raw.containsKey('payload')) 'payload': raw['payload'],
+      if (raw.containsKey('error')) 'error': raw['error'],
+    };
+    _send(response);
+  }
+
+  void _handleError(Object? error) {
+    _diagnostic('Plugin $pluginId uncaught error: $error');
+    _send(<String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'diagnostic',
+      'pluginId': pluginId,
+      'stage': 'plugin-isolate',
+      'message': error.toString(),
+    });
+  }
+
+  void _handleExit(Object? _) {
+    _diagnostic('Plugin $pluginId exited.');
+  }
+}
+
+String _requireString(Map<String, Object?> message, String key) {
+  final Object? value = message[key];
+  if (value is! String || value.isEmpty) throw FormatException('Missing $key.');
+  return value;
+}
+
+String? _pluginId(Map<String, Object?> message) {
+  final Object? value = message['pluginId'];
+  return value is String ? value : null;
+}

@@ -11,6 +11,11 @@ const List<({String name, String path, bool flutter})> _packages =
         flutter: false,
       ),
       (name: 'plugin_runtime', path: 'packages/plugin_runtime', flutter: false),
+      (
+        name: 'plugin_backend_host',
+        path: 'packages/plugin_backend_host',
+        flutter: false,
+      ),
       (name: 'plugin_builder', path: 'packages/plugin_builder', flutter: false),
       (name: 'agent_kernel', path: 'packages/agent_kernel', flutter: false),
       (name: 'workspace_demo', path: 'plugins/workspace_demo', flutter: false),
@@ -89,6 +94,12 @@ Future<void> main(List<String> arguments) async {
           '--timeout',
           '10s',
         ], workingDirectory: 'packages/plugin_runtime');
+        await _run(
+          'plugin_backend_host',
+          'dart',
+          <String>['test'],
+          workingDirectory: 'packages/plugin_backend_host',
+        );
         await _run(
           'workspace_demo_contract',
           'dart',
@@ -218,6 +229,7 @@ List<String> _phase1Defines() {
     'ADELE_PHASE1_PLUGIN_DIRECTORY',
     'ADELE_PHASE1_DEVELOPMENT_DIRECTORY',
     'ADELE_PHASE1_DART_EXECUTABLE',
+    'ADELE_PHASE1_DARTAOTRUNTIME_EXECUTABLE',
     'ADELE_PHASE1_FLUTTER_EXECUTABLE',
   ];
   final Map<String, String> environment = Platform.environment;

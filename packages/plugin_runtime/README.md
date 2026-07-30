@@ -1,9 +1,10 @@
 # Plugin Runtime
 
-`plugin_runtime` is an internal, pure-Dart package for the Phase 1 backend
-launch experiment. It owns semantic launcher/connection APIs, startup timeout,
-portable request/response envelopes, request correlation, structured remote
-failures, exit/error monitoring, and shutdown cleanup.
+`plugin_runtime` is an internal, pure-Dart package for the Phase 1 backend-host
+experiment. It owns the semantic process-host connection, deterministic framed
+IPC, request correlation, plugin routing, structured remote failures,
+exit/stderr monitoring, and shutdown cleanup. Process and framing objects do not
+escape its API.
 
 ## Dependencies
 
@@ -25,8 +26,7 @@ encode an unproven mechanism are intentionally avoided.
 
 ## Experiment Result
 
-The implementation works from a pure-Dart AOT host. Flutter 3.38.10 Linux
-profile mode does not execute the supplied backend snapshot through
-`Isolate.spawnUri`; it executes the Flutter app entrypoint in the new isolate
-group. This package does not contain a process fallback. Discovery,
-installation, profiles, and production lifecycle remain deferred.
+Direct Flutter `Isolate.spawnUri` remains disproven. The continuation starts one
+shared child `dartaotruntime` host, which successfully loads plugin snapshots in
+separate isolate groups under Linux profile mode. Discovery, installation,
+profiles, packaging, and production lifecycle remain deferred.
