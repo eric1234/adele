@@ -8,6 +8,11 @@ Source-based plugin distribution
 
 Proposed
 
+Evidence note, 2026-07-28: local dependency resolution, backend AOT compilation,
+and frontend EVC compilation from source were demonstrated with the Phase 1
+validation toolchain. Source distribution remains proposed because the Flutter
+same-process backend launch gate failed before the complete vertical path.
+
 ## Context
 
 Phase 0 needs a plugin distribution model that supports rapid iteration without committing ADELE to a binary compatibility or artifact-signing design before the plugin architecture is validated.

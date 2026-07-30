@@ -4,14 +4,20 @@ publish_to: none
 version: 0.1.0+1
 
 environment:
-  sdk: ">=3.12.2 <4.0.0"
-  flutter: ">=3.44.8"
+  sdk: ">=3.10.9 <4.0.0"
+  flutter: ">=3.38.10"
 
 resolution: workspace
 
 dependencies:
+  adele_plugin_api: ^0.1.0
+  dart_eval: 0.8.5
   flutter:
     sdk: flutter
+  flutter_eval: 0.8.2
+  plugin_builder: ^0.1.0
+  plugin_runtime: ^0.1.0
+  workspace_demo_contract: ^0.1.0
 
 dev_dependencies:
   flutter_test:

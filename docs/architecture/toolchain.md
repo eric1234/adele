@@ -1,16 +1,29 @@
 # Toolchain Policy
 
-## Exact Phase 0 pin
+## Exact Phase 1 validation pin
 
 | Component | Identity |
 | --- | --- |
-| Flutter | `3.44.8`, framework revision `058e0af2c2` |
-| Dart | `3.12.2`, derived from the pinned Flutter SDK |
+| Flutter | `3.38.10` |
+| Framework revision | `c6f67dede3d4aa1aa7a69dd56a3494a5cde6cc80` |
+| Engine revision | `cafcda5721a78a7884db92f13c5e89f7643d52dd` |
+| Dart | `3.10.9`, bundled with the pinned Flutter SDK |
 
 The framework revision is part of the Flutter identity; the semantic version
 alone is not sufficient for reproducible plugin builds. Dart must be the
 version supplied by that Flutter pin where Flutter tooling is involved. ADELE's
 own product version is independent of Dart's semantic version.
+
+This pin is the matched validation toolchain for the Phase 1 walking skeleton,
+not ADELE's permanent toolchain. The initial Flutter `3.44.8`, framework
+`058e0af2c2b57e369d905a03ac9748b0ebf543c6`, engine
+`0cd610717bde95fd88343c64f81c11ba4e5c0010`, Dart `3.12.2` experiment failed:
+`flutter_eval 0.8.2` does not implement Flutter's new
+`Container.isAntiAlias` member. Upstream issue
+[flutter_eval #140](https://github.com/ethanblake4/flutter_eval/issues/140)
+independently confirms the same failure. Phase 1 will not patch
+`flutter_eval`; upgrading Flutter and modernizing or contributing upstream
+compatibility is a post-walking-skeleton workstream.
 
 ## Local plugin compilation
 

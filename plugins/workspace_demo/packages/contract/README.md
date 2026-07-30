@@ -9,5 +9,8 @@ It may depend on `adele_contract`, `adele_plugin_api`, and
 frontend and backend, ADELE internal packages, and `adele_desktop` are
 prohibited dependencies.
 
-Typed values and service declarations are deferred to the Phase 1 walking
-skeleton. Generation and transport do not belong in this package.
+Phase 1 defines immutable directory entries/listings, strict text contents, a
+typed asynchronous filesystem service, structured semantic failure, and two
+small eval-facing immutable snapshots. Transport maps, request IDs, ports, and
+codecs remain outside this package. Bindings are manual; generation remains
+proposed.

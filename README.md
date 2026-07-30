@@ -4,17 +4,29 @@ ADELE is an extensible, cross-platform desktop environment for building,
 running, inspecting, and extending agent systems. The long-term goal is for
 ADELE to become capable of developing ADELE itself.
 
-The repository is at **Phase 0**. It establishes package boundaries,
-architecture decisions, development tooling, and a runnable Flutter desktop
-shell. Plugins are not discovered, compiled, loaded, or executed. The proposed
-interpreted-frontend/AOT-backend design remains unproven.
+The repository contains the **Phase 1 dual-runtime experiment** on top of the
+Phase 0 shell. Local backend AOT compilation, pure-Dart AOT-host loading, typed
+transport, persisted EVC, interpreted Flutter rendering, and a typed async eval
+bridge were proven. The complete Flutter profile path failed: Flutter's
+`Isolate.spawnUri` ran the application entrypoint rather than the supplied AOT
+backend. Phase 1 therefore has a failed verdict and includes no process
+fallback.
 
 ## Toolchain
 
-Phase 0 is pinned to Flutter `3.44.8` (framework revision `058e0af2c2`) and its
-derived Dart `3.12.2`. Install that Flutter release and ensure `flutter` and
-`dart` are on `PATH`. The exact identity is recorded in `toolchain.json`; the
-SDK is not vendored.
+Phase 1 validation is pinned to Flutter `3.38.10` (framework revision
+`c6f67dede3d4aa1aa7a69dd56a3494a5cde6cc80`, engine revision
+`cafcda5721a78a7884db92f13c5e89f7643d52dd`) and its bundled Dart `3.10.9`.
+Install that exact Flutter release and ensure its `flutter` and `dart` are on
+`PATH`. The identity is recorded in `toolchain.json`; the SDK is not vendored.
+
+This is a matched validation toolchain for the walking skeleton, not ADELE's
+permanent toolchain. Flutter `3.44.8` with `flutter_eval 0.8.2` fails to compile
+because the bridge lacks `Container.isAntiAlias`, as confirmed by upstream
+issue [flutter_eval #140](https://github.com/ethanblake4/flutter_eval/issues/140).
+Phase 1 does not patch `flutter_eval`. Upgrading Flutter and modernizing or
+contributing the required `flutter_eval` compatibility is a post-skeleton
+workstream.
 
 Future ADELE distributions are expected to include a pinned toolchain capable
 of compiling plugin source locally. A toolchain upgrade may invalidate compiled

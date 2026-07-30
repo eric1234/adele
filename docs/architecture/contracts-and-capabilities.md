@@ -9,7 +9,8 @@ Contracts and capabilities solve different problems:
 | Contract | How do typed values and asynchronous operations cross a runtime boundary? |
 | Capability | Which compatible provider handles a request? |
 
-Neither transport nor capability resolution is implemented in Phase 0.
+Phase 1 implements one disposable manual workspace-demo transport. General
+transport and capability resolution remain unimplemented.
 
 ## Contracts
 

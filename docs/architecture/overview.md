@@ -2,11 +2,12 @@
 
 ## Status
 
-ADELE Phase 0 defines boundaries and terminology for an extensible desktop
-agent-development environment. It does not implement or validate plugin
-discovery, compilation, loading, transport, capability routing, profiles, or
-agent execution. Plugin-facing APIs remain experimental during the proof of
-concept stages.
+ADELE Phase 1 preserves the Phase 0 boundaries and records a partial
+dual-runtime experiment. Source compilation, typed transport, EVC persistence,
+and interpreted Flutter rendering were proven. Same-process backend loading
+failed in Flutter 3.38.10 Linux profile mode. Discovery, capability routing,
+profiles, and agent execution remain unimplemented. Plugin-facing APIs remain
+experimental.
 
 ## System shape
 

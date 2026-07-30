@@ -4,11 +4,16 @@ publish_to: none
 version: 0.1.0
 
 environment:
-  sdk: ">=3.12.2 <4.0.0"
+  sdk: ">=3.10.9 <4.0.0"
 
 workspace:
   - app
-  - packages/*
+  - packages/agent_kernel
+  - packages/capabilities
+  - packages/contract
+  - packages/plugin_api
+  - packages/plugin_builder
+  - packages/plugin_runtime
   - plugins/workspace_demo
 
 dev_dependencies:

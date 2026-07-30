@@ -8,6 +8,13 @@ Split interpreted frontend and AOT backend
 
 Proposed
 
+Evidence note, 2026-07-28: the interpreted frontend portion passed under
+Flutter 3.38.10 with `dart_eval 0.8.5` and `flutter_eval 0.8.2`. The proposed
+same-process backend mechanism failed in Linux profile mode: `Isolate.spawnUri`
+created an isolate group that ran the Flutter application's `main` rather than
+the separately compiled backend AOT entrypoint. The split remains proposed,
+but its backend launch mechanism requires a separate architectural decision.
+
 ## Context
 
 Plugin frontends need to remain flexible while plugin backends may need

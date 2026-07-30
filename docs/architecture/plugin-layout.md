@@ -2,9 +2,10 @@
 
 ## Canonical form
 
-Plugin source is the canonical distribution format. The proposed build pipeline
-will derive frontend eval bytecode and a native Dart AOT backend from that
-source, but Phase 0 neither builds nor loads either artifact.
+Plugin source remains the proposed canonical distribution format. Phase 1
+successfully derives frontend EVC and a native Dart AOT backend from
+`workspace_demo`, but Flutter profile mode failed to load the backend artifact
+with the proposed same-process mechanism.
 
 `workspace_demo` establishes the intended repository shape:
 

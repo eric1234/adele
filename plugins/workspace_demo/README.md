@@ -19,9 +19,10 @@ The frontend and backend never depend on one another. The plugin does not
 depend on ADELE's internal `plugin_runtime`, `plugin_builder`, `agent_kernel`, or
 `adele_desktop` packages.
 
-Phase 0 does not discover, compile, load, activate, or configure this plugin. It
-contains no profile settings or configured provider instances.
+Phase 1 locally compiles this source in a known development location. It does
+not implement discovery, installation, profiles, or configured providers.
 
-Phase 1 will attempt an interpreted file-tree and text UI, an AOT filesystem
-backend, typed asynchronous communication, and source rebuild and reload. These
-mechanisms remain unproven.
+The filesystem backend, manual typed transport, persisted interpreted frontend,
+and typed async eval bridge were individually proven. The complete profile path
+failed because Flutter's `Isolate.spawnUri` did not execute the supplied AOT
+backend. See `docs/experiments/phase-1-dual-runtime.md`.

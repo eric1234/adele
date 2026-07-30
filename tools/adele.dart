@@ -81,6 +81,26 @@ Future<void> main(List<String> arguments) async {
         await _run('adele_capabilities', 'dart', <String>[
           'test',
         ], workingDirectory: 'packages/capabilities');
+        await _run('plugin_builder', 'dart', <String>[
+          'test',
+        ], workingDirectory: 'packages/plugin_builder');
+        await _run('plugin_runtime', 'dart', <String>[
+          'test',
+          '--timeout',
+          '10s',
+        ], workingDirectory: 'packages/plugin_runtime');
+        await _run(
+          'workspace_demo_contract',
+          'dart',
+          <String>['test'],
+          workingDirectory: 'plugins/workspace_demo/packages/contract',
+        );
+        await _run(
+          'workspace_demo_backend',
+          'dart',
+          <String>['test'],
+          workingDirectory: 'plugins/workspace_demo/packages/backend',
+        );
         await _run('adele_desktop', 'flutter', <String>[
           'test',
         ], workingDirectory: 'app');
@@ -96,21 +116,54 @@ Future<void> main(List<String> arguments) async {
         final String device = arguments.length > 1
             ? arguments[1]
             : _defaultDesktopDevice();
+        final String mode = _mode(arguments);
         await _run('adele_desktop', 'flutter', <String>[
           'run',
           '-d',
           device,
+          '--$mode',
+          ..._phase1Defines(),
         ], workingDirectory: 'app');
         return;
       case 'build':
         final String target = arguments.length > 1
             ? arguments[1]
             : _defaultDesktopDevice();
+        final String mode = _mode(arguments);
         await _run('adele_desktop $target build', 'flutter', <String>[
           'build',
           target,
-          '--debug',
+          '--$mode',
+          ..._phase1Defines(),
         ], workingDirectory: 'app');
+        return;
+      case 'smoke':
+        final String target = arguments.length > 1
+            ? arguments[1]
+            : _defaultDesktopDevice();
+        if (target != 'linux') {
+          throw UnsupportedError(
+            'Phase 1 runtime smoke is currently implemented for Linux only.',
+          );
+        }
+        final String mode = _mode(arguments) == 'debug'
+            ? 'profile'
+            : _mode(arguments);
+        final List<String> defines = _phase1Defines();
+        if (defines.isEmpty) {
+          throw StateError('Phase 1 smoke requires all ADELE_PHASE1_* values.');
+        }
+        await _run('adele_desktop $target $mode build', 'flutter', <String>[
+          'build',
+          target,
+          '--$mode',
+          ...defines,
+        ], workingDirectory: 'app');
+        await _run(
+          'adele_desktop $target $mode runtime smoke',
+          'app/build/linux/x64/$mode/bundle/adele_desktop',
+          const <String>['--phase1-smoke'],
+        );
         return;
       default:
         _usage();
@@ -152,6 +205,29 @@ String _defaultDesktopDevice() {
   throw UnsupportedError('ADELE Phase 0 supports desktop hosts only.');
 }
 
+String _mode(List<String> arguments) {
+  if (arguments.contains('--release')) return 'release';
+  if (arguments.contains('--profile')) return 'profile';
+  if (arguments.contains('--debug')) return 'debug';
+  return 'debug';
+}
+
+List<String> _phase1Defines() {
+  const List<String> names = <String>[
+    'ADELE_PHASE1_REPOSITORY_ROOT',
+    'ADELE_PHASE1_PLUGIN_DIRECTORY',
+    'ADELE_PHASE1_DEVELOPMENT_DIRECTORY',
+    'ADELE_PHASE1_DART_EXECUTABLE',
+    'ADELE_PHASE1_FLUTTER_EXECUTABLE',
+  ];
+  final Map<String, String> environment = Platform.environment;
+  if (!names.every(environment.containsKey)) return const <String>[];
+  return <String>[
+    '--dart-define=ADELE_PHASE1_ENABLED=true',
+    for (final String name in names) '--dart-define=$name=${environment[name]}',
+  ];
+}
+
 void _usage() {
   stdout.writeln('''
 Usage: dart tools/adele.dart <command>
@@ -162,8 +238,12 @@ Commands:
   analyze            Analyze every package and identify failures.
   test               Run public value tests and desktop widget tests.
   check              Verify formatting, analysis, and tests.
-  run [device]       Run the desktop app (linux, macos, or windows).
-  build [target]     Build a debug desktop app.
+  run [device] [--debug|--profile|--release]
+                     Run the desktop app in an explicit mode.
+  build [target] [--debug|--profile|--release]
+                     Build the desktop app in an explicit mode.
+  smoke linux [--profile|--release]
+                     Build and run the complete Phase 1 Linux smoke path.
 ''');
 }
 
