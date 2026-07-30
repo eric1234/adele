@@ -5,11 +5,17 @@ on:
   pull_request:
     paths:
       - "app/lib/development/**"
+      - "app/lib/development_smoke.dart"
+      - "app/pubspec.yaml"
       - "packages/plugin_backend_host/**"
       - "packages/plugin_builder/**"
       - "packages/plugin_runtime/**"
       - "plugins/workspace_demo/**"
       - "tools/adele.dart"
+      - "pubspec.yaml"
+      - "pubspec.lock"
+      - "toolchain.json"
+      - ".tool-versions"
       - ".github/workflows/runtime-smoke.yaml"
 
 jobs:
