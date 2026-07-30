@@ -163,21 +163,59 @@ final class DevelopmentPluginRuntime {
         artifact: pluginBuild.frontendArtifact,
         bridge: bridge,
       );
-    } on Object {
-      await stop();
-      rethrow;
+    } on Object catch (error, stackTrace) {
+      try {
+        await stop();
+      } on Object catch (cleanupError) {
+        diagnostics.add('startup cleanup failed: $cleanupError');
+      }
+      Error.throwWithStackTrace(error, stackTrace);
     }
   }
 
   Future<void> stop() async {
-    _eval?.invalidate();
-    _eval = null;
+    final WorkspaceDemoEvalAdapter? eval = _eval;
     final PluginBackendConnection? connection = _connection;
-    _connection = null;
-    if (connection != null) await connection.close();
     final PluginBackendHost? host = _host;
+    _eval = null;
+    _connection = null;
     _host = null;
-    if (host != null) await host.close();
     buildId = null;
+    eval?.invalidate();
+
+    await cleanupDevelopmentRuntimeResources(
+      closeConnection: connection?.close,
+      closeHost: host == null
+          ? null
+          : ({required bool graceful}) => host.close(graceful: graceful),
+      onCleanupError: (Object error) {
+        diagnostics.add('backend-host cleanup failed: $error');
+      },
+    );
+  }
+}
+
+Future<void> cleanupDevelopmentRuntimeResources({
+  Future<void> Function()? closeConnection,
+  Future<void> Function({required bool graceful})? closeHost,
+  void Function(Object error)? onCleanupError,
+}) async {
+  Object? connectionError;
+  StackTrace? connectionStack;
+  try {
+    await closeConnection?.call();
+  } on Object catch (error, stackTrace) {
+    connectionError = error;
+    connectionStack = stackTrace;
+  } finally {
+    try {
+      await closeHost?.call(graceful: connectionError == null);
+    } on Object catch (hostError) {
+      onCleanupError?.call(hostError);
+      if (connectionError == null) rethrow;
+    }
+  }
+  if (connectionError != null) {
+    Error.throwWithStackTrace(connectionError, connectionStack!);
   }
 }
