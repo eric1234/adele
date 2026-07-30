@@ -30,16 +30,31 @@ Future<void> main() async {
     'protocolVersion': backendHostProtocolVersion,
     'kind': 'hostHello',
   });
-  await for (final Map<String, Object?> message in messages.stream) {
-    if (!await host.handle(message)) {
-      await stdinSubscription.cancel();
-      await messages.close();
-      await stdout.flush();
-      return;
+  bool commandedShutdown = false;
+  try {
+    await for (final Map<String, Object?> message in messages.stream) {
+      if (!await host.handle(message)) {
+        commandedShutdown = true;
+        break;
+      }
     }
+  } on Object catch (error, stackTrace) {
+    stderr.writeln('backend-host input failure: $error\n$stackTrace');
+    exitCode = 65;
+  } finally {
+    await stdinSubscription.cancel();
+    await host.shutdown(notify: false);
+    if (!messages.isClosed) await messages.close();
+    if (commandedShutdown) await stdout.flush();
   }
 }
 
-void _send(Map<String, Object?> message) {
-  stdout.add(encodeBackendHostFrame(message));
+bool _send(Map<String, Object?> message) {
+  try {
+    stdout.add(encodeBackendHostFrame(message));
+    return true;
+  } on BackendHostProtocolException catch (error) {
+    stderr.writeln('backend-host response encoding failure: $error');
+    return false;
+  }
 }

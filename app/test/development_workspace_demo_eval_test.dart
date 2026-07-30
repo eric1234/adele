@@ -8,15 +8,10 @@ import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:workspace_demo_contract/workspace_demo_contract.dart';
 
 void main() {
-  late final Compiler compiler;
-
-  setUpAll(() {
-    compiler = Compiler()..addPlugin(flutterEvalPlugin);
-  });
-
   testWidgets('interpreted frontend calls typed service and renders text', (
     WidgetTester tester,
   ) async {
@@ -24,38 +19,7 @@ void main() {
       service: _FakeWorkspaceDemoService(),
       developmentRoot: ResourceRef(uri: Uri.parse('file:///demo/')),
     );
-    compiler.addPlugin(bridge);
-    compiler.entrypoints.add(
-      'package:workspace_demo_frontend/workspace_demo_frontend.dart',
-    );
-    final String repository = Directory.current.parent.path;
-    final String frontendSource = File(
-      '$repository/plugins/workspace_demo/packages/frontend/lib/workspace_demo_frontend.dart',
-    ).readAsStringSync();
-    final Program program = compiler.compile(<String, Map<String, String>>{
-      'workspace_demo_frontend': <String, String>{
-        'workspace_demo_frontend.dart': frontendSource,
-        'src/adele_eval_bridge.dart': _bridgeSource,
-      },
-    });
-    final File artifact = File(
-      '${Directory.systemTemp.createTempSync('adele-workspace-eval-').path}/frontend.evc',
-    );
-    addTearDown(() => artifact.parent.deleteSync(recursive: true));
-    artifact.writeAsBytesSync(program.write());
-    final Runtime runtime =
-        Runtime(artifact.readAsBytesSync().buffer.asByteData())
-          ..addPlugin(flutterEvalPlugin)
-          ..addPlugin(bridge);
-    final Object? pendingWidget = runtime.executeLib(
-      'package:workspace_demo_frontend/workspace_demo_frontend.dart',
-      'buildWorkspaceDemo',
-    );
-    final Object? widgetValue = await (pendingWidget! as Future<Object?>);
-    final Object? widget = widgetValue is $Value
-        ? widgetValue.$reified
-        : widgetValue;
-    await tester.pumpWidget(MaterialApp(home: widget! as Widget));
+    await tester.pumpWidget(MaterialApp(home: await _createWidget(bridge)));
     expect(find.text('first.txt'), findsOneWidget);
     expect(find.text('notes.txt'), findsOneWidget);
     await tester.tap(find.text('notes.txt'));
@@ -75,51 +39,134 @@ void main() {
       service: service,
       developmentRoot: ResourceRef(uri: Uri.parse('file:///demo/')),
     );
-    final Compiler delayedCompiler = Compiler()
-      ..addPlugin(flutterEvalPlugin)
-      ..addPlugin(bridge)
-      ..entrypoints.add(
-        'package:workspace_demo_frontend/workspace_demo_frontend.dart',
-      );
-    final String repository = Directory.current.parent.path;
-    final Program
-    program = delayedCompiler.compile(<String, Map<String, String>>{
-      'workspace_demo_frontend': <String, String>{
-        'workspace_demo_frontend.dart': File(
-          '$repository/plugins/workspace_demo/packages/frontend/lib/workspace_demo_frontend.dart',
-        ).readAsStringSync(),
-        'src/adele_eval_bridge.dart': _bridgeSource,
-      },
-    });
-    final Runtime runtime = Runtime(program.write().buffer.asByteData())
-      ..addPlugin(flutterEvalPlugin)
-      ..addPlugin(bridge);
-    final Object? pending = runtime.executeLib(
-      'package:workspace_demo_frontend/workspace_demo_frontend.dart',
-      'buildWorkspaceDemo',
-    );
-    final Object? value = await (pending! as Future<Object?>);
-    final Widget widget = (value is $Value ? value.$reified : value)! as Widget;
-    await tester.pumpWidget(MaterialApp(home: widget));
+    await tester.pumpWidget(MaterialApp(home: await _createWidget(bridge)));
     await tester.tap(find.text('notes.txt'));
     await tester.pumpWidget(const SizedBox.shrink());
     service.completeDelayed();
     await tester.pump();
     expect(tester.takeException(), isNull);
-    bridge.invalidate();
   });
+
+  testWidgets('returns cancellation when invalidated before a request', (
+    WidgetTester tester,
+  ) async {
+    final WorkspaceDemoEvalBridge bridge = WorkspaceDemoEvalBridge(
+      service: _FakeWorkspaceDemoService(),
+      developmentRoot: ResourceRef(uri: Uri.parse('file:///demo/')),
+    )..invalidate();
+    await tester.pumpWidget(MaterialApp(home: await _createWidget(bridge)));
+    expect(find.byType(SizedBox), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('ignores completion after invalidation while pending', (
+    WidgetTester tester,
+  ) async {
+    final _DelayedWorkspaceDemoService service = _DelayedWorkspaceDemoService();
+    final WorkspaceDemoEvalBridge bridge = WorkspaceDemoEvalBridge(
+      service: service,
+      developmentRoot: ResourceRef(uri: Uri.parse('file:///demo/')),
+    );
+    await tester.pumpWidget(MaterialApp(home: await _createWidget(bridge)));
+    await tester.tap(find.text('notes.txt'));
+    bridge.invalidate();
+    service.completeDelayed();
+    await tester.pump();
+    expect(find.text('late text'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('ignores failure after invalidation while pending', (
+    WidgetTester tester,
+  ) async {
+    final _DelayedWorkspaceDemoService service = _DelayedWorkspaceDemoService();
+    final WorkspaceDemoEvalBridge bridge = WorkspaceDemoEvalBridge(
+      service: service,
+      developmentRoot: ResourceRef(uri: Uri.parse('file:///demo/')),
+    );
+    await tester.pumpWidget(MaterialApp(home: await _createWidget(bridge)));
+    await tester.tap(find.text('notes.txt'));
+    bridge.invalidate();
+    service.completeError(
+      const PluginConnectionClosed('Plugin stopped during reload.'),
+    );
+    await tester.pump();
+    expect(find.text('Selected: notes.txt'), findsNothing);
+    expect(find.text('Plugin stopped during reload.'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  test('propagates backend failure while bridge is active', () async {
+    final WorkspaceDemoEvalBridge bridge = WorkspaceDemoEvalBridge(
+      service: _FailingWorkspaceDemoService(),
+      developmentRoot: ResourceRef(uri: Uri.parse('file:///demo/')),
+    );
+    await expectLater(_callText(bridge), throwsA(isA<WorkspaceDemoFailure>()));
+  });
+}
+
+Future<Object?> _callText(WorkspaceDemoEvalBridge bridge) async {
+  final Compiler compiler = Compiler()
+    ..addPlugin(bridge)
+    ..entrypoints.add('package:probe/main.dart');
+  final Program program = compiler.compile(<String, Map<String, String>>{
+    'probe': <String, String>{
+      'main.dart': '''
+import 'package:workspace_demo_frontend/src/adele_eval_bridge.dart';
+Future<WorkspaceDemoTextData> callText() => loadWorkspaceDemoText('file:///demo/notes.txt');
+''',
+    },
+    'workspace_demo_frontend': <String, String>{
+      'src/adele_eval_bridge.dart': _bridgeSource,
+    },
+  });
+  final Runtime runtime = Runtime.ofProgram(program)..addPlugin(bridge);
+  final Object? result = runtime.executeLib(
+    'package:probe/main.dart',
+    'callText',
+  );
+  return await (result! as Future<Object?>);
+}
+
+Future<Widget> _createWidget(WorkspaceDemoEvalBridge bridge) async {
+  final Compiler compiler = Compiler()
+    ..addPlugin(flutterEvalPlugin)
+    ..addPlugin(bridge)
+    ..entrypoints.add(
+      'package:workspace_demo_frontend/workspace_demo_frontend.dart',
+    );
+  final String repository = Directory.current.parent.path;
+  final Program program = compiler.compile(<String, Map<String, String>>{
+    'workspace_demo_frontend': <String, String>{
+      'workspace_demo_frontend.dart': File(
+        '$repository/plugins/workspace_demo/packages/frontend/lib/workspace_demo_frontend.dart',
+      ).readAsStringSync(),
+      'src/adele_eval_bridge.dart': _bridgeSource,
+    },
+  });
+  final Runtime runtime = Runtime(program.write().buffer.asByteData())
+    ..addPlugin(flutterEvalPlugin)
+    ..addPlugin(bridge);
+  final Object? pending = runtime.executeLib(
+    'package:workspace_demo_frontend/workspace_demo_frontend.dart',
+    'buildWorkspaceDemo',
+  );
+  final Object? value = await (pending! as Future<Object?>);
+  return (value is $Value ? value.$reified : value)! as Widget;
 }
 
 const String _bridgeSource = '''
 final class WorkspaceDemoViewData {
-  const WorkspaceDemoViewData({required this.names, required this.uris});
+  const WorkspaceDemoViewData({required this.names, required this.uris, required this.cancelled});
   final List<String> names;
   final List<String> uris;
+  final bool cancelled;
 }
 
 final class WorkspaceDemoTextData {
-  const WorkspaceDemoTextData(this.value);
+  const WorkspaceDemoTextData(this.value, {this.cancelled = false});
   final String value;
+  final bool cancelled;
 }
 
 Future<WorkspaceDemoViewData> loadWorkspaceDemoDirectory() {
@@ -174,6 +221,20 @@ final class _DelayedWorkspaceDemoService extends _FakeWorkspaceDemoService {
         resource: ResourceRef(uri: Uri.parse('file:///demo/notes.txt')),
         text: 'late text',
       ),
+    );
+  }
+
+  void completeError(Object error, [StackTrace? stackTrace]) {
+    _delayed.completeError(error, stackTrace);
+  }
+}
+
+final class _FailingWorkspaceDemoService extends _FakeWorkspaceDemoService {
+  @override
+  Future<TextFileContents> readTextFile(ResourceRef file) {
+    throw const WorkspaceDemoFailure(
+      code: 'unreadable',
+      message: 'Backend read failed.',
     );
   }
 }

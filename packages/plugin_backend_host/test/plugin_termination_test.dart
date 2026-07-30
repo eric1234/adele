@@ -106,6 +106,124 @@ void main() {
     },
     timeout: const Timeout(Duration(minutes: 2)),
   );
+
+  test(
+    'fails pending request when plugin is stopped and keeps host usable',
+    () async {
+      final PluginBackendHost host = await _startHost(
+        dartaotruntime,
+        hostArtifact,
+      );
+      addTearDown(() async {
+        if (!host.isClosed) await host.close(graceful: false);
+      });
+      final PluginBackendConnection plugin = await host.startPlugin(
+        pluginId: 'stoppable',
+        artifactUri: pluginArtifact.uri,
+        arguments: const <String>['wait'],
+      );
+      final Future<Object?> pending = plugin.request(
+        'pending',
+        const <String, Object?>{},
+      );
+      final Future<void> expectation = expectLater(
+        pending.timeout(const Duration(seconds: 5)),
+        throwsA(isA<PluginConnectionClosed>()),
+      );
+      await plugin.close();
+      await expectation;
+      final PluginBackendConnection restarted = await host.startPlugin(
+        pluginId: 'stoppable',
+        artifactUri: pluginArtifact.uri,
+        arguments: const <String>['wait'],
+      );
+      expect(
+        await restarted.request('ping', const <String, Object?>{}),
+        <String, Object?>{'alive': true},
+      );
+      await restarted.close();
+      await host.close();
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
+    'kills plugin that acknowledges shutdown without exiting and restarts it',
+    () async {
+      final PluginBackendHost host = await _startHost(
+        dartaotruntime,
+        hostArtifact,
+      );
+      addTearDown(() async {
+        if (!host.isClosed) await host.close(graceful: false);
+      });
+      final PluginBackendConnection hanging = await host.startPlugin(
+        pluginId: 'hanging',
+        artifactUri: pluginArtifact.uri,
+        arguments: const <String>['acknowledge-hang'],
+      );
+      await hanging.close().timeout(const Duration(seconds: 6));
+      final PluginBackendConnection restarted = await host.startPlugin(
+        pluginId: 'hanging',
+        artifactUri: pluginArtifact.uri,
+        arguments: const <String>['wait'],
+      );
+      expect(
+        await restarted.request('ping', const <String, Object?>{}),
+        <String, Object?>{'alive': true},
+      );
+      await restarted.close();
+      await host.close();
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
+    'contains oversized responses and keeps plugin and host usable',
+    () async {
+      final PluginBackendHost host = await _startHost(
+        dartaotruntime,
+        hostArtifact,
+      );
+      addTearDown(() async {
+        if (!host.isClosed) await host.close(graceful: false);
+      });
+      final PluginBackendConnection plugin = await host.startPlugin(
+        pluginId: 'large',
+        artifactUri: pluginArtifact.uri,
+        arguments: const <String>['wait'],
+      );
+      final Object? below = await plugin.request(
+        'large-below',
+        const <String, Object?>{},
+      );
+      expect((below! as String).length, 8 * 1024 * 1024 - 2048);
+      await expectLater(
+        plugin.request('large-above', const <String, Object?>{}),
+        throwsA(
+          isA<PluginRemoteFailure>().having(
+            (PluginRemoteFailure value) => value.code,
+            'code',
+            'response_too_large',
+          ),
+        ),
+      );
+      expect(
+        await plugin.request('ping', const <String, Object?>{}),
+        <String, Object?>{'alive': true},
+      );
+      await plugin.close();
+      await host.close();
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+}
+
+Future<PluginBackendHost> _startHost(String dartaotruntime, File hostArtifact) {
+  return PluginBackendHost.start(
+    dartaotruntimeExecutable: dartaotruntime,
+    hostArtifactPath: hostArtifact.path,
+  );
 }
 
 Future<void> _compile(

@@ -4,6 +4,7 @@ import 'src/adele_eval_bridge.dart';
 
 Future<Widget> buildWorkspaceDemo() async {
   final WorkspaceDemoViewData data = await loadWorkspaceDemoDirectory();
+  if (data.cancelled) return SizedBox.shrink();
   return WorkspaceDemoWidget(data: data);
 }
 
@@ -32,7 +33,7 @@ class _WorkspaceDemoWidgetState extends State<WorkspaceDemoWidget> {
     final WorkspaceDemoTextData text = await loadWorkspaceDemoText(
       widget.data.uris[index],
     );
-    if (disposed) return;
+    if (disposed || text.cancelled) return;
     setState(() {
       selectedIndex = index;
       selectedText = text;

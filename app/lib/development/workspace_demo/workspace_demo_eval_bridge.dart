@@ -76,47 +76,65 @@ final class WorkspaceDemoEvalBridge implements EvalPlugin {
     List<$Value?> arguments,
   ) {
     return $Future<$Value?>.wrap(
-      _guard(() async {
-        final DirectoryListing listing = await _service.listDirectory(
-          _developmentRoot,
-        );
-        final List<DirectoryEntry> files = listing.entries
-            .where(
-              (DirectoryEntry entry) => entry.kind == DirectoryEntryKind.file,
-            )
-            .toList(growable: false);
-        return _WorkspaceDemoViewData(
-          names: files.map((DirectoryEntry entry) => entry.name).toList(),
-          uris: files
-              .map((DirectoryEntry entry) => entry.resource.uri.toString())
-              .toList(),
-        );
-      }),
+      _guard(
+        cancelled: () => _WorkspaceDemoViewData(
+          names: const <String>[],
+          uris: const <String>[],
+          cancelled: true,
+        ),
+        operation: () async {
+          final DirectoryListing listing = await _service.listDirectory(
+            _developmentRoot,
+          );
+          final List<DirectoryEntry> files = listing.entries
+              .where(
+                (DirectoryEntry entry) => entry.kind == DirectoryEntryKind.file,
+              )
+              .toList(growable: false);
+          return _WorkspaceDemoViewData(
+            names: files.map((DirectoryEntry entry) => entry.name).toList(),
+            uris: files
+                .map((DirectoryEntry entry) => entry.resource.uri.toString())
+                .toList(),
+            cancelled: false,
+          );
+        },
+      ),
     );
   }
 
   $Value? _loadText(Runtime runtime, $Value? target, List<$Value?> arguments) {
     return $Future<$Value?>.wrap(
-      _guard(() async {
-        final String uri = arguments.single!.$value as String;
-        final TextFileContents contents = await _service.readTextFile(
-          ResourceRef(uri: Uri.parse(uri)),
-        );
-        return _WorkspaceDemoTextData(contents.text);
-      }),
+      _guard(
+        cancelled: () => const _WorkspaceDemoTextData('', cancelled: true),
+        operation: () async {
+          final String uri = arguments.single!.$value as String;
+          final TextFileContents contents = await _service.readTextFile(
+            ResourceRef(uri: Uri.parse(uri)),
+          );
+          return _WorkspaceDemoTextData(contents.text);
+        },
+      ),
     );
   }
 
-  Future<$Value?> _guard(Future<$Value?> Function() operation) async {
-    if (!_active) throw StateError('The workspace demo bridge is inactive.');
-    final $Value? value = await operation();
-    if (!_active) throw StateError('The workspace demo bridge is inactive.');
-    return value;
+  Future<$Value?> _guard({
+    required $Value Function() cancelled,
+    required Future<$Value?> Function() operation,
+  }) async {
+    if (!_active) return cancelled();
+    try {
+      final $Value? value = await operation();
+      return _active ? value : cancelled();
+    } on Object catch (error, stackTrace) {
+      if (!_active) return cancelled();
+      Error.throwWithStackTrace(error, stackTrace);
+    }
   }
 }
 
 final class _WorkspaceDemoTextData implements $Instance {
-  const _WorkspaceDemoTextData(this.value);
+  const _WorkspaceDemoTextData(this.value, {this.cancelled = false});
 
   static const BridgeTypeRef $type = BridgeTypeRef(
     BridgeTypeSpec(WorkspaceDemoEvalBridge.library, 'WorkspaceDemoTextData'),
@@ -144,11 +162,17 @@ final class _WorkspaceDemoTextData implements $Instance {
           returns: BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.string)),
         ),
       ),
+      'cancelled': BridgeMethodDef(
+        BridgeFunctionDef(
+          returns: BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.bool)),
+        ),
+      ),
     },
     wrap: true,
   );
 
   final String value;
+  final bool cancelled;
 
   static $Value? construct(
     Runtime runtime,
@@ -164,8 +188,11 @@ final class _WorkspaceDemoTextData implements $Instance {
 
   @override
   $Value? $getProperty(Runtime runtime, String identifier) {
-    if (identifier == 'value') return $String(value);
-    throw UnimplementedError(identifier);
+    return switch (identifier) {
+      'value' => $String(value),
+      'cancelled' => $bool(cancelled),
+      _ => throw UnimplementedError(identifier),
+    };
   }
 
   @override
@@ -178,7 +205,11 @@ final class _WorkspaceDemoTextData implements $Instance {
 }
 
 final class _WorkspaceDemoViewData implements $Instance {
-  _WorkspaceDemoViewData({required this.names, required this.uris});
+  _WorkspaceDemoViewData({
+    required this.names,
+    required this.uris,
+    required this.cancelled,
+  });
 
   static const BridgeTypeRef $type = BridgeTypeRef(
     BridgeTypeSpec(WorkspaceDemoEvalBridge.library, 'WorkspaceDemoViewData'),
@@ -198,12 +229,18 @@ final class _WorkspaceDemoViewData implements $Instance {
           returns: BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.list)),
         ),
       ),
+      'cancelled': BridgeMethodDef(
+        BridgeFunctionDef(
+          returns: BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.bool)),
+        ),
+      ),
     },
     wrap: true,
   );
 
   final List<String> names;
   final List<String> uris;
+  final bool cancelled;
 
   @override
   Object get $reified => this;
@@ -216,6 +253,7 @@ final class _WorkspaceDemoViewData implements $Instance {
     return switch (identifier) {
       'names' => $List.wrap(names.map<$Value>(($String.new)).toList()),
       'uris' => $List.wrap(uris.map<$Value>(($String.new)).toList()),
+      'cancelled' => $bool(cancelled),
       _ => throw UnimplementedError(identifier),
     };
   }

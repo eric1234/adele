@@ -24,6 +24,11 @@ The maintained semantic surface is `PluginBackendHost` plus per-plugin
 `PluginBackendConnection`. It intentionally hides `Process`, framing, ports,
 and request IDs.
 
+Stopping a plugin fails its outstanding requests. Malformed host output closes
+all connections and kills and reaps the child process.
+`PluginBackendConnection.close()` has one supported behavior: bounded semantic
+plugin shutdown.
+
 ## Validated Scope
 
 Direct Flutter `Isolate.spawnUri` remains disproven. The continuation starts one

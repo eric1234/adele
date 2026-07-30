@@ -4,7 +4,7 @@ import 'dart:isolate';
 
 import 'package:plugin_runtime/plugin_runtime.dart';
 
-typedef BackendHostSend = void Function(Map<String, Object?> message);
+typedef BackendHostSend = bool Function(Map<String, Object?> message);
 typedef BackendHostDiagnostic = void Function(String message);
 
 final class AdeleBackendHost {
@@ -17,6 +17,7 @@ final class AdeleBackendHost {
   final BackendHostSend _send;
   final BackendHostDiagnostic _diagnostic;
   final Map<String, _PluginIsolate> _plugins = <String, _PluginIsolate>{};
+  bool _shutDown = false;
 
   Future<bool> handle(Map<String, Object?> message) async {
     final Object? requestId = message['requestId'];
@@ -60,16 +61,20 @@ final class AdeleBackendHost {
     return true;
   }
 
-  Future<void> shutdown({Object? requestId}) async {
+  Future<void> shutdown({Object? requestId, bool notify = true}) async {
+    if (_shutDown) return;
+    _shutDown = true;
     for (final _PluginIsolate plugin in _plugins.values.toList()) {
       await plugin.stop();
     }
     _plugins.clear();
-    _send(<String, Object?>{
-      'protocolVersion': backendHostProtocolVersion,
-      'kind': 'hostStopped',
-      if (requestId is int) 'requestId': requestId,
-    });
+    if (notify) {
+      _send(<String, Object?>{
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'hostStopped',
+        if (requestId is int) 'requestId': requestId,
+      });
+    }
   }
 
   Future<void> _startPlugin(Map<String, Object?> message) async {
@@ -94,6 +99,11 @@ final class AdeleBackendHost {
       onTerminated: _pluginTerminated,
     );
     _plugins[pluginId] = plugin;
+    await Future<void>.delayed(Duration.zero);
+    if (plugin.isTerminated) {
+      _plugins.remove(pluginId);
+      throw StateError('Plugin $pluginId terminated during startup.');
+    }
     _send(<String, Object?>{
       'protocolVersion': backendHostProtocolVersion,
       'kind': 'pluginReady',
@@ -198,9 +208,13 @@ final class _PluginIsolate {
   int _nextPluginRequestId = 1;
   bool _stopped = false;
   bool _terminated = false;
+  bool _cleanedUp = false;
   String? _uncaughtError;
   int? _shutdownRequestId;
   Completer<void>? _shutdownCompleter;
+  final Completer<void> _exitCompleter = Completer<void>();
+
+  bool get isTerminated => _terminated;
 
   static Future<_PluginIsolate> start({
     required String pluginId,
@@ -304,14 +318,18 @@ final class _PluginIsolate {
     });
     try {
       await stopped.future.timeout(const Duration(seconds: 2));
-    } on Object {
+    } on Object catch (error) {
+      _diagnostic('Plugin $pluginId shutdown acknowledgement failed: $error');
       _isolate.kill(priority: Isolate.immediate);
     }
-    await _responseSubscription.cancel();
-    await _errorSubscription.cancel();
-    await _exitSubscription.cancel();
-    _responses.close();
-    _closeLifecyclePorts();
+    try {
+      await _exitCompleter.future.timeout(const Duration(seconds: 2));
+    } on Object catch (error) {
+      _diagnostic('Plugin $pluginId exit timed out: $error');
+      _isolate.kill(priority: Isolate.immediate);
+      await _exitCompleter.future.timeout(const Duration(seconds: 2));
+    }
+    await _cleanup();
   }
 
   void _handleResponse(Object? raw) {
@@ -339,7 +357,19 @@ final class _PluginIsolate {
       if (raw.containsKey('payload')) 'payload': raw['payload'],
       if (raw.containsKey('error')) 'error': raw['error'],
     };
-    _send(response);
+    if (!_send(response)) {
+      _send(<String, Object?>{
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'response',
+        'requestId': outerRequestId,
+        'pluginId': pluginId,
+        'ok': false,
+        'error': <String, Object?>{
+          'code': 'response_too_large',
+          'message': 'The plugin response exceeded the host frame limit.',
+        },
+      });
+    }
   }
 
   void _handleError(Object? error) {
@@ -356,6 +386,7 @@ final class _PluginIsolate {
 
   void _handleExit(Object? _) {
     _diagnostic('Plugin $pluginId exited.');
+    if (!_exitCompleter.isCompleted) _exitCompleter.complete();
     if (_stopped || _terminated) return;
     _terminated = true;
     final List<int> pending = _outerRequestIds.values
@@ -371,10 +402,12 @@ final class _PluginIsolate {
           ? 'The plugin isolate exited unexpectedly.'
           : 'The plugin isolate failed: $uncaughtError',
     );
-    unawaited(_cleanupAfterExit());
+    unawaited(_cleanup());
   }
 
-  Future<void> _cleanupAfterExit() async {
+  Future<void> _cleanup() async {
+    if (_cleanedUp) return;
+    _cleanedUp = true;
     await _responseSubscription.cancel();
     await _errorSubscription.cancel();
     await _exitSubscription.cancel();

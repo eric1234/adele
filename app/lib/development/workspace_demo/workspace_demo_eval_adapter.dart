@@ -71,14 +71,16 @@ final class WorkspaceDemoEvalAdapter {
 
 const String _evalBridgeSource = '''
 final class WorkspaceDemoViewData {
-  const WorkspaceDemoViewData({required this.names, required this.uris});
+  const WorkspaceDemoViewData({required this.names, required this.uris, required this.cancelled});
   final List<String> names;
   final List<String> uris;
+  final bool cancelled;
 }
 
 final class WorkspaceDemoTextData {
-  const WorkspaceDemoTextData(this.value);
+  const WorkspaceDemoTextData(this.value, {this.cancelled = false});
   final String value;
+  final bool cancelled;
 }
 
 Future<WorkspaceDemoViewData> loadWorkspaceDemoDirectory() {
