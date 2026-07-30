@@ -8,6 +8,7 @@ import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:workspace_demo_contract/workspace_demo_contract.dart';
 
 void main() {
@@ -72,6 +73,26 @@ void main() {
     service.completeDelayed();
     await tester.pump();
     expect(find.text('late text'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('ignores failure after invalidation while pending', (
+    WidgetTester tester,
+  ) async {
+    final _DelayedWorkspaceDemoService service = _DelayedWorkspaceDemoService();
+    final WorkspaceDemoEvalBridge bridge = WorkspaceDemoEvalBridge(
+      service: service,
+      developmentRoot: ResourceRef(uri: Uri.parse('file:///demo/')),
+    );
+    await tester.pumpWidget(MaterialApp(home: await _createWidget(bridge)));
+    await tester.tap(find.text('notes.txt'));
+    bridge.invalidate();
+    service.completeError(
+      const PluginConnectionClosed('Plugin stopped during reload.'),
+    );
+    await tester.pump();
+    expect(find.text('Selected: notes.txt'), findsNothing);
+    expect(find.text('Plugin stopped during reload.'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -201,6 +222,10 @@ final class _DelayedWorkspaceDemoService extends _FakeWorkspaceDemoService {
         text: 'late text',
       ),
     );
+  }
+
+  void completeError(Object error, [StackTrace? stackTrace]) {
+    _delayed.completeError(error, stackTrace);
   }
 }
 

@@ -123,9 +123,13 @@ final class WorkspaceDemoEvalBridge implements EvalPlugin {
     required Future<$Value?> Function() operation,
   }) async {
     if (!_active) return cancelled();
-    final $Value? value = await operation();
-    if (!_active) return cancelled();
-    return value;
+    try {
+      final $Value? value = await operation();
+      return _active ? value : cancelled();
+    } on Object catch (error, stackTrace) {
+      if (!_active) return cancelled();
+      Error.throwWithStackTrace(error, stackTrace);
+    }
   }
 }
 
