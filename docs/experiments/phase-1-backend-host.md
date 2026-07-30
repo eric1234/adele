@@ -97,7 +97,11 @@ three PIDs were verified stopped after the run.
 Tests prove structured plugin startup errors, malformed frames, host exit with
 pending requests, startup timeout, forced shutdown after graceful timeout,
 unknown IDs, and stage-specific stderr diagnostics. Plugin isolate uncaught
-errors are forwarded as `plugin-isolate` diagnostics.
+errors are forwarded as `plugin-isolate` diagnostics. Unexpected plugin exit
+removes the plugin from the host registry, fails every routed pending request
+with `plugin_exited` or `plugin_failed`, closes the semantic connection, and
+allows the same plugin ID to start again. Tests cover exit with and without a
+pending request plus successful restart.
 
 ## Interactive Frontend Follow-Up
 
@@ -123,7 +127,7 @@ Flutter 3.44 or Dart 3.12 compatibility is claimed.
 ## Verdict
 
 ```text
-SUCCESS — complete profile/release vertical path proven
+SUCCESS — complete Linux x64 profile vertical path proven
 ```
 
 This verdict applies to the shared backend-host continuation on Linux x64

@@ -44,6 +44,7 @@ final class PluginBackendHost {
   final BackendHostFrameDecoder _decoder = BackendHostFrameDecoder();
   final Map<int, Completer<Map<String, Object?>>> _pending =
       <int, Completer<Map<String, Object?>>>{};
+  final Map<int, String> _pendingPluginIds = <int, String>{};
   final Map<String, PluginBackendConnection> _plugins =
       <String, PluginBackendConnection>{};
   late final StreamSubscription<List<int>> _stdoutSubscription;
@@ -230,6 +231,7 @@ final class PluginBackendHost {
     final Completer<Map<String, Object?>> completer =
         Completer<Map<String, Object?>>();
     _pending[requestId] = completer;
+    if (pluginId != null) _pendingPluginIds[requestId] = pluginId;
     _process.stdin.add(
       encodeBackendHostFrame(<String, Object?>{
         'protocolVersion': backendHostProtocolVersion,
@@ -249,6 +251,10 @@ final class PluginBackendHost {
       );
       return;
     }
+    if (message['kind'] == 'pluginFailed') {
+      _handlePluginFailed(message);
+      return;
+    }
     final Object? rawRequestId = message['requestId'];
     if (rawRequestId is! int) {
       _onDiagnostic?.call('Host message without request ID ignored: $message');
@@ -257,6 +263,7 @@ final class PluginBackendHost {
     final Completer<Map<String, Object?>>? completer = _pending.remove(
       rawRequestId,
     );
+    _pendingPluginIds.remove(rawRequestId);
     if (completer == null) {
       _onDiagnostic?.call(
         'Unknown or duplicate host response ID $rawRequestId.',
@@ -266,6 +273,45 @@ final class PluginBackendHost {
     completer.complete(message);
   }
 
+  void _handlePluginFailed(Map<String, Object?> message) {
+    final Object? rawPluginId = message['pluginId'];
+    if (rawPluginId is! String) {
+      _onDiagnostic?.call('Plugin failure without plugin ID ignored.');
+      return;
+    }
+    final PluginRemoteFailure failure = _remoteFailure(message);
+    final Object? rawRequestIds = message['requestIds'];
+    if (rawRequestIds is List) {
+      for (final Object? rawRequestId in rawRequestIds) {
+        if (rawRequestId is! int) continue;
+        final Completer<Map<String, Object?>>? completer = _pending.remove(
+          rawRequestId,
+        );
+        _pendingPluginIds.remove(rawRequestId);
+        if (completer != null && !completer.isCompleted) {
+          completer.completeError(failure);
+        }
+      }
+    }
+    final List<int> remaining = _pendingPluginIds.entries
+        .where((MapEntry<int, String> entry) => entry.value == rawPluginId)
+        .map((MapEntry<int, String> entry) => entry.key)
+        .toList(growable: false);
+    for (final int requestId in remaining) {
+      final Completer<Map<String, Object?>>? completer = _pending.remove(
+        requestId,
+      );
+      _pendingPluginIds.remove(requestId);
+      if (completer != null && !completer.isCompleted) {
+        completer.completeError(failure);
+      }
+    }
+    _plugins.remove(rawPluginId)?._finish(failure);
+    _onDiagnostic?.call(
+      'plugin-isolate: $rawPluginId terminated (${failure.code}).',
+    );
+  }
+
   void _failAll(Object error) {
     if (_closed && _pending.isEmpty && _plugins.isEmpty) return;
     _closed = true;
@@ -273,6 +319,7 @@ final class PluginBackendHost {
       if (!completer.isCompleted) completer.completeError(error);
     }
     _pending.clear();
+    _pendingPluginIds.clear();
     for (final PluginBackendConnection connection in _plugins.values) {
       connection._finish(error);
     }
