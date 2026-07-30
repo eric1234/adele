@@ -2,9 +2,9 @@
 
 ## Canonical form
 
-Plugin source is the canonical distribution format. The proposed build pipeline
-will derive frontend eval bytecode and a native Dart AOT backend from that
-source, but Phase 0 neither builds nor loads either artifact.
+Plugin source is the canonical distribution format. The development build
+pipeline derives persisted frontend eval bytecode and a native Dart AOT backend
+from that source.
 
 `workspace_demo` establishes the intended repository shape:
 
@@ -29,8 +29,8 @@ the source packages; `adele_plugin.yaml` is the draft ADELE manifest.
 | Package | Responsibility | Rules |
 | --- | --- | --- |
 | Contract | Shared typed async declarations and immutable values | Pure Dart; no Flutter; no transport or generation implementation |
-| Backend | Privileged or native Dart behavior | Depends on the contract; never on the frontend; proposed for local AOT compilation |
-| Frontend | Plugin UI source | Depends on the contract; never on the backend; may use Flutter; proposed for interpreted `flutter_eval`/`dart_eval` execution |
+| Backend | Privileged or native Dart behavior | Depends on the contract; never on the frontend; compiled locally to AOT and hosted in an external isolate group |
+| Frontend | Plugin UI source | Depends on the contract; never on the backend; may use Flutter; currently interpreted with pinned `flutter_eval`/`dart_eval` |
 
 Frontend/backend communication must use shared public contracts and the future
 generated transport. Source imports do not cross between their implementation
@@ -78,9 +78,9 @@ isolation or concurrency models are deferred.
 Temporary runtime resources are created and disposed during operation. They
 are not plugin instances and are not persistent provider configurations.
 
-## Deferred proof
+## Proven and deferred
 
-Phase 1 is intended to test an interpreted file-tree/text frontend, an AOT
-filesystem backend, typed async communication, and source rebuild/reload. Local
-AOT compilation and loading, eval compilation and rendering, communication,
-reload, and behavior across Windows, macOS, and Linux all remain unproven.
+The `workspace_demo` fixture proves local AOT compilation, shared process-hosted
+loading, typed async communication, interpreted rendering, interaction, and
+rebuild/reload on Linux x64 Flutter profile mode. Windows, macOS, release mode,
+packaging, discovery, and broad plugin APIs remain unproven.

@@ -1,0 +1,44 @@
+name: Linux profile runtime smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "app/lib/development/**"
+      - "app/lib/development_smoke.dart"
+      - "app/pubspec.yaml"
+      - "packages/plugin_backend_host/**"
+      - "packages/plugin_builder/**"
+      - "packages/plugin_runtime/**"
+      - "plugins/workspace_demo/**"
+      - "tools/adele.dart"
+      - "pubspec.yaml"
+      - "pubspec.lock"
+      - "toolchain.json"
+      - ".tool-versions"
+      - ".github/workflows/runtime-smoke.yaml"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux desktop dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev xvfb
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.38.10
+          cache: true
+      - run: dart tools/adele.dart bootstrap
+      - name: Run profile vertical smoke
+        env:
+          ADELE_DEVELOPMENT_REPOSITORY_ROOT: ${{ github.workspace }}
+          ADELE_DEVELOPMENT_PLUGIN_DIRECTORY: ${{ github.workspace }}/plugins/workspace_demo
+          ADELE_DEVELOPMENT_DIRECTORY: ${{ github.workspace }}/.dart_tool/adele/smoke-root
+        run: |
+          mkdir -p "$ADELE_DEVELOPMENT_DIRECTORY"
+          printf 'profile smoke text\n' > "$ADELE_DEVELOPMENT_DIRECTORY/profile.txt"
+          xvfb-run -a dart tools/adele.dart smoke linux --profile

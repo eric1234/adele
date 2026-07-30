@@ -11,6 +11,11 @@ const List<({String name, String path, bool flutter})> _packages =
         flutter: false,
       ),
       (name: 'plugin_runtime', path: 'packages/plugin_runtime', flutter: false),
+      (
+        name: 'plugin_backend_host',
+        path: 'packages/plugin_backend_host',
+        flutter: false,
+      ),
       (name: 'plugin_builder', path: 'packages/plugin_builder', flutter: false),
       (name: 'agent_kernel', path: 'packages/agent_kernel', flutter: false),
       (name: 'workspace_demo', path: 'plugins/workspace_demo', flutter: false),
@@ -81,6 +86,32 @@ Future<void> main(List<String> arguments) async {
         await _run('adele_capabilities', 'dart', <String>[
           'test',
         ], workingDirectory: 'packages/capabilities');
+        await _run('plugin_builder', 'dart', <String>[
+          'test',
+        ], workingDirectory: 'packages/plugin_builder');
+        await _run('plugin_runtime', 'dart', <String>[
+          'test',
+          '--timeout',
+          '10s',
+        ], workingDirectory: 'packages/plugin_runtime');
+        await _run(
+          'plugin_backend_host',
+          'dart',
+          <String>['test'],
+          workingDirectory: 'packages/plugin_backend_host',
+        );
+        await _run(
+          'workspace_demo_contract',
+          'dart',
+          <String>['test'],
+          workingDirectory: 'plugins/workspace_demo/packages/contract',
+        );
+        await _run(
+          'workspace_demo_backend',
+          'dart',
+          <String>['test'],
+          workingDirectory: 'plugins/workspace_demo/packages/backend',
+        );
         await _run('adele_desktop', 'flutter', <String>[
           'test',
         ], workingDirectory: 'app');
@@ -96,21 +127,55 @@ Future<void> main(List<String> arguments) async {
         final String device = arguments.length > 1
             ? arguments[1]
             : _defaultDesktopDevice();
+        final String mode = _mode(arguments);
         await _run('adele_desktop', 'flutter', <String>[
           'run',
           '-d',
           device,
+          '--$mode',
         ], workingDirectory: 'app');
         return;
       case 'build':
         final String target = arguments.length > 1
             ? arguments[1]
             : _defaultDesktopDevice();
+        final String mode = _mode(arguments);
         await _run('adele_desktop $target build', 'flutter', <String>[
           'build',
           target,
-          '--debug',
+          '--$mode',
         ], workingDirectory: 'app');
+        return;
+      case 'smoke':
+        final String target = arguments.length > 1
+            ? arguments[1]
+            : _defaultDesktopDevice();
+        if (target != 'linux') {
+          throw UnsupportedError(
+            'Development runtime smoke is currently implemented for Linux only.',
+          );
+        }
+        final String mode = _mode(arguments) == 'debug'
+            ? 'profile'
+            : _mode(arguments);
+        final List<String> defines = _developmentDefines();
+        if (defines.isEmpty) {
+          throw StateError(
+            'Development smoke requires repository, plugin, and development directories.',
+          );
+        }
+        await _run('adele_desktop $target $mode build', 'flutter', <String>[
+          'build',
+          target,
+          '--$mode',
+          '--target=lib/development_smoke.dart',
+          ...defines,
+        ], workingDirectory: 'app');
+        await _run(
+          'adele_desktop $target $mode runtime smoke',
+          'app/build/linux/x64/$mode/bundle/adele_desktop',
+          const <String>[],
+        );
         return;
       default:
         _usage();
@@ -152,6 +217,53 @@ String _defaultDesktopDevice() {
   throw UnsupportedError('ADELE Phase 0 supports desktop hosts only.');
 }
 
+String _mode(List<String> arguments) {
+  if (arguments.contains('--release')) return 'release';
+  if (arguments.contains('--profile')) return 'profile';
+  if (arguments.contains('--debug')) return 'debug';
+  return 'debug';
+}
+
+List<String> _developmentDefines() {
+  const List<String> names = <String>[
+    'ADELE_DEVELOPMENT_REPOSITORY_ROOT',
+    'ADELE_DEVELOPMENT_PLUGIN_DIRECTORY',
+    'ADELE_DEVELOPMENT_DIRECTORY',
+  ];
+  final Map<String, String> environment = Platform.environment;
+  if (!names.every(environment.containsKey)) return const <String>[];
+  final String flutter = _which('flutter');
+  final String dart = _which('dart');
+  final ProcessResult machine = Process.runSync(flutter, <String>[
+    '--version',
+    '--machine',
+  ]);
+  if (machine.exitCode != 0) {
+    throw StateError('Unable to inspect Flutter SDK: ${machine.stderr}');
+  }
+  final RegExpMatch? rootMatch = RegExp(
+    r'"flutterRoot"\s*:\s*"([^"]+)"',
+  ).firstMatch(machine.stdout.toString());
+  if (rootMatch == null) throw StateError('Flutter SDK root was not reported.');
+  final String flutterRoot = rootMatch.group(1)!;
+  final String dartaotruntime =
+      '$flutterRoot${Platform.pathSeparator}bin${Platform.pathSeparator}cache${Platform.pathSeparator}dart-sdk${Platform.pathSeparator}bin${Platform.pathSeparator}dartaotruntime';
+  return <String>[
+    for (final String name in names) '--dart-define=$name=${environment[name]}',
+    '--dart-define=ADELE_DEVELOPMENT_DART_EXECUTABLE=$dart',
+    '--dart-define=ADELE_DEVELOPMENT_DARTAOTRUNTIME_EXECUTABLE=$dartaotruntime',
+    '--dart-define=ADELE_DEVELOPMENT_FLUTTER_EXECUTABLE=$flutter',
+  ];
+}
+
+String _which(String name) {
+  final ProcessResult result = Process.runSync('which', <String>[name]);
+  if (result.exitCode != 0) {
+    throw StateError('Unable to resolve $name on PATH: ${result.stderr}');
+  }
+  return result.stdout.toString().trim();
+}
+
 void _usage() {
   stdout.writeln('''
 Usage: dart tools/adele.dart <command>
@@ -162,8 +274,12 @@ Commands:
   analyze            Analyze every package and identify failures.
   test               Run public value tests and desktop widget tests.
   check              Verify formatting, analysis, and tests.
-  run [device]       Run the desktop app (linux, macos, or windows).
-  build [target]     Build a debug desktop app.
+  run [device] [--debug|--profile|--release]
+                     Run the desktop app in an explicit mode.
+  build [target] [--debug|--profile|--release]
+                     Build the desktop app in an explicit mode.
+  smoke linux [--profile|--release]
+                     Build and run the internal development runtime smoke path.
 ''');
 }
 

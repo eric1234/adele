@@ -1,7 +1,9 @@
 # Plugin Builder
 
-`plugin_builder` is an internal, pure-Dart package reserved for the future
-source-plugin build pipeline. It contains no compiler integration in Phase 0.
+`plugin_builder` is an internal, pure-Dart package. It implements narrow
+development manifest parsing, exact toolchain checks, dependency resolution,
+fresh generation directories, backend AOT compilation, captured process
+diagnostics, and complete-build activation.
 
 ## Dependencies
 
@@ -17,9 +19,8 @@ context. Identical source and build context should allow reuse across ADELE
 profiles and across configured capability instances. Toolchain changes may
 invalidate those artifacts.
 
-## Deferred
+## Current Scope
 
-Manifest parsing, source resolution, dependency restoration, contract
-generation, AOT compilation, eval compilation, diagnostics, provenance,
-caching, invalidation, installation, and profile-specific builds are deferred.
-Phase 0 does not invoke Dart, Flutter, `dart_eval`, or `flutter_eval` compilers.
+Frontend EVC compilation remains in the Flutter application because this
+package stays pure Dart and must not depend on eval or Flutter. Production
+caching, installation, signing, generation, and invalidation remain deferred.

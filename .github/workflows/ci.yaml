@@ -21,7 +21,7 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: stable
-          flutter-version: 3.44.8
+          flutter-version: 3.38.10
           cache: true
 
       - name: Verify toolchain
@@ -39,5 +39,5 @@ jobs:
       - name: Run tests
         run: dart tools/adele.dart test
 
-      - name: Build Linux desktop shell
-        run: dart tools/adele.dart build linux
+      - name: Build Linux desktop profile
+        run: dart tools/adele.dart build linux --profile

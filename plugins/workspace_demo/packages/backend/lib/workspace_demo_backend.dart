@@ -1,4 +1,5 @@
-/// Placeholder for the workspace demo's future Dart AOT backend.
-///
-/// No backend runtime behavior exists in Phase 0.
+/// Workspace demo filesystem backend and reference wire dispatcher.
 library;
+
+export 'src/filesystem_service.dart';
+export 'src/wire_dispatcher.dart';

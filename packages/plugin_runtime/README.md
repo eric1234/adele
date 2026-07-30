@@ -1,7 +1,10 @@
 # Plugin Runtime
 
-`plugin_runtime` is an internal, pure-Dart package reserved for host-side plugin
-lifecycle and runtime coordination. It contains no runtime API in Phase 0.
+`plugin_runtime` is an internal, pure-Dart package for the shared backend host.
+It owns the semantic process-host connection, deterministic framed
+IPC, request correlation, plugin routing, structured remote failures,
+exit/stderr monitoring, and shutdown cleanup. Process and framing objects do not
+escape its API.
 
 ## Dependencies
 
@@ -17,13 +20,13 @@ with multiple configured capability instances managed by that runtime when
 needed. This is not a permanent restriction; additional runtimes for isolation
 or concurrency may be considered after evidence exists.
 
-Future semantic names may include `PluginBackendLauncher`,
-`PluginBackendConnection`, `PluginTransport`, and `PluginRuntime`. Names that
-encode an unproven mechanism are intentionally avoided.
+The maintained semantic surface is `PluginBackendHost` plus per-plugin
+`PluginBackendConnection`. It intentionally hides `Process`, framing, ports,
+and request IDs.
 
-## Deferred
+## Validated Scope
 
-Discovery, installation state, artifact selection, backend startup and shutdown,
-runtime connections, frontend coordination, failures, reload, profiles, and
-multiple runtime instances are deferred. Activation will not be modeled as an
-intrinsic installed-plugin property.
+Direct Flutter `Isolate.spawnUri` remains disproven. The continuation starts one
+shared child `dartaotruntime` host, which successfully loads plugin snapshots in
+separate isolate groups under Linux profile mode. Discovery, installation,
+profiles, packaging, and production lifecycle remain deferred.

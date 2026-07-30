@@ -1,12 +1,16 @@
 name: workspace_demo_backend
-description: Future AOT backend for the workspace demo plugin.
+description: AOT backend reference implementation for the workspace demo plugin.
 publish_to: none
 version: 0.1.0
 
 environment:
-  sdk: ">=3.12.2 <4.0.0"
+  sdk: ">=3.10.9 <4.0.0"
 
 resolution: workspace
 
 dependencies:
+  adele_plugin_api: ^0.1.0
   workspace_demo_contract: ^0.1.0
+
+dev_dependencies:
+  test: ^1.26.3

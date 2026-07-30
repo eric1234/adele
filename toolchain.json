@@ -1,5 +1,6 @@
 {
-  "flutter": "3.44.8",
-  "flutterRevision": "058e0af2c2b57e369d905a03ac9748b0ebf543c6",
-  "dart": "3.12.2"
+  "flutter": "3.38.10",
+  "flutterRevision": "c6f67dede3d4aa1aa7a69dd56a3494a5cde6cc80",
+  "engineRevision": "cafcda5721a78a7884db92f13c5e89f7643d52dd",
+  "dart": "3.10.9"
 }

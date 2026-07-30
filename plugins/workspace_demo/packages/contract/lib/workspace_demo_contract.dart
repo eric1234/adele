@@ -1,4 +1,60 @@
-/// Shared contract declarations for the workspace demo plugin.
-///
-/// The first typed contract is deferred to the Phase 1 walking skeleton.
+/// Experimental shared contract declarations for the workspace demo plugin.
 library;
+
+import 'dart:collection';
+
+import 'package:adele_plugin_api/adele_plugin_api.dart';
+
+enum DirectoryEntryKind { directory, file }
+
+final class DirectoryEntry {
+  const DirectoryEntry({
+    required this.resource,
+    required this.name,
+    required this.kind,
+  });
+
+  final ResourceRef resource;
+  final String name;
+  final DirectoryEntryKind kind;
+}
+
+final class DirectoryListing {
+  DirectoryListing({
+    required this.directory,
+    required List<DirectoryEntry> entries,
+  }) : entries = UnmodifiableListView<DirectoryEntry>(
+         List<DirectoryEntry>.of(entries),
+       );
+
+  final ResourceRef directory;
+  final List<DirectoryEntry> entries;
+}
+
+final class TextFileContents {
+  const TextFileContents({required this.resource, required this.text});
+
+  final ResourceRef resource;
+  final String text;
+}
+
+abstract interface class WorkspaceDemoService {
+  Future<DirectoryListing> listDirectory(ResourceRef directory);
+
+  Future<TextFileContents> readTextFile(ResourceRef file);
+}
+
+final class WorkspaceDemoFailure implements Exception {
+  const WorkspaceDemoFailure({
+    required this.code,
+    required this.message,
+    this.details = const <String, Object?>{},
+  });
+
+  final String code;
+  final String message;
+  final Map<String, Object?> details;
+
+  @override
+  String toString() => 'WorkspaceDemoFailure($code): $message';
+}
