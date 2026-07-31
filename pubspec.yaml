@@ -11,6 +11,7 @@ workspace:
   - packages/agent_kernel
   - packages/capabilities
   - packages/contract
+  - packages/contract_codegen
   - packages/plugin_api
   - packages/plugin_backend_host
   - packages/plugin_builder

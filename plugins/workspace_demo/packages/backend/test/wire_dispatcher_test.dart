@@ -5,16 +5,15 @@ import 'package:workspace_demo_contract/workspace_demo_contract.dart';
 
 void main() {
   test('encodes a nested typed directory listing', () async {
-    final WorkspaceDemoDispatcher dispatcher = WorkspaceDemoDispatcher(
-      _FakeService(),
-    );
+    final WorkspaceDemoServiceDispatcher dispatcher =
+        WorkspaceDemoServiceDispatcher(_FakeService());
     final Map<String, Object?> response = await dispatcher.dispatch(
       <String, Object?>{
         'kind': 'request',
         'requestId': 7,
         'method': 'workspaceDemo.listDirectory',
         'payload': <String, Object?>{
-          'resource': <String, Object?>{
+          'directory': <String, Object?>{
             'uri': 'file:///demo',
             'mediaType': null,
           },
@@ -31,9 +30,8 @@ void main() {
   test(
     'returns structured errors for unknown and malformed requests',
     () async {
-      final WorkspaceDemoDispatcher dispatcher = WorkspaceDemoDispatcher(
-        _FakeService(),
-      );
+      final WorkspaceDemoServiceDispatcher dispatcher =
+          WorkspaceDemoServiceDispatcher(_FakeService());
       final Map<String, Object?> unknown = await dispatcher
           .dispatch(<String, Object?>{
             'kind': 'request',
@@ -47,7 +45,7 @@ void main() {
           'kind': 'request',
           'requestId': 9,
           'method': 'workspaceDemo.listDirectory',
-          'payload': <String, Object?>{'resource': 'bad'},
+          'payload': <String, Object?>{'directory': 'bad'},
         },
       );
       expect((malformed['error'] as Map)['code'], 'invalid_request');

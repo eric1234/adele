@@ -1,20 +1,18 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:adele_contract/adele_contract.dart';
+
 import 'backend_host_protocol.dart';
 
 typedef PluginDiagnosticSink = void Function(String message);
 
-final class PluginRemoteFailure implements Exception {
+final class PluginRemoteFailure extends AdeleRemoteFailure {
   const PluginRemoteFailure({
-    required this.code,
-    required this.message,
-    this.details = const <String, Object?>{},
+    required super.code,
+    required super.message,
+    super.details = const <String, Object?>{},
   });
-
-  final String code;
-  final String message;
-  final Map<String, Object?> details;
 
   @override
   String toString() => 'PluginRemoteFailure($code): $message';
@@ -406,7 +404,7 @@ final class PluginBackendHost {
   }
 }
 
-final class PluginBackendConnection {
+final class PluginBackendConnection implements AdeleRequestChannel {
   PluginBackendConnection._({
     required PluginBackendHost host,
     required this.pluginId,
@@ -418,6 +416,7 @@ final class PluginBackendConnection {
 
   bool get isClosed => _closed || _host.isClosed;
 
+  @override
   Future<Object?> request(String method, Map<String, Object?> payload) {
     if (isClosed) {
       return Future<Object?>.error(

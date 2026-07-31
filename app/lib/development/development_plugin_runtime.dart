@@ -2,11 +2,11 @@ import 'dart:io';
 
 import 'package:adele_desktop/development/workspace_demo/workspace_demo_eval_adapter.dart';
 import 'package:adele_desktop/development/workspace_demo/workspace_demo_eval_bridge.dart';
-import 'package:adele_desktop/development/workspace_demo/workspace_demo_proxy.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:flutter/widgets.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
+import 'package:workspace_demo_contract/workspace_demo_contract.dart';
 
 final class DevelopmentRuntimeConfiguration {
   const DevelopmentRuntimeConfiguration({
@@ -148,7 +148,7 @@ final class DevelopmentPluginRuntime {
         arguments: <String>[configuration.developmentDirectory.path],
       );
       final WorkspaceDemoEvalBridge bridge = WorkspaceDemoEvalBridge(
-        service: WorkspaceDemoProxy(_connection!),
+        service: WorkspaceDemoServiceClient(_connection!),
         developmentRoot: ResourceRef(
           uri: configuration.developmentDirectory.uri,
         ),

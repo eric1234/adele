@@ -2,4 +2,4 @@
 library;
 
 export 'src/filesystem_service.dart';
-export 'src/wire_dispatcher.dart';
+export 'src/workspace_demo_dispatcher.g.dart';

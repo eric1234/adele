@@ -3,10 +3,14 @@ library;
 
 import 'dart:collection';
 
+import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+
+part 'workspace_demo_contract.g.dart';
 
 enum DirectoryEntryKind { directory, file }
 
+@AdeleValue()
 final class DirectoryEntry {
   const DirectoryEntry({
     required this.resource,
@@ -19,6 +23,7 @@ final class DirectoryEntry {
   final DirectoryEntryKind kind;
 }
 
+@AdeleValue()
 final class DirectoryListing {
   DirectoryListing({
     required this.directory,
@@ -31,6 +36,7 @@ final class DirectoryListing {
   final List<DirectoryEntry> entries;
 }
 
+@AdeleValue()
 final class TextFileContents {
   const TextFileContents({required this.resource, required this.text});
 
@@ -38,9 +44,12 @@ final class TextFileContents {
   final String text;
 }
 
+@AdeleContract('workspaceDemo')
 abstract interface class WorkspaceDemoService {
+  @AdeleMethod('listDirectory')
   Future<DirectoryListing> listDirectory(ResourceRef directory);
 
+  @AdeleMethod('readTextFile')
   Future<TextFileContents> readTextFile(ResourceRef file);
 }
 
