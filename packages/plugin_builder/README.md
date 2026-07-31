@@ -2,7 +2,8 @@
 
 `plugin_builder` is an internal, pure-Dart package. It implements narrow
 development manifest parsing, exact toolchain checks, dependency resolution,
-fresh generation directories, backend AOT compilation, captured process
+fresh build directories, generated-contract verification, backend AOT
+compilation, captured process
 diagnostics, and complete-build activation.
 
 ## Dependencies
@@ -23,4 +24,6 @@ invalidate those artifacts.
 
 Frontend EVC compilation remains in the Flutter application because this
 package stays pure Dart and must not depend on eval or Flutter. Production
-caching, installation, signing, generation, and invalidation remain deferred.
+caching, installation, signing, and invalidation remain deferred. Generation is
+owned by `contract_codegen`; this package rejects stale generated files before
+compilation and never activates an incomplete build.

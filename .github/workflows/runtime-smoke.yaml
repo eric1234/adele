@@ -8,6 +8,8 @@ on:
       - "app/lib/development_smoke.dart"
       - "app/pubspec.yaml"
       - "packages/plugin_backend_host/**"
+      - "packages/contract/**"
+      - "packages/contract_codegen/**"
       - "packages/plugin_builder/**"
       - "packages/plugin_runtime/**"
       - "plugins/workspace_demo/**"

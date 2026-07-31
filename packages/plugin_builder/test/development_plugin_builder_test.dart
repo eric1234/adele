@@ -74,6 +74,40 @@ packages:
       isFalse,
     );
   });
+
+  test('verifies generated contracts before toolchain configuration', () async {
+    final File fake = _script(root, 'fake', '''
+if [ "\$1" = "run" ]; then
+  echo "stale generated files" >&2
+  exit 7
+fi
+echo "Dart 3.10.9" >&2
+''');
+
+    await expectLater(
+      const DevelopmentPluginBuilder().prepareBackend(
+        repositoryRoot: root,
+        pluginDirectory: plugin,
+        dartExecutable: fake.path,
+        flutterExecutable: fake.path,
+        expectedDartVersion: '3.10.9',
+        expectedFlutterVersion: '3.38.10',
+      ),
+      throwsA(
+        isA<PluginBuildFailure>()
+            .having(
+              (PluginBuildFailure value) => value.diagnostic?.stage,
+              'stage',
+              'contract-generation-verification',
+            )
+            .having(
+              (PluginBuildFailure value) => value.diagnostic?.stderrText,
+              'stderr',
+              contains('stale generated files'),
+            ),
+      ),
+    );
+  });
 }
 
 File _script(Directory directory, String name, String body) {

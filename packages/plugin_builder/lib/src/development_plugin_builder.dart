@@ -102,6 +102,18 @@ final class DevelopmentPluginBuilder {
     }
 
     final List<PluginBuildDiagnostic> diagnostics = <PluginBuildDiagnostic>[];
+    final PluginBuildDiagnostic generation = await _run(
+      'contract-generation-verification',
+      dartExecutable,
+      const <String>[
+        'run',
+        'packages/contract_codegen/bin/contract_codegen.dart',
+        '--check',
+      ],
+      repositoryRoot.path,
+    );
+    diagnostics.add(generation);
+    _requireSuccess(generation);
     final PluginBuildDiagnostic dartVersion = await _run(
       'configuration',
       dartExecutable,
