@@ -15,6 +15,7 @@ manifestVersion: 1
 id: dev.adele.workspace-demo
 packages:
   backend: packages/backend
+  backendEntrypoint: bin/workspace_demo_backend.dart
 ''');
     Directory(
       '${plugin.path}/packages/backend/bin',

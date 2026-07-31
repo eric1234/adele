@@ -92,6 +92,7 @@ final class DevelopmentPluginBuilder {
     final Map<String, String> manifest = await _readManifest(pluginDirectory);
     final String pluginId = _required(manifest, 'id');
     final String backendRelative = _required(manifest, 'backend');
+    final String backendEntrypoint = _required(manifest, 'backendEntrypoint');
     final Directory backendDirectory = Directory(
       '${pluginDirectory.path}${Platform.pathSeparator}$backendRelative',
     );
@@ -171,7 +172,12 @@ final class DevelopmentPluginBuilder {
     diagnostics.add(resolution);
     _requireSuccess(resolution);
     final String entrypoint =
-        '${backendDirectory.path}${Platform.pathSeparator}bin${Platform.pathSeparator}workspace_demo_backend.dart';
+        '${backendDirectory.path}${Platform.pathSeparator}${backendEntrypoint.replaceAll('/', Platform.pathSeparator)}';
+    if (!File(entrypoint).existsSync()) {
+      throw PluginBuildFailure(
+        'Backend entrypoint does not exist: $entrypoint',
+      );
+    }
     final PluginBuildDiagnostic compilation = await _run(
       'backend-compilation',
       dartExecutable,
@@ -212,14 +218,16 @@ final class DevelopmentPluginBuilder {
     final File current = File(
       '${pluginRoot.path}${Platform.pathSeparator}current.json',
     );
-    await current.writeAsString(
-      const JsonEncoder.withIndent('  ').convert(<String, Object?>{
-        'buildId': build.buildId,
-        'buildDirectory': build.buildDirectory.path,
-        'backendArtifact': build.backendArtifact.path,
-        'frontendArtifact': build.frontendArtifact.path,
-      }),
-    );
+    final String contents = const JsonEncoder.withIndent('  ')
+        .convert(<String, Object?>{
+          'buildId': build.buildId,
+          'buildDirectory': build.buildDirectory.path,
+          'backendArtifact': build.backendArtifact.path,
+          'frontendArtifact': build.frontendArtifact.path,
+        });
+    final File temporary = File('${current.path}.tmp.$pid');
+    await temporary.writeAsString(contents, flush: true);
+    await temporary.rename(current.path);
   }
 }
 

@@ -13,8 +13,9 @@ code. ADR 0013 requires declarations and generation to remain separate.
 
 ## Decision
 
-`adele_contract` provides lightweight annotations, a transport-neutral request
-channel, structured remote failure, and protocol exception. Contract source is
+`adele_contract` provides explicit service, method, value, field, and failure
+annotations, a transport-neutral request channel, an abstract structured remote
+failure boundary, and a protocol exception. Contract source is
 authoritative. The internal analyzer-based `contract_codegen` package validates
 the annotated source and deterministically emits committed client, codec, and
 dispatcher files.
@@ -39,8 +40,10 @@ declarations as the source of truth.
   inferred solely from Dart symbol names.
 - Plugin contract packages do not depend on analyzer, compiler, builder,
   runtime, backend-host, or Flutter packages.
-- Structured transport failures become contract-specific failures at the
-  generated client boundary; malformed values raise `AdeleProtocolException`.
+- Only failures carrying the contract's explicit `declaredFailureType` become
+  contract-specific failures at the generated client boundary. Transport and
+  lifecycle failures remain runtime failures; malformed values raise
+  `AdeleProtocolException`.
 - The generator and annotation API remain experimental. General schema
   compatibility, streams, cancellation, events, capability resolution,
   discovery, packaging, and security sandboxing remain deferred.

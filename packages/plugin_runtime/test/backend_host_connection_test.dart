@@ -78,6 +78,52 @@ void main() {
     await host.close(graceful: false);
   });
 
+  test('parses optional declared failure type', () async {
+    final _FakeHost fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': 1, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      stdout.add(encodeBackendHostFrame({
+        'protocolVersion': 1,
+        'kind': 'error',
+        'requestId': message['requestId'],
+        'pluginId': message['pluginId'],
+        'error': {
+          'declaredFailureType': 'sample.failure',
+          'code': 'declared',
+          'message': 'Declared failure',
+          'details': {'reason': 'test'},
+        },
+      }));
+    }
+  });
+}
+''');
+    addTearDown(fake.dispose);
+    final PluginBackendHost host = await fake.start();
+    await expectLater(
+      host.startPlugin(pluginId: 'declared', artifactUri: Uri.file('/unused')),
+      throwsA(
+        isA<PluginRemoteFailure>()
+            .having(
+              (PluginRemoteFailure value) => value.declaredFailureType,
+              'declaredFailureType',
+              'sample.failure',
+            )
+            .having(
+              (PluginRemoteFailure value) => value.details['reason'],
+              'details',
+              'test',
+            ),
+      ),
+    );
+    await host.close(graceful: false);
+  });
+
   test(
     'does not return a stale connection when plugin fails during startup',
     () async {

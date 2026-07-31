@@ -38,8 +38,6 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       commands.close();
       continue;
     }
-    responsePort.send(
-      await dispatcher.dispatch(message.cast<Object?, Object?>()),
-    );
+    responsePort.send(await dispatcher.dispatch(message));
   }
 }

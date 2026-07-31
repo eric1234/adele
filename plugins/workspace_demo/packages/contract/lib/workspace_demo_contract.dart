@@ -10,7 +10,7 @@ part 'workspace_demo_contract.g.dart';
 
 enum DirectoryEntryKind { directory, file }
 
-@AdeleValue()
+@AdeleValue('workspaceDemo.directoryEntry')
 final class DirectoryEntry {
   const DirectoryEntry({
     required this.resource,
@@ -23,7 +23,7 @@ final class DirectoryEntry {
   final DirectoryEntryKind kind;
 }
 
-@AdeleValue()
+@AdeleValue('workspaceDemo.directoryListing')
 final class DirectoryListing {
   DirectoryListing({
     required this.directory,
@@ -36,7 +36,7 @@ final class DirectoryListing {
   final List<DirectoryEntry> entries;
 }
 
-@AdeleValue()
+@AdeleValue('workspaceDemo.textFileContents')
 final class TextFileContents {
   const TextFileContents({required this.resource, required this.text});
 
@@ -44,7 +44,7 @@ final class TextFileContents {
   final String text;
 }
 
-@AdeleContract('workspaceDemo')
+@AdeleService('workspaceDemo')
 abstract interface class WorkspaceDemoService {
   @AdeleMethod('listDirectory')
   Future<DirectoryListing> listDirectory(ResourceRef directory);
@@ -53,6 +53,7 @@ abstract interface class WorkspaceDemoService {
   Future<TextFileContents> readTextFile(ResourceRef file);
 }
 
+@AdeleFailure('workspaceDemo.failure')
 final class WorkspaceDemoFailure implements Exception {
   const WorkspaceDemoFailure({
     required this.code,

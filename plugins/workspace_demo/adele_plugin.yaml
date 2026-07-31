@@ -6,4 +6,5 @@ displayName: Workspace Demo
 packages:
   contract: packages/contract
   backend: packages/backend
+  backendEntrypoint: bin/workspace_demo_backend.dart
   frontend: packages/frontend

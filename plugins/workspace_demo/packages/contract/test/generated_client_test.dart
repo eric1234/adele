@@ -32,6 +32,10 @@ void main() {
       expect(channel.payload?['directory'], isA<Map<Object?, Object?>>());
       expect(result.entries.single.name, 'readme.txt');
       expect(result.entries.single.kind, DirectoryEntryKind.file);
+      expect(
+        () => result.entries.add(result.entries.single),
+        throwsUnsupportedError,
+      );
     },
   );
 
@@ -55,6 +59,35 @@ void main() {
               '/missing',
             ),
       ),
+    );
+  });
+
+  for (final String? declaredFailureType in <String?>[
+    null,
+    'another.failure',
+  ]) {
+    test('preserves remote failure with type $declaredFailureType', () async {
+      final _RemoteFailure failure = _RemoteFailure(
+        declaredFailureType: declaredFailureType,
+        code: 'transport',
+        message: 'Not declared by the service.',
+      );
+      await expectLater(
+        WorkspaceDemoServiceClient(
+          _ErrorChannel(failure),
+        ).readTextFile(ResourceRef(uri: Uri.parse('file:///missing'))),
+        throwsA(same(failure)),
+      );
+    });
+  }
+
+  test('preserves lifecycle and transport exceptions', () async {
+    final StateError failure = StateError('connection closed');
+    await expectLater(
+      WorkspaceDemoServiceClient(
+        _ErrorChannel(failure),
+      ).readTextFile(ResourceRef(uri: Uri.parse('file:///missing'))),
+      throwsA(same(failure)),
     );
   });
 
@@ -87,10 +120,38 @@ final class _FailingChannel implements AdeleRequestChannel {
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) =>
       Future<Object?>.error(
-        const AdeleRemoteFailure(
+        const _RemoteFailure(
+          declaredFailureType: 'workspaceDemo.failure',
           code: 'missing',
           message: 'Missing.',
           details: <String, Object?>{'path': '/missing'},
         ),
       );
+}
+
+final class _ErrorChannel implements AdeleRequestChannel {
+  const _ErrorChannel(this.error);
+  final Object error;
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) =>
+      Future<Object?>.error(error);
+}
+
+final class _RemoteFailure implements AdeleRemoteFailure {
+  const _RemoteFailure({
+    required this.declaredFailureType,
+    required this.code,
+    required this.message,
+    this.details = const {},
+  });
+
+  @override
+  final String? declaredFailureType;
+  @override
+  final String code;
+  @override
+  final String message;
+  @override
+  final Map<String, Object?> details;
 }

@@ -1,3 +1,3 @@
 library;
 
-export 'src/workspace_demo_generator.dart';
+export 'src/contract_generator.dart';

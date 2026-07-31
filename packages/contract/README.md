@@ -2,7 +2,8 @@
 
 `adele_contract` is an experimental public, pure-Dart package imported by
 plugin contract source. It provides declaration annotations, the
-transport-neutral `AdeleRequestChannel`, structured `AdeleRemoteFailure`, and
+transport-neutral `AdeleRequestChannel`, abstract `AdeleRemoteFailure` boundary
+with an optional declared failure type identifier, and
 `AdeleProtocolException` for malformed generated-protocol values.
 
 ## Dependencies

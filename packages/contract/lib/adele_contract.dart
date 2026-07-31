@@ -2,14 +2,16 @@
 /// ADELE plugin contracts.
 library;
 
-final class AdeleContract {
-  const AdeleContract(this.name);
+final class AdeleService {
+  const AdeleService(this.id);
 
-  final String name;
+  final String id;
 }
 
 final class AdeleValue {
-  const AdeleValue();
+  const AdeleValue(this.id);
+
+  final String id;
 }
 
 final class AdeleMethod {
@@ -24,23 +26,21 @@ final class AdeleField {
   final String name;
 }
 
+final class AdeleFailure {
+  const AdeleFailure(this.id);
+
+  final String id;
+}
+
 abstract interface class AdeleRequestChannel {
   Future<Object?> request(String method, Map<String, Object?> payload);
 }
 
-class AdeleRemoteFailure implements Exception {
-  const AdeleRemoteFailure({
-    required this.code,
-    required this.message,
-    this.details = const <String, Object?>{},
-  });
-
-  final String code;
-  final String message;
-  final Map<String, Object?> details;
-
-  @override
-  String toString() => 'AdeleRemoteFailure($code): $message';
+abstract interface class AdeleRemoteFailure implements Exception {
+  String? get declaredFailureType;
+  String get code;
+  String get message;
+  Map<String, Object?> get details;
 }
 
 final class AdeleProtocolException implements FormatException {

@@ -7,12 +7,22 @@ import 'backend_host_protocol.dart';
 
 typedef PluginDiagnosticSink = void Function(String message);
 
-final class PluginRemoteFailure extends AdeleRemoteFailure {
+final class PluginRemoteFailure implements AdeleRemoteFailure {
   const PluginRemoteFailure({
-    required super.code,
-    required super.message,
-    super.details = const <String, Object?>{},
+    required this.code,
+    required this.message,
+    this.details = const <String, Object?>{},
+    this.declaredFailureType,
   });
+
+  @override
+  final String? declaredFailureType;
+  @override
+  final String code;
+  @override
+  final String message;
+  @override
+  final Map<String, Object?> details;
 
   @override
   String toString() => 'PluginRemoteFailure($code): $message';
@@ -440,6 +450,9 @@ PluginRemoteFailure _remoteFailure(Map<String, Object?> response) {
       code: rawError['code'] as String,
       message: rawError['message'] as String,
       details: _stringMap(rawError['details']),
+      declaredFailureType: rawError['declaredFailureType'] is String
+          ? rawError['declaredFailureType'] as String
+          : null,
     );
   }
   return const PluginRemoteFailure(

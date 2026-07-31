@@ -1,6 +1,5 @@
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:test/test.dart';
-import 'package:workspace_demo_backend/workspace_demo_backend.dart';
 import 'package:workspace_demo_contract/workspace_demo_contract.dart';
 
 void main() {
@@ -51,6 +50,89 @@ void main() {
       expect((malformed['error'] as Map)['code'], 'invalid_request');
     },
   );
+
+  final Map<String, Object?> valid = <String, Object?>{
+    'kind': 'request',
+    'requestId': 10,
+    'method': 'workspaceDemo.listDirectory',
+    'payload': <String, Object?>{
+      'directory': <String, Object?>{'uri': 'file:///demo', 'mediaType': null},
+    },
+  };
+  final Map<String, Map<Object?, Object?> Function()> malformed = {
+    'missing envelope field': () =>
+        Map<Object?, Object?>.of(valid)..remove('kind'),
+    'extra envelope field': () => <Object?, Object?>{...valid, 'extra': true},
+    'missing payload field': () => <Object?, Object?>{
+      ...valid,
+      'payload': <String, Object?>{},
+    },
+    'extra payload field': () => <Object?, Object?>{
+      ...valid,
+      'payload': <String, Object?>{
+        ...(valid['payload']! as Map<String, Object?>),
+        'extra': true,
+      },
+    },
+    'non-string map key': () => <Object?, Object?>{
+      ...valid,
+      'payload': <Object?, Object?>{1: 'bad'},
+    },
+    'malformed nested map': () => <Object?, Object?>{
+      ...valid,
+      'payload': <String, Object?>{'directory': 'bad'},
+    },
+  };
+  for (final MapEntry<String, Map<Object?, Object?> Function()> entry
+      in malformed.entries) {
+    test('rejects ${entry.key}', () async {
+      final Map<String, Object?> response =
+          await WorkspaceDemoServiceDispatcher(
+            _FakeService(),
+          ).dispatch(entry.value());
+      final Map<Object?, Object?> error = response['error'] as Map;
+      expect(response['ok'], isFalse);
+      expect(error['code'], 'invalid_request');
+      expect(error, isNot(contains('declaredFailureType')));
+    });
+  }
+
+  test('emits declared failure type only for declared failures', () async {
+    final WorkspaceDemoServiceDispatcher dispatcher =
+        WorkspaceDemoServiceDispatcher(_ThrowingService(declared: true));
+    final Map<String, Object?> response = await dispatcher.dispatch(valid);
+    expect(
+      (response['error'] as Map)['declaredFailureType'],
+      'workspaceDemo.failure',
+    );
+  });
+
+  test('contains unexpected service exceptions', () async {
+    final WorkspaceDemoServiceDispatcher dispatcher =
+        WorkspaceDemoServiceDispatcher(_ThrowingService(declared: false));
+    final Map<String, Object?> response = await dispatcher.dispatch(valid);
+    final Map<Object?, Object?> error = response['error'] as Map;
+    expect(error['code'], 'internal_error');
+    expect(error['message'], isNot(contains('secret')));
+    expect(error, isNot(contains('declaredFailureType')));
+  });
+}
+
+final class _ThrowingService implements WorkspaceDemoService {
+  const _ThrowingService({required this.declared});
+  final bool declared;
+
+  @override
+  Future<DirectoryListing> listDirectory(ResourceRef directory) {
+    if (declared) {
+      throw const WorkspaceDemoFailure(code: 'denied', message: 'Denied.');
+    }
+    throw StateError('secret implementation detail');
+  }
+
+  @override
+  Future<TextFileContents> readTextFile(ResourceRef file) =>
+      throw UnimplementedError();
 }
 
 final class _FakeService implements WorkspaceDemoService {
