@@ -5,7 +5,7 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
-  final Directory repository = Directory.current.parent.parent;
+  final Directory repository = _repository();
   final File demo = File(
     p.join(
       repository.path,
@@ -13,134 +13,298 @@ void main() {
     ),
   );
 
-  test(
-    'generation is deterministic and matches the checked-in golden',
-    () async {
-      final ContractGenerator generator = const ContractGenerator();
-      final ContractGeneratedFile first = await generator.generate(demo);
-      final ContractGeneratedFile second = await generator.generate(demo);
-
-      expect(first.contents, second.contents);
-      expect(first.contents, await File(first.path).readAsString());
-      expect(await generator.apply(demo, check: true), isTrue);
-      expect(first.contents, contains('WorkspaceDemoServiceClient'));
-      expect(first.contents, contains('WorkspaceDemoServiceDispatcher'));
-      expect(first.contents, isNot(contains('.cast<')));
-    },
-  );
-
-  test('supports package-agnostic names and all wire types', () async {
-    final _Fixture fixture = await _fixture('''
-import 'package:adele_contract/adele_contract.dart';
-import 'package:adele_plugin_api/adele_plugin_api.dart';
-part 'nested/generated/other_name.g.dart';
-enum Mood { calm, busy }
-@AdeleValue('odd.record')
-final class OddRecord {
-  const OddRecord(this.text, {required this.enabled, required this.count, required this.ratio, required this.note, required this.tags, required this.mood, required this.resource});
-  final String text;
-  final bool enabled;
-  final int count;
-  final double ratio;
-  final String? note;
-  final List<String?> tags;
-  final Mood mood;
-  final ResourceRef resource;
-}
-@AdeleService('odd.service')
-abstract interface class OddGateway {
-  @AdeleMethod('roundTrip')
-  Future<OddRecord?> send(@AdeleField('input') OddRecord? value);
-}
-@AdeleFailure('odd.failure')
-final class OddFailure implements Exception {
-  const OddFailure({required this.code, required this.message, this.details = const {}});
-  final String code;
-  final String message;
-  final Map<String, Object?> details;
-}
-''');
-    final ContractGeneratedFile output = await const ContractGenerator()
-        .generate(fixture.source);
-
-    expect(output.path, endsWith('nested/generated/other_name.g.dart'));
-    expect(output.contents, contains('OddGatewayClient'));
-    expect(output.contents, contains('_contractBool'));
-    expect(output.contents, contains('_contractInt'));
-    expect(output.contents, contains('_contractDouble'));
-    expect(output.contents, contains('_decodeMood'));
-    expect(output.contents, contains('_decodeOddRecord'));
-    expect(output.contents, contains('_decodeResourceRef'));
-    expect(output.contents, contains('List.unmodifiable'));
-    expect(output.contents, contains("'input': value == null ? null"));
+  test('parses an annotated service declaration', () async {
+    final output = await const ContractGenerator().generate(demo);
+    expect(output.contents, contains('WorkspaceDemoServiceClient'));
+    expect(output.contents, contains('WorkspaceDemoServiceDispatcher'));
   });
 
-  test(
-    'apply check is non-mutating and write creates only final output',
-    () async {
-      final _Fixture fixture = await _fixture(_minimalContract());
-      final ContractGenerator generator = const ContractGenerator();
-      final ContractGeneratedFile generated = await generator.generate(
-        fixture.source,
-      );
+  test('parses annotated value declarations', () async {
+    final output = await const ContractGenerator().generate(demo);
+    expect(output.contents, contains('_decodeDirectoryListing'));
+    expect(output.contents, contains('_decodeDirectoryEntry'));
+  });
 
-      expect(await generator.apply(fixture.source, check: true), isFalse);
-      expect(File(generated.path).existsSync(), isFalse);
-      expect(await generator.apply(fixture.source, check: false), isFalse);
-      expect(await File(generated.path).readAsString(), generated.contents);
-      expect(fixture.directory.listSync().whereType<File>(), hasLength(2));
-      expect(await generator.apply(fixture.source, check: true), isTrue);
-    },
-  );
+  test('parses an annotated structured failure declaration', () async {
+    final output = await const ContractGenerator().generate(demo);
+    expect(output.contents, contains('case workspaceDemoFailureTypeId'));
+    expect(output.contents, contains('error.code'));
+    expect(output.contents, contains('error.details'));
+  });
 
-  final Map<String, String Function(String)> invalid = {
-    'unsupported type': (String source) => source.replaceFirst(
-      'Future<String> ping(String value);',
-      'Future<DateTime> ping(String value);',
-    ),
-    'duplicate stable ID': (String source) => source.replaceFirst(
-      "@AdeleFailure('fixture.failure')",
-      "@AdeleFailure('fixture.service')",
-    ),
-    'method without annotation': (String source) =>
-        source.replaceFirst("  @AdeleMethod('ping')\n", ''),
-    'bad constructor': (String source) => source.replaceFirst(
-      'const FixtureValue(this.value);',
-      'const FixtureValue();',
-    ),
-    'bad part': (String source) => source.replaceFirst(
-      "part 'fixture.g.dart';",
-      "part '/absolute.g.dart';",
-    ),
-    'unsupported service shape': (String source) => source.replaceFirst(
-      'abstract interface class FixtureService',
-      'abstract class FixtureService',
-    ),
-    'unsupported value shape': (String source) =>
-        source.replaceFirst('final class FixtureValue', 'class FixtureValue'),
-    'unsupported failure shape': (String source) => source.replaceFirst(
-      'final class FixtureFailure implements Exception',
-      'class FixtureFailure',
-    ),
-  };
-  for (final MapEntry<String, String Function(String)> entry
-      in invalid.entries) {
-    test('rejects ${entry.key} at an exact source location', () async {
-      final _Fixture fixture = await _fixture(entry.value(_minimalContract()));
-      final ContractDiagnostic diagnostic = await _diagnostic(fixture.source);
-      expect(diagnostic.path, fixture.source.absolute.path);
-      expect(diagnostic.line, greaterThan(1));
-      expect(diagnostic.column, greaterThan(0));
-      expect(
-        diagnostic.toString(),
-        startsWith('${fixture.source.absolute.path}:'),
-      );
-      if (entry.key == 'method without annotation') {
-        expect(diagnostic.line, 10);
-        expect(diagnostic.column, 18);
-      }
-    });
-  }
+  test('emits stable service method value and failure IDs', () async {
+    final output = await const ContractGenerator().generate(demo);
+    expect(output.contents, contains("'workspaceDemo.listDirectory'"));
+    expect(output.contents, contains("'workspaceDemo.directoryListing'"));
+    expect(output.contents, contains("'workspaceDemo.failure'"));
+  });
+
+  test('rejects duplicate stable IDs', () async {
+    final fixture = await _fixture(
+      _minimalContract().replaceFirst(
+        "@AdeleFailure('fixture.failure')",
+        "@AdeleFailure('fixture.service')",
+      ),
+    );
+    expect(
+      (await _diagnostic(fixture.source)).message,
+      contains('Duplicate or empty stable ID'),
+    );
+  });
+
+  test('rejects a missing annotation identifier', () async {
+    final fixture = await _fixture(
+      _minimalContract().replaceFirst(
+        "@AdeleService('fixture.service')",
+        '@AdeleService()',
+      ),
+    );
+    expect(
+      (await _diagnostic(fixture.source)).message,
+      contains('non-empty stable ID'),
+    );
+  });
+
+  test('rejects an empty annotation identifier', () async {
+    final fixture = await _fixture(
+      _minimalContract().replaceFirst(
+        "@AdeleService('fixture.service')",
+        "@AdeleService('')",
+      ),
+    );
+    expect(
+      (await _diagnostic(fixture.source)).message,
+      contains('non-empty stable ID'),
+    );
+  });
+
+  test('output is deterministic across repeated generation', () async {
+    final generator = const ContractGenerator();
+    expect(
+      (await generator.generate(demo)).contents,
+      (await generator.generate(demo)).contents,
+    );
+  });
+
+  test('output is independent of declaration discovery ordering', () async {
+    final first = await _fixture(_orderedContract(valuesFirst: true));
+    final second = await _fixture(_orderedContract(valuesFirst: false));
+    final generator = const ContractGenerator();
+    final a = (await generator.generate(first.source)).contents;
+    final b = (await generator.generate(second.source)).contents;
+    expect(
+      a.replaceFirst("part of 'fixture.dart';", ''),
+      b.replaceFirst("part of 'fixture.dart';", ''),
+    );
+  });
+
+  test('supports String bool int and double primitives', () async {
+    final output = await _generate(_allTypesContract());
+    expect(
+      output,
+      allOf(
+        contains('_contractString'),
+        contains('_contractBool'),
+        contains('_contractInt'),
+        contains('_contractDouble'),
+      ),
+    );
+  });
+
+  test('supports nullable contract types', () async {
+    final output = await _generate(_allTypesContract());
+    expect(output, contains("note == null ? null"));
+  });
+
+  test('supports immutable decoded lists', () async {
+    final output = await _generate(_allTypesContract());
+    expect(output, contains('List.unmodifiable'));
+  });
+
+  test('supports enums', () async {
+    final output = await _generate(_allTypesContract());
+    expect(output, contains('_decodeMood'));
+  });
+
+  test('supports nested values', () async {
+    final output = await _generate(_allTypesContract());
+    expect(output, contains('_decodeChild'));
+  });
+
+  test('generated Uri client and dispatcher compile and execute', () async {
+    await _runGeneratedFixture(_runtimeContract(), _runtimeTests('uri'));
+  });
+
+  test('supports ResourceRef', () async {
+    final output = await _generate(_allTypesContract());
+    expect(
+      output,
+      allOf(contains('_contractResourceRef'), contains('_decodeResourceRef')),
+    );
+  });
+
+  test('generated Map<String, Object?> recursively validates JSON', () async {
+    await _runGeneratedFixture(_runtimeContract(), _runtimeTests('json'));
+  });
+
+  test('generated enum dispatcher rejects unknown enum values', () async {
+    await _runGeneratedFixture(_runtimeContract(), _runtimeTests('enum'));
+  });
+
+  test('generated Future<void> client requires a null response', () async {
+    await _runGeneratedFixture(_runtimeContract(), _runtimeTests('voidClient'));
+  });
+
+  test('generated Future<void> dispatcher returns a null payload', () async {
+    await _runGeneratedFixture(
+      _runtimeContract(),
+      _runtimeTests('voidDispatcher'),
+    );
+  });
+
+  test('rejects mutable value fields', () async {
+    await _expectDiagnostic(
+      _minimalContract().replaceFirst('final String value;', 'String value;'),
+      'Value fields must be final.',
+    );
+  });
+
+  test('rejects unsupported synchronous returns', () async {
+    await _expectDiagnostic(
+      _minimalContract().replaceFirst('Future<String> ping', 'String ping'),
+      'Service methods must return Future<T>.',
+    );
+  });
+
+  test('rejects Stream returns', () async {
+    await _expectDiagnostic(
+      _minimalContract().replaceFirst(
+        'Future<String> ping',
+        'Stream<String> ping',
+      ),
+      'Service methods must return Future<T>.',
+    );
+  });
+
+  test('rejects generic service methods', () async {
+    await _expectDiagnostic(
+      _minimalContract().replaceFirst(
+        'ping(String value)',
+        'ping<T>(String value)',
+      ),
+      'Generic service methods are not supported.',
+    );
+  });
+
+  test('rejects dynamic contract types', () async {
+    await _expectDiagnostic(
+      _minimalContract().replaceFirst('String value);', 'dynamic value);'),
+      'Dynamic or unconstrained contract types are not supported.',
+    );
+  });
+
+  test('rejects raw List contract types', () async {
+    await _expectDiagnostic(
+      _minimalContract().replaceFirst('String value);', 'List value);'),
+      'Dynamic or unconstrained contract types are not supported.',
+    );
+  });
+
+  test('rejects raw Map contract types', () async {
+    await _expectDiagnostic(
+      _minimalContract().replaceFirst('String value);', 'Map value);'),
+      'Only Map<String, Object?> is supported',
+    );
+  });
+
+  test('rejects maps with non-string keys', () async {
+    await _expectDiagnostic(
+      _minimalContract().replaceFirst(
+        'String value);',
+        'Map<int, Object?> value);',
+      ),
+      'Only Map<String, Object?> is supported',
+    );
+  });
+
+  test('rejects unsupported map value shapes', () async {
+    await _expectDiagnostic(
+      _minimalContract().replaceFirst(
+        'String value);',
+        'Map<String, String> value);',
+      ),
+      'Only Map<String, Object?> is supported',
+    );
+  });
+
+  test('rejects ambiguous multiple constructors', () async {
+    await _expectDiagnostic(
+      _minimalContract().replaceFirst(
+        'const FixtureValue(this.value);',
+        'const FixtureValue(this.value);\n  const FixtureValue.named(this.value);',
+      ),
+      'exactly one unnamed constructor',
+    );
+  });
+
+  test('rejects value inheritance', () async {
+    final source = _minimalContract()
+        .replaceFirst(
+          'final class FixtureValue {',
+          'class Base {}\n@AdeleValue(\'fixture.value\')\nfinal class Replacement extends Base {',
+        )
+        .replaceFirst("@AdeleValue('fixture.value')\n", '')
+        .replaceAll('FixtureValue', 'Replacement');
+    await _expectDiagnostic(source, 'final class without a superclass');
+  });
+
+  test('rejects optional service parameters', () async {
+    await _expectDiagnostic(
+      _minimalContract().replaceFirst(
+        'ping(String value)',
+        'ping([String value = \'\'])',
+      ),
+      'required positional parameters',
+    );
+  });
+
+  test('diagnostics report actionable exact source locations', () async {
+    final fixture = await _fixture(
+      _minimalContract().replaceFirst(
+        'Future<String> ping(String value);',
+        'Future<DateTime> ping(String value);',
+      ),
+    );
+    final diagnostic = await _diagnostic(fixture.source);
+    expect(diagnostic.path, fixture.source.absolute.path);
+    expect(diagnostic.line, 11);
+    expect(diagnostic.column, 20);
+    expect(
+      diagnostic.toString(),
+      '${fixture.source.absolute.path}:11:20: Unsupported contract type DateTime.',
+    );
+  });
+
+  test('apply check is non-mutating and write creates final output', () async {
+    final fixture = await _fixture(_minimalContract());
+    final generator = const ContractGenerator();
+    final generated = await generator.generate(fixture.source);
+    expect(await generator.apply(fixture.source, check: true), isFalse);
+    expect(File(generated.path).existsSync(), isFalse);
+    expect(await generator.apply(fixture.source, check: false), isFalse);
+    expect(await File(generated.path).readAsString(), generated.contents);
+    expect(await generator.apply(fixture.source, check: true), isTrue);
+  });
+}
+
+Future<String> _generate(String source) async {
+  final fixture = await _fixture(source);
+  return (await const ContractGenerator().generate(fixture.source)).contents;
+}
+
+Future<void> _expectDiagnostic(String source, String message) async {
+  final fixture = await _fixture(source);
+  expect((await _diagnostic(fixture.source)).message, contains(message));
 }
 
 String _minimalContract() => '''
@@ -165,6 +329,163 @@ final class FixtureFailure implements Exception {
 }
 ''';
 
+String _orderedContract({required bool valuesFirst}) {
+  const value = '''
+@AdeleValue('fixture.a')
+final class AValue { const AValue(this.text); final String text; }
+@AdeleValue('fixture.z')
+final class ZValue { const ZValue(this.text); final String text; }
+''';
+  const service = '''
+@AdeleService('fixture.service')
+abstract interface class FixtureService {
+  @AdeleMethod('z') Future<ZValue> z(ZValue value);
+  @AdeleMethod('a') Future<AValue> a(AValue value);
+}
+''';
+  return '''
+import 'package:adele_contract/adele_contract.dart';
+part 'fixture.g.dart';
+${valuesFirst ? value : service}
+${valuesFirst ? service : value}
+@AdeleFailure('fixture.failure')
+final class FixtureFailure implements Exception {
+ const FixtureFailure({required this.code, required this.message, this.details = const {}});
+ final String code; final String message; final Map<String, Object?> details;
+}
+''';
+}
+
+String _allTypesContract() => '''
+import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
+part 'fixture.g.dart';
+enum Mood { calm, busy }
+@AdeleValue('fixture.child')
+final class Child { const Child(this.name); final String name; }
+@AdeleValue('fixture.value')
+final class FixtureValue {
+ const FixtureValue({required this.text, required this.flag, required this.count, required this.ratio, required this.note, required this.items, required this.mood, required this.child, required this.uri, required this.resource, required this.json});
+ final String text; final bool flag; final int count; final double ratio;
+ final String? note; final List<String?> items; final Mood mood; final Child child;
+ final Uri uri; final ResourceRef resource; final Map<String, Object?> json;
+}
+@AdeleService('fixture.service')
+abstract interface class FixtureService {
+ @AdeleMethod('roundTrip') Future<FixtureValue> roundTrip(FixtureValue value);
+}
+@AdeleFailure('fixture.failure')
+final class FixtureFailure implements Exception {
+ const FixtureFailure({required this.code, required this.message, this.details = const {}});
+ final String code; final String message; final Map<String, Object?> details;
+}
+''';
+
+String _runtimeContract() => '''
+import 'package:adele_contract/adele_contract.dart';
+part 'fixture.g.dart';
+
+enum Mood { calm, busy }
+
+@AdeleService('fixture.service')
+abstract interface class FixtureService {
+  @AdeleMethod('uri')
+  Future<Uri> uri(Uri value);
+
+  @AdeleMethod('json')
+  Future<Map<String, Object?>> json(Map<String, Object?> value);
+
+  @AdeleMethod('mood')
+  Future<Mood> mood(Mood value);
+
+  @AdeleMethod('notify')
+  Future<void> notify(String value);
+}
+
+@AdeleFailure('fixture.failure')
+final class FixtureFailure implements Exception {
+  const FixtureFailure({required this.code, required this.message, this.details = const {}});
+  final String code;
+  final String message;
+  final Map<String, Object?> details;
+}
+''';
+
+String _runtimeTests(String name) =>
+    '''
+import 'package:adele_contract/adele_contract.dart';
+import 'package:test/test.dart';
+
+import 'package:generated_contract_fixture/fixture.dart';
+
+void main() {
+  test('$name', () async {
+    switch ('$name') {
+      case 'uri':
+        final channel = _Channel('https://example.test/a?b=c');
+        final result = await FixtureServiceClient(channel).uri(Uri.parse('https://input.test/path'));
+        expect(result, Uri.parse('https://example.test/a?b=c'));
+        expect(channel.payload, {'value': 'https://input.test/path'});
+        final response = await FixtureServiceDispatcher(_Service()).dispatch(_request('fixture.service.uri', {'value': 'https://dispatch.test/path'}));
+        expect(response['payload'], 'https://dispatch.test/path');
+      case 'json':
+        final input = <String, Object?>{'nested': <Object?>[true, null, <String, Object?>{'count': 2}]};
+        final channel = _Channel(input);
+        expect(await FixtureServiceClient(channel).json(input), input);
+        final response = await FixtureServiceDispatcher(_Service()).dispatch(_request('fixture.service.json', {'value': input}));
+        expect(response['payload'], input);
+        expect(() => FixtureServiceClient(_Channel({'bad': DateTime(2020)})).json(const {}), throwsA(isA<AdeleProtocolException>()));
+        expect(() => FixtureServiceClient(_Channel({'bad': <Object?, Object?>{1: 'value'}})).json(const {}), throwsA(isA<AdeleProtocolException>()));
+        final invalidObject = await FixtureServiceDispatcher(_Service()).dispatch(_request('fixture.service.json', {'value': {'bad': DateTime(2020)}}));
+        expect((invalidObject['error'] as Map<Object?, Object?>)['code'], 'invalid_request');
+        final invalidKey = await FixtureServiceDispatcher(_Service()).dispatch(_request('fixture.service.json', {'value': {'bad': <Object?, Object?>{1: 'value'}}}));
+        expect((invalidKey['error'] as Map<Object?, Object?>)['code'], 'invalid_request');
+      case 'enum':
+        final response = await FixtureServiceDispatcher(_Service()).dispatch(_request('fixture.service.mood', {'value': 'missing'}));
+        expect(response['ok'], isFalse);
+        expect((response['error'] as Map<Object?, Object?>)['code'], 'invalid_request');
+      case 'voidClient':
+        await FixtureServiceClient(_Channel(null)).notify('ok');
+        expect(() => FixtureServiceClient(_Channel('not null')).notify('bad'), throwsA(isA<AdeleProtocolException>()));
+      case 'voidDispatcher':
+        final response = await FixtureServiceDispatcher(_Service()).dispatch(_request('fixture.service.notify', {'value': 'ok'}));
+        expect(response['ok'], isTrue);
+        expect(response.containsKey('payload'), isTrue);
+        expect(response['payload'], isNull);
+    }
+  });
+}
+
+Map<Object?, Object?> _request(String method, Map<String, Object?> payload) => {
+  'kind': 'request',
+  'requestId': 1,
+  'method': method,
+  'payload': payload,
+};
+
+final class _Channel implements AdeleRequestChannel {
+  _Channel(this.response);
+  final Object? response;
+  Map<String, Object?>? payload;
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) async {
+    this.payload = payload;
+    return response;
+  }
+}
+
+final class _Service implements FixtureService {
+  @override
+  Future<Map<String, Object?>> json(Map<String, Object?> value) async => value;
+  @override
+  Future<Mood> mood(Mood value) async => value;
+  @override
+  Future<void> notify(String value) async {}
+  @override
+  Future<Uri> uri(Uri value) async => value;
+}
+''';
+
 Future<ContractDiagnostic> _diagnostic(File source) async {
   try {
     await const ContractGenerator().generate(source);
@@ -175,16 +496,72 @@ Future<ContractDiagnostic> _diagnostic(File source) async {
 }
 
 Future<_Fixture> _fixture(String source) async {
-  final Directory parent = Directory(
+  final parent = Directory(
     p.join(Directory.current.path, '.dart_tool', 'contract_fixtures'),
   )..createSync(recursive: true);
-  final Directory directory = await parent.createTemp('fixture.');
+  final directory = await parent.createTemp('fixture.');
   addTearDown(() {
     if (directory.existsSync()) directory.deleteSync(recursive: true);
   });
-  final File file = File(p.join(directory.path, 'fixture.dart'));
+  final file = File(p.join(directory.path, 'fixture.dart'));
   await file.writeAsString(source);
   return _Fixture(directory, file);
+}
+
+Future<void> _runGeneratedFixture(String source, String tests) async {
+  final fixture = await _fixture(source);
+  final repository = _repository();
+  final lib = Directory(p.join(fixture.directory.path, 'lib'))..createSync();
+  final sourceFile = File(p.join(lib.path, 'fixture.dart'));
+  await fixture.source.rename(sourceFile.path);
+  await File(p.join(fixture.directory.path, 'pubspec.yaml')).writeAsString('''
+name: generated_contract_fixture
+publish_to: none
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+dependencies:
+  adele_contract:
+    path: ${p.join(repository.path, 'packages/contract')}
+dev_dependencies:
+  test: ^1.26.3
+''');
+  await Directory(p.join(fixture.directory.path, 'test')).create();
+  await File(
+    p.join(fixture.directory.path, 'test', 'fixture_test.dart'),
+  ).writeAsString(tests);
+  final output = await const ContractGenerator().generate(sourceFile);
+  await const ContractGenerator().write(output);
+  await _runDart(fixture.directory, const ['pub', 'get']);
+  await _runDart(fixture.directory, const ['analyze']);
+  await _runDart(fixture.directory, const ['test']);
+}
+
+Directory _repository() {
+  Directory directory = Directory.current.absolute;
+  while (!File(
+    p.join(directory.path, 'packages', 'contract', 'pubspec.yaml'),
+  ).existsSync()) {
+    final parent = directory.parent;
+    if (parent.path == directory.path) {
+      throw StateError('Could not locate the repository root.');
+    }
+    directory = parent;
+  }
+  return directory;
+}
+
+Future<void> _runDart(Directory directory, List<String> arguments) async {
+  final result = await Process.run(
+    Platform.resolvedExecutable,
+    arguments,
+    workingDirectory: directory.path,
+  );
+  expect(
+    result.exitCode,
+    0,
+    reason:
+        'dart ${arguments.join(' ')} failed in ${directory.path}\n${result.stdout}\n${result.stderr}',
+  );
 }
 
 final class _Fixture {

@@ -15,17 +15,18 @@ final class WorkspaceDemoServiceClient implements WorkspaceDemoService {
   Future<DirectoryListing> listDirectory(ResourceRef directory) async {
     try {
       return _decodeDirectoryListing(
-        await _channel.request('workspaceDemo.listDirectory', <String, Object?>{
-          'directory': _contractResourceRef(directory),
-        }),
+        await _channel.request(
+          workspaceDemoServiceListDirectoryId,
+          <String, Object?>{'directory': _contractResourceRef(directory)},
+        ),
       );
     } on AdeleRemoteFailure catch (error) {
       switch (error.declaredFailureType) {
-        case 'workspaceDemo.failure':
+        case workspaceDemoFailureTypeId:
           throw WorkspaceDemoFailure(
             code: error.code,
             message: error.message,
-            details: error.details,
+            details: _contractJsonMap(error.details, 'failure details'),
           );
         default:
           rethrow;
@@ -37,17 +38,18 @@ final class WorkspaceDemoServiceClient implements WorkspaceDemoService {
   Future<TextFileContents> readTextFile(ResourceRef file) async {
     try {
       return _decodeTextFileContents(
-        await _channel.request('workspaceDemo.readTextFile', <String, Object?>{
-          'file': _contractResourceRef(file),
-        }),
+        await _channel.request(
+          workspaceDemoServiceReadTextFileId,
+          <String, Object?>{'file': _contractResourceRef(file)},
+        ),
       );
     } on AdeleRemoteFailure catch (error) {
       switch (error.declaredFailureType) {
-        case 'workspaceDemo.failure':
+        case workspaceDemoFailureTypeId:
           throw WorkspaceDemoFailure(
             code: error.code,
             message: error.message,
-            details: error.details,
+            details: _contractJsonMap(error.details, 'failure details'),
           );
         default:
           rethrow;
@@ -80,20 +82,20 @@ final class WorkspaceDemoServiceDispatcher
         throw const AdeleProtocolException('Malformed request envelope.');
       final payload = _contractMap(request['payload'], 'request payload');
       final Object? result = await switch (request['method']) {
-        'workspaceDemo.listDirectory' => (() async {
+        workspaceDemoServiceListDirectoryId => (() async {
           _contractFields(payload, const {
             'directory',
           }, 'listDirectory payload');
           return _encodeDirectoryListing(
-            await _service.listDirectory(
+            (await _service.listDirectory(
               _decodeResourceRef(payload['directory']),
-            ),
+            )),
           );
         })(),
-        'workspaceDemo.readTextFile' => (() async {
+        workspaceDemoServiceReadTextFileId => (() async {
           _contractFields(payload, const {'file'}, 'readTextFile payload');
           return _encodeTextFileContents(
-            await _service.readTextFile(_decodeResourceRef(payload['file'])),
+            (await _service.readTextFile(_decodeResourceRef(payload['file']))),
           );
         })(),
         _ => throw const AdeleProtocolException('Unknown method.'),
@@ -107,10 +109,10 @@ final class WorkspaceDemoServiceDispatcher
     } on WorkspaceDemoFailure catch (error) {
       return _contractFailure(
         requestId,
-        'workspaceDemo.failure',
+        workspaceDemoFailureTypeId,
         error.code,
         error.message,
-        error.details,
+        _contractJsonMap(error.details, 'failure details'),
       );
     } on AdeleProtocolException catch (error) {
       final unknown = error.message == 'Unknown method.';
@@ -150,20 +152,21 @@ Map<String, Object?> _contractFailure(
     'details': details,
   },
 };
+const String workspaceDemoFailureTypeId = 'workspaceDemo.failure';
 const String directoryEntryTypeId = 'workspaceDemo.directoryEntry';
 Map<String, Object?> _encodeDirectoryEntry(DirectoryEntry value) =>
     <String, Object?>{
-      'resource': _contractResourceRef(value.resource),
-      'name': value.name,
       'kind': value.kind.name,
+      'name': value.name,
+      'resource': _contractResourceRef(value.resource),
     };
 DirectoryEntry _decodeDirectoryEntry(Object? value) {
   final map = _contractMap(value, 'DirectoryEntry');
-  _contractFields(map, const {'resource', 'name', 'kind'}, 'DirectoryEntry');
+  _contractFields(map, const {'kind', 'name', 'resource'}, 'DirectoryEntry');
   return DirectoryEntry(
-    resource: _decodeResourceRef(map['resource']),
-    name: _contractString(map['name'], 'name'),
     kind: _decodeDirectoryEntryKind(map['kind']),
+    name: _contractString(map['name'], 'name'),
+    resource: _decodeResourceRef(map['resource']),
   );
 }
 
@@ -242,6 +245,41 @@ void _contractFields(
 List<Object?> _contractList(Object? value, String label) {
   if (value is! List) throw AdeleProtocolException('Expected list for $label.');
   return List<Object?>.of(value);
+}
+
+Map<String, Object?> _contractJsonMap(Object? value, String label) {
+  final map = _contractMap(value, label);
+  Object? validate(Object? item) {
+    if (item == null ||
+        item is String ||
+        item is bool ||
+        item is int ||
+        item is double)
+      return item;
+    if (item is List) return item.map(validate).toList(growable: false);
+    if (item is Map) {
+      final result = <String, Object?>{};
+      for (final entry in item.entries) {
+        if (entry.key is! String)
+          throw AdeleProtocolException('Expected string keys for $label.');
+        result[entry.key as String] = validate(entry.value);
+      }
+      return result;
+    }
+    throw AdeleProtocolException(
+      'Expected recursively JSON-compatible values for $label.',
+    );
+  }
+
+  return Map<String, Object?>.fromEntries(
+    map.entries.map(
+      (entry) => MapEntry(entry.key as String, validate(entry.value)),
+    ),
+  );
+}
+
+void _contractVoid(Object? value, String label) {
+  if (value != null) throw AdeleProtocolException('Expected null for $label.');
 }
 
 String _contractString(Object? value, String label) {
