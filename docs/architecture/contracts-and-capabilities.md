@@ -9,8 +9,9 @@ Contracts and capabilities solve different problems:
 | Contract | How do typed values and asynchronous operations cross a runtime boundary? |
 | Capability | Which compatible provider handles a request? |
 
-One manual typed reference transport is implemented for `workspace_demo`.
-General transport generation and capability resolution remain unimplemented.
+One generated typed request/response transport is implemented for
+`workspace_demo`. General transport generation and capability resolution remain
+unimplemented.
 
 ## Contracts
 
@@ -18,15 +19,16 @@ Plugin contract source is shared by frontend and backend packages and should
 normally describe immutable snapshot values. A value received across a runtime
 boundary is reconstructed; its object identity is not shared with the sender.
 
-Future internal generation is intended to provide typed proxies, dispatchers,
-serializers, request handling, streams, cancellation, and structured errors.
+The Phase II internal generator provides a typed client, dispatcher, codecs,
+request handling, and structured errors for the maintained fixture. Streams and
+cancellation remain future work.
 Generated code should hide ports, wire formats, request IDs, subscriptions, and
 transport details from plugin code. Contract declarations remain lightweight
 and independent of compiler or generation tooling.
 
-The process-hosted communication path is proven. Its manual proxy, dispatcher,
-and codecs remain reference evidence for future generation; no stable generator
-API or compatibility policy is accepted yet.
+The generated transport layers over the proven process-hosted communication
+path through a transport-neutral request channel. Its annotations and generator
+remain experimental; no general schema compatibility policy is accepted yet.
 
 ## Capability semantics
 

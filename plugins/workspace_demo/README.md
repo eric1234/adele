@@ -21,6 +21,9 @@ depend on ADELE's internal `plugin_runtime`, `plugin_builder`, `agent_kernel`, o
 The development runtime locally compiles this source from a known location. It
 does not implement discovery, installation, profiles, or configured providers.
 
-The filesystem backend, manual typed transport, persisted interpreted frontend,
-and typed async eval bridge are maintained integration fixtures. The complete
+The filesystem backend, generated typed request/response transport, persisted
+interpreted frontend, and typed async eval bridge are maintained integration
+fixtures. Contract declarations are authoritative and generated client, codec,
+and dispatcher files are committed and verified. The backend entrypoint still
+owns the Phase I isolate handshake and reserved `shutdown` method. The complete
 Linux x64 profile path uses the shared backend host described by ADR 0019.

@@ -4,9 +4,11 @@ ADELE is an extensible, cross-platform desktop environment for building,
 running, inspecting, and extending agent systems. The long-term goal is for
 ADELE to become capable of developing ADELE itself.
 
-ADELE's maintained foundation includes the Phase I plugin runtime proof:
+ADELE's maintained foundation includes the Phase I plugin runtime proof and the
+Phase II experimental generated request/response contract path:
 interpreted Flutter frontends and locally compiled AOT backends hosted in one
-shared child Dart runtime. `workspace_demo` remains an internal reference
+shared child Dart runtime, with generated typed clients, codecs, and backend
+dispatch. `workspace_demo` remains an internal reference
 fixture, not product UI. Plugin discovery, packaging, permissions, sandboxing,
 and general third-party APIs are not implemented.
 
@@ -35,6 +37,7 @@ Run all commands from the repository root:
 dart tools/adele.dart bootstrap
 dart tools/adele.dart run linux     # use macos or windows on those hosts
 dart tools/adele.dart format
+dart tools/adele.dart generate
 dart tools/adele.dart analyze
 dart tools/adele.dart test
 dart tools/adele.dart check
@@ -52,6 +55,8 @@ dart tools/adele.dart smoke linux --profile
 ```
 
 `bootstrap` uses the standard Dart pub workspace through Flutter's pub command.
+`generate` deterministically updates committed experimental contract transport;
+`generate --check` rejects stale outputs and is included in `check`.
 The command driver has no package dependencies, fails on the first failed
 package, and names that package. `check` verifies formatting, analysis, and all
 implemented tests.
@@ -62,6 +67,7 @@ implemented tests.
 app/                         single Flutter desktop application
 packages/plugin_api/         adele_plugin_api (experimental public)
 packages/contract/           adele_contract (experimental public)
+packages/contract_codegen/   contract_codegen (internal, pure Dart)
 packages/capabilities/       adele_capabilities (experimental public)
 packages/plugin_runtime/     plugin_runtime (internal, pure Dart)
 packages/plugin_backend_host/ shared backend host (internal, pure Dart)
