@@ -358,18 +358,35 @@ final class _PluginIsolate {
       if (raw.containsKey('error')) 'error': raw['error'],
     };
     if (!_send(response)) {
-      _send(<String, Object?>{
+      final String code;
+      final String message;
+      if (_isOversizedResponse(response)) {
+        code = 'response_too_large';
+        message = 'The plugin response exceeded the host frame limit.';
+      } else {
+        code = 'response_encoding_failed';
+        message = 'The plugin response could not be encoded.';
+      }
+      if (!_send(<String, Object?>{
         'protocolVersion': backendHostProtocolVersion,
         'kind': 'response',
         'requestId': outerRequestId,
         'pluginId': pluginId,
         'ok': false,
-        'error': <String, Object?>{
-          'code': 'response_too_large',
-          'message': 'The plugin response exceeded the host frame limit.',
-        },
-      });
+        'error': <String, Object?>{'code': code, 'message': message},
+      })) {
+        _diagnostic('Failed to send response failure for $pluginId.');
+      }
     }
+  }
+
+  bool _isOversizedResponse(Map<String, Object?> response) {
+    try {
+      encodeBackendHostFrame(response);
+    } on BackendHostProtocolException catch (error) {
+      return error.message == 'Frame is too large.';
+    }
+    return false;
   }
 
   void _handleError(Object? error) {

@@ -217,6 +217,53 @@ void main() {
     },
     timeout: const Timeout(Duration(minutes: 2)),
   );
+
+  test(
+    'contains unencodable responses per request and keeps plugins usable',
+    () async {
+      final PluginBackendHost host = await _startHost(
+        dartaotruntime,
+        hostArtifact,
+      );
+      addTearDown(() async {
+        if (!host.isClosed) await host.close(graceful: false);
+      });
+      final PluginBackendConnection broken = await host.startPlugin(
+        pluginId: 'broken-response',
+        artifactUri: pluginArtifact.uri,
+        arguments: const <String>['wait'],
+      );
+      final PluginBackendConnection healthy = await host.startPlugin(
+        pluginId: 'healthy',
+        artifactUri: pluginArtifact.uri,
+        arguments: const <String>['wait'],
+      );
+      for (final String method in <String>['unencodable', 'non-finite']) {
+        await expectLater(
+          broken.request(method, const <String, Object?>{}),
+          throwsA(
+            isA<PluginRemoteFailure>().having(
+              (PluginRemoteFailure value) => value.code,
+              'code',
+              'response_encoding_failed',
+            ),
+          ),
+        );
+      }
+      expect(
+        await broken.request('ping', const <String, Object?>{}),
+        <String, Object?>{'alive': true},
+      );
+      expect(
+        await healthy.request('ping', const <String, Object?>{}),
+        <String, Object?>{'alive': true},
+      );
+      await broken.close();
+      await healthy.close();
+      await host.close();
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 }
 
 Future<PluginBackendHost> _startHost(String dartaotruntime, File hostArtifact) {

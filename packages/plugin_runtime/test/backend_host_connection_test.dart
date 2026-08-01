@@ -357,6 +357,55 @@ Future<void> main() async {
       throwsA(isA<PluginConnectionClosed>()),
     );
   });
+
+  test(
+    'does not retain pending state after synchronous encoding failure',
+    () async {
+      final _FakeHost fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': 1, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      final kind = switch (message['kind']) {
+        'startPlugin' => 'pluginReady',
+        'stopPlugin' => 'pluginStopped',
+        'shutdownHost' => 'hostStopped',
+        _ => 'response',
+      };
+      stdout.add(encodeBackendHostFrame({
+        'protocolVersion': 1,
+        'kind': kind,
+        'requestId': message['requestId'],
+        'pluginId': message['pluginId'],
+      }));
+      if (message['kind'] == 'shutdownHost') exit(0);
+    }
+  });
+}
+''');
+      addTearDown(fake.dispose);
+      final PluginBackendHost host = await fake.start();
+      final PluginBackendConnection connection = await host.startPlugin(
+        pluginId: 'retryable',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      await expectLater(
+        connection.request('bad', <String, Object?>{'value': double.nan}),
+        throwsA(isA<BackendHostProtocolException>()),
+      );
+      await connection.close();
+      final PluginBackendConnection retried = await host.startPlugin(
+        pluginId: 'retryable',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      expect(retried.isClosed, isFalse);
+      await host.close();
+      expect(host.isClosed, isTrue);
+    },
+  );
 }
 
 final class _FakeHost {

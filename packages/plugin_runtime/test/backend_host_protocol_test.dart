@@ -43,4 +43,26 @@ void main() {
       ),
     );
   });
+
+  test('wraps non-finite payload values as protocol failures', () {
+    expect(
+      () => encodeBackendHostFrame(<String, Object?>{'value': double.nan}),
+      throwsA(isA<BackendHostProtocolException>()),
+    );
+  });
+
+  test('preserves the frame size limit failure', () {
+    expect(
+      () => encodeBackendHostFrame(<String, Object?>{
+        'value': 'x' * maximumBackendHostFrameLength,
+      }),
+      throwsA(
+        isA<BackendHostProtocolException>().having(
+          (BackendHostProtocolException value) => value.message,
+          'message',
+          'Frame is too large.',
+        ),
+      ),
+    );
+  });
 }

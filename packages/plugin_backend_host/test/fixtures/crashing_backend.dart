@@ -42,6 +42,22 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
         'payload': 'x' * (8 * 1024 * 1024 + 1),
       });
     }
+    if (message['method'] == 'unencodable') {
+      responsePort.send(<String, Object?>{
+        'kind': 'response',
+        'requestId': message['requestId'],
+        'ok': true,
+        'payload': responsePort,
+      });
+    }
+    if (message['method'] == 'non-finite') {
+      responsePort.send(<String, Object?>{
+        'kind': 'response',
+        'requestId': message['requestId'],
+        'ok': true,
+        'payload': double.nan,
+      });
+    }
     if (message['method'] == 'ping') {
       responsePort.send(<String, Object?>{
         'kind': 'response',
