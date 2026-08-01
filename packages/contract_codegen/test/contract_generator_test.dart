@@ -171,9 +171,16 @@ void main() {
     await _runGeneratedFixture(_runtimeContract(), _runtimeTests('double'));
   });
 
-  test('generated dispatcher stages classification and containment', () async {
-    await _runGeneratedFixture(_runtimeContract(), _runtimeTests('dispatcher'));
-  }, timeout: const Timeout(Duration(minutes: 2)));
+  test(
+    'generated dispatcher stages classification and containment',
+    () async {
+      await _runGeneratedFixture(
+        _runtimeContract(),
+        _runtimeTests('dispatcher'),
+      );
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 
   test('generated enum dispatcher rejects unknown enum values', () async {
     await _runGeneratedFixture(_runtimeContract(), _runtimeTests('enum'));

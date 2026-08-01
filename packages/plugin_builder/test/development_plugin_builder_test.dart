@@ -178,8 +178,9 @@ exit 99
   );
 
   test('fails clearly when the derived contract source is missing', () async {
-    File('${plugin.path}/packages/contract/lib/temporary_contract.dart')
-        .deleteSync();
+    File(
+      '${plugin.path}/packages/contract/lib/temporary_contract.dart',
+    ).deleteSync();
     final File log = File('${root.path}/commands.txt');
     final File fake = _script(root, 'fake', '''
 printf '%s\n' "\$*" >> '${log.path}'

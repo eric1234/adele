@@ -253,33 +253,6 @@ final class DevelopmentPluginBuilder {
   }
 }
 
-Future<File> _contractSource(Directory contractDirectory) async {
-  final Directory lib = Directory(
-    '${contractDirectory.path}${Platform.pathSeparator}lib',
-  );
-  if (!lib.existsSync()) {
-    throw PluginBuildFailure(
-      'Contract package has no lib directory: ${contractDirectory.path}',
-    );
-  }
-  final List<File> sources = await lib
-      .list()
-      .where(
-        (FileSystemEntity entity) =>
-            entity is File &&
-            entity.path.endsWith('.dart') &&
-            !entity.path.endsWith('.g.dart'),
-      )
-      .cast<File>()
-      .toList();
-  if (sources.length != 1) {
-    throw PluginBuildFailure(
-      'Contract package must contain exactly one top-level Dart source in ${lib.path}.',
-    );
-  }
-  return sources.single;
-}
-
 Future<Map<String, String>> _readManifest(Directory pluginDirectory) async {
   final File file = File(
     '${pluginDirectory.path}${Platform.pathSeparator}adele_plugin.yaml',
