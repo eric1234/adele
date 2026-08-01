@@ -6,6 +6,11 @@ transport-neutral `AdeleRequestChannel`, abstract `AdeleRemoteFailure` boundary
 with an optional declared failure type identifier, and
 `AdeleProtocolException` for malformed generated-protocol values.
 
+Generated clients use `AdeleProtocolException` for local request preflight and
+malformed responses. Generated dispatchers classify malformed request values as
+`invalid_request`; constructor failures are opaque at both boundaries, including
+when a contract constructor itself throws `AdeleProtocolException`.
+
 ## Dependencies
 
 Allowed dependencies are small, platform-neutral public packages required by

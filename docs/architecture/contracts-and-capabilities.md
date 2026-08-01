@@ -42,6 +42,15 @@ failure details that violate the generated response contract become opaque
 `backend_contract_violation` failures. URI values, including `ResourceRef.uri`,
 must be reconstructible absolute URIs.
 
+The same absolute-URI rule applies recursively to direct values,
+`ResourceRef.uri`, annotated value fields, lists, and nested lists. Clients
+perform request encoding before invoking the channel, so invalid local URIs are
+preflight failures. JSON map transport rejects map, list, and mutual cycles and
+aggregate depth beyond 100 while accepting shared acyclic subgraphs. Value
+constructor exceptions are opaque malformed-value failures at the client and
+dispatcher boundaries, and each dispatcher failure remains isolated to its
+request.
+
 Committed transport is checked in normal CI. Development plugin preparation
 also checks the requested plugin independently: the manifest-selected contract
 package's `pubspec.yaml` name determines `lib/<package-name>.dart`, and that
