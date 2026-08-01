@@ -348,8 +348,12 @@ final class _Extractor {
         .map((FieldElement e) => e.name)
         .nonNulls
         .toSet();
-    if (!fields.containsAll(<String>{'code', 'message', 'details'})) {
-      _fail(node, 'Failure must declare code, message, and details fields.');
+    if (fields.length != 3 ||
+        !fields.containsAll(<String>{'code', 'message', 'details'})) {
+      _fail(
+        node,
+        'Failure must declare only code, message, and details fields.',
+      );
     }
     final Map<String, FieldElement> byName = {
       for (final FieldElement field in instanceFields) field.name!: field,
@@ -385,13 +389,13 @@ final class _Extractor {
       final FieldElement field = byName[name]!;
       if (parameter == null ||
           !parameter.isNamed ||
-          !parameter.isRequired ||
+          (name != 'details' && !parameter.isRequired) ||
           parameter.type != field.type ||
           parameter is! FieldFormalParameterElement ||
           parameter.field?.name != field.name) {
         _fail(
           node,
-          'Failure constructor must reconstruct code, message, and details from required named field-formal parameters.',
+          'Failure constructor must reconstruct required named code and message plus named details field-formal parameters.',
         );
       }
     }

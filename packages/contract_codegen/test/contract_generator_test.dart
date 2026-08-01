@@ -19,8 +19,8 @@ void main() {
     expect(output.contents, contains('WorkspaceDemoServiceDispatcher'));
   });
 
-  test('generates each annotated service in one contract library', () async {
-    final output = await _generate(
+  test('rejects multiple annotated services in one contract library', () async {
+    await _expectDiagnostic(
       _minimalContract(namedValue: true).replaceFirst(
         "@AdeleFailure('fixture.failure')",
         '''
@@ -31,12 +31,8 @@ abstract interface class OtherService {
 }
 @AdeleFailure('fixture.failure')''',
       ),
+      'exactly one @AdeleService',
     );
-
-    expect(output, contains('FixtureServiceClient'));
-    expect(output, contains('OtherServiceClient'));
-    expect(output, contains('FixtureServiceDispatcher'));
-    expect(output, contains('OtherServiceDispatcher'));
   });
 
   test('parses annotated value declarations', () async {
@@ -171,16 +167,24 @@ abstract interface class OtherService {
     );
   });
 
-  test('generated Uri client and dispatcher compile and execute', () async {
-    await _runGeneratedFixture(_runtimeContract(), _runtimeTests('uri'));
-  });
+  test(
+    'generated Uri client and dispatcher compile and execute',
+    () async {
+      await _runGeneratedFixture(_runtimeContract(), _runtimeTests('uri'));
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 
-  test('generated ResourceRef codecs reject malformed URI paths', () async {
-    await _runGeneratedFixture(
-      _resourceRuntimeContract(),
-      _resourceRuntimeTests(),
-    );
-  });
+  test(
+    'generated ResourceRef codecs reject malformed URI paths',
+    () async {
+      await _runGeneratedFixture(
+        _resourceRuntimeContract(),
+        _resourceRuntimeTests(),
+      );
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 
   test('supports ResourceRef', () async {
     final output = await _generate(_allTypesContract());
@@ -190,13 +194,21 @@ abstract interface class OtherService {
     );
   });
 
-  test('generated Map<String, Object?> recursively validates JSON', () async {
-    await _runGeneratedFixture(_runtimeContract(), _runtimeTests('json'));
-  });
+  test(
+    'generated Map<String, Object?> recursively validates JSON',
+    () async {
+      await _runGeneratedFixture(_runtimeContract(), _runtimeTests('json'));
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 
-  test('generated double codecs reject non-finite values', () async {
-    await _runGeneratedFixture(_runtimeContract(), _runtimeTests('double'));
-  });
+  test(
+    'generated double codecs reject non-finite values',
+    () async {
+      await _runGeneratedFixture(_runtimeContract(), _runtimeTests('double'));
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 
   test(
     'generated dispatcher stages classification and containment',
@@ -209,41 +221,68 @@ abstract interface class OtherService {
     timeout: const Timeout(Duration(minutes: 2)),
   );
 
-  test('generated dispatcher contains invalid backend output', () async {
-    await _runGeneratedFixture(
-      _runtimeContract(),
-      _runtimeTests('invalidResult'),
-    );
-  });
+  test(
+    'generated dispatcher contains invalid backend output',
+    () async {
+      await _runGeneratedFixture(
+        _runtimeContract(),
+        _runtimeTests('invalidResult'),
+      );
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 
-  test('generated dispatcher contains invalid failure details', () async {
-    await _runGeneratedFixture(
-      _runtimeContract(),
-      _runtimeTests('invalidDetails'),
-    );
-  });
+  test(
+    'generated dispatcher contains invalid failure details',
+    () async {
+      await _runGeneratedFixture(
+        _runtimeContract(),
+        _runtimeTests('invalidDetails'),
+      );
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 
-  test('generated dispatcher contains service protocol exceptions', () async {
-    await _runGeneratedFixture(
-      _runtimeContract(),
-      _runtimeTests('serviceProtocol'),
-    );
-  });
+  test(
+    'generated dispatcher contains service protocol exceptions',
+    () async {
+      await _runGeneratedFixture(
+        _runtimeContract(),
+        _runtimeTests('serviceProtocol'),
+      );
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 
-  test('generated enum dispatcher rejects unknown enum values', () async {
-    await _runGeneratedFixture(_runtimeContract(), _runtimeTests('enum'));
-  });
+  test(
+    'generated enum dispatcher rejects unknown enum values',
+    () async {
+      await _runGeneratedFixture(_runtimeContract(), _runtimeTests('enum'));
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 
-  test('generated Future<void> client requires a null response', () async {
-    await _runGeneratedFixture(_runtimeContract(), _runtimeTests('voidClient'));
-  });
+  test(
+    'generated Future<void> client requires a null response',
+    () async {
+      await _runGeneratedFixture(
+        _runtimeContract(),
+        _runtimeTests('voidClient'),
+      );
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 
-  test('generated Future<void> dispatcher returns a null payload', () async {
-    await _runGeneratedFixture(
-      _runtimeContract(),
-      _runtimeTests('voidDispatcher'),
-    );
-  });
+  test(
+    'generated Future<void> dispatcher returns a null payload',
+    () async {
+      await _runGeneratedFixture(
+        _runtimeContract(),
+        _runtimeTests('voidDispatcher'),
+      );
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 
   test('rejects mutable value fields', () async {
     await _expectDiagnostic(
@@ -418,12 +457,25 @@ final class ImportedValue {
     );
   });
 
-  test('rejects a failure with optional reconstruction state', () async {
+  test('rejects optional code or message reconstruction state', () async {
     await _expectDiagnostic(
       _minimalContract(
         namedValue: true,
       ).replaceFirst('required this.message', 'this.message = \'fallback\''),
-      'required named field-formal parameters',
+      'required named code and message',
+    );
+  });
+
+  test('accepts canonical failure with optional details', () async {
+    final fixture = await _fixture(
+      _minimalContract(namedValue: true).replaceFirst(
+        'required this.details',
+        'this.details = const <String, Object?>{}',
+      ),
+    );
+    expect(
+      (await const ContractGenerator().generate(fixture.source)).contents,
+      contains('FixtureFailure('),
     );
   });
 
@@ -434,7 +486,7 @@ final class ImportedValue {
         _minimalContract(
           namedValue: true,
         ).replaceFirst('required this.message', 'required String message'),
-        'required named field-formal parameters',
+        'named details field-formal parameters',
       );
     },
   );
