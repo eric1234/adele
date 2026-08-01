@@ -26,6 +26,14 @@ adapting generated requests to the Phase I runtime. Generated dispatchers own
 ordinary contract requests only. Plugin entrypoints retain the reserved
 `shutdown` lifecycle branch.
 
+Each declaration library contains one or more annotated services, with a client
+and dispatcher generated independently for each service. Dispatch is staged as
+envelope validation, method classification, selected payload validation, service
+invocation, and result encoding. This ordering ensures an unknown method is
+reported as `unknown_method` without interpreting its payload. `Uri` is a string
+scalar on the wire and is reconstructed with `Uri.parse`; `ResourceRef` is
+encoded as its URI string and nullable media type.
+
 Generation is explicit through `dart tools/adele.dart generate`. Root `check`
 and CI verify generated files before analysis or smoke execution. The plugin
 builder resolves and verifies the selected plugin's own contract source before
@@ -45,6 +53,12 @@ contract declarations as the source of truth.
   contract-specific failures at the generated client boundary. Transport and
   lifecycle failures remain runtime failures; malformed values raise
   `AdeleProtocolException`.
+- Generated failure responses have `kind: response`, an integer `requestId` when
+  the request supplied one, `ok: false`, and an `error` map containing optional
+  `declaredFailureType`, `code`, `message`, and recursively JSON-compatible
+  `details`. Invalid declared-failure details or an unencodable backend result
+  become an opaque `backend_contract_violation` with no declared type and empty
+  details; undeclared service exceptions become opaque `internal_error` values.
 - The generator and annotation API remain experimental. General schema
   compatibility, streams, cancellation, events, capability resolution,
   discovery, packaging, and security sandboxing remain deferred.

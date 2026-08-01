@@ -14,9 +14,10 @@ workspace_demo_contract
           `-- workspace_demo_frontend
 ```
 
-The frontend and backend never depend on one another. The plugin does not
-depend on ADELE's internal `plugin_runtime`, `plugin_builder`, `agent_kernel`, or
-`adele_desktop` packages.
+The frontend and backend never depend on one another. Plugin production code
+does not depend on ADELE's internal `plugin_runtime`, `plugin_builder`,
+`agent_kernel`, or `adele_desktop` packages. The backend integration test uses
+`plugin_runtime` only as a development dependency to exercise the host boundary.
 
 The development runtime locally compiles this source from a known location. It
 does not implement discovery, installation, profiles, or configured providers.

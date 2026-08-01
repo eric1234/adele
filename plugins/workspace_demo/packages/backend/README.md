@@ -7,6 +7,8 @@ internal host package.
 It may depend on `workspace_demo_contract`, public ADELE plugin-facing packages,
 and full Dart libraries needed by proven backend behavior. Flutter, the sibling
 frontend, ADELE internal packages, and `adele_desktop` are prohibited.
+The host integration test uses `plugin_runtime` only as a development dependency;
+backend production code and its AOT entrypoint do not import it.
 
 It lists immediate children deterministically, reads strict UTF-8 regular
 files, confines canonical paths to the configured development root, rejects

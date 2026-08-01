@@ -6,6 +6,19 @@ import 'package:test/test.dart';
 import 'package:workspace_demo_contract/workspace_demo_contract.dart';
 
 void main() {
+  test('keeps the internal runtime outside production dependencies', () {
+    final String pubspec = File('pubspec.yaml').readAsStringSync();
+    final String dependencies = pubspec
+        .split('dev_dependencies:')
+        .first
+        .split('dependencies:')
+        .last;
+    final String devDependencies = pubspec.split('dev_dependencies:').last;
+
+    expect(dependencies, isNot(contains('plugin_runtime:')));
+    expect(devDependencies, contains('plugin_runtime:'));
+  });
+
   test(
     'hosts the typed workspace backend through framed process IPC',
     () async {

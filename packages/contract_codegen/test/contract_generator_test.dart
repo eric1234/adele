@@ -19,6 +19,26 @@ void main() {
     expect(output.contents, contains('WorkspaceDemoServiceDispatcher'));
   });
 
+  test('generates each annotated service in one contract library', () async {
+    final output = await _generate(
+      _minimalContract(namedValue: true).replaceFirst(
+        "@AdeleFailure('fixture.failure')",
+        '''
+@AdeleService('fixture.other')
+abstract interface class OtherService {
+  @AdeleMethod('pong')
+  Future<String> pong(String value);
+}
+@AdeleFailure('fixture.failure')''',
+      ),
+    );
+
+    expect(output, contains('FixtureServiceClient'));
+    expect(output, contains('OtherServiceClient'));
+    expect(output, contains('FixtureServiceDispatcher'));
+    expect(output, contains('OtherServiceDispatcher'));
+  });
+
   test('parses annotated value declarations', () async {
     final output = await const ContractGenerator().generate(demo);
     expect(output.contents, contains('_decodeDirectoryListing'));
