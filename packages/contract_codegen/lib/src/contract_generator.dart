@@ -735,7 +735,7 @@ final class DartContractEmitter {
     List<FailureModel> failures,
   ) {
     out.writeln(
-      'abstract interface class ${service.name}RequestDispatcher { Future<Map<String, Object?>> dispatch(Map<Object?, Object?> request); } final class ${service.name}Dispatcher implements ${service.name}RequestDispatcher { const ${service.name}Dispatcher(this._service); final ${service.name} _service; @override Future<Map<String, Object?>> dispatch(Map<Object?, Object?> request) async { final requestId = request[\'requestId\']; late final String method; late final Map<Object?, Object?> payload; try { _contractFields(request, const {\'kind\', \'requestId\', \'method\', \'payload\'}, \'request envelope\'); if (requestId is! int || request[\'kind\'] != \'request\' || request[\'method\'] is! String) throw const AdeleProtocolException(\'Malformed request envelope.\'); method = request[\'method\'] as String; payload = _contractMap(request[\'payload\'], \'request payload\'); } on AdeleProtocolException catch(error) { return _contractFailure(requestId, null, \'invalid_request\', error.message, const {}); } late final Object? result; try { result = await switch(method) {',
+      'abstract interface class ${service.name}RequestDispatcher { Future<Map<String, Object?>> dispatch(Map<Object?, Object?> request); } final class ${service.name}Dispatcher implements ${service.name}RequestDispatcher { const ${service.name}Dispatcher(this._service); final ${service.name} _service; @override Future<Map<String, Object?>> dispatch(Map<Object?, Object?> request) async { final requestId = request[\'requestId\']; late final String method; try { _contractFields(request, const {\'kind\', \'requestId\', \'method\', \'payload\'}, \'request envelope\'); if (requestId is! int || request[\'kind\'] != \'request\' || request[\'method\'] is! String) throw const AdeleProtocolException(\'Malformed request envelope.\'); method = request[\'method\'] as String; } on AdeleProtocolException catch(error) { return _contractFailure(requestId, null, \'invalid_request\', error.message, const {}); } if (!const {${service.methods.map((MethodModel method) => '${_lower(service.name)}${_cap(method.name)}Id').join(',')}}.contains(method)) return _contractFailure(requestId, null, \'unknown_method\', \'Unknown method.\', const {}); late final Map<Object?, Object?> payload; try { payload = _contractMap(request[\'payload\'], \'request payload\'); } on AdeleProtocolException catch(error) { return _contractFailure(requestId, null, \'invalid_request\', error.message, const {}); } late final Object? result; try { result = await switch(method) {',
     );
     for (final MethodModel method in service.methods) {
       out.writeln(
@@ -745,7 +745,7 @@ final class DartContractEmitter {
     out.writeln("_ => throw const _ContractUnknownMethod(), };");
     for (final FailureModel failure in failures) {
       out.writeln(
-        "} on ${failure.name} catch(error) { return _contractFailure(requestId, ${_lower(failure.name)}TypeId, error.code, error.message, _contractJsonMap(error.details, 'failure details'));",
+        "} on ${failure.name} catch(error) { try { return _contractFailure(requestId, ${_lower(failure.name)}TypeId, error.code, error.message, _contractJsonMap(error.details, 'failure details')); } on Object { return _contractFailure(requestId, null, 'backend_contract_violation', 'The backend violated its generated contract.', const {}); }",
       );
     }
     out.writeln(
@@ -757,7 +757,7 @@ final class DartContractEmitter {
       );
     }
     out.writeln(
-      "_ => throw const _ContractUnknownMethod(), }; return {'kind': 'response', 'requestId': requestId, 'ok': true, 'payload': encoded}; } on Object catch(error) { return _contractFailure(requestId, null, 'invalid_backend_response', 'The backend violated its generated response contract.', const {}); } } } final class _ContractUnknownMethod implements Exception { const _ContractUnknownMethod(); }",
+      "_ => throw const _ContractUnknownMethod(), }; return {'kind': 'response', 'requestId': requestId, 'ok': true, 'payload': encoded}; } on Object { return _contractFailure(requestId, null, 'backend_contract_violation', 'The backend violated its generated contract.', const {}); } } } final class _ContractUnknownMethod implements Exception { const _ContractUnknownMethod(); }",
     );
     out.writeln(
       "Map<String, Object?> _contractFailure(Object? requestId, String? declaredFailureType, String code, String message, Map<String, Object?> details) => {'kind': 'response', if(requestId is int) 'requestId': requestId, 'ok': false, 'error': {if(declaredFailureType != null) 'declaredFailureType': declaredFailureType, 'code': code, 'message': message, 'details': details}};",

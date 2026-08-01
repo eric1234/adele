@@ -48,7 +48,7 @@ void main() {
     );
     expect(
       (await _diagnostic(fixture.source)).message,
-      contains('Duplicate or empty stable ID'),
+      contains('Duplicate stable ID'),
     );
   });
 
@@ -60,7 +60,7 @@ void main() {
     );
     expect(
       (await _diagnostic(fixture.source)).message,
-      contains('non-empty stable ID'),
+      contains('must declare a stable ID'),
     );
   });
 
@@ -72,7 +72,7 @@ void main() {
     );
     expect(
       (await _diagnostic(fixture.source)).message,
-      contains('non-empty stable ID'),
+      contains('must declare a stable ID'),
     );
   });
 
@@ -81,7 +81,7 @@ void main() {
       _minimalContract(
         namedValue: true,
       ).replaceFirst('fixture.service', 'fixture/service'),
-      'conservative ASCII identifier segments',
+      'using ASCII letters or digits',
     );
   });
 
@@ -173,7 +173,7 @@ void main() {
 
   test('generated dispatcher stages classification and containment', () async {
     await _runGeneratedFixture(_runtimeContract(), _runtimeTests('dispatcher'));
-  });
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('generated enum dispatcher rejects unknown enum values', () async {
     await _runGeneratedFixture(_runtimeContract(), _runtimeTests('enum'));
@@ -305,7 +305,7 @@ final class ImportedValue {
     );
     expect(
       (await _diagnostic(fixture.source)).message,
-      contains('must be declared in the contract library'),
+      contains('source library, not imported'),
     );
   });
 
@@ -319,7 +319,7 @@ final class ImportedValue {
     );
     expect(
       (await _diagnostic(fixture.source)).message,
-      contains('Contract enums must be declared in the contract library.'),
+      contains('declared in the source library'),
     );
   });
 

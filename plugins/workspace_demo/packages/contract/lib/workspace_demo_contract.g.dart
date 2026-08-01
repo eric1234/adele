@@ -70,7 +70,6 @@ final class WorkspaceDemoServiceDispatcher
   Future<Map<String, Object?>> dispatch(Map<Object?, Object?> request) async {
     final requestId = request['requestId'];
     late final String method;
-    late final Map<Object?, Object?> payload;
     try {
       _contractFields(request, const {
         'kind',
@@ -83,6 +82,28 @@ final class WorkspaceDemoServiceDispatcher
           request['method'] is! String)
         throw const AdeleProtocolException('Malformed request envelope.');
       method = request['method'] as String;
+    } on AdeleProtocolException catch (error) {
+      return _contractFailure(
+        requestId,
+        null,
+        'invalid_request',
+        error.message,
+        const {},
+      );
+    }
+    if (!const {
+      workspaceDemoServiceListDirectoryId,
+      workspaceDemoServiceReadTextFileId,
+    }.contains(method))
+      return _contractFailure(
+        requestId,
+        null,
+        'unknown_method',
+        'Unknown method.',
+        const {},
+      );
+    late final Map<Object?, Object?> payload;
+    try {
       payload = _contractMap(request['payload'], 'request payload');
     } on AdeleProtocolException catch (error) {
       return _contractFailure(
@@ -113,13 +134,23 @@ final class WorkspaceDemoServiceDispatcher
         _ => throw const _ContractUnknownMethod(),
       };
     } on WorkspaceDemoFailure catch (error) {
-      return _contractFailure(
-        requestId,
-        workspaceDemoFailureTypeId,
-        error.code,
-        error.message,
-        _contractJsonMap(error.details, 'failure details'),
-      );
+      try {
+        return _contractFailure(
+          requestId,
+          workspaceDemoFailureTypeId,
+          error.code,
+          error.message,
+          _contractJsonMap(error.details, 'failure details'),
+        );
+      } on Object {
+        return _contractFailure(
+          requestId,
+          null,
+          'backend_contract_violation',
+          'The backend violated its generated contract.',
+          const {},
+        );
+      }
     } on _ContractUnknownMethod {
       return _contractFailure(
         requestId,
@@ -161,12 +192,12 @@ final class WorkspaceDemoServiceDispatcher
         'ok': true,
         'payload': encoded,
       };
-    } on Object catch (error) {
+    } on Object {
       return _contractFailure(
         requestId,
         null,
-        'invalid_backend_response',
-        'The backend violated its generated response contract.',
+        'backend_contract_violation',
+        'The backend violated its generated contract.',
         const {},
       );
     }
