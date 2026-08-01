@@ -163,7 +163,11 @@ final class _ThrowingService implements WorkspaceDemoService {
   @override
   Future<DirectoryListing> listDirectory(ResourceRef directory) {
     if (declared) {
-      throw const WorkspaceDemoFailure(code: 'denied', message: 'Denied.');
+      throw const WorkspaceDemoFailure(
+        code: 'denied',
+        message: 'Denied.',
+        details: {},
+      );
     }
     throw StateError('secret implementation detail');
   }

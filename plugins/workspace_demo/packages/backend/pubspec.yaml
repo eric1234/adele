@@ -11,8 +11,8 @@ resolution: workspace
 dependencies:
   adele_contract: ^0.1.0
   adele_plugin_api: ^0.1.0
-  plugin_runtime: ^0.1.0
   workspace_demo_contract: ^0.1.0
 
 dev_dependencies:
+  plugin_runtime: ^0.1.0
   test: ^1.26.3

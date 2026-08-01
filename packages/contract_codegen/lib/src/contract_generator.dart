@@ -234,6 +234,12 @@ final class _Extractor {
     if (services.isEmpty) {
       _fail(result.unit, 'No @AdeleService service was found.');
     }
+    if (services.length != 1) {
+      _fail(
+        result.unit,
+        'Phase II contract libraries must declare exactly one @AdeleService service.',
+      );
+    }
     if (failures.isEmpty) {
       _fail(result.unit, 'At least one @AdeleFailure type is required.');
     }
@@ -357,6 +363,18 @@ final class _Extractor {
       );
     }
     final ConstructorElement constructor = element.unnamedConstructor!;
+    if (constructor.isFactory) {
+      _fail(
+        node,
+        'Annotated failure must have a generative unnamed constructor.',
+      );
+    }
+    if (constructor.formalParameters.length != instanceFields.length) {
+      _fail(
+        node,
+        'Failure constructor may only initialize declared instance fields.',
+      );
+    }
     final Map<String, FormalParameterElement> parameters = {
       for (final FormalParameterElement parameter
           in constructor.formalParameters)
@@ -364,10 +382,16 @@ final class _Extractor {
     };
     for (final String name in const ['code', 'message', 'details']) {
       final FormalParameterElement? parameter = parameters[name];
-      if (parameter == null || !parameter.isNamed) {
+      final FieldElement field = byName[name]!;
+      if (parameter == null ||
+          !parameter.isNamed ||
+          !parameter.isRequired ||
+          parameter.type != field.type ||
+          parameter is! FieldFormalParameterElement ||
+          parameter.field?.name != field.name) {
         _fail(
           node,
-          'Failure constructor must expose named code, message, and details parameters.',
+          'Failure constructor must reconstruct code, message, and details from required named field-formal parameters.',
         );
       }
     }
@@ -439,6 +463,9 @@ final class _Extractor {
       'method ID',
     );
     methods.sort((MethodModel a, MethodModel b) => a.id.compareTo(b.id));
+    if (methods.isEmpty) {
+      _fail(node, 'Annotated service must declare at least one method.');
+    }
     _duplicates(
       node,
       methods.map((MethodModel value) => value.name),
@@ -705,9 +732,12 @@ final class DartContractEmitter {
     out.writeln(
       "double _contractDouble(Object? value, String label) { if (value is! double) throw AdeleProtocolException('Expected double for \$label.'); return _contractFiniteDouble(value, label); } double _contractFiniteDouble(double value, String label) { if (!value.isFinite) throw AdeleProtocolException('Expected finite double for \$label.'); return value; }",
     );
+    out.writeln(
+      "Uri _contractUri(Object? value, String label) { final text = _contractString(value, label); final Uri uri; try { uri = Uri.parse(text); } on FormatException { throw AdeleProtocolException('Malformed Uri for \$label.'); } if (!uri.hasScheme) throw AdeleProtocolException('Malformed Uri for \$label.'); return uri; }",
+    );
     if (_usesExternal(model)) {
       out.writeln(
-        "Map<String, Object?> _contractResourceRef(ResourceRef value) => {'uri': value.uri.toString(), 'mediaType': value.mediaType}; ResourceRef _decodeResourceRef(Object? value) { final map = _contractMap(value, 'ResourceRef'); _contractFields(map, const {'uri', 'mediaType'}, 'ResourceRef'); final uri = map['uri']; final mediaType = map['mediaType']; if (uri is! String || mediaType != null && mediaType is! String) throw const AdeleProtocolException('Malformed ResourceRef.'); return ResourceRef(uri: Uri.parse(uri), mediaType: mediaType as String?); }",
+        "Map<String, Object?> _contractResourceRef(ResourceRef value) => {'uri': value.uri.toString(), 'mediaType': value.mediaType}; ResourceRef _decodeResourceRef(Object? value) { final map = _contractMap(value, 'ResourceRef'); _contractFields(map, const {'uri', 'mediaType'}, 'ResourceRef'); final mediaType = map['mediaType']; if (mediaType != null && mediaType is! String) throw const AdeleProtocolException('Malformed ResourceRef.'); return ResourceRef(uri: _contractUri(map['uri'], 'ResourceRef uri'), mediaType: mediaType as String?); }",
       );
     }
     return out.toString();
@@ -735,11 +765,19 @@ final class DartContractEmitter {
     List<FailureModel> failures,
   ) {
     out.writeln(
-      'abstract interface class ${service.name}RequestDispatcher { Future<Map<String, Object?>> dispatch(Map<Object?, Object?> request); } final class ${service.name}Dispatcher implements ${service.name}RequestDispatcher { const ${service.name}Dispatcher(this._service); final ${service.name} _service; @override Future<Map<String, Object?>> dispatch(Map<Object?, Object?> request) async { final requestId = request[\'requestId\']; late final String method; try { _contractFields(request, const {\'kind\', \'requestId\', \'method\', \'payload\'}, \'request envelope\'); if (requestId is! int || request[\'kind\'] != \'request\' || request[\'method\'] is! String) throw const AdeleProtocolException(\'Malformed request envelope.\'); method = request[\'method\'] as String; } on AdeleProtocolException catch(error) { return _contractFailure(requestId, null, \'invalid_request\', error.message, const {}); } if (!const {${service.methods.map((MethodModel method) => '${_lower(service.name)}${_cap(method.name)}Id').join(',')}}.contains(method)) return _contractFailure(requestId, null, \'unknown_method\', \'Unknown method.\', const {}); late final Map<Object?, Object?> payload; try { payload = _contractMap(request[\'payload\'], \'request payload\'); } on AdeleProtocolException catch(error) { return _contractFailure(requestId, null, \'invalid_request\', error.message, const {}); } late final Object? result; try { result = await switch(method) {',
+      'abstract interface class ${service.name}RequestDispatcher { Future<Map<String, Object?>> dispatch(Map<Object?, Object?> request); } final class ${service.name}Dispatcher implements ${service.name}RequestDispatcher { const ${service.name}Dispatcher(this._service); final ${service.name} _service; @override Future<Map<String, Object?>> dispatch(Map<Object?, Object?> request) async { final requestId = request[\'requestId\']; late final String method; try { method = _decodeContractEnvelope(request); } on AdeleProtocolException catch(error) { return _contractFailure(requestId, null, \'invalid_request\', error.message, const {}); } if (!const {${service.methods.map((MethodModel method) => '${_lower(service.name)}${_cap(method.name)}Id').join(',')}}.contains(method)) return _contractFailure(requestId, null, \'unknown_method\', \'Unknown method.\', const {}); late final Map<Object?, Object?> payload; try { payload = _contractMap(request[\'payload\'], \'request payload\'); } on AdeleProtocolException catch(error) { return _contractFailure(requestId, null, \'invalid_request\', error.message, const {}); } late final Object? arguments; try { arguments = switch(method) {',
     );
     for (final MethodModel method in service.methods) {
       out.writeln(
-        '${_lower(service.name)}${_cap(method.name)}Id => ${_dispatchMethod(method)},',
+        '${_lower(service.name)}${_cap(method.name)}Id => ${_decodeArguments(method)},',
+      );
+    }
+    out.writeln(
+      "_ => throw const _ContractUnknownMethod(), }; } on _ContractUnknownMethod { return _contractFailure(requestId, null, 'unknown_method', 'Unknown method.', const {}); } on AdeleProtocolException catch(error) { return _contractFailure(requestId, null, 'invalid_request', error.message, const {}); } late final Object? result; try { result = await switch(method) {",
+    );
+    for (final MethodModel method in service.methods) {
+      out.writeln(
+        '${_lower(service.name)}${_cap(method.name)}Id => ${_invokeMethod(method)},',
       );
     }
     out.writeln("_ => throw const _ContractUnknownMethod(), };");
@@ -749,7 +787,7 @@ final class DartContractEmitter {
       );
     }
     out.writeln(
-      "} on _ContractUnknownMethod { return _contractFailure(requestId, null, 'unknown_method', 'Unknown method.', const {}); } on AdeleProtocolException catch(error) { return _contractFailure(requestId, null, 'invalid_request', error.message, const {}); } on Object catch(error) { return _contractFailure(requestId, null, 'internal_error', 'The backend request failed unexpectedly.', const {}); } try { final encoded = switch(method) {",
+      "} on _ContractUnknownMethod { return _contractFailure(requestId, null, 'unknown_method', 'Unknown method.', const {}); } on Object catch(error) { return _contractFailure(requestId, null, 'internal_error', 'The backend request failed unexpectedly.', const {}); } try { final encoded = switch(method) {",
     );
     for (final MethodModel method in service.methods) {
       out.writeln(
@@ -757,7 +795,7 @@ final class DartContractEmitter {
       );
     }
     out.writeln(
-      "_ => throw const _ContractUnknownMethod(), }; return {'kind': 'response', 'requestId': requestId, 'ok': true, 'payload': encoded}; } on Object { return _contractFailure(requestId, null, 'backend_contract_violation', 'The backend violated its generated contract.', const {}); } } } final class _ContractUnknownMethod implements Exception { const _ContractUnknownMethod(); }",
+      "_ => throw const _ContractUnknownMethod(), }; return {'kind': 'response', 'requestId': requestId, 'ok': true, 'payload': encoded}; } on Object { return _contractFailure(requestId, null, 'backend_contract_violation', 'The backend violated its generated contract.', const {}); } } } String _decodeContractEnvelope(Map<Object?, Object?> request) { _contractFields(request, const {'kind', 'requestId', 'method', 'payload'}, 'request envelope'); if (request['requestId'] is! int || request['kind'] != 'request' || request['method'] is! String) throw const AdeleProtocolException('Malformed request envelope.'); return request['method'] as String; } final class _ContractUnknownMethod implements Exception { const _ContractUnknownMethod(); }",
     );
     out.writeln(
       "Map<String, Object?> _contractFailure(Object? requestId, String? declaredFailureType, String code, String message, Map<String, Object?> details) => {'kind': 'response', if(requestId is int) 'requestId': requestId, 'ok': false, 'error': {if(declaredFailureType != null) 'declaredFailureType': declaredFailureType, 'code': code, 'message': message, 'details': details}};",
@@ -766,22 +804,29 @@ final class DartContractEmitter {
 
   String _failureSwitch(List<FailureModel> failures) =>
       "switch(error.declaredFailureType) { ${failures.map((FailureModel f) => "case ${_lower(f.name)}TypeId: throw ${f.name}(code: error.code, message: error.message, details: _contractJsonMap(error.details, 'failure details'));").join()} default: rethrow; }";
-  String _dispatchMethod(MethodModel method) {
-    if (method.returnType.kind == TypeKind.void_) {
-      final String arguments = method.parameters
-          .map((FieldModel p) => _decode(p.type, "payload['${p.id}']", p.name))
-          .join(',');
-      final String fields = method.parameters
-          .map((FieldModel parameter) => "'${parameter.id}'")
-          .join(',');
-      return "(() async { _contractFields(payload, const {$fields}, '${method.name} payload'); await _service.${method.name}($arguments); return null; })()";
-    }
-    final String invocation =
-        'await _service.${method.name}(${method.parameters.map((FieldModel p) => _decode(p.type, "payload['${p.id}']", p.name)).join(',')})';
+  String _decodeArguments(MethodModel method) {
     final String fields = method.parameters
         .map((FieldModel parameter) => "'${parameter.id}'")
         .join(',');
-    return "(() async { _contractFields(payload, const {$fields}, '${method.name} payload'); return $invocation; })()";
+    final String values = method.parameters
+        .map(
+          (FieldModel parameter) => _decode(
+            parameter.type,
+            "payload['${parameter.id}']",
+            parameter.name,
+          ),
+        )
+        .join(',');
+    return "(() { _contractFields(payload, const {$fields}, '${method.name} payload'); return <Object?>[$values]; })()";
+  }
+
+  String _invokeMethod(MethodModel method) {
+    final String values = <String>[
+      for (int index = 0; index < method.parameters.length; index++)
+        'values[$index] as ${method.parameters[index].type.dart}',
+    ].join(',');
+    final String invocation = 'await _service.${method.name}($values)';
+    return "(() async { final values = arguments as List<Object?>; ${method.returnType.kind == TypeKind.void_ ? '$invocation; return null;' : 'return $invocation;'} })()";
   }
 
   String _encode(TypeModel type, String value) {
@@ -812,7 +857,7 @@ final class DartContractEmitter {
       TypeKind.list =>
         "List.unmodifiable(_contractList($value, '$label').map((element) => ${_decode(type.argument!, 'element', '$label element')}))",
       TypeKind.map => '_contractJsonMap($value, \'$label\')',
-      TypeKind.uri => 'Uri.parse(_contractString($value, \'$label\'))',
+      TypeKind.uri => '_contractUri($value, \'$label\')',
       TypeKind.enumeration => '_decode${_base(type.dart)}($value)',
       TypeKind.value => '_decode${_base(type.dart)}($value)',
       TypeKind.external => '_decodeResourceRef($value)',

@@ -49,5 +49,7 @@ contract declarations as the source of truth.
   compatibility, streams, cancellation, events, capability resolution,
   discovery, packaging, and security sandboxing remain deferred.
 - The supported schema is deliberately local and unary: imported annotated
-  schema, non-finite doubles, positional value construction, and permissive wire
-  identifiers are rejected rather than becoming compatibility commitments.
+  schema, multiple or empty services, non-reconstructible failures, malformed
+  or relative URIs, non-finite doubles, positional value construction, and
+  permissive wire identifiers are rejected rather than becoming compatibility
+  commitments.

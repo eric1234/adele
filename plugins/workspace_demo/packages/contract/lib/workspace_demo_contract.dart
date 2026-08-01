@@ -58,7 +58,7 @@ final class WorkspaceDemoFailure implements Exception {
   const WorkspaceDemoFailure({
     required this.code,
     required this.message,
-    this.details = const <String, Object?>{},
+    required this.details,
   });
 
   final String code;

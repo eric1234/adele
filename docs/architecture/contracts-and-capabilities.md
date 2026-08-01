@@ -21,7 +21,8 @@ boundary is reconstructed; its object identity is not shared with the sender.
 
 The Phase II internal generator provides a typed client, dispatcher, codecs,
 request handling, and structured errors for the maintained fixture. Its scope is
-unary request/response only. Values use one unnamed generative constructor with
+one non-empty service per contract library and unary request/response only.
+Values use one unnamed generative constructor with
 required named parameters, schema enums and values must be declared in the
 contract source library rather than imported, wire IDs use a conservative ASCII
 segment grammar, and every transported double must be finite. Streams,
@@ -33,9 +34,13 @@ and independent of compiler or generation tooling.
 The generated transport layers over the proven process-hosted communication
 path through a transport-neutral request channel. Its annotations and generator
 remain experimental; no general schema compatibility policy is accepted yet.
-Dispatch validates the request envelope and payload before service invocation,
-contains service failures separately, and converts backend return values that
-violate the generated response contract into an opaque protocol failure.
+Dispatch explicitly decodes the envelope and method, decodes arguments, invokes
+the service, and encodes the result as separate stages. Malformed requests are
+`invalid_request`; every service-thrown undeclared exception, including
+`AdeleProtocolException`, is `internal_error`; and backend results or declared
+failure details that violate the generated response contract become opaque
+`backend_contract_violation` failures. URI values, including `ResourceRef.uri`,
+must be reconstructible absolute URIs.
 
 Committed transport is checked in normal CI. Development plugin preparation
 also checks the requested plugin independently: the manifest-selected contract

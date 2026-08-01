@@ -71,17 +71,7 @@ final class WorkspaceDemoServiceDispatcher
     final requestId = request['requestId'];
     late final String method;
     try {
-      _contractFields(request, const {
-        'kind',
-        'requestId',
-        'method',
-        'payload',
-      }, 'request envelope');
-      if (requestId is! int ||
-          request['kind'] != 'request' ||
-          request['method'] is! String)
-        throw const AdeleProtocolException('Malformed request envelope.');
-      method = request['method'] as String;
+      method = _decodeContractEnvelope(request);
     } on AdeleProtocolException catch (error) {
       return _contractFailure(
         requestId,
@@ -114,22 +104,48 @@ final class WorkspaceDemoServiceDispatcher
         const {},
       );
     }
+    late final Object? arguments;
+    try {
+      arguments = switch (method) {
+        workspaceDemoServiceListDirectoryId => (() {
+          _contractFields(payload, const {
+            'directory',
+          }, 'listDirectory payload');
+          return <Object?>[_decodeResourceRef(payload['directory'])];
+        })(),
+        workspaceDemoServiceReadTextFileId => (() {
+          _contractFields(payload, const {'file'}, 'readTextFile payload');
+          return <Object?>[_decodeResourceRef(payload['file'])];
+        })(),
+        _ => throw const _ContractUnknownMethod(),
+      };
+    } on _ContractUnknownMethod {
+      return _contractFailure(
+        requestId,
+        null,
+        'unknown_method',
+        'Unknown method.',
+        const {},
+      );
+    } on AdeleProtocolException catch (error) {
+      return _contractFailure(
+        requestId,
+        null,
+        'invalid_request',
+        error.message,
+        const {},
+      );
+    }
     late final Object? result;
     try {
       result = await switch (method) {
         workspaceDemoServiceListDirectoryId => (() async {
-          _contractFields(payload, const {
-            'directory',
-          }, 'listDirectory payload');
-          return await _service.listDirectory(
-            _decodeResourceRef(payload['directory']),
-          );
+          final values = arguments as List<Object?>;
+          return await _service.listDirectory(values[0] as ResourceRef);
         })(),
         workspaceDemoServiceReadTextFileId => (() async {
-          _contractFields(payload, const {'file'}, 'readTextFile payload');
-          return await _service.readTextFile(
-            _decodeResourceRef(payload['file']),
-          );
+          final values = arguments as List<Object?>;
+          return await _service.readTextFile(values[0] as ResourceRef);
         })(),
         _ => throw const _ContractUnknownMethod(),
       };
@@ -157,14 +173,6 @@ final class WorkspaceDemoServiceDispatcher
         null,
         'unknown_method',
         'Unknown method.',
-        const {},
-      );
-    } on AdeleProtocolException catch (error) {
-      return _contractFailure(
-        requestId,
-        null,
-        'invalid_request',
-        error.message,
         const {},
       );
     } on Object catch (error) {
@@ -202,6 +210,20 @@ final class WorkspaceDemoServiceDispatcher
       );
     }
   }
+}
+
+String _decodeContractEnvelope(Map<Object?, Object?> request) {
+  _contractFields(request, const {
+    'kind',
+    'requestId',
+    'method',
+    'payload',
+  }, 'request envelope');
+  if (request['requestId'] is! int ||
+      request['kind'] != 'request' ||
+      request['method'] is! String)
+    throw const AdeleProtocolException('Malformed request envelope.');
+  return request['method'] as String;
 }
 
 final class _ContractUnknownMethod implements Exception {
@@ -383,6 +405,18 @@ double _contractFiniteDouble(double value, String label) {
   return value;
 }
 
+Uri _contractUri(Object? value, String label) {
+  final text = _contractString(value, label);
+  final Uri uri;
+  try {
+    uri = Uri.parse(text);
+  } on FormatException {
+    throw AdeleProtocolException('Malformed Uri for $label.');
+  }
+  if (!uri.hasScheme) throw AdeleProtocolException('Malformed Uri for $label.');
+  return uri;
+}
+
 Map<String, Object?> _contractResourceRef(ResourceRef value) => {
   'uri': value.uri.toString(),
   'mediaType': value.mediaType,
@@ -390,9 +424,11 @@ Map<String, Object?> _contractResourceRef(ResourceRef value) => {
 ResourceRef _decodeResourceRef(Object? value) {
   final map = _contractMap(value, 'ResourceRef');
   _contractFields(map, const {'uri', 'mediaType'}, 'ResourceRef');
-  final uri = map['uri'];
   final mediaType = map['mediaType'];
-  if (uri is! String || mediaType != null && mediaType is! String)
+  if (mediaType != null && mediaType is! String)
     throw const AdeleProtocolException('Malformed ResourceRef.');
-  return ResourceRef(uri: Uri.parse(uri), mediaType: mediaType as String?);
+  return ResourceRef(
+    uri: _contractUri(map['uri'], 'ResourceRef uri'),
+    mediaType: mediaType as String?,
+  );
 }

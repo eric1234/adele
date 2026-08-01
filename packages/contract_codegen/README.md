@@ -23,7 +23,10 @@ integers, finite doubles, nullable forms, lists, enums, annotated values, and th
 experimental `ResourceRef` scalar. Unsupported declarations fail with source
 path, line, and column diagnostics.
 
-Phase II remains unary and local to one declaration library. Annotated schema
-cannot be imported, value constructors use required named parameters, and wire
-IDs use ASCII alphanumeric segments separated by single dots, hyphens, or
-underscores.
+Phase II remains unary and local to one declaration library, with exactly one
+non-empty service. Annotated schema cannot be imported, value and failure
+constructors must reconstruct their declared state, URI values must be absolute
+and parseable, and wire IDs use ASCII alphanumeric segments separated by single
+dots, hyphens, or underscores. Generated dispatch separates envelope/method
+decoding, argument decoding, service invocation, and result encoding so backend
+exceptions cannot be mistaken for malformed requests.
