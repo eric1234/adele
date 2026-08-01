@@ -69,6 +69,8 @@ final class WorkspaceDemoServiceDispatcher
   @override
   Future<Map<String, Object?>> dispatch(Map<Object?, Object?> request) async {
     final requestId = request['requestId'];
+    late final String method;
+    late final Map<Object?, Object?> payload;
     try {
       _contractFields(request, const {
         'kind',
@@ -80,31 +82,35 @@ final class WorkspaceDemoServiceDispatcher
           request['kind'] != 'request' ||
           request['method'] is! String)
         throw const AdeleProtocolException('Malformed request envelope.');
-      final payload = _contractMap(request['payload'], 'request payload');
-      final Object? result = await switch (request['method']) {
+      method = request['method'] as String;
+      payload = _contractMap(request['payload'], 'request payload');
+    } on AdeleProtocolException catch (error) {
+      return _contractFailure(
+        requestId,
+        null,
+        'invalid_request',
+        error.message,
+        const {},
+      );
+    }
+    late final Object? result;
+    try {
+      result = await switch (method) {
         workspaceDemoServiceListDirectoryId => (() async {
           _contractFields(payload, const {
             'directory',
           }, 'listDirectory payload');
-          return _encodeDirectoryListing(
-            (await _service.listDirectory(
-              _decodeResourceRef(payload['directory']),
-            )),
+          return await _service.listDirectory(
+            _decodeResourceRef(payload['directory']),
           );
         })(),
         workspaceDemoServiceReadTextFileId => (() async {
           _contractFields(payload, const {'file'}, 'readTextFile payload');
-          return _encodeTextFileContents(
-            (await _service.readTextFile(_decodeResourceRef(payload['file']))),
+          return await _service.readTextFile(
+            _decodeResourceRef(payload['file']),
           );
         })(),
-        _ => throw const AdeleProtocolException('Unknown method.'),
-      };
-      return {
-        'kind': 'response',
-        'requestId': requestId,
-        'ok': true,
-        'payload': result,
+        _ => throw const _ContractUnknownMethod(),
       };
     } on WorkspaceDemoFailure catch (error) {
       return _contractFailure(
@@ -114,12 +120,19 @@ final class WorkspaceDemoServiceDispatcher
         error.message,
         _contractJsonMap(error.details, 'failure details'),
       );
-    } on AdeleProtocolException catch (error) {
-      final unknown = error.message == 'Unknown method.';
+    } on _ContractUnknownMethod {
       return _contractFailure(
         requestId,
         null,
-        unknown ? 'unknown_method' : 'invalid_request',
+        'unknown_method',
+        'Unknown method.',
+        const {},
+      );
+    } on AdeleProtocolException catch (error) {
+      return _contractFailure(
+        requestId,
+        null,
+        'invalid_request',
         error.message,
         const {},
       );
@@ -132,7 +145,36 @@ final class WorkspaceDemoServiceDispatcher
         const {},
       );
     }
+    try {
+      final encoded = switch (method) {
+        workspaceDemoServiceListDirectoryId => _encodeDirectoryListing(
+          (result as DirectoryListing),
+        ),
+        workspaceDemoServiceReadTextFileId => _encodeTextFileContents(
+          (result as TextFileContents),
+        ),
+        _ => throw const _ContractUnknownMethod(),
+      };
+      return {
+        'kind': 'response',
+        'requestId': requestId,
+        'ok': true,
+        'payload': encoded,
+      };
+    } on Object catch (error) {
+      return _contractFailure(
+        requestId,
+        null,
+        'invalid_backend_response',
+        'The backend violated its generated response contract.',
+        const {},
+      );
+    }
   }
+}
+
+final class _ContractUnknownMethod implements Exception {
+  const _ContractUnknownMethod();
 }
 
 Map<String, Object?> _contractFailure(
@@ -250,12 +292,12 @@ List<Object?> _contractList(Object? value, String label) {
 Map<String, Object?> _contractJsonMap(Object? value, String label) {
   final map = _contractMap(value, label);
   Object? validate(Object? item) {
-    if (item == null ||
-        item is String ||
-        item is bool ||
-        item is int ||
-        item is double)
+    if (item == null || item is String || item is bool || item is int)
       return item;
+    if (item is double) {
+      _contractFiniteDouble(item, label);
+      return item;
+    }
     if (item is List) return item.map(validate).toList(growable: false);
     if (item is Map) {
       final result = <String, Object?>{};
@@ -301,6 +343,12 @@ int _contractInt(Object? value, String label) {
 double _contractDouble(Object? value, String label) {
   if (value is! double)
     throw AdeleProtocolException('Expected double for $label.');
+  return _contractFiniteDouble(value, label);
+}
+
+double _contractFiniteDouble(double value, String label) {
+  if (!value.isFinite)
+    throw AdeleProtocolException('Expected finite double for $label.');
   return value;
 }
 

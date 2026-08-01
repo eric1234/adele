@@ -14,7 +14,14 @@ final class BackendHostProtocolException implements Exception {
 }
 
 Uint8List encodeBackendHostFrame(Map<String, Object?> message) {
-  final Uint8List payload = utf8.encode(jsonEncode(message));
+  late final Uint8List payload;
+  try {
+    payload = utf8.encode(jsonEncode(message));
+  } on Object catch (error) {
+    throw BackendHostProtocolException(
+      'Frame payload is not JSON serializable: $error',
+    );
+  }
   if (payload.length > maximumBackendHostFrameLength) {
     throw const BackendHostProtocolException('Frame is too large.');
   }

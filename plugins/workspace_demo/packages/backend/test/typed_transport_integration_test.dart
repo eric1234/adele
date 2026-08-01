@@ -7,9 +7,10 @@ import 'package:workspace_demo_contract/workspace_demo_contract.dart';
 
 void main() {
   test(
-    'hosts the workspace backend through framed process IPC',
+    'hosts the typed workspace backend through framed process IPC',
     () async {
-      final String repository = Directory.current.parent.parent.path;
+      final String repository =
+          Directory.current.parent.parent.parent.parent.path;
       final Directory artifacts = Directory(
         '$repository/.dart_tool/adele/integration/backend-host',
       )..createSync(recursive: true);

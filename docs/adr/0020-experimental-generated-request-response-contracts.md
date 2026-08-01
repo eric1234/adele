@@ -27,9 +27,10 @@ ordinary contract requests only. Plugin entrypoints retain the reserved
 `shutdown` lifecycle branch.
 
 Generation is explicit through `dart tools/adele.dart generate`. Root `check`
-and `plugin_builder` verify generated files before analysis, tests, or backend
-compilation. Generated files are derived artifacts and do not replace contract
-declarations as the source of truth.
+and CI verify generated files before analysis or smoke execution. The plugin
+builder resolves and verifies the selected plugin's own contract source before
+backend compilation. Generated files are derived artifacts and do not replace
+contract declarations as the source of truth.
 
 ## Consequences
 
@@ -47,3 +48,6 @@ declarations as the source of truth.
 - The generator and annotation API remain experimental. General schema
   compatibility, streams, cancellation, events, capability resolution,
   discovery, packaging, and security sandboxing remain deferred.
+- The supported schema is deliberately local and unary: imported annotated
+  schema, non-finite doubles, positional value construction, and permissive wire
+  identifiers are rejected rather than becoming compatibility commitments.

@@ -48,7 +48,7 @@ void main() {
     );
     expect(
       (await _diagnostic(fixture.source)).message,
-      contains('Duplicate or empty stable ID'),
+      contains('Duplicate stable ID'),
     );
   });
 
@@ -56,12 +56,12 @@ void main() {
     final fixture = await _fixture(
       _minimalContract().replaceFirst(
         "@AdeleService('fixture.service')",
-        '@AdeleService()',
+        '@AdeleService',
       ),
     );
     expect(
       (await _diagnostic(fixture.source)).message,
-      contains('non-empty stable ID'),
+      contains('must declare a stable ID'),
     );
   });
 
@@ -74,7 +74,7 @@ void main() {
     );
     expect(
       (await _diagnostic(fixture.source)).message,
-      contains('non-empty stable ID'),
+      contains('must declare a stable ID'),
     );
   });
 
@@ -113,7 +113,7 @@ void main() {
 
   test('supports nullable contract types', () async {
     final output = await _generate(_allTypesContract());
-    expect(output, contains("note == null ? null"));
+    expect(output, contains("map['note'] == null ? null"));
   });
 
   test('supports immutable decoded lists', () async {
@@ -147,6 +147,20 @@ void main() {
     await _runGeneratedFixture(_runtimeContract(), _runtimeTests('json'));
   });
 
+  test('generated codecs reject non-finite doubles everywhere', () async {
+    await _runGeneratedFixture(
+      _runtimeContract(),
+      _runtimeTests('finiteDouble'),
+    );
+  });
+
+  test('dispatcher contains backend response contract violations', () async {
+    await _runGeneratedFixture(
+      _runtimeContract(),
+      _runtimeTests('backendViolation'),
+    );
+  });
+
   test('generated enum dispatcher rejects unknown enum values', () async {
     await _runGeneratedFixture(_runtimeContract(), _runtimeTests('enum'));
   });
@@ -166,6 +180,50 @@ void main() {
     await _expectDiagnostic(
       _minimalContract().replaceFirst('final String value;', 'String value;'),
       'Value fields must be final.',
+    );
+  });
+
+  test('rejects positional value constructor parameters', () async {
+    await _expectDiagnostic(
+      _minimalContract().replaceFirst(
+        'const FixtureValue({required this.value});',
+        'const FixtureValue(this.value);',
+      ),
+      'Value constructor parameters must be required and named.',
+    );
+  });
+
+  test('rejects imported annotated schema declarations', () async {
+    final fixture = await _fixture(_minimalContract());
+    final imported = File(p.join(fixture.directory.path, 'imported.dart'));
+    await fixture.source.rename(imported.path);
+    final source = File(p.join(fixture.directory.path, 'fixture.dart'));
+    await source.writeAsString('''
+import 'imported.dart';
+import 'package:adele_contract/adele_contract.dart';
+part 'fixture.g.dart';
+@AdeleService('local.service')
+abstract interface class LocalService {
+  @AdeleMethod('read') Future<FixtureValue> read();
+}
+@AdeleFailure('local.failure')
+final class LocalFailure implements Exception {
+  const LocalFailure({required this.code, required this.message, this.details = const {}});
+  final String code;
+  final String message;
+  final Map<String, Object?> details;
+}
+''');
+    expect(
+      (await _diagnostic(source)).message,
+      contains('schema declarations must be declared in the source library'),
+    );
+  });
+
+  test('rejects IDs outside the conservative grammar', () async {
+    await _expectDiagnostic(
+      _minimalContract().replaceFirst('fixture.service', 'fixture/service'),
+      'must declare a stable ID',
     );
   });
 
@@ -240,8 +298,8 @@ void main() {
   test('rejects ambiguous multiple constructors', () async {
     await _expectDiagnostic(
       _minimalContract().replaceFirst(
-        'const FixtureValue(this.value);',
-        'const FixtureValue(this.value);\n  const FixtureValue.named(this.value);',
+        'const FixtureValue({required this.value});',
+        'const FixtureValue({required this.value});\n  const FixtureValue.named({required this.value});',
       ),
       'exactly one unnamed constructor',
     );
@@ -312,7 +370,7 @@ import 'package:adele_contract/adele_contract.dart';
 part 'fixture.g.dart';
 @AdeleValue('fixture.value')
 final class FixtureValue {
-  const FixtureValue(this.value);
+  const FixtureValue({required this.value});
   final String value;
 }
 @AdeleService('fixture.service')
@@ -332,9 +390,9 @@ final class FixtureFailure implements Exception {
 String _orderedContract({required bool valuesFirst}) {
   const value = '''
 @AdeleValue('fixture.a')
-final class AValue { const AValue(this.text); final String text; }
+final class AValue { const AValue({required this.text}); final String text; }
 @AdeleValue('fixture.z')
-final class ZValue { const ZValue(this.text); final String text; }
+final class ZValue { const ZValue({required this.text}); final String text; }
 ''';
   const service = '''
 @AdeleService('fixture.service')
@@ -362,7 +420,7 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 part 'fixture.g.dart';
 enum Mood { calm, busy }
 @AdeleValue('fixture.child')
-final class Child { const Child(this.name); final String name; }
+final class Child { const Child({required this.name}); final String name; }
 @AdeleValue('fixture.value')
 final class FixtureValue {
  const FixtureValue({required this.text, required this.flag, required this.count, required this.ratio, required this.note, required this.items, required this.mood, required this.child, required this.uri, required this.resource, required this.json});
@@ -394,6 +452,9 @@ abstract interface class FixtureService {
 
   @AdeleMethod('json')
   Future<Map<String, Object?>> json(Map<String, Object?> value);
+
+  @AdeleMethod('ratio')
+  Future<double> ratio(double value);
 
   @AdeleMethod('mood')
   Future<Mood> mood(Mood value);
@@ -444,6 +505,16 @@ void main() {
         final response = await FixtureServiceDispatcher(_Service()).dispatch(_request('fixture.service.mood', {'value': 'missing'}));
         expect(response['ok'], isFalse);
         expect((response['error'] as Map<Object?, Object?>)['code'], 'invalid_request');
+      case 'finiteDouble':
+        expect(() => FixtureServiceClient(_Channel(double.nan)).ratio(1), throwsA(isA<AdeleProtocolException>()));
+        expect(() => FixtureServiceClient(_Channel(1.0)).ratio(double.infinity), throwsA(isA<AdeleProtocolException>()));
+        final invalidRequest = await FixtureServiceDispatcher(_Service()).dispatch(_request('fixture.service.ratio', {'value': double.negativeInfinity}));
+        expect((invalidRequest['error'] as Map<Object?, Object?>)['code'], 'invalid_request');
+        expect(() => FixtureServiceClient(_Channel({'nested': double.nan})).json(const {}), throwsA(isA<AdeleProtocolException>()));
+      case 'backendViolation':
+        final response = await FixtureServiceDispatcher(_Service()).dispatch(_request('fixture.service.ratio', {'value': 1.0}));
+        expect(response['ok'], isFalse);
+        expect((response['error'] as Map<Object?, Object?>)['code'], 'invalid_backend_response');
       case 'voidClient':
         await FixtureServiceClient(_Channel(null)).notify('ok');
         expect(() => FixtureServiceClient(_Channel('not null')).notify('bad'), throwsA(isA<AdeleProtocolException>()));
@@ -453,7 +524,7 @@ void main() {
         expect(response.containsKey('payload'), isTrue);
         expect(response['payload'], isNull);
     }
-  });
+  }, timeout: const Timeout(Duration(minutes: 2)));
 }
 
 Map<Object?, Object?> _request(String method, Map<String, Object?> payload) => {
@@ -481,6 +552,8 @@ final class _Service implements FixtureService {
   Future<Mood> mood(Mood value) async => value;
   @override
   Future<void> notify(String value) async {}
+  @override
+  Future<double> ratio(double value) async => value == 1.0 ? double.infinity : value;
   @override
   Future<Uri> uri(Uri value) async => value;
 }

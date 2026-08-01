@@ -257,6 +257,51 @@ void main() {
     await host.close(graceful: false);
   });
 
+  test(
+    'removes pending requests after synchronous serialization failure',
+    () async {
+      final _FakeHost fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': 1, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': 1, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'stopPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': 1, 'kind': 'pluginStopped', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'shutdownHost') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': 1, 'kind': 'hostStopped', 'requestId': message['requestId']}));
+        exit(0);
+      }
+    }
+  });
+}
+''');
+      addTearDown(fake.dispose);
+      final List<String> diagnostics = <String>[];
+      final PluginBackendHost host = await fake.start(
+        onDiagnostic: diagnostics.add,
+      );
+      final PluginBackendConnection connection = await host.startPlugin(
+        pluginId: 'serialize',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      await expectLater(
+        connection.request('bad', <String, Object?>{'value': Object()}),
+        throwsA(isA<BackendHostProtocolException>()),
+      );
+      await connection.close();
+      await host.close();
+      expect(
+        diagnostics.where((String value) => value.contains('response ID')),
+        isEmpty,
+      );
+    },
+  );
+
   test('kills and reaps host after malformed stdout', () async {
     final _FakeHost fake = _FakeHost.create('''
 import 'dart:async';

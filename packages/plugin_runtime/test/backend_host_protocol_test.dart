@@ -30,4 +30,17 @@ void main() {
       throwsA(anything),
     );
   });
+
+  test('wraps frame serialization failures', () {
+    expect(
+      () => encodeBackendHostFrame(<String, Object?>{'bad': Object()}),
+      throwsA(
+        isA<BackendHostProtocolException>().having(
+          (BackendHostProtocolException error) => error.message,
+          'message',
+          contains('not JSON serializable'),
+        ),
+      ),
+    );
+  });
 }

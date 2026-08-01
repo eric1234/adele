@@ -14,12 +14,19 @@ void main() {
 manifestVersion: 1
 id: dev.adele.workspace-demo
 packages:
+  contract: packages/contract
   backend: packages/backend
   backendEntrypoint: bin/workspace_demo_backend.dart
 ''');
     Directory(
       '${plugin.path}/packages/backend/bin',
     ).createSync(recursive: true);
+    Directory(
+      '${plugin.path}/packages/contract/lib',
+    ).createSync(recursive: true);
+    File(
+      '${plugin.path}/packages/contract/lib/plugin_contract.dart',
+    ).writeAsStringSync('library;');
     File(
       '${plugin.path}/packages/backend/bin/workspace_demo_backend.dart',
     ).writeAsStringSync('void main() {}');
@@ -107,6 +114,29 @@ echo "Dart 3.10.9" >&2
               contains('stale generated files'),
             ),
       ),
+    );
+  });
+
+  test('verifies the selected plugin contract source', () async {
+    final File arguments = File('${root.path}/arguments.txt');
+    final File fake = _script(root, 'fake', '''
+printf '%s\n' "\$@" > "${arguments.path}"
+if [ "\$1" = "run" ]; then exit 7; fi
+''');
+    await expectLater(
+      const DevelopmentPluginBuilder().prepareBackend(
+        repositoryRoot: root,
+        pluginDirectory: plugin,
+        dartExecutable: fake.path,
+        flutterExecutable: fake.path,
+        expectedDartVersion: '3.10.9',
+        expectedFlutterVersion: '3.38.10',
+      ),
+      throwsA(isA<PluginBuildFailure>()),
+    );
+    expect(
+      arguments.readAsStringSync(),
+      contains('${plugin.path}/packages/contract/lib/plugin_contract.dart'),
     );
   });
 }

@@ -20,8 +20,12 @@ normally describe immutable snapshot values. A value received across a runtime
 boundary is reconstructed; its object identity is not shared with the sender.
 
 The Phase II internal generator provides a typed client, dispatcher, codecs,
-request handling, and structured errors for the maintained fixture. Streams and
-cancellation remain future work.
+request handling, and structured errors for the maintained fixture. Its scope is
+unary request/response only. Values use one unnamed generative constructor with
+required named parameters, schema enums and values must be declared in the
+contract source library rather than imported, wire IDs use a conservative ASCII
+segment grammar, and every transported double must be finite. Streams,
+cancellation, events, and broader schema composition remain future work.
 Generated code should hide ports, wire formats, request IDs, subscriptions, and
 transport details from plugin code. Contract declarations remain lightweight
 and independent of compiler or generation tooling.
@@ -29,6 +33,9 @@ and independent of compiler or generation tooling.
 The generated transport layers over the proven process-hosted communication
 path through a transport-neutral request channel. Its annotations and generator
 remain experimental; no general schema compatibility policy is accepted yet.
+Dispatch validates the request envelope and payload before service invocation,
+contains service failures separately, and converts backend return values that
+violate the generated response contract into an opaque protocol failure.
 
 ## Capability semantics
 

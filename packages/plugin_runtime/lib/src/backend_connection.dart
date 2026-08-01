@@ -278,15 +278,20 @@ final class PluginBackendHost {
     if (pluginId != null && trackPluginRequest) {
       _pendingPluginIds[requestId] = pluginId;
     }
-    _process.stdin.add(
-      encodeBackendHostFrame(<String, Object?>{
+    try {
+      final List<int> frame = encodeBackendHostFrame(<String, Object?>{
         'protocolVersion': backendHostProtocolVersion,
         'kind': kind,
         'requestId': requestId,
         'pluginId': ?pluginId,
         ...fields,
-      }),
-    );
+      });
+      _process.stdin.add(frame);
+    } on Object catch (error, stackTrace) {
+      _pending.remove(requestId);
+      _pendingPluginIds.remove(requestId);
+      completer.completeError(error, stackTrace);
+    }
     return completer.future;
   }
 

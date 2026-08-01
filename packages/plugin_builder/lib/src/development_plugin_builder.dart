@@ -91,6 +91,7 @@ final class DevelopmentPluginBuilder {
   }) async {
     final Map<String, String> manifest = await _readManifest(pluginDirectory);
     final String pluginId = _required(manifest, 'id');
+    final String contractRelative = _required(manifest, 'contract');
     final String backendRelative = _required(manifest, 'backend');
     final String backendEntrypoint = _required(manifest, 'backendEntrypoint');
     final Directory backendDirectory = Directory(
@@ -103,16 +104,23 @@ final class DevelopmentPluginBuilder {
     }
 
     final List<PluginBuildDiagnostic> diagnostics = <PluginBuildDiagnostic>[];
-    final PluginBuildDiagnostic generation = await _run(
-      'contract-generation-verification',
-      dartExecutable,
-      const <String>[
-        'run',
-        'packages/contract_codegen/bin/contract_codegen.dart',
-        '--check',
-      ],
-      repositoryRoot.path,
+    final Directory contractDirectory = Directory(
+      '${pluginDirectory.path}${Platform.pathSeparator}$contractRelative',
     );
+    if (!contractDirectory.existsSync()) {
+      throw PluginBuildFailure(
+        'Contract package does not exist: ${contractDirectory.path}',
+      );
+    }
+    final File contractSource = await _contractSource(contractDirectory);
+    final PluginBuildDiagnostic generation =
+        await _run('contract-generation-verification', dartExecutable, <String>[
+          'run',
+          'packages/contract_codegen/bin/contract_codegen.dart',
+          '--check',
+          '--source',
+          contractSource.path,
+        ], repositoryRoot.path);
     diagnostics.add(generation);
     _requireSuccess(generation);
     final PluginBuildDiagnostic dartVersion = await _run(
@@ -229,6 +237,33 @@ final class DevelopmentPluginBuilder {
     await temporary.writeAsString(contents, flush: true);
     await temporary.rename(current.path);
   }
+}
+
+Future<File> _contractSource(Directory contractDirectory) async {
+  final Directory lib = Directory(
+    '${contractDirectory.path}${Platform.pathSeparator}lib',
+  );
+  if (!lib.existsSync()) {
+    throw PluginBuildFailure(
+      'Contract package has no lib directory: ${contractDirectory.path}',
+    );
+  }
+  final List<File> sources = await lib
+      .list()
+      .where(
+        (FileSystemEntity entity) =>
+            entity is File &&
+            entity.path.endsWith('.dart') &&
+            !entity.path.endsWith('.g.dart'),
+      )
+      .cast<File>()
+      .toList();
+  if (sources.length != 1) {
+    throw PluginBuildFailure(
+      'Contract package must contain exactly one top-level Dart source in ${lib.path}.',
+    );
+  }
+  return sources.single;
 }
 
 Future<Map<String, String>> _readManifest(Directory pluginDirectory) async {

@@ -19,6 +19,11 @@ mode reports stale output without writing.
 
 The generated part owns stable identifiers, codecs, typed clients, and backend
 dispatcher interfaces/implementations. Supported values are strings, booleans,
-integers, doubles, nullable forms, lists, enums, annotated values, and the
+integers, finite doubles, nullable forms, lists, enums, annotated values, and the
 experimental `ResourceRef` scalar. Unsupported declarations fail with source
 path, line, and column diagnostics.
+
+Phase II remains unary and local to one declaration library. Annotated schema
+cannot be imported, value constructors use required named parameters, and wire
+IDs use ASCII alphanumeric segments separated by single dots, hyphens, or
+underscores.

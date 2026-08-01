@@ -12,6 +12,4 @@ dependencies:
   plugin_runtime: ^0.1.0
 
 dev_dependencies:
-  adele_plugin_api: ^0.1.0
   test: ^1.26.3
-  workspace_demo_contract: ^0.1.0
