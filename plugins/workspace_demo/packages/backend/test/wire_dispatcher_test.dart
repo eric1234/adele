@@ -106,6 +106,20 @@ void main() {
     expect(response['error'], containsPair('code', 'unknown_method'));
   });
 
+  test('dispatcher classifies unknown method before payload decoding', () async {
+    final response = await _dispatch({
+      ..._request('unknown', const {}),
+      'payload': DateTime(2020),
+    });
+    expect(response['error'], containsPair('code', 'unknown_method'));
+  });
+
+  test('dispatcher omits malformed request ID from failure', () async {
+    final response = await _dispatch({..._validRequest(), 'requestId': 'bad'});
+    expect(response['error'], containsPair('code', 'invalid_request'));
+    expect(response.containsKey('requestId'), isFalse);
+  });
+
   test('dispatcher preserves request ID on success', () async {
     final response = await _dispatch({..._validRequest(), 'requestId': 2468});
     expect(response['requestId'], 2468);

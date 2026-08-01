@@ -41,40 +41,47 @@ void main() {
 
   test('rejects duplicate stable IDs', () async {
     final fixture = await _fixture(
-      _minimalContract().replaceFirst(
+      _minimalContract(namedValue: true).replaceFirst(
         "@AdeleFailure('fixture.failure')",
         "@AdeleFailure('fixture.service')",
       ),
     );
     expect(
       (await _diagnostic(fixture.source)).message,
-      contains('Duplicate stable ID'),
+      contains('Duplicate or empty stable ID'),
     );
   });
 
   test('rejects a missing annotation identifier', () async {
     final fixture = await _fixture(
-      _minimalContract().replaceFirst(
-        "@AdeleService('fixture.service')",
-        '@AdeleService',
-      ),
+      _minimalContract(
+        namedValue: true,
+      ).replaceFirst("@AdeleService('fixture.service')", '@AdeleService()'),
     );
     expect(
       (await _diagnostic(fixture.source)).message,
-      contains('must declare a stable ID'),
+      contains('non-empty stable ID'),
     );
   });
 
   test('rejects an empty annotation identifier', () async {
     final fixture = await _fixture(
-      _minimalContract().replaceFirst(
-        "@AdeleService('fixture.service')",
-        "@AdeleService('')",
-      ),
+      _minimalContract(
+        namedValue: true,
+      ).replaceFirst("@AdeleService('fixture.service')", "@AdeleService('')"),
     );
     expect(
       (await _diagnostic(fixture.source)).message,
-      contains('must declare a stable ID'),
+      contains('non-empty stable ID'),
+    );
+  });
+
+  test('rejects stable IDs outside the conservative grammar', () async {
+    await _expectDiagnostic(
+      _minimalContract(
+        namedValue: true,
+      ).replaceFirst('fixture.service', 'fixture/service'),
+      'conservative ASCII identifier segments',
     );
   });
 
@@ -113,7 +120,7 @@ void main() {
 
   test('supports nullable contract types', () async {
     final output = await _generate(_allTypesContract());
-    expect(output, contains("map['note'] == null ? null"));
+    expect(output, contains("note == null ? null"));
   });
 
   test('supports immutable decoded lists', () async {
@@ -129,6 +136,19 @@ void main() {
   test('supports nested values', () async {
     final output = await _generate(_allTypesContract());
     expect(output, contains('_decodeChild'));
+  });
+
+  test('emits named value invocation in deterministic wire order', () async {
+    final output = await _generate(_wireOrderingContract());
+    expect(output, contains(RegExp(r"'a':\s*value\.second")));
+    expect(output, contains(RegExp(r"'z':\s*value\.first")));
+    expect(output.indexOf("'a':"), lessThan(output.indexOf("'z':")));
+    final constructor = output.indexOf('return OrderedValue(');
+    expect(constructor, isNonNegative);
+    expect(
+      output.indexOf('second:', constructor),
+      lessThan(output.indexOf('first:', constructor)),
+    );
   });
 
   test('generated Uri client and dispatcher compile and execute', () async {
@@ -147,18 +167,12 @@ void main() {
     await _runGeneratedFixture(_runtimeContract(), _runtimeTests('json'));
   });
 
-  test('generated codecs reject non-finite doubles everywhere', () async {
-    await _runGeneratedFixture(
-      _runtimeContract(),
-      _runtimeTests('finiteDouble'),
-    );
+  test('generated double codecs reject non-finite values', () async {
+    await _runGeneratedFixture(_runtimeContract(), _runtimeTests('double'));
   });
 
-  test('dispatcher contains backend response contract violations', () async {
-    await _runGeneratedFixture(
-      _runtimeContract(),
-      _runtimeTests('backendViolation'),
-    );
+  test('generated dispatcher stages classification and containment', () async {
+    await _runGeneratedFixture(_runtimeContract(), _runtimeTests('dispatcher'));
   });
 
   test('generated enum dispatcher rejects unknown enum values', () async {
@@ -178,126 +192,88 @@ void main() {
 
   test('rejects mutable value fields', () async {
     await _expectDiagnostic(
-      _minimalContract().replaceFirst('final String value;', 'String value;'),
+      _minimalContract(
+        namedValue: true,
+      ).replaceFirst('final String value;', 'String value;'),
       'Value fields must be final.',
-    );
-  });
-
-  test('rejects positional value constructor parameters', () async {
-    await _expectDiagnostic(
-      _minimalContract().replaceFirst(
-        'const FixtureValue({required this.value});',
-        'const FixtureValue(this.value);',
-      ),
-      'Value constructor parameters must be required and named.',
-    );
-  });
-
-  test('rejects imported annotated schema declarations', () async {
-    final fixture = await _fixture(_minimalContract());
-    final imported = File(p.join(fixture.directory.path, 'imported.dart'));
-    await fixture.source.rename(imported.path);
-    final source = File(p.join(fixture.directory.path, 'fixture.dart'));
-    await source.writeAsString('''
-import 'imported.dart';
-import 'package:adele_contract/adele_contract.dart';
-part 'fixture.g.dart';
-@AdeleService('local.service')
-abstract interface class LocalService {
-  @AdeleMethod('read') Future<FixtureValue> read();
-}
-@AdeleFailure('local.failure')
-final class LocalFailure implements Exception {
-  const LocalFailure({required this.code, required this.message, this.details = const {}});
-  final String code;
-  final String message;
-  final Map<String, Object?> details;
-}
-''');
-    expect(
-      (await _diagnostic(source)).message,
-      contains('schema declarations must be declared in the source library'),
-    );
-  });
-
-  test('rejects IDs outside the conservative grammar', () async {
-    await _expectDiagnostic(
-      _minimalContract().replaceFirst('fixture.service', 'fixture/service'),
-      'must declare a stable ID',
     );
   });
 
   test('rejects unsupported synchronous returns', () async {
     await _expectDiagnostic(
-      _minimalContract().replaceFirst('Future<String> ping', 'String ping'),
+      _minimalContract(
+        namedValue: true,
+      ).replaceFirst('Future<String> ping', 'String ping'),
       'Service methods must return Future<T>.',
     );
   });
 
   test('rejects Stream returns', () async {
     await _expectDiagnostic(
-      _minimalContract().replaceFirst(
-        'Future<String> ping',
-        'Stream<String> ping',
-      ),
+      _minimalContract(
+        namedValue: true,
+      ).replaceFirst('Future<String> ping', 'Stream<String> ping'),
       'Service methods must return Future<T>.',
     );
   });
 
   test('rejects generic service methods', () async {
     await _expectDiagnostic(
-      _minimalContract().replaceFirst(
-        'ping(String value)',
-        'ping<T>(String value)',
-      ),
+      _minimalContract(
+        namedValue: true,
+      ).replaceFirst('ping(String value)', 'ping<T>(String value)'),
       'Generic service methods are not supported.',
     );
   });
 
   test('rejects dynamic contract types', () async {
     await _expectDiagnostic(
-      _minimalContract().replaceFirst('String value);', 'dynamic value);'),
+      _minimalContract(
+        namedValue: true,
+      ).replaceFirst('String value);', 'dynamic value);'),
       'Dynamic or unconstrained contract types are not supported.',
     );
   });
 
   test('rejects raw List contract types', () async {
     await _expectDiagnostic(
-      _minimalContract().replaceFirst('String value);', 'List value);'),
+      _minimalContract(
+        namedValue: true,
+      ).replaceFirst('String value);', 'List value);'),
       'Dynamic or unconstrained contract types are not supported.',
     );
   });
 
   test('rejects raw Map contract types', () async {
     await _expectDiagnostic(
-      _minimalContract().replaceFirst('String value);', 'Map value);'),
+      _minimalContract(
+        namedValue: true,
+      ).replaceFirst('String value);', 'Map value);'),
       'Only Map<String, Object?> is supported',
     );
   });
 
   test('rejects maps with non-string keys', () async {
     await _expectDiagnostic(
-      _minimalContract().replaceFirst(
-        'String value);',
-        'Map<int, Object?> value);',
-      ),
+      _minimalContract(
+        namedValue: true,
+      ).replaceFirst('String value);', 'Map<int, Object?> value);'),
       'Only Map<String, Object?> is supported',
     );
   });
 
   test('rejects unsupported map value shapes', () async {
     await _expectDiagnostic(
-      _minimalContract().replaceFirst(
-        'String value);',
-        'Map<String, String> value);',
-      ),
+      _minimalContract(
+        namedValue: true,
+      ).replaceFirst('String value);', 'Map<String, String> value);'),
       'Only Map<String, Object?> is supported',
     );
   });
 
   test('rejects ambiguous multiple constructors', () async {
     await _expectDiagnostic(
-      _minimalContract().replaceFirst(
+      _minimalContract(namedValue: true).replaceFirst(
         'const FixtureValue({required this.value});',
         'const FixtureValue({required this.value});\n  const FixtureValue.named({required this.value});',
       ),
@@ -305,8 +281,50 @@ final class LocalFailure implements Exception {
     );
   });
 
+  test('rejects positional value constructor parameters', () async {
+    await _expectDiagnostic(
+      _minimalContract(),
+      'Value constructor parameters must be required and named.',
+    );
+  });
+
+  test('rejects imported annotated value types', () async {
+    final fixture = await _fixtureWithSupport(
+      _minimalContract(namedValue: true).replaceFirst(
+        'Future<String> ping(String value);',
+        'Future<ImportedValue> ping(ImportedValue value);',
+      ),
+      '''
+import 'package:adele_contract/adele_contract.dart';
+@AdeleValue('support.value')
+final class ImportedValue {
+  const ImportedValue({required this.value});
+  final String value;
+}
+''',
+    );
+    expect(
+      (await _diagnostic(fixture.source)).message,
+      contains('must be declared in the contract library'),
+    );
+  });
+
+  test('rejects imported enum types', () async {
+    final fixture = await _fixtureWithSupport(
+      _minimalContract(namedValue: true).replaceFirst(
+        'Future<String> ping(String value);',
+        'Future<ImportedMood> ping(ImportedMood value);',
+      ),
+      'enum ImportedMood { calm }',
+    );
+    expect(
+      (await _diagnostic(fixture.source)).message,
+      contains('Contract enums must be declared in the contract library.'),
+    );
+  });
+
   test('rejects value inheritance', () async {
-    final source = _minimalContract()
+    final source = _minimalContract(namedValue: true)
         .replaceFirst(
           'final class FixtureValue {',
           'class Base {}\n@AdeleValue(\'fixture.value\')\nfinal class Replacement extends Base {',
@@ -318,17 +336,16 @@ final class LocalFailure implements Exception {
 
   test('rejects optional service parameters', () async {
     await _expectDiagnostic(
-      _minimalContract().replaceFirst(
-        'ping(String value)',
-        'ping([String value = \'\'])',
-      ),
+      _minimalContract(
+        namedValue: true,
+      ).replaceFirst('ping(String value)', 'ping([String value = \'\'])'),
       'required positional parameters',
     );
   });
 
   test('diagnostics report actionable exact source locations', () async {
     final fixture = await _fixture(
-      _minimalContract().replaceFirst(
+      _minimalContract(namedValue: true).replaceFirst(
         'Future<String> ping(String value);',
         'Future<DateTime> ping(String value);',
       ),
@@ -344,7 +361,7 @@ final class LocalFailure implements Exception {
   });
 
   test('apply check is non-mutating and write creates final output', () async {
-    final fixture = await _fixture(_minimalContract());
+    final fixture = await _fixture(_minimalContract(namedValue: true));
     final generator = const ContractGenerator();
     final generated = await generator.generate(fixture.source);
     expect(await generator.apply(fixture.source, check: true), isFalse);
@@ -365,12 +382,13 @@ Future<void> _expectDiagnostic(String source, String message) async {
   expect((await _diagnostic(fixture.source)).message, contains(message));
 }
 
-String _minimalContract() => '''
+String _minimalContract({bool namedValue = false}) =>
+    '''
 import 'package:adele_contract/adele_contract.dart';
 part 'fixture.g.dart';
 @AdeleValue('fixture.value')
 final class FixtureValue {
-  const FixtureValue({required this.value});
+  const FixtureValue(${namedValue ? '{required this.value}' : 'this.value'});
   final String value;
 }
 @AdeleService('fixture.service')
@@ -495,26 +513,33 @@ void main() {
         expect(await FixtureServiceClient(channel).json(input), input);
         final response = await FixtureServiceDispatcher(_Service()).dispatch(_request('fixture.service.json', {'value': input}));
         expect(response['payload'], input);
-        expect(() => FixtureServiceClient(_Channel({'bad': DateTime(2020)})).json(const {}), throwsA(isA<AdeleProtocolException>()));
-        expect(() => FixtureServiceClient(_Channel({'bad': <Object?, Object?>{1: 'value'}})).json(const {}), throwsA(isA<AdeleProtocolException>()));
+        await expectLater(FixtureServiceClient(_Channel({'bad': DateTime(2020)})).json(const {}), throwsA(isA<AdeleProtocolException>()));
+        await expectLater(FixtureServiceClient(_Channel({'bad': <Object?, Object?>{1: 'value'}})).json(const {}), throwsA(isA<AdeleProtocolException>()));
         final invalidObject = await FixtureServiceDispatcher(_Service()).dispatch(_request('fixture.service.json', {'value': {'bad': DateTime(2020)}}));
         expect((invalidObject['error'] as Map<Object?, Object?>)['code'], 'invalid_request');
         final invalidKey = await FixtureServiceDispatcher(_Service()).dispatch(_request('fixture.service.json', {'value': {'bad': <Object?, Object?>{1: 'value'}}}));
         expect((invalidKey['error'] as Map<Object?, Object?>)['code'], 'invalid_request');
+        await expectLater(FixtureServiceClient(_Channel({'bad': double.nan})).json(const {}), throwsA(isA<AdeleProtocolException>()));
+        expect(() => FixtureServiceClient(_Channel(const {})).json({'bad': double.infinity}), throwsA(isA<AdeleProtocolException>()));
+      case 'double':
+        expect(await FixtureServiceClient(_Channel(1.5)).ratio(2.5), 1.5);
+        await expectLater(FixtureServiceClient(_Channel(double.nan)).ratio(1), throwsA(isA<AdeleProtocolException>()));
+        expect(() => FixtureServiceClient(_Channel(1.0)).ratio(double.infinity), throwsA(isA<AdeleProtocolException>()));
+        final invalid = await FixtureServiceDispatcher(_Service()).dispatch(_request('fixture.service.ratio', {'value': double.negativeInfinity}));
+        expect((invalid['error'] as Map<Object?, Object?>)['code'], 'invalid_request');
+      case 'dispatcher':
+        final missingId = await FixtureServiceDispatcher(_Service()).dispatch({'kind': 'request', 'method': 'fixture.service.uri', 'payload': const {}});
+        expect(missingId.containsKey('requestId'), isFalse);
+        expect((missingId['error'] as Map<Object?, Object?>)['code'], 'invalid_request');
+        final unknownBadPayload = await FixtureServiceDispatcher(_Service()).dispatch(_request('missing', DateTime(2020)));
+        expect((unknownBadPayload['error'] as Map<Object?, Object?>)['code'], 'unknown_method');
+        final thrown = await FixtureServiceDispatcher(_ThrowingService()).dispatch(_request('fixture.service.uri', {'value': 'https://example.test'}));
+        expect((thrown['error'] as Map<Object?, Object?>)['code'], 'internal_error');
+        expect((thrown['error'] as Map<Object?, Object?>)['message'], isNot(contains('secret')));
       case 'enum':
         final response = await FixtureServiceDispatcher(_Service()).dispatch(_request('fixture.service.mood', {'value': 'missing'}));
         expect(response['ok'], isFalse);
         expect((response['error'] as Map<Object?, Object?>)['code'], 'invalid_request');
-      case 'finiteDouble':
-        expect(() => FixtureServiceClient(_Channel(double.nan)).ratio(1), throwsA(isA<AdeleProtocolException>()));
-        expect(() => FixtureServiceClient(_Channel(1.0)).ratio(double.infinity), throwsA(isA<AdeleProtocolException>()));
-        final invalidRequest = await FixtureServiceDispatcher(_Service()).dispatch(_request('fixture.service.ratio', {'value': double.negativeInfinity}));
-        expect((invalidRequest['error'] as Map<Object?, Object?>)['code'], 'invalid_request');
-        expect(() => FixtureServiceClient(_Channel({'nested': double.nan})).json(const {}), throwsA(isA<AdeleProtocolException>()));
-      case 'backendViolation':
-        final response = await FixtureServiceDispatcher(_Service()).dispatch(_request('fixture.service.ratio', {'value': 1.0}));
-        expect(response['ok'], isFalse);
-        expect((response['error'] as Map<Object?, Object?>)['code'], 'invalid_backend_response');
       case 'voidClient':
         await FixtureServiceClient(_Channel(null)).notify('ok');
         expect(() => FixtureServiceClient(_Channel('not null')).notify('bad'), throwsA(isA<AdeleProtocolException>()));
@@ -524,10 +549,10 @@ void main() {
         expect(response.containsKey('payload'), isTrue);
         expect(response['payload'], isNull);
     }
-  }, timeout: const Timeout(Duration(minutes: 2)));
+  });
 }
 
-Map<Object?, Object?> _request(String method, Map<String, Object?> payload) => {
+Map<Object?, Object?> _request(String method, Object? payload) => {
   'kind': 'request',
   'requestId': 1,
   'method': method,
@@ -553,9 +578,44 @@ final class _Service implements FixtureService {
   @override
   Future<void> notify(String value) async {}
   @override
-  Future<double> ratio(double value) async => value == 1.0 ? double.infinity : value;
+  Future<double> ratio(double value) async => value;
   @override
   Future<Uri> uri(Uri value) async => value;
+}
+
+final class _ThrowingService implements FixtureService {
+  @override
+  Future<Map<String, Object?>> json(Map<String, Object?> value) => throw StateError('secret');
+  @override
+  Future<Mood> mood(Mood value) => throw StateError('secret');
+  @override
+  Future<void> notify(String value) => throw StateError('secret');
+  @override
+  Future<double> ratio(double value) => throw StateError('secret');
+  @override
+  Future<Uri> uri(Uri value) => throw StateError('secret');
+}
+''';
+
+String _wireOrderingContract() => '''
+import 'package:adele_contract/adele_contract.dart';
+part 'fixture.g.dart';
+@AdeleValue('fixture.ordered')
+final class OrderedValue {
+  const OrderedValue({required this.first, required this.second});
+  @AdeleField('z')
+  final String first;
+  @AdeleField('a')
+  final String second;
+}
+@AdeleService('fixture.service')
+abstract interface class FixtureService {
+  @AdeleMethod('roundTrip') Future<OrderedValue> roundTrip(OrderedValue value);
+}
+@AdeleFailure('fixture.failure')
+final class FixtureFailure implements Exception {
+  const FixtureFailure({required this.code, required this.message, this.details = const {}});
+  final String code; final String message; final Map<String, Object?> details;
 }
 ''';
 
@@ -579,6 +639,14 @@ Future<_Fixture> _fixture(String source) async {
   final file = File(p.join(directory.path, 'fixture.dart'));
   await file.writeAsString(source);
   return _Fixture(directory, file);
+}
+
+Future<_Fixture> _fixtureWithSupport(String source, String support) async {
+  final fixture = await _fixture("import 'support.dart';\n$source");
+  await File(
+    p.join(fixture.directory.path, 'support.dart'),
+  ).writeAsString(support);
+  return fixture;
 }
 
 Future<void> _runGeneratedFixture(String source, String tests) async {

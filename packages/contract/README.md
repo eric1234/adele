@@ -16,6 +16,8 @@ prohibited.
 ## Deferred
 
 The Phase II annotations cover async request/response services and immutable
-values. Actions, streams, cancellation, typed handles, compatibility policy,
-and general schema evolution remain deferred. Serialization and generation do
-not belong here; the separate internal `contract_codegen` package owns them.
+values. Annotated values use one unnamed constructor with required named field
+parameters. Actions, streams, cancellation, typed handles, compatibility
+policy, and general schema evolution remain deferred. Serialization and
+generation do not belong here; the separate internal `contract_codegen` package
+owns them.
