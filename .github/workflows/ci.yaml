@@ -30,6 +30,9 @@ jobs:
       - name: Bootstrap workspace
         run: dart tools/adele.dart bootstrap
 
+      - name: Check generated contracts
+        run: dart tools/adele.dart generate --check
+
       - name: Check formatting
         run: dart tools/adele.dart format --check
 

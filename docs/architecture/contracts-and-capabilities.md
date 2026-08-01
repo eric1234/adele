@@ -37,6 +37,12 @@ Dispatch validates the request envelope and payload before service invocation,
 contains service failures separately, and converts backend return values that
 violate the generated response contract into an opaque protocol failure.
 
+Committed transport is checked in normal CI. Development plugin preparation
+also checks the requested plugin independently: the manifest-selected contract
+package's `pubspec.yaml` name determines `lib/<package-name>.dart`, and that
+absolute source is passed explicitly to `contract_codegen --check --source`.
+This keeps stale transport failure local to the plugin and ahead of compilation.
+
 ## Capability semantics
 
 | Kind | Semantics | Examples |

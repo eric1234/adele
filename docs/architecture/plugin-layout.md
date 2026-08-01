@@ -24,6 +24,13 @@ plugins/workspace_demo/
 The plugin directory is a small Dart workspace. Its root manifest coordinates
 the source packages; `adele_plugin.yaml` is the draft ADELE manifest.
 
+For development builds, `packages.contract` selects the plugin's contract
+package. The builder reads its Dart package name from `pubspec.yaml`, derives
+`lib/<package-name>.dart`, resolves that source to an absolute path, and runs
+`contract_codegen --check --source <path>` after validating Dart but before any
+backend compilation. Repository-wide generator configuration is not used to
+choose a requested plugin's contract.
+
 ## Package split
 
 | Package | Responsibility | Rules |
@@ -84,3 +91,8 @@ The `workspace_demo` fixture proves local AOT compilation, shared process-hosted
 loading, typed async communication, interpreted rendering, interaction, and
 rebuild/reload on Linux x64 Flutter profile mode. Windows, macOS, release mode,
 packaging, discovery, and broad plugin APIs remain unproven.
+
+Plugin-specific typed vertical tests belong to the plugin backend package that
+owns the implementation and contract. The shared backend host package tests
+only generic framing and lifecycle behavior and does not take development
+dependencies on fixture contracts or plugin APIs solely for a plugin test.

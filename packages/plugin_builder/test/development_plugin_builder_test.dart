@@ -19,6 +19,15 @@ packages:
   backendEntrypoint: bin/workspace_demo_backend.dart
 ''');
     Directory(
+      '${plugin.path}/packages/contract/lib',
+    ).createSync(recursive: true);
+    File('${plugin.path}/packages/contract/pubspec.yaml').writeAsStringSync('''
+name: temporary_contract
+''');
+    File(
+      '${plugin.path}/packages/contract/lib/temporary_contract.dart',
+    ).writeAsStringSync("part 'temporary_contract.g.dart';\n");
+    Directory(
       '${plugin.path}/packages/backend/bin',
     ).createSync(recursive: true);
     Directory(
@@ -83,13 +92,13 @@ packages:
     );
   });
 
-  test('verifies generated contracts before toolchain configuration', () async {
+  test('validates Dart before generated contracts', () async {
     final File fake = _script(root, 'fake', '''
+echo "Dart 3.10.9" >&2
 if [ "\$1" = "run" ]; then
   echo "stale generated files" >&2
   exit 7
 fi
-echo "Dart 3.10.9" >&2
 ''');
 
     await expectLater(
@@ -117,11 +126,64 @@ echo "Dart 3.10.9" >&2
     );
   });
 
-  test('verifies the selected plugin contract source', () async {
-    final File arguments = File('${root.path}/arguments.txt');
+  test(
+    'checks the requested plugin contract source before compilation',
+    () async {
+      final File log = File('${root.path}/commands.txt');
+      final File fake = _script(root, 'fake', '''
+printf '%s\n' "\$*" >> '${log.path}'
+if [ "\$1" = "--version" ]; then
+  echo "Dart 3.10.9" >&2
+  exit 0
+fi
+if [ "\$1" = "run" ]; then
+  echo "stale generated files" >&2
+  exit 7
+fi
+exit 99
+''');
+
+      await expectLater(
+        const DevelopmentPluginBuilder().prepareBackend(
+          repositoryRoot: root,
+          pluginDirectory: plugin,
+          dartExecutable: fake.path,
+          flutterExecutable: fake.path,
+          expectedDartVersion: '3.10.9',
+          expectedFlutterVersion: '3.38.10',
+        ),
+        throwsA(
+          isA<PluginBuildFailure>().having(
+            (PluginBuildFailure value) => value.diagnostic?.stage,
+            'stage',
+            'contract-generation-verification',
+          ),
+        ),
+      );
+
+      final List<String> commands = log.readAsLinesSync();
+      expect(commands.first, '--version');
+      expect(commands, hasLength(2));
+      expect(commands.last, contains('--check --source'));
+      expect(
+        commands.last,
+        endsWith(
+          File(
+            '${plugin.path}/packages/contract/lib/temporary_contract.dart',
+          ).absolute.path,
+        ),
+      );
+      expect(commands.last, isNot(contains('contract_codegen.yaml')));
+    },
+  );
+
+  test('fails clearly when the derived contract source is missing', () async {
+    File('${plugin.path}/packages/contract/lib/temporary_contract.dart')
+        .deleteSync();
+    final File log = File('${root.path}/commands.txt');
     final File fake = _script(root, 'fake', '''
-printf '%s\n' "\$@" > "${arguments.path}"
-if [ "\$1" = "run" ]; then exit 7; fi
+printf '%s\n' "\$*" >> '${log.path}'
+echo "Dart 3.10.9" >&2
 ''');
     await expectLater(
       const DevelopmentPluginBuilder().prepareBackend(
@@ -132,12 +194,15 @@ if [ "\$1" = "run" ]; then exit 7; fi
         expectedDartVersion: '3.10.9',
         expectedFlutterVersion: '3.38.10',
       ),
-      throwsA(isA<PluginBuildFailure>()),
+      throwsA(
+        isA<PluginBuildFailure>().having(
+          (PluginBuildFailure value) => value.message,
+          'message',
+          contains('Contract source does not exist'),
+        ),
+      ),
     );
-    expect(
-      arguments.readAsStringSync(),
-      contains('${plugin.path}/packages/contract/lib/plugin_contract.dart'),
-    );
+    expect(log.readAsLinesSync(), <String>['--version']);
   });
 }
 
