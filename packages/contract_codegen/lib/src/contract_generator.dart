@@ -107,6 +107,12 @@ final class TypeModel {
   final String dart;
   final TypeModel? argument;
   final bool nullable;
+
+  TypeModel get nonNullable => TypeModel(
+    kind,
+    dart.endsWith('?') ? dart.substring(0, dart.length - 1) : dart,
+    argument: argument,
+  );
 }
 
 final class ContractGenerator {
@@ -292,14 +298,20 @@ final class _Extractor {
       final FormalParameterElement? parameter = constructor.formalParameters
           .where((FormalParameterElement p) => p.name == field.name)
           .firstOrNull;
-      if (parameter == null || !parameter.isRequired) {
+      if (parameter == null) {
         _fail(
           node,
-          'Field ${field.name} must have a matching required constructor parameter.',
+          'Field ${field.name} must have a matching constructor parameter.',
         );
       }
-      if (!parameter.isNamed) {
+      if (!parameter.isRequired || !parameter.isNamed) {
         _fail(node, 'Value constructor parameters must be required and named.');
+      }
+      if (parameter.type != field.type) {
+        _fail(
+          node,
+          'Field ${field.name} and its required named constructor parameter must have exactly the same type.',
+        );
       }
       fields.add(
         FieldModel(
@@ -701,7 +713,7 @@ final class DartContractEmitter {
         'Map<String, Object?> _encode${value.name}(${value.name} value) => <String, Object?>{${value.fields.map((FieldModel f) => "'${f.id}': ${_encode(f.type, 'value.${f.name}')} ").join(',')}};',
       );
       out.writeln(
-        '${value.name} _decode${value.name}(Object? value) { final map = _contractMap(value, \'${value.name}\'); _contractFields(map, const {${value.fields.map((FieldModel f) => "'${f.id}'").join(',')}}, \'${value.name}\'); return ${value.name}(${value.fields.map((FieldModel f) => "${f.name}: ${_decode(f.type, "map['${f.id}']", f.name)}").join(',')}); }',
+        '${value.name} _decode${value.name}(Object? value) { final map = _contractMap(value, \'${value.name}\'); _contractFields(map, const {${value.fields.map((FieldModel f) => "'${f.id}'").join(',')}}, \'${value.name}\'); return _contractConstruct(\'${value.name}\', () => ${value.name}(${value.fields.map((FieldModel f) => "${f.name}: ${_decode(f.type, "map['${f.id}']", f.name)}").join(',')})); }',
       );
     }
     for (final EnumModel value in model.enums) {
@@ -739,9 +751,15 @@ final class DartContractEmitter {
     out.writeln(
       "Uri _contractUri(Object? value, String label) { final text = _contractString(value, label); final Uri uri; try { uri = Uri.parse(text); } on FormatException { throw AdeleProtocolException('Malformed Uri for \$label.'); } if (!uri.hasScheme) throw AdeleProtocolException('Malformed Uri for \$label.'); return uri; }",
     );
+    out.writeln(
+      "String _contractUriString(Uri value, String label) => _contractUri(value.toString(), label).toString();",
+    );
+    out.writeln(
+      "T _contractConstruct<T>(String label, T Function() construct) { try { return construct(); } on AdeleProtocolException { rethrow; } on Object { throw AdeleProtocolException('Invalid value for \$label.'); } }",
+    );
     if (_usesExternal(model)) {
       out.writeln(
-        "Map<String, Object?> _contractResourceRef(ResourceRef value) => {'uri': value.uri.toString(), 'mediaType': value.mediaType}; ResourceRef _decodeResourceRef(Object? value) { final map = _contractMap(value, 'ResourceRef'); _contractFields(map, const {'uri', 'mediaType'}, 'ResourceRef'); final mediaType = map['mediaType']; if (mediaType != null && mediaType is! String) throw const AdeleProtocolException('Malformed ResourceRef.'); return ResourceRef(uri: _contractUri(map['uri'], 'ResourceRef uri'), mediaType: mediaType as String?); }",
+        "Map<String, Object?> _contractResourceRef(ResourceRef value) => {'uri': _contractUriString(value.uri, 'ResourceRef uri'), 'mediaType': value.mediaType}; ResourceRef _decodeResourceRef(Object? value) { final map = _contractMap(value, 'ResourceRef'); _contractFields(map, const {'uri', 'mediaType'}, 'ResourceRef'); final mediaType = map['mediaType']; if (mediaType != null && mediaType is! String) throw const AdeleProtocolException('Malformed ResourceRef.'); return _contractConstruct('ResourceRef', () => ResourceRef(uri: _contractUri(map['uri'], 'ResourceRef uri'), mediaType: mediaType as String?)); }",
       );
     }
     return out.toString();
@@ -841,13 +859,13 @@ final class DartContractEmitter {
       TypeKind.list =>
         '$value.map((element) => ${_encode(type.argument!, 'element')}).toList(growable: false)',
       TypeKind.map => '_contractJsonMap($value, \'map\')',
-      TypeKind.uri => '$value.toString()',
+      TypeKind.uri => "_contractUriString($value, 'Uri')",
       TypeKind.enumeration => '$value.name',
       TypeKind.value => '_encode${_base(type.dart)}($value)',
       TypeKind.external => '_contractResourceRef($value)',
     };
     return type.nullable
-        ? '$value == null ? null : ${_parenthesize(encoded)}'
+        ? 'switch ($value) { final nonNullValue? => ${_encode(type.nonNullable, 'nonNullValue')}, null => null }'
         : encoded;
   }
 
@@ -866,7 +884,9 @@ final class DartContractEmitter {
       TypeKind.value => '_decode${_base(type.dart)}($value)',
       TypeKind.external => '_decodeResourceRef($value)',
     };
-    return type.nullable ? '$value == null ? null : $decoded' : decoded;
+    return type.nullable
+        ? 'switch ($value) { final nonNullValue? => ${_decode(type.nonNullable, 'nonNullValue', label)}, null => null }'
+        : decoded;
   }
 
   String _clientResult(ServiceModel service, MethodModel method) {
@@ -897,7 +917,6 @@ final class DartContractEmitter {
   bool _typeUsesExternal(TypeModel type) =>
       type.kind == TypeKind.external ||
       type.argument != null && _typeUsesExternal(type.argument!);
-  String _parenthesize(String value) => '($value)';
   String _lower(String value) =>
       '${value[0].toLowerCase()}${value.substring(1)}';
   String _cap(String value) => '${value[0].toUpperCase()}${value.substring(1)}';

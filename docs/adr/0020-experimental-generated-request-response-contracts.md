@@ -26,8 +26,8 @@ adapting generated requests to the Phase I runtime. Generated dispatchers own
 ordinary contract requests only. Plugin entrypoints retain the reserved
 `shutdown` lifecycle branch.
 
-Each declaration library contains one or more annotated services, with a client
-and dispatcher generated independently for each service. Dispatch is staged as
+Each Phase II declaration library contains exactly one annotated service, with a
+client and dispatcher generated for that service. Dispatch is staged as
 envelope validation, method classification, selected payload validation, service
 invocation, and result encoding. This ordering ensures an unknown method is
 reported as `unknown_method` without interpreting its payload. `Uri` is a string

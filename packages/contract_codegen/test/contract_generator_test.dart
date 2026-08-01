@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:analyzer/dart/analysis/analysis_context_collection.dart';
+import 'package:analyzer/dart/analysis/results.dart';
 import 'package:contract_codegen/contract_codegen.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
@@ -68,17 +70,30 @@ abstract interface class OtherService {
     );
   });
 
-  test('rejects a missing annotation identifier', () async {
-    final fixture = await _fixture(
-      _minimalContract(
-        namedValue: true,
-      ).replaceFirst("@AdeleService('fixture.service')", '@AdeleService()'),
-    );
-    expect(
-      (await _diagnostic(fixture.source)).message,
-      contains('must declare a stable ID'),
-    );
-  });
+  test(
+    'reports the analyzer diagnostic for a missing annotation argument',
+    () async {
+      final fixture = await _fixture(
+        _minimalContract(
+          namedValue: true,
+        ).replaceFirst("@AdeleService('fixture.service')", '@AdeleService()'),
+      );
+      final AnalysisContextCollection collection = AnalysisContextCollection(
+        includedPaths: <String>[fixture.source.absolute.path],
+      );
+      final result = await collection
+          .contextFor(fixture.source.absolute.path)
+          .currentSession
+          .getResolvedUnit(fixture.source.absolute.path);
+      expect(result, isA<ResolvedUnitResult>());
+      expect(
+        (result as ResolvedUnitResult).diagnostics.map(
+          (error) => error.message,
+        ),
+        anyElement(contains('positional argument')),
+      );
+    },
+  );
 
   test('rejects an empty annotation identifier', () async {
     final fixture = await _fixture(
@@ -136,7 +151,7 @@ abstract interface class OtherService {
 
   test('supports nullable contract types', () async {
     final output = await _generate(_allTypesContract());
-    expect(output, contains("note == null ? null"));
+    expect(output, contains('switch (value.note)'));
   });
 
   test('supports immutable decoded lists', () async {
@@ -159,7 +174,7 @@ abstract interface class OtherService {
     expect(output, contains(RegExp(r"'a':\s*value\.second")));
     expect(output, contains(RegExp(r"'z':\s*value\.first")));
     expect(output.indexOf("'a':"), lessThan(output.indexOf("'z':")));
-    final constructor = output.indexOf('return OrderedValue(');
+    final constructor = output.indexOf('() => OrderedValue(');
     expect(constructor, isNonNegative);
     expect(
       output.indexOf('second:', constructor),
@@ -250,6 +265,14 @@ abstract interface class OtherService {
         _runtimeContract(),
         _runtimeTests('serviceProtocol'),
       );
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
+    'generated value construction failures stay within protocol boundaries',
+    () async {
+      await _runGeneratedFixture(_valueRuntimeContract(), _valueRuntimeTests());
     },
     timeout: const Timeout(Duration(minutes: 2)),
   );
@@ -379,6 +402,16 @@ abstract interface class OtherService {
     await _expectDiagnostic(
       _minimalContract(),
       'Value constructor parameters must be required and named.',
+    );
+  });
+
+  test('rejects value field and constructor parameter type mismatch', () async {
+    await _expectDiagnostic(
+      _minimalContract(namedValue: true).replaceFirst(
+        'const FixtureValue({required this.value});',
+        'const FixtureValue({required Object value}) : value = value as String;',
+      ),
+      'must have exactly the same type',
     );
   });
 
@@ -671,6 +704,9 @@ void main() {
         expect((relative['error'] as Map<Object?, Object?>)['code'], 'invalid_request');
         final malformed = await FixtureServiceDispatcher(_Service()).dispatch(_request('fixture.service.uri', {'value': 'http://[::1'}));
         expect((malformed['error'] as Map<Object?, Object?>)['code'], 'invalid_request');
+        final channelFailure = _ThrowingChannel();
+        expect(() => FixtureServiceClient(channelFailure).uri(Uri.parse('relative/path')), throwsA(isA<AdeleProtocolException>()));
+        expect(channelFailure.called, isFalse);
       case 'json':
         final input = <String, Object?>{'nested': <Object?>[true, null, <String, Object?>{'count': 2}]};
         final channel = _Channel(input);
@@ -755,6 +791,14 @@ final class _Channel implements AdeleRequestChannel {
   }
 }
 
+final class _ThrowingChannel implements AdeleRequestChannel {
+  bool called = false;
+  @override Future<Object?> request(String method, Map<String, Object?> payload) async {
+    called = true;
+    throw StateError('channel must not be called');
+  }
+}
+
 final class _Service implements FixtureService {
   @override
   Future<Map<String, Object?>> json(Map<String, Object?> value) async => value;
@@ -809,6 +853,78 @@ abstract interface class FixtureService {
 final class FixtureFailure implements Exception {
   const FixtureFailure({required this.code, required this.message, required this.details});
   final String code; final String message; final Map<String, Object?> details;
+}
+''';
+
+String _valueRuntimeContract() => '''
+import 'package:adele_contract/adele_contract.dart';
+part 'fixture.g.dart';
+
+@AdeleValue('fixture.guarded')
+final class GuardedValue {
+  GuardedValue({required this.name}) {
+    if (name == 'throw') throw ArgumentError.value(name);
+  }
+  final String name;
+}
+
+@AdeleValue('fixture.values')
+final class GuardedValues {
+  const GuardedValues({required this.direct, required this.items, required this.optional});
+  final GuardedValue direct;
+  final List<GuardedValue> items;
+  final GuardedValue? optional;
+}
+
+@AdeleService('fixture.service')
+abstract interface class FixtureService {
+  @AdeleMethod('roundTrip')
+  Future<GuardedValues> roundTrip(GuardedValues value);
+}
+
+@AdeleFailure('fixture.failure')
+final class FixtureFailure implements Exception {
+  const FixtureFailure({required this.code, required this.message, required this.details});
+  final String code; final String message; final Map<String, Object?> details;
+}
+''';
+
+String _valueRuntimeTests() => '''
+// ignore_for_file: inference_failure_on_collection_literal
+
+import 'package:adele_contract/adele_contract.dart';
+import 'package:generated_contract_fixture/fixture.dart';
+import 'package:test/test.dart';
+
+void main() {
+  test('request and response construction are contained', () async {
+    final dispatcher = FixtureServiceDispatcher(_Service());
+    for (final value in [
+      {'direct': {'name': 'throw'}, 'items': const [], 'optional': null},
+      {'direct': {'name': 'ok'}, 'items': [{'name': 'throw'}], 'optional': null},
+      {'direct': {'name': 'ok'}, 'items': const [], 'optional': {'name': 'throw'}},
+    ]) {
+      final response = await dispatcher.dispatch(_request(value));
+      expect((response['error'] as Map<Object?, Object?>)['code'], 'invalid_request');
+    }
+    final continued = await dispatcher.dispatch(_request({'direct': {'name': 'ok'}, 'items': const [], 'optional': null}));
+    expect(continued['ok'], isTrue);
+
+    await expectLater(
+      FixtureServiceClient(_Channel({'direct': {'name': 'ok'}, 'items': [{'name': 'throw'}], 'optional': null}))
+          .roundTrip(GuardedValues(direct: GuardedValue(name: 'ok'), items: const [], optional: null)),
+      throwsA(isA<AdeleProtocolException>()),
+    );
+  });
+}
+
+Map<Object?, Object?> _request(Object? value) => {'kind': 'request', 'requestId': 1, 'method': 'fixture.service.roundTrip', 'payload': {'value': value}};
+final class _Service implements FixtureService {
+  @override Future<GuardedValues> roundTrip(GuardedValues value) async => value;
+}
+final class _Channel implements AdeleRequestChannel {
+  const _Channel(this.response); final Object? response;
+  @override Future<Object?> request(String method, Map<String, Object?> payload) async => response;
 }
 ''';
 

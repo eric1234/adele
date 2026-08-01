@@ -258,10 +258,13 @@ Map<String, Object?> _encodeDirectoryEntry(DirectoryEntry value) =>
 DirectoryEntry _decodeDirectoryEntry(Object? value) {
   final map = _contractMap(value, 'DirectoryEntry');
   _contractFields(map, const {'kind', 'name', 'resource'}, 'DirectoryEntry');
-  return DirectoryEntry(
-    kind: _decodeDirectoryEntryKind(map['kind']),
-    name: _contractString(map['name'], 'name'),
-    resource: _decodeResourceRef(map['resource']),
+  return _contractConstruct(
+    'DirectoryEntry',
+    () => DirectoryEntry(
+      kind: _decodeDirectoryEntryKind(map['kind']),
+      name: _contractString(map['name'], 'name'),
+      resource: _decodeResourceRef(map['resource']),
+    ),
   );
 }
 
@@ -276,13 +279,16 @@ Map<String, Object?> _encodeDirectoryListing(DirectoryListing value) =>
 DirectoryListing _decodeDirectoryListing(Object? value) {
   final map = _contractMap(value, 'DirectoryListing');
   _contractFields(map, const {'directory', 'entries'}, 'DirectoryListing');
-  return DirectoryListing(
-    directory: _decodeResourceRef(map['directory']),
-    entries: List.unmodifiable(
-      _contractList(
-        map['entries'],
-        'entries',
-      ).map((element) => _decodeDirectoryEntry(element)),
+  return _contractConstruct(
+    'DirectoryListing',
+    () => DirectoryListing(
+      directory: _decodeResourceRef(map['directory']),
+      entries: List.unmodifiable(
+        _contractList(
+          map['entries'],
+          'entries',
+        ).map((element) => _decodeDirectoryEntry(element)),
+      ),
     ),
   );
 }
@@ -296,9 +302,12 @@ Map<String, Object?> _encodeTextFileContents(TextFileContents value) =>
 TextFileContents _decodeTextFileContents(Object? value) {
   final map = _contractMap(value, 'TextFileContents');
   _contractFields(map, const {'resource', 'text'}, 'TextFileContents');
-  return TextFileContents(
-    resource: _decodeResourceRef(map['resource']),
-    text: _contractString(map['text'], 'text'),
+  return _contractConstruct(
+    'TextFileContents',
+    () => TextFileContents(
+      resource: _decodeResourceRef(map['resource']),
+      text: _contractString(map['text'], 'text'),
+    ),
   );
 }
 
@@ -417,8 +426,20 @@ Uri _contractUri(Object? value, String label) {
   return uri;
 }
 
+String _contractUriString(Uri value, String label) =>
+    _contractUri(value.toString(), label).toString();
+T _contractConstruct<T>(String label, T Function() construct) {
+  try {
+    return construct();
+  } on AdeleProtocolException {
+    rethrow;
+  } on Object {
+    throw AdeleProtocolException('Invalid value for $label.');
+  }
+}
+
 Map<String, Object?> _contractResourceRef(ResourceRef value) => {
-  'uri': value.uri.toString(),
+  'uri': _contractUriString(value.uri, 'ResourceRef uri'),
   'mediaType': value.mediaType,
 };
 ResourceRef _decodeResourceRef(Object? value) {
@@ -427,8 +448,11 @@ ResourceRef _decodeResourceRef(Object? value) {
   final mediaType = map['mediaType'];
   if (mediaType != null && mediaType is! String)
     throw const AdeleProtocolException('Malformed ResourceRef.');
-  return ResourceRef(
-    uri: _contractUri(map['uri'], 'ResourceRef uri'),
-    mediaType: mediaType as String?,
+  return _contractConstruct(
+    'ResourceRef',
+    () => ResourceRef(
+      uri: _contractUri(map['uri'], 'ResourceRef uri'),
+      mediaType: mediaType as String?,
+    ),
   );
 }
