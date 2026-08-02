@@ -312,7 +312,16 @@ abstract interface class OtherService {
       _minimalContract(
         namedValue: true,
       ).replaceFirst('final String value;', 'String value;'),
-      'Value fields must be final.',
+      'Value fields must be non-late and final.',
+    );
+  });
+
+  test('rejects late final value fields', () async {
+    await _expectDiagnostic(
+      _minimalContract(
+        namedValue: true,
+      ).replaceFirst('final String value;', 'late final String value;'),
+      'non-late and final',
     );
   });
 
@@ -415,6 +424,42 @@ abstract interface class OtherService {
     );
   });
 
+  for (final entry in <String, String>{
+    'scalar': 'Object value',
+    'nullability': 'String? value',
+  }.entries) {
+    test('rejects ${entry.key} value parameter type mismatch', () async {
+      await _expectDiagnostic(
+        _minimalContract(
+          namedValue: true,
+        ).replaceFirst('required this.value', 'required ${entry.value}'),
+        'must have exactly the same type',
+      );
+    });
+  }
+
+  test('rejects list element value parameter type mismatch', () async {
+    await _expectDiagnostic(
+      _minimalContract(namedValue: true)
+          .replaceAll('String value', 'List<String> value')
+          .replaceFirst('required this.value', 'required List<Object> value'),
+      'must have exactly the same type',
+    );
+  });
+
+  test('rejects annotated value parameter type mismatch', () async {
+    await _expectDiagnostic(
+      _minimalContract(namedValue: true)
+          .replaceFirst(
+            "@AdeleValue('fixture.value')",
+            "@AdeleValue('fixture.child')\nfinal class Child { const Child({required this.value}); final String value; }\n@AdeleValue('fixture.otherChild')\nfinal class OtherChild { const OtherChild({required this.value}); final String value; }\n@AdeleValue('fixture.value')",
+          )
+          .replaceAll('String value', 'Child value')
+          .replaceFirst('required this.value', 'required OtherChild value'),
+      'must have exactly the same type',
+    );
+  });
+
   test('rejects non-field-formal value reconstruction', () async {
     await _expectDiagnostic(
       _minimalContract(namedValue: true).replaceFirst(
@@ -432,6 +477,16 @@ abstract interface class OtherService {
   test('rejects list recursive annotated value schemas', () async {
     await _expectDiagnostic(
       _recursiveValueContract('List<Node>'),
+      'schema cycles',
+    );
+  });
+
+  test('rejects mutual recursive annotated value schemas', () async {
+    await _expectDiagnostic(
+      _recursiveValueContract('Other?').replaceFirst(
+        "@AdeleFailure('fixture.failure')",
+        "@AdeleValue('fixture.other')\nfinal class Other { const Other({required this.next}); final Node? next; }\n@AdeleFailure('fixture.failure')",
+      ),
       'schema cycles',
     );
   });
@@ -525,6 +580,16 @@ final class ImportedValue {
         "class FixtureServiceClient {}\n@AdeleValue('fixture.value')",
       ),
       'Generated symbol collision for FixtureServiceClient',
+    );
+  });
+
+  test('rejects method names that map to one generated symbol', () async {
+    await _expectDiagnostic(
+      _minimalContract(namedValue: true).replaceFirst(
+        "  @AdeleMethod('ping')",
+        "  @AdeleMethod('upperPing')\n  Future<String> Ping(String value);\n  @AdeleMethod('ping')",
+      ),
+      'Generated symbol collision',
     );
   });
 

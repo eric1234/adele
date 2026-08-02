@@ -294,8 +294,8 @@ final class _Extractor {
     for (final FieldElement field in element.fields.where(
       (FieldElement field) => !field.isStatic,
     )) {
-      if (!field.isFinal) {
-        _failElement(field, 'Value fields must be final.');
+      if (!field.isFinal || field.isLate) {
+        _failElement(field, 'Value fields must be non-late and final.');
       }
       final FormalParameterElement? parameter = constructor.formalParameters
           .where((FormalParameterElement p) => p.name == field.name)
@@ -356,7 +356,9 @@ final class _Extractor {
         .where((FieldElement field) => !field.isStatic)
         .toList(growable: false);
     for (final FieldElement field in instanceFields) {
-      if (!field.isFinal) _failElement(field, 'Failure fields must be final.');
+      if (!field.isFinal || field.isLate) {
+        _failElement(field, 'Failure fields must be non-late and final.');
+      }
     }
     if (element.constructors.length != 1 ||
         element.unnamedConstructor == null) {
