@@ -23,10 +23,14 @@ final class WorkspaceDemoServiceClient implements WorkspaceDemoService {
     } on AdeleRemoteFailure catch (error) {
       switch (error.declaredFailureType) {
         case workspaceDemoFailureTypeId:
-          throw WorkspaceDemoFailure(
-            code: error.code,
-            message: error.message,
-            details: _contractJsonMap(error.details, 'failure details'),
+          final details = _contractJsonMap(error.details, 'failure details');
+          throw _contractConstruct(
+            'WorkspaceDemoFailure',
+            () => WorkspaceDemoFailure(
+              code: error.code,
+              message: error.message,
+              details: details,
+            ),
           );
         default:
           rethrow;
@@ -46,10 +50,14 @@ final class WorkspaceDemoServiceClient implements WorkspaceDemoService {
     } on AdeleRemoteFailure catch (error) {
       switch (error.declaredFailureType) {
         case workspaceDemoFailureTypeId:
-          throw WorkspaceDemoFailure(
-            code: error.code,
-            message: error.message,
-            details: _contractJsonMap(error.details, 'failure details'),
+          final details = _contractJsonMap(error.details, 'failure details');
+          throw _contractConstruct(
+            'WorkspaceDemoFailure',
+            () => WorkspaceDemoFailure(
+              code: error.code,
+              message: error.message,
+              details: details,
+            ),
           );
         default:
           rethrow;
@@ -258,13 +266,12 @@ Map<String, Object?> _encodeDirectoryEntry(DirectoryEntry value) =>
 DirectoryEntry _decodeDirectoryEntry(Object? value) {
   final map = _contractMap(value, 'DirectoryEntry');
   _contractFields(map, const {'kind', 'name', 'resource'}, 'DirectoryEntry');
+  final kind = _decodeDirectoryEntryKind(map['kind']);
+  final name = _contractString(map['name'], 'name');
+  final resource = _decodeResourceRef(map['resource']);
   return _contractConstruct(
     'DirectoryEntry',
-    () => DirectoryEntry(
-      kind: _decodeDirectoryEntryKind(map['kind']),
-      name: _contractString(map['name'], 'name'),
-      resource: _decodeResourceRef(map['resource']),
-    ),
+    () => DirectoryEntry(kind: kind, name: name, resource: resource),
   );
 }
 
@@ -279,17 +286,16 @@ Map<String, Object?> _encodeDirectoryListing(DirectoryListing value) =>
 DirectoryListing _decodeDirectoryListing(Object? value) {
   final map = _contractMap(value, 'DirectoryListing');
   _contractFields(map, const {'directory', 'entries'}, 'DirectoryListing');
+  final directory = _decodeResourceRef(map['directory']);
+  final entries = List<DirectoryEntry>.unmodifiable(
+    _contractList(
+      map['entries'],
+      'entries',
+    ).map((element) => _decodeDirectoryEntry(element)),
+  );
   return _contractConstruct(
     'DirectoryListing',
-    () => DirectoryListing(
-      directory: _decodeResourceRef(map['directory']),
-      entries: List.unmodifiable(
-        _contractList(
-          map['entries'],
-          'entries',
-        ).map((element) => _decodeDirectoryEntry(element)),
-      ),
-    ),
+    () => DirectoryListing(directory: directory, entries: entries),
   );
 }
 
@@ -302,12 +308,11 @@ Map<String, Object?> _encodeTextFileContents(TextFileContents value) =>
 TextFileContents _decodeTextFileContents(Object? value) {
   final map = _contractMap(value, 'TextFileContents');
   _contractFields(map, const {'resource', 'text'}, 'TextFileContents');
+  final resource = _decodeResourceRef(map['resource']);
+  final text = _contractString(map['text'], 'text');
   return _contractConstruct(
     'TextFileContents',
-    () => TextFileContents(
-      resource: _decodeResourceRef(map['resource']),
-      text: _contractString(map['text'], 'text'),
-    ),
+    () => TextFileContents(resource: resource, text: text),
   );
 }
 
@@ -351,35 +356,53 @@ List<Object?> _contractList(Object? value, String label) {
   return List<Object?>.of(value);
 }
 
+const int _contractJsonMaxDepth = 64;
 Map<String, Object?> _contractJsonMap(Object? value, String label) {
   final map = _contractMap(value, label);
-  Object? validate(Object? item) {
+  final active = Set<Object>.identity();
+  Object? validate(Object? item, int depth) {
     if (item == null || item is String || item is bool || item is int)
       return item;
     if (item is double) {
       _contractFiniteDouble(item, label);
       return item;
     }
-    if (item is List) return item.map(validate).toList(growable: false);
-    if (item is Map) {
-      final result = <String, Object?>{};
-      for (final entry in item.entries) {
-        if (entry.key is! String)
-          throw AdeleProtocolException('Expected string keys for $label.');
-        result[entry.key as String] = validate(entry.value);
+    if (depth >= _contractJsonMaxDepth)
+      throw AdeleProtocolException(
+        'JSON value for $label exceeds maximum depth $_contractJsonMaxDepth.',
+      );
+    if (item is List) {
+      if (!active.add(item))
+        throw AdeleProtocolException('Cyclic JSON value for $label.');
+      try {
+        return item
+            .map((element) => validate(element, depth + 1))
+            .toList(growable: false);
+      } finally {
+        active.remove(item);
       }
-      return result;
+    }
+    if (item is Map) {
+      if (!active.add(item))
+        throw AdeleProtocolException('Cyclic JSON value for $label.');
+      try {
+        final result = <String, Object?>{};
+        for (final entry in item.entries) {
+          if (entry.key is! String)
+            throw AdeleProtocolException('Expected string keys for $label.');
+          result[entry.key as String] = validate(entry.value, depth + 1);
+        }
+        return result;
+      } finally {
+        active.remove(item);
+      }
     }
     throw AdeleProtocolException(
       'Expected recursively JSON-compatible values for $label.',
     );
   }
 
-  return Map<String, Object?>.fromEntries(
-    map.entries.map(
-      (entry) => MapEntry(entry.key as String, validate(entry.value)),
-    ),
-  );
+  return validate(map, 0) as Map<String, Object?>;
 }
 
 void _contractVoid(Object? value, String label) {
@@ -431,8 +454,6 @@ String _contractUriString(Uri value, String label) =>
 T _contractConstruct<T>(String label, T Function() construct) {
   try {
     return construct();
-  } on AdeleProtocolException {
-    rethrow;
   } on Object {
     throw AdeleProtocolException('Invalid value for $label.');
   }
@@ -445,14 +466,12 @@ Map<String, Object?> _contractResourceRef(ResourceRef value) => {
 ResourceRef _decodeResourceRef(Object? value) {
   final map = _contractMap(value, 'ResourceRef');
   _contractFields(map, const {'uri', 'mediaType'}, 'ResourceRef');
+  final uri = _contractUri(map['uri'], 'ResourceRef uri');
   final mediaType = map['mediaType'];
   if (mediaType != null && mediaType is! String)
     throw const AdeleProtocolException('Malformed ResourceRef.');
   return _contractConstruct(
     'ResourceRef',
-    () => ResourceRef(
-      uri: _contractUri(map['uri'], 'ResourceRef uri'),
-      mediaType: mediaType as String?,
-    ),
+    () => ResourceRef(uri: uri, mediaType: mediaType as String?),
   );
 }

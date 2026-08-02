@@ -16,8 +16,11 @@ prohibited.
 ## Deferred
 
 The Phase II annotations cover async request/response services and immutable
-values. Annotated values use one unnamed constructor with required named field
-parameters. Actions, streams, cancellation, typed handles, compatibility
+values. Annotated values use one unnamed constructor with final fields and
+matching required named field-formal parameters of exactly the same type.
+Recursive annotated value schemas are rejected. JSON-compatible maps reject
+active-path identity cycles and nesting deeper than 64 containers. Actions,
+streams, cancellation, typed handles, compatibility
 policy, and general schema evolution remain deferred. Serialization and
 generation do not belong here; the separate internal `contract_codegen` package
 owns them.

@@ -156,7 +156,7 @@ abstract interface class OtherService {
 
   test('supports immutable decoded lists', () async {
     final output = await _generate(_allTypesContract());
-    expect(output, contains('List.unmodifiable'));
+    expect(output, contains(RegExp(r'List<[^>]+>\.unmodifiable')));
   });
 
   test('supports enums', () async {
@@ -415,6 +415,27 @@ abstract interface class OtherService {
     );
   });
 
+  test('rejects non-field-formal value reconstruction', () async {
+    await _expectDiagnostic(
+      _minimalContract(namedValue: true).replaceFirst(
+        'const FixtureValue({required this.value});',
+        'const FixtureValue({required String value}) : value = value;',
+      ),
+      'required named field-formal parameters',
+    );
+  });
+
+  test('rejects nullable recursive annotated value schemas', () async {
+    await _expectDiagnostic(_recursiveValueContract('Node?'), 'schema cycles');
+  });
+
+  test('rejects list recursive annotated value schemas', () async {
+    await _expectDiagnostic(
+      _recursiveValueContract('List<Node>'),
+      'schema cycles',
+    );
+  });
+
   test('rejects imported annotated value types', () async {
     final fixture = await _fixtureWithSupport(
       _minimalContract(namedValue: true).replaceFirst(
@@ -467,6 +488,43 @@ final class ImportedValue {
         namedValue: true,
       ).replaceFirst('ping(String value)', 'ping([String value = \'\'])'),
       'required positional parameters',
+    );
+  });
+
+  for (final entry in <String, String>{
+    'static methods':
+        "@AdeleMethod('other') static Future<String> other(String value) async => value;",
+    'concrete methods':
+        "@AdeleMethod('other') Future<String> other(String value) async => value;",
+    'operators':
+        "@AdeleMethod('other') Future<String> operator +(String value);",
+    'getters': 'String get value;',
+    'setters': 'set value(String value);',
+    'fields': "static final String value = 'value';",
+    'constructors': 'factory FixtureService() => throw UnimplementedError();',
+  }.entries) {
+    test('rejects service ${entry.key}', () async {
+      await _expectDiagnostic(
+        _minimalContract(namedValue: true).replaceFirst(
+          "  @AdeleMethod('ping')",
+          "  ${entry.value}\n  @AdeleMethod('ping')",
+        ),
+        entry.key == 'constructors'
+            ? 'may not declare constructors'
+            : entry.key == 'getters' || entry.key == 'setters'
+            ? 'may not declare getters or setters'
+            : 'abstract instance methods',
+      );
+    });
+  }
+
+  test('rejects generated public symbol collisions', () async {
+    await _expectDiagnostic(
+      _minimalContract(namedValue: true).replaceFirst(
+        "@AdeleValue('fixture.value')",
+        "class FixtureServiceClient {}\n@AdeleValue('fixture.value')",
+      ),
+      'Generated symbol collision for FixtureServiceClient',
     );
   });
 
@@ -721,6 +779,22 @@ void main() {
         expect((invalidKey['error'] as Map<Object?, Object?>)['code'], 'invalid_request');
         await expectLater(FixtureServiceClient(_Channel(<String, Object?>{'bad': double.nan})).json(const {}), throwsA(isA<AdeleProtocolException>()));
         expect(() => FixtureServiceClient(_Channel(const <String, Object?>{})).json(<String, Object?>{'bad': double.infinity}), throwsA(isA<AdeleProtocolException>()));
+        final cyclicMap = <String, Object?>{};
+        cyclicMap['self'] = cyclicMap;
+        expect(() => FixtureServiceClient(_Channel(const <String, Object?>{})).json(cyclicMap), throwsA(isA<AdeleProtocolException>().having((error) => error.message, 'message', contains('Cyclic JSON'))));
+        final cyclicList = <Object?>[];
+        cyclicList.add(cyclicList);
+        expect(() => FixtureServiceClient(_Channel(const <String, Object?>{})).json({'list': cyclicList}), throwsA(isA<AdeleProtocolException>()));
+        final shared = <String, Object?>{'value': true};
+        final acyclic = <String, Object?>{'first': shared, 'second': shared};
+        final acyclicChannel = _Channel(acyclic);
+        expect(await FixtureServiceClient(acyclicChannel).json(acyclic), acyclic);
+        Object? depth64 = 'leaf';
+        for (var index = 0; index < 63; index++) depth64 = <Object?>[depth64];
+        await FixtureServiceClient(_Channel({'value': depth64})).json({'value': depth64});
+        Object? depth65 = depth64;
+        depth65 = <Object?>[depth65];
+        expect(() => FixtureServiceClient(_Channel(const <String, Object?>{})).json({'value': depth65}), throwsA(isA<AdeleProtocolException>().having((error) => error.message, 'message', contains('maximum depth 64'))));
       case 'double':
         expect(await FixtureServiceClient(_Channel(1.5)).ratio(2.5), 1.5);
         await expectLater(FixtureServiceClient(_Channel(double.nan)).ratio(1), throwsA(isA<AdeleProtocolException>()));
@@ -864,6 +938,7 @@ part 'fixture.g.dart';
 final class GuardedValue {
   GuardedValue({required this.name}) {
     if (name == 'throw') throw ArgumentError.value(name);
+    if (name == 'protocol') throw const AdeleProtocolException('constructor detail');
   }
   final String name;
 }
@@ -914,6 +989,11 @@ void main() {
       FixtureServiceClient(_Channel({'direct': {'name': 'ok'}, 'items': [{'name': 'throw'}], 'optional': null}))
           .roundTrip(GuardedValues(direct: GuardedValue(name: 'ok'), items: const [], optional: null)),
       throwsA(isA<AdeleProtocolException>()),
+    );
+    await expectLater(
+      FixtureServiceClient(_Channel({'direct': {'name': 'protocol'}, 'items': const [], 'optional': null}))
+          .roundTrip(GuardedValues(direct: GuardedValue(name: 'ok'), items: const [], optional: null)),
+      throwsA(isA<AdeleProtocolException>().having((error) => error.message, 'message', 'Invalid value for GuardedValue.')),
     );
   });
 }
@@ -972,6 +1052,26 @@ final class OrderedValue {
 @AdeleService('fixture.service')
 abstract interface class FixtureService {
   @AdeleMethod('roundTrip') Future<OrderedValue> roundTrip(OrderedValue value);
+}
+@AdeleFailure('fixture.failure')
+final class FixtureFailure implements Exception {
+  const FixtureFailure({required this.code, required this.message, required this.details});
+  final String code; final String message; final Map<String, Object?> details;
+}
+''';
+
+String _recursiveValueContract(String fieldType) =>
+    '''
+import 'package:adele_contract/adele_contract.dart';
+part 'fixture.g.dart';
+@AdeleValue('fixture.node')
+final class Node {
+  const Node({required this.child});
+  final $fieldType child;
+}
+@AdeleService('fixture.service')
+abstract interface class FixtureService {
+  @AdeleMethod('ping') Future<Node> ping(Node value);
 }
 @AdeleFailure('fixture.failure')
 final class FixtureFailure implements Exception {

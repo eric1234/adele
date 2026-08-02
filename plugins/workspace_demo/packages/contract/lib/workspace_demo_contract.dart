@@ -1,8 +1,6 @@
 /// Experimental shared contract declarations for the workspace demo plugin.
 library;
 
-import 'dart:collection';
-
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 
@@ -25,12 +23,7 @@ final class DirectoryEntry {
 
 @AdeleValue('workspaceDemo.directoryListing')
 final class DirectoryListing {
-  DirectoryListing({
-    required this.directory,
-    required List<DirectoryEntry> entries,
-  }) : entries = UnmodifiableListView<DirectoryEntry>(
-         List<DirectoryEntry>.of(entries),
-       );
+  DirectoryListing({required this.directory, required this.entries});
 
   final ResourceRef directory;
   final List<DirectoryEntry> entries;

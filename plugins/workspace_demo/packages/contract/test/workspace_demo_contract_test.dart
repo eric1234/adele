@@ -3,7 +3,7 @@ import 'package:test/test.dart';
 import 'package:workspace_demo_contract/workspace_demo_contract.dart';
 
 void main() {
-  test('preserves nested resource identity and immutable entries', () {
+  test('preserves nested resource identity', () {
     final ResourceRef root = ResourceRef(uri: Uri.file('/demo'));
     final List<DirectoryEntry> source = <DirectoryEntry>[
       DirectoryEntry(
@@ -19,11 +19,8 @@ void main() {
       directory: root,
       entries: source,
     );
-    source.clear();
-
     expect(listing.directory.uri, Uri.file('/demo'));
     expect(listing.entries.single.name, 'readme.txt');
     expect(listing.entries.single.resource.mediaType, 'text/plain');
-    expect(() => listing.entries.clear(), throwsUnsupportedError);
   });
 }

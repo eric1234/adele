@@ -68,3 +68,13 @@ contract declarations as the source of truth.
   or relative URIs, non-finite doubles, positional value construction, and
   permissive wire identifiers are rejected rather than becoming compatibility
   commitments.
+- Annotated values require exact required named field-formal reconstruction and
+  cannot form schema cycles through nullable values or lists. Decoders validate
+  fields before entering an opaque constructor boundary that catches every
+  constructor exception; declared-failure reconstruction is contained likewise.
+- JSON-compatible maps detect cycles by identity on the active traversal path,
+  so shared acyclic references remain valid, and conservatively reject nesting
+  deeper than 64 containers.
+- Service declarations reject constructors, fields, getters, setters, static or
+  concrete methods, and operators. Generation rejects collisions among emitted
+  public and private symbols before writing source.

@@ -249,6 +249,8 @@ final class _Extractor {
     if (failures.isEmpty) {
       _fail(result.unit, 'At least one @AdeleFailure type is required.');
     }
+    _rejectValueCycles(values);
+    _rejectGeneratedSymbolCollisions(services, values, failures);
     return ContractModel(
       sourcePath: result.path,
       partUri: partUri,
@@ -311,6 +313,13 @@ final class _Extractor {
         _fail(
           node,
           'Field ${field.name} and its required named constructor parameter must have exactly the same type.',
+        );
+      }
+      if (parameter is! FieldFormalParameterElement ||
+          parameter.field?.name != field.name) {
+        _fail(
+          node,
+          'Value constructor parameters must be required named field-formal parameters.',
         );
       }
       fields.add(
@@ -428,7 +437,40 @@ final class _Extractor {
       _fail(node, 'Annotated service must be an abstract interface class.');
     }
     final List<MethodModel> methods = <MethodModel>[];
+    for (final FieldElement field in element.fields.where(
+      (FieldElement field) => !field.isSynthetic,
+    )) {
+      _failElement(
+        field,
+        'Service declarations may only contain abstract instance methods annotated with @AdeleMethod.',
+      );
+    }
+    for (final ConstructorElement constructor in element.constructors) {
+      if (!constructor.isSynthetic) {
+        _failElement(
+          constructor,
+          'Service declarations may not declare constructors.',
+        );
+      }
+    }
+    for (final PropertyAccessorElement accessor in <PropertyAccessorElement>[
+      ...element.getters,
+      ...element.setters,
+    ]) {
+      if (!accessor.isSynthetic) {
+        _failElement(
+          accessor,
+          'Service declarations may not declare getters or setters.',
+        );
+      }
+    }
     for (final MethodElement method in element.methods) {
+      if (method.isStatic || !method.isAbstract || method.isOperator) {
+        _failElement(
+          method,
+          'Service declarations may only contain abstract instance methods annotated with @AdeleMethod.',
+        );
+      }
       if (method.typeParameters.isNotEmpty) {
         _failElement(method, 'Generic service methods are not supported.');
       }
@@ -488,6 +530,94 @@ final class _Extractor {
       'method name',
     );
     return ServiceModel(node.name.lexeme, id, List.unmodifiable(methods));
+  }
+
+  void _rejectValueCycles(List<ValueModel> values) {
+    final Map<String, ValueModel> byName = {
+      for (final ValueModel value in values) value.name: value,
+    };
+    final Set<String> active = <String>{};
+    final Set<String> complete = <String>{};
+
+    void visit(ValueModel value) {
+      if (complete.contains(value.name)) return;
+      if (!active.add(value.name)) {
+        _fail(
+          result.unit,
+          'Recursive annotated value schema cycles are not supported: ${value.name}.',
+        );
+      }
+      for (final FieldModel field in value.fields) {
+        for (final String dependency in _valueDependencies(field.type)) {
+          final ValueModel? target = byName[dependency];
+          if (target != null) visit(target);
+        }
+      }
+      active.remove(value.name);
+      complete.add(value.name);
+    }
+
+    for (final ValueModel value in values) {
+      visit(value);
+    }
+  }
+
+  Iterable<String> _valueDependencies(TypeModel type) sync* {
+    if (type.kind == TypeKind.value) yield type.dart.replaceAll('?', '');
+    if (type.argument != null) yield* _valueDependencies(type.argument!);
+  }
+
+  void _rejectGeneratedSymbolCollisions(
+    List<ServiceModel> services,
+    List<ValueModel> values,
+    List<FailureModel> failures,
+  ) {
+    final Map<String, String> symbols = <String, String>{};
+    final Set<String> declaredNames = <String>{
+      ...services.map((ServiceModel value) => value.name),
+      ...values.map((ValueModel value) => value.name),
+      ...failures.map((FailureModel value) => value.name),
+      ...result.unit.declarations.whereType<ClassDeclaration>().map(
+        (ClassDeclaration value) => value.name.lexeme,
+      ),
+    };
+    void add(String symbol, String source) {
+      if (declaredNames.contains(symbol)) {
+        _fail(
+          result.unit,
+          'Generated symbol collision for $symbol between a contract declaration and $source.',
+        );
+      }
+      final String? previous = symbols[symbol];
+      if (previous != null) {
+        _fail(
+          result.unit,
+          'Generated symbol collision for $symbol between $previous and $source.',
+        );
+      }
+      symbols[symbol] = source;
+    }
+
+    for (final ServiceModel service in services) {
+      add('${_lowerName(service.name)}Id', 'service ${service.name}');
+      add('${service.name}Client', 'service ${service.name}');
+      add('${service.name}Dispatcher', 'service ${service.name}');
+      add('${service.name}RequestDispatcher', 'service ${service.name}');
+      for (final MethodModel method in service.methods) {
+        add(
+          '${_lowerName(service.name)}${_capitalize(method.name)}Id',
+          'method ${service.name}.${method.name}',
+        );
+      }
+    }
+    for (final ValueModel value in values) {
+      add('${_lowerName(value.name)}TypeId', 'value ${value.name}');
+      add('_encode${value.name}', 'value ${value.name}');
+      add('_decode${value.name}', 'value ${value.name}');
+    }
+    for (final FailureModel failure in failures) {
+      add('${_lowerName(failure.name)}TypeId', 'failure ${failure.name}');
+    }
   }
 
   TypeModel _type(DartType type, Object node) {
@@ -685,6 +815,11 @@ final class _Extractor {
   };
 }
 
+String _lowerName(String value) =>
+    '${value[0].toLowerCase()}${value.substring(1)}';
+String _capitalize(String value) =>
+    '${value[0].toUpperCase()}${value.substring(1)}';
+
 final class DartContractEmitter {
   String emit(ContractModel model) {
     final StringBuffer out = StringBuffer(
@@ -713,7 +848,7 @@ final class DartContractEmitter {
         'Map<String, Object?> _encode${value.name}(${value.name} value) => <String, Object?>{${value.fields.map((FieldModel f) => "'${f.id}': ${_encode(f.type, 'value.${f.name}')} ").join(',')}};',
       );
       out.writeln(
-        '${value.name} _decode${value.name}(Object? value) { final map = _contractMap(value, \'${value.name}\'); _contractFields(map, const {${value.fields.map((FieldModel f) => "'${f.id}'").join(',')}}, \'${value.name}\'); return _contractConstruct(\'${value.name}\', () => ${value.name}(${value.fields.map((FieldModel f) => "${f.name}: ${_decode(f.type, "map['${f.id}']", f.name)}").join(',')})); }',
+        '${value.name} _decode${value.name}(Object? value) { final map = _contractMap(value, \'${value.name}\'); _contractFields(map, const {${value.fields.map((FieldModel f) => "'${f.id}'").join(',')}}, \'${value.name}\'); ${value.fields.map((FieldModel f) => 'final ${f.name} = ${_decode(f.type, "map['${f.id}']", f.name)};').join(' ')} return _contractConstruct(\'${value.name}\', () => ${value.name}(${value.fields.map((FieldModel f) => "${f.name}: ${f.name}").join(',')})); }',
       );
     }
     for (final EnumModel value in model.enums) {
@@ -731,7 +866,7 @@ final class DartContractEmitter {
       "List<Object?> _contractList(Object? value, String label) { if (value is! List) throw AdeleProtocolException('Expected list for \$label.'); return List<Object?>.of(value); }",
     );
     out.writeln(
-      "Map<String, Object?> _contractJsonMap(Object? value, String label) { final map = _contractMap(value, label); Object? validate(Object? item) { if (item == null || item is String || item is bool || item is int) return item; if (item is double) { _contractFiniteDouble(item, label); return item; } if (item is List) return item.map(validate).toList(growable: false); if (item is Map) { final result = <String, Object?>{}; for (final entry in item.entries) { if (entry.key is! String) throw AdeleProtocolException('Expected string keys for \$label.'); result[entry.key as String] = validate(entry.value); } return result; } throw AdeleProtocolException('Expected recursively JSON-compatible values for \$label.'); } return Map<String, Object?>.fromEntries(map.entries.map((entry) => MapEntry(entry.key as String, validate(entry.value)))); }",
+      "const int _contractJsonMaxDepth = 64; Map<String, Object?> _contractJsonMap(Object? value, String label) { final map = _contractMap(value, label); final active = Set<Object>.identity(); Object? validate(Object? item, int depth) { if (item == null || item is String || item is bool || item is int) return item; if (item is double) { _contractFiniteDouble(item, label); return item; } if (depth >= _contractJsonMaxDepth) throw AdeleProtocolException('JSON value for \$label exceeds maximum depth \$_contractJsonMaxDepth.'); if (item is List) { if (!active.add(item)) throw AdeleProtocolException('Cyclic JSON value for \$label.'); try { return item.map((element) => validate(element, depth + 1)).toList(growable: false); } finally { active.remove(item); } } if (item is Map) { if (!active.add(item)) throw AdeleProtocolException('Cyclic JSON value for \$label.'); try { final result = <String, Object?>{}; for (final entry in item.entries) { if (entry.key is! String) throw AdeleProtocolException('Expected string keys for \$label.'); result[entry.key as String] = validate(entry.value, depth + 1); } return result; } finally { active.remove(item); } } throw AdeleProtocolException('Expected recursively JSON-compatible values for \$label.'); } return validate(map, 0) as Map<String, Object?>; }",
     );
     out.writeln(
       "void _contractVoid(Object? value, String label) { if (value != null) throw AdeleProtocolException('Expected null for \$label.'); }",
@@ -755,11 +890,11 @@ final class DartContractEmitter {
       "String _contractUriString(Uri value, String label) => _contractUri(value.toString(), label).toString();",
     );
     out.writeln(
-      "T _contractConstruct<T>(String label, T Function() construct) { try { return construct(); } on AdeleProtocolException { rethrow; } on Object { throw AdeleProtocolException('Invalid value for \$label.'); } }",
+      "T _contractConstruct<T>(String label, T Function() construct) { try { return construct(); } on Object { throw AdeleProtocolException('Invalid value for \$label.'); } }",
     );
     if (_usesExternal(model)) {
       out.writeln(
-        "Map<String, Object?> _contractResourceRef(ResourceRef value) => {'uri': _contractUriString(value.uri, 'ResourceRef uri'), 'mediaType': value.mediaType}; ResourceRef _decodeResourceRef(Object? value) { final map = _contractMap(value, 'ResourceRef'); _contractFields(map, const {'uri', 'mediaType'}, 'ResourceRef'); final mediaType = map['mediaType']; if (mediaType != null && mediaType is! String) throw const AdeleProtocolException('Malformed ResourceRef.'); return _contractConstruct('ResourceRef', () => ResourceRef(uri: _contractUri(map['uri'], 'ResourceRef uri'), mediaType: mediaType as String?)); }",
+        "Map<String, Object?> _contractResourceRef(ResourceRef value) => {'uri': _contractUriString(value.uri, 'ResourceRef uri'), 'mediaType': value.mediaType}; ResourceRef _decodeResourceRef(Object? value) { final map = _contractMap(value, 'ResourceRef'); _contractFields(map, const {'uri', 'mediaType'}, 'ResourceRef'); final uri = _contractUri(map['uri'], 'ResourceRef uri'); final mediaType = map['mediaType']; if (mediaType != null && mediaType is! String) throw const AdeleProtocolException('Malformed ResourceRef.'); return _contractConstruct('ResourceRef', () => ResourceRef(uri: uri, mediaType: mediaType as String?)); }",
       );
     }
     return out.toString();
@@ -825,7 +960,7 @@ final class DartContractEmitter {
   }
 
   String _failureSwitch(List<FailureModel> failures) =>
-      "switch(error.declaredFailureType) { ${failures.map((FailureModel f) => "case ${_lower(f.name)}TypeId: throw ${f.name}(code: error.code, message: error.message, details: _contractJsonMap(error.details, 'failure details'));").join()} default: rethrow; }";
+      "switch(error.declaredFailureType) { ${failures.map((FailureModel f) => "case ${_lower(f.name)}TypeId: final details = _contractJsonMap(error.details, 'failure details'); throw _contractConstruct('${f.name}', () => ${f.name}(code: error.code, message: error.message, details: details));").join()} default: rethrow; }";
   String _decodeArguments(MethodModel method) {
     final String fields = method.parameters
         .map((FieldModel parameter) => "'${parameter.id}'")
@@ -877,7 +1012,7 @@ final class DartContractEmitter {
       TypeKind.integer => '_contractInt($value, \'$label\')',
       TypeKind.double_ => '_contractDouble($value, \'$label\')',
       TypeKind.list =>
-        "List.unmodifiable(_contractList($value, '$label').map((element) => ${_decode(type.argument!, 'element', '$label element')}))",
+        "List<${type.argument!.dart}>.unmodifiable(_contractList($value, '$label').map((element) => ${_decode(type.argument!, 'element', '$label element')}))",
       TypeKind.map => '_contractJsonMap($value, \'$label\')',
       TypeKind.uri => '_contractUri($value, \'$label\')',
       TypeKind.enumeration => '_decode${_base(type.dart)}($value)',

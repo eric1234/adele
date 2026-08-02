@@ -24,9 +24,18 @@ experimental `ResourceRef` scalar. Unsupported declarations fail with source
 path, line, and column diagnostics.
 
 Phase II remains unary and local to one declaration library, with exactly one
-non-empty service. Annotated schema cannot be imported, value and failure
-constructors must reconstruct their declared state, URI values must be absolute
-and parseable, and wire IDs use ASCII alphanumeric segments separated by single
-dots, hyphens, or underscores. Generated dispatch separates envelope/method
-decoding, argument decoding, service invocation, and result encoding so backend
-exceptions cannot be mistaken for malformed requests.
+non-empty service. Services may contain only abstract instance methods. Annotated
+schema cannot be imported or recursively cycle through nullable values or lists.
+Values require final fields and matching required named field-formal constructor
+parameters with exact types. Failure constructors have the corresponding fixed
+reconstructible shape. URI values must be absolute and parseable, and wire IDs
+use ASCII alphanumeric segments separated by single dots, hyphens, or
+underscores. Generated symbols are collision-checked before emission.
+
+Generated dispatch separates envelope/method decoding, argument decoding,
+service invocation, and result encoding so backend exceptions cannot be mistaken
+for malformed requests. Field decoding occurs before an opaque constructor
+boundary that catches every constructor exception; declared-failure
+reconstruction is contained the same way. Recursive JSON maps use identity-based
+active-path cycle detection, allowing shared acyclic references, and a
+conservative maximum container depth of 64.
