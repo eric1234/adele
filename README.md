@@ -59,7 +59,7 @@ dart tools/adele.dart smoke linux --profile
 `generate --check` rejects stale outputs and is included in `check`.
 The command driver has no package dependencies, fails on the first failed
 package, and names that package. `check` verifies formatting, analysis, and all
-implemented tests.
+implemented tests, including committed generated-output freshness.
 
 ## Repository
 

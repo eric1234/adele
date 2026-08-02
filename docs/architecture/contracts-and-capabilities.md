@@ -9,9 +9,9 @@ Contracts and capabilities solve different problems:
 | Contract | How do typed values and asynchronous operations cross a runtime boundary? |
 | Capability | Which compatible provider handles a request? |
 
-One generated typed request/response transport is implemented for
-`workspace_demo`. General transport generation and capability resolution remain
-unimplemented.
+The constrained Phase II generated typed request/response transport is
+implemented for `workspace_demo`. Broader transport generation and capability
+resolution remain unimplemented.
 
 ## Contracts
 
@@ -46,7 +46,7 @@ The same absolute-URI rule applies recursively to direct values,
 `ResourceRef.uri`, annotated value fields, lists, and nested lists. Clients
 perform request encoding before invoking the channel, so invalid local URIs are
 preflight failures. JSON map transport rejects map, list, and mutual cycles and
-aggregate depth beyond 100 while accepting shared acyclic subgraphs. Value
+container depth beyond 64 while accepting shared acyclic subgraphs. Value
 constructor exceptions are opaque malformed-value failures at the client and
 dispatcher boundaries, and each dispatcher failure remains isolated to its
 request.

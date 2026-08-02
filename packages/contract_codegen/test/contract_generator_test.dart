@@ -278,6 +278,28 @@ abstract interface class OtherService {
   );
 
   test(
+    'declared failure construction failures stay opaque and recoverable',
+    () async {
+      await _runGeneratedFixture(
+        _failureRuntimeContract(),
+        _failureRuntimeTests(),
+      );
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
+    'relative URI backend result shapes are contained and recoverable',
+    () async {
+      await _runGeneratedFixture(
+        _relativeUriResultContract(),
+        _relativeUriResultTests(),
+      );
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
     'generated enum dispatcher rejects unknown enum values',
     () async {
       await _runGeneratedFixture(_runtimeContract(), _runtimeTests('enum'));
@@ -351,6 +373,24 @@ abstract interface class OtherService {
       'Generic service methods are not supported.',
     );
   });
+
+  for (final entry in <String, String>{
+    'value': 'final class FixtureValue<T>',
+    'service': 'abstract interface class FixtureService<T>',
+    'failure': 'final class FixtureFailure<T>',
+  }.entries) {
+    test('rejects generic annotated ${entry.key} declarations', () async {
+      final original = switch (entry.key) {
+        'value' => 'final class FixtureValue',
+        'service' => 'abstract interface class FixtureService',
+        _ => 'final class FixtureFailure',
+      };
+      await _expectDiagnostic(
+        _minimalContract(namedValue: true).replaceFirst(original, entry.value),
+        'Generic annotated ${entry.key} declarations are not supported.',
+      );
+    });
+  }
 
   test('rejects dynamic contract types', () async {
     await _expectDiagnostic(
@@ -583,6 +623,69 @@ final class ImportedValue {
     );
   });
 
+  for (final entry in <String, String>{
+    'enum': 'enum FixtureServiceClient { value }',
+    'mixin': 'mixin FixtureServiceClient {}',
+    'typedef': 'typedef FixtureServiceClient = String;',
+    'extension': 'extension FixtureServiceClient on String {}',
+    'extension type': 'extension type FixtureServiceClient(String value) {}',
+    'function': 'void FixtureServiceClient() {}',
+    'variable': 'final FixtureServiceClient = Object();',
+    'getter': 'Object get FixtureServiceClient => Object();',
+    'setter': 'set FixtureServiceClient(Object value) {}',
+  }.entries) {
+    test('rejects generated collisions with top-level ${entry.key}', () async {
+      await _expectDiagnostic(
+        _minimalContract(namedValue: true).replaceFirst(
+          "@AdeleValue('fixture.value')",
+          "${entry.value}\n@AdeleValue('fixture.value')",
+        ),
+        'Generated symbol collision for FixtureServiceClient',
+      );
+    });
+  }
+
+  for (final declaration in <String>[
+    'Object? _contractMap;',
+    'Object? _contractJsonMaxDepth;',
+    'Object? _decodeContractEnvelope;',
+    'class _ContractUnknownMethod {}',
+    'Object? _contractFailure;',
+  ]) {
+    test('rejects fixed generated helper collision $declaration', () async {
+      final symbol = RegExp(
+        r'_[A-Za-z][A-Za-z0-9_]*',
+      ).firstMatch(declaration)!.group(0)!;
+      await _expectDiagnostic(
+        _minimalContract(namedValue: true).replaceFirst(
+          "@AdeleValue('fixture.value')",
+          "$declaration\n@AdeleValue('fixture.value')",
+        ),
+        'Generated symbol collision for $symbol',
+      );
+    });
+  }
+
+  test('rejects conditional ResourceRef helper collisions', () async {
+    await _expectDiagnostic(
+      _allTypesContract().replaceFirst(
+        'enum Mood',
+        'Object? _decodeResourceRef;\nenum Mood',
+      ),
+      'Generated symbol collision for _decodeResourceRef',
+    );
+  });
+
+  test('rejects enum decoder collisions with value decoders', () async {
+    await _expectDiagnostic(
+      _minimalContract(namedValue: true).replaceFirst(
+        "@AdeleValue('fixture.value')",
+        "enum FixtureValue { value }\n@AdeleValue('fixture.value')",
+      ),
+      'Generated symbol collision for _decodeFixtureValue',
+    );
+  });
+
   test('rejects method names that map to one generated symbol', () async {
     await _expectDiagnostic(
       _minimalContract(namedValue: true).replaceFirst(
@@ -683,6 +786,45 @@ final class ImportedValue {
     expect(await generator.apply(fixture.source, check: false), isFalse);
     expect(await File(generated.path).readAsString(), generated.contents);
     expect(await generator.apply(fixture.source, check: true), isTrue);
+  });
+
+  for (final part in <String>[
+    'other.g.dart',
+    'generated/fixture.g.dart',
+    '../fixture.g.dart',
+    './fixture.g.dart',
+    '/fixture.g.dart',
+    r'generated\fixture.g.dart',
+    'file:fixture.g.dart',
+    'package:fixture/fixture.g.dart',
+    '//example.test/fixture.g.dart',
+    'fixture.g.dart?query',
+    'fixture.g.dart#fragment',
+    'fixture%2Eg.dart',
+  ]) {
+    test('rejects non-canonical generated part URI $part', () async {
+      await _expectDiagnostic(
+        _minimalContract(
+          namedValue: true,
+        ).replaceFirst("part 'fixture.g.dart';", "part '$part';"),
+        'Generated part URI must be exactly fixture.g.dart',
+      );
+    });
+  }
+
+  test('derives a contained sibling generated destination', () async {
+    final fixture = await _fixture(
+      _minimalContract(namedValue: true),
+      basename: 'some_contract.dart',
+    );
+    await fixture.source.writeAsString(
+      _minimalContract(
+        namedValue: true,
+      ).replaceFirst('fixture.g.dart', 'some_contract.g.dart'),
+    );
+    final generated = await const ContractGenerator().generate(fixture.source);
+    expect(p.basename(generated.path), 'some_contract.g.dart');
+    expect(p.dirname(generated.path), fixture.directory.path);
   });
 }
 
@@ -850,6 +992,9 @@ void main() {
         final cyclicList = <Object?>[];
         cyclicList.add(cyclicList);
         expect(() => FixtureServiceClient(_Channel(const <String, Object?>{})).json({'list': cyclicList}), throwsA(isA<AdeleProtocolException>()));
+        final mutualMap = <String, Object?>{};
+        final mutualList = <Object?>[mutualMap];
+        mutualMap['list'] = mutualList;
         final shared = <String, Object?>{'value': true};
         final acyclic = <String, Object?>{'first': shared, 'second': shared};
         final acyclicChannel = _Channel(acyclic);
@@ -860,6 +1005,18 @@ void main() {
         Object? depth65 = depth64;
         depth65 = <Object?>[depth65];
         expect(() => FixtureServiceClient(_Channel(const <String, Object?>{})).json({'value': depth65}), throwsA(isA<AdeleProtocolException>().having((error) => error.message, 'message', contains('maximum depth 64'))));
+        final dispatcher = FixtureServiceDispatcher(_Service());
+        for (final invalidValue in <Map<String, Object?>>[
+          cyclicMap,
+          {'list': cyclicList},
+          mutualMap,
+          {'value': depth65},
+        ]) {
+          final invalid = await dispatcher.dispatch(_request('fixture.service.json', {'value': invalidValue}));
+          _expectOpaqueFailure(invalid, 'invalid_request');
+        }
+        final continued = await dispatcher.dispatch(_request('fixture.service.json', {'value': const {'continued': true}}));
+        expect(continued['ok'], isTrue);
       case 'double':
         expect(await FixtureServiceClient(_Channel(1.5)).ratio(2.5), 1.5);
         await expectLater(FixtureServiceClient(_Channel(double.nan)).ratio(1), throwsA(isA<AdeleProtocolException>()));
@@ -877,23 +1034,27 @@ void main() {
         expect((thrown['error'] as Map<Object?, Object?>)['message'], isNot(contains('secret')));
       case 'invalidResult':
         final dispatcher = FixtureServiceDispatcher(_InvalidResultService());
-        final invalid = await dispatcher.dispatch(_request('fixture.service.json', {'value': const {}}));
-        expect((invalid['error'] as Map<Object?, Object?>)['code'], 'backend_contract_violation');
+        for (final mode in ['object', 'cycleMap', 'cycleList', 'mutual', 'deep']) {
+          final invalid = await dispatcher.dispatch(_request('fixture.service.json', {'value': {'mode': mode}}));
+          _expectOpaqueFailure(invalid, 'backend_contract_violation');
+        }
         final continued = await dispatcher.dispatch(_request('fixture.service.uri', {'value': 'https://continued.test/path'}));
         expect(continued['ok'], isTrue);
         expect(continued['payload'], 'https://continued.test/path');
       case 'invalidDetails':
         final dispatcher = FixtureServiceDispatcher(_InvalidDetailsService());
-        final invalid = await dispatcher.dispatch(_request('fixture.service.uri', {'value': 'https://example.test'}));
-        expect((invalid['error'] as Map<Object?, Object?>)['code'], 'backend_contract_violation');
+        for (final mode in ['object', 'cycleMap', 'cycleList', 'mutual', 'deep']) {
+          final invalid = await dispatcher.dispatch(_request('fixture.service.uri', {'value': 'https://example.test/\$mode'}));
+          _expectOpaqueFailure(invalid, 'backend_contract_violation');
+        }
         final continued = await dispatcher.dispatch(_request('fixture.service.json', {'value': const {'continued': true}}));
         expect(continued['ok'], isTrue);
         expect(continued['payload'], {'continued': true});
       case 'serviceProtocol':
         final dispatcher = FixtureServiceDispatcher(_ProtocolService());
         final invalid = await dispatcher.dispatch(_request('fixture.service.uri', {'value': 'https://example.test'}));
-        expect((invalid['error'] as Map<Object?, Object?>)['code'], 'internal_error');
-        expect((invalid['error'] as Map<Object?, Object?>)['message'], isNot(contains('secret')));
+        _expectOpaqueFailure(invalid, 'internal_error');
+        expect((invalid['error'] as Map<Object?, Object?>)['message'], 'The backend request failed unexpectedly.');
         final continued = await dispatcher.dispatch(_request('fixture.service.json', {'value': const {'continued': true}}));
         expect(continued['ok'], isTrue);
       case 'enum':
@@ -910,6 +1071,14 @@ void main() {
         expect(response['payload'], isNull);
     }
   });
+}
+
+void _expectOpaqueFailure(Map<String, Object?> response, String code) {
+  expect(response['ok'], isFalse);
+  final error = response['error'] as Map<Object?, Object?>;
+  expect(error['code'], code);
+  expect(error.containsKey('declaredFailureType'), isFalse);
+  expect(error['details'], isEmpty);
 }
 
 Map<Object?, Object?> _request(String method, Object? payload) => Map<Object?, Object?>.from({
@@ -966,12 +1135,57 @@ final class _ThrowingService implements FixtureService {
 
 final class _InvalidResultService extends _Service {
   @override
-  Future<Map<String, Object?>> json(Map<String, Object?> value) async => <String, Object?>{'bad': DateTime(2020)};
+  Future<Map<String, Object?>> json(Map<String, Object?> value) async {
+    switch (value['mode']) {
+      case 'cycleMap':
+        final result = <String, Object?>{};
+        result['self'] = result;
+        return result;
+      case 'cycleList':
+        final list = <Object?>[];
+        list.add(list);
+        return <String, Object?>{'list': list};
+      case 'mutual':
+        final result = <String, Object?>{};
+        final list = <Object?>[result];
+        result['list'] = list;
+        return result;
+      case 'deep':
+        Object? result = 'leaf';
+        for (var index = 0; index < 65; index++) result = <Object?>[result];
+        return <String, Object?>{'deep': result};
+      default:
+        return <String, Object?>{'bad': DateTime(2020)};
+    }
+  }
 }
 
 final class _InvalidDetailsService extends _Service {
   @override
-  Future<Uri> uri(Uri value) => throw FixtureFailure(code: 'broken', message: 'Broken.', details: <String, Object?>{'bad': DateTime(2020)});
+  Future<Uri> uri(Uri value) {
+    final mode = value.pathSegments.last;
+    final Map<String, Object?> details;
+    switch (mode) {
+      case 'cycleMap':
+        details = <String, Object?>{};
+        details['self'] = details;
+      case 'cycleList':
+        final list = <Object?>[];
+        list.add(list);
+        details = <String, Object?>{'list': list};
+      case 'mutual':
+        details = <String, Object?>{};
+        final list = <Object?>[details];
+        details['list'] = list;
+      case 'deep':
+        Object? value = 'leaf';
+        for (var index = 0; index < 65; index++) value = <Object?>[value];
+        details = <String, Object?>{'deep': value};
+      default:
+        details = <String, Object?>{'bad': DateTime(2020)};
+    }
+    throw FixtureFailure(code: 'secret', message: 'secret', details: details);
+  }
 }
 
 final class _ProtocolService extends _Service {
@@ -1073,6 +1287,168 @@ final class _Channel implements AdeleRequestChannel {
 }
 ''';
 
+String _failureRuntimeContract() => '''
+import 'package:adele_contract/adele_contract.dart';
+part 'fixture.g.dart';
+
+@AdeleService('fixture.service')
+abstract interface class FixtureService {
+  @AdeleMethod('ping') Future<String> ping(String value);
+}
+
+@AdeleFailure('fixture.failure')
+final class FixtureFailure implements Exception {
+  FixtureFailure({required this.code, required this.message, required this.details}) {
+    if (code == 'state') throw StateError('state constructor secret');
+    if (code == 'protocol') throw const AdeleProtocolException('protocol constructor secret');
+  }
+  final String code;
+  final String message;
+  final Map<String, Object?> details;
+}
+''';
+
+String _failureRuntimeTests() => '''
+import 'package:adele_contract/adele_contract.dart';
+import 'package:generated_contract_fixture/fixture.dart';
+import 'package:test/test.dart';
+
+void main() {
+  test('failure constructors are opaque protocol failures', () async {
+    final channel = _FailureChannel();
+    final client = FixtureServiceClient(channel);
+    for (final code in ['state', 'protocol']) {
+      channel.code = code;
+      await expectLater(
+        client.ping('fail'),
+        throwsA(isA<AdeleProtocolException>().having(
+          (error) => error.message,
+          'message',
+          'Invalid value for FixtureFailure.',
+        )),
+      );
+      channel.code = null;
+      expect(await client.ping('continued'), 'continued');
+    }
+  });
+}
+
+final class _FailureChannel implements AdeleRequestChannel {
+  String? code;
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) async {
+    final failureCode = code;
+    if (failureCode != null) {
+      throw _RemoteFailure(
+        code: failureCode,
+        declaredFailureType: fixtureFailureTypeId,
+      );
+    }
+    return payload['value'];
+  }
+}
+
+final class _RemoteFailure implements AdeleRemoteFailure {
+  const _RemoteFailure({required this.code, required this.declaredFailureType});
+  @override final String code;
+  @override final String? declaredFailureType;
+  @override Map<String, Object?> get details => const <String, Object?>{};
+  @override String get message => 'remote secret';
+}
+''';
+
+String _relativeUriResultContract() => '''
+import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
+part 'fixture.g.dart';
+
+@AdeleValue('fixture.uriValue')
+final class UriValue {
+  const UriValue({required this.uri, required this.resource, required this.items});
+  final Uri uri;
+  final ResourceRef resource;
+  final List<List<Uri>> items;
+}
+
+@AdeleService('fixture.service')
+abstract interface class FixtureService {
+  @AdeleMethod('uri') Future<Uri> uri(String mode);
+  @AdeleMethod('resource') Future<ResourceRef> resource(String mode);
+  @AdeleMethod('value') Future<UriValue> value(String mode);
+  @AdeleMethod('uris') Future<List<List<Uri>>> uris(String mode);
+  @AdeleMethod('ping') Future<String> ping(String value);
+}
+
+@AdeleFailure('fixture.failure')
+final class FixtureFailure implements Exception {
+  const FixtureFailure({required this.code, required this.message, required this.details});
+  final String code;
+  final String message;
+  final Map<String, Object?> details;
+}
+''';
+
+String _relativeUriResultTests() => '''
+import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:generated_contract_fixture/fixture.dart';
+import 'package:test/test.dart';
+
+void main() {
+  test('relative URI result shapes are opaque backend violations', () async {
+    final dispatcher = FixtureServiceDispatcher(_Service());
+    for (final method in ['uri', 'resource', 'value', 'uris']) {
+      final invalid = await dispatcher.dispatch(
+        _request('fixture.service.\$method', argument: 'mode'),
+      );
+      expect(invalid['ok'], isFalse);
+      final error = invalid['error'] as Map<Object?, Object?>;
+      expect(error['code'], 'backend_contract_violation');
+      expect(error.containsKey('declaredFailureType'), isFalse);
+      expect(error['details'], isEmpty);
+      expect(error['message'], 'The backend violated its generated contract.');
+      final continued = await dispatcher.dispatch(
+        _request('fixture.service.ping', argument: 'value', value: 'continued'),
+      );
+      expect(continued['ok'], isTrue);
+      expect(continued['payload'], 'continued');
+    }
+    for (final mode in ['uri', 'resource', 'items']) {
+      final invalid = await dispatcher.dispatch(
+        _request('fixture.service.value', argument: 'mode', value: mode),
+      );
+      final error = invalid['error'] as Map<Object?, Object?>;
+      expect(error['code'], 'backend_contract_violation');
+      expect(error.containsKey('declaredFailureType'), isFalse);
+      expect(error['details'], isEmpty);
+      final continued = await dispatcher.dispatch(
+        _request('fixture.service.ping', argument: 'value', value: 'continued'),
+      );
+      expect(continued['payload'], 'continued');
+    }
+  });
+}
+
+Map<Object?, Object?> _request(String method, {required String argument, String value = 'relative'}) => {
+  'kind': 'request', 'requestId': 1, 'method': method, 'payload': {argument: value},
+};
+
+final class _Service implements FixtureService {
+  static final relative = Uri.parse('relative/path');
+  @override Future<String> ping(String value) async => value;
+  @override Future<ResourceRef> resource(String mode) async => ResourceRef(uri: relative);
+  @override Future<Uri> uri(String mode) async => relative;
+  @override Future<List<List<Uri>>> uris(String mode) async => [[relative]];
+  @override Future<UriValue> value(String mode) async {
+    final absolute = Uri.parse('https://example.test/path');
+    return UriValue(
+      uri: mode == 'uri' || mode == 'relative' ? relative : absolute,
+      resource: ResourceRef(uri: mode == 'resource' ? relative : absolute),
+      items: [[mode == 'items' ? relative : absolute]],
+    );
+  }
+}
+''';
+
 String _resourceRuntimeTests() => '''
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
@@ -1154,7 +1530,10 @@ Future<ContractDiagnostic> _diagnostic(File source) async {
   throw StateError('Expected contract generation to fail.');
 }
 
-Future<_Fixture> _fixture(String source) async {
+Future<_Fixture> _fixture(
+  String source, {
+  String basename = 'fixture.dart',
+}) async {
   final parent = Directory(
     p.join(Directory.current.path, '.dart_tool', 'contract_fixtures'),
   )..createSync(recursive: true);
@@ -1162,7 +1541,7 @@ Future<_Fixture> _fixture(String source) async {
   addTearDown(() {
     if (directory.existsSync()) directory.deleteSync(recursive: true);
   });
-  final file = File(p.join(directory.path, 'fixture.dart'));
+  final file = File(p.join(directory.path, basename));
   await file.writeAsString(source);
   return _Fixture(directory, file);
 }

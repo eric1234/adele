@@ -30,7 +30,11 @@ Values require final fields and matching required named field-formal constructor
 parameters with exact types. Failure constructors have the corresponding fixed
 reconstructible shape. URI values must be absolute and parseable, and wire IDs
 use ASCII alphanumeric segments separated by single dots, hyphens, or
-underscores. Generated symbols are collision-checked before emission.
+underscores. Generic annotated declarations are rejected. The generated part URI
+must be exactly `<source-basename>.g.dart`; output remains beside its source.
+Every top-level declaration and every unconditional or conditional emitted
+symbol share one collision namespace and derived generated identifiers are
+validated before emission.
 
 Generated dispatch separates envelope/method decoding, argument decoding,
 service invocation, and result encoding so backend exceptions cannot be mistaken

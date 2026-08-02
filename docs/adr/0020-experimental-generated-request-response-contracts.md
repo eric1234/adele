@@ -77,4 +77,6 @@ contract declarations as the source of truth.
   deeper than 64 containers.
 - Service declarations reject constructors, fields, getters, setters, static or
   concrete methods, and operators. Generation rejects collisions among emitted
-  public and private symbols before writing source.
+  public and private symbols and all source top-level declarations before
+  writing source. Generic annotated values, failures, and services are rejected,
+  and the generated part is the exact sibling `<source-basename>.g.dart`.

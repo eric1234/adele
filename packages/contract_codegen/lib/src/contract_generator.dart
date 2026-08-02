@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:analyzer/dart/analysis/analysis_context_collection.dart';
 import 'package:analyzer/dart/analysis/results.dart';
 import 'package:analyzer/dart/ast/ast.dart';
+import 'package:analyzer/dart/ast/token.dart';
 import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/dart/element/type.dart';
 import 'package:analyzer/diagnostic/diagnostic.dart';
@@ -150,10 +151,19 @@ final class ContractGenerator {
     final ContractModel model = _Extractor(result).extract();
     final String unformatted = DartContractEmitter().emit(model);
     final String formatted = await _format(unformatted, source.parent);
-    return ContractGeneratedFile(
-      p.join(source.parent.path, model.partUri),
-      formatted,
+    final String sourceDirectory = p.normalize(absolute.parent.path);
+    final String destination = p.normalize(
+      p.join(sourceDirectory, model.partUri),
     );
+    if (p.dirname(destination) != sourceDirectory) {
+      throw ContractDiagnostic(
+        'Generated output must remain in the contract source directory.',
+        absolute.path,
+        1,
+        1,
+      );
+    }
+    return ContractGeneratedFile(destination, formatted);
   }
 
   Future<bool> apply(File source, {required bool check}) async {
@@ -198,8 +208,27 @@ final class _Extractor {
     }
     final PartDirective part = parts.single;
     final String partUri = part.uri.stringValue ?? '';
-    if (!partUri.endsWith('.g.dart') || p.isAbsolute(partUri)) {
-      _fail(part, 'Generated part URI must be a relative .g.dart path.');
+    final String expectedPartUri =
+        '${p.basenameWithoutExtension(result.path)}.g.dart';
+    Uri? parsedPartUri;
+    try {
+      parsedPartUri = Uri.parse(partUri);
+    } on FormatException {
+      // The exact textual check below emits the contract-specific diagnostic.
+    }
+    if (partUri != expectedPartUri ||
+        parsedPartUri == null ||
+        parsedPartUri.hasScheme ||
+        parsedPartUri.hasAuthority ||
+        parsedPartUri.hasQuery ||
+        parsedPartUri.hasFragment ||
+        parsedPartUri.pathSegments.length != 1 ||
+        partUri.contains('/') ||
+        partUri.contains(r'\')) {
+      _fail(
+        part,
+        'Generated part URI must be exactly $expectedPartUri in the contract source directory.',
+      );
     }
     final List<ValueModel> values = <ValueModel>[];
     final List<EnumModel> enums = <EnumModel>[];
@@ -250,7 +279,7 @@ final class _Extractor {
       _fail(result.unit, 'At least one @AdeleFailure type is required.');
     }
     _rejectValueCycles(values);
-    _rejectGeneratedSymbolCollisions(services, values, failures);
+    _rejectGeneratedSymbolCollisions(services, values, enums, failures);
     return ContractModel(
       sourcePath: result.path,
       partUri: partUri,
@@ -266,6 +295,7 @@ final class _Extractor {
     InterfaceElement element,
     String id,
   ) {
+    _rejectGenericDeclaration(node, element, 'value');
     _unique(node, node.name.lexeme, id);
     if (element.constructors.length != 1 ||
         element.unnamedConstructor == null) {
@@ -343,8 +373,9 @@ final class _Extractor {
   }
 
   FailureModel _failure(ClassDeclaration node, String id) {
-    _unique(node, node.name.lexeme, id);
     final InterfaceElement element = node.declaredFragment!.element;
+    _rejectGenericDeclaration(node, element, 'failure');
+    _unique(node, node.name.lexeme, id);
     if (node.finalKeyword == null ||
         element.supertype?.element.name != 'Object' ||
         element.mixins.isNotEmpty ||
@@ -430,6 +461,7 @@ final class _Extractor {
     InterfaceElement element,
     String id,
   ) {
+    _rejectGenericDeclaration(node, element, 'service');
     _unique(node, node.name.lexeme, id);
     if (node.abstractKeyword == null ||
         node.interfaceKeyword == null ||
@@ -572,18 +604,13 @@ final class _Extractor {
   void _rejectGeneratedSymbolCollisions(
     List<ServiceModel> services,
     List<ValueModel> values,
+    List<EnumModel> enums,
     List<FailureModel> failures,
   ) {
     final Map<String, String> symbols = <String, String>{};
-    final Set<String> declaredNames = <String>{
-      ...services.map((ServiceModel value) => value.name),
-      ...values.map((ValueModel value) => value.name),
-      ...failures.map((FailureModel value) => value.name),
-      ...result.unit.declarations.whereType<ClassDeclaration>().map(
-        (ClassDeclaration value) => value.name.lexeme,
-      ),
-    };
+    final Set<String> declaredNames = _topLevelNames();
     void add(String symbol, String source) {
+      _validateGeneratedIdentifier(symbol, source);
       if (declaredNames.contains(symbol)) {
         _fail(
           result.unit,
@@ -600,12 +627,31 @@ final class _Extractor {
       symbols[symbol] = source;
     }
 
+    for (final String helper in _fixedGeneratedSymbols) {
+      add(helper, 'fixed generated helper');
+    }
+    if (_usesExternalTypes(services, values)) {
+      add('_contractResourceRef', 'ResourceRef encoder');
+      add('_decodeResourceRef', 'ResourceRef decoder');
+    }
+
     for (final ServiceModel service in services) {
+      _validateGeneratedIdentifier(service.name, 'service ${service.name}');
       add('${_lowerName(service.name)}Id', 'service ${service.name}');
       add('${service.name}Client', 'service ${service.name}');
       add('${service.name}Dispatcher', 'service ${service.name}');
       add('${service.name}RequestDispatcher', 'service ${service.name}');
       for (final MethodModel method in service.methods) {
+        _validateGeneratedIdentifier(
+          method.name,
+          'method ${service.name}.${method.name}',
+        );
+        for (final FieldModel parameter in method.parameters) {
+          _validateGeneratedIdentifier(
+            parameter.name,
+            'parameter ${service.name}.${method.name}.${parameter.name}',
+          );
+        }
         add(
           '${_lowerName(service.name)}${_capitalize(method.name)}Id',
           'method ${service.name}.${method.name}',
@@ -613,14 +659,105 @@ final class _Extractor {
       }
     }
     for (final ValueModel value in values) {
+      _validateGeneratedIdentifier(value.name, 'value ${value.name}');
+      for (final FieldModel field in value.fields) {
+        _validateGeneratedIdentifier(
+          field.name,
+          'field ${value.name}.${field.name}',
+        );
+      }
       add('${_lowerName(value.name)}TypeId', 'value ${value.name}');
       add('_encode${value.name}', 'value ${value.name}');
       add('_decode${value.name}', 'value ${value.name}');
     }
     for (final FailureModel failure in failures) {
+      _validateGeneratedIdentifier(failure.name, 'failure ${failure.name}');
       add('${_lowerName(failure.name)}TypeId', 'failure ${failure.name}');
     }
+    for (final EnumModel value in enums) {
+      _validateGeneratedIdentifier(value.name, 'enum ${value.name}');
+      for (final String enumValue in value.values) {
+        _validateGeneratedIdentifier(
+          enumValue,
+          'enum value ${value.name}.$enumValue',
+        );
+      }
+      add('_decode${value.name}', 'enum ${value.name}');
+    }
   }
+
+  Set<String> _topLevelNames() {
+    final Set<String> names = <String>{};
+    for (final CompilationUnitMember declaration in result.unit.declarations) {
+      switch (declaration) {
+        case ClassDeclaration(:final name) ||
+            EnumDeclaration(:final name) ||
+            MixinDeclaration(:final name) ||
+            ExtensionTypeDeclaration(:final name) ||
+            TypeAlias(:final name):
+          names.add(name.lexeme);
+        case ExtensionDeclaration(:final name?):
+          names.add(name.lexeme);
+        case FunctionDeclaration(:final name):
+          names.add(name.lexeme);
+        case TopLevelVariableDeclaration(:final variables):
+          names.addAll(
+            variables.variables.map(
+              (VariableDeclaration variable) => variable.name.lexeme,
+            ),
+          );
+        default:
+          break;
+      }
+    }
+    return names;
+  }
+
+  void _rejectGenericDeclaration(
+    ClassDeclaration node,
+    InterfaceElement element,
+    String kind,
+  ) {
+    if (element.typeParameters.isNotEmpty) {
+      _fail(
+        node.typeParameters ?? node,
+        'Generic annotated $kind declarations are not supported.',
+      );
+    }
+  }
+
+  void _validateGeneratedIdentifier(String value, String source) {
+    if (!RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(value) ||
+        Keyword.keywords.containsKey(value)) {
+      _fail(
+        result.unit,
+        'Generated identifier $value for $source is not a valid Dart identifier.',
+      );
+    }
+  }
+
+  bool _usesExternalTypes(
+    List<ServiceModel> services,
+    List<ValueModel> values,
+  ) =>
+      values.any(
+        (ValueModel value) => value.fields.any(
+          (FieldModel field) => _typeUsesExternal(field.type),
+        ),
+      ) ||
+      services.any(
+        (ServiceModel service) => service.methods.any(
+          (MethodModel method) =>
+              _typeUsesExternal(method.returnType) ||
+              method.parameters.any(
+                (FieldModel parameter) => _typeUsesExternal(parameter.type),
+              ),
+        ),
+      );
+
+  bool _typeUsesExternal(TypeModel type) =>
+      type.kind == TypeKind.external ||
+      type.argument != null && _typeUsesExternal(type.argument!);
 
   TypeModel _type(DartType type, Object node) {
     if (type is DynamicType || type is TypeParameterType) {
@@ -821,6 +958,26 @@ String _lowerName(String value) =>
     '${value[0].toLowerCase()}${value.substring(1)}';
 String _capitalize(String value) =>
     '${value[0].toUpperCase()}${value.substring(1)}';
+
+const Set<String> _fixedGeneratedSymbols = <String>{
+  '_contractMap',
+  '_contractFields',
+  '_contractList',
+  '_contractJsonMaxDepth',
+  '_contractJsonMap',
+  '_contractVoid',
+  '_contractString',
+  '_contractBool',
+  '_contractInt',
+  '_contractDouble',
+  '_contractFiniteDouble',
+  '_contractUri',
+  '_contractUriString',
+  '_contractConstruct',
+  '_decodeContractEnvelope',
+  '_ContractUnknownMethod',
+  '_contractFailure',
+};
 
 final class DartContractEmitter {
   String emit(ContractModel model) {
