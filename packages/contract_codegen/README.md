@@ -42,6 +42,8 @@ mixed class roles are rejected independent of annotation order. Legal Dart `$`
 identifiers remain supported. Generated implementation members are reserved as
 `this._adeleChannel` and `this._adeleService`; all generated temporaries use
 indexed `_adele` names, and unavoidable `dispatch` API conflicts are rejected.
+Private service methods are also rejected because Dart library privacy prevents
+backend implementations in a separate package from implementing them.
 One single-quoted Dart literal escaper handles every emitted source- or
 schema-derived string, including quotes, backslashes, dollar signs, and control
 characters.

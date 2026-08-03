@@ -494,6 +494,12 @@ final class _Extractor {
       }
     }
     for (final MethodElement method in element.methods) {
+      if (method.name?.startsWith('_') ?? false) {
+        _failElement(
+          method,
+          'Private service methods cannot be implemented across package boundaries.',
+        );
+      }
       if (method.isStatic || !method.isAbstract || method.isOperator) {
         _failElement(
           method,
@@ -553,11 +559,12 @@ final class _Extractor {
     if (methods.isEmpty) {
       _fail(node, 'Annotated service must declare at least one method.');
     }
-    _duplicates(
-      node,
-      methods.map((MethodModel value) => value.name),
-      'method name',
-    );
+    final Set<String> methodNames = <String>{};
+    for (final MethodModel method in methods) {
+      if (!methodNames.add(method.name)) {
+        _fail(node, 'Duplicate method name ${method.name}.');
+      }
+    }
     return ServiceModel(node.name.lexeme, id, List.unmodifiable(methods));
   }
 

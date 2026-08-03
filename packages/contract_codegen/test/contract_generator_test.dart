@@ -787,6 +787,15 @@ final class ImportedValue {
     );
   });
 
+  test('rejects private service methods', () async {
+    await _expectDiagnostic(
+      _minimalContract(
+        namedValue: true,
+      ).replaceFirst('Future<String> ping', 'Future<String> _ping'),
+      'cannot be implemented across package boundaries',
+    );
+  });
+
   test('rejects an empty service', () async {
     await _expectDiagnostic(
       _minimalContract(namedValue: true).replaceFirst(
@@ -1603,7 +1612,9 @@ final class $Value {
 @AdeleService('fixture.service')
 abstract interface class $Service {
   @AdeleMethod('roundTrip') Future<$Value?> result($Value? value, String map, List<Uri?> element);
-  @AdeleMethod('void') Future<void> error(String result);
+  @AdeleMethod('channel') Future<String> channel(@AdeleField('channel') String _channel, String payload, String method, String values, String nonNullValue);
+  @AdeleMethod('service') Future<String> service(String response, String error);
+  @AdeleMethod('void') Future<void> error(String response);
   @AdeleMethod('enum') Future<$Mood> value($Mood error);
 }
 @AdeleFailure('fixture.failure')
@@ -1624,16 +1635,26 @@ void main() {
     final response = await dispatcher.dispatch({'kind': 'request', 'requestId': 1, 'method': 'fixture.service.roundTrip', 'payload': {'value': {'quote_and_slash': 'v', 'map': 'm', 'error': null, 'result': ['x', null], 'element': 'result', 'nonNullValue': 'https://example.test', 'dollar_value': r'$'}, 'map': 'm', 'element': [null]}});
     expect(response['ok'], isTrue);
     expect(await $ServiceClient(_Channel(response['payload'])).result(value, 'm', [null]), isA<$Value>());
+    final sequence = _SequenceChannel(['channel', 'service']);
+    expect(await $ServiceClient(sequence).channel('a', 'b', 'c', 'd', 'e'), 'channel');
+    expect(await $ServiceClient(sequence).service('response', 'error'), 'service');
+    await $ServiceClient(const _Channel(null)).error('response');
   });
 }
 final class _Service implements $Service {
   @override Future<$Value?> result($Value? value, String map, List<Uri?> element) async => value;
-  @override Future<void> error(String result) async {}
+  @override Future<String> channel(String _channel, String payload, String method, String values, String nonNullValue) async => _channel;
+  @override Future<String> service(String response, String error) async => response;
+  @override Future<void> error(String response) async {}
   @override Future<$Mood> value($Mood error) async => error;
 }
 final class _Channel implements AdeleRequestChannel {
   const _Channel(this.response); final Object? response;
   @override Future<Object?> request(String method, Map<String, Object?> payload) async => response;
+}
+final class _SequenceChannel implements AdeleRequestChannel {
+  _SequenceChannel(this.responses); final List<Object?> responses; int index = 0;
+  @override Future<Object?> request(String method, Map<String, Object?> payload) async => responses[index++];
 }
 '''
         .replaceFirst(
