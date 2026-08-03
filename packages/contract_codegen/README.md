@@ -36,6 +36,16 @@ Every top-level declaration and every unconditional or conditional emitted
 symbol share one collision namespace and derived generated identifiers are
 validated before emission.
 
+The extractor collects all `adele_contract` annotations before assigning a
+class role. Repeated service, value, failure, method, or field annotations and
+mixed class roles are rejected independent of annotation order. Legal Dart `$`
+identifiers remain supported. Generated implementation members are reserved as
+`this._adeleChannel` and `this._adeleService`; all generated temporaries use
+indexed `_adele` names, and unavoidable `dispatch` API conflicts are rejected.
+One single-quoted Dart literal escaper handles every emitted source- or
+schema-derived string, including quotes, backslashes, dollar signs, and control
+characters.
+
 Generated dispatch separates envelope/method decoding, argument decoding,
 service invocation, and result encoding so backend exceptions cannot be mistaken
 for malformed requests. Field decoding occurs before an opaque constructor

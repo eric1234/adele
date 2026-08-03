@@ -80,3 +80,8 @@ contract declarations as the source of truth.
   public and private symbols and all source top-level declarations before
   writing source. Generic annotated values, failures, and services are rejected,
   and the generated part is the exact sibling `<source-basename>.g.dart`.
+- Annotation collection rejects repeated role, method, and field annotations
+  and mixed class roles without depending on metadata order. Generated members
+  and locals use reserved indexed `_adele` names, `dispatch` conflicts are
+  rejected, legal `$` identifiers are preserved, and all source-derived Dart
+  strings pass through one single-quoted literal escaper.

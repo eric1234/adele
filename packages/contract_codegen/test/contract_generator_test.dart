@@ -46,8 +46,8 @@ abstract interface class OtherService {
   test('parses an annotated structured failure declaration', () async {
     final output = await const ContractGenerator().generate(demo);
     expect(output.contents, contains('case workspaceDemoFailureTypeId'));
-    expect(output.contents, contains('error.code'));
-    expect(output.contents, contains('error.details'));
+    expect(output.contents, contains(RegExp(r'_adeleError\d+\.code')));
+    expect(output.contents, contains(RegExp(r'_adeleError\d+\.details')));
   });
 
   test('emits stable service method value and failure IDs', () async {
@@ -116,12 +116,75 @@ abstract interface class OtherService {
     );
   });
 
+  for (final annotation in <String>[
+    'AdeleService',
+    'AdeleValue',
+    'AdeleFailure',
+    'AdeleMethod',
+    'AdeleField',
+  ]) {
+    test('rejects repeated @$annotation annotations', () async {
+      final source = switch (annotation) {
+        'AdeleService' => _minimalContract(namedValue: true).replaceFirst(
+          "@AdeleService('fixture.service')",
+          "@AdeleService('fixture.duplicate')\n@AdeleService('fixture.service')",
+        ),
+        'AdeleValue' => _minimalContract(namedValue: true).replaceFirst(
+          "@AdeleValue('fixture.value')",
+          "@AdeleValue('fixture.duplicate')\n@AdeleValue('fixture.value')",
+        ),
+        'AdeleFailure' => _minimalContract(namedValue: true).replaceFirst(
+          "@AdeleFailure('fixture.failure')",
+          "@AdeleFailure('fixture.duplicate')\n@AdeleFailure('fixture.failure')",
+        ),
+        'AdeleMethod' => _minimalContract(namedValue: true).replaceFirst(
+          "@AdeleMethod('ping')",
+          "@AdeleMethod('duplicate')\n  @AdeleMethod('ping')",
+        ),
+        _ => _minimalContract(namedValue: true).replaceFirst(
+          'final String value;',
+          "@AdeleField('duplicate')\n  @AdeleField('value')\n  final String value;",
+        ),
+      };
+      await _expectDiagnostic(source, 'Repeated @$annotation');
+    });
+  }
+
+  for (final roles in <String>[
+    "@AdeleValue('fixture.value')\n@AdeleService('fixture.service')",
+    "@AdeleService('fixture.service')\n@AdeleValue('fixture.value')",
+  ]) {
+    test('rejects mixed class roles independent of annotation order', () async {
+      await _expectDiagnostic(
+        _minimalContract(
+          namedValue: true,
+        ).replaceFirst("@AdeleValue('fixture.value')", roles),
+        'mixed roles',
+      );
+    });
+  }
+
   test('output is deterministic across repeated generation', () async {
     final generator = const ContractGenerator();
     expect(
       (await generator.generate(demo)).contents,
       (await generator.generate(demo)).contents,
     );
+  });
+
+  test('escapes every source-derived Dart string literal', () async {
+    final fixture = await _fixture(
+      _minimalContract(namedValue: true),
+      basename: r"fixture'$name.dart".replaceAll(r'$name', r'$'),
+    );
+    await fixture.source.writeAsString(
+      _minimalContract(namedValue: true).replaceFirst(
+        'fixture.g.dart',
+        r"fixture\'$name.g.dart".replaceAll(r'$name', r'\$'),
+      ),
+    );
+    final output = await const ContractGenerator().generate(fixture.source);
+    expect(output.contents, contains(r"part of 'fixture\'\$.dart';"));
   });
 
   test('output is independent of declaration discovery ordering', () async {
@@ -151,7 +214,7 @@ abstract interface class OtherService {
 
   test('supports nullable contract types', () async {
     final output = await _generate(_allTypesContract());
-    expect(output, contains('switch (value.note)'));
+    expect(output, contains(RegExp(r'switch \(_adeleValue\d+\.note\)')));
   });
 
   test('supports immutable decoded lists', () async {
@@ -171,8 +234,8 @@ abstract interface class OtherService {
 
   test('emits named value invocation in deterministic wire order', () async {
     final output = await _generate(_wireOrderingContract());
-    expect(output, contains(RegExp(r"'a':\s*value\.second")));
-    expect(output, contains(RegExp(r"'z':\s*value\.first")));
+    expect(output, contains(RegExp(r"'a':\s*_adeleValue\d+\.second")));
+    expect(output, contains(RegExp(r"'z':\s*_adeleValue\d+\.first")));
     expect(output.indexOf("'a':"), lessThan(output.indexOf("'z':")));
     final constructor = output.indexOf('() => OrderedValue(');
     expect(constructor, isNonNegative);
@@ -295,6 +358,25 @@ abstract interface class OtherService {
         _relativeUriResultContract(),
         _relativeUriResultTests(),
       );
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
+    'nullable and nested annotated URI backend results are contained',
+    () async {
+      await _runGeneratedFixture(
+        _nullableUriResultContract(),
+        _nullableUriResultTests(),
+      );
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
+    'adversarial legal identifiers and shapes compile and execute',
+    () async {
+      await _runGeneratedFixture(_adversarialContract(), _adversarialTests());
     },
     timeout: const Timeout(Duration(minutes: 2)),
   );
@@ -693,6 +775,15 @@ final class ImportedValue {
         "  @AdeleMethod('upperPing')\n  Future<String> Ping(String value);\n  @AdeleMethod('ping')",
       ),
       'Generated symbol collision',
+    );
+  });
+
+  test('rejects dispatch method conflict', () async {
+    await _expectDiagnostic(
+      _minimalContract(
+        namedValue: true,
+      ).replaceAll('ping(String value)', 'dispatch(String value)'),
+      'dispatch conflicts with the generated dispatcher API',
     );
   });
 
@@ -1448,6 +1539,107 @@ final class _Service implements FixtureService {
   }
 }
 ''';
+
+String _nullableUriResultContract() => '''
+import 'package:adele_contract/adele_contract.dart';
+part 'fixture.g.dart';
+@AdeleValue('fixture.inner')
+final class Inner { const Inner({required this.uri}); final Uri? uri; }
+@AdeleValue('fixture.outer')
+final class Outer { const Outer({required this.inner}); final Inner? inner; }
+@AdeleService('fixture.service')
+abstract interface class FixtureService {
+  @AdeleMethod('nullable') Future<Uri?> nullable(String mode);
+  @AdeleMethod('nested') Future<Outer?> nested(String mode);
+  @AdeleMethod('ping') Future<String> ping(String value);
+}
+@AdeleFailure('fixture.failure')
+final class FixtureFailure implements Exception {
+  const FixtureFailure({required this.code, required this.message, required this.details});
+  final String code; final String message; final Map<String, Object?> details;
+}
+''';
+
+String _nullableUriResultTests() => '''
+import 'package:generated_contract_fixture/fixture.dart';
+import 'package:test/test.dart';
+void main() {
+  test('nullable nested URI results', () async {
+    final dispatcher = FixtureServiceDispatcher(_Service());
+    for (final method in ['nullable', 'nested']) {
+      final invalid = await dispatcher.dispatch(_request('fixture.service.\$method', 'relative'));
+      expect((invalid['error'] as Map<Object?, Object?>)['code'], 'backend_contract_violation');
+      final validNull = await dispatcher.dispatch(_request('fixture.service.\$method', 'null'));
+      expect(validNull['ok'], isTrue);
+      expect(validNull['payload'], isNull);
+      final continued = await dispatcher.dispatch(_request('fixture.service.ping', 'continued'));
+      expect(continued['payload'], 'continued');
+    }
+  });
+}
+Map<Object?, Object?> _request(String method, String value) => {'kind': 'request', 'requestId': 1, 'method': method, 'payload': method.endsWith('ping') ? {'value': value} : {'mode': value}};
+final class _Service implements FixtureService {
+  @override Future<Uri?> nullable(String mode) async => mode == 'null' ? null : Uri.parse('relative/path');
+  @override Future<Outer?> nested(String mode) async => mode == 'null' ? null : Outer(inner: Inner(uri: Uri.parse('relative/path')));
+  @override Future<String> ping(String value) async => value;
+}
+''';
+
+String _adversarialContract() => r'''
+import 'package:adele_contract/adele_contract.dart';
+part 'fixture.g.dart';
+enum $Mood { value, error, result }
+@AdeleValue('fixture.escaped')
+final class $Value {
+  const $Value({required this.value, required this.map, required this.error, required this.result, required this.element, required this.nonNullValue, required this.$value});
+  @AdeleField('quote_and_slash') final String value;
+  final String map;
+  final String? error;
+  final List<String?> result;
+  final $Mood element;
+  final Uri? nonNullValue;
+  @AdeleField('dollar_value') final String $value;
+}
+@AdeleService('fixture.service')
+abstract interface class $Service {
+  @AdeleMethod('roundTrip') Future<$Value?> result($Value? value, String map, List<Uri?> element);
+  @AdeleMethod('void') Future<void> error(String result);
+  @AdeleMethod('enum') Future<$Mood> value($Mood error);
+}
+@AdeleFailure('fixture.failure')
+final class $Failure implements Exception {
+  const $Failure({required this.code, required this.message, required this.details});
+  final String code; final String message; final Map<String, Object?> details;
+}
+''';
+
+String _adversarialTests() =>
+    r'''
+import 'package:generated_contract_fixture/fixture.dart';
+import 'package:test/test.dart';
+void main() {
+  test('adversarial fixture', () async {
+    final value = $Value(value: 'v', map: 'm', error: null, result: const ['x', null], element: $Mood.result, nonNullValue: Uri.parse('https://example.test'), $value: r'$');
+    final dispatcher = $ServiceDispatcher(_Service());
+    final response = await dispatcher.dispatch({'kind': 'request', 'requestId': 1, 'method': 'fixture.service.roundTrip', 'payload': {'value': {'quote_and_slash': 'v', 'map': 'm', 'error': null, 'result': ['x', null], 'element': 'result', 'nonNullValue': 'https://example.test', 'dollar_value': r'$'}, 'map': 'm', 'element': [null]}});
+    expect(response['ok'], isTrue);
+    expect(await $ServiceClient(_Channel(response['payload'])).result(value, 'm', [null]), isA<$Value>());
+  });
+}
+final class _Service implements $Service {
+  @override Future<$Value?> result($Value? value, String map, List<Uri?> element) async => value;
+  @override Future<void> error(String result) async {}
+  @override Future<$Mood> value($Mood error) async => error;
+}
+final class _Channel implements AdeleRequestChannel {
+  const _Channel(this.response); final Object? response;
+  @override Future<Object?> request(String method, Map<String, Object?> payload) async => response;
+}
+'''
+        .replaceFirst(
+          "import 'package:generated_contract_fixture/fixture.dart';",
+          "import 'package:adele_contract/adele_contract.dart';\nimport 'package:generated_contract_fixture/fixture.dart';",
+        );
 
 String _resourceRuntimeTests() => '''
 import 'package:adele_contract/adele_contract.dart';

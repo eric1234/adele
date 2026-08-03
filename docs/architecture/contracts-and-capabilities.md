@@ -51,6 +51,13 @@ constructor exceptions are opaque malformed-value failures at the client and
 dispatcher boundaries, and each dispatcher failure remains isolated to its
 request.
 
+Annotation interpretation is multiplicity-aware: repeated role, method, and
+field annotations and mixed class roles are invalid regardless of declaration
+order. Generated implementation state and temporaries occupy indexed `_adele`
+names rather than contract namespaces, while legal Dart `$` identifiers remain
+usable. Every contract-derived string entering generated Dart source is emitted
+through one single-quoted literal escaping path.
+
 Committed transport is checked in normal CI. Development plugin preparation
 also checks the requested plugin independently: the manifest-selected contract
 package's `pubspec.yaml` name determines `lib/<package-name>.dart`, and that
