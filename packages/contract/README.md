@@ -11,6 +11,12 @@ malformed responses. Generated dispatchers classify malformed request values as
 `invalid_request`; constructor failures are opaque at both boundaries, including
 when a contract constructor itself throws `AdeleProtocolException`.
 
+Phase II contract source is an intentionally constrained IDL embedded in Dart,
+not arbitrary Dart API source. Every schema-participating declaration and member
+uses a public ASCII identifier matching `[A-Za-z][A-Za-z0-9_]*`; private,
+dollar-prefixed, and non-ASCII schema names are rejected. These restrictions may
+remain permanent and should only be relaxed for a concrete contract use case.
+
 ## Dependencies
 
 Allowed dependencies are small, platform-neutral public packages required by
