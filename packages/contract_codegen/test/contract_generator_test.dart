@@ -288,6 +288,26 @@ abstract interface class OtherService {
     });
   }
 
+  for (final declaration in <String>[
+    'class AdeleRequestChannel {}',
+    'class AdeleProtocolException {}',
+    'class String {}',
+    'class Future<T> {}',
+    'class Exception {}',
+  ]) {
+    test('rejects unprefixed import before reserved-name analysis', () async {
+      final fixture = await _fixtureWithSupport(
+        "import 'support.dart';\n${_minimalContract(namedValue: true)}",
+        declaration,
+      );
+      final diagnostic = await _diagnostic(fixture.source);
+      expect(diagnostic.message, contains('must be prefixed'));
+      expect(diagnostic.path, fixture.source.absolute.path);
+      expect(diagnostic.line, 2);
+      expect(diagnostic.column, 1);
+    });
+  }
+
   test('allows canonical and additional prefixed contract imports', () async {
     expect(
       await _generate(
