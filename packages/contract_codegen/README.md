@@ -23,7 +23,8 @@ integers, finite doubles, nullable forms, lists, enums, annotated values, and th
 experimental `ResourceRef` scalar. Unsupported declarations fail with source
 path, line, and column diagnostics.
 
-Phase II remains unary and local to one declaration library, with exactly one
+Phase II is a deliberately constrained IDL embedded in Dart. It remains unary
+and local to one declaration library, with exactly one
 non-empty service. Services may contain only abstract instance methods. Annotated
 schema cannot be imported or recursively cycle through nullable values or lists.
 Values require final fields and matching required named field-formal constructor
@@ -34,16 +35,20 @@ underscores. Generic annotated declarations are rejected. The generated part URI
 must be exactly `<source-basename>.g.dart`; output remains beside its source.
 Every top-level declaration and every unconditional or conditional emitted
 symbol share one collision namespace and derived generated identifiers are
-validated before emission.
+validated before emission. Schema Dart names must match
+`[A-Za-z][A-Za-z0-9_]*`: annotated services, values, failures and their validated
+members use public ASCII names, as do enums and enum values reachable through
+the transported schema. Unrelated unreachable private helpers and enums are not
+part of the IDL and remain allowed. These restrictions are contract boundaries,
+not temporary parser omissions, and may remain permanent.
 
 The extractor collects all `adele_contract` annotations before assigning a
 class role. Repeated service, value, failure, method, or field annotations and
-mixed class roles are rejected independent of annotation order. Legal Dart `$`
-identifiers remain supported. Generated implementation members are reserved as
-`this._adeleChannel` and `this._adeleService`; all generated temporaries use
-indexed `_adele` names, and unavoidable `dispatch` API conflicts are rejected.
-Private service methods are also rejected because Dart library privacy prevents
-backend implementations in a separate package from implementing them.
+mixed class roles are rejected independent of annotation order. Generated
+implementation members are accessed as `this._adeleChannel` and
+`this._adeleService`; all generated temporaries use indexed `_adele` names.
+Ordinary schema methods, including `dispatch`, coexist with the generated client
+and dispatcher APIs without a schema-wide scope allocator.
 One single-quoted Dart literal escaper handles every emitted source- or
 schema-derived string, including quotes, backslashes, dollar signs, and control
 characters.

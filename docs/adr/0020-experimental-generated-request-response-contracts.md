@@ -68,6 +68,12 @@ contract declarations as the source of truth.
   or relative URIs, non-finite doubles, positional value construction, and
   permissive wire identifiers are rejected rather than becoming compatibility
   commitments.
+- Contract source is a constrained IDL embedded in Dart. Annotated service,
+  value, and failure names, their transported members and validated constructor
+  parameters, and reachable enum names and values must match
+  `[A-Za-z][A-Za-z0-9_]*`. Private, dollar-prefixed, and non-ASCII schema names
+  are rejected; unreachable private helpers and enums remain outside the schema.
+  This restriction may be permanent.
 - Annotated values require exact required named field-formal reconstruction and
   cannot form schema cycles through nullable values or lists. Decoders validate
   fields before entering an opaque constructor boundary that catches every
@@ -82,6 +88,7 @@ contract declarations as the source of truth.
   and the generated part is the exact sibling `<source-basename>.g.dart`.
 - Annotation collection rejects repeated role, method, and field annotations
   and mixed class roles without depending on metadata order. Generated members
-  and locals use reserved indexed `_adele` names, `dispatch` conflicts are
-  rejected, legal `$` identifiers are preserved, and all source-derived Dart
-  strings pass through one single-quoted literal escaper.
+  and locals use reserved indexed `_adele` names; schema methods such as
+  `dispatch` coexist with generated client and dispatcher APIs without a scope
+  allocator. All source-derived Dart strings pass through one single-quoted
+  literal escaper.

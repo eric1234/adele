@@ -1,5 +1,5 @@
 // GENERATED CODE - DO NOT MODIFY BY HAND.
-// ignore_for_file: curly_braces_in_flow_control_structures, no_leading_underscores_for_local_identifiers, prefer_interpolation_to_compose_strings, unnecessary_nullable_for_final_variable_declarations, unused_catch_clause, unused_element, use_null_aware_elements
+// ignore_for_file: curly_braces_in_flow_control_structures, no_leading_underscores_for_local_identifiers, prefer_interpolation_to_compose_strings, unnecessary_nullable_for_final_variable_declarations, unnecessary_this, unused_catch_clause, unused_element, use_null_aware_elements
 
 part of 'workspace_demo_contract.dart';
 
@@ -15,7 +15,7 @@ final class WorkspaceDemoServiceClient implements WorkspaceDemoService {
   Future<DirectoryListing> listDirectory(ResourceRef directory) async {
     try {
       return _decodeDirectoryListing(
-        await _adeleChannel.request(
+        await this._adeleChannel.request(
           workspaceDemoServiceListDirectoryId,
           <String, Object?>{'directory': _contractResourceRef(directory)},
         ),
@@ -45,7 +45,7 @@ final class WorkspaceDemoServiceClient implements WorkspaceDemoService {
   Future<TextFileContents> readTextFile(ResourceRef file) async {
     try {
       return _decodeTextFileContents(
-        await _adeleChannel.request(
+        await this._adeleChannel.request(
           workspaceDemoServiceReadTextFileId,
           <String, Object?>{'file': _contractResourceRef(file)},
         ),
@@ -162,13 +162,13 @@ final class WorkspaceDemoServiceDispatcher
       _adeleResult8 = await switch (_adeleMethod2) {
         workspaceDemoServiceListDirectoryId => (() async {
           final _adeleValues0 = _adeleArguments6 as List<Object?>;
-          return await _adeleService.listDirectory(
+          return await this._adeleService.listDirectory(
             _adeleValues0[0] as ResourceRef,
           );
         })(),
         workspaceDemoServiceReadTextFileId => (() async {
           final _adeleValues0 = _adeleArguments6 as List<Object?>;
-          return await _adeleService.readTextFile(
+          return await this._adeleService.readTextFile(
             _adeleValues0[0] as ResourceRef,
           );
         })(),

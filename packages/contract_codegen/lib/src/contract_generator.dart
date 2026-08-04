@@ -195,6 +195,7 @@ final class _Extractor {
   final ResolvedUnitResult result;
   final Set<String> _ids = <String>{};
   final Set<String> _names = <String>{};
+  final Set<EnumElement> _reachableEnums = <EnumElement>{};
 
   ContractModel extract() {
     final List<PartDirective> parts = result.unit.directives
@@ -231,19 +232,13 @@ final class _Extractor {
       );
     }
     final List<ValueModel> values = <ValueModel>[];
-    final List<EnumModel> enums = <EnumModel>[];
+    final Map<EnumElement, EnumDeclaration> enumDeclarations =
+        <EnumElement, EnumDeclaration>{};
     final List<FailureModel> failures = <FailureModel>[];
     final List<ServiceModel> services = <ServiceModel>[];
     for (final CompilationUnitMember declaration in result.unit.declarations) {
       if (declaration case final EnumDeclaration value) {
-        enums.add(
-          EnumModel(
-            value.name.lexeme,
-            value.constants
-                .map((EnumConstantDeclaration e) => e.name.lexeme)
-                .toList(growable: false),
-          ),
-        );
+        enumDeclarations[value.declaredFragment!.element] = value;
       } else if (declaration case final ClassDeclaration value) {
         final InterfaceElement element = value.declaredFragment!.element;
         final Map<String, String> roles = _roleAnnotationIds(element);
@@ -257,6 +252,16 @@ final class _Extractor {
         }
       }
     }
+    final List<EnumModel> enums = <EnumModel>[
+      for (final EnumElement element in _reachableEnums)
+        if (enumDeclarations[element] case final EnumDeclaration declaration)
+          EnumModel(
+            declaration.name.lexeme,
+            declaration.constants
+                .map((EnumConstantDeclaration value) => value.name.lexeme)
+                .toList(growable: false),
+          ),
+    ];
     values.sort((ValueModel a, ValueModel b) => a.id.compareTo(b.id));
     enums.sort((EnumModel a, EnumModel b) => a.name.compareTo(b.name));
     failures.sort((FailureModel a, FailureModel b) => a.id.compareTo(b.id));
@@ -291,6 +296,7 @@ final class _Extractor {
     String id,
   ) {
     _rejectGenericDeclaration(node, element, 'value');
+    _validateSchemaIdentifier(node.name.lexeme, 'value');
     _unique(node, node.name.lexeme, id);
     if (element.constructors.length != 1 ||
         element.unnamedConstructor == null) {
@@ -322,6 +328,7 @@ final class _Extractor {
       if (!field.isFinal || field.isLate) {
         _failElement(field, 'Value fields must be non-late and final.');
       }
+      _validateSchemaIdentifier(field.name!, 'value field');
       final FormalParameterElement? parameter = constructor.formalParameters
           .where((FormalParameterElement p) => p.name == field.name)
           .firstOrNull;
@@ -331,6 +338,7 @@ final class _Extractor {
           'Field ${field.name} must have a matching constructor parameter.',
         );
       }
+      _validateSchemaIdentifier(parameter.name!, 'value constructor parameter');
       if (!parameter.isRequired || !parameter.isNamed) {
         _fail(node, 'Value constructor parameters must be required and named.');
       }
@@ -370,6 +378,7 @@ final class _Extractor {
   FailureModel _failure(ClassDeclaration node, String id) {
     final InterfaceElement element = node.declaredFragment!.element;
     _rejectGenericDeclaration(node, element, 'failure');
+    _validateSchemaIdentifier(node.name.lexeme, 'failure');
     _unique(node, node.name.lexeme, id);
     if (node.finalKeyword == null ||
         element.supertype?.element.name != 'Object' ||
@@ -457,6 +466,7 @@ final class _Extractor {
     String id,
   ) {
     _rejectGenericDeclaration(node, element, 'service');
+    _validateSchemaIdentifier(node.name.lexeme, 'service');
     _unique(node, node.name.lexeme, id);
     if (node.abstractKeyword == null ||
         node.interfaceKeyword == null ||
@@ -494,18 +504,13 @@ final class _Extractor {
       }
     }
     for (final MethodElement method in element.methods) {
-      if (method.name?.startsWith('_') ?? false) {
-        _failElement(
-          method,
-          'Private service methods cannot be implemented across package boundaries.',
-        );
-      }
       if (method.isStatic || !method.isAbstract || method.isOperator) {
         _failElement(
           method,
           'Service declarations may only contain abstract instance methods annotated with @AdeleMethod.',
         );
       }
+      _validateSchemaIdentifier(method.name!, 'service method');
       if (method.typeParameters.isNotEmpty) {
         _failElement(method, 'Generic service methods are not supported.');
       }
@@ -521,6 +526,7 @@ final class _Extractor {
       }
       final List<FieldModel> parameters = <FieldModel>[];
       for (final FormalParameterElement parameter in method.formalParameters) {
+        _validateSchemaIdentifier(parameter.name!, 'service parameter');
         if (parameter.isOptional || parameter.isNamed) {
           _failElement(
             parameter,
@@ -638,28 +644,11 @@ final class _Extractor {
     }
 
     for (final ServiceModel service in services) {
-      _validateGeneratedIdentifier(service.name, 'service ${service.name}');
       add('${_lowerName(service.name)}Id', 'service ${service.name}');
       add('${service.name}Client', 'service ${service.name}');
       add('${service.name}Dispatcher', 'service ${service.name}');
       add('${service.name}RequestDispatcher', 'service ${service.name}');
       for (final MethodModel method in service.methods) {
-        _validateGeneratedIdentifier(
-          method.name,
-          'method ${service.name}.${method.name}',
-        );
-        for (final FieldModel parameter in method.parameters) {
-          _validateGeneratedIdentifier(
-            parameter.name,
-            'parameter ${service.name}.${method.name}.${parameter.name}',
-          );
-        }
-        if (method.name == 'dispatch') {
-          _fail(
-            result.unit,
-            'Service method dispatch conflicts with the generated dispatcher API.',
-          );
-        }
         add(
           '${_lowerName(service.name)}${_capitalize(method.name)}Id',
           'method ${service.name}.${method.name}',
@@ -667,29 +656,14 @@ final class _Extractor {
       }
     }
     for (final ValueModel value in values) {
-      _validateGeneratedIdentifier(value.name, 'value ${value.name}');
-      for (final FieldModel field in value.fields) {
-        _validateGeneratedIdentifier(
-          field.name,
-          'field ${value.name}.${field.name}',
-        );
-      }
       add('${_lowerName(value.name)}TypeId', 'value ${value.name}');
       add('_encode${value.name}', 'value ${value.name}');
       add('_decode${value.name}', 'value ${value.name}');
     }
     for (final FailureModel failure in failures) {
-      _validateGeneratedIdentifier(failure.name, 'failure ${failure.name}');
       add('${_lowerName(failure.name)}TypeId', 'failure ${failure.name}');
     }
     for (final EnumModel value in enums) {
-      _validateGeneratedIdentifier(value.name, 'enum ${value.name}');
-      for (final String enumValue in value.values) {
-        _validateGeneratedIdentifier(
-          enumValue,
-          'enum value ${value.name}.$enumValue',
-        );
-      }
       add('_decode${value.name}', 'enum ${value.name}');
     }
   }
@@ -740,6 +714,16 @@ final class _Extractor {
       _fail(
         result.unit,
         'Generated identifier $value for $source is not a valid Dart identifier.',
+      );
+    }
+  }
+
+  void _validateSchemaIdentifier(String value, String source) {
+    if (!RegExp(r'^[A-Za-z][A-Za-z0-9_]*$').hasMatch(value) ||
+        Keyword.keywords.containsKey(value)) {
+      _fail(
+        result.unit,
+        'Schema $source name $value must match [A-Za-z][A-Za-z0-9_]*.',
       );
     }
   }
@@ -827,6 +811,14 @@ final class _Extractor {
       }
       if (base.element is EnumElement) {
         _requireLocalType(base.element, node);
+        final EnumElement enumElement = base.element as EnumElement;
+        _validateSchemaIdentifier(enumElement.name!, 'enum');
+        for (final FieldElement value in enumElement.fields.where(
+          (FieldElement value) => value.isEnumConstant,
+        )) {
+          _validateSchemaIdentifier(value.name!, 'enum value');
+        }
+        _reachableEnums.add(enumElement);
         return TypeModel(
           TypeKind.enumeration,
           type.getDisplayString(),
@@ -1018,7 +1010,7 @@ final class DartContractEmitter {
     _nextLocal = 0;
     final StringBuffer out = StringBuffer(
       '// GENERATED CODE - DO NOT MODIFY BY HAND.\n'
-      '// ignore_for_file: curly_braces_in_flow_control_structures, no_leading_underscores_for_local_identifiers, prefer_interpolation_to_compose_strings, unnecessary_nullable_for_final_variable_declarations, unused_catch_clause, unused_element, use_null_aware_elements\n\n'
+      '// ignore_for_file: curly_braces_in_flow_control_structures, no_leading_underscores_for_local_identifiers, prefer_interpolation_to_compose_strings, unnecessary_nullable_for_final_variable_declarations, unnecessary_this, unused_catch_clause, unused_element, use_null_aware_elements\n\n'
       'part of ${_literal(p.basename(model.sourcePath))};\n\n',
     );
     for (final ServiceModel service in model.services) {
@@ -1189,7 +1181,8 @@ final class DartContractEmitter {
       for (int index = 0; index < method.parameters.length; index++)
         '_adeleValues0[$index] as ${method.parameters[index].type.dart}',
     ].join(',');
-    final String invocation = 'await _adeleService.${method.name}($values)';
+    final String invocation =
+        'await this._adeleService.${method.name}($values)';
     return "(() async { final _adeleValues0 = $arguments as List<Object?>; ${method.returnType.kind == TypeKind.void_ ? '$invocation; return null;' : 'return $invocation;'} })()";
   }
 
@@ -1237,7 +1230,7 @@ final class DartContractEmitter {
 
   String _clientResult(ServiceModel service, MethodModel method) {
     final String response =
-        "await _adeleChannel.request(${_lower(service.name)}${_cap(method.name)}Id, <String, Object?>{${method.parameters.map((FieldModel p) => '${_literal(p.id)}: ${_encode(p.type, p.name)}').join(',')}})";
+        "await this._adeleChannel.request(${_lower(service.name)}${_cap(method.name)}Id, <String, Object?>{${method.parameters.map((FieldModel p) => '${_literal(p.id)}: ${_encode(p.type, p.name)}').join(',')}})";
     if (method.returnType.kind == TypeKind.void_) {
       final String result = _local('response');
       return 'final $result = $response; _contractVoid($result, ${_literal(method.name)}); return;';

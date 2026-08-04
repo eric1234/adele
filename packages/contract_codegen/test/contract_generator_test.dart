@@ -374,7 +374,7 @@ abstract interface class OtherService {
   );
 
   test(
-    'adversarial legal identifiers and shapes compile and execute',
+    'ordinary collision-prone identifiers and shapes compile and execute',
     () async {
       await _runGeneratedFixture(_adversarialContract(), _adversarialTests());
     },
@@ -760,10 +760,15 @@ final class ImportedValue {
 
   test('rejects enum decoder collisions with value decoders', () async {
     await _expectDiagnostic(
-      _minimalContract(namedValue: true).replaceFirst(
-        "@AdeleValue('fixture.value')",
-        "enum FixtureValue { value }\n@AdeleValue('fixture.value')",
-      ),
+      _minimalContract(namedValue: true)
+          .replaceFirst(
+            "@AdeleValue('fixture.value')",
+            "enum FixtureValue { value }\n@AdeleValue('fixture.value')",
+          )
+          .replaceFirst(
+            'Future<String> ping(String value);',
+            'Future<FixtureValue> ping(FixtureValue value);',
+          ),
       'Generated symbol collision for _decodeFixtureValue',
     );
   });
@@ -778,22 +783,54 @@ final class ImportedValue {
     );
   });
 
-  test('rejects dispatch method conflict', () async {
-    await _expectDiagnostic(
-      _minimalContract(
-        namedValue: true,
-      ).replaceAll('ping(String value)', 'dispatch(String value)'),
-      'dispatch conflicts with the generated dispatcher API',
-    );
-  });
+  for (final entry in <String, String>{
+    'service': 'FixtureService',
+    'value': 'FixtureValue',
+    'failure': 'FixtureFailure',
+    'method': 'ping',
+    'service parameter': 'ping(String value)',
+    'value field': 'final String value;',
+    'value constructor parameter': 'required this.value',
+    'enum': 'FixtureMood',
+    'enum value': 'ready',
+  }.entries) {
+    for (final invalid in const <String>['_private', r'$dollar', 'café']) {
+      test('rejects ${entry.key} schema name $invalid', () async {
+        String source = _identifierContract();
+        source = switch (entry.key) {
+          'method' => source.replaceFirst(
+            'Future<FixtureMood> ping(String value)',
+            'Future<FixtureMood> $invalid(String value)',
+          ),
+          'service parameter' => source.replaceFirst(
+            entry.value,
+            'ping(String $invalid)',
+          ),
+          'value field' =>
+            source
+                .replaceFirst(entry.value, 'final String $invalid;')
+                .replaceAll('this.value', 'this.$invalid'),
+          'value constructor parameter' =>
+            source
+                .replaceFirst(entry.value, 'required this.$invalid')
+                .replaceFirst('final String value;', 'final String $invalid;'),
+          'enum' => source.replaceAll(entry.value, invalid),
+          _ => source.replaceFirst(entry.value, invalid),
+        };
+        await _expectDiagnostic(source, '[A-Za-z][A-Za-z0-9_]*');
+      });
+    }
+  }
 
-  test('rejects private service methods', () async {
-    await _expectDiagnostic(
-      _minimalContract(
-        namedValue: true,
-      ).replaceFirst('Future<String> ping', 'Future<String> _ping'),
-      'cannot be implemented across package boundaries',
+  test('allows unrelated unreachable private helpers and enums', () async {
+    final output = await _generate(
+      _identifierContract().replaceFirst(
+        "@AdeleValue('fixture.value')",
+        'class _PrivateHelper {}\nenum _PrivateMood { _ready }\n'
+            "@AdeleValue('fixture.value')",
+      ),
     );
+    expect(output, isNot(contains('_decode_PrivateMood')));
   });
 
   test('rejects an empty service', () async {
@@ -1594,59 +1631,64 @@ final class _Service implements FixtureService {
 }
 ''';
 
-String _adversarialContract() => r'''
+String _adversarialContract() => '''
 import 'package:adele_contract/adele_contract.dart';
 part 'fixture.g.dart';
-enum $Mood { value, error, result }
-@AdeleValue('fixture.escaped')
-final class $Value {
-  const $Value({required this.value, required this.map, required this.error, required this.result, required this.element, required this.nonNullValue, required this.$value});
-  @AdeleField('quote_and_slash') final String value;
+enum CollisionMood { value, error, result }
+@AdeleValue('fixture.collision')
+final class CollisionValue {
+  const CollisionValue({required this.value, required this.map, required this.response, required this.result, required this.error, required this.payload, required this.method, required this.values, required this.element, required this.nonNullValue, required this.channel, required this.service});
+  final String value;
   final String map;
+  final String response;
+  final String result;
   final String? error;
-  final List<String?> result;
-  final $Mood element;
-  final Uri? nonNullValue;
-  @AdeleField('dollar_value') final String $value;
+  final Map<String, Object?> payload;
+  final String method;
+  final List<String?> values;
+  final CollisionMood element;
+  final List<List<String?>> nonNullValue;
+  final String channel;
+  final String service;
 }
 @AdeleService('fixture.service')
-abstract interface class $Service {
-  @AdeleMethod('roundTrip') Future<$Value?> result($Value? value, String map, List<Uri?> element);
-  @AdeleMethod('channel') Future<String> channel(@AdeleField('channel') String _channel, String payload, String method, String values, String nonNullValue);
+abstract interface class CollisionService {
+  @AdeleMethod('dispatch') Future<CollisionValue?> dispatch(CollisionValue? value);
+  @AdeleMethod('channel') Future<String> channel(String payload, String method, String values, String nonNullValue);
   @AdeleMethod('service') Future<String> service(String response, String error);
   @AdeleMethod('void') Future<void> error(String response);
-  @AdeleMethod('enum') Future<$Mood> value($Mood error);
+  @AdeleMethod('enum') Future<CollisionMood> value(CollisionMood error);
 }
 @AdeleFailure('fixture.failure')
-final class $Failure implements Exception {
-  const $Failure({required this.code, required this.message, required this.details});
+final class CollisionFailure implements Exception {
+  const CollisionFailure({required this.code, required this.message, required this.details});
   final String code; final String message; final Map<String, Object?> details;
 }
 ''';
 
-String _adversarialTests() =>
-    r'''
+String _adversarialTests() => '''
+import 'package:adele_contract/adele_contract.dart';
 import 'package:generated_contract_fixture/fixture.dart';
 import 'package:test/test.dart';
 void main() {
-  test('adversarial fixture', () async {
-    final value = $Value(value: 'v', map: 'm', error: null, result: const ['x', null], element: $Mood.result, nonNullValue: Uri.parse('https://example.test'), $value: r'$');
-    final dispatcher = $ServiceDispatcher(_Service());
-    final response = await dispatcher.dispatch({'kind': 'request', 'requestId': 1, 'method': 'fixture.service.roundTrip', 'payload': {'value': {'quote_and_slash': 'v', 'map': 'm', 'error': null, 'result': ['x', null], 'element': 'result', 'nonNullValue': 'https://example.test', 'dollar_value': r'$'}, 'map': 'm', 'element': [null]}});
+  test('client dispatcher and backend coexist', () async {
+    final value = CollisionValue(value: 'v', map: 'm', response: 'r', result: 'result', error: null, payload: const {'ok': true}, method: 'method', values: const ['x', null], element: CollisionMood.result, nonNullValue: const [[null]], channel: 'channel', service: 'service');
+    final dispatcher = CollisionServiceDispatcher(_Service());
+    final response = await dispatcher.dispatch({'kind': 'request', 'requestId': 1, 'method': 'fixture.service.dispatch', 'payload': {'value': {'value': 'v', 'map': 'm', 'response': 'r', 'result': 'result', 'error': null, 'payload': {'ok': true}, 'method': 'method', 'values': ['x', null], 'element': 'result', 'nonNullValue': [[null]], 'channel': 'channel', 'service': 'service'}}});
     expect(response['ok'], isTrue);
-    expect(await $ServiceClient(_Channel(response['payload'])).result(value, 'm', [null]), isA<$Value>());
+    expect(await CollisionServiceClient(_Channel(response['payload'])).dispatch(value), isA<CollisionValue>());
     final sequence = _SequenceChannel(['channel', 'service']);
-    expect(await $ServiceClient(sequence).channel('a', 'b', 'c', 'd', 'e'), 'channel');
-    expect(await $ServiceClient(sequence).service('response', 'error'), 'service');
-    await $ServiceClient(const _Channel(null)).error('response');
+    expect(await CollisionServiceClient(sequence).channel('a', 'b', 'c', 'd'), 'channel');
+    expect(await CollisionServiceClient(sequence).service('response', 'error'), 'service');
+    await CollisionServiceClient(const _Channel(null)).error('response');
   });
 }
-final class _Service implements $Service {
-  @override Future<$Value?> result($Value? value, String map, List<Uri?> element) async => value;
-  @override Future<String> channel(String _channel, String payload, String method, String values, String nonNullValue) async => _channel;
+final class _Service implements CollisionService {
+  @override Future<CollisionValue?> dispatch(CollisionValue? value) async => value;
+  @override Future<String> channel(String payload, String method, String values, String nonNullValue) async => 'channel';
   @override Future<String> service(String response, String error) async => response;
   @override Future<void> error(String response) async {}
-  @override Future<$Mood> value($Mood error) async => error;
+  @override Future<CollisionMood> value(CollisionMood error) async => error;
 }
 final class _Channel implements AdeleRequestChannel {
   const _Channel(this.response); final Object? response;
@@ -1656,11 +1698,27 @@ final class _SequenceChannel implements AdeleRequestChannel {
   _SequenceChannel(this.responses); final List<Object?> responses; int index = 0;
   @override Future<Object?> request(String method, Map<String, Object?> payload) async => responses[index++];
 }
-'''
-        .replaceFirst(
-          "import 'package:generated_contract_fixture/fixture.dart';",
-          "import 'package:adele_contract/adele_contract.dart';\nimport 'package:generated_contract_fixture/fixture.dart';",
-        );
+''';
+
+String _identifierContract() => '''
+import 'package:adele_contract/adele_contract.dart';
+part 'fixture.g.dart';
+enum FixtureMood { ready }
+@AdeleValue('fixture.value')
+final class FixtureValue {
+  const FixtureValue({required this.value});
+  final String value;
+}
+@AdeleService('fixture.service')
+abstract interface class FixtureService {
+  @AdeleMethod('ping') Future<FixtureMood> ping(String value);
+}
+@AdeleFailure('fixture.failure')
+final class FixtureFailure implements Exception {
+  const FixtureFailure({required this.code, required this.message, required this.details});
+  final String code; final String message; final Map<String, Object?> details;
+}
+''';
 
 String _resourceRuntimeTests() => '''
 import 'package:adele_contract/adele_contract.dart';

@@ -19,7 +19,8 @@ Plugin contract source is shared by frontend and backend packages and should
 normally describe immutable snapshot values. A value received across a runtime
 boundary is reconstructed; its object identity is not shared with the sender.
 
-The Phase II internal generator provides a typed client, dispatcher, codecs,
+The Phase II internal generator treats contracts as a constrained IDL embedded
+in Dart and provides a typed client, dispatcher, codecs,
 request handling, and structured errors for the maintained fixture. Its scope is
 one non-empty service per contract library and unary request/response only.
 Values use one unnamed generative constructor with
@@ -27,6 +28,11 @@ required named parameters, schema enums and values must be declared in the
 contract source library rather than imported, wire IDs use a conservative ASCII
 segment grammar, and every transported double must be finite. Streams,
 cancellation, events, and broader schema composition remain future work.
+Schema names match `[A-Za-z][A-Za-z0-9_]*` across annotated declarations and
+members plus reachable enums and enum values. Private, dollar-prefixed, and
+non-ASCII names are outside the IDL, although unrelated unreachable private
+helpers and enums remain ordinary implementation details. These restrictions
+may be permanent rather than promises of future Dart-language parity.
 Generated code should hide ports, wire formats, request IDs, subscriptions, and
 transport details from plugin code. Contract declarations remain lightweight
 and independent of compiler or generation tooling.
@@ -54,9 +60,10 @@ request.
 Annotation interpretation is multiplicity-aware: repeated role, method, and
 field annotations and mixed class roles are invalid regardless of declaration
 order. Generated implementation state and temporaries occupy indexed `_adele`
-names rather than contract namespaces, while legal Dart `$` identifiers remain
-usable. Every contract-derived string entering generated Dart source is emitted
-through one single-quoted literal escaping path.
+names rather than contract namespaces, and public schema methods such as
+`dispatch` coexist with the generated client, dispatcher, and backend service.
+Every contract-derived string entering generated Dart source is emitted through
+one single-quoted literal escaping path.
 
 Committed transport is checked in normal CI. Development plugin preparation
 also checks the requested plugin independently: the manifest-selected contract
