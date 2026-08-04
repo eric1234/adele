@@ -28,6 +28,11 @@ required named parameters, schema enums and values must be declared in the
 contract source library rather than imported, wire IDs use a conservative ASCII
 segment grammar, and every transported double must be finite. Streams,
 cancellation, events, and broader schema composition remain future work.
+The contract annotation import is exactly canonical, unprefixed, and without
+combinators. The plugin API import has the same shape exactly when the schema
+uses `ResourceRef`. Every import prefix shares the generated top-level collision
+namespace with contract declarations, generated identifiers, unqualified ADELE
+runtime names, and SDK names; `ResourceRef` is reserved conditionally.
 Schema names match `[A-Za-z][A-Za-z0-9_]*` across annotated declarations and
 members plus reachable enums and enum values. Private, dollar-prefixed, and
 non-ASCII names are outside the IDL, although unrelated unreachable private
@@ -64,6 +69,13 @@ names rather than contract namespaces, and public schema methods such as
 `dispatch` coexist with the generated client, dispatcher, and backend service.
 Every contract-derived string entering generated Dart source is emitted through
 one single-quoted literal escaping path.
+Supported core and async types are checked by exact semantic library identity,
+not spelling: core scalars, collections, `Uri`, and `Object` come from
+`dart:core`, method wrappers are the `dart:async` `Future`, and `ResourceRef` is
+the exact canonical plugin API declaration. Type aliases are excluded from the
+transported closure recursively, including the outer `Future`, while unused
+implementation aliases remain permitted. Extraction diagnostics retain precise
+method, parameter, field, enum, and enum-value source nodes.
 
 Committed transport is checked in normal CI. Development plugin preparation
 also checks the requested plugin independently: the manifest-selected contract

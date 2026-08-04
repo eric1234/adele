@@ -5,6 +5,7 @@ import 'package:analyzer/dart/analysis/results.dart';
 import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/ast/token.dart';
 import 'package:analyzer/dart/element/element.dart';
+import 'package:analyzer/dart/element/nullability_suffix.dart';
 import 'package:analyzer/dart/element/type.dart';
 import 'package:analyzer/diagnostic/diagnostic.dart';
 import 'package:path/path.dart' as p;
@@ -197,7 +198,16 @@ final class _Extractor {
   final Set<String> _names = <String>{};
   final Set<EnumElement> _reachableEnums = <EnumElement>{};
 
+  static const String _contractLibrary =
+      'package:adele_contract/adele_contract.dart';
+  static const String _pluginApiLibrary =
+      'package:adele_plugin_api/adele_plugin_api.dart';
+  static const String _resourceRefLibrary =
+      'package:adele_plugin_api/src/resource_ref.dart';
+
   ContractModel extract() {
+    _validateContractImport();
+    _validatePluginApiImportSyntax();
     final List<PartDirective> parts = result.unit.directives
         .whereType<PartDirective>()
         .toList(growable: false);
@@ -279,6 +289,7 @@ final class _Extractor {
       _fail(result.unit, 'At least one @AdeleFailure type is required.');
     }
     _rejectValueCycles(values);
+    _validatePluginApiImport(_usesExternalTypes(services, values));
     _rejectGeneratedSymbolCollisions(services, values, enums, failures);
     return ContractModel(
       sourcePath: result.path,
@@ -296,7 +307,7 @@ final class _Extractor {
     String id,
   ) {
     _rejectGenericDeclaration(node, element, 'value');
-    _validateSchemaIdentifier(node.name.lexeme, 'value');
+    _validateSchemaIdentifier(node.name.lexeme, 'value', node);
     _unique(node, node.name.lexeme, id);
     if (element.constructors.length != 1 ||
         element.unnamedConstructor == null) {
@@ -313,7 +324,7 @@ final class _Extractor {
       );
     }
     if (node.finalKeyword == null ||
-        element.supertype?.element.name != 'Object' ||
+        !_isSdkType(element.supertype, 'dart:core', 'Object') ||
         element.mixins.isNotEmpty ||
         element.interfaces.isNotEmpty) {
       _fail(
@@ -328,7 +339,8 @@ final class _Extractor {
       if (!field.isFinal || field.isLate) {
         _failElement(field, 'Value fields must be non-late and final.');
       }
-      _validateSchemaIdentifier(field.name!, 'value field');
+      final VariableDeclaration fieldNode = _fieldNode(field);
+      _validateSchemaIdentifier(field.name!, 'value field', fieldNode);
       final FormalParameterElement? parameter = constructor.formalParameters
           .where((FormalParameterElement p) => p.name == field.name)
           .firstOrNull;
@@ -338,7 +350,12 @@ final class _Extractor {
           'Field ${field.name} must have a matching constructor parameter.',
         );
       }
-      _validateSchemaIdentifier(parameter.name!, 'value constructor parameter');
+      final FormalParameter parameterNode = _parameterNode(parameter);
+      _validateSchemaIdentifier(
+        parameter.name!,
+        'value constructor parameter',
+        parameterNode,
+      );
       if (!parameter.isRequired || !parameter.isNamed) {
         _fail(node, 'Value constructor parameters must be required and named.');
       }
@@ -359,7 +376,7 @@ final class _Extractor {
         FieldModel(
           field.name!,
           _annotationId(field, 'AdeleField') ?? field.name!,
-          _type(field.type, field),
+          _type(field.type, _fieldTypeNode(fieldNode)),
           named: true,
         ),
       );
@@ -378,13 +395,13 @@ final class _Extractor {
   FailureModel _failure(ClassDeclaration node, String id) {
     final InterfaceElement element = node.declaredFragment!.element;
     _rejectGenericDeclaration(node, element, 'failure');
-    _validateSchemaIdentifier(node.name.lexeme, 'failure');
+    _validateSchemaIdentifier(node.name.lexeme, 'failure', node);
     _unique(node, node.name.lexeme, id);
     if (node.finalKeyword == null ||
-        element.supertype?.element.name != 'Object' ||
+        !_isSdkType(element.supertype, 'dart:core', 'Object') ||
         element.mixins.isNotEmpty ||
         element.interfaces.length != 1 ||
-        element.interfaces.single.element.name != 'Exception') {
+        !_isSdkType(element.interfaces.single, 'dart:core', 'Exception')) {
       _fail(node, 'Annotated failure must be a final Exception class.');
     }
     final List<FieldElement> instanceFields = element.fields
@@ -416,9 +433,9 @@ final class _Extractor {
     final Map<String, FieldElement> byName = {
       for (final FieldElement field in instanceFields) field.name!: field,
     };
-    if (byName['code']?.type.getDisplayString() != 'String' ||
-        byName['message']?.type.getDisplayString() != 'String' ||
-        byName['details']?.type.getDisplayString() != 'Map<String, Object?>') {
+    if (!_isCanonicalString(byName['code']?.type) ||
+        !_isCanonicalString(byName['message']?.type) ||
+        !_isCanonicalJsonMap(byName['details']?.type)) {
       _fail(
         node,
         'Failure fields must be String, String, and Map<String, Object?>.',
@@ -466,11 +483,11 @@ final class _Extractor {
     String id,
   ) {
     _rejectGenericDeclaration(node, element, 'service');
-    _validateSchemaIdentifier(node.name.lexeme, 'service');
+    _validateSchemaIdentifier(node.name.lexeme, 'service', node);
     _unique(node, node.name.lexeme, id);
     if (node.abstractKeyword == null ||
         node.interfaceKeyword == null ||
-        element.supertype?.element.name != 'Object' ||
+        !_isSdkType(element.supertype, 'dart:core', 'Object') ||
         element.mixins.isNotEmpty ||
         element.interfaces.isNotEmpty) {
       _fail(node, 'Annotated service must be an abstract interface class.');
@@ -510,7 +527,8 @@ final class _Extractor {
           'Service declarations may only contain abstract instance methods annotated with @AdeleMethod.',
         );
       }
-      _validateSchemaIdentifier(method.name!, 'service method');
+      final MethodDeclaration methodNode = _methodNode(method);
+      _validateSchemaIdentifier(method.name!, 'service method', methodNode);
       if (method.typeParameters.isNotEmpty) {
         _failElement(method, 'Generic service methods are not supported.');
       }
@@ -519,14 +537,24 @@ final class _Extractor {
         _failElement(method, 'Every service method must have @AdeleMethod.');
       }
       final DartType returnType = method.returnType;
+      final TypeAnnotation? returnTypeNode = methodNode.returnType;
+      if (returnTypeNode == null) {
+        _fail(methodNode, 'Service methods must return Future<T>.');
+      }
       if (returnType is! InterfaceType ||
-          returnType.element.name != 'Future' ||
+          returnType.alias != null ||
+          !_isSdkType(returnType, 'dart:async', 'Future') ||
           returnType.typeArguments.length != 1) {
-        _failElement(method, 'Service methods must return Future<T>.');
+        _fail(returnTypeNode, 'Service methods must return Future<T>.');
       }
       final List<FieldModel> parameters = <FieldModel>[];
       for (final FormalParameterElement parameter in method.formalParameters) {
-        _validateSchemaIdentifier(parameter.name!, 'service parameter');
+        final FormalParameter parameterNode = _parameterNode(parameter);
+        _validateSchemaIdentifier(
+          parameter.name!,
+          'service parameter',
+          parameterNode,
+        );
         if (parameter.isOptional || parameter.isNamed) {
           _failElement(
             parameter,
@@ -537,7 +565,7 @@ final class _Extractor {
           FieldModel(
             parameter.name!,
             _annotationId(parameter, 'AdeleField') ?? parameter.name!,
-            _type(parameter.type, parameter),
+            _type(parameter.type, _parameterTypeNode(parameterNode)),
             named: false,
           ),
         );
@@ -551,7 +579,10 @@ final class _Extractor {
         MethodModel(
           method.name!,
           methodId,
-          _type(returnType.typeArguments.single, method),
+          _type(
+            returnType.typeArguments.single,
+            _futureArgumentNode(returnTypeNode),
+          ),
           List.unmodifiable(parameters),
         ),
       );
@@ -639,6 +670,7 @@ final class _Extractor {
       add(helper, 'fixed generated helper');
     }
     if (_usesExternalTypes(services, values)) {
+      add('ResourceRef', 'ResourceRef type');
       add('_contractResourceRef', 'ResourceRef encoder');
       add('_decodeResourceRef', 'ResourceRef decoder');
     }
@@ -670,6 +702,12 @@ final class _Extractor {
 
   Set<String> _topLevelNames() {
     final Set<String> names = <String>{};
+    names.addAll(
+      result.unit.directives
+          .whereType<ImportDirective>()
+          .map((ImportDirective directive) => directive.prefix?.name)
+          .nonNulls,
+    );
     for (final CompilationUnitMember declaration in result.unit.declarations) {
       switch (declaration) {
         case ClassDeclaration(:final name) ||
@@ -718,11 +756,11 @@ final class _Extractor {
     }
   }
 
-  void _validateSchemaIdentifier(String value, String source) {
+  void _validateSchemaIdentifier(String value, String source, AstNode node) {
     if (!RegExp(r'^[A-Za-z][A-Za-z0-9_]*$').hasMatch(value) ||
         Keyword.keywords.containsKey(value)) {
       _fail(
-        result.unit,
+        node,
         'Schema $source name $value must match [A-Za-z][A-Za-z0-9_]*.',
       );
     }
@@ -751,24 +789,113 @@ final class _Extractor {
       type.kind == TypeKind.external ||
       type.argument != null && _typeUsesExternal(type.argument!);
 
-  TypeModel _type(DartType type, Object node) {
+  void _validateContractImport() {
+    _validateCanonicalImport(
+      _contractLibrary,
+      required: true,
+      packageName: 'adele_contract',
+    );
+  }
+
+  void _validatePluginApiImport(bool required) {
+    _validateCanonicalImport(
+      _pluginApiLibrary,
+      required: required,
+      packageName: 'adele_plugin_api',
+    );
+  }
+
+  void _validatePluginApiImportSyntax() {
+    final ImportDirective? directive = result.unit.directives
+        .whereType<ImportDirective>()
+        .where(
+          (ImportDirective directive) =>
+              directive.uri.stringValue == _pluginApiLibrary,
+        )
+        .firstOrNull;
+    if (directive != null &&
+        (directive.prefix != null || directive.combinators.isNotEmpty)) {
+      _fail(
+        directive,
+        'The adele_plugin_api import must be exactly unprefixed and have no combinators.',
+      );
+    }
+  }
+
+  void _validateCanonicalImport(
+    String uri, {
+    required bool required,
+    required String packageName,
+  }) {
+    final List<ImportDirective> imports = result.unit.directives
+        .whereType<ImportDirective>()
+        .where((ImportDirective directive) => directive.uri.stringValue == uri)
+        .toList(growable: false);
+    if (!required && imports.isEmpty) return;
+    if (imports.length != 1) {
+      _fail(
+        imports.length > 1 ? imports[1] : result.unit,
+        'Contract library must import $uri exactly once without a prefix or combinators.',
+      );
+    }
+    final ImportDirective directive = imports.single;
+    if (directive.prefix != null || directive.combinators.isNotEmpty) {
+      _fail(
+        directive,
+        'The $packageName import must be exactly unprefixed and have no combinators.',
+      );
+    }
+  }
+
+  bool _isSdkType(DartType? type, String uri, String name) =>
+      type is InterfaceType &&
+      type.element.name == name &&
+      type.element.library.uri.toString() == uri;
+
+  bool _isCanonicalString(DartType? type) =>
+      type != null && type.alias == null && type.isDartCoreString;
+
+  bool _isCanonicalNullableObject(DartType? type) =>
+      type != null &&
+      type.alias == null &&
+      type.isDartCoreObject &&
+      type.nullabilitySuffix == NullabilitySuffix.question;
+
+  bool _isCanonicalJsonMap(DartType? type) =>
+      type is InterfaceType &&
+      type.alias == null &&
+      type.isDartCoreMap &&
+      type.typeArguments.length == 2 &&
+      _isCanonicalString(type.typeArguments.first) &&
+      _isCanonicalNullableObject(type.typeArguments.last);
+
+  TypeModel _type(DartType type, AstNode node) {
+    if (type.alias != null) {
+      _fail(
+        node,
+        'Type aliases are not supported in transported contract types.',
+      );
+    }
     if (type is DynamicType || type is TypeParameterType) {
       _failSource(
         node,
         'Dynamic or unconstrained contract types are not supported.',
       );
     }
-    final bool nullable = type.getDisplayString().endsWith('?');
+    final bool nullable = type.nullabilitySuffix == NullabilitySuffix.question;
     if (type is VoidType) return const TypeModel(TypeKind.void_, 'void');
     if (type is InterfaceType) {
       final InterfaceType base = type;
       final String name = base.element.name ?? '';
-      final TypeKind? scalar = <String, TypeKind>{
-        'String': TypeKind.string,
-        'bool': TypeKind.boolean,
-        'int': TypeKind.integer,
-        'double': TypeKind.double_,
-      }[name];
+      final TypeKind? scalar = base.isDartCoreString
+          ? TypeKind.string
+          : base.isDartCoreBool
+          ? TypeKind.boolean
+          : base.isDartCoreInt
+          ? TypeKind.integer
+          : base.isDartCoreDouble
+          ? TypeKind.double_
+          : null;
       if (scalar != null) {
         return TypeModel(
           scalar,
@@ -776,7 +903,7 @@ final class _Extractor {
           nullable: nullable,
         );
       }
-      if (name == 'List' && base.typeArguments.length == 1) {
+      if (base.isDartCoreList && base.typeArguments.length == 1) {
         return TypeModel(
           TypeKind.list,
           type.getDisplayString(),
@@ -784,10 +911,10 @@ final class _Extractor {
           nullable: nullable,
         );
       }
-      if (name == 'Map' && base.element.library.uri.toString() == 'dart:core') {
+      if (base.isDartCoreMap) {
         if (base.typeArguments.length != 2 ||
-            base.typeArguments.first.getDisplayString() != 'String' ||
-            base.typeArguments.last.getDisplayString() != 'Object?') {
+            !_isCanonicalString(base.typeArguments.first) ||
+            !_isCanonicalNullableObject(base.typeArguments.last)) {
           _failSource(
             node,
             'Only Map<String, Object?> is supported; map keys must be String.',
@@ -799,10 +926,10 @@ final class _Extractor {
           nullable: nullable,
         );
       }
-      if (name == 'Stream') {
+      if (base.isDartAsyncStream) {
         _failSource(node, 'Stream contract types are not supported.');
       }
-      if (name == 'Uri' && base.element.library.uri.toString() == 'dart:core') {
+      if (_isSdkType(base, 'dart:core', 'Uri')) {
         return TypeModel(
           TypeKind.uri,
           type.getDisplayString(),
@@ -812,11 +939,16 @@ final class _Extractor {
       if (base.element is EnumElement) {
         _requireLocalType(base.element, node);
         final EnumElement enumElement = base.element as EnumElement;
-        _validateSchemaIdentifier(enumElement.name!, 'enum');
+        final EnumDeclaration declaration = _enumNode(enumElement);
+        _validateSchemaIdentifier(enumElement.name!, 'enum', declaration);
         for (final FieldElement value in enumElement.fields.where(
           (FieldElement value) => value.isEnumConstant,
         )) {
-          _validateSchemaIdentifier(value.name!, 'enum value');
+          _validateSchemaIdentifier(
+            value.name!,
+            'enum value',
+            _enumValueNode(declaration, value.name!),
+          );
         }
         _reachableEnums.add(enumElement);
         return TypeModel(
@@ -840,10 +972,7 @@ final class _Extractor {
         );
       }
       if (name == 'ResourceRef' &&
-          base.element.library.uri.toString().startsWith(
-                'package:adele_plugin_api/',
-              ) ==
-              true) {
+          base.element.library.uri.toString() == _resourceRefLibrary) {
         return TypeModel(
           TypeKind.external,
           type.getDisplayString(),
@@ -859,14 +988,89 @@ final class _Extractor {
     _failSource(node, 'Unsupported contract type ${type.getDisplayString()}.');
   }
 
+  MethodDeclaration _methodNode(MethodElement element) => result
+      .unit
+      .declarations
+      .whereType<ClassDeclaration>()
+      .expand((ClassDeclaration declaration) => declaration.members)
+      .whereType<MethodDeclaration>()
+      .firstWhere(
+        (MethodDeclaration declaration) =>
+            declaration.declaredFragment?.element == element,
+      );
+
+  FormalParameter _parameterNode(FormalParameterElement element) => result
+      .unit
+      .declarations
+      .whereType<ClassDeclaration>()
+      .expand((ClassDeclaration declaration) => declaration.members)
+      .expand((ClassMember member) sync* {
+        if (member case final MethodDeclaration declaration) {
+          yield* declaration.parameters?.parameters ??
+              const <FormalParameter>[];
+        } else if (member case final ConstructorDeclaration declaration) {
+          yield* declaration.parameters.parameters;
+        }
+      })
+      .firstWhere(
+        (FormalParameter parameter) =>
+            parameter.declaredFragment?.element == element,
+      );
+
+  VariableDeclaration _fieldNode(FieldElement element) => result
+      .unit
+      .declarations
+      .whereType<ClassDeclaration>()
+      .expand((ClassDeclaration declaration) => declaration.members)
+      .whereType<FieldDeclaration>()
+      .expand((FieldDeclaration declaration) => declaration.fields.variables)
+      .firstWhere(
+        (VariableDeclaration variable) =>
+            variable.declaredFragment?.element == element,
+      );
+
+  TypeAnnotation _fieldTypeNode(VariableDeclaration node) =>
+      (node.parent! as VariableDeclarationList).type!;
+
+  TypeAnnotation _parameterTypeNode(FormalParameter node) {
+    FormalParameter current = node;
+    while (current is DefaultFormalParameter) {
+      current = current.parameter;
+    }
+    return switch (current) {
+          SimpleFormalParameter(:final type?) => type,
+          FieldFormalParameter(:final type?) => type,
+          SuperFormalParameter(:final type?) => type,
+          _ => current,
+        }
+        as TypeAnnotation;
+  }
+
+  TypeAnnotation _futureArgumentNode(TypeAnnotation node) {
+    if (node case NamedType(:final typeArguments?)) {
+      return typeArguments.arguments.single;
+    }
+    return node;
+  }
+
+  EnumDeclaration _enumNode(EnumElement element) =>
+      result.unit.declarations.whereType<EnumDeclaration>().firstWhere(
+        (EnumDeclaration declaration) =>
+            declaration.declaredFragment?.element == element,
+      );
+
+  AstNode _enumValueNode(EnumDeclaration declaration, String name) =>
+      declaration.constants.firstWhere(
+        (EnumConstantDeclaration value) => value.name.lexeme == name,
+      );
+
   List<ElementAnnotation> _annotations(Element element, String name) => element
       .metadata
       .annotations
       .where(
         (ElementAnnotation annotation) =>
             annotation.element?.enclosingElement?.name == name &&
-            annotation.element?.library?.uri.toString() ==
-                'package:adele_contract/adele_contract.dart',
+            annotation.element?.library?.uri.toString() == _contractLibrary,
       )
       .toList(growable: false);
   String? _annotationId(Element element, String name) {
@@ -984,6 +1188,21 @@ String _capitalize(String value) =>
     '${value[0].toUpperCase()}${value.substring(1)}';
 
 const Set<String> _fixedGeneratedSymbols = <String>{
+  'AdeleProtocolException',
+  'AdeleRemoteFailure',
+  'AdeleRequestChannel',
+  'Future',
+  'String',
+  'bool',
+  'int',
+  'double',
+  'List',
+  'Map',
+  'Set',
+  'Uri',
+  'Object',
+  'Exception',
+  'FormatException',
   '_contractMap',
   '_contractFields',
   '_contractList',

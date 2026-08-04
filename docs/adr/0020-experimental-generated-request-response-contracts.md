@@ -41,6 +41,11 @@ builder resolves and verifies the selected plugin's own contract source before
 backend compilation. Generated files are derived artifacts and do not replace
 contract declarations as the source of truth.
 
+The annotation import is canonical, unprefixed, and has no combinators. The
+plugin API import has the same shape exactly when `ResourceRef` occurs in the
+extracted schema. Import prefixes participate in the generated top-level
+collision namespace.
+
 ## Consequences
 
 - Typed request/response transport is implemented for `workspace_demo` without
@@ -92,3 +97,12 @@ contract declarations as the source of truth.
   `dispatch` coexist with generated client and dispatcher APIs without a scope
   allocator. All source-derived Dart strings pass through one single-quoted
   literal escaper.
+- Generated unqualified ADELE runtime and SDK names are reserved, with
+  `ResourceRef` reserved conditionally. Supported SDK types are accepted only
+  from their exact `dart:core` or `dart:async` libraries, and `ResourceRef` only
+  from its canonical plugin API declaration; same-named lookalikes are rejected.
+- Analyzer aliases are rejected recursively through nullable, list, enum,
+  annotated-value, `ResourceRef`, imported, and chained schema positions,
+  including an alias for the outer `Future`. Unused aliases outside the schema
+  remain ordinary implementation details. Diagnostics identify the precise
+  method, parameter, field, or enum-value declaration involved.

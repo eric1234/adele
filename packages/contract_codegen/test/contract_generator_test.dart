@@ -272,6 +272,194 @@ abstract interface class OtherService {
     );
   });
 
+  for (final import in <String>[
+    "import 'package:adele_contract/adele_contract.dart' as contract;",
+    "import 'package:adele_contract/adele_contract.dart' show AdeleService, AdeleMethod, AdeleValue, AdeleFailure;",
+  ]) {
+    test('rejects non-canonical adele_contract import $import', () async {
+      await _expectDiagnostic(
+        _minimalContract(namedValue: true).replaceFirst(
+          "import 'package:adele_contract/adele_contract.dart';",
+          import,
+        ),
+        'adele_contract import must be exactly unprefixed',
+      );
+    });
+  }
+
+  test('allows no adele_plugin_api import without ResourceRef', () async {
+    expect(await _generate(_minimalContract(namedValue: true)), isNotEmpty);
+  });
+
+  for (final import in <String>[
+    "import 'package:adele_plugin_api/adele_plugin_api.dart' as api;",
+    "import 'package:adele_plugin_api/adele_plugin_api.dart' show ResourceRef;",
+  ]) {
+    test('rejects non-canonical ResourceRef import $import', () async {
+      await _expectDiagnostic(
+        _allTypesContract().replaceFirst(
+          "import 'package:adele_plugin_api/adele_plugin_api.dart';",
+          import,
+        ),
+        'adele_plugin_api import must be exactly unprefixed',
+      );
+    });
+  }
+
+  test('rejects ResourceRef without canonical plugin API import', () async {
+    await _expectDiagnostic(
+      _allTypesContract().replaceFirst(
+        "import 'package:adele_plugin_api/adele_plugin_api.dart';\n",
+        "import 'package:adele_plugin_api/src/resource_ref.dart';\n",
+      ),
+      'must import package:adele_plugin_api/adele_plugin_api.dart exactly once',
+    );
+  });
+
+  test('rejects ResourceRef lookalikes', () async {
+    await _expectDiagnostic(
+      _minimalContract(namedValue: true)
+          .replaceFirst(
+            "part 'fixture.g.dart';",
+            "part 'fixture.g.dart';\nclass ResourceRef {}",
+          )
+          .replaceFirst(
+            'Future<String> ping(String value);',
+            'Future<ResourceRef> ping(ResourceRef value);',
+          ),
+      'Unsupported contract type ResourceRef',
+    );
+  });
+
+  for (final entry in <String, String>{
+    'String': 'class String {}',
+    'bool': 'class bool {}',
+    'int': 'class int {}',
+    'double': 'class double {}',
+    'List': 'class List<T> {}',
+    'Map': 'class Map<K, V> {}',
+    'Uri': 'class Uri {}',
+    'Object': 'class Object {}',
+  }.entries) {
+    test('rejects ${entry.key} lookalike contract types', () async {
+      final source = _minimalContract(namedValue: true)
+          .replaceFirst(
+            "part 'fixture.g.dart';",
+            "part 'fixture.g.dart';\n${entry.value}",
+          )
+          .replaceAll('String value', '${entry.key} value');
+      await _expectDiagnostic(source, 'Unsupported contract type');
+    });
+  }
+
+  test('rejects Future lookalike outer returns', () async {
+    await _expectDiagnostic(
+      _minimalContract(namedValue: true).replaceFirst(
+        "part 'fixture.g.dart';",
+        "part 'fixture.g.dart';\nclass Future<T> {}",
+      ),
+      'Service methods must return Future<T>',
+    );
+  });
+
+  for (final prefix in <String>[
+    'FixtureServiceClient',
+    '_contractMap',
+    'fixtureServiceId',
+    'fixtureValueTypeId',
+    'AdeleRequestChannel',
+  ]) {
+    test('reserves import prefix $prefix against generated symbols', () async {
+      final fixture = await _fixtureWithSupport(
+        _minimalContract(namedValue: true),
+        'class Unused {}',
+        prefix: prefix,
+      );
+      expect(
+        (await _diagnostic(fixture.source)).message,
+        contains('Generated symbol collision for $prefix'),
+      );
+    });
+  }
+
+  test('conditionally reserves ResourceRef import prefixes', () async {
+    final fixture = await _fixtureWithSupport(
+      _allTypesContract(),
+      'class Unused {}',
+      prefix: '_decodeResourceRef',
+    );
+    expect(
+      (await _diagnostic(fixture.source)).message,
+      contains('Generated symbol collision for _decodeResourceRef'),
+    );
+  });
+
+  for (final entry in <String, String>{
+    'outer Future': 'typedef Alias<T> = Future<T>;',
+    'nullable': 'typedef Alias = String?;',
+    'list': 'typedef Alias = List<String>;',
+    'list element': 'typedef Alias = String;',
+    'enum': 'typedef Alias = FixtureMood;',
+    'value': 'typedef Alias = FixtureValue;',
+    'ResourceRef': 'typedef Alias = ResourceRef;',
+  }.entries) {
+    test('rejects transported ${entry.key} aliases', () async {
+      String source = _identifierContract().replaceFirst(
+        "part 'fixture.g.dart';",
+        "part 'fixture.g.dart';\n${entry.value}",
+      );
+      if (entry.key == 'outer Future') {
+        source = source.replaceFirst(
+          'Future<FixtureMood> ping(String value)',
+          'Alias<FixtureMood> ping(String value)',
+        );
+      } else if (entry.key == 'list element') {
+        source = source.replaceFirst('String value)', 'List<Alias> value)');
+      } else if (entry.key == 'ResourceRef') {
+        source = source
+            .replaceFirst(
+              "import 'package:adele_contract/adele_contract.dart';",
+              "import 'package:adele_contract/adele_contract.dart';\nimport 'package:adele_plugin_api/adele_plugin_api.dart';",
+            )
+            .replaceFirst('String value)', 'Alias value)');
+      } else {
+        source = source.replaceFirst('String value)', 'Alias value)');
+      }
+      await _expectDiagnostic(
+        source,
+        entry.key == 'outer Future'
+            ? 'Service methods must return Future<T>'
+            : 'Type aliases are not supported',
+      );
+    });
+  }
+
+  test('rejects imported schema aliases', () async {
+    final fixture = await _fixtureWithSupport(
+      _minimalContract(namedValue: true).replaceFirst(
+        'Future<String> ping(String value);',
+        'Future<Alias> ping(Alias value);',
+      ),
+      'class Imported {}\ntypedef Alias = Imported;',
+    );
+    expect(
+      (await _diagnostic(fixture.source)).message,
+      contains('Type aliases are not supported'),
+    );
+  });
+
+  test('allows unused unrelated aliases', () async {
+    expect(
+      await _generate(
+        _minimalContract(namedValue: true).replaceFirst(
+          "part 'fixture.g.dart';",
+          "part 'fixture.g.dart';\ntypedef Unused = DateTime;",
+        ),
+      ),
+      isNotEmpty,
+    );
+  });
+
   test(
     'generated Map<String, Object?> recursively validates JSON',
     () async {
@@ -907,12 +1095,56 @@ final class ImportedValue {
     final diagnostic = await _diagnostic(fixture.source);
     expect(diagnostic.path, fixture.source.absolute.path);
     expect(diagnostic.line, 11);
-    expect(diagnostic.column, 20);
+    expect(diagnostic.column, 10);
     expect(
       diagnostic.toString(),
-      '${fixture.source.absolute.path}:11:20: Unsupported contract type DateTime.',
+      '${fixture.source.absolute.path}:11:10: Unsupported contract type DateTime.',
     );
   });
+
+  for (final entry
+      in <
+            String,
+            ({String original, String replacement, int line, int column})
+          >{
+            'method': (
+              original: 'Future<FixtureMood> ping(String value)',
+              replacement: r'Future<FixtureMood> $ping(String value)',
+              line: 11,
+              column: 3,
+            ),
+            'parameter': (
+              original: 'ping(String value)',
+              replacement: r'ping(String $value)',
+              line: 11,
+              column: 49,
+            ),
+            'field': (
+              original: 'final String value;',
+              replacement: r'final String $value;',
+              line: 7,
+              column: 16,
+            ),
+            'enum value': (
+              original: 'enum FixtureMood { ready }',
+              replacement: r'enum FixtureMood { $ready }',
+              line: 3,
+              column: 20,
+            ),
+          }
+          .entries) {
+    test('reports precise ${entry.key} identifier location', () async {
+      final fixture = await _fixture(
+        _identifierContract().replaceFirst(
+          entry.value.original,
+          entry.value.replacement,
+        ),
+      );
+      final diagnostic = await _diagnostic(fixture.source);
+      expect(diagnostic.line, entry.value.line);
+      expect(diagnostic.column, entry.value.column);
+    });
+  }
 
   test('apply check is non-mutating and write creates final output', () async {
     final fixture = await _fixture(_minimalContract(namedValue: true));
@@ -1817,8 +2049,14 @@ Future<_Fixture> _fixture(
   return _Fixture(directory, file);
 }
 
-Future<_Fixture> _fixtureWithSupport(String source, String support) async {
-  final fixture = await _fixture("import 'support.dart';\n$source");
+Future<_Fixture> _fixtureWithSupport(
+  String source,
+  String support, {
+  String? prefix,
+}) async {
+  final fixture = await _fixture(
+    "import 'support.dart'${prefix == null ? '' : ' as $prefix'};\n$source",
+  );
   await File(
     p.join(fixture.directory.path, 'support.dart'),
   ).writeAsString(support);

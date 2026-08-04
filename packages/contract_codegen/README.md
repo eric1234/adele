@@ -6,6 +6,11 @@ ADELE request/response contracts. It uses the pinned analyzer and
 package-agnostic model, validates it, and emits the contract-owned generated
 part. It does not parse source text as a schema and has no fixture templates.
 
+Contract sources import `package:adele_contract/adele_contract.dart` exactly
+once, unprefixed and without combinators. They do the same for
+`package:adele_plugin_api/adele_plugin_api.dart` exactly when the extracted
+schema uses `ResourceRef`.
+
 Run generation from the repository root:
 
 ```sh
@@ -34,13 +39,24 @@ use ASCII alphanumeric segments separated by single dots, hyphens, or
 underscores. Generic annotated declarations are rejected. The generated part URI
 must be exactly `<source-basename>.g.dart`; output remains beside its source.
 Every top-level declaration and every unconditional or conditional emitted
-symbol share one collision namespace and derived generated identifiers are
+symbol share one collision namespace. Import prefixes and unqualified ADELE and
+SDK names used by generated code are reserved there; `ResourceRef` is reserved
+only when emitted. Derived generated identifiers are
 validated before emission. Schema Dart names must match
 `[A-Za-z][A-Za-z0-9_]*`: annotated services, values, failures and their validated
 members use public ASCII names, as do enums and enum values reachable through
 the transported schema. Unrelated unreachable private helpers and enums are not
 part of the IDL and remain allowed. These restrictions are contract boundaries,
 not temporary parser omissions, and may remain permanent.
+
+Transported types are a closed semantic set. `String`, `bool`, `int`, `double`,
+`List`, `Map`, `Uri`, and `Object` must be exact `dart:core` declarations; the
+outer method `Future` must be the exact `dart:async` declaration; and
+`ResourceRef` must resolve to its canonical plugin API declaration. Same-named
+lookalikes are rejected. Analyzer aliases are rejected recursively at every
+transported type position, including the outer `Future`, while unrelated aliases
+outside the schema remain allowed. Identifier and type diagnostics retain the
+referencing declaration node.
 
 The extractor collects all `adele_contract` annotations before assigning a
 class role. Repeated service, value, failure, method, or field annotations and
