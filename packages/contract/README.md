@@ -16,6 +16,10 @@ not arbitrary Dart API source. Every schema-participating declaration and member
 uses a public ASCII identifier matching `[A-Za-z][A-Za-z0-9_]*`; private,
 dollar-prefixed, and non-ASCII schema names are rejected. These restrictions may
 remain permanent and should only be relaxed for a concrete contract use case.
+Contract source imports this package's canonical library exactly once,
+unprefixed, and without combinators or configurations. Additional imports from
+this package and every unrelated import must be prefixed; conditional imports
+involving `adele_contract` or `adele_plugin_api` are outside the IDL.
 
 ## Dependencies
 

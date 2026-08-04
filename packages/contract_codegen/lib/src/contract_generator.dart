@@ -206,8 +206,7 @@ final class _Extractor {
       'package:adele_plugin_api/src/resource_ref.dart';
 
   ContractModel extract() {
-    _validateContractImport();
-    _validatePresentPluginApiImports();
+    _validateImports();
     final List<PartDirective> parts = result.unit.directives
         .whereType<PartDirective>()
         .toList(growable: false);
@@ -289,7 +288,10 @@ final class _Extractor {
       _fail(result.unit, 'At least one @AdeleFailure type is required.');
     }
     _rejectValueCycles(values);
-    _validatePluginApiImport(_usesExternalTypes(services, values));
+    _validateCanonicalImport(
+      _pluginApiLibrary,
+      required: _usesExternalTypes(services, values),
+    );
     _rejectGeneratedSymbolCollisions(services, values, enums, failures);
     return ContractModel(
       sourcePath: result.path,
@@ -789,37 +791,63 @@ final class _Extractor {
       type.kind == TypeKind.external ||
       type.argument != null && _typeUsesExternal(type.argument!);
 
-  void _validateContractImport() {
-    _validateCanonicalImport(
-      _contractLibrary,
-      required: true,
-      packageName: 'adele_contract',
-    );
-  }
-
-  void _validatePluginApiImport(bool required) {
-    _validateCanonicalImport(
-      _pluginApiLibrary,
-      required: required,
-      packageName: 'adele_plugin_api',
-    );
-  }
-
-  void _validatePresentPluginApiImports() {
-    final bool present = result.unit.directives
+  void _validateImports() {
+    final List<ImportDirective> imports = result.unit.directives
         .whereType<ImportDirective>()
-        .any(
-          (ImportDirective directive) =>
-              directive.uri.stringValue == _pluginApiLibrary,
+        .toList(growable: false);
+    for (final ImportDirective directive in imports) {
+      final String? uri = directive.uri.stringValue;
+      final String? canonicalPackage = _canonicalPackage(directive);
+      if (canonicalPackage != null) {
+        if (directive.configurations.isNotEmpty) {
+          _fail(
+            directive,
+            'Conditional imports from the $canonicalPackage package are not supported.',
+          );
+        }
+        final String canonicalUri = canonicalPackage == 'adele_contract'
+            ? _contractLibrary
+            : _pluginApiLibrary;
+        if (uri != canonicalUri && directive.prefix == null) {
+          _fail(
+            directive,
+            'Additional imports from the $canonicalPackage package must be prefixed.',
+          );
+        }
+      } else if (directive.prefix == null) {
+        _fail(
+          directive,
+          'Every other contract library import must be prefixed.',
         );
-    if (present) _validatePluginApiImport(true);
+      }
+    }
+    _validateCanonicalImport(_contractLibrary, required: true);
+    if (imports.any(
+      (ImportDirective directive) =>
+          _canonicalPackage(directive) == 'adele_plugin_api',
+    )) {
+      _validateCanonicalImport(_pluginApiLibrary, required: true);
+    }
   }
 
-  void _validateCanonicalImport(
-    String uri, {
-    required bool required,
-    required String packageName,
-  }) {
+  String? _canonicalPackage(ImportDirective directive) {
+    final Iterable<String?> uris = <String?>[
+      directive.uri.stringValue,
+      ...directive.configurations.map(
+        (Configuration configuration) => configuration.uri.stringValue,
+      ),
+    ];
+    for (final String? uri in uris) {
+      if (_isPackageUri(uri, 'adele_contract')) return 'adele_contract';
+      if (_isPackageUri(uri, 'adele_plugin_api')) return 'adele_plugin_api';
+    }
+    return null;
+  }
+
+  bool _isPackageUri(String? uri, String packageName) =>
+      uri != null && uri.startsWith('package:$packageName/');
+
+  void _validateCanonicalImport(String uri, {required bool required}) {
     final List<ImportDirective> imports = result.unit.directives
         .whereType<ImportDirective>()
         .where((ImportDirective directive) => directive.uri.stringValue == uri)
@@ -828,7 +856,9 @@ final class _Extractor {
     final List<ImportDirective> canonical = imports
         .where(
           (ImportDirective directive) =>
-              directive.prefix == null && directive.combinators.isEmpty,
+              directive.prefix == null &&
+              directive.combinators.isEmpty &&
+              directive.configurations.isEmpty,
         )
         .toList(growable: false);
     if (canonical.length != 1) {
@@ -836,7 +866,7 @@ final class _Extractor {
         canonical.length > 1
             ? canonical[1]
             : imports.firstOrNull ?? result.unit,
-        'Contract library must contain exactly one canonical unprefixed import of $uri without combinators.',
+        'Contract library must contain exactly one canonical unprefixed import of $uri without combinators or configurations.',
       );
     }
   }
@@ -1023,21 +1053,25 @@ final class _Extractor {
             variable.declaredFragment?.element == element,
       );
 
-  TypeAnnotation _fieldTypeNode(VariableDeclaration node) =>
-      (node.parent! as VariableDeclarationList).type!;
+  AstNode _fieldTypeNode(VariableDeclaration node) {
+    final AstNode? parent = node.parent;
+    if (parent is VariableDeclarationList && parent.type != null) {
+      return parent.type!;
+    }
+    return node;
+  }
 
-  TypeAnnotation _parameterTypeNode(FormalParameter node) {
+  AstNode _parameterTypeNode(FormalParameter node) {
     FormalParameter current = node;
     while (current is DefaultFormalParameter) {
       current = current.parameter;
     }
     return switch (current) {
-          SimpleFormalParameter(:final type?) => type,
-          FieldFormalParameter(:final type?) => type,
-          SuperFormalParameter(:final type?) => type,
-          _ => current,
-        }
-        as TypeAnnotation;
+      SimpleFormalParameter(:final type?) => type,
+      FieldFormalParameter(:final type?) => type,
+      SuperFormalParameter(:final type?) => type,
+      _ => current,
+    };
   }
 
   TypeAnnotation _futureArgumentNode(TypeAnnotation node) {

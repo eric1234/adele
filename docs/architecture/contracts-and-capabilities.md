@@ -29,10 +29,13 @@ contract source library rather than imported, wire IDs use a conservative ASCII
 segment grammar, and every transported double must be finite. Streams,
 cancellation, events, and broader schema composition remain future work.
 The contract annotation import is exactly canonical, unprefixed, and without
-combinators. The plugin API import has the same shape exactly when the schema
-uses `ResourceRef`. Every import prefix shares the generated top-level collision
-namespace with contract declarations, generated identifiers, unqualified ADELE
-runtime names, and SDK names; `ResourceRef` is reserved conditionally.
+combinators or configurations. The plugin API import has the same shape exactly
+when the schema uses `ResourceRef`. Additional imports from either canonical
+package and every other import must be prefixed; conditional imports involving
+either canonical package are rejected. Every import prefix shares the generated
+top-level collision namespace with contract declarations, generated identifiers,
+unqualified ADELE runtime names, and SDK names; `ResourceRef` is reserved
+conditionally.
 Schema names match `[A-Za-z][A-Za-z0-9_]*` across annotated declarations and
 members plus reachable enums and enum values. Private, dollar-prefixed, and
 non-ASCII names are outside the IDL, although unrelated unreachable private

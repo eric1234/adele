@@ -7,9 +7,11 @@ package-agnostic model, validates it, and emits the contract-owned generated
 part. It does not parse source text as a schema and has no fixture templates.
 
 Contract sources import `package:adele_contract/adele_contract.dart` exactly
-once, unprefixed and without combinators. They do the same for
+once, unprefixed and without combinators or configurations. They do the same for
 `package:adele_plugin_api/adele_plugin_api.dart` exactly when the extracted
-schema uses `ResourceRef`.
+schema uses `ResourceRef`. Additional imports from either canonical package and
+every other import must be prefixed. Conditional imports involving either
+canonical package are rejected.
 
 Run generation from the repository root:
 

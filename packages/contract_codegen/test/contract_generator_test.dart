@@ -300,6 +300,62 @@ abstract interface class OtherService {
     );
   });
 
+  for (final import in <String>[
+    "import 'support.dart';",
+    "import './support.dart';",
+    "import 'package:path/path.dart';",
+    "import 'package:adele_contract_lookalike/adele_contract.dart';",
+    "import 'package:other/adele_contract.dart';",
+  ]) {
+    test('rejects unprefixed noncanonical import $import', () async {
+      await _expectDiagnostic(
+        '$import\n${_minimalContract(namedValue: true)}',
+        'Every other contract library import must be prefixed',
+      );
+    });
+  }
+
+  for (final import in <String>[
+    "import 'package:adele_contract/src/annotations.dart';",
+    "import 'package:adele_contract/other.dart';",
+    "import 'package:adele_plugin_api/src/resource_ref.dart';",
+    "import 'package:adele_plugin_api/other.dart';",
+  ]) {
+    test('rejects unprefixed canonical-package import $import', () async {
+      await _expectDiagnostic(
+        '$import\n${_minimalContract(namedValue: true)}',
+        'package must be prefixed',
+      );
+    });
+  }
+
+  test('allows prefixed noncanonical and canonical-package imports', () async {
+    expect(
+      await _generate('''
+import 'support.dart' as support;
+import 'package:path/path.dart' as path;
+import 'package:adele_contract/src/annotations.dart' as annotations;
+import 'package:adele_plugin_api/src/resource_ref.dart' as resource;
+import 'package:adele_plugin_api/adele_plugin_api.dart';
+${_minimalContract(namedValue: true)}'''),
+      isNotEmpty,
+    );
+  });
+
+  for (final import in <String>[
+    "import 'support.dart' if (dart.library.io) 'package:adele_contract/adele_contract.dart' as support;",
+    "import 'package:adele_contract/adele_contract.dart' if (dart.library.io) 'support.dart';",
+    "import 'support.dart' if (dart.library.io) 'package:adele_plugin_api/adele_plugin_api.dart' as support;",
+    "import 'package:adele_plugin_api/adele_plugin_api.dart' if (dart.library.io) 'support.dart' as api;",
+  ]) {
+    test('rejects conditional canonical import $import', () async {
+      await _expectDiagnostic(
+        '$import\n${_minimalContract(namedValue: true)}',
+        'Conditional imports from the adele_',
+      );
+    });
+  }
+
   test('allows no adele_plugin_api import without ResourceRef', () async {
     expect(await _generate(_minimalContract(namedValue: true)), isNotEmpty);
   });
@@ -324,7 +380,7 @@ abstract interface class OtherService {
     await _expectDiagnostic(
       _allTypesContract().replaceFirst(
         "import 'package:adele_plugin_api/adele_plugin_api.dart';\n",
-        "import 'package:adele_plugin_api/src/resource_ref.dart';\n",
+        "import 'package:adele_plugin_api/src/resource_ref.dart' as resource;\n",
       ),
       'exactly one canonical unprefixed import',
     );
@@ -695,6 +751,42 @@ abstract interface class OtherService {
       ).replaceFirst('String value);', 'dynamic value);'),
       'Dynamic or unconstrained contract types are not supported.',
     );
+  });
+
+  test(
+    'reports ContractDiagnostic for an implicitly dynamic parameter',
+    () async {
+      final fixture = await _fixture(
+        _minimalContract(namedValue: true).replaceFirst(
+          'Future<String> ping(String value);',
+          'Future<String> ping(value);',
+        ),
+      );
+      final diagnostic = await _diagnostic(fixture.source);
+      expect(diagnostic, isA<ContractDiagnostic>());
+      expect(
+        diagnostic.message,
+        contains('Dynamic or unconstrained contract types'),
+      );
+      expect(diagnostic.path, fixture.source.absolute.path);
+      expect(diagnostic.line, 11);
+      expect(diagnostic.column, 23);
+    },
+  );
+
+  test('reports ContractDiagnostic for a function-typed parameter', () async {
+    final fixture = await _fixture(
+      _minimalContract(namedValue: true).replaceFirst(
+        'Future<String> ping(String value);',
+        'Future<String> ping(String value());',
+      ),
+    );
+    final diagnostic = await _diagnostic(fixture.source);
+    expect(diagnostic, isA<ContractDiagnostic>());
+    expect(diagnostic.message, contains('Unsupported contract type'));
+    expect(diagnostic.path, fixture.source.absolute.path);
+    expect(diagnostic.line, 11);
+    expect(diagnostic.column, 23);
   });
 
   test('rejects raw List contract types', () async {
@@ -2080,8 +2172,15 @@ Future<_Fixture> _fixtureWithSupport(
   String support, {
   String? prefix,
 }) async {
+  final String importPrefix = prefix ?? 'support';
+  final String qualifiedSource = source.replaceAllMapped(
+    RegExp(
+      r'(?<![A-Za-z0-9_.])(?:Alias|ImportedValue|ImportedMood)(?![A-Za-z0-9_])',
+    ),
+    (Match match) => '$importPrefix.${match[0]}',
+  );
   final fixture = await _fixture(
-    "import 'support.dart'${prefix == null ? '' : ' as $prefix'};\n$source",
+    "import 'support.dart' as $importPrefix;\n$qualifiedSource",
   );
   await File(
     p.join(fixture.directory.path, 'support.dart'),

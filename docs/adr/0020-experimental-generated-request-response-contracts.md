@@ -41,10 +41,12 @@ builder resolves and verifies the selected plugin's own contract source before
 backend compilation. Generated files are derived artifacts and do not replace
 contract declarations as the source of truth.
 
-The annotation import is canonical, unprefixed, and has no combinators. The
-plugin API import has the same shape exactly when `ResourceRef` occurs in the
-extracted schema. Import prefixes participate in the generated top-level
-collision namespace.
+The annotation import is canonical, unprefixed, and has no combinators or
+configurations. The plugin API import has the same shape exactly when
+`ResourceRef` occurs in the extracted schema. Additional imports from either
+canonical package and every other import are prefixed. Conditional imports
+involving either canonical package are rejected. Import prefixes participate in
+the generated top-level collision namespace.
 
 ## Consequences
 
