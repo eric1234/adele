@@ -207,7 +207,7 @@ final class _Extractor {
 
   ContractModel extract() {
     _validateContractImport();
-    _validatePluginApiImportSyntax();
+    _validatePresentPluginApiImports();
     final List<PartDirective> parts = result.unit.directives
         .whereType<PartDirective>()
         .toList(growable: false);
@@ -805,21 +805,14 @@ final class _Extractor {
     );
   }
 
-  void _validatePluginApiImportSyntax() {
-    final ImportDirective? directive = result.unit.directives
+  void _validatePresentPluginApiImports() {
+    final bool present = result.unit.directives
         .whereType<ImportDirective>()
-        .where(
+        .any(
           (ImportDirective directive) =>
               directive.uri.stringValue == _pluginApiLibrary,
-        )
-        .firstOrNull;
-    if (directive != null &&
-        (directive.prefix != null || directive.combinators.isNotEmpty)) {
-      _fail(
-        directive,
-        'The adele_plugin_api import must be exactly unprefixed and have no combinators.',
-      );
-    }
+        );
+    if (present) _validatePluginApiImport(true);
   }
 
   void _validateCanonicalImport(
@@ -832,17 +825,18 @@ final class _Extractor {
         .where((ImportDirective directive) => directive.uri.stringValue == uri)
         .toList(growable: false);
     if (!required && imports.isEmpty) return;
-    if (imports.length != 1) {
+    final List<ImportDirective> canonical = imports
+        .where(
+          (ImportDirective directive) =>
+              directive.prefix == null && directive.combinators.isEmpty,
+        )
+        .toList(growable: false);
+    if (canonical.length != 1) {
       _fail(
-        imports.length > 1 ? imports[1] : result.unit,
-        'Contract library must import $uri exactly once without a prefix or combinators.',
-      );
-    }
-    final ImportDirective directive = imports.single;
-    if (directive.prefix != null || directive.combinators.isNotEmpty) {
-      _fail(
-        directive,
-        'The $packageName import must be exactly unprefixed and have no combinators.',
+        canonical.length > 1
+            ? canonical[1]
+            : imports.firstOrNull ?? result.unit,
+        'Contract library must contain exactly one canonical unprefixed import of $uri without combinators.',
       );
     }
   }
