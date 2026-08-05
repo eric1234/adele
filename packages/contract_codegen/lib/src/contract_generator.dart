@@ -288,10 +288,7 @@ final class _Extractor {
       _fail(result.unit, 'At least one @AdeleFailure type is required.');
     }
     _rejectValueCycles(values);
-    _validateCanonicalImport(
-      _pluginApiLibrary,
-      required: _usesExternalTypes(services, values),
-    );
+    _validateImports(usesResourceRef: _usesExternalTypes(services, values));
     _rejectGeneratedSymbolCollisions(services, values, enums, failures);
     return ContractModel(
       sourcePath: result.path,
@@ -791,7 +788,7 @@ final class _Extractor {
       type.kind == TypeKind.external ||
       type.argument != null && _typeUsesExternal(type.argument!);
 
-  void _validateImports() {
+  void _validateImports({bool? usesResourceRef}) {
     final List<ImportDirective> imports = result.unit.directives
         .whereType<ImportDirective>()
         .toList(growable: false);
@@ -822,11 +819,17 @@ final class _Extractor {
       }
     }
     _validateCanonicalImport(_contractLibrary, required: true);
-    if (imports.any(
+    if (usesResourceRef == null) return;
+    final bool hasPluginApiImport = imports.any(
       (ImportDirective directive) =>
-          _canonicalPackage(directive) == 'adele_plugin_api',
-    )) {
-      _validateCanonicalImport(_pluginApiLibrary, required: true);
+          directive.uri.stringValue == _pluginApiLibrary &&
+          directive.prefix == null,
+    );
+    if (usesResourceRef || hasPluginApiImport) {
+      _validateCanonicalImport(
+        _pluginApiLibrary,
+        required: usesResourceRef || hasPluginApiImport,
+      );
     }
   }
 
@@ -852,7 +855,6 @@ final class _Extractor {
         .whereType<ImportDirective>()
         .where((ImportDirective directive) => directive.uri.stringValue == uri)
         .toList(growable: false);
-    if (!required && imports.isEmpty) return;
     final List<ImportDirective> canonical = imports
         .where(
           (ImportDirective directive) =>
@@ -861,7 +863,13 @@ final class _Extractor {
               directive.configurations.isEmpty,
         )
         .toList(growable: false);
-    if (canonical.length != 1) {
+    final bool hasNoncanonicalUnprefixed = imports.any(
+      (ImportDirective directive) =>
+          directive.prefix == null && !canonical.contains(directive),
+    );
+    if (canonical.length > 1 ||
+        required && canonical.length != 1 ||
+        hasNoncanonicalUnprefixed) {
       _fail(
         canonical.length > 1
             ? canonical[1]

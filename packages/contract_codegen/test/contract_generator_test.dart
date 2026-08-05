@@ -349,24 +349,36 @@ abstract interface class OtherService {
     });
   }
 
-  test('allows prefixed noncanonical and canonical-package imports', () async {
-    expect(
-      await _generate('''
+  for (final pluginImport in <String>[
+    "import 'package:adele_plugin_api/adele_plugin_api.dart' as api;",
+    "import 'package:adele_plugin_api/adele_plugin_api.dart' as api show ResourceRef;",
+    "import 'package:adele_plugin_api/adele_plugin_api.dart' as api hide ResourceRef;",
+    "import 'package:adele_plugin_api/src/resource_ref.dart' as resource;",
+    "import 'package:adele_plugin_api/other.dart' as api_other;",
+  ]) {
+    test(
+      'allows prefixed plugin import without ResourceRef $pluginImport',
+      () async {
+        expect(
+          await _generate('''
 import 'support.dart' as support;
 import 'package:path/path.dart' as path;
 import 'package:adele_contract/src/annotations.dart' as annotations;
-import 'package:adele_plugin_api/src/resource_ref.dart' as resource;
-import 'package:adele_plugin_api/adele_plugin_api.dart';
+$pluginImport
 ${_minimalContract(namedValue: true)}'''),
-      isNotEmpty,
+          isNotEmpty,
+        );
+      },
     );
-  });
+  }
 
   for (final import in <String>[
     "import 'support.dart' if (dart.library.io) 'package:adele_contract/adele_contract.dart' as support;",
     "import 'package:adele_contract/adele_contract.dart' if (dart.library.io) 'support.dart';",
+    "import 'package:adele_contract/src/annotations.dart' if (dart.library.io) 'support.dart' as support;",
     "import 'support.dart' if (dart.library.io) 'package:adele_plugin_api/adele_plugin_api.dart' as support;",
     "import 'package:adele_plugin_api/adele_plugin_api.dart' if (dart.library.io) 'support.dart' as api;",
+    "import 'package:adele_plugin_api/src/resource_ref.dart' if (dart.library.io) 'support.dart' as resource;",
   ]) {
     test('rejects conditional canonical import $import', () async {
       await _expectDiagnostic(
@@ -383,7 +395,6 @@ ${_minimalContract(namedValue: true)}'''),
   for (final import in <String>[
     "import 'package:adele_plugin_api/adele_plugin_api.dart' as api;",
     "import 'package:adele_plugin_api/adele_plugin_api.dart' show ResourceRef;",
-    "import 'package:adele_plugin_api/adele_plugin_api.dart' hide ResourceRef;",
   ]) {
     test('rejects non-canonical ResourceRef import $import', () async {
       await _expectDiagnostic(
@@ -391,9 +402,98 @@ ${_minimalContract(namedValue: true)}'''),
           "import 'package:adele_plugin_api/adele_plugin_api.dart';",
           import,
         ),
-        'exactly one canonical unprefixed import',
+        import.contains(' as api;')
+            ? 'Unsupported contract type InvalidType'
+            : 'exactly one canonical unprefixed import',
       );
     });
+  }
+
+  test('rejects ResourceRef when the canonical plugin import hides it', () async {
+    await _expectDiagnostic(
+      _allTypesContract().replaceFirst(
+        "import 'package:adele_plugin_api/adele_plugin_api.dart';",
+        "import 'package:adele_plugin_api/adele_plugin_api.dart' hide ResourceRef;",
+      ),
+      'Unsupported contract type InvalidType',
+    );
+  });
+
+  for (final additionalImport in <String>[
+    "import 'package:adele_plugin_api/adele_plugin_api.dart' show ResourceRef;",
+    "import 'package:adele_plugin_api/adele_plugin_api.dart' hide ResourceRef;",
+  ]) {
+    test(
+      'rejects additional unprefixed canonical plugin import $additionalImport',
+      () async {
+        await _expectDiagnostic(
+          _allTypesContract().replaceFirst(
+            "import 'package:adele_plugin_api/adele_plugin_api.dart';",
+            "import 'package:adele_plugin_api/adele_plugin_api.dart';\n$additionalImport",
+          ),
+          'exactly one canonical unprefixed import',
+        );
+      },
+    );
+  }
+
+  for (final additionalImport in <String>[
+    "import 'package:adele_plugin_api/adele_plugin_api.dart' as api;",
+    "import 'package:adele_plugin_api/adele_plugin_api.dart' as api show ResourceRef;",
+    "import 'package:adele_plugin_api/adele_plugin_api.dart' as api hide ResourceRef;",
+  ]) {
+    test(
+      'allows additional prefixed canonical plugin import $additionalImport',
+      () async {
+        expect(
+          await _generate(
+            _allTypesContract().replaceFirst(
+              "import 'package:adele_plugin_api/adele_plugin_api.dart';",
+              "import 'package:adele_plugin_api/adele_plugin_api.dart';\n$additionalImport",
+            ),
+          ),
+          isNotEmpty,
+        );
+      },
+    );
+  }
+
+  for (final additionalImport in <String>[
+    "import 'package:adele_contract/adele_contract.dart' show AdeleService;",
+    "import 'package:adele_contract/adele_contract.dart' hide AdeleProtocolException;",
+  ]) {
+    test(
+      'rejects additional unprefixed canonical contract import $additionalImport',
+      () async {
+        await _expectDiagnostic(
+          _minimalContract(namedValue: true).replaceFirst(
+            "import 'package:adele_contract/adele_contract.dart';",
+            "import 'package:adele_contract/adele_contract.dart';\n$additionalImport",
+          ),
+          'exactly one canonical unprefixed import',
+        );
+      },
+    );
+  }
+
+  for (final additionalImport in <String>[
+    "import 'package:adele_contract/adele_contract.dart' as contract show AdeleService;",
+    "import 'package:adele_contract/adele_contract.dart' as contract hide AdeleProtocolException;",
+  ]) {
+    test(
+      'allows additional prefixed canonical contract import $additionalImport',
+      () async {
+        expect(
+          await _generate(
+            _minimalContract(namedValue: true).replaceFirst(
+              "import 'package:adele_contract/adele_contract.dart';",
+              "import 'package:adele_contract/adele_contract.dart';\n$additionalImport",
+            ),
+          ),
+          isNotEmpty,
+        );
+      },
+    );
   }
 
   test('rejects ResourceRef without canonical plugin API import', () async {
@@ -402,7 +502,7 @@ ${_minimalContract(namedValue: true)}'''),
         "import 'package:adele_plugin_api/adele_plugin_api.dart';\n",
         "import 'package:adele_plugin_api/src/resource_ref.dart' as resource;\n",
       ),
-      'exactly one canonical unprefixed import',
+      'Unsupported contract type InvalidType',
     );
   });
 

@@ -43,10 +43,12 @@ contract declarations as the source of truth.
 
 The annotation import is canonical, unprefixed, and has no combinators or
 configurations. The plugin API import has the same shape exactly when
-`ResourceRef` occurs in the extracted schema. Additional imports from either
-canonical package and every other import are prefixed. Conditional imports
-involving either canonical package are rejected. Import prefixes participate in
-the generated top-level collision namespace.
+the canonical `ResourceRef` occurs semantically in the extracted schema;
+prefixed plugin API imports do not require it otherwise. Additional imports from
+either package, including repeated canonical URIs with `show` or `hide`, and
+every other import are prefixed. Conditional imports whose default or configured
+URI involves either package are rejected. Import prefixes participate in the
+generated top-level collision namespace.
 
 ## Consequences
 
@@ -93,6 +95,9 @@ the generated top-level collision namespace.
   public and private symbols and all source top-level declarations before
   writing source. Generic annotated values, failures, and services are rejected,
   and the generated part is the exact sibling `<source-basename>.g.dart`.
+- Service parameters must be explicitly typed required positionals; optional,
+  named, covariant, initializing-formal, super-formal, function-typed, and
+  implicitly dynamic parameters are rejected.
 - Annotation collection rejects repeated role, method, and field annotations
   and mixed class roles without depending on metadata order. Generated members
   and locals use reserved indexed `_adele` names; schema methods such as
@@ -106,5 +111,7 @@ the generated top-level collision namespace.
 - Analyzer aliases are rejected recursively through nullable, list, enum,
   annotated-value, `ResourceRef`, imported, and chained schema positions,
   including an alias for the outer `Future`. Unused aliases outside the schema
-  remain ordinary implementation details. Diagnostics identify the precise
-  method, parameter, field, or enum-value declaration involved.
+  remain ordinary implementation details. `ContractDiagnostic` reports source
+  path and one-based line and column at the precise import, annotation, method,
+  parameter, field, constructor, enum, or enum-value node when available;
+  whole-library constraints use the compilation unit.

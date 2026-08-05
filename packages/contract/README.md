@@ -16,10 +16,54 @@ not arbitrary Dart API source. Every schema-participating declaration and member
 uses a public ASCII identifier matching `[A-Za-z][A-Za-z0-9_]*`; private,
 dollar-prefixed, and non-ASCII schema names are rejected. These restrictions may
 remain permanent and should only be relaxed for a concrete contract use case.
-Contract source imports this package's canonical library exactly once,
-unprefixed, and without combinators or configurations. Additional imports from
-this package and every unrelated import must be prefixed; conditional imports
-involving `adele_contract` or `adele_plugin_api` are outside the IDL.
+
+## Contract source rules
+
+Every contract library imports
+`package:adele_contract/adele_contract.dart` exactly once in canonical form:
+unprefixed, unconditional, and without `show` or `hide`. It imports
+`package:adele_plugin_api/adele_plugin_api.dart` in that same canonical form
+exactly when the extracted transported schema uses `ResourceRef`. A prefixed
+plugin API import does not require the canonical import when `ResourceRef` is
+absent.
+
+Every additional import from either ADELE package must have a prefix. This
+includes a second import of either canonical URI with `show` or `hide`, as well
+as imports of another library within those packages. Every unrelated import must
+also have a prefix. Any conditional import whose default or configured URI is
+within `adele_contract` or `adele_plugin_api` is rejected, whether prefixed or
+not.
+
+Generated unqualified ADELE names and SDK names are reserved against all
+top-level declarations and import prefixes. This includes the annotation and
+transport surface, generated clients and dispatchers, codec helpers, `String`,
+`bool`, `int`, `double`, `List`, `Map`, `Uri`, `Object`, `Future`, and
+`Exception`. `ResourceRef` and its codec helper names are reserved only when the
+extracted schema uses `ResourceRef`. All derived generated identifiers and every
+unconditional or conditional top-level declaration share the same collision
+namespace.
+
+Transported SDK types are recognized by semantic declaration identity, not by
+name: core types must resolve to `dart:core`, and the outer service return
+`Future` must resolve to `dart:async`. `ResourceRef` must resolve to the
+canonical plugin API declaration. Same-named local, imported, or prefixed
+lookalikes are unsupported. Typedefs and other analyzer aliases are rejected at
+every transported type position, including aliases nested in nullable values or
+lists and an alias for the outer `Future`; aliases unused by the schema remain
+allowed.
+
+Each service method is abstract, non-static, non-operator, and returns
+`Future<T>`. Parameters must be explicitly typed, required positional
+parameters; optional, named, covariant, initializing-formal, super-formal,
+function-typed, and implicitly dynamic parameters are rejected. The Phase II
+transport remains unary in scope even though validation applies to every
+declared parameter.
+
+Generator failures are reported as `ContractDiagnostic` values with the source
+path and one-based line and column. Diagnostics are attached to the most precise
+relevant declaration or type node: imports, annotations, services, methods,
+parameters, fields, constructors, enums, and enum values retain their own source
+locations; whole-library constraints point at the compilation unit.
 
 ## Dependencies
 

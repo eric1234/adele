@@ -9,9 +9,11 @@ part. It does not parse source text as a schema and has no fixture templates.
 Contract sources import `package:adele_contract/adele_contract.dart` exactly
 once, unprefixed and without combinators or configurations. They do the same for
 `package:adele_plugin_api/adele_plugin_api.dart` exactly when the extracted
-schema uses `ResourceRef`. Additional imports from either canonical package and
-every other import must be prefixed. Conditional imports involving either
-canonical package are rejected.
+schema semantically uses the canonical `ResourceRef`; prefixed plugin API
+imports alone do not require it. Every additional import from either package,
+including a repeated canonical URI with `show` or `hide`, and every unrelated
+import must be prefixed. Conditional imports whose default or configured URI is
+in either package are rejected.
 
 Run generation from the repository root:
 
@@ -28,7 +30,8 @@ The generated part owns stable identifiers, codecs, typed clients, and backend
 dispatcher interfaces/implementations. Supported values are strings, booleans,
 integers, finite doubles, nullable forms, lists, enums, annotated values, and the
 experimental `ResourceRef` scalar. Unsupported declarations fail with source
-path, line, and column diagnostics.
+path and one-based line and column `ContractDiagnostic` locations attached to
+the most precise relevant import, declaration, member, parameter, or type node.
 
 Phase II is a deliberately constrained IDL embedded in Dart. It remains unary
 and local to one declaration library, with exactly one
@@ -57,8 +60,10 @@ outer method `Future` must be the exact `dart:async` declaration; and
 `ResourceRef` must resolve to its canonical plugin API declaration. Same-named
 lookalikes are rejected. Analyzer aliases are rejected recursively at every
 transported type position, including the outer `Future`, while unrelated aliases
-outside the schema remain allowed. Identifier and type diagnostics retain the
-referencing declaration node.
+outside the schema remain allowed. Service parameters must be explicitly typed
+required positionals; optional, named, covariant, initializing-formal,
+super-formal, function-typed, and implicitly dynamic parameters are rejected.
+Identifier and type diagnostics retain the referencing declaration node.
 
 The extractor collects all `adele_contract` annotations before assigning a
 class role. Repeated service, value, failure, method, or field annotations and

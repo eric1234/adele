@@ -30,12 +30,14 @@ segment grammar, and every transported double must be finite. Streams,
 cancellation, events, and broader schema composition remain future work.
 The contract annotation import is exactly canonical, unprefixed, and without
 combinators or configurations. The plugin API import has the same shape exactly
-when the schema uses `ResourceRef`. Additional imports from either canonical
-package and every other import must be prefixed; conditional imports involving
-either canonical package are rejected. Every import prefix shares the generated
-top-level collision namespace with contract declarations, generated identifiers,
-unqualified ADELE runtime names, and SDK names; `ResourceRef` is reserved
-conditionally.
+when the extracted schema semantically uses canonical `ResourceRef`; prefixed
+plugin API imports do not require it otherwise. Additional imports from either
+package, including repeated canonical URIs with `show` or `hide`, and every
+other import must be prefixed. Conditional imports whose default or configured
+URI is within either package are rejected. Every import prefix shares the
+generated top-level collision namespace with contract declarations, generated
+identifiers, unqualified ADELE runtime names, and SDK names; `ResourceRef` is
+reserved conditionally.
 Schema names match `[A-Za-z][A-Za-z0-9_]*` across annotated declarations and
 members plus reachable enums and enum values. Private, dollar-prefixed, and
 non-ASCII names are outside the IDL, although unrelated unreachable private
@@ -77,8 +79,12 @@ not spelling: core scalars, collections, `Uri`, and `Object` come from
 `dart:core`, method wrappers are the `dart:async` `Future`, and `ResourceRef` is
 the exact canonical plugin API declaration. Type aliases are excluded from the
 transported closure recursively, including the outer `Future`, while unused
-implementation aliases remain permitted. Extraction diagnostics retain precise
-method, parameter, field, enum, and enum-value source nodes.
+implementation aliases remain permitted. Service parameters are explicitly
+typed required positionals; optional, named, covariant, initializing-formal,
+super-formal, function-typed, and implicitly dynamic forms are rejected.
+`ContractDiagnostic` locations retain the precise import, annotation, method,
+parameter, field, constructor, enum, or enum-value source node when available;
+whole-library constraints use the compilation unit.
 
 Committed transport is checked in normal CI. Development plugin preparation
 also checks the requested plugin independently: the manifest-selected contract
