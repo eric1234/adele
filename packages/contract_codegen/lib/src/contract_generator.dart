@@ -549,11 +549,24 @@ final class _Extractor {
       final List<FieldModel> parameters = <FieldModel>[];
       for (final FormalParameterElement parameter in method.formalParameters) {
         final FormalParameter parameterNode = _parameterNode(parameter);
+        final String? parameterName = parameter.name;
+        if (parameterName == null || parameterName == '_') {
+          _fail(
+            parameterNode,
+            'Service parameters must declare public ASCII names matching [A-Za-z][A-Za-z0-9_]*.',
+          );
+        }
         _validateSchemaIdentifier(
-          parameter.name!,
+          parameterName,
           'service parameter',
           parameterNode,
         );
+        if (parameter.isCovariant) {
+          _fail(
+            parameterNode,
+            'Covariant service parameters are not supported.',
+          );
+        }
         if (parameter.isOptional || parameter.isNamed) {
           _failElement(
             parameter,
@@ -562,8 +575,8 @@ final class _Extractor {
         }
         parameters.add(
           FieldModel(
-            parameter.name!,
-            _annotationId(parameter, 'AdeleField') ?? parameter.name!,
+            parameterName,
+            _annotationId(parameter, 'AdeleField') ?? parameterName,
             _type(parameter.type, _parameterTypeNode(parameterNode)),
             named: false,
           ),
@@ -863,17 +876,20 @@ final class _Extractor {
               directive.configurations.isEmpty,
         )
         .toList(growable: false);
-    final bool hasNoncanonicalUnprefixed = imports.any(
-      (ImportDirective directive) =>
-          directive.prefix == null && !canonical.contains(directive),
-    );
+    ImportDirective? invalidUnprefixed;
+    for (final ImportDirective directive in imports) {
+      if (directive.prefix == null && !canonical.contains(directive)) {
+        invalidUnprefixed = directive;
+        break;
+      }
+    }
     if (canonical.length > 1 ||
         required && canonical.length != 1 ||
-        hasNoncanonicalUnprefixed) {
+        invalidUnprefixed != null) {
       _fail(
         canonical.length > 1
             ? canonical[1]
-            : imports.firstOrNull ?? result.unit,
+            : invalidUnprefixed ?? imports.firstOrNull ?? result.unit,
         'Contract library must contain exactly one canonical unprefixed import of $uri without combinators or configurations.',
       );
     }

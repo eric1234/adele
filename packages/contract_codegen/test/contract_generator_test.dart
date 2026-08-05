@@ -437,6 +437,48 @@ ${_minimalContract(namedValue: true)}'''),
     );
   }
 
+  for (final entry in <String, String>{
+    'contract show':
+        "import 'package:adele_contract/adele_contract.dart' show AdeleService;",
+    'contract hide':
+        "import 'package:adele_contract/adele_contract.dart' hide AdeleProtocolException;",
+  }.entries) {
+    test('${entry.key} diagnostic targets additional import', () async {
+      final source = _minimalContract(namedValue: true).replaceFirst(
+        "import 'package:adele_contract/adele_contract.dart';",
+        "import 'package:adele_contract/adele_contract.dart';\n\n${entry.value}",
+      );
+      final fixture = await _fixture(source);
+      final diagnostic = await _diagnostic(fixture.source);
+      final lines = await fixture.source.readAsLines();
+      expect(diagnostic, isA<ContractDiagnostic>());
+      expect(diagnostic.path, fixture.source.absolute.path);
+      expect(diagnostic.line, lines.indexOf(entry.value) + 1);
+      expect(diagnostic.column, 1);
+    });
+  }
+
+  for (final entry in <String, String>{
+    'plugin show':
+        "import 'package:adele_plugin_api/adele_plugin_api.dart' show ResourceRef;",
+    'plugin hide':
+        "import 'package:adele_plugin_api/adele_plugin_api.dart' hide ResourceRef;",
+  }.entries) {
+    test('${entry.key} diagnostic targets additional import', () async {
+      final source = _allTypesContract().replaceFirst(
+        "import 'package:adele_plugin_api/adele_plugin_api.dart';",
+        "import 'package:adele_plugin_api/adele_plugin_api.dart';\n\n${entry.value}",
+      );
+      final fixture = await _fixture(source);
+      final diagnostic = await _diagnostic(fixture.source);
+      final lines = await fixture.source.readAsLines();
+      expect(diagnostic, isA<ContractDiagnostic>());
+      expect(diagnostic.path, fixture.source.absolute.path);
+      expect(diagnostic.line, lines.indexOf(entry.value) + 1);
+      expect(diagnostic.column, 1);
+    });
+  }
+
   for (final additionalImport in <String>[
     "import 'package:adele_plugin_api/adele_plugin_api.dart' as api;",
     "import 'package:adele_plugin_api/adele_plugin_api.dart' as api show ResourceRef;",
@@ -908,6 +950,34 @@ ${_minimalContract(namedValue: true)}'''),
     expect(diagnostic.line, 11);
     expect(diagnostic.column, 23);
   });
+
+  for (final entry in <String, String>{
+    'wildcard': 'String _',
+    'covariant': 'covariant String value',
+  }.entries) {
+    test('reports ContractDiagnostic for ${entry.key} parameter', () async {
+      final fixture = await _fixture(
+        _minimalContract(
+          namedValue: true,
+        ).replaceFirst('String value);', '${entry.value});'),
+      );
+      final generated = File(p.join(fixture.directory.path, 'fixture.g.dart'));
+      final diagnostic = await _diagnostic(fixture.source);
+      expect(diagnostic, isA<ContractDiagnostic>());
+      expect(
+        diagnostic.message,
+        contains(
+          entry.key == 'wildcard'
+              ? 'must declare public ASCII names'
+              : 'Covariant service parameters are not supported',
+        ),
+      );
+      expect(diagnostic.path, fixture.source.absolute.path);
+      expect(diagnostic.line, 11);
+      expect(diagnostic.column, 23);
+      expect(generated.existsSync(), isFalse);
+    });
+  }
 
   test('rejects raw List contract types', () async {
     await _expectDiagnostic(

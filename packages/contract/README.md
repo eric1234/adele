@@ -57,7 +57,8 @@ Each service method is abstract, non-static, non-operator, and returns
 parameters; optional, named, covariant, initializing-formal, super-formal,
 function-typed, and implicitly dynamic parameters are rejected. The Phase II
 transport remains unary in scope even though validation applies to every
-declared parameter.
+declared parameter. Wildcard or otherwise unnamed parameters are unsupported
+because every transported parameter requires a stable schema name.
 
 Generator failures are reported as `ContractDiagnostic` values with the source
 path and one-based line and column. Diagnostics are attached to the most precise
