@@ -451,13 +451,20 @@ PluginRemoteFailure _remoteFailure(Map<String, Object?> response) {
   if (rawError is Map &&
       rawError['code'] is String &&
       rawError['message'] is String) {
+    final Object? declaredFailureType = rawError['declaredFailureType'];
+    final Object? rawDetails = rawError['details'];
+    if (declaredFailureType != null &&
+        (declaredFailureType is! String || !_isStringMap(rawDetails))) {
+      return const PluginRemoteFailure(
+        code: 'invalid_response',
+        message: 'The backend host returned an invalid error response.',
+      );
+    }
     return PluginRemoteFailure(
       code: rawError['code'] as String,
       message: rawError['message'] as String,
-      details: _stringMap(rawError['details']),
-      declaredFailureType: rawError['declaredFailureType'] is String
-          ? rawError['declaredFailureType'] as String
-          : null,
+      details: _stringMap(rawDetails),
+      declaredFailureType: declaredFailureType as String?,
     );
   }
   return const PluginRemoteFailure(
@@ -465,6 +472,9 @@ PluginRemoteFailure _remoteFailure(Map<String, Object?> response) {
     message: 'The backend host returned an invalid error response.',
   );
 }
+
+bool _isStringMap(Object? value) =>
+    value is Map && value.keys.every((Object? key) => key is String);
 
 Map<String, Object?> _stringMap(Object? value) {
   if (value is! Map) return const <String, Object?>{};
