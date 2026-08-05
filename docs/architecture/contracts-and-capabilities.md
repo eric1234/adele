@@ -9,8 +9,9 @@ Contracts and capabilities solve different problems:
 | Contract | How do typed values and asynchronous operations cross a runtime boundary? |
 | Capability | Which compatible provider handles a request? |
 
-One manual typed reference transport is implemented for `workspace_demo`.
-General transport generation and capability resolution remain unimplemented.
+The constrained Phase II generated typed request/response transport is
+implemented for `workspace_demo`. Broader transport generation and capability
+resolution remain unimplemented.
 
 ## Contracts
 
@@ -18,15 +19,78 @@ Plugin contract source is shared by frontend and backend packages and should
 normally describe immutable snapshot values. A value received across a runtime
 boundary is reconstructed; its object identity is not shared with the sender.
 
-Future internal generation is intended to provide typed proxies, dispatchers,
-serializers, request handling, streams, cancellation, and structured errors.
+The Phase II internal generator treats contracts as a constrained IDL embedded
+in Dart and provides a typed client, dispatcher, codecs,
+request handling, and structured errors for the maintained fixture. Its scope is
+one non-empty service per contract library and unary request/response only.
+Values use one unnamed generative constructor with
+required named parameters, schema enums and values must be declared in the
+contract source library rather than imported, wire IDs use a conservative ASCII
+segment grammar, and every transported double must be finite. Streams,
+cancellation, events, and broader schema composition remain future work.
+The contract annotation import is exactly canonical, unprefixed, and without
+combinators or configurations. The plugin API import has the same shape exactly
+when the extracted schema semantically uses canonical `ResourceRef`; prefixed
+plugin API imports do not require it otherwise. Additional imports from either
+package, including repeated canonical URIs with `show` or `hide`, and every
+other import must be prefixed. Conditional imports whose default or configured
+URI is within either package are rejected. Every import prefix shares the
+generated top-level collision namespace with contract declarations, generated
+identifiers, unqualified ADELE runtime names, and SDK names; `ResourceRef` is
+reserved conditionally.
+Schema names match `[A-Za-z][A-Za-z0-9_]*` across annotated declarations and
+members plus reachable enums and enum values. Private, dollar-prefixed, and
+non-ASCII names are outside the IDL, although unrelated unreachable private
+helpers and enums remain ordinary implementation details. These restrictions
+may be permanent rather than promises of future Dart-language parity.
 Generated code should hide ports, wire formats, request IDs, subscriptions, and
 transport details from plugin code. Contract declarations remain lightweight
 and independent of compiler or generation tooling.
 
-The process-hosted communication path is proven. Its manual proxy, dispatcher,
-and codecs remain reference evidence for future generation; no stable generator
-API or compatibility policy is accepted yet.
+The generated transport layers over the proven process-hosted communication
+path through a transport-neutral request channel. Its annotations and generator
+remain experimental; no general schema compatibility policy is accepted yet.
+Dispatch explicitly decodes the envelope and method, decodes arguments, invokes
+the service, and encodes the result as separate stages. Malformed requests are
+`invalid_request`; every service-thrown undeclared exception, including
+`AdeleProtocolException`, is `internal_error`; and backend results or declared
+failure details that violate the generated response contract become opaque
+`backend_contract_violation` failures. URI values, including `ResourceRef.uri`,
+must be reconstructible absolute URIs.
+
+The same absolute-URI rule applies recursively to direct values,
+`ResourceRef.uri`, annotated value fields, lists, and nested lists. Clients
+perform request encoding before invoking the channel, so invalid local URIs are
+preflight failures. JSON map transport rejects map, list, and mutual cycles and
+container depth beyond 64 while accepting shared acyclic subgraphs. Value
+constructor exceptions are opaque malformed-value failures at the client and
+dispatcher boundaries, and each dispatcher failure remains isolated to its
+request.
+
+Annotation interpretation is multiplicity-aware: repeated role, method, and
+field annotations and mixed class roles are invalid regardless of declaration
+order. Generated implementation state and temporaries occupy indexed `_adele`
+names rather than contract namespaces, and public schema methods such as
+`dispatch` coexist with the generated client, dispatcher, and backend service.
+Every contract-derived string entering generated Dart source is emitted through
+one single-quoted literal escaping path.
+Supported core and async types are checked by exact semantic library identity,
+not spelling: core scalars, collections, `Uri`, and `Object` come from
+`dart:core`, method wrappers are the `dart:async` `Future`, and `ResourceRef` is
+the exact canonical plugin API declaration. Type aliases are excluded from the
+transported closure recursively, including the outer `Future`, while unused
+implementation aliases remain permitted. Service parameters are explicitly
+typed required positionals; optional, named, covariant, initializing-formal,
+super-formal, function-typed, and implicitly dynamic forms are rejected.
+`ContractDiagnostic` locations retain the precise import, annotation, method,
+parameter, field, constructor, enum, or enum-value source node when available;
+whole-library constraints use the compilation unit.
+
+Committed transport is checked in normal CI. Development plugin preparation
+also checks the requested plugin independently: the manifest-selected contract
+package's `pubspec.yaml` name determines `lib/<package-name>.dart`, and that
+absolute source is passed explicitly to `contract_codegen --check --source`.
+This keeps stale transport failure local to the plugin and ahead of compilation.
 
 ## Capability semantics
 

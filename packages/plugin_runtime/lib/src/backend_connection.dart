@@ -1,19 +1,27 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:adele_contract/adele_contract.dart';
+
 import 'backend_host_protocol.dart';
 
 typedef PluginDiagnosticSink = void Function(String message);
 
-final class PluginRemoteFailure implements Exception {
+final class PluginRemoteFailure implements AdeleRemoteFailure {
   const PluginRemoteFailure({
     required this.code,
     required this.message,
     this.details = const <String, Object?>{},
+    this.declaredFailureType,
   });
 
+  @override
+  final String? declaredFailureType;
+  @override
   final String code;
+  @override
   final String message;
+  @override
   final Map<String, Object?> details;
 
   @override
@@ -270,15 +278,20 @@ final class PluginBackendHost {
     if (pluginId != null && trackPluginRequest) {
       _pendingPluginIds[requestId] = pluginId;
     }
-    _process.stdin.add(
-      encodeBackendHostFrame(<String, Object?>{
+    try {
+      final List<int> frame = encodeBackendHostFrame(<String, Object?>{
         'protocolVersion': backendHostProtocolVersion,
         'kind': kind,
         'requestId': requestId,
         'pluginId': ?pluginId,
         ...fields,
-      }),
-    );
+      });
+      _process.stdin.add(frame);
+    } on Object catch (error, stackTrace) {
+      _pending.remove(requestId);
+      _pendingPluginIds.remove(requestId);
+      completer.completeError(error, stackTrace);
+    }
     return completer.future;
   }
 
@@ -406,7 +419,7 @@ final class PluginBackendHost {
   }
 }
 
-final class PluginBackendConnection {
+final class PluginBackendConnection implements AdeleRequestChannel {
   PluginBackendConnection._({
     required PluginBackendHost host,
     required this.pluginId,
@@ -418,6 +431,7 @@ final class PluginBackendConnection {
 
   bool get isClosed => _closed || _host.isClosed;
 
+  @override
   Future<Object?> request(String method, Map<String, Object?> payload) {
     if (isClosed) {
       return Future<Object?>.error(
@@ -437,10 +451,20 @@ PluginRemoteFailure _remoteFailure(Map<String, Object?> response) {
   if (rawError is Map &&
       rawError['code'] is String &&
       rawError['message'] is String) {
+    final Object? declaredFailureType = rawError['declaredFailureType'];
+    final Object? rawDetails = rawError['details'];
+    if (declaredFailureType != null &&
+        (declaredFailureType is! String || !_isStringMap(rawDetails))) {
+      return const PluginRemoteFailure(
+        code: 'invalid_response',
+        message: 'The backend host returned an invalid error response.',
+      );
+    }
     return PluginRemoteFailure(
       code: rawError['code'] as String,
       message: rawError['message'] as String,
-      details: _stringMap(rawError['details']),
+      details: _stringMap(rawDetails),
+      declaredFailureType: declaredFailureType as String?,
     );
   }
   return const PluginRemoteFailure(
@@ -448,6 +472,9 @@ PluginRemoteFailure _remoteFailure(Map<String, Object?> response) {
     message: 'The backend host returned an invalid error response.',
   );
 }
+
+bool _isStringMap(Object? value) =>
+    value is Map && value.keys.every((Object? key) => key is String);
 
 Map<String, Object?> _stringMap(Object? value) {
   if (value is! Map) return const <String, Object?>{};

@@ -77,6 +77,13 @@ depend on Flutter and future plugin-facing UI APIs. A backend may use full Dart
 capabilities in later phases, subject to the eventual runtime and security
 model.
 
+Plugin tests may use internal host packages as development-only dependencies to
+exercise integration boundaries. Those dependencies must remain under
+`dev_dependencies` and must not be imported by plugin production libraries or
+entrypoints. The `workspace_demo_backend` host integration test uses
+`plugin_runtime` on this basis; the backend's production dependency graph does
+not include it.
+
 Plugins communicate through public contracts and capability discovery, never
 by importing another plugin's frontend, backend, or other implementation
 package.

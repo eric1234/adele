@@ -8,6 +8,8 @@ on:
       - "app/lib/development_smoke.dart"
       - "app/pubspec.yaml"
       - "packages/plugin_backend_host/**"
+      - "packages/contract/**"
+      - "packages/contract_codegen/**"
       - "packages/plugin_builder/**"
       - "packages/plugin_runtime/**"
       - "plugins/workspace_demo/**"
@@ -33,6 +35,8 @@ jobs:
           flutter-version: 3.38.10
           cache: true
       - run: dart tools/adele.dart bootstrap
+      - name: Verify generated contracts
+        run: dart tools/adele.dart generate --check
       - name: Run profile vertical smoke
         env:
           ADELE_DEVELOPMENT_REPOSITORY_ROOT: ${{ github.workspace }}

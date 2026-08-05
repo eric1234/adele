@@ -235,6 +235,7 @@ final class _FailingWorkspaceDemoService extends _FakeWorkspaceDemoService {
     throw const WorkspaceDemoFailure(
       code: 'unreadable',
       message: 'Backend read failed.',
+      details: {},
     );
   }
 }

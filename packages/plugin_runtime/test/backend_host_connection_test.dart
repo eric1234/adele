@@ -78,6 +78,106 @@ void main() {
     await host.close(graceful: false);
   });
 
+  test('parses optional declared failure type', () async {
+    final _FakeHost fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': 1, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      stdout.add(encodeBackendHostFrame({
+        'protocolVersion': 1,
+        'kind': 'error',
+        'requestId': message['requestId'],
+        'pluginId': message['pluginId'],
+        'error': {
+          'declaredFailureType': 'sample.failure',
+          'code': 'declared',
+          'message': 'Declared failure',
+          'details': {'reason': 'test'},
+        },
+      }));
+    }
+  });
+}
+''');
+    addTearDown(fake.dispose);
+    final PluginBackendHost host = await fake.start();
+    await expectLater(
+      host.startPlugin(pluginId: 'declared', artifactUri: Uri.file('/unused')),
+      throwsA(
+        isA<PluginRemoteFailure>()
+            .having(
+              (PluginRemoteFailure value) => value.declaredFailureType,
+              'declaredFailureType',
+              'sample.failure',
+            )
+            .having(
+              (PluginRemoteFailure value) => value.details['reason'],
+              'details',
+              'test',
+            ),
+      ),
+    );
+    await host.close(graceful: false);
+  });
+
+  for (final entry in <String, String>{
+    'missing details': '',
+    'non-map details': "'details': 'invalid',",
+  }.entries) {
+    test('rejects declared failure with ${entry.key}', () async {
+      final _FakeHost fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': 1, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      stdout.add(encodeBackendHostFrame({
+        'protocolVersion': 1,
+        'kind': 'error',
+        'requestId': message['requestId'],
+        'pluginId': message['pluginId'],
+        'error': {
+          'declaredFailureType': 'sample.failure',
+          'code': 'declared',
+          'message': 'Declared failure',
+          ${entry.value}
+        },
+      }));
+    }
+  });
+}
+''');
+      addTearDown(fake.dispose);
+      final PluginBackendHost host = await fake.start();
+      await expectLater(
+        host.startPlugin(
+          pluginId: 'malformed-declared',
+          artifactUri: Uri.file('/unused'),
+        ),
+        throwsA(
+          isA<PluginRemoteFailure>()
+              .having(
+                (PluginRemoteFailure value) => value.code,
+                'code',
+                'invalid_response',
+              )
+              .having(
+                (PluginRemoteFailure value) => value.declaredFailureType,
+                'declaredFailureType',
+                isNull,
+              ),
+        ),
+      );
+      await host.close(graceful: false);
+    });
+  }
+
   test(
     'does not return a stale connection when plugin fails during startup',
     () async {
@@ -211,6 +311,51 @@ void main() {
     await host.close(graceful: false);
   });
 
+  test(
+    'removes pending requests after synchronous serialization failure',
+    () async {
+      final _FakeHost fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': 1, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': 1, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'stopPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': 1, 'kind': 'pluginStopped', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'shutdownHost') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': 1, 'kind': 'hostStopped', 'requestId': message['requestId']}));
+        exit(0);
+      }
+    }
+  });
+}
+''');
+      addTearDown(fake.dispose);
+      final List<String> diagnostics = <String>[];
+      final PluginBackendHost host = await fake.start(
+        onDiagnostic: diagnostics.add,
+      );
+      final PluginBackendConnection connection = await host.startPlugin(
+        pluginId: 'serialize',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      await expectLater(
+        connection.request('bad', <String, Object?>{'value': Object()}),
+        throwsA(isA<BackendHostProtocolException>()),
+      );
+      await connection.close();
+      await host.close();
+      expect(
+        diagnostics.where((String value) => value.contains('response ID')),
+        isEmpty,
+      );
+    },
+  );
+
   test('kills and reaps host after malformed stdout', () async {
     final _FakeHost fake = _FakeHost.create('''
 import 'dart:async';
@@ -266,6 +411,55 @@ Future<void> main() async {
       throwsA(isA<PluginConnectionClosed>()),
     );
   });
+
+  test(
+    'does not retain pending state after synchronous encoding failure',
+    () async {
+      final _FakeHost fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': 1, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      final kind = switch (message['kind']) {
+        'startPlugin' => 'pluginReady',
+        'stopPlugin' => 'pluginStopped',
+        'shutdownHost' => 'hostStopped',
+        _ => 'response',
+      };
+      stdout.add(encodeBackendHostFrame({
+        'protocolVersion': 1,
+        'kind': kind,
+        'requestId': message['requestId'],
+        'pluginId': message['pluginId'],
+      }));
+      if (message['kind'] == 'shutdownHost') exit(0);
+    }
+  });
+}
+''');
+      addTearDown(fake.dispose);
+      final PluginBackendHost host = await fake.start();
+      final PluginBackendConnection connection = await host.startPlugin(
+        pluginId: 'retryable',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      await expectLater(
+        connection.request('bad', <String, Object?>{'value': double.nan}),
+        throwsA(isA<BackendHostProtocolException>()),
+      );
+      await connection.close();
+      final PluginBackendConnection retried = await host.startPlugin(
+        pluginId: 'retryable',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      expect(retried.isClosed, isFalse);
+      await host.close();
+      expect(host.isClosed, isTrue);
+    },
+  );
 }
 
 final class _FakeHost {

@@ -2,8 +2,15 @@
 
 `plugin_builder` is an internal, pure-Dart package. It implements narrow
 development manifest parsing, exact toolchain checks, dependency resolution,
-fresh generation directories, backend AOT compilation, captured process
-diagnostics, and complete-build activation.
+fresh build directories, generated-contract verification, backend AOT
+compilation, captured process diagnostics, and complete-build activation.
+
+`prepareBackend` validates the Dart toolchain before running build tooling. It
+resolves `packages.contract` from the requested plugin manifest, reads that
+package's name from `pubspec.yaml`, and checks the absolute
+`lib/<package-name>.dart` source with `contract_codegen --check --source`.
+Missing or stale plugin contract sources fail before Flutter validation,
+dependency resolution, or backend compilation.
 
 ## Dependencies
 
@@ -23,4 +30,8 @@ invalidate those artifacts.
 
 Frontend EVC compilation remains in the Flutter application because this
 package stays pure Dart and must not depend on eval or Flutter. Production
-caching, installation, signing, generation, and invalidation remain deferred.
+caching, installation, signing, and invalidation remain deferred. Generation is
+owned by `contract_codegen`; this package rejects stale generated files before
+compilation and never activates an incomplete build. Its tests create isolated
+temporary plugin layouts so verification cannot accidentally depend on the
+repository's generator configuration or maintained fixture.

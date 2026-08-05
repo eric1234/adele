@@ -1,13 +1,29 @@
 import 'dart:io';
 
+import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:test/test.dart';
+import 'package:workspace_demo_contract/workspace_demo_contract.dart';
 
 void main() {
+  test('keeps the internal runtime outside production dependencies', () {
+    final String pubspec = File('pubspec.yaml').readAsStringSync();
+    final String dependencies = pubspec
+        .split('dev_dependencies:')
+        .first
+        .split('dependencies:')
+        .last;
+    final String devDependencies = pubspec.split('dev_dependencies:').last;
+
+    expect(dependencies, isNot(contains('plugin_runtime:')));
+    expect(devDependencies, contains('plugin_runtime:'));
+  });
+
   test(
-    'hosts the workspace backend through framed process IPC',
+    'hosts the typed workspace backend through framed process IPC',
     () async {
-      final String repository = Directory.current.parent.parent.path;
+      final String repository =
+          Directory.current.parent.parent.parent.parent.path;
       final Directory artifacts = Directory(
         '$repository/.dart_tool/adele/integration/backend-host',
       )..createSync(recursive: true);
@@ -45,23 +61,10 @@ void main() {
         artifactUri: pluginArtifact.uri,
         arguments: <String>[developmentRoot.path],
       );
-      final Object? listing = await plugin.request(
-        'workspaceDemo.listDirectory',
-        <String, Object?>{
-          'resource': <String, Object?>{
-            'uri': developmentRoot.uri.toString(),
-            'mediaType': null,
-          },
-        },
-      );
-      expect(listing, isA<Map<Object?, Object?>>());
-      final Map<Object?, Object?> listingMap =
-          listing! as Map<Object?, Object?>;
-      final List<Object?> entries = listingMap['entries']! as List<Object?>;
-      expect(
-        (entries.single as Map<Object?, Object?>)['name'],
-        'integration.txt',
-      );
+      final DirectoryListing listing = await WorkspaceDemoServiceClient(
+        plugin,
+      ).listDirectory(ResourceRef(uri: developmentRoot.uri));
+      expect(listing.entries.single.name, 'integration.txt');
       await plugin.close();
       expect(host.isClosed, isFalse);
       await host.close();

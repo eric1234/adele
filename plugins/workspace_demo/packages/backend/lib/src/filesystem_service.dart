@@ -78,6 +78,7 @@ final class WorkspaceDemoFileService implements WorkspaceDemoService {
       throw WorkspaceDemoFailure(
         code: 'unsupported_scheme',
         message: 'Only file resources are supported.',
+        details: const {},
       );
     }
     final String requested = File.fromUri(resource.uri).absolute.path;
@@ -89,6 +90,7 @@ final class WorkspaceDemoFileService implements WorkspaceDemoService {
       throw WorkspaceDemoFailure(
         code: 'not_found',
         message: 'The requested resource does not exist.',
+        details: const {},
       );
     }
     final String canonical = type == FileSystemEntityType.directory
@@ -100,18 +102,21 @@ final class WorkspaceDemoFileService implements WorkspaceDemoService {
       throw WorkspaceDemoFailure(
         code: 'outside_development_root',
         message: 'The requested resource is outside the development root.',
+        details: const {},
       );
     }
     if (expectedDirectory && type != FileSystemEntityType.directory) {
       throw const WorkspaceDemoFailure(
         code: 'not_a_directory',
         message: 'The requested resource is not a directory.',
+        details: {},
       );
     }
     if (!expectedDirectory && type != FileSystemEntityType.file) {
       throw const WorkspaceDemoFailure(
         code: 'not_a_file',
         message: 'The requested resource is not a regular file.',
+        details: {},
       );
     }
     return canonical;

@@ -91,10 +91,20 @@ final class DevelopmentPluginBuilder {
   }) async {
     final Map<String, String> manifest = await _readManifest(pluginDirectory);
     final String pluginId = _required(manifest, 'id');
+    final String contractRelative = _required(manifest, 'contract');
     final String backendRelative = _required(manifest, 'backend');
+    final String backendEntrypoint = _required(manifest, 'backendEntrypoint');
+    final Directory contractDirectory = Directory(
+      '${pluginDirectory.path}${Platform.pathSeparator}$contractRelative',
+    ).absolute;
+    if (!contractDirectory.existsSync()) {
+      throw PluginBuildFailure(
+        'Contract package does not exist: ${contractDirectory.path}',
+      );
+    }
     final Directory backendDirectory = Directory(
       '${pluginDirectory.path}${Platform.pathSeparator}$backendRelative',
-    );
+    ).absolute;
     if (!backendDirectory.existsSync()) {
       throw PluginBuildFailure(
         'Backend package does not exist: ${backendDirectory.path}',
@@ -116,6 +126,31 @@ final class DevelopmentPluginBuilder {
         diagnostic: dartVersion,
       );
     }
+    _requireSuccess(dartVersion);
+
+    final String contractPackageName = await _readPackageName(
+      contractDirectory,
+    );
+    final File contractSource = File(
+      '${contractDirectory.path}${Platform.pathSeparator}lib${Platform.pathSeparator}$contractPackageName.dart',
+    ).absolute;
+    if (!contractSource.existsSync()) {
+      throw PluginBuildFailure(
+        'Contract source does not exist: ${contractSource.path}',
+      );
+    }
+    final String generator = File(
+      '${repositoryRoot.absolute.path}${Platform.pathSeparator}packages${Platform.pathSeparator}contract_codegen${Platform.pathSeparator}bin${Platform.pathSeparator}contract_codegen.dart',
+    ).path;
+    final PluginBuildDiagnostic generation = await _run(
+      'contract-generation-verification',
+      dartExecutable,
+      <String>['run', generator, '--check', '--source', contractSource.path],
+      repositoryRoot.absolute.path,
+    );
+    diagnostics.add(generation);
+    _requireSuccess(generation);
+
     final PluginBuildDiagnostic flutterVersion = await _run(
       'configuration',
       flutterExecutable,
@@ -159,7 +194,12 @@ final class DevelopmentPluginBuilder {
     diagnostics.add(resolution);
     _requireSuccess(resolution);
     final String entrypoint =
-        '${backendDirectory.path}${Platform.pathSeparator}bin${Platform.pathSeparator}workspace_demo_backend.dart';
+        '${backendDirectory.path}${Platform.pathSeparator}${backendEntrypoint.replaceAll('/', Platform.pathSeparator)}';
+    if (!File(entrypoint).existsSync()) {
+      throw PluginBuildFailure(
+        'Backend entrypoint does not exist: $entrypoint',
+      );
+    }
     final PluginBuildDiagnostic compilation = await _run(
       'backend-compilation',
       dartExecutable,
@@ -200,14 +240,16 @@ final class DevelopmentPluginBuilder {
     final File current = File(
       '${pluginRoot.path}${Platform.pathSeparator}current.json',
     );
-    await current.writeAsString(
-      const JsonEncoder.withIndent('  ').convert(<String, Object?>{
-        'buildId': build.buildId,
-        'buildDirectory': build.buildDirectory.path,
-        'backendArtifact': build.backendArtifact.path,
-        'frontendArtifact': build.frontendArtifact.path,
-      }),
-    );
+    final String contents = const JsonEncoder.withIndent('  ')
+        .convert(<String, Object?>{
+          'buildId': build.buildId,
+          'buildDirectory': build.buildDirectory.path,
+          'backendArtifact': build.backendArtifact.path,
+          'frontendArtifact': build.frontendArtifact.path,
+        });
+    final File temporary = File('${current.path}.tmp.$pid');
+    await temporary.writeAsString(contents, flush: true);
+    await temporary.rename(current.path);
   }
 }
 
@@ -235,6 +277,29 @@ Future<Map<String, String>> _readManifest(Directory pluginDirectory) async {
     throw const PluginBuildFailure('Unsupported manifest version.');
   }
   return values;
+}
+
+Future<String> _readPackageName(Directory packageDirectory) async {
+  final File pubspec = File(
+    '${packageDirectory.path}${Platform.pathSeparator}pubspec.yaml',
+  );
+  if (!pubspec.existsSync()) {
+    throw PluginBuildFailure(
+      'Contract package pubspec does not exist: ${pubspec.path}',
+    );
+  }
+  for (final String rawLine in await pubspec.readAsLines()) {
+    if (rawLine.startsWith('name:')) {
+      final String name = rawLine.substring('name:'.length).trim();
+      if (RegExp(r'^[a-z][a-z0-9_]*$').hasMatch(name)) return name;
+      throw PluginBuildFailure(
+        'Invalid contract package name in ${pubspec.path}: $name',
+      );
+    }
+  }
+  throw PluginBuildFailure(
+    'Missing package name in contract pubspec: ${pubspec.path}',
+  );
 }
 
 String _required(Map<String, String> values, String key) {

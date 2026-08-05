@@ -1,40 +1,37 @@
 import 'dart:io';
 
-const List<({String name, String path, bool flutter})> _packages =
-    <({String name, String path, bool flutter})>[
-      (name: 'adele_desktop', path: 'app', flutter: true),
-      (name: 'adele_plugin_api', path: 'packages/plugin_api', flutter: false),
-      (name: 'adele_contract', path: 'packages/contract', flutter: false),
-      (
-        name: 'adele_capabilities',
-        path: 'packages/capabilities',
-        flutter: false,
-      ),
-      (name: 'plugin_runtime', path: 'packages/plugin_runtime', flutter: false),
-      (
-        name: 'plugin_backend_host',
-        path: 'packages/plugin_backend_host',
-        flutter: false,
-      ),
-      (name: 'plugin_builder', path: 'packages/plugin_builder', flutter: false),
-      (name: 'agent_kernel', path: 'packages/agent_kernel', flutter: false),
-      (name: 'workspace_demo', path: 'plugins/workspace_demo', flutter: false),
-      (
-        name: 'workspace_demo_contract',
-        path: 'plugins/workspace_demo/packages/contract',
-        flutter: false,
-      ),
-      (
-        name: 'workspace_demo_backend',
-        path: 'plugins/workspace_demo/packages/backend',
-        flutter: false,
-      ),
-      (
-        name: 'workspace_demo_frontend',
-        path: 'plugins/workspace_demo/packages/frontend',
-        flutter: true,
-      ),
-    ];
+const List<({String name, String path, bool flutter})>
+_packages = <({String name, String path, bool flutter})>[
+  (name: 'adele_desktop', path: 'app', flutter: true),
+  (name: 'adele_plugin_api', path: 'packages/plugin_api', flutter: false),
+  (name: 'adele_contract', path: 'packages/contract', flutter: false),
+  (name: 'contract_codegen', path: 'packages/contract_codegen', flutter: false),
+  (name: 'adele_capabilities', path: 'packages/capabilities', flutter: false),
+  (name: 'plugin_runtime', path: 'packages/plugin_runtime', flutter: false),
+  (
+    name: 'plugin_backend_host',
+    path: 'packages/plugin_backend_host',
+    flutter: false,
+  ),
+  (name: 'plugin_builder', path: 'packages/plugin_builder', flutter: false),
+  (name: 'agent_kernel', path: 'packages/agent_kernel', flutter: false),
+  (name: 'workspace_demo', path: 'plugins/workspace_demo', flutter: false),
+  (
+    name: 'workspace_demo_contract',
+    path: 'plugins/workspace_demo/packages/contract',
+    flutter: false,
+  ),
+  (
+    name: 'workspace_demo_backend',
+    path: 'plugins/workspace_demo/packages/backend',
+    flutter: false,
+  ),
+  (
+    name: 'workspace_demo_frontend',
+    path: 'plugins/workspace_demo/packages/frontend',
+    flutter: true,
+  ),
+];
 
 Future<void> main(List<String> arguments) async {
   if (arguments.isEmpty) {
@@ -64,11 +61,18 @@ Future<void> main(List<String> arguments) async {
           '.',
         ]);
         return;
+      case 'generate':
+        await _run('contract generation', 'dart', <String>[
+          'run',
+          'packages/contract_codegen/bin/contract_codegen.dart',
+          if (arguments.skip(1).contains('--check')) '--check',
+        ]);
+        return;
       case 'analyze':
         await _run('repository tools', 'dart', <String>[
           'analyze',
           '--fatal-infos',
-          'tools',
+          'tools/adele.dart',
         ]);
         for (final package in _packages) {
           await _run(
@@ -80,6 +84,12 @@ Future<void> main(List<String> arguments) async {
         }
         return;
       case 'test':
+        await _run('adele_contract', 'dart', <String>[
+          'test',
+        ], workingDirectory: 'packages/contract');
+        await _run('contract_codegen', 'dart', <String>[
+          'test',
+        ], workingDirectory: 'packages/contract_codegen');
         await _run('adele_plugin_api', 'dart', <String>[
           'test',
         ], workingDirectory: 'packages/plugin_api');
@@ -117,6 +127,8 @@ Future<void> main(List<String> arguments) async {
         ], workingDirectory: 'app');
         return;
       case 'check':
+        await main(<String>['generate', '--check']);
+        if (exitCode != 0) return;
         await main(<String>['format', '--check']);
         if (exitCode != 0) return;
         await main(<String>['analyze']);
@@ -271,6 +283,7 @@ Usage: dart tools/adele.dart <command>
 Commands:
   bootstrap          Resolve the complete pub workspace.
   format [--check]   Format or verify formatting for all Dart files.
+  generate [--check] Generate or verify committed contract transport files.
   analyze            Analyze every package and identify failures.
   test               Run public value tests and desktop widget tests.
   check              Verify formatting, analysis, and tests.
