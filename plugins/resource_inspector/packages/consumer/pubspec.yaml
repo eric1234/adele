@@ -1,0 +1,19 @@
+name: resource_inspector_consumer
+description: Interpreted Phase III capability consumer frontend.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+  flutter: ">=3.38.10"
+
+resolution: workspace
+
+dependencies:
+  flutter:
+    sdk: flutter
+  resource_inspector_contract: ^0.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter

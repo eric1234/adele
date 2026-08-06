@@ -17,6 +17,7 @@ workspace:
   - packages/plugin_builder
   - packages/plugin_runtime
   - plugins/workspace_demo
+  - plugins/resource_inspector
 
 dev_dependencies:
   lints: ^6.0.0

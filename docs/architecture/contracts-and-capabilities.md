@@ -11,7 +11,9 @@ Contracts and capabilities solve different problems:
 
 The constrained Phase II generated typed request/response transport is
 implemented for `workspace_demo`. Broader transport generation and capability
-resolution remain unimplemented.
+transport plus Phase III active provider registration, deterministic discovery,
+exact-major resolution, and generated-client invocation are implemented for the
+maintained resource-inspector fixture.
 
 ## Contracts
 
@@ -127,8 +129,13 @@ profile preferences, workspace overrides, request compatibility, resource
 scheme, media type, availability, and dynamic suitability. The matching model
 and precedence are intentionally deferred.
 
-Phase 0 has no capability registry, provider discovery, ranking, routing,
-preference persistence, message bus, or cross-plugin transport.
+Phase III has an in-memory host-owned active registry. Discovery orders higher
+provider rank first and then stable provider ID lexically; default resolution
+selects the first result. Explicit resolution never falls back. Bindings retain
+one runtime generation and become stale when its registration closes. Exact
+positive major-version matching is provisional. Preference persistence,
+profiles, compatibility negotiation, message buses, streams, and retained
+handles remain unimplemented.
 
 ## Configured capability instances
 

@@ -1,11 +1,15 @@
 import 'dart:io';
 
+import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_desktop/development/resource_inspector/resource_inspector_eval_adapter.dart';
+import 'package:adele_desktop/development/resource_inspector/resource_inspector_eval_bridge.dart';
 import 'package:adele_desktop/development/workspace_demo/workspace_demo_eval_adapter.dart';
 import 'package:adele_desktop/development/workspace_demo/workspace_demo_eval_bridge.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:flutter/widgets.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
+import 'package:resource_inspector_contract/resource_inspector_contract.dart';
 import 'package:workspace_demo_contract/workspace_demo_contract.dart';
 
 final class DevelopmentRuntimeConfiguration {
@@ -102,11 +106,18 @@ final class DevelopmentPluginRuntime {
   final List<String> diagnostics = <String>[];
   PluginBackendHost? _host;
   PluginBackendConnection? _connection;
+  final CapabilityRegistry capabilityRegistry = CapabilityRegistry();
+  final List<PluginCapabilityActivation> _capabilityActivations =
+      <PluginCapabilityActivation>[];
+  final List<PluginBackendConnection> _capabilityConnections =
+      <PluginBackendConnection>[];
   WorkspaceDemoEvalAdapter? _eval;
+  ResourceInspectorEvalAdapter? _capabilityEval;
 
   String? buildId;
   int? get hostProcessId => _host?.processId;
   Widget? get interpretedWidget => _eval?.widget;
+  Widget? get capabilityWidget => _capabilityEval?.widget;
 
   Future<void> buildAndStart() async {
     if (_host != null) {
@@ -147,6 +158,7 @@ final class DevelopmentPluginRuntime {
         artifactUri: pluginBuild.backendArtifact.uri,
         arguments: <String>[configuration.developmentDirectory.path],
       );
+      await _startCapabilityExample();
       final WorkspaceDemoEvalBridge bridge = WorkspaceDemoEvalBridge(
         service: WorkspaceDemoServiceClient(_connection!),
         developmentRoot: ResourceRef(
@@ -173,15 +185,131 @@ final class DevelopmentPluginRuntime {
     }
   }
 
+  Future<void> _startCapabilityExample() async {
+    final Directory root = configuration.repositoryRoot;
+    final DevelopmentPluginBuilder builder = const DevelopmentPluginBuilder();
+    final BackendHostBuildResult hostBuild = await builder.buildBackendHost(
+      repositoryRoot: root,
+      dartExecutable: configuration.dartExecutable,
+    );
+    final File basicArtifact = File(
+      '${hostBuild.artifact.parent.path}/resource-inspector-basic.aot',
+    );
+    final File alternateArtifact = File(
+      '${hostBuild.artifact.parent.path}/resource-inspector-alternate.aot',
+    );
+    await _compileBackend(
+      '${root.path}/plugins/resource_inspector/packages/basic_backend/bin/resource_inspector_basic_backend.dart',
+      basicArtifact,
+    );
+    await _compileBackend(
+      '${root.path}/plugins/resource_inspector/packages/alternate_backend/bin/resource_inspector_alternate_backend.dart',
+      alternateArtifact,
+    );
+    for (final ({
+          String pluginId,
+          File artifact,
+          ProviderId providerId,
+          String displayName,
+        })
+        value
+        in <
+          ({
+            String pluginId,
+            File artifact,
+            ProviderId providerId,
+            String displayName,
+          })
+        >[
+          (
+            pluginId: 'dev.adele.resource_inspector.basic_plugin',
+            artifact: basicArtifact,
+            providerId: basicResourceInspectorProviderId,
+            displayName: 'Basic Inspector',
+          ),
+          (
+            pluginId: 'dev.adele.resource_inspector.alternate_plugin',
+            artifact: alternateArtifact,
+            providerId: alternateResourceInspectorProviderId,
+            displayName: 'Alternate Inspector',
+          ),
+        ]) {
+      final PluginBackendConnection connection = await _host!.startPlugin(
+        pluginId: value.pluginId,
+        artifactUri: value.artifact.uri,
+      );
+      _capabilityConnections.add(connection);
+      _capabilityActivations.add(
+        await PluginCapabilityActivation.register(
+          connection: connection,
+          registry: capabilityRegistry,
+          providers: <ProviderDescriptor>[
+            ProviderDescriptor(
+              id: value.providerId,
+              capability: resourceInspectCapability,
+              pluginId: value.pluginId,
+              displayName: value.displayName,
+              serviceId: resourceInspectorServiceId,
+            ),
+          ],
+        ),
+      );
+    }
+    final ResourceInspectorEvalBridge bridge = ResourceInspectorEvalBridge(
+      registry: capabilityRegistry,
+      resource: ResourceRef(uri: configuration.developmentDirectory.uri),
+    );
+    _capabilityEval = await ResourceInspectorEvalAdapter.compileAndLoad(
+      repositoryRoot: root,
+      bridge: bridge,
+    );
+  }
+
+  Future<void> _compileBackend(String entrypoint, File artifact) async {
+    final ProcessResult result = await Process.run(
+      configuration.dartExecutable,
+      <String>['compile', 'aot-snapshot', entrypoint, '-o', artifact.path],
+      workingDirectory: configuration.repositoryRoot.path,
+    );
+    diagnostics.add('resource-inspector compile: exit ${result.exitCode}');
+    if (result.exitCode != 0) {
+      throw StateError(
+        'Resource inspector compilation failed: ${result.stderr}',
+      );
+    }
+  }
+
   Future<void> stop() async {
     final WorkspaceDemoEvalAdapter? eval = _eval;
+    final ResourceInspectorEvalAdapter? capabilityEval = _capabilityEval;
     final PluginBackendConnection? connection = _connection;
     final PluginBackendHost? host = _host;
     _eval = null;
+    _capabilityEval = null;
     _connection = null;
     _host = null;
     buildId = null;
     eval?.invalidate();
+    capabilityEval?.invalidate();
+
+    for (final PluginCapabilityActivation activation
+        in _capabilityActivations.reversed) {
+      try {
+        await activation.retire();
+      } on Object catch (error) {
+        diagnostics.add('capability retirement failed: $error');
+      }
+    }
+    _capabilityActivations.clear();
+    for (final PluginBackendConnection capabilityConnection
+        in _capabilityConnections.reversed) {
+      try {
+        if (!capabilityConnection.isClosed) await capabilityConnection.close();
+      } on Object catch (error) {
+        diagnostics.add('capability connection cleanup failed: $error');
+      }
+    }
+    _capabilityConnections.clear();
 
     await cleanupDevelopmentRuntimeResources(
       closeConnection: connection?.close,

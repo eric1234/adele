@@ -1,0 +1,16 @@
+name: resource_inspector_alternate_backend
+description: Alternate resource-inspection provider plugin backend.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+
+resolution: workspace
+
+dependencies:
+  adele_plugin_api: ^0.1.0
+  resource_inspector_contract: ^0.1.0
+
+dev_dependencies:
+  test: ^1.26.3

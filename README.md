@@ -4,13 +4,17 @@ ADELE is an extensible, cross-platform desktop environment for building,
 running, inspecting, and extending agent systems. The long-term goal is for
 ADELE to become capable of developing ADELE itself.
 
-ADELE's maintained foundation includes the Phase I plugin runtime proof and the
-Phase II experimental generated request/response contract path:
+ADELE's maintained foundation includes the Phase I plugin runtime proof, the
+Phase II generated request/response contract path, and the Phase III active
+capability provider registry:
 interpreted Flutter frontends and locally compiled AOT backends hosted in one
-shared child Dart runtime, with generated typed clients, codecs, and backend
-dispatch. `workspace_demo` remains an internal reference
-fixture, not product UI. Plugin discovery, packaging, permissions, sandboxing,
-and general third-party APIs are not implemented.
+shared child Dart runtime, with generated typed clients, codecs, backend
+dispatch, and deterministic provider selection. `workspace_demo` remains the
+Phase I/II regression fixture. `resource_inspector` runs two independent
+providers in separate isolate groups in the shared child process and invokes
+both through generated transport. These are internal reference fixtures, not
+product UI. Plugin installation, packaging, permissions, sandboxing, and
+general third-party APIs are not implemented.
 
 ## Toolchain
 
@@ -74,6 +78,7 @@ packages/plugin_backend_host/ shared backend host (internal, pure Dart)
 packages/plugin_builder/     plugin_builder (internal, pure Dart)
 packages/agent_kernel/       agent_kernel (internal, pure Dart)
 plugins/workspace_demo/      internal source-plugin reference fixture
+plugins/resource_inspector/  Phase III two-provider capability fixture
 docs/architecture/           architecture boundaries and terminology
 docs/adr/                    architectural decision records
 tools/                       root development command driver
@@ -88,6 +93,13 @@ The application is the composition root.
 `workspace_demo` exercises separate pure-Dart contract, Dart backend, and
 Flutter frontend packages. Frontend and backend depend on the contract, never
 on one another. It is maintained reference infrastructure, not product UI.
+
+`resource_inspector` contains a lightweight shared capability/contract package,
+independent basic and alternate backend packages, and an evaluated consumer.
+The consumer lists provider IDs and names, invokes the deterministic default,
+explicitly invokes each provider, and renders a structured unavailable state.
+The Linux development smoke command above verifies that both providers are
+active while running and absent after each shutdown.
 
 ## Profiles
 
