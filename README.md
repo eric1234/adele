@@ -98,6 +98,9 @@ on one another. It is maintained reference infrastructure, not product UI.
 independent basic and alternate backend packages, and an evaluated consumer.
 The consumer lists provider IDs and names, invokes the deterministic default,
 explicitly invokes each provider, and renders a structured unavailable state.
+Those discovery and resolution steps run in interpreted consumer code through a
+narrow capability bridge; host code only adapts semantic operations and invokes
+the selected binding with the generated typed client.
 The Linux development smoke command above verifies that both providers are
 active while running and absent after each shutdown.
 

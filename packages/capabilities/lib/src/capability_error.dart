@@ -30,6 +30,23 @@ final class CapabilityUnavailable extends CapabilityException {
   final Object capability;
 }
 
+final class CapabilityVersionUnavailable extends CapabilityException {
+  CapabilityVersionUnavailable({
+    required this.capabilityId,
+    required this.requestedMajorVersion,
+    required Iterable<int> availableMajorVersions,
+  }) : availableMajorVersions = List<int>.unmodifiable(availableMajorVersions),
+       super(
+         'Capability $capabilityId has no active provider at major '
+         '$requestedMajorVersion; available majors: '
+         '${availableMajorVersions.join(', ')}.',
+       );
+
+  final Object capabilityId;
+  final int requestedMajorVersion;
+  final List<int> availableMajorVersions;
+}
+
 final class ProviderUnavailable extends CapabilityException {
   ProviderUnavailable({
     required this.capability,

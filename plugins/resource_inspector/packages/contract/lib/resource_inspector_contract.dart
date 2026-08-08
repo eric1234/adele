@@ -14,10 +14,10 @@ final capabilities.CapabilityKey resourceInspectCapability =
     );
 
 final capabilities.ProviderId basicResourceInspectorProviderId =
-    capabilities.ProviderId('dev.adele.resource_inspector.basic');
+    capabilities.ProviderId('dev.adele.resource-inspector.basic');
 
 final capabilities.ProviderId alternateResourceInspectorProviderId =
-    capabilities.ProviderId('dev.adele.resource_inspector.alternate');
+    capabilities.ProviderId('dev.adele.resource-inspector.alternate');
 
 @AdeleValue('resourceInspector.inspection')
 final class ResourceInspection {

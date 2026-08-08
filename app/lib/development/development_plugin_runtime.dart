@@ -222,13 +222,13 @@ final class DevelopmentPluginRuntime {
           })
         >[
           (
-            pluginId: 'dev.adele.resource_inspector.basic_plugin',
+            pluginId: 'dev.adele.resource-inspector.basic-plugin',
             artifact: basicArtifact,
             providerId: basicResourceInspectorProviderId,
             displayName: 'Basic Inspector',
           ),
           (
-            pluginId: 'dev.adele.resource_inspector.alternate_plugin',
+            pluginId: 'dev.adele.resource-inspector.alternate-plugin',
             artifact: alternateArtifact,
             providerId: alternateResourceInspectorProviderId,
             displayName: 'Alternate Inspector',
@@ -257,7 +257,6 @@ final class DevelopmentPluginRuntime {
     }
     final ResourceInspectorEvalBridge bridge = ResourceInspectorEvalBridge(
       registry: capabilityRegistry,
-      resource: ResourceRef(uri: configuration.developmentDirectory.uri),
     );
     _capabilityEval = await ResourceInspectorEvalAdapter.compileAndLoad(
       repositoryRoot: root,

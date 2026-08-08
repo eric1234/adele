@@ -59,12 +59,23 @@ final class ResourceInspectorEvalAdapter {
 }
 
 const String _bridgeSource = '''
-final class CapabilityDemoData {
-  const CapabilityDemoData({required this.lines});
-  final List<String> lines;
+final class CapabilityProviderData {
+  const CapabilityProviderData({required this.id, required this.displayName});
+  final String id;
+  final String displayName;
 }
-
-Future<CapabilityDemoData> loadCapabilityDemo() {
-  throw UnsupportedError('Bridge function.');
+final class ResolvedInspectorData {
+  const ResolvedInspectorData({required this.token, required this.providerId});
+  final String token;
+  final String providerId;
 }
+final class InspectionData {
+  const InspectionData({required this.providerLabel, required this.summary, required this.cancelled});
+  final String providerLabel;
+  final String summary;
+  final bool cancelled;
+}
+Future<List<CapabilityProviderData>> resourceInspectorProviders() => throw UnsupportedError('Bridge function.');
+Future<ResolvedInspectorData> resolveResourceInspector([String? providerId]) => throw UnsupportedError('Bridge function.');
+Future<InspectionData> inspectResource(String token, String resourceUri) => throw UnsupportedError('Bridge function.');
 ''';

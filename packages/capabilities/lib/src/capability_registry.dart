@@ -1,3 +1,5 @@
+import 'package:adele_plugin_api/adele_plugin_api.dart';
+
 import 'capability_error.dart';
 import 'capability_id.dart';
 
@@ -29,7 +31,11 @@ final class CapabilityKey {
 
 final class ProviderId {
   factory ProviderId(String value) {
-    validatePublicIdentifier(value, label: 'provider ID');
+    try {
+      validateAdelePublicId(value, label: 'provider ID');
+    } on FormatException catch (error) {
+      throw InvalidCapabilityIdentity(error.message);
+    }
     return ProviderId._(value);
   }
 
@@ -57,7 +63,7 @@ final class ProviderDescriptor {
     required this.serviceId,
     this.rank = 0,
   }) {
-    validatePublicIdentifier(pluginId, label: 'plugin ID');
+    PluginId(pluginId);
     if (displayName.trim().isEmpty) {
       throw const InvalidProviderRegistration(
         'Provider display name must not be empty.',
@@ -220,7 +226,26 @@ final class CapabilityRegistry {
       }
       return ProviderBinding._(registration);
     }
-    if (available.isEmpty) throw CapabilityUnavailable(capability);
+    if (available.isEmpty) {
+      final List<int> availableMajors =
+          _providers.keys
+              .where(
+                (CapabilityKey key) =>
+                    key.id == capability.id && providersFor(key).isNotEmpty,
+              )
+              .map((CapabilityKey key) => key.majorVersion)
+              .toSet()
+              .toList()
+            ..sort();
+      if (availableMajors.isNotEmpty) {
+        throw CapabilityVersionUnavailable(
+          capabilityId: capability.id,
+          requestedMajorVersion: capability.majorVersion,
+          availableMajorVersions: availableMajors,
+        );
+      }
+      throw CapabilityUnavailable(capability);
+    }
     return ProviderBinding._(capabilityProviders![available.first.id]!);
   }
 

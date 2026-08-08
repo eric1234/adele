@@ -3,14 +3,14 @@ import 'package:test/test.dart';
 
 void main() {
   test('CapabilityId has value equality and string behavior', () {
-    final CapabilityId first = CapabilityId('dev.adele.edit_resource');
-    final CapabilityId equal = CapabilityId('dev.adele.edit_resource');
-    final CapabilityId different = CapabilityId('dev.adele.view_resource');
+    final CapabilityId first = CapabilityId('dev.adele.edit-resource');
+    final CapabilityId equal = CapabilityId('dev.adele.edit-resource');
+    final CapabilityId different = CapabilityId('dev.adele.view-resource');
 
     expect(first, equal);
     expect(first.hashCode, equal.hashCode);
     expect(first, isNot(different));
-    expect(first.toString(), 'dev.adele.edit_resource');
+    expect(first.toString(), 'dev.adele.edit-resource');
   });
 
   test('CapabilityId rejects identifiers outside the public grammar', () {
@@ -21,7 +21,9 @@ void main() {
       'dev..adele',
       'dev.adele.',
       'dev.adele bad',
-      'dev.adele-bad',
+      'dev.adele_bad',
+      'dev.adele.-bad',
+      'dev.adele.bad-',
       'dev.adèle.bad',
       'Dev.adele.bad',
     ]) {

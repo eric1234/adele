@@ -137,6 +137,12 @@ positive major-version matching is provisional. Preference persistence,
 profiles, compatibility negotiation, message buses, streams, and retained
 handles remain unimplemented.
 
+Public capability, provider, and plugin identities share a lowercase
+reverse-domain ASCII grammar. Dot-separated segments begin with a letter and
+may contain digits or internal hyphens; underscores are not valid identity
+characters. A missing capability and a capability available only at other
+active major versions are separate structured resolution failures.
+
 ## Configured capability instances
 
 One plugin runtime may expose multiple named configurations of the same

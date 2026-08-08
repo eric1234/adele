@@ -23,7 +23,7 @@ void main() {
       'dev.adele.inspector.basic',
     );
     expect(
-      () => ProviderId('dev.adele.inspector-basic'),
+      () => ProviderId('dev.adele.inspector_basic'),
       throwsA(isA<InvalidCapabilityIdentity>()),
     );
   });
@@ -144,7 +144,7 @@ void main() {
     );
   });
 
-  test('distinguishes no provider and exact major mismatch', () {
+  test('distinguishes missing capability and unavailable major version', () {
     final CapabilityRegistry registry = CapabilityRegistry();
     registry.register(
       provider: _provider(capability, 'dev.adele.inspector.alpha'),
@@ -152,6 +152,29 @@ void main() {
     );
     expect(
       () => registry.resolve(CapabilityKey(id: capability.id, majorVersion: 2)),
+      throwsA(
+        isA<CapabilityVersionUnavailable>()
+            .having(
+              (CapabilityVersionUnavailable value) =>
+                  value.requestedMajorVersion,
+              'requestedMajorVersion',
+              2,
+            )
+            .having(
+              (CapabilityVersionUnavailable value) =>
+                  value.availableMajorVersions,
+              'availableMajorVersions',
+              <int>[1],
+            ),
+      ),
+    );
+    expect(
+      () => registry.resolve(
+        CapabilityKey(
+          id: CapabilityId('dev.adele.resource.nonexistent'),
+          majorVersion: 1,
+        ),
+      ),
       throwsA(isA<CapabilityUnavailable>()),
     );
   });

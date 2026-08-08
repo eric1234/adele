@@ -27,7 +27,11 @@ in-memory host-owned registry, registration leases, immutable discovery
 snapshots, and generation-specific provider bindings.
 
 A capability key consists of a stable reverse-domain ASCII identifier and a
-positive integer major version. Phase III compatibility is an exact key match.
+positive integer major version. Public capability, provider, and plugin IDs use
+one grammar: at least two lowercase dot-separated segments, each beginning with
+an ASCII letter and containing ASCII letters, digits, or internal hyphens.
+Underscores, empty segments, whitespace, controls, and non-ASCII text are
+invalid. Phase III compatibility is an exact key match.
 Semantic-version ranges, negotiation, adapters, and schema compatibility are
 deferred. This exact-match rule is provisional.
 
@@ -52,6 +56,11 @@ contract-service mismatches. A registration lease removes exactly the
 registration it owns and closure is idempotent. A registration group closes
 all leases in reverse order and supports rollback after partial activation.
 
+A request for an unknown capability ID produces `CapabilityUnavailable`. When
+that capability ID has active providers at other majors, resolution instead
+produces `CapabilityVersionUnavailable` with the requested and active majors.
+No negotiation or fallback across majors occurs.
+
 A binding captures the registration generation. Unregistration invalidates it.
 Restarting a provider creates a new generation even when its stable provider ID
 is unchanged. A stale binding fails as provider unavailable and cannot invoke
@@ -64,10 +73,14 @@ reports backend termination. Partial startup is rolled back. Frontend failure
 uses the existing inactive-state cleanup and therefore cannot leave active
 registrations.
 
-Plugin-facing discovery is exposed through a narrow injected resolver. The
-maintained evaluated frontend bridge can list provider metadata and invoke a
-resolved generated client without exposing frames, request IDs, maps, process
-IDs, ports, or isolate identities.
+Plugin-facing discovery is exposed through a narrow injected resolver. Because
+the eval runtime cannot retain arbitrary host objects, the bridge exposes
+capability-semantic operations: provider discovery, default or explicit
+resolution to an opaque generation binding token, and contract-specific typed
+invocation. The interpreted consumer itself sequences those operations and
+handles unavailable states. The host bridge does not precompute presentation
+output, and invocation still constructs the generated contract client without
+exposing frames, request IDs, maps, process IDs, ports, or isolate identities.
 
 ## Consequences
 

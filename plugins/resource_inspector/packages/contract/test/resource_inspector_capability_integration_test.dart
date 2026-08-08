@@ -59,11 +59,11 @@ void main() {
       });
       final CapabilityRegistry registry = CapabilityRegistry();
       final PluginBackendConnection basic = await host.startPlugin(
-        pluginId: 'dev.adele.resource_inspector.basic_plugin',
+        pluginId: 'dev.adele.resource-inspector.basic-plugin',
         artifactUri: basicArtifact.uri,
       );
       final PluginBackendConnection alternate = await host.startPlugin(
-        pluginId: 'dev.adele.resource_inspector.alternate_plugin',
+        pluginId: 'dev.adele.resource-inspector.alternate-plugin',
         artifactUri: alternateArtifact.uri,
       );
       final PluginCapabilityActivation basicActivation =
@@ -184,7 +184,7 @@ void main() {
         'Alternate Inspector',
       );
       final PluginBackendConnection restartedBasic = await host.startPlugin(
-        pluginId: 'dev.adele.resource_inspector.basic_plugin',
+        pluginId: 'dev.adele.resource-inspector.basic-plugin',
         artifactUri: basicArtifact.uri,
       );
       final PluginCapabilityActivation restartedActivation =

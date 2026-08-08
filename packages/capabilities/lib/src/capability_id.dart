@@ -1,9 +1,15 @@
+import 'package:adele_plugin_api/adele_plugin_api.dart';
+
 import 'capability_error.dart';
 
 /// A stable identifier for an action, service, or event capability.
 final class CapabilityId {
   factory CapabilityId(String value) {
-    validatePublicIdentifier(value, label: 'capability ID');
+    try {
+      validateAdelePublicId(value, label: 'capability ID');
+    } on FormatException catch (error) {
+      throw InvalidCapabilityIdentity(error.message);
+    }
     return CapabilityId._(value);
   }
 
@@ -20,12 +26,4 @@ final class CapabilityId {
 
   @override
   String toString() => value;
-}
-
-void validatePublicIdentifier(String value, {required String label}) {
-  if (!RegExp(r'^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$').hasMatch(value)) {
-    throw InvalidCapabilityIdentity(
-      '$label must be a lowercase reverse-domain ASCII identifier: $value',
-    );
-  }
 }
