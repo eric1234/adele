@@ -170,10 +170,33 @@ void main() {
     );
     expect(
       () => registry.resolve(
+        CapabilityKey(id: capability.id, majorVersion: 2),
+        providerId: ProviderId('dev.adele.inspector.alpha'),
+      ),
+      throwsA(
+        isA<CapabilityVersionUnavailable>().having(
+          (CapabilityVersionUnavailable value) => value.availableMajorVersions,
+          'availableMajorVersions',
+          <int>[1],
+        ),
+      ),
+    );
+    expect(
+      () => registry.resolve(
         CapabilityKey(
           id: CapabilityId('dev.adele.resource.nonexistent'),
           majorVersion: 1,
         ),
+      ),
+      throwsA(isA<CapabilityUnavailable>()),
+    );
+    expect(
+      () => registry.resolve(
+        CapabilityKey(
+          id: CapabilityId('dev.adele.resource.nonexistent'),
+          majorVersion: 2,
+        ),
+        providerId: ProviderId('dev.adele.inspector.alpha'),
       ),
       throwsA(isA<CapabilityUnavailable>()),
     );

@@ -81,6 +81,11 @@ invocation. The interpreted consumer itself sequences those operations and
 handles unavailable states. The host bridge does not precompute presentation
 output, and invocation still constructs the generated contract client without
 exposing frames, request IDs, maps, process IDs, ports, or isolate identities.
+Expected capability lifecycle races cross that bridge as narrow structured
+statuses. Tokens belong to one eval bridge generation, are cleared by
+invalidation, and retain their original provider binding; they are neither
+provider identities nor reusable handles across reload. Backend contract and
+transport failures remain in the generated transport error model.
 
 ## Consequences
 

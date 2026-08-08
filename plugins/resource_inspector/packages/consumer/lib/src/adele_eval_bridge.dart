@@ -6,22 +6,27 @@ final class CapabilityProviderData {
 }
 
 final class ResolvedInspectorData {
-  const ResolvedInspectorData({required this.token, required this.providerId});
+  const ResolvedInspectorData({
+    required this.status,
+    required this.token,
+    required this.providerId,
+  });
 
+  final String status;
   final String token;
   final String providerId;
 }
 
 final class InspectionData {
   const InspectionData({
+    required this.status,
     required this.providerLabel,
     required this.summary,
-    required this.cancelled,
   });
 
+  final String status;
   final String providerLabel;
   final String summary;
-  final bool cancelled;
 }
 
 Future<List<CapabilityProviderData>> resourceInspectorProviders() {

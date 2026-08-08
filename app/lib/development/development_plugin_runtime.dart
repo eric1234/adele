@@ -158,7 +158,7 @@ final class DevelopmentPluginRuntime {
         artifactUri: pluginBuild.backendArtifact.uri,
         arguments: <String>[configuration.developmentDirectory.path],
       );
-      await _startCapabilityExample();
+      await _startCapabilityExample(hostBuild.artifact.parent);
       final WorkspaceDemoEvalBridge bridge = WorkspaceDemoEvalBridge(
         service: WorkspaceDemoServiceClient(_connection!),
         developmentRoot: ResourceRef(
@@ -185,18 +185,13 @@ final class DevelopmentPluginRuntime {
     }
   }
 
-  Future<void> _startCapabilityExample() async {
+  Future<void> _startCapabilityExample(Directory artifactDirectory) async {
     final Directory root = configuration.repositoryRoot;
-    final DevelopmentPluginBuilder builder = const DevelopmentPluginBuilder();
-    final BackendHostBuildResult hostBuild = await builder.buildBackendHost(
-      repositoryRoot: root,
-      dartExecutable: configuration.dartExecutable,
-    );
     final File basicArtifact = File(
-      '${hostBuild.artifact.parent.path}/resource-inspector-basic.aot',
+      '${artifactDirectory.path}/resource-inspector-basic.aot',
     );
     final File alternateArtifact = File(
-      '${hostBuild.artifact.parent.path}/resource-inspector-alternate.aot',
+      '${artifactDirectory.path}/resource-inspector-alternate.aot',
     );
     await _compileBackend(
       '${root.path}/plugins/resource_inspector/packages/basic_backend/bin/resource_inspector_basic_backend.dart',

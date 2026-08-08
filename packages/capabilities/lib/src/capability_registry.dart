@@ -210,6 +210,9 @@ final class CapabilityRegistry {
     final Map<ProviderId, _ActiveRegistration>? capabilityProviders =
         _providers[capability];
     final List<ProviderDescriptor> available = providersFor(capability);
+    if (available.isEmpty) {
+      _throwUnavailable(capability);
+    }
     if (providerId != null) {
       final _ActiveRegistration? registration =
           capabilityProviders?[providerId];
@@ -226,27 +229,28 @@ final class CapabilityRegistry {
       }
       return ProviderBinding._(registration);
     }
-    if (available.isEmpty) {
-      final List<int> availableMajors =
-          _providers.keys
-              .where(
-                (CapabilityKey key) =>
-                    key.id == capability.id && providersFor(key).isNotEmpty,
-              )
-              .map((CapabilityKey key) => key.majorVersion)
-              .toSet()
-              .toList()
-            ..sort();
-      if (availableMajors.isNotEmpty) {
-        throw CapabilityVersionUnavailable(
-          capabilityId: capability.id,
-          requestedMajorVersion: capability.majorVersion,
-          availableMajorVersions: availableMajors,
-        );
-      }
-      throw CapabilityUnavailable(capability);
-    }
     return ProviderBinding._(capabilityProviders![available.first.id]!);
+  }
+
+  Never _throwUnavailable(CapabilityKey capability) {
+    final List<int> availableMajors =
+        _providers.keys
+            .where(
+              (CapabilityKey key) =>
+                  key.id == capability.id && providersFor(key).isNotEmpty,
+            )
+            .map((CapabilityKey key) => key.majorVersion)
+            .toSet()
+            .toList()
+          ..sort();
+    if (availableMajors.isNotEmpty) {
+      throw CapabilityVersionUnavailable(
+        capabilityId: capability.id,
+        requestedMajorVersion: capability.majorVersion,
+        availableMajorVersions: availableMajors,
+      );
+    }
+    throw CapabilityUnavailable(capability);
   }
 
   void _remove(_ActiveRegistration registration) {

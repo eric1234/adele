@@ -14,28 +14,40 @@ Future<Widget> buildCapabilityDemo() async {
     }
     final ResolvedInspectorData defaultProvider =
         await resolveResourceInspector();
-    lines.add('Default: ${defaultProvider.providerId}');
-    final InspectionData defaultResult = await inspectResource(
-      defaultProvider.token,
-      'file:///tmp/example.txt',
-    );
-    if (!defaultResult.cancelled) {
-      lines.add(
-        'Default result: ${defaultResult.providerLabel}: ${defaultResult.summary}',
+    if (defaultProvider.status == 'success') {
+      lines.add('Default: ${defaultProvider.providerId}');
+      final InspectionData defaultResult = await inspectResource(
+        defaultProvider.token,
+        'file:///tmp/example.txt',
       );
+      if (defaultResult.status == 'success') {
+        lines.add(
+          'Default result: ${defaultResult.providerLabel}: ${defaultResult.summary}',
+        );
+      } else if (defaultResult.status != 'cancelled') {
+        lines.add('Default unavailable: ${defaultResult.status}');
+      }
+    } else if (defaultProvider.status != 'cancelled') {
+      lines.add('Default unavailable: ${defaultProvider.status}');
     }
     for (final CapabilityProviderData provider in providers) {
       final ResolvedInspectorData explicit = await resolveResourceInspector(
         provider.id,
       );
-      final InspectionData result = await inspectResource(
-        explicit.token,
-        'file:///tmp/example.txt',
-      );
-      if (!result.cancelled) {
-        lines.add(
-          'Explicit ${provider.id}: ${result.providerLabel}: ${result.summary}',
+      if (explicit.status == 'success') {
+        final InspectionData result = await inspectResource(
+          explicit.token,
+          'file:///tmp/example.txt',
         );
+        if (result.status == 'success') {
+          lines.add(
+            'Explicit ${provider.id}: ${result.providerLabel}: ${result.summary}',
+          );
+        } else if (result.status != 'cancelled') {
+          lines.add('Explicit ${provider.id}: unavailable (${result.status})');
+        }
+      } else if (explicit.status != 'cancelled') {
+        lines.add('Explicit ${provider.id}: unavailable (${explicit.status})');
       }
     }
   }

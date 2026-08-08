@@ -12,6 +12,7 @@ on:
       - "packages/contract_codegen/**"
       - "packages/capabilities/**"
       - "packages/plugin_builder/**"
+      - "packages/plugin_api/**"
       - "packages/plugin_runtime/**"
       - "plugins/workspace_demo/**"
       - "plugins/resource_inspector/**"

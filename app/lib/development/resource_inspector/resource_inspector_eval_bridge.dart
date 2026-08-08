@@ -25,11 +25,11 @@ final class ResourceInspectorEvalBridge implements EvalPlugin {
   Future<List<({String id, String displayName})>> providersForTest() async =>
       _providerValues();
 
-  Future<({String token, String providerId})> resolveForTest([
+  Future<({String status, String token, String providerId})> resolveForTest([
     String? providerId,
   ]) => _resolveValue(providerId);
 
-  Future<({String providerLabel, String summary, bool cancelled})>
+  Future<({String status, String providerLabel, String summary})>
   inspectForTest(String token, String resourceUri) =>
       _inspectValue(token, resourceUri);
 
@@ -123,8 +123,12 @@ final class ResourceInspectorEvalBridge implements EvalPlugin {
         _resolveValue(
           arguments.isEmpty ? null : arguments.single?.$value as String?,
         ).then(
-          (({String token, String providerId}) value) =>
-              _ResolvedInspectorData(value.token, value.providerId),
+          (({String status, String token, String providerId}) value) =>
+              _ResolvedInspectorData(
+                value.status,
+                value.token,
+                value.providerId,
+              ),
         ),
       );
 
@@ -134,12 +138,8 @@ final class ResourceInspectorEvalBridge implements EvalPlugin {
           arguments[0]!.$value as String,
           arguments[1]!.$value as String,
         ).then(
-          (({String providerLabel, String summary, bool cancelled}) value) =>
-              _InspectionData(
-                value.providerLabel,
-                value.summary,
-                value.cancelled,
-              ),
+          (({String status, String providerLabel, String summary}) value) =>
+              _InspectionData(value.status, value.providerLabel, value.summary),
         ),
       );
 
@@ -154,44 +154,66 @@ final class ResourceInspectorEvalBridge implements EvalPlugin {
         .toList(growable: false);
   }
 
-  Future<({String token, String providerId})> _resolveValue(
+  Future<({String status, String token, String providerId})> _resolveValue(
     String? providerId,
   ) async {
-    if (!_active) throw CapabilityUnavailable(resourceInspectCapability);
-    final ProviderBinding binding = _registry.resolve(
-      resourceInspectCapability,
-      providerId: providerId == null ? null : ProviderId(providerId),
-    );
-    final String token = 'binding-${_nextToken++}';
-    _bindings[token] = binding;
-    return (token: token, providerId: binding.provider.id.value);
+    if (!_active) return (status: 'cancelled', token: '', providerId: '');
+    try {
+      final ProviderBinding binding = _registry.resolve(
+        resourceInspectCapability,
+        providerId: providerId == null ? null : ProviderId(providerId),
+      );
+      final String token = 'binding-${_nextToken++}';
+      _bindings[token] = binding;
+      return (
+        status: 'success',
+        token: token,
+        providerId: binding.provider.id.value,
+      );
+    } on ProviderUnavailable {
+      return (
+        status: 'providerUnavailable',
+        token: '',
+        providerId: providerId ?? '',
+      );
+    } on CapabilityVersionUnavailable {
+      return (status: 'versionUnavailable', token: '', providerId: '');
+    } on CapabilityUnavailable {
+      return (status: 'capabilityUnavailable', token: '', providerId: '');
+    }
   }
 
-  Future<({String providerLabel, String summary, bool cancelled})>
-  _inspectValue(String token, String resourceUri) async {
-    if (!_active) return (providerLabel: '', summary: '', cancelled: true);
+  Future<({String status, String providerLabel, String summary})> _inspectValue(
+    String token,
+    String resourceUri,
+  ) async {
+    if (!_active) {
+      return (status: 'cancelled', providerLabel: '', summary: '');
+    }
     try {
       final ProviderBinding? binding = _bindings[token];
       if (binding == null) {
-        throw ProviderUnavailable(
-          capability: resourceInspectCapability,
-          providerId: token,
-          availableProviderIds: _registry
-              .providersFor(resourceInspectCapability)
-              .map((ProviderDescriptor provider) => provider.id),
-        );
+        return (status: 'providerUnavailable', providerLabel: '', summary: '');
       }
       final ResourceInspection result = await ResourceInspectorServiceClient(
         binding.requestChannel,
       ).inspect(ResourceRef(uri: Uri.parse(resourceUri)));
-      if (!_active) return (providerLabel: '', summary: '', cancelled: true);
+      if (!_active) {
+        return (status: 'cancelled', providerLabel: '', summary: '');
+      }
       return (
+        status: 'success',
         providerLabel: result.providerLabel,
         summary: result.summary,
-        cancelled: false,
       );
+    } on ProviderUnavailable {
+      return (status: 'providerUnavailable', providerLabel: '', summary: '');
+    } on ProviderEndpointUnavailable {
+      return (status: 'providerUnavailable', providerLabel: '', summary: '');
     } on Object catch (error, stackTrace) {
-      if (!_active) return (providerLabel: '', summary: '', cancelled: true);
+      if (!_active) {
+        return (status: 'cancelled', providerLabel: '', summary: '');
+      }
       Error.throwWithStackTrace(error, stackTrace);
     }
   }
@@ -255,7 +277,7 @@ final class _CapabilityProviderData extends _BridgeValue {
 }
 
 final class _ResolvedInspectorData extends _BridgeValue {
-  const _ResolvedInspectorData(this.token, this.providerId);
+  const _ResolvedInspectorData(this.status, this.token, this.providerId);
 
   static const BridgeTypeRef $type = BridgeTypeRef(
     BridgeTypeSpec(
@@ -267,6 +289,11 @@ final class _ResolvedInspectorData extends _BridgeValue {
     BridgeClassType($type),
     constructors: <String, BridgeConstructorDef>{},
     getters: <String, BridgeMethodDef>{
+      'status': BridgeMethodDef(
+        BridgeFunctionDef(
+          returns: BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.string)),
+        ),
+      ),
       'token': BridgeMethodDef(
         BridgeFunctionDef(
           returns: BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.string)),
@@ -281,12 +308,14 @@ final class _ResolvedInspectorData extends _BridgeValue {
     wrap: true,
   );
 
+  final String status;
   final String token;
   final String providerId;
 
   @override
   $Value? $getProperty(Runtime runtime, String identifier) =>
       switch (identifier) {
+        'status' => $String(status),
         'token' => $String(token),
         'providerId' => $String(providerId),
         _ => throw UnimplementedError(identifier),
@@ -297,7 +326,7 @@ final class _ResolvedInspectorData extends _BridgeValue {
 }
 
 final class _InspectionData extends _BridgeValue {
-  const _InspectionData(this.providerLabel, this.summary, this.cancelled);
+  const _InspectionData(this.status, this.providerLabel, this.summary);
 
   static const BridgeTypeRef $type = BridgeTypeRef(
     BridgeTypeSpec(ResourceInspectorEvalBridge.library, 'InspectionData'),
@@ -306,6 +335,11 @@ final class _InspectionData extends _BridgeValue {
     BridgeClassType($type),
     constructors: <String, BridgeConstructorDef>{},
     getters: <String, BridgeMethodDef>{
+      'status': BridgeMethodDef(
+        BridgeFunctionDef(
+          returns: BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.string)),
+        ),
+      ),
       'providerLabel': BridgeMethodDef(
         BridgeFunctionDef(
           returns: BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.string)),
@@ -316,25 +350,20 @@ final class _InspectionData extends _BridgeValue {
           returns: BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.string)),
         ),
       ),
-      'cancelled': BridgeMethodDef(
-        BridgeFunctionDef(
-          returns: BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.bool)),
-        ),
-      ),
     },
     wrap: true,
   );
 
+  final String status;
   final String providerLabel;
   final String summary;
-  final bool cancelled;
 
   @override
   $Value? $getProperty(Runtime runtime, String identifier) =>
       switch (identifier) {
+        'status' => $String(status),
         'providerLabel' => $String(providerLabel),
         'summary' => $String(summary),
-        'cancelled' => $bool(cancelled),
         _ => throw UnimplementedError(identifier),
       };
 
