@@ -8,6 +8,7 @@ environment:
 
 workspace:
   - app
+  - experiments/tool_semantics
   - packages/agent_kernel
   - packages/capabilities
   - packages/contract

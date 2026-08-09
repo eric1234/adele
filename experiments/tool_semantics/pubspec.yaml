@@ -1,0 +1,12 @@
+name: tool_semantics_experiment
+description: Disposable pressure test for ADELE model-callable tool semantics.
+publish_to: none
+version: 0.0.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+
+resolution: workspace
+
+dev_dependencies:
+  test: ^1.25.0
