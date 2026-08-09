@@ -225,8 +225,10 @@ void main() {
     },
   );
 
-  test('fails pending requests when the host exits', () async {
-    final _FakeHost fake = _FakeHost.create('''
+  test(
+    'reports structured connection termination when the host exits',
+    () async {
+      final _FakeHost fake = _FakeHost.create('''
 import 'dart:io';
 import 'package:plugin_runtime/plugin_runtime.dart';
 void main() {
@@ -245,18 +247,20 @@ void main() {
   });
 }
 ''');
-    addTearDown(fake.dispose);
-    final PluginBackendHost host = await fake.start();
-    final PluginBackendConnection connection = await host.startPlugin(
-      pluginId: 'test',
-      artifactUri: Uri.file('/unused.aot'),
-    );
-    await expectLater(
-      connection.request('pending', const <String, Object?>{}),
-      throwsA(isA<PluginConnectionClosed>()),
-    );
-    expect(host.isClosed, isTrue);
-  });
+      addTearDown(fake.dispose);
+      final PluginBackendHost host = await fake.start();
+      final PluginBackendConnection connection = await host.startPlugin(
+        pluginId: 'test',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      await expectLater(
+        connection.request('pending', const <String, Object?>{}),
+        throwsA(isA<PluginConnectionClosed>()),
+      );
+      expect(await connection.terminated, isA<PluginConnectionClosed>());
+      expect(host.isClosed, isTrue);
+    },
+  );
 
   test('fails plugin stop when the host exits during stop', () async {
     final _FakeHost fake = _FakeHost.create('''

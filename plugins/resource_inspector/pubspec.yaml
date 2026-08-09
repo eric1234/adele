@@ -1,0 +1,15 @@
+name: resource_inspector
+description: Workspace root for the Phase III capability example.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+
+resolution: workspace
+
+workspace:
+  - packages/contract
+  - packages/basic_backend
+  - packages/alternate_backend
+  - packages/consumer

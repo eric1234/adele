@@ -4,24 +4,40 @@ import 'package:test/test.dart';
 void main() {
   group('PluginId', () {
     test('compares equal values equally', () {
-      const PluginId first = PluginId('dev.adele.workspace-demo');
-      const PluginId second = PluginId('dev.adele.workspace-demo');
+      final PluginId first = PluginId('dev.adele.workspace-demo');
+      final PluginId second = PluginId('dev.adele.workspace-demo');
 
       expect(first, second);
       expect(first.hashCode, second.hashCode);
     });
 
     test('distinguishes different values', () {
-      const PluginId first = PluginId('dev.adele.workspace-demo');
-      const PluginId second = PluginId('dev.adele.other');
+      final PluginId first = PluginId('dev.adele.workspace-demo');
+      final PluginId second = PluginId('dev.adele.other');
 
       expect(first, isNot(second));
     });
 
     test('converts to its value', () {
-      const PluginId id = PluginId('dev.adele.workspace-demo');
+      final PluginId id = PluginId('dev.adele.workspace-demo');
 
       expect(id.toString(), 'dev.adele.workspace-demo');
+    });
+
+    test('enforces the shared public identifier grammar', () {
+      expect(PluginId('dev.adele.workspace-demo').value, isNotEmpty);
+      for (final String value in <String>[
+        '',
+        'single',
+        'dev..adele',
+        'dev.adele_bad',
+        'dev.adele.-bad',
+        'dev.adele.bad-',
+        'Dev.adele.bad',
+        'dev.adèle.bad',
+      ]) {
+        expect(() => PluginId(value), throwsFormatException, reason: value);
+      }
     });
   });
 }

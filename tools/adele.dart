@@ -17,6 +17,31 @@ _packages = <({String name, String path, bool flutter})>[
   (name: 'agent_kernel', path: 'packages/agent_kernel', flutter: false),
   (name: 'workspace_demo', path: 'plugins/workspace_demo', flutter: false),
   (
+    name: 'resource_inspector',
+    path: 'plugins/resource_inspector',
+    flutter: false,
+  ),
+  (
+    name: 'resource_inspector_contract',
+    path: 'plugins/resource_inspector/packages/contract',
+    flutter: false,
+  ),
+  (
+    name: 'resource_inspector_basic_backend',
+    path: 'plugins/resource_inspector/packages/basic_backend',
+    flutter: false,
+  ),
+  (
+    name: 'resource_inspector_alternate_backend',
+    path: 'plugins/resource_inspector/packages/alternate_backend',
+    flutter: false,
+  ),
+  (
+    name: 'resource_inspector_consumer',
+    path: 'plugins/resource_inspector/packages/consumer',
+    flutter: true,
+  ),
+  (
     name: 'workspace_demo_contract',
     path: 'plugins/workspace_demo/packages/contract',
     flutter: false,
@@ -109,6 +134,12 @@ Future<void> main(List<String> arguments) async {
           'dart',
           <String>['test'],
           workingDirectory: 'packages/plugin_backend_host',
+        );
+        await _run(
+          'resource_inspector_contract',
+          'dart',
+          <String>['test', '--timeout', '4m'],
+          workingDirectory: 'plugins/resource_inspector/packages/contract',
         );
         await _run(
           'workspace_demo_contract',

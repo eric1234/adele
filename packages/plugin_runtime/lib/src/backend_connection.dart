@@ -427,9 +427,11 @@ final class PluginBackendConnection implements AdeleRequestChannel {
 
   final PluginBackendHost _host;
   final String pluginId;
+  final Completer<Object> _termination = Completer<Object>();
   bool _closed = false;
 
   bool get isClosed => _closed || _host.isClosed;
+  Future<Object> get terminated => _termination.future;
 
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) {
@@ -443,7 +445,10 @@ final class PluginBackendConnection implements AdeleRequestChannel {
 
   Future<void> close() => _host.stopPlugin(pluginId);
 
-  void _finish(Object _) => _closed = true;
+  void _finish(Object reason) {
+    _closed = true;
+    if (!_termination.isCompleted) _termination.complete(reason);
+  }
 }
 
 PluginRemoteFailure _remoteFailure(Map<String, Object?> response) {

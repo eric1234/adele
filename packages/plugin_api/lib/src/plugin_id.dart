@@ -1,6 +1,13 @@
+import 'public_id.dart';
+
 /// A stable, globally namespaced plugin identifier.
 final class PluginId {
-  const PluginId(this.value);
+  factory PluginId(String value) {
+    validateAdelePublicId(value, label: 'plugin ID');
+    return PluginId._(value);
+  }
+
+  const PluginId._(this.value);
 
   final String value;
 
