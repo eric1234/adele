@@ -1,0 +1,13 @@
+name: scripted_model
+description: Workspace root for the deterministic Phase IV model provider.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+
+resolution: workspace
+
+workspace:
+  - packages/contract
+  - packages/backend

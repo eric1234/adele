@@ -1,4 +1,6 @@
-/// Internal provider-neutral agent execution substrate.
-///
-/// Agent execution APIs are intentionally absent in Phase 0.
+/// Internal provider-neutral deterministic agent execution substrate.
 library;
+
+export 'src/agent_model.dart';
+export 'src/agent_run.dart';
+export 'src/agent_tool.dart';

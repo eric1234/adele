@@ -15,6 +15,13 @@ transport plus Phase III active provider registration, deterministic discovery,
 exact-major resolution, and generated-client invocation are implemented for the
 maintained resource-inspector fixture.
 
+Phase IV adds a generated unary model-provider contract. The application binds
+one model provider and selected semantic capabilities before constructing an
+`AgentRun`. Small host adapters convert the model contract to the kernel's
+provider-neutral values and project Resource Inspector as `inspect_resource`.
+After argument validation, tool execution still uses the generated
+`ResourceInspectorServiceClient`; no generic tool RPC layer exists.
+
 ## Contracts
 
 Plugin contract source is shared by frontend and backend packages and should

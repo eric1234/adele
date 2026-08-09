@@ -2,10 +2,11 @@
 
 ## Status
 
-ADELE's Phase I foundation proves source compilation, typed transport, and
-interpreted frontend execution on Linux x64 Flutter profile mode. It does not
-implement plugin discovery, packaging, capability routing, profiles, sandboxing,
-or agent execution. Plugin-facing APIs remain experimental.
+ADELE's maintained Phase I-IV foundation proves source compilation, generated
+typed transport, interpreted frontend execution, active capability resolution,
+and one deterministic capability-backed agent run. Packaging, profiles,
+sandboxing, durable sessions, and general coding-agent workflows remain
+unimplemented. Plugin-facing APIs remain experimental.
 
 ## System shape
 
@@ -22,7 +23,7 @@ not required:
 | `plugin_runtime` | Plugin discovery, lifecycle, artifact selection, runtime coordination, and failure reporting |
 | `plugin_builder` | Source resolution, contract generation coordination, backend and frontend builds, diagnostics, provenance, and caching |
 | `plugin_backend_host` | Shared child-process entrypoint and one external AOT isolate group per active plugin |
-| `agent_kernel` | Provider-neutral sessions, runs, model/tool coordination, approval, cancellation, persistence, replay, and execution events |
+| `agent_kernel` | Provider-neutral run state, model/tool coordination, explicit approval, terminal outcomes, and ordered in-memory execution events |
 
 These are internal packages. Plugins must not import them.
 
@@ -67,8 +68,9 @@ can be requested and which compatible provider may handle it:
 Capability resolution is one-to-many. Several plugins may provide the same
 action or service, and one plugin runtime may expose multiple named,
 configured instances of a capability. ADELE, not a provider, owns preferred
-provider resolution. Availability queries, provider enumeration, preference
-matching, explicit selection, and routing are future requirements only.
+provider resolution. Active provider enumeration, deterministic default
+selection, explicit selection, exact-major matching, and generation-bound
+routing are implemented. Preference matching and persistence remain deferred.
 
 The default runtime model is one plugin runtime per activation context. That
 runtime can manage multiple configured accounts, providers, clusters,
@@ -86,9 +88,12 @@ conceptually shared plugin configuration plus optional profile overrides.
 The maintained development runtime uses one implicit development profile
 without introducing profile-management APIs.
 
-The future `agent_kernel` is a provider-neutral execution substrate. Concrete
-models, tools, editors, Git integrations, terminals, UI, and specialized agent
-workflows belong in plugins rather than in the kernel.
+The Phase IV `agent_kernel` is a provider-neutral execution substrate. It owns
+one-run state transitions, approval, continuation, failures, and sequenced
+events. Concrete model providers and capabilities remain outside the kernel;
+application adapters project selected capabilities into model-facing tools.
+Editors, Git integrations, terminals, UI, durable sessions, and specialized
+agent workflows remain deferred.
 
 The long-term self-hosting goal is for ADELE to develop ADELE itself. That goal
 does not change the Phase 0 rule to prefer small, working boundaries and avoid

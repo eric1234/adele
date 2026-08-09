@@ -5,16 +5,19 @@ running, inspecting, and extending agent systems. The long-term goal is for
 ADELE to become capable of developing ADELE itself.
 
 ADELE's maintained foundation includes the Phase I plugin runtime proof, the
-Phase II generated request/response contract path, and the Phase III active
-capability provider registry:
+Phase II generated request/response contract path, the Phase III active
+capability provider registry, and the Phase IV deterministic agent run:
 interpreted Flutter frontends and locally compiled AOT backends hosted in one
 shared child Dart runtime, with generated typed clients, codecs, backend
 dispatch, and deterministic provider selection. `workspace_demo` remains the
 Phase I/II regression fixture. `resource_inspector` runs two independent
 providers in separate isolate groups in the shared child process and invokes
-both through generated transport. These are internal reference fixtures, not
-product UI. Plugin installation, packaging, permissions, sandboxing, and
-general third-party APIs are not implemented.
+both through generated transport. `scripted_model` is a real AOT capability
+provider used with a capability-backed resource-inspector tool to prove explicit
+approval, rejection, generation-safe continuation, deterministic completion,
+failure containment, and an ordered run journal. These are internal reference
+fixtures, not product UI. Plugin installation, packaging, permissions,
+sandboxing, and general third-party APIs are not implemented.
 
 ## Toolchain
 
@@ -79,6 +82,7 @@ packages/plugin_builder/     plugin_builder (internal, pure Dart)
 packages/agent_kernel/       agent_kernel (internal, pure Dart)
 plugins/workspace_demo/      internal source-plugin reference fixture
 plugins/resource_inspector/  Phase III two-provider capability fixture
+plugins/scripted_model/      Phase IV deterministic model-provider fixture
 docs/architecture/           architecture boundaries and terminology
 docs/adr/                    architectural decision records
 tools/                       root development command driver

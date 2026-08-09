@@ -1,8 +1,8 @@
 # Agent Kernel
 
-`agent_kernel` is an internal, pure-Dart package reserved for a future
-provider-neutral agent execution substrate. It contains no agent API or loop in
-Phase 0.
+`agent_kernel` is ADELE's internal, pure-Dart, provider-neutral execution
+substrate. Phase IV implements one deterministic `AgentRun` initialized from a
+user request.
 
 ## Dependencies
 
@@ -13,9 +13,11 @@ Plugins must not depend on this package.
 
 ## Ownership
 
-Future responsibilities may include sessions, runs, model invocation
-coordination, tool-call lifecycle, approval, cancellation, persistence and
-replay, execution events, and errors.
+The kernel defines small `AgentModel` and `AgentTool` ports, immutable request
+snapshots, an explicit run state machine, mandatory tool approval or rejection,
+terminal results and failures, and an append-only in-memory event journal with
+run-local sequence numbers. It supports at most one proposed tool call per model
+response.
 
 Concrete model providers, concrete tools, editors, Git, terminals, workspace
 implementations, coding-agent workflows, profile management, and provider
@@ -23,5 +25,7 @@ account management do not belong here.
 
 ## Deferred
 
-Agent loops, complete message/tool/event/persistence models, and multi-agent
-abstractions are intentionally deferred.
+Persistent sessions, durable storage, replay/recovery, cancellation, streaming,
+parallel tool calls, policy-driven approval, complete conversation models, and
+multi-agent abstractions are intentionally deferred. The event journal is
+inspectable execution history, not an event-sourced persistence mechanism.
