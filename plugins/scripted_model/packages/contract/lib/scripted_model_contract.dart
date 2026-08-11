@@ -26,6 +26,8 @@ enum ScriptedToolOutcomeStatus {
   indeterminate,
 }
 
+enum ScriptedModelStreamItemKind { text, toolCall, probe }
+
 @AdeleValue('scriptedModelFixture.message')
 final class ScriptedModelMessage {
   const ScriptedModelMessage({
@@ -85,10 +87,47 @@ final class ScriptedModelResponse {
   final ScriptedToolCall? toolCall;
 }
 
+@AdeleValue('scriptedModelFixture.streamItem')
+final class ScriptedModelStreamItem {
+  const ScriptedModelStreamItem({
+    required this.kind,
+    required this.text,
+    required this.toolCall,
+    required this.sequence,
+  });
+
+  final ScriptedModelStreamItemKind kind;
+  final String? text;
+  final ScriptedToolCall? toolCall;
+  final int? sequence;
+}
+
+@AdeleValue('scriptedModelFixture.streamProbe')
+final class ScriptedModelStreamProbe {
+  const ScriptedModelStreamProbe({
+    required this.advanced,
+    required this.cancellations,
+    required this.active,
+  });
+
+  final int advanced;
+  final int cancellations;
+  final int active;
+}
+
 @AdeleService('scriptedModelFixture')
 abstract interface class ScriptedModelFixtureService {
   @AdeleMethod('invoke')
   Future<ScriptedModelResponse> invoke(ScriptedModelRequest request);
+
+  @AdeleMethod('invokeStream')
+  Stream<ScriptedModelStreamItem> invokeStream(ScriptedModelRequest request);
+
+  @AdeleMethod('streamProbe')
+  Future<ScriptedModelStreamProbe> streamProbe();
+
+  @AdeleMethod('resetStreamProbe')
+  Future<ScriptedModelStreamProbe> resetStreamProbe();
 }
 
 @AdeleFailure('scriptedModelFixture.failure')

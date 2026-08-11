@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:isolate';
 
 import 'package:resource_inspector_basic_backend/resource_inspector_basic_backend.dart';
@@ -22,6 +23,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   await for (final Object? request in requests) {
     if (request is! Map) continue;
     if (request['method'] == 'shutdown' && request['requestId'] is int) {
+      await dispatcher.close();
       responsePort.send(<String, Object?>{
         'kind': 'response',
         'requestId': request['requestId'],
@@ -31,6 +33,6 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       requests.close();
       continue;
     }
-    responsePort.send(await dispatcher.dispatch(request));
+    unawaited(dispatcher.handle(request, responsePort.send));
   }
 }

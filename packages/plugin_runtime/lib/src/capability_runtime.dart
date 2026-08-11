@@ -23,6 +23,14 @@ final class AdeleRequestChannelEndpoint implements CapabilityEndpoint {
 extension ProviderBindingRequestChannel on ProviderBinding {
   AdeleRequestChannel get requestChannel =>
       endpointAs<AdeleRequestChannelEndpoint>().channel;
+
+  AdeleStreamChannel get streamChannel {
+    final AdeleRequestChannel channel = requestChannel;
+    if (channel is! AdeleStreamChannel) {
+      throw StateError('The provider does not support generated streaming.');
+    }
+    return channel;
+  }
 }
 
 final class PluginCapabilityActivation {

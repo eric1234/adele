@@ -7,7 +7,8 @@ const String resourceInspectorServiceId = 'resourceInspector';
 const String resourceInspectorServiceInspectId = 'resourceInspector.inspect';
 
 final class ResourceInspectorServiceClient implements ResourceInspectorService {
-  const ResourceInspectorServiceClient(this._adeleChannel);
+  const ResourceInspectorServiceClient(AdeleRequestChannel _adeleChannel)
+    : _adeleChannel = _adeleChannel;
   final AdeleRequestChannel _adeleChannel;
   @override
   Future<ResourceInspection> inspect(ResourceRef resource) async {
@@ -40,14 +41,14 @@ final class ResourceInspectorServiceClient implements ResourceInspectorService {
   }
 }
 
-abstract interface class ResourceInspectorServiceRequestDispatcher {
-  Future<Map<String, Object?>> dispatch(Map<Object?, Object?> _adeleRequest0);
-}
+abstract interface class ResourceInspectorServiceRequestDispatcher
+    implements AdeleBackendDispatcher {}
 
 final class ResourceInspectorServiceDispatcher
     implements ResourceInspectorServiceRequestDispatcher {
-  const ResourceInspectorServiceDispatcher(this._adeleService);
+  ResourceInspectorServiceDispatcher(this._adeleService);
   final ResourceInspectorService _adeleService;
+  final AdeleBoundedExecutor _adeleExecutor = AdeleBoundedExecutor();
   @override
   Future<Map<String, Object?>> dispatch(
     Map<Object?, Object?> _adeleRequest0,
@@ -55,7 +56,7 @@ final class ResourceInspectorServiceDispatcher
     final _adeleRequestId1 = _adeleRequest0['requestId'];
     late final String _adeleMethod2;
     try {
-      _adeleMethod2 = _decodeContractEnvelope(_adeleRequest0);
+      _adeleMethod2 = _decodeContractEnvelope(_adeleRequest0, 'request');
     } on AdeleProtocolException catch (_adeleError3) {
       return _contractFailure(
         _adeleRequestId1,
@@ -185,9 +186,22 @@ final class ResourceInspectorServiceDispatcher
       );
     }
   }
+
+  @override
+  Future<void> handle(
+    Map<Object?, Object?> _adeleCommand0,
+    void Function(Map<String, Object?>) _adeleSend1,
+  ) => _adeleExecutor.run<void>(
+    () async => _adeleSend1(await dispatch(_adeleCommand0)),
+  );
+  @override
+  Future<void> close() async {}
 }
 
-String _decodeContractEnvelope(Map<Object?, Object?> _adeleRequest0) {
+String _decodeContractEnvelope(
+  Map<Object?, Object?> _adeleRequest0,
+  String _adeleKind1,
+) {
   _contractFields(_adeleRequest0, const {
     'kind',
     'requestId',
@@ -195,7 +209,7 @@ String _decodeContractEnvelope(Map<Object?, Object?> _adeleRequest0) {
     'payload',
   }, 'request envelope');
   if (_adeleRequest0['requestId'] is! int ||
-      _adeleRequest0['kind'] != 'request' ||
+      _adeleRequest0['kind'] != _adeleKind1 ||
       _adeleRequest0['method'] is! String)
     throw const AdeleProtocolException('Malformed request envelope.');
   return _adeleRequest0['method'] as String;

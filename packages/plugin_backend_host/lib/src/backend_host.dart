@@ -38,6 +38,12 @@ final class AdeleBackendHost {
           await _stopPlugin(message);
         case 'request':
           _forwardRequest(message);
+        case 'streamOpen':
+          _forwardStreamOpen(message);
+        case 'streamCredit':
+          _forwardStreamControl(message, 'streamCredit');
+        case 'streamCancel':
+          _forwardStreamControl(message, 'streamCancel');
         case 'shutdownHost':
           await shutdown(requestId: requestId);
           return false;
@@ -132,6 +138,20 @@ final class AdeleBackendHost {
     plugin.request(message);
   }
 
+  void _forwardStreamOpen(Map<String, Object?> message) {
+    final String pluginId = _requireString(message, 'pluginId');
+    final _PluginIsolate? plugin = _plugins[pluginId];
+    if (plugin == null) throw StateError('Plugin $pluginId is not running.');
+    plugin.openStream(message);
+  }
+
+  void _forwardStreamControl(Map<String, Object?> message, String kind) {
+    final String pluginId = _requireString(message, 'pluginId');
+    final _PluginIsolate? plugin = _plugins[pluginId];
+    if (plugin == null) throw StateError('Plugin $pluginId is not running.');
+    plugin.streamControl(message, kind);
+  }
+
   void _pluginTerminated(
     String pluginId,
     List<int> requestIds,
@@ -202,6 +222,8 @@ final class _PluginIsolate {
   final BackendHostDiagnostic _diagnostic;
   final _PluginTerminated _onTerminated;
   final Map<int, int> _outerRequestIds = <int, int>{};
+  final Map<int, _HostPluginStream> _streams = <int, _HostPluginStream>{};
+  final Map<int, int> _pluginStreamIdsByOuter = <int, int>{};
   late final StreamSubscription<Object?> _responseSubscription;
   late final StreamSubscription<Object?> _errorSubscription;
   late final StreamSubscription<Object?> _exitSubscription;
@@ -302,9 +324,92 @@ final class _PluginIsolate {
     });
   }
 
+  void openStream(Map<String, Object?> message) {
+    if (_stopped) throw StateError('Plugin $pluginId is stopped.');
+    final Object? outerRequestId = message['requestId'];
+    if (outerRequestId is! int) {
+      throw const FormatException('Missing request ID.');
+    }
+    if (_pluginStreamIdsByOuter.containsKey(outerRequestId)) {
+      _send(<String, Object?>{
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'streamFailure',
+        'requestId': outerRequestId,
+        'pluginId': pluginId,
+        'error': <String, Object?>{
+          'code': 'stream_protocol_violation',
+          'message': 'A stream with this request ID is already active.',
+        },
+      });
+      return;
+    }
+    final String method = _requireString(message, 'method');
+    final Object? payload = message['payload'];
+    if (payload is! Map) {
+      throw const FormatException('Request payload must be a map.');
+    }
+    final int pluginRequestId = _nextPluginRequestId++;
+    final _HostPluginStream stream = _HostPluginStream(
+      pluginRequestId,
+      outerRequestId,
+    );
+    _streams[pluginRequestId] = stream;
+    _pluginStreamIdsByOuter[outerRequestId] = pluginRequestId;
+    _commands.send(<String, Object?>{
+      'kind': 'streamOpen',
+      'requestId': pluginRequestId,
+      'method': method,
+      'payload': payload,
+    });
+  }
+
+  void streamControl(Map<String, Object?> message, String kind) {
+    final Object? outerRequestId = message['requestId'];
+    if (outerRequestId is! int) {
+      throw const FormatException('Missing request ID.');
+    }
+    final int? pluginRequestId = _pluginStreamIdsByOuter[outerRequestId];
+    if (pluginRequestId == null) return;
+    final _HostPluginStream stream = _streams[pluginRequestId]!;
+    if (kind == 'streamCredit') {
+      final Object? credit = message['credit'];
+      if (credit is! int ||
+          credit <= 0 ||
+          stream.credit + credit > backendHostStreamWindow) {
+        _finishStream(stream, <String, Object?>{
+          'kind': 'streamFailure',
+          'error': <String, Object?>{
+            'code': 'stream_protocol_violation',
+            'message': 'Invalid stream credit.',
+          },
+        });
+        return;
+      }
+      stream.credit += credit;
+      _commands.send(<String, Object?>{
+        'kind': 'streamCredit',
+        'requestId': pluginRequestId,
+        'credit': credit,
+      });
+    } else {
+      if (stream.cancelling) return;
+      stream.cancelling = true;
+      _commands.send(<String, Object?>{
+        'kind': 'streamCancel',
+        'requestId': pluginRequestId,
+      });
+    }
+  }
+
   Future<void> stop() async {
     if (_stopped) return;
     _stopped = true;
+    for (final _HostPluginStream stream in _streams.values.toList()) {
+      _commands.send(<String, Object?>{
+        'kind': 'streamCancel',
+        'requestId': stream.pluginRequestId,
+      });
+    }
     final int requestId = _nextPluginRequestId++;
     final Completer<void> stopped = Completer<void>();
     _shutdownRequestId = requestId;
@@ -338,6 +443,11 @@ final class _PluginIsolate {
       return;
     }
     final int pluginRequestId = raw['requestId'] as int;
+    final _HostPluginStream? stream = _streams[pluginRequestId];
+    if (stream != null) {
+      _handleStreamResponse(stream, raw);
+      return;
+    }
     if (pluginRequestId == _shutdownRequestId) {
       final Completer<void>? completer = _shutdownCompleter;
       if (completer != null && !completer.isCompleted) completer.complete();
@@ -380,6 +490,119 @@ final class _PluginIsolate {
     }
   }
 
+  void _handleStreamResponse(
+    _HostPluginStream stream,
+    Map<Object?, Object?> raw,
+  ) {
+    final Object? kind = raw['kind'];
+    if (kind == 'streamItem') {
+      if (stream.credit <= 0) {
+        _commands.send(<String, Object?>{
+          'kind': 'streamCancel',
+          'requestId': stream.pluginRequestId,
+        });
+        _finishStream(stream, <String, Object?>{
+          'kind': 'streamFailure',
+          'error': <String, Object?>{
+            'code': 'stream_protocol_violation',
+            'message': 'The plugin emitted without stream credit.',
+          },
+        });
+        return;
+      }
+      stream.credit--;
+      final Map<String, Object?> item = <String, Object?>{
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'streamItem',
+        'requestId': stream.outerRequestId,
+        'pluginId': pluginId,
+        'payload': raw['payload'],
+      };
+      if (!_send(item)) {
+        _commands.send(<String, Object?>{
+          'kind': 'streamCancel',
+          'requestId': stream.pluginRequestId,
+        });
+        _finishStream(stream, <String, Object?>{
+          'kind': 'streamFailure',
+          'error': <String, Object?>{
+            'code': _isOversizedResponse(item)
+                ? 'response_too_large'
+                : 'response_encoding_failed',
+            'message': 'The plugin stream item could not be transported.',
+          },
+        });
+      }
+      return;
+    }
+    if (kind == 'streamDone' ||
+        kind == 'streamFailure' ||
+        kind == 'streamCancelled') {
+      if (!_validStreamTerminal(stream, raw)) {
+        _commands.send(<String, Object?>{
+          'kind': 'streamCancel',
+          'requestId': stream.pluginRequestId,
+        });
+        _finishStream(stream, <String, Object?>{
+          'kind': 'streamFailure',
+          'error': <String, Object?>{
+            'code': 'stream_protocol_violation',
+            'message': 'The plugin returned a malformed stream terminal.',
+          },
+        });
+        return;
+      }
+      _finishStream(stream, raw);
+      return;
+    }
+    _diagnostic('Malformed stream response from $pluginId: $raw');
+  }
+
+  bool _validStreamTerminal(
+    _HostPluginStream stream,
+    Map<Object?, Object?> raw,
+  ) {
+    final Object? kind = raw['kind'];
+    if (kind == 'streamCancelled') {
+      return stream.cancelling &&
+          raw.length == 2 &&
+          raw['requestId'] == stream.pluginRequestId;
+    }
+    if (kind == 'streamDone') {
+      return raw.length == 2 && raw['requestId'] == stream.pluginRequestId;
+    }
+    if (kind != 'streamFailure' ||
+        raw.length != 3 ||
+        raw['requestId'] != stream.pluginRequestId) {
+      return false;
+    }
+    final Object? error = raw['error'];
+    if (error is! Map ||
+        error['code'] is! String ||
+        error['message'] is! String) {
+      return false;
+    }
+    final Object? declaredFailureType = error['declaredFailureType'];
+    final Object? details = error['details'];
+    return (declaredFailureType == null || declaredFailureType is String) &&
+        (details == null || details is Map);
+  }
+
+  void _finishStream(_HostPluginStream stream, Map<Object?, Object?> raw) {
+    if (_streams.remove(stream.pluginRequestId) != stream) return;
+    _pluginStreamIdsByOuter.remove(stream.outerRequestId);
+    final Map<String, Object?> response = <String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': raw['kind'] as String,
+      'requestId': stream.outerRequestId,
+      'pluginId': pluginId,
+      if (raw.containsKey('error')) 'error': raw['error'],
+    };
+    if (!_send(response)) {
+      _diagnostic('Failed to send stream terminal for $pluginId.');
+    }
+  }
+
   bool _isOversizedResponse(Map<String, Object?> response) {
     try {
       encodeBackendHostFrame(response);
@@ -408,8 +631,13 @@ final class _PluginIsolate {
     _terminated = true;
     final List<int> pending = _outerRequestIds.values
         .where((int requestId) => requestId >= 0)
-        .toList(growable: false);
+        .toList();
+    pending.addAll(
+      _streams.values.map((_HostPluginStream value) => value.outerRequestId),
+    );
     _outerRequestIds.clear();
+    _streams.clear();
+    _pluginStreamIdsByOuter.clear();
     final String? uncaughtError = _uncaughtError;
     _onTerminated(
       pluginId,
@@ -431,6 +659,15 @@ final class _PluginIsolate {
     _responses.close();
     _closeLifecyclePorts();
   }
+}
+
+final class _HostPluginStream {
+  _HostPluginStream(this.pluginRequestId, this.outerRequestId);
+
+  final int pluginRequestId;
+  final int outerRequestId;
+  int credit = 0;
+  bool cancelling = false;
 }
 
 typedef _PluginTerminated =

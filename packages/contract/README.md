@@ -2,7 +2,7 @@
 
 `adele_contract` is an experimental public, pure-Dart package imported by
 plugin contract source. It provides declaration annotations, the
-transport-neutral `AdeleRequestChannel`, abstract `AdeleRemoteFailure` boundary
+transport-neutral `AdeleRequestChannel` and `AdeleStreamChannel`, abstract `AdeleRemoteFailure` boundary
 with an optional declared failure type identifier, and
 `AdeleProtocolException` for malformed generated-protocol values.
 
@@ -37,7 +37,7 @@ not.
 Generated unqualified ADELE names and SDK names are reserved against all
 top-level declarations and import prefixes. This includes the annotation and
 transport surface, generated clients and dispatchers, codec helpers, `String`,
-`bool`, `int`, `double`, `List`, `Map`, `Uri`, `Object`, `Future`, and
+`bool`, `int`, `double`, `List`, `Map`, `Uri`, `Object`, `Future`, `Stream`, and
 `Exception`. `ResourceRef` and its codec helper names are reserved only when the
 extracted schema uses `ResourceRef`. All derived generated identifiers and every
 unconditional or conditional top-level declaration share the same collision
@@ -45,19 +45,19 @@ namespace.
 
 Transported SDK types are recognized by semantic declaration identity, not by
 name: core types must resolve to `dart:core`, and the outer service return
-`Future` must resolve to `dart:async`. `ResourceRef` must resolve to the
+`Future` or `Stream` must resolve to `dart:async`. `ResourceRef` must resolve to the
 canonical plugin API declaration. Same-named local, imported, or prefixed
 lookalikes are unsupported. Typedefs and other analyzer aliases are rejected at
 every transported type position, including aliases nested in nullable values or
-lists and an alias for the outer `Future`; aliases unused by the schema remain
+lists and an alias for the outer `Future` or `Stream`; aliases unused by the schema remain
 allowed.
 
 Each service method is abstract, non-static, non-operator, and returns
-`Future<T>`. Parameters must be explicitly typed, required positional
+`Future<T>` or `Stream<T>`. Parameters must be explicitly typed, required positional
 parameters; optional, named, covariant, initializing-formal, super-formal,
-function-typed, and implicitly dynamic parameters are rejected. The Phase II
-transport remains unary in scope even though validation applies to every
-declared parameter. Wildcard or otherwise unnamed parameters are unsupported
+function-typed, stream-typed, and implicitly dynamic parameters are rejected.
+Streaming is server-only; `Stream<void>`, nested streams, client streaming, and
+bidirectional streaming are unsupported. Wildcard or otherwise unnamed parameters are unsupported
 because every transported parameter requires a stable schema name.
 
 Generator failures are reported as `ContractDiagnostic` values with the source
@@ -75,12 +75,12 @@ prohibited.
 
 ## Deferred
 
-The Phase II annotations cover async request/response services and immutable
+The Phase II annotations cover unary and server-streaming services and immutable
 values. Annotated values use one unnamed constructor with final fields and
 matching required named field-formal parameters of exactly the same type.
 Recursive annotated value schemas are rejected. JSON-compatible maps reject
 active-path identity cycles and nesting deeper than 64 containers. Actions,
-streams, cancellation, typed handles, compatibility
-policy, and general schema evolution remain deferred. Serialization and
+client/bidirectional streaming, replay, typed handles, compatibility policy,
+and general schema evolution remain deferred. Serialization and
 generation do not belong here; the separate internal `contract_codegen` package
 owns them.

@@ -9,11 +9,12 @@ Contracts and capabilities solve different problems:
 | Contract | How do typed values and asynchronous operations cross a runtime boundary? |
 | Capability | Which compatible provider handles a request? |
 
-The constrained Phase II generated typed request/response transport is
+The constrained Phase II-A generated unary transport and Phase II-B generated
+server-streaming transport are
 implemented for `workspace_demo`. The Phase IV-A scripted model fixture also
 uses this unary generator behind an application adapter that emits kernel
 semantic model events; it is not the final common ModelProvider contract.
-Broader transport generation and capability transport plus Phase III active
+Capability transport plus Phase III active
 provider registration, deterministic discovery, exact-major resolution, and
 generated-client invocation are implemented for the maintained
 resource-inspector fixture.
@@ -27,12 +28,14 @@ boundary is reconstructed; its object identity is not shared with the sender.
 The Phase II internal generator treats contracts as a constrained IDL embedded
 in Dart and provides a typed client, dispatcher, codecs,
 request handling, and structured errors for the maintained fixture. Its scope is
-one non-empty service per contract library and unary request/response only.
+one non-empty service per contract library with unary `Future<T>` and
+server-streaming `Stream<T>` methods.
 Values use one unnamed generative constructor with
 required named parameters, schema enums and values must be declared in the
 contract source library rather than imported, wire IDs use a conservative ASCII
-segment grammar, and every transported double must be finite. Streams,
-cancellation, events, and broader schema composition remain future work.
+segment grammar, and every transported double must be finite.
+Client/bidirectional streaming, reverse RPC, replay, and broader schema
+composition remain future work.
 The contract annotation import is exactly canonical, unprefixed, and without
 combinators or configurations. The plugin API import has the same shape exactly
 when the extracted schema semantically uses canonical `ResourceRef`; prefixed
@@ -81,9 +84,9 @@ Every contract-derived string entering generated Dart source is emitted through
 one single-quoted literal escaping path.
 Supported core and async types are checked by exact semantic library identity,
 not spelling: core scalars, collections, `Uri`, and `Object` come from
-`dart:core`, method wrappers are the `dart:async` `Future`, and `ResourceRef` is
+`dart:core`, method wrappers are exact `dart:async` `Future` or `Stream`, and `ResourceRef` is
 the exact canonical plugin API declaration. Type aliases are excluded from the
-transported closure recursively, including the outer `Future`, while unused
+transported closure recursively, including the outer wrapper, while unused
 implementation aliases remain permitted. Service parameters are explicitly
 typed required positionals; optional, named, covariant, initializing-formal,
 super-formal, function-typed, and implicitly dynamic forms are rejected.
@@ -96,6 +99,14 @@ also checks the requested plugin independently: the manifest-selected contract
 package's `pubspec.yaml` name determines `lib/<package-name>.dart`, and that
 absolute source is passed explicitly to `contract_codegen --check --source`.
 This keeps stale transport failure local to the plugin and ahead of compilation.
+
+Server-streaming uses the existing shared backend-host path. Generated clients
+open lazily and decode ordered typed items. Generated dispatchers hide producer
+iteration, cancellation, and terminal failure mapping. Protocol v2 uses a fixed
+one-item credit window, so paused consumers stop producer advancement after the
+already-granted item and cancellation reaches the producer iterator. Streams
+remain bound to their exact provider generation and fail rather than migrating
+when that generation disappears.
 
 ## Capability semantics
 
@@ -137,7 +148,7 @@ provider rank first and then stable provider ID lexically; default resolution
 selects the first result. Explicit resolution never falls back. Bindings retain
 one runtime generation and become stale when its registration closes. Exact
 positive major-version matching is provisional. Preference persistence,
-profiles, compatibility negotiation, message buses, streams, and retained
+profiles, compatibility negotiation, message buses, and retained
 handles remain unimplemented.
 
 Public capability, provider, and plugin identities share a lowercase

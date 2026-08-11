@@ -1,12 +1,17 @@
 import 'package:scripted_model_contract/scripted_model_contract.dart';
 
 final class ScriptedModelProvider implements ScriptedModelFixtureService {
-  const ScriptedModelProvider();
+  ScriptedModelProvider();
 
   static const String toolName = 'inspect_resource';
   static const String toolCallId = 'inspect-1';
   static const String resourceUri = 'file:///tmp/adele-phase-iv.txt';
   static const String failingResourceRequest = 'fixture:tool-domain-failure';
+  static const String longStreamRequest = 'fixture:long-stream';
+
+  int _advanced = 0;
+  int _cancellations = 0;
+  int _active = 0;
 
   @override
   Future<ScriptedModelResponse> invoke(ScriptedModelRequest request) async {
@@ -97,5 +102,74 @@ final class ScriptedModelProvider implements ScriptedModelFixtureService {
         toolCall: null,
       ),
     };
+  }
+
+  @override
+  Stream<ScriptedModelStreamItem> invokeStream(
+    ScriptedModelRequest request,
+  ) async* {
+    final bool longStream = request.messages.any(
+      (ScriptedModelMessage message) => message.content == longStreamRequest,
+    );
+    _active++;
+    bool complete = false;
+    try {
+      if (longStream) {
+        for (int sequence = 0; sequence < 1000000; sequence++) {
+          _advanced++;
+          yield ScriptedModelStreamItem(
+            kind: ScriptedModelStreamItemKind.probe,
+            text: null,
+            toolCall: null,
+            sequence: sequence,
+          );
+        }
+        complete = true;
+        return;
+      }
+      final ScriptedModelResponse response = await invoke(request);
+      if (response.content.isNotEmpty) {
+        yield ScriptedModelStreamItem(
+          kind: ScriptedModelStreamItemKind.text,
+          text: response.content,
+          toolCall: null,
+          sequence: null,
+        );
+      }
+      if (response.toolCall case final ScriptedToolCall toolCall) {
+        yield ScriptedModelStreamItem(
+          kind: ScriptedModelStreamItemKind.toolCall,
+          text: null,
+          toolCall: toolCall,
+          sequence: null,
+        );
+      }
+      complete = true;
+    } finally {
+      _active--;
+      if (!complete) _cancellations++;
+    }
+  }
+
+  @override
+  Future<ScriptedModelStreamProbe> streamProbe() async =>
+      ScriptedModelStreamProbe(
+        advanced: _advanced,
+        cancellations: _cancellations,
+        active: _active,
+      );
+
+  @override
+  Future<ScriptedModelStreamProbe> resetStreamProbe() async {
+    if (_active != 0) {
+      throw const ScriptedModelFailure(
+        code: 'stream_active',
+        message: 'Cannot reset the stream probe while a producer is active.',
+        details: <String, Object?>{},
+      );
+    }
+    _advanced = 0;
+    _cancellations = 0;
+    return streamProbe();
   }
 }

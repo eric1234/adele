@@ -52,6 +52,7 @@ final class PluginBackendHost {
   final BackendHostFrameDecoder _decoder = BackendHostFrameDecoder();
   final Map<int, Completer<Map<String, Object?>>> _pending =
       <int, Completer<Map<String, Object?>>>{};
+  final Map<int, _PendingPluginStream> _streams = <int, _PendingPluginStream>{};
   final Map<int, String> _pendingPluginIds = <int, String>{};
   final Map<String, PluginBackendConnection> _plugins =
       <String, PluginBackendConnection>{};
@@ -90,7 +91,7 @@ final class PluginBackendHost {
               if (message['protocolVersion'] != backendHostProtocolVersion) {
                 hello.completeError(
                   const BackendHostProtocolException(
-                    'Unsupported host protocol.',
+                    'Unsupported host protocol. Runtime and backend-host artifacts must be deployed atomically.',
                   ),
                 );
               } else {
@@ -124,7 +125,9 @@ final class PluginBackendHost {
         );
     unawaited(
       process.exitCode.then((int code) {
-        if (host._shuttingDown && host._pending.isEmpty) {
+        if (host._shuttingDown &&
+            host._pending.isEmpty &&
+            host._streams.isEmpty) {
           host._closed = true;
           return;
         }
@@ -260,6 +263,91 @@ final class PluginBackendHost {
     throw _remoteFailure(response);
   }
 
+  Stream<Object?> _stream(
+    String pluginId,
+    String method,
+    Map<String, Object?> payload,
+  ) {
+    late final StreamController<Object?> controller;
+    int? requestId;
+    controller = StreamController<Object?>(
+      sync: true,
+      onListen: () {
+        if (_closed) {
+          controller.addError(
+            const PluginConnectionClosed('The backend host is closed.'),
+          );
+          unawaited(controller.close());
+          return;
+        }
+        final int id = _nextRequestId++;
+        requestId = id;
+        _streams[id] = _PendingPluginStream(pluginId, controller);
+        _pendingPluginIds[id] = pluginId;
+        try {
+          _send(<String, Object?>{
+            'protocolVersion': backendHostProtocolVersion,
+            'kind': 'streamOpen',
+            'requestId': id,
+            'pluginId': pluginId,
+            'method': method,
+            'payload': payload,
+          });
+          _sendStreamControl(id, pluginId, 'streamCredit', credit: 1);
+        } on Object catch (error, stackTrace) {
+          _finishStream(id, error: error, stackTrace: stackTrace);
+        }
+      },
+      onResume: () {
+        final int? id = requestId;
+        if (id != null && _streams.containsKey(id)) {
+          _sendStreamControl(id, pluginId, 'streamCredit', credit: 1);
+        }
+      },
+      onCancel: () async {
+        final int? id = requestId;
+        if (id == null) return;
+        final _PendingPluginStream? stream = _streams[id];
+        if (stream == null) return;
+        final Completer<void> cancellation = stream.cancelCompleter ??=
+            Completer<void>();
+        if (!stream.cancelSent) {
+          stream.cancelSent = true;
+          _sendStreamControl(id, pluginId, 'streamCancel');
+        }
+        try {
+          await cancellation.future.timeout(_shutdownTimeout);
+        } on TimeoutException {
+          _finishStream(id, cancelled: true);
+        }
+      },
+    );
+    return controller.stream;
+  }
+
+  void _send(Map<String, Object?> message) {
+    _process.stdin.add(encodeBackendHostFrame(message));
+  }
+
+  void _sendStreamControl(
+    int requestId,
+    String pluginId,
+    String kind, {
+    int? credit,
+  }) {
+    try {
+      _send(<String, Object?>{
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': kind,
+        'requestId': requestId,
+        'pluginId': pluginId,
+        'credit': ?credit,
+      });
+    } on Object catch (error, stackTrace) {
+      _finishStream(requestId, error: error, stackTrace: stackTrace);
+    }
+  }
+
   Future<Map<String, Object?>> _command({
     required String kind,
     String? pluginId,
@@ -311,6 +399,14 @@ final class PluginBackendHost {
       _onDiagnostic?.call('Host message without request ID ignored: $message');
       return;
     }
+    if (message['kind']
+        case 'streamItem' ||
+            'streamDone' ||
+            'streamFailure' ||
+            'streamCancelled') {
+      _handleStreamMessage(rawRequestId, message);
+      return;
+    }
     final Completer<Map<String, Object?>>? completer = _pending.remove(
       rawRequestId,
     );
@@ -322,6 +418,58 @@ final class PluginBackendHost {
       return;
     }
     completer.complete(message);
+  }
+
+  void _handleStreamMessage(int requestId, Map<String, Object?> message) {
+    final _PendingPluginStream? stream = _streams[requestId];
+    if (stream == null) {
+      _onDiagnostic?.call('Unknown or late stream response ID $requestId.');
+      return;
+    }
+    if (message['pluginId'] != stream.pluginId) {
+      _failAll(
+        const PluginConnectionClosed(
+          'The backend host returned a stream frame for the wrong plugin.',
+        ),
+      );
+      return;
+    }
+    switch (message['kind']) {
+      case 'streamItem':
+        stream.controller.add(message['payload']);
+        if (!stream.controller.isPaused && !stream.controller.isClosed) {
+          _sendStreamControl(
+            requestId,
+            stream.pluginId,
+            'streamCredit',
+            credit: 1,
+          );
+        }
+      case 'streamDone':
+        _finishStream(requestId);
+      case 'streamFailure':
+        _finishStream(requestId, error: _remoteFailure(message));
+      case 'streamCancelled':
+        _finishStream(requestId, cancelled: true);
+    }
+  }
+
+  void _finishStream(
+    int requestId, {
+    Object? error,
+    StackTrace? stackTrace,
+    bool cancelled = false,
+  }) {
+    final _PendingPluginStream? stream = _streams.remove(requestId);
+    _pendingPluginIds.remove(requestId);
+    if (stream == null) return;
+    final Completer<void>? cancellation = stream.cancelCompleter;
+    if (cancellation != null && !cancellation.isCompleted) {
+      cancellation.complete();
+    }
+    if (cancelled && error == null) return;
+    if (error != null) stream.controller.addError(error, stackTrace);
+    unawaited(stream.controller.close());
   }
 
   void _handlePluginFailed(Map<String, Object?> message) {
@@ -342,6 +490,7 @@ final class PluginBackendHost {
         if (completer != null && !completer.isCompleted) {
           completer.completeError(failure);
         }
+        _finishStream(rawRequestId, error: failure);
       }
     }
     final List<int> remaining = _pendingPluginIds.entries
@@ -356,6 +505,7 @@ final class PluginBackendHost {
       if (completer != null && !completer.isCompleted) {
         completer.completeError(failure);
       }
+      _finishStream(requestId, error: failure);
     }
     _plugins.remove(rawPluginId)?._finish(failure);
     _startingPlugins.remove(rawPluginId)?._finish(failure);
@@ -365,12 +515,17 @@ final class PluginBackendHost {
   }
 
   void _failAll(Object error) {
-    if (_closed && _pending.isEmpty && _plugins.isEmpty) return;
+    if (_closed && _pending.isEmpty && _streams.isEmpty && _plugins.isEmpty) {
+      return;
+    }
     _closed = true;
     for (final Completer<Map<String, Object?>> completer in _pending.values) {
       if (!completer.isCompleted) completer.completeError(error);
     }
     _pending.clear();
+    for (final int requestId in _streams.keys.toList(growable: false)) {
+      _finishStream(requestId, error: error);
+    }
     _pendingPluginIds.clear();
     for (final PluginBackendConnection connection in _plugins.values) {
       connection._finish(error);
@@ -395,6 +550,7 @@ final class PluginBackendHost {
       if (completer != null && !completer.isCompleted) {
         completer.completeError(error);
       }
+      _finishStream(requestId, error: error);
     }
   }
 
@@ -419,7 +575,7 @@ final class PluginBackendHost {
   }
 }
 
-final class PluginBackendConnection implements AdeleRequestChannel {
+final class PluginBackendConnection implements AdeleStreamChannel {
   PluginBackendConnection._({
     required PluginBackendHost host,
     required this.pluginId,
@@ -443,12 +599,31 @@ final class PluginBackendConnection implements AdeleRequestChannel {
     return _host._request(pluginId, method, payload);
   }
 
+  @override
+  Stream<Object?> stream(String method, Map<String, Object?> payload) {
+    if (isClosed) {
+      return Stream<Object?>.error(
+        const PluginConnectionClosed('The plugin connection is closed.'),
+      );
+    }
+    return _host._stream(pluginId, method, payload);
+  }
+
   Future<void> close() => _host.stopPlugin(pluginId);
 
   void _finish(Object reason) {
     _closed = true;
     if (!_termination.isCompleted) _termination.complete(reason);
   }
+}
+
+final class _PendingPluginStream {
+  _PendingPluginStream(this.pluginId, this.controller);
+
+  final String pluginId;
+  final StreamController<Object?> controller;
+  Completer<void>? cancelCompleter;
+  bool cancelSent = false;
 }
 
 PluginRemoteFailure _remoteFailure(Map<String, Object?> response) {

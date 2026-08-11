@@ -1,7 +1,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
-const int backendHostProtocolVersion = 1;
+const int backendHostProtocolVersion = 2;
+const int backendHostStreamWindow = 1;
 const int maximumBackendHostFrameLength = 8 * 1024 * 1024;
 
 final class BackendHostProtocolException implements Exception {

@@ -21,6 +21,36 @@ void main() {
     expect(output.contents, contains('WorkspaceDemoServiceDispatcher'));
   });
 
+  test('models mixed unary and server-streaming methods explicitly', () async {
+    final fixture = await _fixture(
+      _minimalContract(namedValue: true).replaceFirst(
+        'Future<String> ping(String value);',
+        '''Future<String> ping(String value);
+  @AdeleMethod('events')
+  Stream<FixtureValue> events(String value);''',
+      ),
+    );
+    final generated = await const ContractGenerator().generate(fixture.source);
+    expect(generated.contents, contains('Stream<FixtureValue> events'));
+    expect(generated.contents, contains('AdeleStreamChannel'));
+    expect(generated.contents, contains("'fixture.service.events'"));
+  });
+
+  for (final entry in <String, String>{
+    'Stream<void>': 'Stream<void>',
+    'Future<Stream<String>>': 'Stream contract types',
+    'Stream<String>?': 'Future<T> or Stream<T>',
+  }.entries) {
+    test('rejects ${entry.key}', () async {
+      await _expectDiagnostic(
+        _minimalContract(
+          namedValue: true,
+        ).replaceFirst('Future<String>', entry.key),
+        entry.value,
+      );
+    });
+  }
+
   test('rejects multiple annotated services in one contract library', () async {
     await _expectDiagnostic(
       _minimalContract(namedValue: true).replaceFirst(
@@ -866,16 +896,18 @@ ${_minimalContract(namedValue: true)}'''),
       _minimalContract(
         namedValue: true,
       ).replaceFirst('Future<String> ping', 'String ping'),
-      'Service methods must return Future<T>.',
+      'Service methods must return Future<T> or Stream<T>.',
     );
   });
 
-  test('rejects Stream returns', () async {
-    await _expectDiagnostic(
-      _minimalContract(
-        namedValue: true,
-      ).replaceFirst('Future<String> ping', 'Stream<String> ping'),
-      'Service methods must return Future<T>.',
+  test('accepts Stream returns', () async {
+    expect(
+      await _generate(
+        _minimalContract(
+          namedValue: true,
+        ).replaceFirst('Future<String> ping', 'Stream<String> ping'),
+      ),
+      contains('Stream<String> ping'),
     );
   });
 
