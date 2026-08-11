@@ -2,7 +2,7 @@
 
 ## Status
 
-**Guiding architecture for the next Phase IV design**
+**Guiding architecture; Phase IV-A foundation implemented**
 
 This document records the semantic boundaries ADELE intends to preserve while implementing its agent execution substrate. It is more specific than the non-normative research survey, but it is **not** a stable public extension API and does not freeze exact Dart type names, persistence schemas, or contribution APIs.
 
@@ -615,6 +615,7 @@ For clarity:
 
 ```text
 Phase II-A — generated unary typed transport          complete
+Phase IV-A — semantic agent-execution foundation      complete
 Phase II-B — generated streaming + cancellation       pending
 ```
 

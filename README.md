@@ -5,8 +5,9 @@ running, inspecting, and extending agent systems. The long-term goal is for
 ADELE to become capable of developing ADELE itself.
 
 ADELE's maintained foundation includes the Phase I plugin runtime proof, the
-Phase II generated request/response contract path, and the Phase III active
-capability provider registry:
+Phase II generated request/response contract path, the Phase III active
+capability provider registry, and the Phase IV-A semantic agent-execution
+foundation:
 interpreted Flutter frontends and locally compiled AOT backends hosted in one
 shared child Dart runtime, with generated typed clients, codecs, backend
 dispatch, and deterministic provider selection. `workspace_demo` remains the
@@ -15,6 +16,14 @@ providers in separate isolate groups in the shared child process and invokes
 both through generated transport. These are internal reference fixtures, not
 product UI. Plugin installation, packaging, permissions, sandboxing, and
 general third-party APIs are not implemented.
+
+Phase IV-A separates canonical Session history, Run lifecycle, context
+assembly, streaming-shaped semantic model events, immutable tool
+materialization, ToolInvocation, effect description, policy, approval, tool
+execution, structured outcomes, and typed execution observation. Its
+development-only AOT fixture adapts a generated unary scripted model capability
+and a generation-bound ResourceInspector capability into those kernel ports.
+Generated streaming remains Phase II-B work.
 
 ## Toolchain
 
@@ -79,6 +88,7 @@ packages/plugin_builder/     plugin_builder (internal, pure Dart)
 packages/agent_kernel/       agent_kernel (internal, pure Dart)
 plugins/workspace_demo/      internal source-plugin reference fixture
 plugins/resource_inspector/  Phase III two-provider capability fixture
+plugins/scripted_model/      Phase IV-A unary model/AOT integration fixture
 docs/architecture/           architecture boundaries and terminology
 docs/adr/                    architectural decision records
 tools/                       root development command driver
@@ -119,7 +129,9 @@ types in Phase 0.
 
 ## Next Work
 
-Validate Windows, macOS, release packaging, and current Flutter compatibility;
-modernize or replace the eval stack; and define packaging and discovery before
-expanding the public plugin API. See `docs/architecture/overview.md` and ADR
-0019.
+Implement Phase II-B generated streaming and cancellation, then replace the
+fixture transport mechanics with true generated model streams and establish the
+first common model-provider capability. Windows, macOS, release packaging,
+current Flutter compatibility, packaging/discovery, and eval-stack
+modernization also remain open. See `docs/architecture/overview.md` and ADRs
+0019 through 0022.

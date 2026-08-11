@@ -15,6 +15,17 @@ _packages = <({String name, String path, bool flutter})>[
   ),
   (name: 'plugin_builder', path: 'packages/plugin_builder', flutter: false),
   (name: 'agent_kernel', path: 'packages/agent_kernel', flutter: false),
+  (name: 'scripted_model', path: 'plugins/scripted_model', flutter: false),
+  (
+    name: 'scripted_model_contract',
+    path: 'plugins/scripted_model/packages/contract',
+    flutter: false,
+  ),
+  (
+    name: 'scripted_model_backend',
+    path: 'plugins/scripted_model/packages/backend',
+    flutter: false,
+  ),
   (name: 'workspace_demo', path: 'plugins/workspace_demo', flutter: false),
   (
     name: 'resource_inspector',
@@ -121,6 +132,9 @@ Future<void> main(List<String> arguments) async {
         await _run('adele_capabilities', 'dart', <String>[
           'test',
         ], workingDirectory: 'packages/capabilities');
+        await _run('agent_kernel', 'dart', <String>[
+          'test',
+        ], workingDirectory: 'packages/agent_kernel');
         await _run('plugin_builder', 'dart', <String>[
           'test',
         ], workingDirectory: 'packages/plugin_builder');
@@ -140,6 +154,18 @@ Future<void> main(List<String> arguments) async {
           'dart',
           <String>['test', '--timeout', '4m'],
           workingDirectory: 'plugins/resource_inspector/packages/contract',
+        );
+        await _run(
+          'scripted_model_contract',
+          'dart',
+          <String>['test', '--timeout', '4m'],
+          workingDirectory: 'plugins/scripted_model/packages/contract',
+        );
+        await _run(
+          'scripted_model_backend',
+          'dart',
+          <String>['test'],
+          workingDirectory: 'plugins/scripted_model/packages/backend',
         );
         await _run(
           'workspace_demo_contract',

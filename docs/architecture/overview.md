@@ -2,10 +2,11 @@
 
 ## Status
 
-ADELE's Phase I foundation proves source compilation, typed transport, and
-interpreted frontend execution on Linux x64 Flutter profile mode. It does not
-implement plugin discovery, packaging, capability routing, profiles, sandboxing,
-or agent execution. Plugin-facing APIs remain experimental.
+ADELE's maintained foundation proves source compilation, unary typed transport,
+interpreted frontend execution, active capability routing, and the Phase IV-A
+semantic agent-execution vertical on Linux x64. It does not implement plugin
+discovery, packaging, profiles, sandboxing, generated streaming/cancellation,
+or a real model provider. Plugin-facing APIs remain experimental.
 
 ## System shape
 
@@ -22,7 +23,7 @@ not required:
 | `plugin_runtime` | Plugin discovery, lifecycle, artifact selection, runtime coordination, and failure reporting |
 | `plugin_builder` | Source resolution, contract generation coordination, backend and frontend builds, diagnostics, provenance, and caching |
 | `plugin_backend_host` | Shared child-process entrypoint and one external AOT isolate group per active plugin |
-| `agent_kernel` | Provider-neutral sessions, runs, model/tool coordination, approval, cancellation, persistence, replay, and execution events |
+| `agent_kernel` | Provider-neutral Session/Run boundaries, context/model/tool semantics, interruptions, structured outcomes, and typed execution observation |
 
 These are internal packages. Plugins must not import them.
 
@@ -86,9 +87,15 @@ conceptually shared plugin configuration plus optional profile overrides.
 The maintained development runtime uses one implicit development profile
 without introducing profile-management APIs.
 
-The future `agent_kernel` is a provider-neutral execution substrate. Concrete
+`agent_kernel` is a provider-neutral execution substrate. Concrete
 models, tools, editors, Git integrations, terminals, UI, and specialized agent
 workflows belong in plugins rather than in the kernel.
+
+Phase IV-A uses a development-only application strategy and fixture-specific
+unary scripted model capability to prove a generation-safe
+model/tool/approval/tool/model cycle through real AOT providers. The kernel
+model port is stream-shaped; generated plugin transport remains unary until
+Phase II-B.
 
 The long-term self-hosting goal is for ADELE to develop ADELE itself. That goal
 does not change the Phase 0 rule to prefer small, working boundaries and avoid

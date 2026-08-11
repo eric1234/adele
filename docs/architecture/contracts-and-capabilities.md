@@ -10,10 +10,13 @@ Contracts and capabilities solve different problems:
 | Capability | Which compatible provider handles a request? |
 
 The constrained Phase II generated typed request/response transport is
-implemented for `workspace_demo`. Broader transport generation and capability
-transport plus Phase III active provider registration, deterministic discovery,
-exact-major resolution, and generated-client invocation are implemented for the
-maintained resource-inspector fixture.
+implemented for `workspace_demo`. The Phase IV-A scripted model fixture also
+uses this unary generator behind an application adapter that emits kernel
+semantic model events; it is not the final common ModelProvider contract.
+Broader transport generation and capability transport plus Phase III active
+provider registration, deterministic discovery, exact-major resolution, and
+generated-client invocation are implemented for the maintained
+resource-inspector fixture.
 
 ## Contracts
 
