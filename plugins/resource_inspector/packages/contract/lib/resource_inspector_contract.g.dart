@@ -48,7 +48,8 @@ final class ResourceInspectorServiceDispatcher
     implements ResourceInspectorServiceRequestDispatcher {
   ResourceInspectorServiceDispatcher(this._adeleService);
   final ResourceInspectorService _adeleService;
-  final AdeleBoundedExecutor _adeleExecutor = AdeleBoundedExecutor();
+  final Set<Future<void>> _adeleOperations = <Future<void>>{};
+  bool _adeleClosed = false;
   @override
   Future<Map<String, Object?>> dispatch(
     Map<Object?, Object?> _adeleRequest0,
@@ -191,11 +192,22 @@ final class ResourceInspectorServiceDispatcher
   Future<void> handle(
     Map<Object?, Object?> _adeleCommand0,
     void Function(Map<String, Object?>) _adeleSend1,
-  ) => _adeleExecutor.run<void>(
-    () async => _adeleSend1(await dispatch(_adeleCommand0)),
-  );
+  ) {
+    if (_adeleClosed) return Future<void>.value();
+    late final Future<void> _adeleOperation2;
+    _adeleOperation2 = (() async => _adeleSend1(
+      await dispatch(_adeleCommand0),
+    ))().whenComplete(() => _adeleOperations.remove(_adeleOperation2));
+    _adeleOperations.add(_adeleOperation2);
+    return _adeleOperation2;
+  }
+
   @override
-  Future<void> close() async {}
+  Future<void> close() async {
+    if (_adeleClosed) return;
+    _adeleClosed = true;
+    await Future.wait<void>(_adeleOperations.toList(growable: false));
+  }
 }
 
 String _decodeContractEnvelope(

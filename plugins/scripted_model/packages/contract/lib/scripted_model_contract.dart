@@ -1,4 +1,4 @@
-/// Deterministic unary transport declarations for the Phase IV model fixture.
+/// Deterministic unary and streaming declarations for the model fixture.
 library;
 
 import 'package:adele_capabilities/adele_capabilities.dart' as capabilities;

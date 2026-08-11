@@ -264,10 +264,11 @@ final class PluginBackendHost {
   }
 
   Stream<Object?> _stream(
-    String pluginId,
+    PluginBackendConnection owner,
     String method,
     Map<String, Object?> payload,
   ) {
+    final String pluginId = owner.pluginId;
     late final StreamController<Object?> controller;
     int? requestId;
     controller = StreamController<Object?>(
@@ -282,7 +283,11 @@ final class PluginBackendHost {
         }
         final int id = _nextRequestId++;
         requestId = id;
-        _streams[id] = _PendingPluginStream(pluginId, controller);
+        final _PendingPluginStream stream = _PendingPluginStream(
+          owner,
+          controller,
+        );
+        _streams[id] = stream;
         _pendingPluginIds[id] = pluginId;
         try {
           _send(<String, Object?>{
@@ -293,15 +298,20 @@ final class PluginBackendHost {
             'method': method,
             'payload': payload,
           });
-          _sendStreamControl(id, pluginId, 'streamCredit', credit: 1);
+          _grantStreamCredit(id, stream);
         } on Object catch (error, stackTrace) {
           _finishStream(id, error: error, stackTrace: stackTrace);
         }
       },
       onResume: () {
         final int? id = requestId;
-        if (id != null && _streams.containsKey(id)) {
-          _sendStreamControl(id, pluginId, 'streamCredit', credit: 1);
+        final _PendingPluginStream? stream = id == null ? null : _streams[id];
+        if (id != null &&
+            stream != null &&
+            stream.creditWithheld &&
+            !stream.cancelSent) {
+          stream.creditWithheld = false;
+          _grantStreamCredit(id, stream);
         }
       },
       onCancel: () async {
@@ -318,11 +328,39 @@ final class PluginBackendHost {
         try {
           await cancellation.future.timeout(_shutdownTimeout);
         } on TimeoutException {
-          _finishStream(id, cancelled: true);
+          await _retireCancellationOwner(id, stream);
         }
       },
     );
     return controller.stream;
+  }
+
+  void _grantStreamCredit(int requestId, _PendingPluginStream stream) {
+    if (stream.outstandingCredit != 0 || stream.cancelSent) return;
+    stream.outstandingCredit = 1;
+    _sendStreamControl(requestId, stream.pluginId, 'streamCredit', credit: 1);
+  }
+
+  Future<void> _retireCancellationOwner(
+    int requestId,
+    _PendingPluginStream stream,
+  ) async {
+    final PluginConnectionClosed failure = PluginConnectionClosed(
+      'Plugin ${stream.pluginId} did not acknowledge stream cancellation.',
+    );
+    if (_streams[requestId] != stream) return;
+    if (_plugins[stream.pluginId] == stream.owner) {
+      try {
+        await stopPlugin(stream.pluginId);
+      } on Object {
+        if (_plugins[stream.pluginId] == stream.owner) {
+          _plugins.remove(stream.pluginId);
+          _failPluginRequests(stream.pluginId, failure);
+          stream.owner._finish(failure);
+        }
+      }
+    }
+    _finishStream(requestId, error: failure);
   }
 
   void _send(Map<String, Object?> message) {
@@ -436,14 +474,20 @@ final class PluginBackendHost {
     }
     switch (message['kind']) {
       case 'streamItem':
+        if (stream.outstandingCredit != 1) {
+          _failAll(
+            const PluginConnectionClosed(
+              'The backend host returned a stream item without credit.',
+            ),
+          );
+          return;
+        }
+        stream.outstandingCredit = 0;
         stream.controller.add(message['payload']);
         if (!stream.controller.isPaused && !stream.controller.isClosed) {
-          _sendStreamControl(
-            requestId,
-            stream.pluginId,
-            'streamCredit',
-            credit: 1,
-          );
+          _grantStreamCredit(requestId, stream);
+        } else {
+          stream.creditWithheld = true;
         }
       case 'streamDone':
         _finishStream(requestId);
@@ -606,7 +650,7 @@ final class PluginBackendConnection implements AdeleStreamChannel {
         const PluginConnectionClosed('The plugin connection is closed.'),
       );
     }
-    return _host._stream(pluginId, method, payload);
+    return _host._stream(this, method, payload);
   }
 
   Future<void> close() => _host.stopPlugin(pluginId);
@@ -618,12 +662,15 @@ final class PluginBackendConnection implements AdeleStreamChannel {
 }
 
 final class _PendingPluginStream {
-  _PendingPluginStream(this.pluginId, this.controller);
+  _PendingPluginStream(this.owner, this.controller);
 
-  final String pluginId;
+  final PluginBackendConnection owner;
+  String get pluginId => owner.pluginId;
   final StreamController<Object?> controller;
   Completer<void>? cancelCompleter;
   bool cancelSent = false;
+  bool creditWithheld = false;
+  int outstandingCredit = 0;
 }
 
 PluginRemoteFailure _remoteFailure(Map<String, Object?> response) {

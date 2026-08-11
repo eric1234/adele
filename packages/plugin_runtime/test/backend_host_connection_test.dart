@@ -581,6 +581,92 @@ void main() {
       emitsError(isA<PluginConnectionClosed>()),
     );
   });
+
+  test('pause before first item does not grant duplicate credit', () async {
+    final _FakeHost fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  var credits = 0;
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'streamCredit') {
+        credits++;
+        if (credits > 1) stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'diagnostic', 'stage': 'test', 'message': 'duplicate-credit'}));
+      } else if (message['kind'] == 'streamCancel') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamCancelled', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      }
+    }
+  });
+}
+''');
+    addTearDown(fake.dispose);
+    final diagnostics = <String>[];
+    final PluginBackendHost host = await fake.start(
+      onDiagnostic: (message) {
+        diagnostics.add(message);
+      },
+    );
+    final connection = await host.startPlugin(
+      pluginId: 'paused',
+      artifactUri: Uri.file('/unused.aot'),
+    );
+    final subscription = connection.stream('events', const {}).listen((_) {});
+    subscription.pause();
+    subscription.resume();
+    subscription.pause();
+    subscription.resume();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(diagnostics, isNot(contains(contains('duplicate-credit'))));
+    await subscription.cancel();
+    await host.close(graceful: false);
+  });
+
+  test('cancellation timeout retires its plugin generation', () async {
+    final _FakeHost fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'stopPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginStopped', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'shutdownHost') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostStopped', 'requestId': message['requestId']}));
+        exit(0);
+      }
+    }
+  });
+}
+''');
+    addTearDown(fake.dispose);
+    final PluginBackendHost host = await fake.start(
+      shutdownTimeout: const Duration(milliseconds: 50),
+    );
+    final connection = await host.startPlugin(
+      pluginId: 'stuck',
+      artifactUri: Uri.file('/unused.aot'),
+    );
+    final subscription = connection.stream('events', const {}).listen((_) {});
+    await subscription.cancel().timeout(const Duration(seconds: 1));
+    expect(connection.isClosed, isTrue);
+    await connection.terminated.timeout(const Duration(seconds: 1));
+    final replacement = await host.startPlugin(
+      pluginId: 'stuck',
+      artifactUri: Uri.file('/unused.aot'),
+    );
+    expect(replacement.isClosed, isFalse);
+    await replacement.close();
+    await host.close();
+  });
 }
 
 final class _FakeHost {

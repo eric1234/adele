@@ -65,39 +65,37 @@ final class ScriptedModelFixtureServiceClient
           scriptedModelFixtureServiceInvokeStreamId,
           <String, Object?>{'request': _encodeScriptedModelRequest(request)},
         );
-        return _adeleRaw6
-            .map<ScriptedModelStreamItem>(
-              (Object? _adeleItem5) =>
-                  _decodeScriptedModelStreamItem(_adeleItem5),
-            )
-            .handleError((Object _adeleError5) {
-              if (_adeleError5 is AdeleRemoteFailure) {
-                switch (_adeleError5.declaredFailureType) {
-                  case scriptedModelFailureTypeId:
-                    final _adeleDetails8 = _contractJsonMap(
-                      _adeleError5.details,
-                      'failure details',
-                    );
-                    throw _contractConstruct(
-                      'ScriptedModelFailure',
-                      () => ScriptedModelFailure(
-                        code: _adeleError5.code,
-                        message: _adeleError5.message,
-                        details: _adeleDetails8,
-                      ),
-                    );
-                  default:
-                    break;
-                }
+        return adeleDecodedStream<ScriptedModelStreamItem>(
+          _adeleRaw6,
+          (Object? _adeleItem5) => _decodeScriptedModelStreamItem(_adeleItem5),
+          (Object _adeleError5) {
+            if (_adeleError5 is AdeleRemoteFailure) {
+              switch (_adeleError5.declaredFailureType) {
+                case scriptedModelFailureTypeId:
+                  final _adeleDetails8 = _contractJsonMap(
+                    _adeleError5.details,
+                    'failure details',
+                  );
+                  throw _contractConstruct(
+                    'ScriptedModelFailure',
+                    () => ScriptedModelFailure(
+                      code: _adeleError5.code,
+                      message: _adeleError5.message,
+                      details: _adeleDetails8,
+                    ),
+                  );
+                default:
+                  break;
               }
-              throw _adeleError5;
-            })
-            .listen(
-              _adeleOnData0,
-              onError: _adeleOnError1,
-              onDone: _adeleOnDone2,
-              cancelOnError: _adeleCancelOnError3,
-            );
+            }
+            return _adeleError5;
+          },
+        ).listen(
+          _adeleOnData0,
+          onError: _adeleOnError1,
+          onDone: _adeleOnDone2,
+          cancelOnError: _adeleCancelOnError3,
+        );
       });
   @override
   Future<ScriptedModelStreamProbe> resetStreamProbe() async {
@@ -169,7 +167,8 @@ final class ScriptedModelFixtureServiceDispatcher
   final ScriptedModelFixtureService _adeleService;
   final Map<int, _ContractStreamState> _adeleStreams =
       <int, _ContractStreamState>{};
-  final AdeleBoundedExecutor _adeleExecutor = AdeleBoundedExecutor();
+  final Set<Future<void>> _adeleOperations = <Future<void>>{};
+  final Set<Future<void>> _adeleCancellations = <Future<void>>{};
   bool _adeleClosed = false;
   @override
   Future<Map<String, Object?>> dispatch(
@@ -347,22 +346,38 @@ final class ScriptedModelFixtureServiceDispatcher
   Future<void> handle(
     Map<Object?, Object?> _adeleCommand0,
     void Function(Map<String, Object?>) _adeleSend1,
-  ) async {
+  ) {
     final _adeleKind2 = _adeleCommand0['kind'];
     if (_adeleKind2 == 'request') {
-      await _adeleExecutor.run<void>(
+      if (_adeleClosed) return Future<void>.value();
+      return _adeleTrackOperation(
         () async => _adeleSend1(await dispatch(_adeleCommand0)),
       );
-      return;
     }
     if (_adeleKind2 == 'streamOpen') {
-      await _adeleExecutor.run<void>(
-        () => _adeleOpenStream(_adeleCommand0, _adeleSend1),
+      if (_adeleClosed) return Future<void>.value();
+      final _adeleRequestId3 = _adeleCommand0['requestId'];
+      if (_adeleRequestId3 is! int ||
+          _adeleStreams.containsKey(_adeleRequestId3)) {
+        _adeleSend1(
+          _contractStreamFailure(
+            _adeleRequestId3,
+            null,
+            'invalid_request',
+            'Malformed stream-open request.',
+            const {},
+          ),
+        );
+        return Future<void>.value();
+      }
+      final _adeleState4 = _ContractStreamState.opening(_adeleRequestId3);
+      _adeleStreams[_adeleRequestId3] = _adeleState4;
+      return _adeleTrackOperation(
+        () => _adeleOpenStream(_adeleState4, _adeleCommand0, _adeleSend1),
       );
-      return;
     }
     final _adeleRequestId3 = _adeleCommand0['requestId'];
-    if (_adeleRequestId3 is! int) return;
+    if (_adeleRequestId3 is! int) return Future<void>.value();
     final _adeleState4 = _adeleStreams[_adeleRequestId3];
     if (_adeleKind2 == 'streamCredit') {
       final _adeleCredit5 = _adeleCommand0['credit'];
@@ -370,31 +385,28 @@ final class ScriptedModelFixtureServiceDispatcher
         _adeleState4.credit += _adeleCredit5;
         _adelePump(_adeleState4, _adeleSend1);
       }
-    } else if (_adeleKind2 == 'streamCancel' &&
-        await _adeleCancel(_adeleRequestId3)) {
-      _adeleSend1({'kind': 'streamCancelled', 'requestId': _adeleRequestId3});
+      return Future<void>.value();
     }
+    if (_adeleKind2 == 'streamCancel')
+      return _adeleCancelAndAcknowledge(_adeleRequestId3, _adeleSend1);
+    return Future<void>.value();
+  }
+
+  Future<void> _adeleTrackOperation(Future<void> Function() _adeleBody0) {
+    late final Future<void> _adeleOperation1;
+    _adeleOperation1 = _adeleBody0().whenComplete(
+      () => _adeleOperations.remove(_adeleOperation1),
+    );
+    _adeleOperations.add(_adeleOperation1);
+    return _adeleOperation1;
   }
 
   Future<void> _adeleOpenStream(
+    _ContractStreamState _adeleState0,
     Map<Object?, Object?> _adeleRequest0,
     void Function(Map<String, Object?>) _adeleSend1,
   ) async {
-    final _adeleRequestId2 = _adeleRequest0['requestId'];
-    if (_adeleClosed ||
-        _adeleRequestId2 is! int ||
-        _adeleStreams.containsKey(_adeleRequestId2)) {
-      _adeleSend1(
-        _contractStreamFailure(
-          _adeleRequestId2,
-          null,
-          'invalid_request',
-          'Malformed stream-open request.',
-          const {},
-        ),
-      );
-      return;
-    }
+    final _adeleRequestId2 = _adeleState0.requestId;
     late final String _adeleMethod3;
     late final Map<Object?, Object?> _adelePayload4;
     late final List<Object?> _adeleArguments5;
@@ -408,7 +420,9 @@ final class ScriptedModelFixtureServiceDispatcher
           scriptedModelFixtureServiceResetStreamProbeId,
           scriptedModelFixtureServiceStreamProbeId,
         }.contains(_adeleMethod3);
-        _adeleSend1(
+        _adeleFinish(
+          _adeleState0,
+          _adeleSend1,
           _contractStreamFailure(
             _adeleRequestId2,
             null,
@@ -437,7 +451,9 @@ final class ScriptedModelFixtureServiceDispatcher
         _ => throw const _ContractUnknownMethod(),
       };
     } on AdeleProtocolException catch (_adeleError7) {
-      _adeleSend1(
+      _adeleFinish(
+        _adeleState0,
+        _adeleSend1,
         _contractStreamFailure(
           _adeleRequestId2,
           null,
@@ -456,14 +472,43 @@ final class ScriptedModelFixtureServiceDispatcher
               .map<Object?>((Object? _adeleItem) => _adeleItem),
         _ => throw const _ContractUnknownMethod(),
       };
-      final _adeleState9 = _ContractStreamState(
-        _adeleRequestId2,
-        _adeleMethod3,
-        AdeleStreamIterator<Object?>(_adeleSource8),
-      );
-      _adeleStreams[_adeleRequestId2] = _adeleState9;
+      if (_adeleState0.done) {
+        await AdeleStreamIterator<Object?>(_adeleSource8).cancel();
+        return;
+      }
+      _adeleState0.method = _adeleMethod3;
+      _adeleState0.iterator = AdeleStreamIterator<Object?>(_adeleSource8);
+      _adelePump(_adeleState0, _adeleSend1);
+    } on ScriptedModelFailure catch (_adeleError9) {
+      try {
+        _adeleFinish(
+          _adeleState0,
+          _adeleSend1,
+          _contractStreamFailure(
+            _adeleRequestId2,
+            scriptedModelFailureTypeId,
+            _adeleError9.code,
+            _adeleError9.message,
+            _contractJsonMap(_adeleError9.details, 'failure details'),
+          ),
+        );
+      } on Object {
+        _adeleFinish(
+          _adeleState0,
+          _adeleSend1,
+          _contractStreamFailure(
+            _adeleRequestId2,
+            null,
+            'backend_contract_violation',
+            'The backend violated its generated contract.',
+            const {},
+          ),
+        );
+      }
     } on Object {
-      _adeleSend1(
+      _adeleFinish(
+        _adeleState0,
+        _adeleSend1,
         _contractStreamFailure(
           _adeleRequestId2,
           null,
@@ -479,14 +524,16 @@ final class ScriptedModelFixtureServiceDispatcher
     _ContractStreamState _adeleState0,
     void Function(Map<String, Object?>) _adeleSend1,
   ) async {
-    if (_adeleState0.pumping || _adeleState0.done) return;
+    final _adeleIterator2 = _adeleState0.iterator;
+    if (_adeleState0.pumping || _adeleState0.done || _adeleIterator2 == null)
+      return;
     _adeleState0.pumping = true;
     try {
       while (!_adeleState0.done && _adeleState0.credit > 0) {
         _adeleState0.credit--;
         late final bool _adeleHasItem2;
         try {
-          _adeleHasItem2 = await _adeleState0.iterator.moveNext();
+          _adeleHasItem2 = await _adeleIterator2.moveNext();
         } on ScriptedModelFailure catch (_adeleError3) {
           try {
             _adeleFinish(
@@ -542,7 +589,7 @@ final class ScriptedModelFixtureServiceDispatcher
           final _adeleEncoded4 = switch (_adeleState0.method) {
             scriptedModelFixtureServiceInvokeStreamId =>
               _encodeScriptedModelStreamItem(
-                (_adeleState0.iterator.current as ScriptedModelStreamItem),
+                (_adeleIterator2.current as ScriptedModelStreamItem),
               ),
             _ => throw const _ContractUnknownMethod(),
           };
@@ -568,7 +615,9 @@ final class ScriptedModelFixtureServiceDispatcher
       }
     } finally {
       _adeleState0.pumping = false;
-      if (!_adeleState0.done && _adeleState0.credit > 0)
+      if (!_adeleState0.done &&
+          _adeleState0.credit > 0 &&
+          _adeleState0.iterator != null)
         _adelePump(_adeleState0, _adeleSend1);
     }
   }
@@ -585,12 +634,25 @@ final class ScriptedModelFixtureServiceDispatcher
     _adeleSend1(_adeleTerminal2);
   }
 
-  Future<bool> _adeleCancel(int _adeleRequestId0) async {
+  Future<void> _adeleCancelAndAcknowledge(
+    int _adeleRequestId0,
+    void Function(Map<String, Object?>) _adeleSend1,
+  ) async {
+    if (await _adeleCancel(_adeleRequestId0))
+      _adeleSend1({'kind': 'streamCancelled', 'requestId': _adeleRequestId0});
+  }
+
+  Future<bool> _adeleCancel(int _adeleRequestId0) {
     final _adeleState1 = _adeleStreams.remove(_adeleRequestId0);
-    if (_adeleState1 == null || _adeleState1.done) return false;
+    if (_adeleState1 == null || _adeleState1.done)
+      return Future<bool>.value(false);
     _adeleState1.done = true;
-    await _adeleState1.iterator.cancel();
-    return true;
+    late final Future<void> _adeleCancellation2;
+    _adeleCancellation2 = (() async {
+      await _adeleState1.iterator?.cancel();
+    })().whenComplete(() => _adeleCancellations.remove(_adeleCancellation2));
+    _adeleCancellations.add(_adeleCancellation2);
+    return _adeleCancellation2.then((_) => true);
   }
 
   @override
@@ -598,9 +660,9 @@ final class ScriptedModelFixtureServiceDispatcher
     if (_adeleClosed) return;
     _adeleClosed = true;
     final _adeleIds0 = _adeleStreams.keys.toList(growable: false);
-    for (final _adeleId1 in _adeleIds0) {
-      await _adeleCancel(_adeleId1);
-    }
+    await Future.wait<bool>(_adeleIds0.map(_adeleCancel));
+    await Future.wait<void>(_adeleOperations.toList(growable: false));
+    await Future.wait<void>(_adeleCancellations.toList(growable: false));
   }
 }
 
@@ -626,10 +688,10 @@ final class _ContractUnknownMethod implements Exception {
 }
 
 final class _ContractStreamState {
-  _ContractStreamState(this.requestId, this.method, this.iterator);
+  _ContractStreamState.opening(this.requestId);
   final int requestId;
-  final String method;
-  final AdeleStreamIterator<Object?> iterator;
+  String? method;
+  AdeleStreamIterator<Object?>? iterator;
   int credit = 0;
   bool pumping = false;
   bool done = false;

@@ -40,8 +40,25 @@ void main() {
       expect(channel.streamCalls, 1);
       expect(items.single.kind, ScriptedModelStreamItemKind.text);
       expect(items.single.text, 'streamed');
+      expect(() => stream.listen((_) {}), throwsStateError);
+      expect(channel.streamCalls, 1);
     },
   );
+
+  test('malformed item cancels the raw stream before later items', () async {
+    final channel = _MalformedFixtureChannel();
+    final client = ScriptedModelFixtureServiceClient(channel);
+    final items = <ScriptedModelStreamItem>[];
+    final errors = <Object>[];
+    final subscription = client
+        .invokeStream(_request())
+        .listen(items.add, onError: errors.add, cancelOnError: false);
+    await Future<void>.delayed(Duration.zero);
+    await subscription.cancel();
+    expect(items.map((item) => item.text), <String?>['valid']);
+    expect(errors.single, isA<AdeleProtocolException>());
+    expect(channel.cancellations, 1);
+  });
 
   test('generated dispatcher gates producer advancement on credit', () async {
     final service = _StreamingFixtureService();
@@ -107,6 +124,97 @@ void main() {
       ]);
     },
   );
+
+  test(
+    'stream open retains credit received before source installation',
+    () async {
+      final service = _DelayedOpenFixtureService();
+      final dispatcher = ScriptedModelFixtureServiceDispatcher(service);
+      final events = <Map<String, Object?>>[];
+      final Future<void> opening = dispatcher.handle({
+        'kind': 'streamOpen',
+        'requestId': 9,
+        'method': scriptedModelFixtureServiceInvokeStreamId,
+        'payload': {'request': _encodedRequest()},
+      }, events.add);
+      await dispatcher.handle({
+        'kind': 'streamCredit',
+        'requestId': 9,
+        'credit': 1,
+      }, events.add);
+      await opening;
+      await Future<void>.delayed(Duration.zero);
+      expect(events.single['kind'], 'streamItem');
+    },
+  );
+
+  test('synchronous declared stream failure retains typed metadata', () async {
+    final dispatcher = ScriptedModelFixtureServiceDispatcher(
+      _SynchronousFailureFixtureService(),
+    );
+    final events = <Map<String, Object?>>[];
+    await dispatcher.handle({
+      'kind': 'streamOpen',
+      'requestId': 10,
+      'method': scriptedModelFixtureServiceInvokeStreamId,
+      'payload': {'request': _encodedRequest()},
+    }, events.add);
+    expect(events.single['kind'], 'streamFailure');
+    expect(
+      (events.single['error'] as Map)['declaredFailureType'],
+      scriptedModelFailureTypeId,
+    );
+  });
+
+  test('close waits for admitted unary work', () async {
+    final service = _BlockedUnaryFixtureService();
+    final dispatcher = ScriptedModelFixtureServiceDispatcher(service);
+    final events = <Map<String, Object?>>[];
+    final Future<void> unary = dispatcher.handle({
+      'kind': 'request',
+      'requestId': 11,
+      'method': scriptedModelFixtureServiceInvokeId,
+      'payload': {'request': _encodedRequest()},
+    }, events.add);
+    await service.started.future;
+    bool closed = false;
+    final Future<void> closing = dispatcher.close().then((_) => closed = true);
+    await Future<void>.delayed(Duration.zero);
+    expect(closed, isFalse);
+    service.release.complete();
+    await unary;
+    await closing;
+    expect(events.single['kind'], 'response');
+  });
+
+  test(
+    'stream cancellation remains responsive while unary is blocked',
+    () async {
+      final service = _BlockedUnaryFixtureService();
+      final dispatcher = ScriptedModelFixtureServiceDispatcher(service);
+      final events = <Map<String, Object?>>[];
+      final Future<void> unary = dispatcher.handle({
+        'kind': 'request',
+        'requestId': 12,
+        'method': scriptedModelFixtureServiceInvokeId,
+        'payload': {'request': _encodedRequest()},
+      }, events.add);
+      await service.started.future;
+      await dispatcher.handle({
+        'kind': 'streamOpen',
+        'requestId': 13,
+        'method': scriptedModelFixtureServiceInvokeStreamId,
+        'payload': {'request': _encodedRequest()},
+      }, events.add);
+      await dispatcher
+          .handle({'kind': 'streamCancel', 'requestId': 13}, events.add)
+          .timeout(const Duration(seconds: 1));
+      expect(events.any((event) => event['kind'] == 'streamCancelled'), isTrue);
+      service.release.complete();
+      await unary;
+      await dispatcher.close();
+    },
+  );
 }
 
 ScriptedModelRequest _request() => const ScriptedModelRequest(
@@ -139,6 +247,38 @@ final class _FixtureChannel implements AdeleStreamChannel {
       'toolCall': null,
     });
   })();
+}
+
+final class _MalformedFixtureChannel implements AdeleStreamChannel {
+  int cancellations = 0;
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) async =>
+      null;
+
+  @override
+  Stream<Object?> stream(String method, Map<String, Object?> payload) {
+    late final StreamController<Object?> controller;
+    controller = StreamController<Object?>(
+      onListen: () {
+        controller.add({
+          'kind': 'text',
+          'sequence': null,
+          'text': 'valid',
+          'toolCall': null,
+        });
+        controller.add({'kind': 'invalid'});
+        controller.add({
+          'kind': 'text',
+          'sequence': null,
+          'text': 'late',
+          'toolCall': null,
+        });
+      },
+      onCancel: () => cancellations++,
+    );
+    return controller.stream;
+  }
 }
 
 final class _StreamingFixtureService implements ScriptedModelFixtureService {
@@ -194,5 +334,41 @@ final class _DelayedStreamingFixtureService extends _StreamingFixtureService {
       toolCall: null,
       sequence: 0,
     );
+  }
+}
+
+final class _DelayedOpenFixtureService extends _StreamingFixtureService {
+  @override
+  Stream<ScriptedModelStreamItem> invokeStream(
+    ScriptedModelRequest request,
+  ) async* {
+    yield const ScriptedModelStreamItem(
+      kind: ScriptedModelStreamItemKind.probe,
+      text: null,
+      toolCall: null,
+      sequence: 0,
+    );
+  }
+}
+
+final class _SynchronousFailureFixtureService extends _StreamingFixtureService {
+  @override
+  Stream<ScriptedModelStreamItem> invokeStream(ScriptedModelRequest request) =>
+      throw const ScriptedModelFailure(
+        code: 'declared',
+        message: 'Declared creation failure.',
+        details: <String, Object?>{},
+      );
+}
+
+final class _BlockedUnaryFixtureService extends _StreamingFixtureService {
+  final Completer<void> started = Completer<void>();
+  final Completer<void> release = Completer<void>();
+
+  @override
+  Future<ScriptedModelResponse> invoke(ScriptedModelRequest request) async {
+    started.complete();
+    await release.future;
+    return const ScriptedModelResponse(content: 'done', toolCall: null);
   }
 }

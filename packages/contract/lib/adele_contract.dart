@@ -68,6 +68,8 @@ final class AdeleStreamIterator<T> {
 final class AdeleLazyStream<T> extends Stream<T> {
   AdeleLazyStream(this._listen);
 
+  bool _listened = false;
+
   final StreamSubscription<T> Function(
     void Function(T event)? onData,
     Function? onError,
@@ -82,79 +84,66 @@ final class AdeleLazyStream<T> extends Stream<T> {
     Function? onError,
     void Function()? onDone,
     bool? cancelOnError,
-  }) => _listen(onData, onError, onDone, cancelOnError);
-}
-
-final class AdeleBackendCommandRunner {
-  AdeleBackendCommandRunner(
-    this.dispatcher,
-    this.send, {
-    this.maxConcurrentOperations = 16,
-  }) : assert(maxConcurrentOperations > 0);
-
-  final AdeleBackendDispatcher dispatcher;
-  final void Function(Map<String, Object?> event) send;
-  final int maxConcurrentOperations;
-  final Set<Future<void>> _operations = <Future<void>>{};
-  final List<Completer<void>> _capacityWaiters = <Completer<void>>[];
-  bool _closed = false;
-
-  Future<void> add(Map<Object?, Object?> command) async {
-    if (_closed) return;
-    final Object? kind = command['kind'];
-    if (kind == 'streamCredit' || kind == 'streamCancel') {
-      await dispatcher.handle(command, send);
-      return;
+  }) {
+    if (_listened) {
+      throw StateError('Stream has already been listened to.');
     }
-    while (!_closed && _operations.length >= maxConcurrentOperations) {
-      final Completer<void> waiter = Completer<void>();
-      _capacityWaiters.add(waiter);
-      await waiter.future;
-    }
-    if (_closed) return;
-    late final Future<void> operation;
-    operation = dispatcher.handle(command, send).whenComplete(() {
-      _operations.remove(operation);
-      if (_capacityWaiters.isNotEmpty) {
-        _capacityWaiters.removeAt(0).complete();
-      }
-    });
-    _operations.add(operation);
-  }
-
-  Future<void> close() async {
-    if (_closed) return;
-    _closed = true;
-    for (final Completer<void> waiter in _capacityWaiters) {
-      if (!waiter.isCompleted) waiter.complete();
-    }
-    _capacityWaiters.clear();
-    await dispatcher.close();
-    await Future.wait<void>(_operations.toList(growable: false));
+    _listened = true;
+    return _listen(onData, onError, onDone, cancelOnError);
   }
 }
 
-final class AdeleBoundedExecutor {
-  AdeleBoundedExecutor({this.maximum = 16}) : assert(maximum > 0);
-
-  final int maximum;
-  int _active = 0;
-  final List<Completer<void>> _waiters = <Completer<void>>[];
-
-  Future<T> run<T>(Future<T> Function() operation) async {
-    if (_active >= maximum) {
-      final Completer<void> waiter = Completer<void>();
-      _waiters.add(waiter);
-      await waiter.future;
-    }
-    _active++;
-    try {
-      return await operation();
-    } finally {
-      _active--;
-      if (_waiters.isNotEmpty) _waiters.removeAt(0).complete();
-    }
+Stream<T> adeleDecodedStream<T>(
+  Stream<Object?> raw,
+  T Function(Object? value) decode,
+  Object Function(Object error) mapError,
+) {
+  late final StreamController<T> controller;
+  StreamSubscription<Object?>? subscription;
+  bool terminated = false;
+  Future<void> terminate(Object error, StackTrace stackTrace) async {
+    if (terminated) return;
+    terminated = true;
+    await subscription?.cancel();
+    controller.addError(error, stackTrace);
+    await controller.close();
   }
+
+  controller = StreamController<T>(
+    sync: true,
+    onListen: () {
+      subscription = raw.listen(
+        (Object? item) {
+          if (terminated) return;
+          try {
+            controller.add(decode(item));
+          } on Object catch (error, stackTrace) {
+            unawaited(terminate(error, stackTrace));
+          }
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          if (terminated) return;
+          try {
+            unawaited(terminate(mapError(error), stackTrace));
+          } on Object catch (mappedError, mappedStackTrace) {
+            unawaited(terminate(mappedError, mappedStackTrace));
+          }
+        },
+        onDone: () {
+          if (terminated) return;
+          terminated = true;
+          unawaited(controller.close());
+        },
+      );
+    },
+    onPause: () => subscription?.pause(),
+    onResume: () => subscription?.resume(),
+    onCancel: () async {
+      terminated = true;
+      await subscription?.cancel();
+    },
+  );
+  return controller.stream;
 }
 
 abstract interface class AdeleRemoteFailure implements Exception {

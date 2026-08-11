@@ -19,10 +19,11 @@ kind; `T` remains in the existing transported-value closure. Outer aliases,
 lookalikes, raw or nullable streams, `Stream<void>`, nested streams, and stream
 parameters are rejected.
 
-Generated clients expose lazy single-subscription Dart streams. Items decode in
-transport order. Existing declared failure metadata reconstructs typed failures
-before or after items; malformed items raise `AdeleProtocolException` and cancel
-the underlying stream.
+Generated clients expose lazy single-subscription Dart streams; a second listen
+is rejected without opening another invocation. Items decode in transport order.
+Existing declared failure metadata reconstructs typed failures during stream
+creation or iteration. A malformed item raises `AdeleProtocolException`, cancels
+the exact underlying subscription, and prevents later delivery or credit.
 
 Generated dispatchers own stream iterators, credit accounting, item encoding,
 terminal classification, cancellation, and idempotent shutdown. Entrypoints
@@ -39,10 +40,22 @@ a mismatched host before any plugin activation; deployments and rollbacks must
 replace both artifacts together. Version 1 negotiation is not retained because
 it cannot provide the required stream lifecycle semantics.
 
-Flow control uses a fixed one-item window. Pause stops credit replenishment;
-resume grants the next credit. Consumer cancellation traverses runtime, host,
-plugin isolate, generated dispatcher, and `StreamIterator.cancel()`, completing
-after the producer settles. At most one granted item may advance during a race.
+Flow control uses a fixed one-item window. Runtime state explicitly tracks the
+single outstanding credit. Pause stops replacement credit; resume grants only a
+withheld replacement and never duplicates an outstanding grant. Consumer
+cancellation traverses runtime, host, plugin isolate, generated dispatcher, and
+`StreamIterator.cancel()`, completing after the producer settles. At most one
+granted item may advance during a race.
+
+Generated dispatchers reserve stream-open state before asynchronous work, retain
+early credit, track admitted unary/open and cancellation work, reject new work
+after close begins, and await previously admitted work before shutdown
+acknowledgement. Stream controls remain responsive while unary work is pending.
+
+If remote cancellation does not acknowledge within the bounded lifecycle
+timeout, runtime retires the exact owning plugin generation through normal
+stop/forced-isolate termination. Local correlation is not silently abandoned,
+and a later replacement generation is not affected by stale timeout work.
 
 Streams belong to the exact plugin/provider generation that opened them.
 Disappearance terminates the stream; a replacement never inherits it.
