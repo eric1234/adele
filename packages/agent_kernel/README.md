@@ -1,8 +1,10 @@
 # Agent Kernel
 
-`agent_kernel` is an internal, pure-Dart package reserved for a future
-provider-neutral agent execution substrate. It contains no agent API or loop in
-Phase 0.
+`agent_kernel` is ADELE's internal, pure-Dart, provider-neutral execution
+substrate. Phase IV-A establishes Session and Run separation, context assembly,
+streaming-shaped model invocation, immutable tool materialization, proposal
+resolution, invocation-specific effects, policy, interruptions, structured tool
+execution outcomes, and typed execution observation.
 
 ## Dependencies
 
@@ -13,15 +15,28 @@ Plugins must not depend on this package.
 
 ## Ownership
 
-Future responsibilities may include sessions, runs, model invocation
-coordination, tool-call lifecycle, approval, cancellation, persistence and
-replay, execution events, and errors.
+Session ports expose canonical conversational snapshots. Runs own execution
+identity, a small lifecycle, interruptions, terminal failure, and a deterministic
+in-memory journal. Runs do not own canonical transcripts, models, tool catalogs,
+context policy, or workflow sequencing.
+
+Model ports return semantic event streams even though the maintained scripted
+fixture currently adapts generated unary transport in the application. Tools
+have semantic IDs independent from model aliases and retain exact executable
+objects in immutable per-model-invocation materializations.
 
 Concrete model providers, concrete tools, editors, Git, terminals, workspace
 implementations, coding-agent workflows, profile management, and provider
 account management do not belong here.
 
+## Journal
+
+`RunJournal` is deterministic observation for tests and inspection. It is not
+durable storage, replay, recovery, or an event-sourcing decision.
+
 ## Deferred
 
-Agent loops, complete message/tool/event/persistence models, and multi-agent
-abstractions are intentionally deferred.
+Generated streaming and cancellation, persistent Session/Run storage, a final
+public model-provider contract, production workflows, parallel execution,
+complete effect/content taxonomies, durable approval, runtime resources,
+artifacts, and multi-agent abstractions remain deferred.
