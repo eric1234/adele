@@ -198,9 +198,15 @@ final class PluginBackendHost {
     }
   }
 
-  Future<void> stopPlugin(String pluginId) async {
-    final PluginBackendConnection? connection = _plugins.remove(pluginId);
-    if (connection == null) return;
+  Future<void> stopPlugin(
+    String pluginId, {
+    PluginBackendConnection? expected,
+  }) async {
+    final PluginBackendConnection? connection = _plugins[pluginId];
+    if (connection == null || (expected != null && connection != expected)) {
+      return;
+    }
+    _plugins.remove(pluginId);
     final PluginConnectionClosed stopped = PluginConnectionClosed(
       'Plugin $pluginId was stopped.',
     );
@@ -351,7 +357,7 @@ final class PluginBackendHost {
     if (_streams[requestId] != stream) return;
     if (_plugins[stream.pluginId] == stream.owner) {
       try {
-        await stopPlugin(stream.pluginId);
+        await stopPlugin(stream.pluginId, expected: stream.owner);
       } on Object {
         if (_plugins[stream.pluginId] == stream.owner) {
           _plugins.remove(stream.pluginId);
@@ -653,7 +659,10 @@ final class PluginBackendConnection implements AdeleStreamChannel {
     return _host._stream(this, method, payload);
   }
 
-  Future<void> close() => _host.stopPlugin(pluginId);
+  Future<void> close() {
+    if (_closed) return Future<void>.value();
+    return _host.stopPlugin(pluginId, expected: this);
+  }
 
   void _finish(Object reason) {
     _closed = true;

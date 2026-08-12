@@ -51,6 +51,48 @@ void main() {
     });
   }
 
+  test('rejects raw Stream returns', () async {
+    await _expectDiagnostic(
+      _minimalContract(
+        namedValue: true,
+      ).replaceFirst('Future<String>', 'Stream'),
+      'Dynamic or unconstrained contract types',
+    );
+  });
+
+  test('rejects outer Stream aliases', () async {
+    await _expectDiagnostic(
+      _minimalContract(namedValue: true)
+          .replaceFirst(
+            "part 'fixture.g.dart';",
+            "part 'fixture.g.dart';\ntypedef StreamAlias<T> = Stream<T>;",
+          )
+          .replaceFirst('Future<String>', 'StreamAlias<String>'),
+      'Future<T> or Stream<T>',
+    );
+  });
+
+  test('rejects Stream lookalike returns', () async {
+    await _expectDiagnostic(
+      _minimalContract(namedValue: true)
+          .replaceFirst(
+            "part 'fixture.g.dart';",
+            "part 'fixture.g.dart';\nclass Stream<T> {}",
+          )
+          .replaceFirst('Future<String>', 'Stream<String>'),
+      'Future<T> or Stream<T>',
+    );
+  });
+
+  test('rejects Stream service parameters', () async {
+    await _expectDiagnostic(
+      _minimalContract(
+        namedValue: true,
+      ).replaceFirst('String value);', 'Stream<String> value);'),
+      'Stream contract types are not supported',
+    );
+  });
+
   test('rejects multiple annotated services in one contract library', () async {
     await _expectDiagnostic(
       _minimalContract(namedValue: true).replaceFirst(
@@ -630,6 +672,9 @@ ${_minimalContract(namedValue: true)}'''),
     'fixtureServiceId',
     'fixtureValueTypeId',
     'AdeleRequestChannel',
+    'AdeleStreamChannel',
+    'AdeleLazyStream',
+    'adeleDecodedStream',
   ]) {
     test('reserves import prefix $prefix against generated symbols', () async {
       final fixture = await _fixtureWithSupport(

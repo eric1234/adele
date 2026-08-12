@@ -10,6 +10,8 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   final ReceivePort? keepAlive = arguments.single == 'acknowledge-hang'
       ? ReceivePort()
       : null;
+  final Map<int, String> streams = <int, String>{};
+  final Map<int, int> sequences = <int, int>{};
   bootstrapPort.send(<String, Object?>{
     'kind': 'ready',
     'commandPort': commands.sendPort,
@@ -21,6 +23,59 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   }
   await for (final Object? raw in commands) {
     final Map<Object?, Object?> message = raw! as Map<Object?, Object?>;
+    if (message['kind'] == 'streamOpen') {
+      final int id = message['requestId']! as int;
+      streams[id] = message['method']! as String;
+      sequences[id] = 0;
+      continue;
+    }
+    if (message['kind'] == 'streamCredit') {
+      final int id = message['requestId']! as int;
+      final String? method = streams[id];
+      if (method == null) continue;
+      if (method == 'stream-malformed') {
+        responsePort.send(<String, Object?>{
+          'kind': 'response',
+          'requestId': id,
+          'ok': true,
+        });
+      } else if (method == 'stream-large-item') {
+        responsePort.send(<String, Object?>{
+          'kind': 'streamItem',
+          'requestId': id,
+          'payload': 'x' * (8 * 1024 * 1024 + 1),
+        });
+      } else if (method == 'stream-large-terminal') {
+        responsePort.send(<String, Object?>{
+          'kind': 'streamFailure',
+          'requestId': id,
+          'error': <String, Object?>{
+            'code': 'fixture_failure',
+            'message': 'large',
+            'details': <String, Object?>{'value': 'x' * (8 * 1024 * 1024 + 1)},
+          },
+        });
+      } else {
+        final int sequence = sequences[id]!;
+        sequences[id] = sequence + 1;
+        responsePort.send(<String, Object?>{
+          'kind': 'streamItem',
+          'requestId': id,
+          'payload': <String, Object?>{'label': method, 'sequence': sequence},
+        });
+      }
+      continue;
+    }
+    if (message['kind'] == 'streamCancel') {
+      final int id = message['requestId']! as int;
+      streams.remove(id);
+      sequences.remove(id);
+      responsePort.send(<String, Object?>{
+        'kind': 'streamCancelled',
+        'requestId': id,
+      });
+      continue;
+    }
     if (message['method'] == 'crash') {
       commands.close();
       return;

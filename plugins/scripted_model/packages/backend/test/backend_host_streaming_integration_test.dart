@@ -103,25 +103,24 @@ void main() {
       while ((await clientA.streamProbe()).active == 0) {
         await Future<void>.delayed(Duration.zero);
       }
+      final Future<void> oldStreamTerminal = disappeared.future.then((_) {});
+      await generationA.close();
       disappearingSubscription.resume();
-      await host.close(graceful: false);
       expect(await disappeared.future, isA<PluginConnectionClosed>());
-      final PluginBackendHost replacementHost = await PluginBackendHost.start(
-        dartaotruntimeExecutable: runtime,
-        hostArtifactPath: hostArtifact.path,
+      await oldStreamTerminal;
+      final PluginBackendConnection generationB = await host.startPlugin(
+        pluginId: 'dev.adele.fixture.scripted-model',
+        artifactUri: pluginArtifact.uri,
       );
-      final PluginBackendConnection generationB = await replacementHost
-          .startPlugin(
-            pluginId: 'dev.adele.fixture.scripted-model',
-            artifactUri: pluginArtifact.uri,
-          );
       final List<ScriptedModelStreamItem> fresh =
           await ScriptedModelFixtureServiceClient(
             generationB,
           ).invokeStream(_ordinaryRequest()).toList();
       expect(fresh, hasLength(2));
+      await generationA.close();
+      expect(generationB.isClosed, isFalse);
       await generationB.close();
-      await replacementHost.close();
+      await host.close();
     },
     timeout: const Timeout(Duration(minutes: 3)),
   );

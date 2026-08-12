@@ -48,17 +48,38 @@ cancellation traverses runtime, host, plugin isolate, generated dispatcher, and
 granted item may advance during a race.
 
 Generated dispatchers reserve stream-open state before asynchronous work, retain
-early credit, track admitted unary/open and cancellation work, reject new work
-after close begins, and await previously admitted work before shutdown
-acknowledgement. Stream controls remain responsive while unary work is pending.
+early credit, and serialize unary requests and stream opening through one FIFO
+ordinary-operation lane. Credit and cancellation commands bypass that lane, so
+an already-open stream remains controllable while unary work is pending.
+Dispatchers track admitted ordinary and cancellation work, reject new work after
+close begins, and share one cached close future among concurrent close callers.
+Shutdown acknowledgement follows settlement of all admitted work.
+
+When generated item encoding or type enforcement fails, the malformed item is
+not emitted. The dispatcher sends one `backend_contract_violation`, cancels the
+exact producer iterator, and includes that cancellation in close settlement.
 
 If remote cancellation does not acknowledge within the bounded lifecycle
 timeout, runtime retires the exact owning plugin generation through normal
 stop/forced-isolate termination. Local correlation is not silently abandoned,
 and a later replacement generation is not affected by stale timeout work.
 
+Host lifecycle state distinguishes consumer cancellation, plugin-generation
+shutdown, and host containment aborts. Only consumer cancellation produces a
+silent `streamCancelled` completion. Generation shutdown fails old runtime
+streams as connection disappearance; host aborts send a contained stream
+failure and retain cancellation state until producer acknowledgement or
+generation cleanup.
+
+If a preferred stream terminal cannot be framed, the host sends a small
+`response_too_large` or `response_encoding_failed` fallback. Failure to send
+even that fallback retires the owning plugin generation rather than abandoning
+runtime correlation.
+
 Streams belong to the exact plugin/provider generation that opened them.
-Disappearance terminates the stream; a replacement never inherits it.
+Disappearance terminates the stream; a replacement never inherits it. Tests
+stop generation A with an active stream and start generation B with the same ID
+inside the same shared host.
 
 The scripted-model fixture retains its unary Phase IV-A method and application
 adapter. It additionally exposes a generated stream and fixture-only probe for

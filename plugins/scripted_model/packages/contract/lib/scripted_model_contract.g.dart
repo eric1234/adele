@@ -167,8 +167,10 @@ final class ScriptedModelFixtureServiceDispatcher
   final ScriptedModelFixtureService _adeleService;
   final Map<int, _ContractStreamState> _adeleStreams =
       <int, _ContractStreamState>{};
+  Future<void> _adeleOrdinaryTail = Future<void>.value();
   final Set<Future<void>> _adeleOperations = <Future<void>>{};
   final Set<Future<void>> _adeleCancellations = <Future<void>>{};
+  Future<void>? _adeleCloseFuture;
   bool _adeleClosed = false;
   @override
   Future<Map<String, Object?>> dispatch(
@@ -350,7 +352,7 @@ final class ScriptedModelFixtureServiceDispatcher
     final _adeleKind2 = _adeleCommand0['kind'];
     if (_adeleKind2 == 'request') {
       if (_adeleClosed) return Future<void>.value();
-      return _adeleTrackOperation(
+      return _adeleScheduleOrdinary(
         () async => _adeleSend1(await dispatch(_adeleCommand0)),
       );
     }
@@ -372,7 +374,7 @@ final class ScriptedModelFixtureServiceDispatcher
       }
       final _adeleState4 = _ContractStreamState.opening(_adeleRequestId3);
       _adeleStreams[_adeleRequestId3] = _adeleState4;
-      return _adeleTrackOperation(
+      return _adeleScheduleOrdinary(
         () => _adeleOpenStream(_adeleState4, _adeleCommand0, _adeleSend1),
       );
     }
@@ -392,10 +394,14 @@ final class ScriptedModelFixtureServiceDispatcher
     return Future<void>.value();
   }
 
-  Future<void> _adeleTrackOperation(Future<void> Function() _adeleBody0) {
+  Future<void> _adeleScheduleOrdinary(Future<void> Function() _adeleBody0) {
     late final Future<void> _adeleOperation1;
-    _adeleOperation1 = _adeleBody0().whenComplete(
-      () => _adeleOperations.remove(_adeleOperation1),
+    _adeleOperation1 = _adeleOrdinaryTail
+        .then((_) => _adeleBody0())
+        .whenComplete(() => _adeleOperations.remove(_adeleOperation1));
+    _adeleOrdinaryTail = _adeleOperation1.then<void>(
+      (_) {},
+      onError: (_, _) {},
     );
     _adeleOperations.add(_adeleOperation1);
     return _adeleOperation1;
@@ -599,7 +605,7 @@ final class ScriptedModelFixtureServiceDispatcher
             'payload': _adeleEncoded4,
           });
         } on Object {
-          _adeleFinish(
+          _adeleFailAndCancel(
             _adeleState0,
             _adeleSend1,
             _contractStreamFailure(
@@ -634,6 +640,19 @@ final class ScriptedModelFixtureServiceDispatcher
     _adeleSend1(_adeleTerminal2);
   }
 
+  void _adeleFailAndCancel(
+    _ContractStreamState _adeleState0,
+    void Function(Map<String, Object?>) _adeleSend1,
+    Map<String, Object?> _adeleTerminal2,
+  ) {
+    if (_adeleState0.done ||
+        _adeleStreams.remove(_adeleState0.requestId) != _adeleState0)
+      return;
+    _adeleState0.done = true;
+    _adeleSend1(_adeleTerminal2);
+    _adeleTrackCancellation(_adeleState0);
+  }
+
   Future<void> _adeleCancelAndAcknowledge(
     int _adeleRequestId0,
     void Function(Map<String, Object?>) _adeleSend1,
@@ -642,22 +661,26 @@ final class ScriptedModelFixtureServiceDispatcher
       _adeleSend1({'kind': 'streamCancelled', 'requestId': _adeleRequestId0});
   }
 
+  Future<void> _adeleTrackCancellation(_ContractStreamState _adeleState0) {
+    late final Future<void> _adeleCancellation1;
+    _adeleCancellation1 = (() async {
+      await _adeleState0.iterator?.cancel();
+    })().whenComplete(() => _adeleCancellations.remove(_adeleCancellation1));
+    _adeleCancellations.add(_adeleCancellation1);
+    return _adeleCancellation1;
+  }
+
   Future<bool> _adeleCancel(int _adeleRequestId0) {
     final _adeleState1 = _adeleStreams.remove(_adeleRequestId0);
     if (_adeleState1 == null || _adeleState1.done)
       return Future<bool>.value(false);
     _adeleState1.done = true;
-    late final Future<void> _adeleCancellation2;
-    _adeleCancellation2 = (() async {
-      await _adeleState1.iterator?.cancel();
-    })().whenComplete(() => _adeleCancellations.remove(_adeleCancellation2));
-    _adeleCancellations.add(_adeleCancellation2);
-    return _adeleCancellation2.then((_) => true);
+    return _adeleTrackCancellation(_adeleState1).then((_) => true);
   }
 
   @override
-  Future<void> close() async {
-    if (_adeleClosed) return;
+  Future<void> close() => _adeleCloseFuture ??= _adeleClose();
+  Future<void> _adeleClose() async {
     _adeleClosed = true;
     final _adeleIds0 = _adeleStreams.keys.toList(growable: false);
     await Future.wait<bool>(_adeleIds0.map(_adeleCancel));

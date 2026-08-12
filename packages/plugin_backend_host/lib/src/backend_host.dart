@@ -394,6 +394,7 @@ final class _PluginIsolate {
     } else {
       if (stream.cancelling) return;
       stream.cancelling = true;
+      stream.cancelOrigin = _StreamCancelOrigin.consumer;
       _commands.send(<String, Object?>{
         'kind': 'streamCancel',
         'requestId': pluginRequestId,
@@ -405,6 +406,8 @@ final class _PluginIsolate {
     if (_stopped) return;
     _stopped = true;
     for (final _HostPluginStream stream in _streams.values.toList()) {
+      stream.cancelling = true;
+      stream.cancelOrigin = _StreamCancelOrigin.pluginStop;
       _commands.send(<String, Object?>{
         'kind': 'streamCancel',
         'requestId': stream.pluginRequestId,
@@ -497,17 +500,11 @@ final class _PluginIsolate {
     final Object? kind = raw['kind'];
     if (kind == 'streamItem') {
       if (stream.credit <= 0) {
-        _commands.send(<String, Object?>{
-          'kind': 'streamCancel',
-          'requestId': stream.pluginRequestId,
-        });
-        _finishStream(stream, <String, Object?>{
-          'kind': 'streamFailure',
-          'error': <String, Object?>{
-            'code': 'stream_protocol_violation',
-            'message': 'The plugin emitted without stream credit.',
-          },
-        });
+        _abortStream(
+          stream,
+          code: 'stream_protocol_violation',
+          message: 'The plugin emitted without stream credit.',
+        );
         return;
       }
       stream.credit--;
@@ -519,19 +516,13 @@ final class _PluginIsolate {
         'payload': raw['payload'],
       };
       if (!_send(item)) {
-        _commands.send(<String, Object?>{
-          'kind': 'streamCancel',
-          'requestId': stream.pluginRequestId,
-        });
-        _finishStream(stream, <String, Object?>{
-          'kind': 'streamFailure',
-          'error': <String, Object?>{
-            'code': _isOversizedResponse(item)
-                ? 'response_too_large'
-                : 'response_encoding_failed',
-            'message': 'The plugin stream item could not be transported.',
-          },
-        });
+        _abortStream(
+          stream,
+          code: _isOversizedResponse(item)
+              ? 'response_too_large'
+              : 'response_encoding_failed',
+          message: 'The plugin stream item could not be transported.',
+        );
       }
       return;
     }
@@ -539,23 +530,33 @@ final class _PluginIsolate {
         kind == 'streamFailure' ||
         kind == 'streamCancelled') {
       if (!_validStreamTerminal(stream, raw)) {
-        _commands.send(<String, Object?>{
-          'kind': 'streamCancel',
-          'requestId': stream.pluginRequestId,
-        });
-        _finishStream(stream, <String, Object?>{
-          'kind': 'streamFailure',
-          'error': <String, Object?>{
-            'code': 'stream_protocol_violation',
-            'message': 'The plugin returned a malformed stream terminal.',
-          },
-        });
+        _abortStream(
+          stream,
+          code: 'stream_protocol_violation',
+          message: 'The plugin returned a malformed stream terminal.',
+        );
         return;
+      }
+      if (kind == 'streamCancelled') {
+        final _StreamCancelOrigin? origin = stream.cancelOrigin;
+        if (origin == _StreamCancelOrigin.hostAbort) {
+          _removeStream(stream);
+          return;
+        }
+        if (origin == _StreamCancelOrigin.pluginStop) {
+          _removeStream(stream);
+          return;
+        }
       }
       _finishStream(stream, raw);
       return;
     }
     _diagnostic('Malformed stream response from $pluginId: $raw');
+    _abortStream(
+      stream,
+      code: 'stream_protocol_violation',
+      message: 'The plugin returned a malformed stream response.',
+    );
   }
 
   bool _validStreamTerminal(
@@ -565,6 +566,7 @@ final class _PluginIsolate {
     final Object? kind = raw['kind'];
     if (kind == 'streamCancelled') {
       return stream.cancelling &&
+          stream.cancelOrigin != null &&
           raw.length == 2 &&
           raw['requestId'] == stream.pluginRequestId;
     }
@@ -589,8 +591,6 @@ final class _PluginIsolate {
   }
 
   void _finishStream(_HostPluginStream stream, Map<Object?, Object?> raw) {
-    if (_streams.remove(stream.pluginRequestId) != stream) return;
-    _pluginStreamIdsByOuter.remove(stream.outerRequestId);
     final Map<String, Object?> response = <String, Object?>{
       'protocolVersion': backendHostProtocolVersion,
       'kind': raw['kind'] as String,
@@ -598,9 +598,61 @@ final class _PluginIsolate {
       'pluginId': pluginId,
       if (raw.containsKey('error')) 'error': raw['error'],
     };
-    if (!_send(response)) {
-      _diagnostic('Failed to send stream terminal for $pluginId.');
+    if (!_sendStreamTerminal(stream, response)) return;
+    _removeStream(stream);
+  }
+
+  void _abortStream(
+    _HostPluginStream stream, {
+    required String code,
+    required String message,
+  }) {
+    if (stream.abortTerminalSent) return;
+    stream.cancelling = true;
+    stream.cancelOrigin = _StreamCancelOrigin.hostAbort;
+    stream.abortTerminalSent = true;
+    _commands.send(<String, Object?>{
+      'kind': 'streamCancel',
+      'requestId': stream.pluginRequestId,
+    });
+    final Map<String, Object?> terminal = <String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'streamFailure',
+      'requestId': stream.outerRequestId,
+      'pluginId': pluginId,
+      'error': <String, Object?>{'code': code, 'message': message},
+    };
+    if (!_sendStreamTerminal(stream, terminal)) {
+      _isolate.kill(priority: Isolate.immediate);
     }
+  }
+
+  bool _sendStreamTerminal(
+    _HostPluginStream stream,
+    Map<String, Object?> preferred,
+  ) {
+    if (_send(preferred)) return true;
+    final String code = _isOversizedResponse(preferred)
+        ? 'response_too_large'
+        : 'response_encoding_failed';
+    final Map<String, Object?> fallback = <String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'streamFailure',
+      'requestId': stream.outerRequestId,
+      'pluginId': pluginId,
+      'error': <String, Object?>{
+        'code': code,
+        'message': 'The plugin stream terminal could not be transported.',
+      },
+    };
+    if (_send(fallback)) return true;
+    _diagnostic('Failed to send stream terminal fallback for $pluginId.');
+    return false;
+  }
+
+  void _removeStream(_HostPluginStream stream) {
+    if (_streams.remove(stream.pluginRequestId) != stream) return;
+    _pluginStreamIdsByOuter.remove(stream.outerRequestId);
   }
 
   bool _isOversizedResponse(Map<String, Object?> response) {
@@ -668,7 +720,11 @@ final class _HostPluginStream {
   final int outerRequestId;
   int credit = 0;
   bool cancelling = false;
+  _StreamCancelOrigin? cancelOrigin;
+  bool abortTerminalSent = false;
 }
+
+enum _StreamCancelOrigin { consumer, pluginStop, hostAbort }
 
 typedef _PluginTerminated =
     void Function(

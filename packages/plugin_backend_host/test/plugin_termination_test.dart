@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:plugin_runtime/plugin_runtime.dart';
@@ -260,6 +261,146 @@ void main() {
       );
       await broken.close();
       await healthy.close();
+      await host.close();
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
+    'multiplexes streams and unary requests independently',
+    () async {
+      final host = await _startHost(dartaotruntime, hostArtifact);
+      addTearDown(() async {
+        if (!host.isClosed) await host.close(graceful: false);
+      });
+      final plugin = await host.startPlugin(
+        pluginId: 'multiplexed',
+        artifactUri: pluginArtifact.uri,
+        arguments: const <String>['wait'],
+      );
+      final left = <int>[];
+      final right = <int>[];
+      late StreamSubscription<Object?> leftSubscription;
+      late StreamSubscription<Object?> rightSubscription;
+      final leftFirst = Completer<void>();
+      final rightFirst = Completer<void>();
+      leftSubscription = plugin.stream('left', const {}).listen((value) {
+        left.add((value! as Map)['sequence']! as int);
+        if (!leftFirst.isCompleted) {
+          leftSubscription.pause();
+          leftFirst.complete();
+        }
+      });
+      rightSubscription = plugin.stream('right', const {}).listen((value) {
+        right.add((value! as Map)['sequence']! as int);
+        if (!rightFirst.isCompleted) {
+          rightSubscription.pause();
+          rightFirst.complete();
+        }
+      });
+      await Future.wait<void>(<Future<void>>[
+        leftFirst.future,
+        rightFirst.future,
+      ]);
+      expect(left, <int>[0]);
+      expect(right, <int>[0]);
+      expect(
+        await plugin.request('ping', const <String, Object?>{}),
+        <String, Object?>{'alive': true},
+      );
+      await leftSubscription.cancel();
+      rightSubscription.resume();
+      while (right.length < 2) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      expect(right, <int>[0, 1]);
+      await rightSubscription.cancel();
+      await plugin.close();
+      await host.close();
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  for (final entry in <String, String>{
+    'stream-large-item': 'response_too_large',
+    'stream-large-terminal': 'response_too_large',
+    'stream-malformed': 'stream_protocol_violation',
+  }.entries) {
+    test(
+      'contains ${entry.key} to one stream',
+      () async {
+        final host = await _startHost(dartaotruntime, hostArtifact);
+        addTearDown(() async {
+          if (!host.isClosed) await host.close(graceful: false);
+        });
+        final plugin = await host.startPlugin(
+          pluginId: entry.key,
+          artifactUri: pluginArtifact.uri,
+          arguments: const <String>['wait'],
+        );
+        await expectLater(
+          plugin.stream(entry.key, const <String, Object?>{}),
+          emitsError(
+            isA<PluginRemoteFailure>().having(
+              (failure) => failure.code,
+              'code',
+              entry.value,
+            ),
+          ),
+        );
+        expect(
+          await plugin.request('ping', const <String, Object?>{}),
+          <String, Object?>{'alive': true},
+        );
+        await plugin.close();
+        await host.close();
+      },
+      timeout: const Timeout(Duration(minutes: 2)),
+    );
+  }
+
+  test(
+    'stops an active stream and restarts same ID in the same host',
+    () async {
+      final diagnostics = <String>[];
+      final host = await PluginBackendHost.start(
+        dartaotruntimeExecutable: dartaotruntime,
+        hostArtifactPath: hostArtifact.path,
+        onDiagnostic: diagnostics.add,
+      );
+      addTearDown(() async {
+        if (!host.isClosed) await host.close(graceful: false);
+      });
+      final first = await host.startPlugin(
+        pluginId: 'stream-restart',
+        artifactUri: pluginArtifact.uri,
+        arguments: const <String>['wait'],
+      );
+      final firstItem = Completer<void>();
+      late final StreamSubscription<Object?> subscription;
+      subscription = first.stream('long', const {}).listen((_) {
+        subscription.pause();
+        if (!firstItem.isCompleted) firstItem.complete();
+      });
+      await firstItem.future;
+      await first.close();
+      expect(first.isClosed, isTrue);
+      expect(
+        diagnostics.where((message) => message.contains('protocol_violation')),
+        isEmpty,
+      );
+      final replacement = await host.startPlugin(
+        pluginId: 'stream-restart',
+        artifactUri: pluginArtifact.uri,
+        arguments: const <String>['wait'],
+      );
+      expect(
+        await replacement.request('ping', const <String, Object?>{}),
+        <String, Object?>{'alive': true},
+      );
+      await first.close();
+      expect(replacement.isClosed, isFalse);
+      await replacement.close();
       await host.close();
     },
     timeout: const Timeout(Duration(minutes: 2)),

@@ -80,7 +80,9 @@ final class WorkspaceDemoServiceDispatcher
     implements WorkspaceDemoServiceRequestDispatcher {
   WorkspaceDemoServiceDispatcher(this._adeleService);
   final WorkspaceDemoService _adeleService;
+  Future<void> _adeleOrdinaryTail = Future<void>.value();
   final Set<Future<void>> _adeleOperations = <Future<void>>{};
+  Future<void>? _adeleCloseFuture;
   bool _adeleClosed = false;
   @override
   Future<Map<String, Object?>> dispatch(
@@ -244,17 +246,27 @@ final class WorkspaceDemoServiceDispatcher
     void Function(Map<String, Object?>) _adeleSend1,
   ) {
     if (_adeleClosed) return Future<void>.value();
-    late final Future<void> _adeleOperation2;
-    _adeleOperation2 = (() async => _adeleSend1(
-      await dispatch(_adeleCommand0),
-    ))().whenComplete(() => _adeleOperations.remove(_adeleOperation2));
-    _adeleOperations.add(_adeleOperation2);
-    return _adeleOperation2;
+    return _adeleScheduleOrdinary(
+      () async => _adeleSend1(await dispatch(_adeleCommand0)),
+    );
+  }
+
+  Future<void> _adeleScheduleOrdinary(Future<void> Function() _adeleBody0) {
+    late final Future<void> _adeleOperation1;
+    _adeleOperation1 = _adeleOrdinaryTail
+        .then((_) => _adeleBody0())
+        .whenComplete(() => _adeleOperations.remove(_adeleOperation1));
+    _adeleOrdinaryTail = _adeleOperation1.then<void>(
+      (_) {},
+      onError: (_, _) {},
+    );
+    _adeleOperations.add(_adeleOperation1);
+    return _adeleOperation1;
   }
 
   @override
-  Future<void> close() async {
-    if (_adeleClosed) return;
+  Future<void> close() => _adeleCloseFuture ??= _adeleClose();
+  Future<void> _adeleClose() async {
     _adeleClosed = true;
     await Future.wait<void>(_adeleOperations.toList(growable: false));
   }
