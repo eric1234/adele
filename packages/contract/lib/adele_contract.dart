@@ -65,6 +65,14 @@ final class AdeleStreamIterator<T> {
   Future<void> cancel() => _iterator.cancel();
 }
 
+final class AdeleCompleter<T> {
+  final Completer<T> _completer = Completer<T>();
+
+  bool get isCompleted => _completer.isCompleted;
+  Future<T> get future => _completer.future;
+  void complete([FutureOr<T>? value]) => _completer.complete(value);
+}
+
 final class AdeleLazyStream<T> extends Stream<T> {
   AdeleLazyStream(this._listen);
 

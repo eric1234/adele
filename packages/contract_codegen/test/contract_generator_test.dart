@@ -380,6 +380,18 @@ abstract interface class OtherService {
     });
   }
 
+  for (final symbol in <String>['TypeError', 'StateError']) {
+    test('rejects generated core collision $symbol', () async {
+      await _expectDiagnostic(
+        _minimalContract(namedValue: true).replaceFirst(
+          "@AdeleValue('fixture.value')",
+          'class $symbol {}\n@AdeleValue(\'fixture.value\')',
+        ),
+        'Generated symbol collision for $symbol',
+      );
+    });
+  }
+
   test('allows canonical and additional prefixed contract imports', () async {
     expect(
       await _generate(

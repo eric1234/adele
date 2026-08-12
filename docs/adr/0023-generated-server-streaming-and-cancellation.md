@@ -46,11 +46,16 @@ withheld replacement and never duplicates an outstanding grant. Consumer
 cancellation traverses runtime, host, plugin isolate, generated dispatcher, and
 `StreamIterator.cancel()`, completing after the producer settles. At most one
 granted item may advance during a race.
+Errors reported by producer cancellation cleanup are contained as stream-local
+lifecycle settlement and do not escape the generated dispatcher.
 
 Generated dispatchers reserve stream-open state before asynchronous work, retain
 early credit, and serialize unary requests and stream opening through one FIFO
 ordinary-operation lane. Credit and cancellation commands bypass that lane, so
 an already-open stream remains controllable while unary work is pending.
+Cancellation of a queued open marks it immediately but acknowledges only after
+the queued opening reaches admission and is skipped without invoking the backend
+service.
 Dispatchers track admitted ordinary and cancellation work, reject new work after
 close begins, and share one cached close future among concurrent close callers.
 Shutdown acknowledgement follows settlement of all admitted work.

@@ -296,6 +296,75 @@ void main() {
     }, events.add);
   });
 
+  test('queued stream cancellation waits and skips backend open', () async {
+    final service = _BlockedUnaryFixtureService();
+    final dispatcher = ScriptedModelFixtureServiceDispatcher(service);
+    final events = <Map<String, Object?>>[];
+    final unary = dispatcher.handle({
+      'kind': 'request',
+      'requestId': 20,
+      'method': scriptedModelFixtureServiceInvokeId,
+      'payload': {'request': _encodedRequest()},
+    }, events.add);
+    await service.started.future;
+    final opening = dispatcher.handle({
+      'kind': 'streamOpen',
+      'requestId': 21,
+      'method': scriptedModelFixtureServiceInvokeStreamId,
+      'payload': {'request': _encodedRequest()},
+    }, events.add);
+    bool cancelSettled = false;
+    final cancelling = dispatcher
+        .handle({'kind': 'streamCancel', 'requestId': 21}, events.add)
+        .then((_) => cancelSettled = true);
+    expect(service.streamInvocations, 0);
+    expect(cancelSettled, isFalse);
+    expect(events.any((event) => event['kind'] == 'streamCancelled'), isFalse);
+    service.release.complete();
+    await Future.wait<void>(<Future<void>>[unary, opening, cancelling]);
+    expect(service.streamInvocations, 0);
+    expect(
+      events.where((event) => event['kind'] == 'streamCancelled'),
+      hasLength(1),
+    );
+  });
+
+  test('producer cancellation cleanup errors remain stream-local', () async {
+    final service = _ThrowingCancelFixtureService();
+    final dispatcher = ScriptedModelFixtureServiceDispatcher(service);
+    final events = <Map<String, Object?>>[];
+    await dispatcher.handle({
+      'kind': 'streamOpen',
+      'requestId': 22,
+      'method': scriptedModelFixtureServiceInvokeStreamId,
+      'payload': {'request': _encodedRequest()},
+    }, events.add);
+    await dispatcher.handle({
+      'kind': 'streamCredit',
+      'requestId': 22,
+      'credit': 1,
+    }, events.add);
+    await service.listened.future;
+    await dispatcher.handle({
+      'kind': 'streamCancel',
+      'requestId': 22,
+    }, events.add);
+    expect(events.any((event) => event['kind'] == 'streamCancelled'), isTrue);
+    await dispatcher.handle({
+      'kind': 'request',
+      'requestId': 23,
+      'method': scriptedModelFixtureServiceInvokeId,
+      'payload': {'request': _encodedRequest()},
+    }, events.add);
+    expect(
+      events.any(
+        (event) => event['kind'] == 'response' && event['requestId'] == 23,
+      ),
+      isTrue,
+    );
+    await dispatcher.close();
+  });
+
   test('concurrent close callers await the same shutdown work', () async {
     final service = _BlockedUnaryFixtureService();
     final dispatcher = ScriptedModelFixtureServiceDispatcher(service);
@@ -499,12 +568,33 @@ final class _SynchronousFailureFixtureService extends _StreamingFixtureService {
 final class _BlockedUnaryFixtureService extends _StreamingFixtureService {
   final Completer<void> started = Completer<void>();
   final Completer<void> release = Completer<void>();
+  int streamInvocations = 0;
 
   @override
   Future<ScriptedModelResponse> invoke(ScriptedModelRequest request) async {
     started.complete();
     await release.future;
     return const ScriptedModelResponse(content: 'done', toolCall: null);
+  }
+
+  @override
+  Stream<ScriptedModelStreamItem> invokeStream(ScriptedModelRequest request) {
+    streamInvocations++;
+    return super.invokeStream(request);
+  }
+}
+
+final class _ThrowingCancelFixtureService extends _StreamingFixtureService {
+  final Completer<void> listened = Completer<void>();
+
+  @override
+  Stream<ScriptedModelStreamItem> invokeStream(ScriptedModelRequest request) {
+    late final StreamController<ScriptedModelStreamItem> controller;
+    controller = StreamController<ScriptedModelStreamItem>(
+      onListen: listened.complete,
+      onCancel: () => Future<void>.error(StateError('cleanup failed')),
+    );
+    return controller.stream;
   }
 }
 

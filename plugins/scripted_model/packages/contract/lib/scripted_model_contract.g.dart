@@ -413,92 +413,107 @@ final class ScriptedModelFixtureServiceDispatcher
     void Function(Map<String, Object?>) _adeleSend1,
   ) async {
     final _adeleRequestId2 = _adeleState0.requestId;
-    late final String _adeleMethod3;
-    late final Map<Object?, Object?> _adelePayload4;
-    late final List<Object?> _adeleArguments5;
     try {
-      _adeleMethod3 = _decodeContractEnvelope(_adeleRequest0, 'streamOpen');
-      if (!const {
-        scriptedModelFixtureServiceInvokeStreamId,
-      }.contains(_adeleMethod3)) {
-        final _adeleWrongKind6 = const {
-          scriptedModelFixtureServiceInvokeId,
-          scriptedModelFixtureServiceResetStreamProbeId,
-          scriptedModelFixtureServiceStreamProbeId,
-        }.contains(_adeleMethod3);
+      if (_adeleState0.done) return;
+      late final String _adeleMethod3;
+      late final Map<Object?, Object?> _adelePayload4;
+      late final List<Object?> _adeleArguments5;
+      try {
+        _adeleMethod3 = _decodeContractEnvelope(_adeleRequest0, 'streamOpen');
+        if (!const {
+          scriptedModelFixtureServiceInvokeStreamId,
+        }.contains(_adeleMethod3)) {
+          final _adeleWrongKind6 = const {
+            scriptedModelFixtureServiceInvokeId,
+            scriptedModelFixtureServiceResetStreamProbeId,
+            scriptedModelFixtureServiceStreamProbeId,
+          }.contains(_adeleMethod3);
+          _adeleFinish(
+            _adeleState0,
+            _adeleSend1,
+            _contractStreamFailure(
+              _adeleRequestId2,
+              null,
+              _adeleWrongKind6 ? 'wrong_method_kind' : 'unknown_method',
+              _adeleWrongKind6
+                  ? 'Unary method requires request.'
+                  : 'Unknown method.',
+              const {},
+            ),
+          );
+          return;
+        }
+        _adelePayload4 = _contractMap(
+          _adeleRequest0['payload'],
+          'request payload',
+        );
+        _adeleArguments5 = switch (_adeleMethod3) {
+          scriptedModelFixtureServiceInvokeStreamId => (() {
+            _contractFields(_adelePayload4, const {
+              'request',
+            }, 'invokeStream payload');
+            return <Object?>[
+              _decodeScriptedModelRequest(_adelePayload4['request']),
+            ];
+          })(),
+          _ => throw const _ContractUnknownMethod(),
+        };
+      } on AdeleProtocolException catch (_adeleError7) {
         _adeleFinish(
           _adeleState0,
           _adeleSend1,
           _contractStreamFailure(
             _adeleRequestId2,
             null,
-            _adeleWrongKind6 ? 'wrong_method_kind' : 'unknown_method',
-            _adeleWrongKind6
-                ? 'Unary method requires request.'
-                : 'Unknown method.',
+            'invalid_request',
+            _adeleError7.message,
             const {},
           ),
         );
         return;
       }
-      _adelePayload4 = _contractMap(
-        _adeleRequest0['payload'],
-        'request payload',
-      );
-      _adeleArguments5 = switch (_adeleMethod3) {
-        scriptedModelFixtureServiceInvokeStreamId => (() {
-          _contractFields(_adelePayload4, const {
-            'request',
-          }, 'invokeStream payload');
-          return <Object?>[
-            _decodeScriptedModelRequest(_adelePayload4['request']),
-          ];
-        })(),
-        _ => throw const _ContractUnknownMethod(),
-      };
-    } on AdeleProtocolException catch (_adeleError7) {
-      _adeleFinish(
-        _adeleState0,
-        _adeleSend1,
-        _contractStreamFailure(
-          _adeleRequestId2,
-          null,
-          'invalid_request',
-          _adeleError7.message,
-          const {},
-        ),
-      );
-      return;
-    }
-    try {
-      final Stream<Object?> _adeleSource8 = switch (_adeleMethod3) {
-        scriptedModelFixtureServiceInvokeStreamId =>
-          this._adeleService
-              .invokeStream(_adeleArguments5[0] as ScriptedModelRequest)
-              .map<Object?>((Object? _adeleItem) => _adeleItem),
-        _ => throw const _ContractUnknownMethod(),
-      };
-      if (_adeleState0.done) {
-        await AdeleStreamIterator<Object?>(_adeleSource8).cancel();
-        return;
-      }
-      _adeleState0.method = _adeleMethod3;
-      _adeleState0.iterator = AdeleStreamIterator<Object?>(_adeleSource8);
-      _adelePump(_adeleState0, _adeleSend1);
-    } on ScriptedModelFailure catch (_adeleError9) {
       try {
-        _adeleFinish(
-          _adeleState0,
-          _adeleSend1,
-          _contractStreamFailure(
-            _adeleRequestId2,
-            scriptedModelFailureTypeId,
-            _adeleError9.code,
-            _adeleError9.message,
-            _contractJsonMap(_adeleError9.details, 'failure details'),
-          ),
-        );
-      } on Object {
+        final Stream<Object?> _adeleSource8 = switch (_adeleMethod3) {
+          scriptedModelFixtureServiceInvokeStreamId =>
+            this._adeleService
+                .invokeStream(_adeleArguments5[0] as ScriptedModelRequest)
+                .map<Object?>((Object? _adeleItem) => _adeleItem),
+          _ => throw const _ContractUnknownMethod(),
+        };
+        if (_adeleState0.done) {
+          await AdeleStreamIterator<Object?>(_adeleSource8).cancel();
+          return;
+        }
+        _adeleState0.method = _adeleMethod3;
+        _adeleState0.iterator = AdeleStreamIterator<Object?>(_adeleSource8);
+        _adelePump(_adeleState0, _adeleSend1);
+      } on ScriptedModelFailure catch (_adeleError9) {
+        try {
+          _adeleFinish(
+            _adeleState0,
+            _adeleSend1,
+            _contractStreamFailure(
+              _adeleRequestId2,
+              scriptedModelFailureTypeId,
+              _adeleError9.code,
+              _adeleError9.message,
+              _contractJsonMap(_adeleError9.details, 'failure details'),
+            ),
+          );
+        } on Object {
+          _adeleFinish(
+            _adeleState0,
+            _adeleSend1,
+            _contractStreamFailure(
+              _adeleRequestId2,
+              null,
+              'backend_contract_violation',
+              'The backend violated its generated contract.',
+              const {},
+            ),
+          );
+        }
+      } on TypeError {
         _adeleFinish(
           _adeleState0,
           _adeleSend1,
@@ -510,31 +525,22 @@ final class ScriptedModelFixtureServiceDispatcher
             const {},
           ),
         );
+      } on Object {
+        _adeleFinish(
+          _adeleState0,
+          _adeleSend1,
+          _contractStreamFailure(
+            _adeleRequestId2,
+            null,
+            'internal_error',
+            'The backend stream failed unexpectedly.',
+            const {},
+          ),
+        );
       }
-    } on TypeError {
-      _adeleFinish(
-        _adeleState0,
-        _adeleSend1,
-        _contractStreamFailure(
-          _adeleRequestId2,
-          null,
-          'backend_contract_violation',
-          'The backend violated its generated contract.',
-          const {},
-        ),
-      );
-    } on Object {
-      _adeleFinish(
-        _adeleState0,
-        _adeleSend1,
-        _contractStreamFailure(
-          _adeleRequestId2,
-          null,
-          'internal_error',
-          'The backend stream failed unexpectedly.',
-          const {},
-        ),
-      );
+    } finally {
+      if (!_adeleState0.openingSettled.isCompleted)
+        _adeleState0.openingSettled.complete();
     }
   }
 
@@ -689,7 +695,12 @@ final class ScriptedModelFixtureServiceDispatcher
   Future<void> _adeleTrackCancellation(_ContractStreamState _adeleState0) {
     late final Future<void> _adeleCancellation1;
     _adeleCancellation1 = (() async {
-      await _adeleState0.iterator?.cancel();
+      await _adeleState0.openingSettled.future;
+      try {
+        await _adeleState0.iterator?.cancel();
+      } on Object {
+        return;
+      }
     })().whenComplete(() => _adeleCancellations.remove(_adeleCancellation1));
     _adeleCancellations.add(_adeleCancellation1);
     return _adeleCancellation1;
@@ -738,6 +749,7 @@ final class _ContractUnknownMethod implements Exception {
 final class _ContractStreamState {
   _ContractStreamState.opening(this.requestId);
   final int requestId;
+  final AdeleCompleter<void> openingSettled = AdeleCompleter<void>();
   String? method;
   AdeleStreamIterator<Object?>? iterator;
   int credit = 0;
