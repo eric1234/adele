@@ -1522,6 +1522,9 @@ final class DartContractEmitter {
         );
       }
       out.writeln(
+        "on TypeError { _adeleFinish(_adeleState0, _adeleSend1, _contractStreamFailure(_adeleRequestId2, null, 'backend_contract_violation', 'The backend violated its generated contract.', const {})); }",
+      );
+      out.writeln(
         "on Object { _adeleFinish(_adeleState0, _adeleSend1, _contractStreamFailure(_adeleRequestId2, null, 'internal_error', 'The backend stream failed unexpectedly.', const {})); } }",
       );
       out.writeln(
@@ -1532,6 +1535,9 @@ final class DartContractEmitter {
           "on ${failure.name} catch(_adeleError3) { try { _adeleFinish(_adeleState0, _adeleSend1, _contractStreamFailure(_adeleState0.requestId, ${_lower(failure.name)}TypeId, _adeleError3.code, _adeleError3.message, _contractJsonMap(_adeleError3.details, 'failure details'))); } on Object { _adeleFinish(_adeleState0, _adeleSend1, _contractStreamFailure(_adeleState0.requestId, null, 'backend_contract_violation', 'The backend violated its generated contract.', const {})); } return; }",
         );
       }
+      out.writeln(
+        "on TypeError { _adeleFailAndCancel(_adeleState0, _adeleSend1, _contractStreamFailure(_adeleState0.requestId, null, 'backend_contract_violation', 'The backend violated its generated contract.', const {})); return; }",
+      );
       out.writeln(
         "on Object { _adeleFinish(_adeleState0, _adeleSend1, _contractStreamFailure(_adeleState0.requestId, null, 'internal_error', 'The backend stream failed unexpectedly.', const {})); return; } if (_adeleState0.done || _adeleStreams[_adeleState0.requestId] != _adeleState0) return; if (!_adeleHasItem2) { _adeleFinish(_adeleState0, _adeleSend1, {'kind': 'streamDone', 'requestId': _adeleState0.requestId}); return; } try { final _adeleEncoded4 = switch (_adeleState0.method) {",
       );

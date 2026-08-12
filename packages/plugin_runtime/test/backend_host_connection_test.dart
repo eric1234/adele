@@ -667,6 +667,65 @@ void main() {
     await replacement.close();
     await host.close();
   });
+
+  test(
+    'lazy streams reject stale owner generations before remote open',
+    () async {
+      final _FakeHost fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  var opens = 0;
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'stopPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginStopped', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'streamOpen') {
+        opens++;
+      } else if (message['kind'] == 'streamCredit') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamDone', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'request') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'response', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'ok': true, 'payload': opens}));
+      } else if (message['kind'] == 'shutdownHost') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostStopped', 'requestId': message['requestId']}));
+        exit(0);
+      }
+    }
+  });
+}
+''');
+      addTearDown(fake.dispose);
+      final PluginBackendHost host = await fake.start();
+      final generationA = await host.startPlugin(
+        pluginId: 'same-id',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      final staleWithoutReplacement = generationA.stream('events', const {});
+      final staleWithReplacement = generationA.stream('events', const {});
+      await generationA.close();
+      await expectLater(
+        staleWithoutReplacement,
+        emitsError(isA<PluginConnectionClosed>()),
+      );
+      final generationB = await host.startPlugin(
+        pluginId: 'same-id',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      await expectLater(
+        staleWithReplacement,
+        emitsError(isA<PluginConnectionClosed>()),
+      );
+      expect(await generationB.request('open-count', const {}), 0);
+      await expectLater(generationB.stream('events', const {}), emitsDone);
+      expect(await generationB.request('open-count', const {}), 1);
+      await generationB.close();
+      await host.close();
+    },
+  );
 }
 
 final class _FakeHost {

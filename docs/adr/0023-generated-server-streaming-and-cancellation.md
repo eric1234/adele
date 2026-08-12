@@ -58,6 +58,8 @@ Shutdown acknowledgement follows settlement of all admitted work.
 When generated item encoding or type enforcement fails, the malformed item is
 not emitted. The dispatcher sends one `backend_contract_violation`, cancels the
 exact producer iterator, and includes that cancellation in close settlement.
+Runtime `TypeError` checks at stream creation and item iteration are classified
+the same way; unrelated undeclared producer exceptions remain `internal_error`.
 
 If remote cancellation does not acknowledge within the bounded lifecycle
 timeout, runtime retires the exact owning plugin generation through normal
@@ -82,6 +84,8 @@ Streams belong to the exact plugin/provider generation that opened them.
 Disappearance terminates the stream; a replacement never inherits it. Tests
 stop generation A with an active stream and start generation B with the same ID
 inside the same shared host.
+Lazy runtime streams revalidate the exact owning `PluginBackendConnection` by
+identity at listen/open time, before allocating correlation or sending frames.
 
 The scripted-model fixture retains its unary Phase IV-A method and application
 adapter. It additionally exposes a generated stream and fixture-only probe for

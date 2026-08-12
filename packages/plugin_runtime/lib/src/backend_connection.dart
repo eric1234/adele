@@ -287,6 +287,15 @@ final class PluginBackendHost {
           unawaited(controller.close());
           return;
         }
+        if (owner.isClosed || _plugins[pluginId] != owner) {
+          controller.addError(
+            const PluginConnectionClosed(
+              'The plugin connection generation is closed.',
+            ),
+          );
+          unawaited(controller.close());
+          return;
+        }
         final int id = _nextRequestId++;
         requestId = id;
         final _PendingPluginStream stream = _PendingPluginStream(

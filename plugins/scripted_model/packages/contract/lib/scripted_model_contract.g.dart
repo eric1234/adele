@@ -511,6 +511,18 @@ final class ScriptedModelFixtureServiceDispatcher
           ),
         );
       }
+    } on TypeError {
+      _adeleFinish(
+        _adeleState0,
+        _adeleSend1,
+        _contractStreamFailure(
+          _adeleRequestId2,
+          null,
+          'backend_contract_violation',
+          'The backend violated its generated contract.',
+          const {},
+        ),
+      );
     } on Object {
       _adeleFinish(
         _adeleState0,
@@ -566,6 +578,19 @@ final class ScriptedModelFixtureServiceDispatcher
               ),
             );
           }
+          return;
+        } on TypeError {
+          _adeleFailAndCancel(
+            _adeleState0,
+            _adeleSend1,
+            _contractStreamFailure(
+              _adeleState0.requestId,
+              null,
+              'backend_contract_violation',
+              'The backend violated its generated contract.',
+              const {},
+            ),
+          );
           return;
         } on Object {
           _adeleFinish(

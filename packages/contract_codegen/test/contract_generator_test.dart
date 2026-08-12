@@ -818,6 +818,85 @@ ${_minimalContract(namedValue: true)}'''),
   );
 
   test(
+    'stream runtime type enforcement is a contract violation',
+    () async {
+      await _runGeneratedFixture(
+        '''
+library fixture;
+import 'package:adele_contract/adele_contract.dart';
+part 'fixture.g.dart';
+@AdeleService('fixture.service')
+abstract interface class FixtureService {
+  @AdeleMethod('ping')
+  Future<String> ping(String value);
+  @AdeleMethod('events')
+  Stream<String> events(String mode);
+}
+@AdeleFailure('fixture.failure')
+final class FixtureFailure implements Exception {
+  const FixtureFailure({required this.code, required this.message, required this.details});
+  final String code;
+  final String message;
+  final Map<String, Object?> details;
+}
+''',
+        '''
+import 'package:generated_contract_fixture/fixture.dart';
+import 'package:test/test.dart';
+
+void main() {
+  test('classifies boundary TypeErrors narrowly', () async {
+    final dispatcher = FixtureServiceDispatcher(_UnsoundService());
+    Future<Map<String, Object?>> run(String mode) async {
+      final events = <Map<String, Object?>>[];
+      await dispatcher.handle({
+        'kind': 'streamOpen',
+        'requestId': mode.hashCode,
+        'method': fixtureServiceEventsId,
+        'payload': {'mode': mode},
+      }, events.add);
+      await dispatcher.handle({
+        'kind': 'streamCredit',
+        'requestId': mode.hashCode,
+        'credit': 1,
+      }, events.add);
+      while (events.isEmpty) await Future<void>.delayed(Duration.zero);
+      return events.single;
+    }
+    for (final mode in ['wrongReturn', 'wrongItem']) {
+      final event = await run(mode);
+      expect(event['kind'], 'streamFailure');
+      expect((event['error'] as Map)['code'], 'backend_contract_violation');
+    }
+    final event = await run('ordinaryFailure');
+    expect((event['error'] as Map)['code'], 'internal_error');
+    await dispatcher.close();
+  });
+}
+
+final class _UnsoundService implements FixtureService {
+  @override
+  Future<String> ping(String value) async => value;
+
+  @override
+  Stream<String> events(String mode) {
+    if (mode == 'wrongReturn') return _dynamicValue(7);
+    if (mode == 'wrongItem') {
+      return _dynamicValue(Stream<Object?>.value(7));
+    }
+    return (() async* { throw StateError('ordinary'); })();
+  }
+}
+
+dynamic _dynamicValue(Object? value) => value;
+''',
+        analyze: false,
+      );
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
     'generated dispatcher contains invalid failure details',
     () async {
       await _runGeneratedFixture(
@@ -2455,7 +2534,11 @@ Future<_Fixture> _fixtureWithSupport(
   return fixture;
 }
 
-Future<void> _runGeneratedFixture(String source, String tests) async {
+Future<void> _runGeneratedFixture(
+  String source,
+  String tests, {
+  bool analyze = true,
+}) async {
   final fixture = await _fixture(source);
   final repository = _repository();
   final lib = Directory(p.join(fixture.directory.path, 'lib'))..createSync();
@@ -2481,7 +2564,7 @@ dev_dependencies:
   final output = await const ContractGenerator().generate(sourceFile);
   await const ContractGenerator().write(output);
   await _runDart(fixture.directory, const ['pub', 'get']);
-  await _runDart(fixture.directory, const ['analyze']);
+  if (analyze) await _runDart(fixture.directory, const ['analyze']);
   await _runDart(fixture.directory, const ['test']);
 }
 
