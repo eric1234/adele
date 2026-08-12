@@ -68,8 +68,10 @@ Host lifecycle state distinguishes consumer cancellation, plugin-generation
 shutdown, and host containment aborts. Only consumer cancellation produces a
 silent `streamCancelled` completion. Generation shutdown fails old runtime
 streams as connection disappearance; host aborts send a contained stream
-failure and retain cancellation state until producer acknowledgement or
-generation cleanup.
+failure exactly once, cancel the backend producer, and retain settlement state
+independently. Any later valid backend terminal only settles that state. If the
+producer does not settle within the bounded plugin lifecycle timeout, the host
+retires that exact plugin generation while leaving unrelated generations alive.
 
 If a preferred stream terminal cannot be framed, the host sends a small
 `response_too_large` or `response_encoding_failed` fallback. Failure to send

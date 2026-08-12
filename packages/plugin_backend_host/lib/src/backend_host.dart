@@ -4,6 +4,8 @@ import 'dart:isolate';
 
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+const Duration _pluginLifecycleTimeout = Duration(seconds: 2);
+
 typedef BackendHostSend = bool Function(Map<String, Object?> message);
 typedef BackendHostDiagnostic = void Function(String message);
 
@@ -376,13 +378,11 @@ final class _PluginIsolate {
       if (credit is! int ||
           credit <= 0 ||
           stream.credit + credit > backendHostStreamWindow) {
-        _finishStream(stream, <String, Object?>{
-          'kind': 'streamFailure',
-          'error': <String, Object?>{
-            'code': 'stream_protocol_violation',
-            'message': 'Invalid stream credit.',
-          },
-        });
+        _abortStream(
+          stream,
+          code: 'stream_protocol_violation',
+          message: 'Invalid stream credit.',
+        );
         return;
       }
       stream.credit += credit;
@@ -425,17 +425,17 @@ final class _PluginIsolate {
       'payload': <String, Object?>{},
     });
     try {
-      await stopped.future.timeout(const Duration(seconds: 2));
+      await stopped.future.timeout(_pluginLifecycleTimeout);
     } on Object catch (error) {
       _diagnostic('Plugin $pluginId shutdown acknowledgement failed: $error');
       _isolate.kill(priority: Isolate.immediate);
     }
     try {
-      await _exitCompleter.future.timeout(const Duration(seconds: 2));
+      await _exitCompleter.future.timeout(_pluginLifecycleTimeout);
     } on Object catch (error) {
       _diagnostic('Plugin $pluginId exit timed out: $error');
       _isolate.kill(priority: Isolate.immediate);
-      await _exitCompleter.future.timeout(const Duration(seconds: 2));
+      await _exitCompleter.future.timeout(_pluginLifecycleTimeout);
     }
     await _cleanup();
   }
@@ -537,12 +537,12 @@ final class _PluginIsolate {
         );
         return;
       }
+      if (stream.cancelOrigin == _StreamCancelOrigin.hostAbort) {
+        _settleHostAbort(stream);
+        return;
+      }
       if (kind == 'streamCancelled') {
         final _StreamCancelOrigin? origin = stream.cancelOrigin;
-        if (origin == _StreamCancelOrigin.hostAbort) {
-          _removeStream(stream);
-          return;
-        }
         if (origin == _StreamCancelOrigin.pluginStop) {
           _removeStream(stream);
           return;
@@ -624,7 +624,25 @@ final class _PluginIsolate {
     };
     if (!_sendStreamTerminal(stream, terminal)) {
       _isolate.kill(priority: Isolate.immediate);
+      return;
     }
+    stream.abortTimeout = Timer(_pluginLifecycleTimeout, () {
+      if (_streams[stream.pluginRequestId] != stream ||
+          stream.cancelOrigin != _StreamCancelOrigin.hostAbort) {
+        return;
+      }
+      _diagnostic(
+        'Plugin $pluginId did not settle host-aborted stream '
+        '${stream.pluginRequestId}.',
+      );
+      _isolate.kill(priority: Isolate.immediate);
+    });
+  }
+
+  void _settleHostAbort(_HostPluginStream stream) {
+    stream.abortTimeout?.cancel();
+    stream.abortTimeout = null;
+    _removeStream(stream);
   }
 
   bool _sendStreamTerminal(
@@ -652,6 +670,8 @@ final class _PluginIsolate {
 
   void _removeStream(_HostPluginStream stream) {
     if (_streams.remove(stream.pluginRequestId) != stream) return;
+    stream.abortTimeout?.cancel();
+    stream.abortTimeout = null;
     _pluginStreamIdsByOuter.remove(stream.outerRequestId);
   }
 
@@ -722,6 +742,7 @@ final class _HostPluginStream {
   bool cancelling = false;
   _StreamCancelOrigin? cancelOrigin;
   bool abortTerminalSent = false;
+  Timer? abortTimeout;
 }
 
 enum _StreamCancelOrigin { consumer, pluginStop, hostAbort }
