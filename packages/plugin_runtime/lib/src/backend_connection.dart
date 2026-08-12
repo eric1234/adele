@@ -501,20 +501,16 @@ final class PluginBackendHost {
       return;
     }
     if (message['pluginId'] != stream.pluginId) {
-      _failAll(
-        const PluginConnectionClosed(
-          'The backend host returned a stream frame for the wrong plugin.',
-        ),
+      _hostProtocolViolation(
+        'The backend host returned a stream frame for the wrong plugin.',
       );
       return;
     }
     switch (message['kind']) {
       case 'streamItem':
         if (stream.outstandingCredit != 1) {
-          _failAll(
-            const PluginConnectionClosed(
-              'The backend host returned a stream item without credit.',
-            ),
+          _hostProtocolViolation(
+            'The backend host returned a stream item without credit.',
           );
           return;
         }
@@ -636,6 +632,10 @@ final class PluginBackendHost {
 
   Future<void> _terminateAfterFailure(Object error) {
     return _termination ??= _doTerminateAfterFailure(error);
+  }
+
+  void _hostProtocolViolation(String message) {
+    unawaited(_terminateAfterFailure(PluginConnectionClosed(message)));
   }
 
   Future<void> _doTerminateAfterFailure(Object error) async {

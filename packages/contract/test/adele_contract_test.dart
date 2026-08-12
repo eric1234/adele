@@ -63,11 +63,41 @@ void main() {
       expect(raw.subscription.active, isFalse);
     },
   );
+
+  test('decoded cancellation joins in-progress raw cancellation', () async {
+    final cancelStarted = Completer<void>();
+    final releaseCancel = Completer<void>();
+    final raw = _SynchronousRawStream(
+      cancelStarted: cancelStarted,
+      releaseCancel: releaseCancel,
+    );
+    final subscription = adeleDecodedStream<int>(
+      raw,
+      (value) => throw const AdeleProtocolException('Malformed item.'),
+      (error) => error,
+    ).listen((_) {}, onError: (_) {});
+    await cancelStarted.future;
+    bool cancelDone = false;
+    final cancelling = subscription.cancel().then((_) => cancelDone = true);
+    expect(raw.subscription.cancelCalls, 1);
+    expect(cancelDone, isFalse);
+    releaseCancel.complete();
+    await cancelling;
+    expect(raw.subscription.cancelCalls, 1);
+    expect(raw.subscription.active, isFalse);
+  });
 }
 
 final class _SynchronousRawStream extends Stream<Object?> {
-  _SynchronousRawStream({bool cancelFails = false})
-    : subscription = _RawSubscription(cancelFails: cancelFails);
+  _SynchronousRawStream({
+    bool cancelFails = false,
+    Completer<void>? cancelStarted,
+    Completer<void>? releaseCancel,
+  }) : subscription = _RawSubscription(
+         cancelFails: cancelFails,
+         cancelStarted: cancelStarted,
+         releaseCancel: releaseCancel,
+       );
 
   final _RawSubscription subscription;
 
@@ -84,15 +114,23 @@ final class _SynchronousRawStream extends Stream<Object?> {
 }
 
 final class _RawSubscription implements StreamSubscription<Object?> {
-  _RawSubscription({required this.cancelFails});
+  _RawSubscription({
+    required this.cancelFails,
+    this.cancelStarted,
+    this.releaseCancel,
+  });
 
   final bool cancelFails;
+  final Completer<void>? cancelStarted;
+  final Completer<void>? releaseCancel;
   int cancelCalls = 0;
   bool active = true;
 
   @override
   Future<void> cancel() async {
     cancelCalls++;
+    cancelStarted?.complete();
+    await releaseCancel?.future;
     active = false;
     if (cancelFails) throw StateError('cleanup failed');
   }

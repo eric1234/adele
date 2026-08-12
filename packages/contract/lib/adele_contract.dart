@@ -109,7 +109,7 @@ Stream<T> adeleDecodedStream<T>(
   late final StreamController<T> controller;
   StreamSubscription<Object?>? subscription;
   bool terminated = false;
-  bool cancellationStarted = false;
+  Future<void>? cancellationFuture;
   Object? primaryError;
   StackTrace? primaryStackTrace;
   Future<void> cancelContained(StreamSubscription<Object?> target) async {
@@ -119,6 +119,9 @@ Stream<T> adeleDecodedStream<T>(
       return;
     }
   }
+
+  Future<void> ensureCancellation(StreamSubscription<Object?> target) =>
+      cancellationFuture ??= cancelContained(target);
 
   Future<void> deliverPrimary() async {
     final Object? error = primaryError;
@@ -136,8 +139,7 @@ Stream<T> adeleDecodedStream<T>(
     primaryStackTrace = stackTrace;
     final StreamSubscription<Object?>? current = subscription;
     if (current == null) return;
-    cancellationStarted = true;
-    await cancelContained(current);
+    await ensureCancellation(current);
     await deliverPrimary();
   }
 
@@ -168,10 +170,9 @@ Stream<T> adeleDecodedStream<T>(
         },
       );
       subscription = created;
-      if (terminated && !cancellationStarted) {
-        cancellationStarted = true;
+      if (terminated) {
         unawaited(() async {
-          await cancelContained(created);
+          await ensureCancellation(created);
           await deliverPrimary();
         }());
       }
@@ -181,10 +182,7 @@ Stream<T> adeleDecodedStream<T>(
     onCancel: () async {
       terminated = true;
       final StreamSubscription<Object?>? current = subscription;
-      if (current != null && !cancellationStarted) {
-        cancellationStarted = true;
-        await cancelContained(current);
-      }
+      if (current != null) await ensureCancellation(current);
     },
   );
   return controller.stream;

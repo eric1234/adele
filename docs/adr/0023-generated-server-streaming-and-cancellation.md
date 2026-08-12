@@ -26,6 +26,8 @@ creation or iteration. A malformed item raises `AdeleProtocolException`, cancels
 the exact underlying subscription, and prevents later delivery or credit.
 Secondary subscription-cleanup failures are contained so they cannot replace or
 strand that primary failure, including synchronous emission during `listen()`.
+All decoded-stream cancellation waiters join the same raw-subscription cleanup
+operation, so cancellation cannot complete while producer cleanup is pending.
 
 Generated dispatchers own stream iterators, credit accounting, item encoding,
 terminal classification, cancellation, and idempotent shutdown. Entrypoints
@@ -83,6 +85,9 @@ failure exactly once, cancel the backend producer, and retain settlement state
 independently. Any later valid backend terminal only settles that state. If the
 producer does not settle within the bounded plugin lifecycle timeout, the host
 retires that exact plugin generation while leaving unrelated generations alive.
+Impossible cross-plugin stream correlation or item-without-credit frames emitted
+by the shared backend host invalidate multiplexing trust and therefore fail all
+host users while deterministically terminating and reaping that host process.
 
 If a preferred stream terminal cannot be framed, the host sends a small
 `response_too_large` or `response_encoding_failed` fallback. Failure to send

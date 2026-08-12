@@ -322,6 +322,63 @@ void main() {
     await host.close(graceful: false);
   });
 
+  for (final wrongPlugin in <bool>[true, false]) {
+    test(
+      'kills host after ${wrongPlugin ? 'cross-plugin frame' : 'item without credit'}',
+      () async {
+        final _FakeHost fake = _FakeHost.create('''
+import 'dart:async';
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+Future<void> main() async {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'streamOpen') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamItem', 'requestId': message['requestId'], 'pluginId': ${wrongPlugin ? "'wrong-plugin'" : "message['pluginId']"}, 'payload': 1}));
+        ${wrongPlugin ? '' : "Future<void>.delayed(Duration.zero, () => stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamItem', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'payload': 2})));"}
+      }
+    }
+  });
+  await Completer<void>().future;
+}
+''');
+        addTearDown(fake.dispose);
+        final host = await fake.start();
+        final int pid = host.processId;
+        final connection = await host.startPlugin(
+          pluginId: 'corrupt-host',
+          artifactUri: Uri.file('/unused.aot'),
+        );
+        if (wrongPlugin) {
+          await expectLater(
+            connection.stream('events', const {}),
+            emitsError(isA<PluginConnectionClosed>()),
+          );
+        } else {
+          late final StreamSubscription<Object?> subscription;
+          subscription = connection.stream('events', const {}).listen((_) {
+            subscription.pause();
+          });
+          while (!host.isClosed) {
+            await Future<void>.delayed(Duration.zero);
+          }
+        }
+        expect(host.isClosed, isTrue);
+        expect(connection.isClosed, isTrue);
+        await host.close().timeout(const Duration(seconds: 2));
+        final ProcessResult alive = await Process.run('kill', <String>[
+          '-0',
+          '$pid',
+        ]);
+        expect(alive.exitCode, isNot(0));
+      },
+    );
+  }
+
   test(
     'removes pending requests after synchronous serialization failure',
     () async {
