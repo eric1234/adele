@@ -365,6 +365,39 @@ void main() {
     await dispatcher.close();
   });
 
+  test('StreamIterator error automatically cancels producer', () async {
+    final service = _IterationErrorFixtureService();
+    final dispatcher = ScriptedModelFixtureServiceDispatcher(service);
+    final events = <Map<String, Object?>>[];
+    await dispatcher.handle({
+      'kind': 'streamOpen',
+      'requestId': 24,
+      'method': scriptedModelFixtureServiceInvokeStreamId,
+      'payload': {'request': _encodedRequest()},
+    }, events.add);
+    await dispatcher.handle({
+      'kind': 'streamCredit',
+      'requestId': 24,
+      'credit': 1,
+    }, events.add);
+    await service.iterationCancelled.future;
+    expect(events.single['kind'], 'streamFailure');
+    expect((events.single['error'] as Map)['code'], 'internal_error');
+    await dispatcher.handle({
+      'kind': 'request',
+      'requestId': 25,
+      'method': scriptedModelFixtureServiceInvokeId,
+      'payload': {'request': _encodedRequest()},
+    }, events.add);
+    expect(
+      events.any(
+        (event) => event['kind'] == 'response' && event['requestId'] == 25,
+      ),
+      isTrue,
+    );
+    await dispatcher.close();
+  });
+
   test('concurrent close callers await the same shutdown work', () async {
     final service = _BlockedUnaryFixtureService();
     final dispatcher = ScriptedModelFixtureServiceDispatcher(service);
@@ -593,6 +626,20 @@ final class _ThrowingCancelFixtureService extends _StreamingFixtureService {
     controller = StreamController<ScriptedModelStreamItem>(
       onListen: listened.complete,
       onCancel: () => Future<void>.error(StateError('cleanup failed')),
+    );
+    return controller.stream;
+  }
+}
+
+final class _IterationErrorFixtureService extends _StreamingFixtureService {
+  final Completer<void> iterationCancelled = Completer<void>();
+
+  @override
+  Stream<ScriptedModelStreamItem> invokeStream(ScriptedModelRequest request) {
+    late final StreamController<ScriptedModelStreamItem> controller;
+    controller = StreamController<ScriptedModelStreamItem>(
+      onListen: () => controller.addError(StateError('producer failed')),
+      onCancel: iterationCancelled.complete,
     );
     return controller.stream;
   }

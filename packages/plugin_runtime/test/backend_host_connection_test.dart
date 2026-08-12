@@ -772,6 +772,82 @@ void main() {
     await connection.close();
     await host.close();
   });
+
+  test('cancellation timeout joins exact in-flight plugin stop', () async {
+    final _FakeHost fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  Map<String, Object?>? pendingStop;
+  var gatedStopUsed = false;
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'stopPlugin') {
+        if (message['pluginId'] == 'joining-stop' && !gatedStopUsed) {
+          gatedStopUsed = true;
+          pendingStop = message;
+          stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'diagnostic', 'stage': 'test', 'message': 'stop-started'}));
+        } else {
+          stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginStopped', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+        }
+      } else if (message['kind'] == 'request' && message['method'] == 'release-stop') {
+        final stop = pendingStop!;
+        pendingStop = null;
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginStopped', 'requestId': stop['requestId'], 'pluginId': stop['pluginId']}));
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'response', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'ok': true, 'payload': true}));
+      } else if (message['kind'] == 'request') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'response', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'ok': true, 'payload': 'alive'}));
+      } else if (message['kind'] == 'shutdownHost') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostStopped', 'requestId': message['requestId']}));
+        exit(0);
+      }
+    }
+  });
+}
+''');
+    addTearDown(fake.dispose);
+    final stopStarted = Completer<void>();
+    final host = await fake.start(
+      shutdownTimeout: const Duration(milliseconds: 50),
+      onDiagnostic: (message) {
+        if (message.contains('stop-started') && !stopStarted.isCompleted) {
+          stopStarted.complete();
+        }
+      },
+    );
+    final generationA = await host.startPlugin(
+      pluginId: 'joining-stop',
+      artifactUri: Uri.file('/unused.aot'),
+    );
+    final release = await host.startPlugin(
+      pluginId: 'release',
+      artifactUri: Uri.file('/unused.aot'),
+    );
+    final subscription = generationA.stream('events', const {}).listen((_) {});
+    bool cancellationDone = false;
+    final cancelling = subscription.cancel().then(
+      (_) => cancellationDone = true,
+    );
+    final stopping = host.stopPlugin('joining-stop', expected: generationA);
+    await stopStarted.future;
+    await Future<void>.delayed(const Duration(milliseconds: 75));
+    expect(cancellationDone, isFalse);
+    await release.request('release-stop', const {});
+    await Future.wait<void>(<Future<void>>[cancelling, stopping]);
+    final generationB = await host.startPlugin(
+      pluginId: 'joining-stop',
+      artifactUri: Uri.file('/unused.aot'),
+    );
+    await generationA.close();
+    expect(await generationB.request('ping', const {}), 'alive');
+    await generationB.close();
+    await release.close();
+    await host.close();
+  });
 }
 
 final class _FakeHost {

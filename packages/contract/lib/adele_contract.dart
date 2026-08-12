@@ -109,18 +109,42 @@ Stream<T> adeleDecodedStream<T>(
   late final StreamController<T> controller;
   StreamSubscription<Object?>? subscription;
   bool terminated = false;
+  bool cancellationStarted = false;
+  Object? primaryError;
+  StackTrace? primaryStackTrace;
+  Future<void> cancelContained(StreamSubscription<Object?> target) async {
+    try {
+      await target.cancel();
+    } on Object {
+      return;
+    }
+  }
+
+  Future<void> deliverPrimary() async {
+    final Object? error = primaryError;
+    final StackTrace? stackTrace = primaryStackTrace;
+    if (error != null && stackTrace != null) {
+      controller.addError(error, stackTrace);
+    }
+    await controller.close();
+  }
+
   Future<void> terminate(Object error, StackTrace stackTrace) async {
     if (terminated) return;
     terminated = true;
-    await subscription?.cancel();
-    controller.addError(error, stackTrace);
-    await controller.close();
+    primaryError = error;
+    primaryStackTrace = stackTrace;
+    final StreamSubscription<Object?>? current = subscription;
+    if (current == null) return;
+    cancellationStarted = true;
+    await cancelContained(current);
+    await deliverPrimary();
   }
 
   controller = StreamController<T>(
     sync: true,
     onListen: () {
-      subscription = raw.listen(
+      final StreamSubscription<Object?> created = raw.listen(
         (Object? item) {
           if (terminated) return;
           try {
@@ -143,12 +167,24 @@ Stream<T> adeleDecodedStream<T>(
           unawaited(controller.close());
         },
       );
+      subscription = created;
+      if (terminated && !cancellationStarted) {
+        cancellationStarted = true;
+        unawaited(() async {
+          await cancelContained(created);
+          await deliverPrimary();
+        }());
+      }
     },
     onPause: () => subscription?.pause(),
     onResume: () => subscription?.resume(),
     onCancel: () async {
       terminated = true;
-      await subscription?.cancel();
+      final StreamSubscription<Object?>? current = subscription;
+      if (current != null && !cancellationStarted) {
+        cancellationStarted = true;
+        await cancelContained(current);
+      }
     },
   );
   return controller.stream;

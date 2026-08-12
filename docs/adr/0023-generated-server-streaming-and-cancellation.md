@@ -24,6 +24,8 @@ is rejected without opening another invocation. Items decode in transport order.
 Existing declared failure metadata reconstructs typed failures during stream
 creation or iteration. A malformed item raises `AdeleProtocolException`, cancels
 the exact underlying subscription, and prevents later delivery or credit.
+Secondary subscription-cleanup failures are contained so they cannot replace or
+strand that primary failure, including synchronous emission during `listen()`.
 
 Generated dispatchers own stream iterators, credit accounting, item encoding,
 terminal classification, cancellation, and idempotent shutdown. Entrypoints
@@ -70,6 +72,8 @@ If remote cancellation does not acknowledge within the bounded lifecycle
 timeout, runtime retires the exact owning plugin generation through normal
 stop/forced-isolate termination. Local correlation is not silently abandoned,
 and a later replacement generation is not affected by stale timeout work.
+If that exact generation is already stopping, cancellation joins the published
+in-flight stop instead of treating active-map removal as settlement.
 
 Host lifecycle state distinguishes consumer cancellation, plugin-generation
 shutdown, and host containment aborts. Only consumer cancellation produces a

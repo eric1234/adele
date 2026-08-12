@@ -58,6 +58,8 @@ final class PluginBackendHost {
       <String, PluginBackendConnection>{};
   final Map<String, PluginBackendConnection> _startingPlugins =
       <String, PluginBackendConnection>{};
+  final Map<PluginBackendConnection, Future<void>> _stoppingPlugins =
+      <PluginBackendConnection, Future<void>>{};
   late final StreamSubscription<List<int>> _stdoutSubscription;
   late final StreamSubscription<String> _stderrSubscription;
   int _nextRequestId = 1;
@@ -201,12 +203,26 @@ final class PluginBackendHost {
   Future<void> stopPlugin(
     String pluginId, {
     PluginBackendConnection? expected,
-  }) async {
+  }) {
+    if (expected != null) {
+      final Future<void>? stopping = _stoppingPlugins[expected];
+      if (stopping != null) return stopping;
+    }
     final PluginBackendConnection? connection = _plugins[pluginId];
     if (connection == null || (expected != null && connection != expected)) {
-      return;
+      return Future<void>.value();
     }
+    late final Future<void> stopping;
+    stopping = _stopPlugin(connection).whenComplete(() {
+      _stoppingPlugins.remove(connection);
+    });
+    _stoppingPlugins[connection] = stopping;
     _plugins.remove(pluginId);
+    return stopping;
+  }
+
+  Future<void> _stopPlugin(PluginBackendConnection connection) async {
+    final String pluginId = connection.pluginId;
     final PluginConnectionClosed stopped = PluginConnectionClosed(
       'Plugin $pluginId was stopped.',
     );
@@ -364,9 +380,10 @@ final class PluginBackendHost {
       'Plugin ${stream.pluginId} did not acknowledge stream cancellation.',
     );
     if (_streams[requestId] != stream) return;
-    if (_plugins[stream.pluginId] == stream.owner) {
+    final Future<void>? stopping = _stoppingPlugins[stream.owner];
+    if (_plugins[stream.pluginId] == stream.owner || stopping != null) {
       try {
-        await stopPlugin(stream.pluginId, expected: stream.owner);
+        await (stopping ?? stopPlugin(stream.pluginId, expected: stream.owner));
       } on Object {
         if (_plugins[stream.pluginId] == stream.owner) {
           _plugins.remove(stream.pluginId);
