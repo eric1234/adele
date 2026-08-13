@@ -843,6 +843,8 @@ abstract interface class FixtureService {
   Future<String> ping(String value);
   @AdeleMethod('events')
   Stream<String> events(String mode);
+  @AdeleMethod('invalidNumbers')
+  Stream<double> invalidNumbers();
 }
 @AdeleFailure('fixture.failure')
 final class FixtureFailure implements Exception {
@@ -853,6 +855,8 @@ final class FixtureFailure implements Exception {
 }
 ''',
         '''
+import 'dart:async';
+
 import 'package:generated_contract_fixture/fixture.dart';
 import 'package:test/test.dart';
 
@@ -882,11 +886,38 @@ void main() {
     }
     final event = await run('ordinaryFailure');
     expect((event['error'] as Map)['code'], 'internal_error');
+    final service = _UnsoundService();
+    final barrierDispatcher = FixtureServiceDispatcher(service);
+    final barrierEvents = <Map<String, Object?>>[];
+    await barrierDispatcher.handle({
+      'kind': 'streamOpen',
+      'requestId': 99,
+      'method': fixtureServiceInvalidNumbersId,
+      'payload': {},
+    }, barrierEvents.add);
+    await barrierDispatcher.handle({
+      'kind': 'streamCredit',
+      'requestId': 99,
+      'credit': 1,
+    }, barrierEvents.add);
+    await service.cancelStarted.future;
+    expect(barrierEvents, isEmpty);
+    bool closed = false;
+    final closing = barrierDispatcher.close().then((_) => closed = true);
+    expect(closed, isFalse);
+    service.releaseCancel.complete();
+    await closing;
+    expect(barrierEvents, hasLength(1));
+    expect((barrierEvents.single['error'] as Map)['code'], 'backend_contract_violation');
+    expect(service.cancelCalls, 1);
     await dispatcher.close();
   });
 }
 
 final class _UnsoundService implements FixtureService {
+  final Completer<void> cancelStarted = Completer<void>();
+  final Completer<void> releaseCancel = Completer<void>();
+  int cancelCalls = 0;
   @override
   Future<String> ping(String value) async => value;
 
@@ -897,6 +928,20 @@ final class _UnsoundService implements FixtureService {
       return _dynamicValue(Stream<Object?>.value(7));
     }
     return (() async* { throw StateError('ordinary'); })();
+  }
+
+  @override
+  Stream<double> invalidNumbers() {
+    late final StreamController<double> controller;
+    controller = StreamController<double>(
+      onListen: () => controller.add(double.nan),
+      onCancel: () async {
+        cancelCalls++;
+        cancelStarted.complete();
+        await releaseCancel.future;
+      },
+    );
+    return controller.stream;
   }
 }
 

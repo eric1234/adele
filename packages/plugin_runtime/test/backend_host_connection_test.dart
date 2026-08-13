@@ -959,6 +959,106 @@ Future<void> main() async {
     );
   }
 
+  test('pluginFailed with cross-owner request ID kills host', () async {
+    final _FakeHost fake = _FakeHost.create('''
+import 'dart:async';
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+Future<void> main() async {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  int? pluginBStream;
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'streamOpen' && message['pluginId'] == 'plugin-b') {
+        pluginBStream = message['requestId'] as int;
+      } else if (message['kind'] == 'request' && message['pluginId'] == 'plugin-a') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginFailed', 'pluginId': 'plugin-a', 'requestIds': [pluginBStream], 'error': {'code': 'plugin_failed', 'message': 'A failed'}}));
+      }
+    }
+  });
+  await Completer<void>().future;
+}
+''');
+    addTearDown(fake.dispose);
+    final host = await fake.start();
+    final int pid = host.processId;
+    final pluginA = await host.startPlugin(
+      pluginId: 'plugin-a',
+      artifactUri: Uri.file('/unused.aot'),
+    );
+    final pluginB = await host.startPlugin(
+      pluginId: 'plugin-b',
+      artifactUri: Uri.file('/unused.aot'),
+    );
+    final errors = <Object>[];
+    final terminal = Completer<void>();
+    pluginB
+        .stream('events', const {})
+        .listen(
+          (_) {},
+          onError: (Object error) {
+            errors.add(error);
+            terminal.complete();
+          },
+        );
+    try {
+      await pluginA.request('trigger', const {});
+    } on PluginConnectionClosed {
+      // Expected after the malformed cross-plugin failure frame.
+    }
+    await terminal.future;
+    expect(errors.single, isA<PluginConnectionClosed>());
+    expect(errors.single, isNot(isA<PluginRemoteFailure>()));
+    await host.close().timeout(const Duration(seconds: 2));
+    final ProcessResult alive = await Process.run('kill', <String>[
+      '-0',
+      '$pid',
+    ]);
+    expect(alive.exitCode, isNot(0));
+  });
+
+  test('unsolicited streamCancelled kills host', () async {
+    final _FakeHost fake = _FakeHost.create('''
+import 'dart:async';
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+Future<void> main() async {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'streamOpen') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamCancelled', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      }
+    }
+  });
+  await Completer<void>().future;
+}
+''');
+    addTearDown(fake.dispose);
+    final host = await fake.start();
+    final int pid = host.processId;
+    final connection = await host.startPlugin(
+      pluginId: 'unsolicited-cancel',
+      artifactUri: Uri.file('/unused.aot'),
+    );
+    await expectLater(
+      connection.stream('events', const {}),
+      emitsError(isA<PluginConnectionClosed>()),
+    );
+    await host.close().timeout(const Duration(seconds: 2));
+    final ProcessResult alive = await Process.run('kill', <String>[
+      '-0',
+      '$pid',
+    ]);
+    expect(alive.exitCode, isNot(0));
+  });
+
   test('cancellation timeout joins exact in-flight plugin stop', () async {
     final _FakeHost fake = _FakeHost.create('''
 import 'dart:io';

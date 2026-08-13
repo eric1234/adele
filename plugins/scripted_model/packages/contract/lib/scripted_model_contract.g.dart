@@ -690,8 +690,10 @@ final class ScriptedModelFixtureServiceDispatcher
         _adeleStreams.remove(_adeleState0.requestId) != _adeleState0)
       return;
     _adeleState0.done = true;
-    _adeleSend1(_adeleTerminal2);
-    _adeleTrackCancellation(_adeleState0);
+    _adeleTrackCancellation(
+      _adeleState0,
+      onSettled: () => _adeleSend1(_adeleTerminal2),
+    );
   }
 
   Future<void> _adeleCancelAndAcknowledge(
@@ -702,16 +704,24 @@ final class ScriptedModelFixtureServiceDispatcher
       _adeleSend1({'kind': 'streamCancelled', 'requestId': _adeleRequestId0});
   }
 
-  Future<void> _adeleTrackCancellation(_ContractStreamState _adeleState0) {
+  Future<void> _adeleTrackCancellation(
+    _ContractStreamState _adeleState0, {
+    void Function()? onSettled,
+  }) {
     late final Future<void> _adeleCancellation1;
-    _adeleCancellation1 = (() async {
-      await _adeleState0.openingSettled.future;
-      try {
-        await _adeleState0.iterator?.cancel();
-      } on Object {
-        return;
-      }
-    })().whenComplete(() => _adeleCancellations.remove(_adeleCancellation1));
+    _adeleCancellation1 =
+        (() async {
+              await _adeleState0.openingSettled.future;
+              try {
+                await _adeleState0.iterator?.cancel();
+              } on Object {
+                return;
+              }
+            })()
+            .then<void>((_) => onSettled?.call())
+            .whenComplete(
+              () => _adeleCancellations.remove(_adeleCancellation1),
+            );
     _adeleCancellations.add(_adeleCancellation1);
     return _adeleCancellation1;
   }

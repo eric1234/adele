@@ -535,6 +535,12 @@ final class PluginBackendHost {
       case 'streamFailure':
         _finishStream(requestId, error: _remoteFailure(message));
       case 'streamCancelled':
+        if (!stream.cancelSent) {
+          _hostProtocolViolation(
+            'The backend host returned an unsolicited stream cancellation.',
+          );
+          return;
+        }
         _finishStream(requestId, cancelled: true);
       case 'error':
         _finishStream(requestId, error: _remoteFailure(message));
@@ -567,8 +573,20 @@ final class PluginBackendHost {
       _onDiagnostic?.call('Plugin failure without plugin ID ignored.');
       return;
     }
-    final PluginRemoteFailure failure = _remoteFailure(message);
     final Object? rawRequestIds = message['requestIds'];
+    if (rawRequestIds is List) {
+      for (final Object? rawRequestId in rawRequestIds) {
+        if (rawRequestId is! int) continue;
+        final String? knownOwner = _pendingPluginIds[rawRequestId];
+        if (knownOwner != null && knownOwner != rawPluginId) {
+          _hostProtocolViolation(
+            'The backend host attributed a live request to the wrong plugin.',
+          );
+          return;
+        }
+      }
+    }
+    final PluginRemoteFailure failure = _remoteFailure(message);
     if (rawRequestIds is List) {
       for (final Object? rawRequestId in rawRequestIds) {
         if (rawRequestId is! int) continue;
