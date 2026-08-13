@@ -514,6 +514,12 @@ final class PluginBackendHost {
     }
     switch (message['kind']) {
       case 'streamItem':
+        if (!_validHostStreamItem(requestId, stream, message)) {
+          _hostProtocolViolation(
+            'The backend host returned a malformed stream item.',
+          );
+          return;
+        }
         if (stream.outstandingCredit != 1) {
           _hostProtocolViolation(
             'The backend host returned a stream item without credit.',
@@ -546,6 +552,25 @@ final class PluginBackendHost {
         _finishStream(requestId, error: _remoteFailure(message));
     }
   }
+
+  bool _validHostStreamItem(
+    int requestId,
+    _PendingPluginStream stream,
+    Map<String, Object?> message,
+  ) =>
+      message.length == 5 &&
+      message.keys.toSet().containsAll(const <String>{
+        'protocolVersion',
+        'kind',
+        'requestId',
+        'pluginId',
+        'payload',
+      }) &&
+      message['protocolVersion'] == backendHostProtocolVersion &&
+      message['kind'] == 'streamItem' &&
+      message['requestId'] == requestId &&
+      message['pluginId'] == stream.pluginId &&
+      message.containsKey('payload');
 
   void _finishStream(
     int requestId, {

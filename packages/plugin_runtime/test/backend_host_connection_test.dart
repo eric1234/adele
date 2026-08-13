@@ -383,6 +383,108 @@ Future<void> main() async {
     );
   }
 
+  for (final extraField in <bool>[false, true]) {
+    test(
+      'kills host after stream item with ${extraField ? 'extra field' : 'missing payload'}',
+      () async {
+        final _FakeHost fake = _FakeHost.create('''
+import 'dart:async';
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+Future<void> main() async {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'streamOpen') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamItem', 'requestId': message['requestId'], 'pluginId': message['pluginId'], ${extraField ? "'payload': null, 'extra': true" : ''}}));
+      }
+    }
+  });
+  await Completer<void>().future;
+}
+''');
+        addTearDown(fake.dispose);
+        final host = await fake.start();
+        final int pid = host.processId;
+        final connection = await host.startPlugin(
+          pluginId: 'malformed-item',
+          artifactUri: Uri.file('/unused.aot'),
+        );
+        final values = <Object?>[];
+        final errors = <Object>[];
+        final terminal = Completer<void>();
+        connection
+            .stream('events', const {})
+            .listen(
+              values.add,
+              onError: (Object error) {
+                errors.add(error);
+                terminal.complete();
+              },
+            );
+        await terminal.future;
+        expect(values, isEmpty);
+        expect(errors.single, isA<PluginConnectionClosed>());
+        await host.close().timeout(const Duration(seconds: 2));
+        final ProcessResult alive = await Process.run('kill', <String>[
+          '-0',
+          '$pid',
+        ]);
+        expect(alive.exitCode, isNot(0));
+      },
+    );
+  }
+
+  test('accepts explicit null stream item payload', () async {
+    final _FakeHost fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'streamOpen') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamItem', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'payload': null}));
+      } else if (message['kind'] == 'streamCancel') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamCancelForwarded', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamCancelled', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'request') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'response', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'ok': true, 'payload': 'alive'}));
+      } else if (message['kind'] == 'stopPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginStopped', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'shutdownHost') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostStopped', 'requestId': message['requestId']}));
+        exit(0);
+      }
+    }
+  });
+}
+''');
+    addTearDown(fake.dispose);
+    final host = await fake.start();
+    final connection = await host.startPlugin(
+      pluginId: 'null-item',
+      artifactUri: Uri.file('/unused.aot'),
+    );
+    final value = Completer<Object?>();
+    late final StreamSubscription<Object?> subscription;
+    subscription = connection.stream('events', const {}).listen((item) {
+      subscription.pause();
+      value.complete(item);
+    });
+    expect(await value.future, isNull);
+    await subscription.cancel();
+    expect(await connection.request('ping', const {}), 'alive');
+    await connection.close();
+    await host.close();
+  });
+
   test(
     'removes pending requests after synchronous serialization failure',
     () async {
