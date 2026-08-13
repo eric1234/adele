@@ -477,13 +477,7 @@ final class PluginBackendHost {
       _onDiagnostic?.call('Host message without request ID ignored: $message');
       return;
     }
-    if (message['kind']
-        case 'streamItem' ||
-            'streamDone' ||
-            'streamFailure' ||
-            'streamCancelled' ||
-            'streamCancelForwarded' ||
-            'error' when _streams.containsKey(rawRequestId)) {
+    if (_streams.containsKey(rawRequestId)) {
       _handleStreamMessage(rawRequestId, message);
       return;
     }
@@ -550,6 +544,10 @@ final class PluginBackendHost {
         _finishStream(requestId, cancelled: true);
       case 'error':
         _finishStream(requestId, error: _remoteFailure(message));
+      default:
+        _hostProtocolViolation(
+          'The backend host returned an incompatible frame for an active stream.',
+        );
     }
   }
 

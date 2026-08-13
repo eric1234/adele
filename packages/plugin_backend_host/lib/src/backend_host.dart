@@ -473,6 +473,15 @@ final class _PluginIsolate {
   void _handleResponse(Object? raw) {
     if (raw is! Map || raw['requestId'] is! int) {
       _diagnostic('Malformed response from $pluginId: $raw');
+      if (raw is Map &&
+          const <Object?>{
+            'streamItem',
+            'streamDone',
+            'streamFailure',
+            'streamCancelled',
+          }.contains(raw['kind'])) {
+        _isolate.kill(priority: Isolate.immediate);
+      }
       return;
     }
     final int pluginRequestId = raw['requestId'] as int;

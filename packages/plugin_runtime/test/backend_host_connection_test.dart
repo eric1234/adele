@@ -1161,6 +1161,45 @@ Future<void> main() async {
     expect(alive.exitCode, isNot(0));
   });
 
+  test('non-stream response for active stream kills host', () async {
+    final _FakeHost fake = _FakeHost.create('''
+import 'dart:async';
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+Future<void> main() async {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'streamOpen') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'response', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'ok': true, 'payload': 'wrong-kind'}));
+      }
+    }
+  });
+  await Completer<void>().future;
+}
+''');
+    addTearDown(fake.dispose);
+    final host = await fake.start();
+    final int pid = host.processId;
+    final connection = await host.startPlugin(
+      pluginId: 'wrong-kind',
+      artifactUri: Uri.file('/unused.aot'),
+    );
+    await expectLater(
+      connection.stream('events', const {}),
+      emitsError(isA<PluginConnectionClosed>()),
+    );
+    await host.close().timeout(const Duration(seconds: 2));
+    final ProcessResult alive = await Process.run('kill', <String>[
+      '-0',
+      '$pid',
+    ]);
+    expect(alive.exitCode, isNot(0));
+  });
+
   test('cancellation timeout joins exact in-flight plugin stop', () async {
     final _FakeHost fake = _FakeHost.create('''
 import 'dart:io';

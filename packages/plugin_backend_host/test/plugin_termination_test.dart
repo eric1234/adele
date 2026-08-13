@@ -410,6 +410,47 @@ void main() {
   }
 
   test(
+    'retires plugin for stream frame without request ID',
+    () async {
+      final host = await _startHost(dartaotruntime, hostArtifact);
+      addTearDown(() async {
+        if (!host.isClosed) await host.close(graceful: false);
+      });
+      final broken = await host.startPlugin(
+        pluginId: 'uncorrelatable-stream',
+        artifactUri: pluginArtifact.uri,
+        arguments: const <String>['wait'],
+      );
+      final peer = await host.startPlugin(
+        pluginId: 'uncorrelatable-peer',
+        artifactUri: pluginArtifact.uri,
+        arguments: const <String>['wait'],
+      );
+      await expectLater(
+        broken.stream('stream-item-missing-request-id', const {}),
+        emitsError(isA<PluginRemoteFailure>()),
+      );
+      await broken.terminated.timeout(const Duration(seconds: 5));
+      expect(broken.isClosed, isTrue);
+      expect(await peer.request('ping', const {}), <String, Object?>{
+        'alive': true,
+      });
+      final replacement = await host.startPlugin(
+        pluginId: 'uncorrelatable-stream',
+        artifactUri: pluginArtifact.uri,
+        arguments: const <String>['wait'],
+      );
+      expect(await replacement.request('ping', const {}), <String, Object?>{
+        'alive': true,
+      });
+      await replacement.close();
+      await peer.close();
+      await host.close();
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
     'stops an active stream and restarts same ID in the same host',
     () async {
       final diagnostics = <String>[];
