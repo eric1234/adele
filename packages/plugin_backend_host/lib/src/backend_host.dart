@@ -237,6 +237,7 @@ final class _PluginIsolate {
   final Map<int, int> _outerRequestIds = <int, int>{};
   final Map<int, _HostPluginStream> _streams = <int, _HostPluginStream>{};
   final Map<int, int> _pluginStreamIdsByOuter = <int, int>{};
+  final Set<int> _pendingConsumerCancellationOuterIds = <int>{};
   late final StreamSubscription<Object?> _responseSubscription;
   late final StreamSubscription<Object?> _errorSubscription;
   late final StreamSubscription<Object?> _exitSubscription;
@@ -366,6 +367,8 @@ final class _PluginIsolate {
       pluginRequestId,
       outerRequestId,
     );
+    stream.consumerCancellationRequested = _pendingConsumerCancellationOuterIds
+        .remove(outerRequestId);
     _streams[pluginRequestId] = stream;
     _pluginStreamIdsByOuter[outerRequestId] = pluginRequestId;
     _commands.send(<String, Object?>{
@@ -382,7 +385,12 @@ final class _PluginIsolate {
       throw const FormatException('Missing request ID.');
     }
     final int? pluginRequestId = _pluginStreamIdsByOuter[outerRequestId];
-    if (pluginRequestId == null) return false;
+    if (pluginRequestId == null) {
+      if (kind == 'streamCancel') {
+        _pendingConsumerCancellationOuterIds.remove(outerRequestId);
+      }
+      return false;
+    }
     final _HostPluginStream stream = _streams[pluginRequestId]!;
     if (kind == 'streamCredit') {
       final Object? credit = message['credit'];
@@ -410,7 +418,10 @@ final class _PluginIsolate {
 
   void noteStreamCancelRequested(int outerRequestId) {
     final int? pluginRequestId = _pluginStreamIdsByOuter[outerRequestId];
-    if (pluginRequestId == null) return;
+    if (pluginRequestId == null) {
+      _pendingConsumerCancellationOuterIds.add(outerRequestId);
+      return;
+    }
     _streams[pluginRequestId]?.consumerCancellationRequested = true;
   }
 
@@ -806,6 +817,7 @@ final class _PluginIsolate {
     _outerRequestIds.clear();
     _streams.clear();
     _pluginStreamIdsByOuter.clear();
+    _pendingConsumerCancellationOuterIds.clear();
     final String? uncaughtError = _uncaughtError;
     _onTerminated(
       pluginId,

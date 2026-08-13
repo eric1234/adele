@@ -1106,6 +1106,161 @@ void main() {
       );
     },
   );
+
+  test('ingress cancellation intent survives stream admission', () async {
+    final emitted = <Map<String, Object?>>[];
+    final host = AdeleBackendHost(
+      send: (message) {
+        emitted.add(message);
+        return true;
+      },
+    );
+    addTearDown(() => host.shutdown(notify: false));
+    await host.handle(<String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'startPlugin',
+      'requestId': 50,
+      'pluginId': 'pre-admission-cancel',
+      'artifactUri': pluginKernel.uri.toString(),
+      'arguments': <String>['wait'],
+    });
+    final cancel = <String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'streamCancel',
+      'requestId': 51,
+      'pluginId': 'pre-admission-cancel',
+    };
+    host.noteStreamCancelRequested(cancel);
+    await host.handle(<String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'streamOpen',
+      'requestId': 51,
+      'pluginId': 'pre-admission-cancel',
+      'method': 'stream-malformed',
+      'payload': <String, Object?>{},
+    });
+    await host.handle(<String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'streamCredit',
+      'requestId': 51,
+      'pluginId': 'pre-admission-cancel',
+      'credit': 1,
+    });
+    while (!emitted.any(
+      (message) =>
+          message['kind'] == 'streamCancelled' && message['requestId'] == 51,
+    )) {
+      await Future<void>.delayed(Duration.zero);
+    }
+    await host.handle(cancel);
+    expect(
+      emitted.where(
+        (message) =>
+            message['kind'] == 'streamFailure' && message['requestId'] == 51,
+      ),
+      isEmpty,
+    );
+    expect(
+      emitted.where(
+        (message) =>
+            message['kind'] == 'streamCancelForwarded' &&
+            message['requestId'] == 51,
+      ),
+      hasLength(1),
+    );
+    await host.handle(<String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'request',
+      'requestId': 52,
+      'pluginId': 'pre-admission-cancel',
+      'method': 'stream-cancel-count',
+      'payload': <String, Object?>{},
+    });
+    await host.handle(<String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'request',
+      'requestId': 53,
+      'pluginId': 'pre-admission-cancel',
+      'method': 'ping',
+      'payload': <String, Object?>{},
+    });
+    while (!emitted.any(
+      (message) => message['kind'] == 'response' && message['requestId'] == 53,
+    )) {
+      await Future<void>.delayed(Duration.zero);
+    }
+    expect(
+      emitted.singleWhere((message) => message['requestId'] == 52)['payload'],
+      1,
+    );
+    expect(
+      emitted.singleWhere((message) => message['requestId'] == 53)['payload'],
+      <String, Object?>{'alive': true},
+    );
+  });
+
+  test('unmatched ingress cancellation intent is discarded', () async {
+    final emitted = <Map<String, Object?>>[];
+    final host = AdeleBackendHost(
+      send: (message) {
+        emitted.add(message);
+        return true;
+      },
+    );
+    addTearDown(() => host.shutdown(notify: false));
+    await host.handle(<String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'startPlugin',
+      'requestId': 60,
+      'pluginId': 'discard-cancel',
+      'artifactUri': pluginKernel.uri.toString(),
+      'arguments': <String>['wait'],
+    });
+    final cancel = <String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'streamCancel',
+      'requestId': 61,
+      'pluginId': 'discard-cancel',
+    };
+    host.noteStreamCancelRequested(cancel);
+    await host.handle(cancel);
+    await host.handle(<String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'streamOpen',
+      'requestId': 61,
+      'pluginId': 'discard-cancel',
+      'method': 'stream-malformed',
+      'payload': <String, Object?>{},
+    });
+    await host.handle(<String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'streamCredit',
+      'requestId': 61,
+      'pluginId': 'discard-cancel',
+      'credit': 1,
+    });
+    while (!emitted.any(
+      (message) =>
+          message['kind'] == 'streamFailure' && message['requestId'] == 61,
+    )) {
+      await Future<void>.delayed(Duration.zero);
+    }
+    expect(
+      emitted.where(
+        (message) =>
+            message['kind'] == 'streamFailure' && message['requestId'] == 61,
+      ),
+      hasLength(1),
+    );
+    expect(
+      emitted.where(
+        (message) =>
+            message['kind'] == 'streamCancelForwarded' &&
+            message['requestId'] == 61,
+      ),
+      isEmpty,
+    );
+  });
 }
 
 Future<PluginBackendHost> _startHost(String dartaotruntime, File hostArtifact) {
