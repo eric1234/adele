@@ -482,12 +482,9 @@ final class PluginBackendHost {
             'streamDone' ||
             'streamFailure' ||
             'streamCancelled' ||
-            'streamCancelForwarded') {
+            'streamCancelForwarded' ||
+            'error' when _streams.containsKey(rawRequestId)) {
       _handleStreamMessage(rawRequestId, message);
-      return;
-    }
-    if (message['kind'] == 'error' && _streams.containsKey(rawRequestId)) {
-      _finishStream(rawRequestId, error: _remoteFailure(message));
       return;
     }
     final Completer<Map<String, Object?>>? completer = _pending.remove(
@@ -539,6 +536,8 @@ final class PluginBackendHost {
         _finishStream(requestId, error: _remoteFailure(message));
       case 'streamCancelled':
         _finishStream(requestId, cancelled: true);
+      case 'error':
+        _finishStream(requestId, error: _remoteFailure(message));
     }
   }
 

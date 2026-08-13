@@ -905,6 +905,60 @@ void main() {
     await host.close();
   });
 
+  for (final owner in <String?>['wrong-owner', null]) {
+    test(
+      'generic stream error with ${owner == null ? 'missing' : 'wrong'} owner kills host',
+      () async {
+        final _FakeHost fake = _FakeHost.create('''
+import 'dart:async';
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+Future<void> main() async {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'streamOpen') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'error', 'requestId': message['requestId'], ${owner == null ? '' : "'pluginId': '$owner',"} 'error': {'code': 'supplied_failure', 'message': 'must not escape'}}));
+      }
+    }
+  });
+  await Completer<void>().future;
+}
+''');
+        addTearDown(fake.dispose);
+        final host = await fake.start();
+        final int pid = host.processId;
+        final connection = await host.startPlugin(
+          pluginId: 'owned-stream',
+          artifactUri: Uri.file('/unused.aot'),
+        );
+        final errors = <Object>[];
+        final terminal = Completer<void>();
+        connection
+            .stream('events', const {})
+            .listen(
+              (_) {},
+              onError: (Object error) {
+                errors.add(error);
+                terminal.complete();
+              },
+            );
+        await terminal.future;
+        expect(errors.single, isA<PluginConnectionClosed>());
+        expect(errors.single, isNot(isA<PluginRemoteFailure>()));
+        await host.close().timeout(const Duration(seconds: 2));
+        final ProcessResult alive = await Process.run('kill', <String>[
+          '-0',
+          '$pid',
+        ]);
+        expect(alive.exitCode, isNot(0));
+      },
+    );
+  }
+
   test('cancellation timeout joins exact in-flight plugin stop', () async {
     final _FakeHost fake = _FakeHost.create('''
 import 'dart:io';
