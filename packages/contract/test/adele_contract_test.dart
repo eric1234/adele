@@ -86,6 +86,74 @@ void main() {
     expect(raw.subscription.cancelCalls, 1);
     expect(raw.subscription.active, isFalse);
   });
+
+  test('decoded stream preserves pause during raw listen assignment', () async {
+    final raw = _SynchronousValueStream();
+    late final StreamSubscription<int> decodedSubscription;
+    final first = Completer<void>();
+    decodedSubscription =
+        adeleDecodedStream<int>(
+          raw,
+          (value) => value! as int,
+          (error) => error,
+        ).listen((value) {
+          decodedSubscription.pause();
+          first.complete();
+        });
+    await first.future;
+    expect(raw.subscription.pauseCalls, 1);
+    expect(raw.subscription.isPaused, isTrue);
+    decodedSubscription.resume();
+    expect(raw.subscription.resumeCalls, 1);
+    expect(raw.subscription.isPaused, isFalse);
+    await decodedSubscription.cancel();
+  });
+}
+
+final class _SynchronousValueStream extends Stream<Object?> {
+  final _TrackingSubscription subscription = _TrackingSubscription();
+
+  @override
+  StreamSubscription<Object?> listen(
+    void Function(Object? event)? onData, {
+    Function? onError,
+    void Function()? onDone,
+    bool? cancelOnError,
+  }) {
+    onData?.call(1);
+    return subscription;
+  }
+}
+
+final class _TrackingSubscription implements StreamSubscription<Object?> {
+  int pauseCalls = 0;
+  int resumeCalls = 0;
+  bool _paused = false;
+
+  @override
+  Future<void> cancel() async {}
+  @override
+  void onData(void Function(Object? data)? handleData) {}
+  @override
+  void onDone(void Function()? handleDone) {}
+  @override
+  void onError(Function? handleError) {}
+  @override
+  void pause([Future<void>? resumeSignal]) {
+    pauseCalls++;
+    _paused = true;
+  }
+
+  @override
+  void resume() {
+    resumeCalls++;
+    _paused = false;
+  }
+
+  @override
+  bool get isPaused => _paused;
+  @override
+  Future<E> asFuture<E>([E? futureValue]) => Future<E>.value(futureValue);
 }
 
 final class _SynchronousRawStream extends Stream<Object?> {

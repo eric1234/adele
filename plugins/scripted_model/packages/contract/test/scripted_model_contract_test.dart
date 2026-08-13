@@ -420,6 +420,41 @@ void main() {
     await Future.wait<void>(<Future<void>>[first, second]);
     expect(firstDone && secondDone, isTrue);
   });
+
+  test('close waits for admitted direct dispatch', () async {
+    final service = _BlockedUnaryFixtureService();
+    final dispatcher = ScriptedModelFixtureServiceDispatcher(service);
+    final direct = dispatcher.dispatch({
+      'kind': 'request',
+      'requestId': 26,
+      'method': scriptedModelFixtureServiceInvokeId,
+      'payload': {'request': _encodedRequest()},
+    });
+    await service.started.future;
+    bool closed = false;
+    final closing = dispatcher.close().then((_) => closed = true);
+    await Future<void>.delayed(Duration.zero);
+    expect(closed, isFalse);
+    service.release.complete();
+    expect((await direct)['kind'], 'response');
+    await closing;
+  });
+
+  test('direct dispatch after close rejects without service work', () async {
+    final service = _CountingFixtureService();
+    final dispatcher = ScriptedModelFixtureServiceDispatcher(service);
+    await dispatcher.close();
+    await expectLater(
+      dispatcher.dispatch({
+        'kind': 'request',
+        'requestId': 27,
+        'method': scriptedModelFixtureServiceInvokeId,
+        'payload': {'request': _encodedRequest()},
+      }),
+      throwsStateError,
+    );
+    expect(service.invocations, 0);
+  });
 }
 
 ScriptedModelRequest _request() => const ScriptedModelRequest(
@@ -661,5 +696,15 @@ final class _OrderedUnaryFixtureService extends _StreamingFixtureService {
       secondStarted.complete();
     }
     return const ScriptedModelResponse(content: 'done', toolCall: null);
+  }
+}
+
+final class _CountingFixtureService extends _StreamingFixtureService {
+  int invocations = 0;
+
+  @override
+  Future<ScriptedModelResponse> invoke(ScriptedModelRequest request) async {
+    invocations++;
+    return super.invoke(request);
   }
 }

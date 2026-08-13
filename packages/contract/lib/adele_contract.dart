@@ -109,6 +109,7 @@ Stream<T> adeleDecodedStream<T>(
   late final StreamController<T> controller;
   StreamSubscription<Object?>? subscription;
   bool terminated = false;
+  bool pausePending = false;
   Future<void>? cancellationFuture;
   Object? primaryError;
   StackTrace? primaryStackTrace;
@@ -175,10 +176,26 @@ Stream<T> adeleDecodedStream<T>(
           await ensureCancellation(created);
           await deliverPrimary();
         }());
+      } else if (pausePending) {
+        created.pause();
       }
     },
-    onPause: () => subscription?.pause(),
-    onResume: () => subscription?.resume(),
+    onPause: () {
+      final StreamSubscription<Object?>? current = subscription;
+      if (current == null) {
+        pausePending = true;
+      } else {
+        current.pause();
+      }
+    },
+    onResume: () {
+      final StreamSubscription<Object?>? current = subscription;
+      if (current == null) {
+        pausePending = false;
+      } else {
+        current.resume();
+      }
+    },
     onCancel: () async {
       terminated = true;
       final StreamSubscription<Object?>? current = subscription;

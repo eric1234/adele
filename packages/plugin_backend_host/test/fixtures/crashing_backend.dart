@@ -40,6 +40,18 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
           'requestId': id,
           'ok': true,
         });
+      } else if (method == 'stream-item-missing-payload') {
+        responsePort.send(<String, Object?>{
+          'kind': 'streamItem',
+          'requestId': id,
+        });
+      } else if (method == 'stream-item-extra-field') {
+        responsePort.send(<String, Object?>{
+          'kind': 'streamItem',
+          'requestId': id,
+          'payload': null,
+          'extra': true,
+        });
       } else if (method.startsWith('stream-large-item')) {
         responsePort.send(<String, Object?>{
           'kind': 'streamItem',

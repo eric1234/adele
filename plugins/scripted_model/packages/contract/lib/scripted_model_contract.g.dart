@@ -173,7 +173,17 @@ final class ScriptedModelFixtureServiceDispatcher
   Future<void>? _adeleCloseFuture;
   bool _adeleClosed = false;
   @override
-  Future<Map<String, Object?>> dispatch(
+  Future<Map<String, Object?>> dispatch(Map<Object?, Object?> _adeleRequest0) {
+    if (_adeleClosed)
+      return Future<Map<String, Object?>>.error(
+        StateError('The dispatcher is closed.'),
+      );
+    return _adeleScheduleOrdinary<Map<String, Object?>>(
+      () => _adeleDispatchCore(_adeleRequest0),
+    );
+  }
+
+  Future<Map<String, Object?>> _adeleDispatchCore(
     Map<Object?, Object?> _adeleRequest0,
   ) async {
     final _adeleRequestId1 = _adeleRequest0['requestId'];
@@ -352,8 +362,8 @@ final class ScriptedModelFixtureServiceDispatcher
     final _adeleKind2 = _adeleCommand0['kind'];
     if (_adeleKind2 == 'request') {
       if (_adeleClosed) return Future<void>.value();
-      return _adeleScheduleOrdinary(
-        () async => _adeleSend1(await dispatch(_adeleCommand0)),
+      return _adeleScheduleOrdinary<void>(
+        () async => _adeleSend1(await _adeleDispatchCore(_adeleCommand0)),
       );
     }
     if (_adeleKind2 == 'streamOpen') {
@@ -374,7 +384,7 @@ final class ScriptedModelFixtureServiceDispatcher
       }
       final _adeleState4 = _ContractStreamState.opening(_adeleRequestId3);
       _adeleStreams[_adeleRequestId3] = _adeleState4;
-      return _adeleScheduleOrdinary(
+      return _adeleScheduleOrdinary<void>(
         () => _adeleOpenStream(_adeleState4, _adeleCommand0, _adeleSend1),
       );
     }
@@ -394,17 +404,17 @@ final class ScriptedModelFixtureServiceDispatcher
     return Future<void>.value();
   }
 
-  Future<void> _adeleScheduleOrdinary(Future<void> Function() _adeleBody0) {
-    late final Future<void> _adeleOperation1;
-    _adeleOperation1 = _adeleOrdinaryTail
-        .then((_) => _adeleBody0())
-        .whenComplete(() => _adeleOperations.remove(_adeleOperation1));
-    _adeleOrdinaryTail = _adeleOperation1.then<void>(
-      (_) {},
-      onError: (_, _) {},
+  Future<T> _adeleScheduleOrdinary<T>(Future<T> Function() _adeleBody0) {
+    final Future<T> _adeleResult1 = _adeleOrdinaryTail.then(
+      (_) => _adeleBody0(),
     );
-    _adeleOperations.add(_adeleOperation1);
-    return _adeleOperation1;
+    late final Future<void> _adeleSettlement2;
+    _adeleSettlement2 = _adeleResult1
+        .then<void>((_) {}, onError: (_, _) {})
+        .whenComplete(() => _adeleOperations.remove(_adeleSettlement2));
+    _adeleOrdinaryTail = _adeleSettlement2;
+    _adeleOperations.add(_adeleSettlement2);
+    return _adeleResult1;
   }
 
   Future<void> _adeleOpenStream(

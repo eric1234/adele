@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:plugin_backend_host/plugin_backend_host.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:test/test.dart';
 
@@ -8,6 +9,7 @@ void main() {
   late Directory artifacts;
   late File hostArtifact;
   late File pluginArtifact;
+  late File pluginKernel;
   late String dartaotruntime;
 
   setUpAll(() async {
@@ -17,6 +19,7 @@ void main() {
     )..createSync(recursive: true);
     hostArtifact = File('${artifacts.path}/host.aot');
     pluginArtifact = File('${artifacts.path}/plugin.aot');
+    pluginKernel = File('${artifacts.path}/plugin.dill');
     final String dart = Platform.resolvedExecutable;
     dartaotruntime = '${File(dart).parent.path}/dartaotruntime';
     await _compile(
@@ -25,6 +28,16 @@ void main() {
       hostArtifact.path,
       repository,
     );
+    final ProcessResult kernelResult = await Process.run(dart, <String>[
+      'compile',
+      'kernel',
+      '$repository/packages/plugin_backend_host/test/fixtures/crashing_backend.dart',
+      '-o',
+      pluginKernel.path,
+    ], workingDirectory: repository);
+    if (kernelResult.exitCode != 0) {
+      throw StateError(kernelResult.stderr.toString());
+    }
     await _compile(
       dart,
       '$repository/packages/plugin_backend_host/test/fixtures/crashing_backend.dart',
@@ -359,6 +372,43 @@ void main() {
     );
   }
 
+  for (final method in <String>[
+    'stream-item-missing-payload',
+    'stream-item-extra-field',
+  ]) {
+    test(
+      'contains malformed item envelope $method',
+      () async {
+        final host = await _startHost(dartaotruntime, hostArtifact);
+        addTearDown(() async {
+          if (!host.isClosed) await host.close(graceful: false);
+        });
+        final plugin = await host.startPlugin(
+          pluginId: method,
+          artifactUri: pluginArtifact.uri,
+          arguments: const <String>['wait'],
+        );
+        await expectLater(
+          plugin.stream(method, const {}),
+          emitsError(
+            isA<PluginRemoteFailure>().having(
+              (failure) => failure.code,
+              'code',
+              'stream_protocol_violation',
+            ),
+          ),
+        );
+        expect(await plugin.request('stream-cancel-count', const {}), 1);
+        expect(await plugin.request('ping', const {}), <String, Object?>{
+          'alive': true,
+        });
+        await plugin.close();
+        await host.close();
+      },
+      timeout: const Timeout(Duration(minutes: 2)),
+    );
+  }
+
   test(
     'stops an active stream and restarts same ID in the same host',
     () async {
@@ -600,6 +650,84 @@ void main() {
       }
       await iterator.cancel();
       await messages.close();
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
+    'retires plugin when preferred and fallback terminals cannot send',
+    () async {
+      final emitted = <Map<String, Object?>>[];
+      bool rejectTerminals = true;
+      final host = AdeleBackendHost(
+        send: (message) {
+          if (rejectTerminals &&
+              message['pluginId'] == 'double-send-failure' &&
+              (message['kind'] == 'streamDone' ||
+                  message['kind'] == 'streamFailure')) {
+            return false;
+          }
+          emitted.add(message);
+          return true;
+        },
+      );
+      addTearDown(() => host.shutdown(notify: false));
+      await host.handle(<String, Object?>{
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'startPlugin',
+        'requestId': 1,
+        'pluginId': 'double-send-failure',
+        'artifactUri': pluginKernel.uri.toString(),
+        'arguments': <String>['wait'],
+      });
+      await host.handle(<String, Object?>{
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'startPlugin',
+        'requestId': 2,
+        'pluginId': 'healthy-peer',
+        'artifactUri': pluginKernel.uri.toString(),
+        'arguments': <String>['wait'],
+      });
+      await host.handle(<String, Object?>{
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'streamOpen',
+        'requestId': 3,
+        'pluginId': 'double-send-failure',
+        'method': 'stream-large-terminal',
+        'payload': <String, Object?>{},
+      });
+      await host.handle(<String, Object?>{
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'streamCredit',
+        'requestId': 3,
+        'pluginId': 'double-send-failure',
+        'credit': 1,
+      });
+      while (!emitted.any(
+        (message) =>
+            message['kind'] == 'pluginFailed' &&
+            message['pluginId'] == 'double-send-failure',
+      )) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      rejectTerminals = false;
+      await host.handle(<String, Object?>{
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'request',
+        'requestId': 4,
+        'pluginId': 'healthy-peer',
+        'method': 'ping',
+        'payload': <String, Object?>{},
+      });
+      while (!emitted.any(
+        (message) => message['kind'] == 'response' && message['requestId'] == 4,
+      )) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      expect(
+        emitted.singleWhere((message) => message['requestId'] == 4)['payload'],
+        <String, Object?>{'alive': true},
+      );
     },
     timeout: const Timeout(Duration(minutes: 2)),
   );

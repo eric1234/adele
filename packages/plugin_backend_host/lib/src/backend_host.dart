@@ -499,6 +499,14 @@ final class _PluginIsolate {
   ) {
     final Object? kind = raw['kind'];
     if (kind == 'streamItem') {
+      if (!_validStreamItem(stream, raw)) {
+        _abortStream(
+          stream,
+          code: 'stream_protocol_violation',
+          message: 'The plugin returned a malformed stream item.',
+        );
+        return;
+      }
       if (stream.credit <= 0) {
         _abortStream(
           stream,
@@ -559,6 +567,12 @@ final class _PluginIsolate {
     );
   }
 
+  bool _validStreamItem(_HostPluginStream stream, Map<Object?, Object?> raw) =>
+      raw.length == 3 &&
+      raw['kind'] == 'streamItem' &&
+      raw['requestId'] == stream.pluginRequestId &&
+      raw.containsKey('payload');
+
   bool _validStreamTerminal(
     _HostPluginStream stream,
     Map<Object?, Object?> raw,
@@ -598,7 +612,10 @@ final class _PluginIsolate {
       'pluginId': pluginId,
       if (raw.containsKey('error')) 'error': raw['error'],
     };
-    if (!_sendStreamTerminal(stream, response)) return;
+    if (!_sendStreamTerminal(stream, response)) {
+      _isolate.kill(priority: Isolate.immediate);
+      return;
+    }
     _removeStream(stream);
   }
 
