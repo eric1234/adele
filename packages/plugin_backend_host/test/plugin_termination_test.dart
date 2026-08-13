@@ -451,6 +451,37 @@ void main() {
   );
 
   test(
+    'retires plugin for stream frame with wrong integer ID',
+    () async {
+      final host = await _startHost(dartaotruntime, hostArtifact);
+      addTearDown(() async {
+        if (!host.isClosed) await host.close(graceful: false);
+      });
+      final broken = await host.startPlugin(
+        pluginId: 'wrong-stream-id',
+        artifactUri: pluginArtifact.uri,
+        arguments: const <String>['wait'],
+      );
+      final peer = await host.startPlugin(
+        pluginId: 'wrong-stream-id-peer',
+        artifactUri: pluginArtifact.uri,
+        arguments: const <String>['wait'],
+      );
+      await expectLater(
+        broken.stream('stream-item-wrong-request-id', const {}),
+        emitsError(isA<PluginRemoteFailure>()),
+      );
+      await broken.terminated.timeout(const Duration(seconds: 5));
+      expect(await peer.request('ping', const {}), <String, Object?>{
+        'alive': true,
+      });
+      await peer.close();
+      await host.close();
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
     'stops an active stream and restarts same ID in the same host',
     () async {
       final diagnostics = <String>[];

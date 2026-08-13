@@ -45,6 +45,12 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
           'kind': 'streamItem',
           'payload': 'uncorrelatable',
         });
+      } else if (method == 'stream-item-wrong-request-id') {
+        responsePort.send(<String, Object?>{
+          'kind': 'streamItem',
+          'requestId': id + 1000000,
+          'payload': 'uncorrelatable',
+        });
       } else if (method == 'stream-item-missing-payload') {
         responsePort.send(<String, Object?>{
           'kind': 'streamItem',

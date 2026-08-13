@@ -487,6 +487,13 @@ final class PluginBackendHost {
       _handleStreamMessage(rawRequestId, message);
       return;
     }
+    if (_isHostStreamKind(message['kind']) &&
+        _pending.containsKey(rawRequestId)) {
+      _hostProtocolViolation(
+        'The backend host returned a stream frame for a non-stream request.',
+      );
+      return;
+    }
     final Completer<Map<String, Object?>>? completer = _pending.remove(
       rawRequestId,
     );
@@ -521,7 +528,7 @@ final class PluginBackendHost {
       );
       return;
     }
-    if (_isHostStreamKind(message['kind']) &&
+    if ((_isHostStreamKind(message['kind']) || message['kind'] == 'error') &&
         !_validHostStreamFrame(requestId, stream, message)) {
       _hostProtocolViolation(
         'The backend host returned a malformed stream frame.',
@@ -544,6 +551,12 @@ final class PluginBackendHost {
           stream.creditWithheld = true;
         }
       case 'streamCancelForwarded':
+        if (!stream.cancelSent) {
+          _hostProtocolViolation(
+            'The backend host returned an unsolicited stream cancellation forwarding acknowledgement.',
+          );
+          return;
+        }
         final Completer<void>? forwarded = stream.cancelForwardedCompleter;
         if (forwarded != null && !forwarded.isCompleted) forwarded.complete();
       case 'streamDone':
@@ -588,16 +601,31 @@ final class PluginBackendHost {
         'pluginId',
         'error',
       },
+      'error' => const <String>{
+        'protocolVersion',
+        'kind',
+        'requestId',
+        'pluginId',
+        'error',
+      },
       'streamDone' || 'streamCancelled' || 'streamCancelForwarded' =>
         const <String>{'protocolVersion', 'kind', 'requestId', 'pluginId'},
       _ => const <String>{},
     };
+    final Object? error = message['error'];
+    final bool validError =
+        kind != 'error' ||
+        (error is Map &&
+            error['code'] is String &&
+            error['message'] is String &&
+            error['details'] is Map);
     return expected.isNotEmpty &&
         message.length == expected.length &&
         message.keys.toSet().containsAll(expected) &&
         message['protocolVersion'] == backendHostProtocolVersion &&
         message['requestId'] == requestId &&
-        message['pluginId'] == stream.pluginId;
+        message['pluginId'] == stream.pluginId &&
+        validError;
   }
 
   void _finishStream(

@@ -1280,6 +1280,96 @@ Future<void> main() async {
     });
   }
 
+  test('malformed generic error for active stream kills host', () async {
+    final _FakeHost fake = _FakeHost.create('''
+import 'dart:async';
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+Future<void> main() async {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      if (message['kind'] == 'streamOpen') stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion + 1, 'kind': 'error', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'error': {'code': 'bad', 'message': 'bad', 'details': {}}}));
+    }
+  });
+  await Completer<void>().future;
+}
+''');
+    addTearDown(fake.dispose);
+    final host = await fake.start();
+    final connection = await host.startPlugin(
+      pluginId: 'malformed-error',
+      artifactUri: Uri.file('/unused.aot'),
+    );
+    await expectLater(
+      connection.stream('events', const {}),
+      emitsError(isA<PluginConnectionClosed>()),
+    );
+    await host.close().timeout(const Duration(seconds: 2));
+  });
+
+  test('stream frame colliding with live unary request kills host', () async {
+    final _FakeHost fake = _FakeHost.create('''
+import 'dart:async';
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+Future<void> main() async {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      if (message['kind'] == 'request') stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamDone', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+    }
+  });
+  await Completer<void>().future;
+}
+''');
+    addTearDown(fake.dispose);
+    final host = await fake.start();
+    final connection = await host.startPlugin(
+      pluginId: 'cross-kind',
+      artifactUri: Uri.file('/unused.aot'),
+    );
+    await expectLater(
+      connection.request('ping', const {}),
+      throwsA(isA<PluginConnectionClosed>()),
+    );
+    await host.close().timeout(const Duration(seconds: 2));
+  });
+
+  test('unsolicited streamCancelForwarded kills host', () async {
+    final _FakeHost fake = _FakeHost.create('''
+import 'dart:async';
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+Future<void> main() async {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      if (message['kind'] == 'streamOpen') stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamCancelForwarded', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+    }
+  });
+  await Completer<void>().future;
+}
+''');
+    addTearDown(fake.dispose);
+    final host = await fake.start();
+    final connection = await host.startPlugin(
+      pluginId: 'unsolicited-forward',
+      artifactUri: Uri.file('/unused.aot'),
+    );
+    await expectLater(
+      connection.stream('events', const {}),
+      emitsError(isA<PluginConnectionClosed>()),
+    );
+    await host.close().timeout(const Duration(seconds: 2));
+  });
+
   test('cancellation timeout joins exact in-flight plugin stop', () async {
     final _FakeHost fake = _FakeHost.create('''
 import 'dart:io';

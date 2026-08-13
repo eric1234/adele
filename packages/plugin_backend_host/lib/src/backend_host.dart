@@ -473,20 +473,21 @@ final class _PluginIsolate {
   void _handleResponse(Object? raw) {
     if (raw is! Map || raw['requestId'] is! int) {
       _diagnostic('Malformed response from $pluginId: $raw');
-      if (raw is Map &&
-          const <Object?>{
-            'streamItem',
-            'streamDone',
-            'streamFailure',
-            'streamCancelled',
-          }.contains(raw['kind'])) {
+      if (raw is Map && _isPluginStreamResponseKind(raw['kind'])) {
         _isolate.kill(priority: Isolate.immediate);
       }
       return;
     }
     final int pluginRequestId = raw['requestId'] as int;
     final _HostPluginStream? stream = _streams[pluginRequestId];
-    if (stream != null) {
+    if (_isPluginStreamResponseKind(raw['kind'])) {
+      if (stream == null) {
+        _diagnostic(
+          'Uncorrelatable stream response ID $pluginRequestId from $pluginId.',
+        );
+        _isolate.kill(priority: Isolate.immediate);
+        return;
+      }
       _handleStreamResponse(stream, raw);
       return;
     }
@@ -531,6 +532,14 @@ final class _PluginIsolate {
       }
     }
   }
+
+  bool _isPluginStreamResponseKind(Object? kind) => switch (kind) {
+    'streamItem' ||
+    'streamDone' ||
+    'streamFailure' ||
+    'streamCancelled' => true,
+    _ => false,
+  };
 
   void _handleStreamResponse(
     _HostPluginStream stream,
