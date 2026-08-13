@@ -29,6 +29,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   await for (final Object? message in commands) {
     if (message is! Map) continue;
     if (message['method'] == 'shutdown' && message['requestId'] is int) {
+      await dispatcher.close();
       responsePort.send(<String, Object?>{
         'kind': 'response',
         'requestId': message['requestId'],
@@ -38,6 +39,6 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       commands.close();
       continue;
     }
-    responsePort.send(await dispatcher.dispatch(message));
+    unawaited(dispatcher.handle(message, responsePort.send));
   }
 }

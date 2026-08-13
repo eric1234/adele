@@ -5,7 +5,8 @@ running, inspecting, and extending agent systems. The long-term goal is for
 ADELE to become capable of developing ADELE itself.
 
 ADELE's maintained foundation includes the Phase I plugin runtime proof, the
-Phase II generated request/response contract path, the Phase III active
+Phase II-A generated unary contract path, Phase II-B generated server-streaming
+and cancellation, the Phase III active
 capability provider registry, and the Phase IV-A semantic agent-execution
 foundation:
 interpreted Flutter frontends and locally compiled AOT backends hosted in one
@@ -23,7 +24,9 @@ materialization, ToolInvocation, effect description, policy, approval, tool
 execution, structured outcomes, and typed execution observation. Its
 development-only AOT fixture adapts a generated unary scripted model capability
 and a generation-bound ResourceInspector capability into those kernel ports.
-Generated streaming remains Phase II-B work.
+The scripted-model contract now also has a generated typed stream proven through
+the shared-host AOT runtime. The Phase IV-A application adapter intentionally
+continues using the unary method as a regression boundary.
 
 ## Toolchain
 
@@ -88,7 +91,7 @@ packages/plugin_builder/     plugin_builder (internal, pure Dart)
 packages/agent_kernel/       agent_kernel (internal, pure Dart)
 plugins/workspace_demo/      internal source-plugin reference fixture
 plugins/resource_inspector/  Phase III two-provider capability fixture
-plugins/scripted_model/      Phase IV-A unary model/AOT integration fixture
+plugins/scripted_model/      Phase IV-A unary plus Phase II-B stream fixture
 docs/architecture/           architecture boundaries and terminology
 docs/adr/                    architectural decision records
 tools/                       root development command driver
@@ -129,9 +132,10 @@ types in Phase 0.
 
 ## Next Work
 
-Implement Phase II-B generated streaming and cancellation, then replace the
-fixture transport mechanics with true generated model streams and establish the
-first common model-provider capability. Windows, macOS, release packaging,
+Continue remaining Phase IV by switching the scripted-model adapter to the
+generated stream, establishing the first common model-provider capability,
+integrating one real provider, and proving the minimal streamed model/tool loop.
+Windows, macOS, release packaging,
 current Flutter compatibility, packaging/discovery, and eval-stack
 modernization also remain open. See `docs/architecture/overview.md` and ADRs
-0019 through 0022.
+0019 through 0023.

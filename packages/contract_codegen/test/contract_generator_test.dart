@@ -21,6 +21,78 @@ void main() {
     expect(output.contents, contains('WorkspaceDemoServiceDispatcher'));
   });
 
+  test('models mixed unary and server-streaming methods explicitly', () async {
+    final fixture = await _fixture(
+      _minimalContract(namedValue: true).replaceFirst(
+        'Future<String> ping(String value);',
+        '''Future<String> ping(String value);
+  @AdeleMethod('events')
+  Stream<FixtureValue> events(String value);''',
+      ),
+    );
+    final generated = await const ContractGenerator().generate(fixture.source);
+    expect(generated.contents, contains('Stream<FixtureValue> events'));
+    expect(generated.contents, contains('AdeleStreamChannel'));
+    expect(generated.contents, contains("'fixture.service.events'"));
+  });
+
+  for (final entry in <String, String>{
+    'Stream<void>': 'Stream<void>',
+    'Future<Stream<String>>': 'Stream contract types',
+    'Stream<String>?': 'Future<T> or Stream<T>',
+  }.entries) {
+    test('rejects ${entry.key}', () async {
+      await _expectDiagnostic(
+        _minimalContract(
+          namedValue: true,
+        ).replaceFirst('Future<String>', entry.key),
+        entry.value,
+      );
+    });
+  }
+
+  test('rejects raw Stream returns', () async {
+    await _expectDiagnostic(
+      _minimalContract(
+        namedValue: true,
+      ).replaceFirst('Future<String>', 'Stream'),
+      'Dynamic or unconstrained contract types',
+    );
+  });
+
+  test('rejects outer Stream aliases', () async {
+    await _expectDiagnostic(
+      _minimalContract(namedValue: true)
+          .replaceFirst(
+            "part 'fixture.g.dart';",
+            "part 'fixture.g.dart';\ntypedef StreamAlias<T> = Stream<T>;",
+          )
+          .replaceFirst('Future<String>', 'StreamAlias<String>'),
+      'Future<T> or Stream<T>',
+    );
+  });
+
+  test('rejects Stream lookalike returns', () async {
+    await _expectDiagnostic(
+      _minimalContract(namedValue: true)
+          .replaceFirst(
+            "part 'fixture.g.dart';",
+            "part 'fixture.g.dart';\nclass Stream<T> {}",
+          )
+          .replaceFirst('Future<String>', 'Stream<String>'),
+      'Future<T> or Stream<T>',
+    );
+  });
+
+  test('rejects Stream service parameters', () async {
+    await _expectDiagnostic(
+      _minimalContract(
+        namedValue: true,
+      ).replaceFirst('String value);', 'Stream<String> value);'),
+      'Stream contract types are not supported',
+    );
+  });
+
   test('rejects multiple annotated services in one contract library', () async {
     await _expectDiagnostic(
       _minimalContract(namedValue: true).replaceFirst(
@@ -305,6 +377,18 @@ abstract interface class OtherService {
       expect(diagnostic.path, fixture.source.absolute.path);
       expect(diagnostic.line, 2);
       expect(diagnostic.column, 1);
+    });
+  }
+
+  for (final symbol in <String>['TypeError', 'StateError']) {
+    test('rejects generated core collision $symbol', () async {
+      await _expectDiagnostic(
+        _minimalContract(namedValue: true).replaceFirst(
+          "@AdeleValue('fixture.value')",
+          'class $symbol {}\n@AdeleValue(\'fixture.value\')',
+        ),
+        'Generated symbol collision for $symbol',
+      );
     });
   }
 
@@ -600,6 +684,9 @@ ${_minimalContract(namedValue: true)}'''),
     'fixtureServiceId',
     'fixtureValueTypeId',
     'AdeleRequestChannel',
+    'AdeleStreamChannel',
+    'AdeleLazyStream',
+    'adeleDecodedStream',
   ]) {
     test('reserves import prefix $prefix against generated symbols', () async {
       final fixture = await _fixtureWithSupport(
@@ -743,6 +830,130 @@ ${_minimalContract(namedValue: true)}'''),
   );
 
   test(
+    'stream runtime type enforcement is a contract violation',
+    () async {
+      await _runGeneratedFixture(
+        '''
+library fixture;
+import 'package:adele_contract/adele_contract.dart';
+part 'fixture.g.dart';
+@AdeleService('fixture.service')
+abstract interface class FixtureService {
+  @AdeleMethod('ping')
+  Future<String> ping(String value);
+  @AdeleMethod('events')
+  Stream<String> events(String mode);
+  @AdeleMethod('invalidNumbers')
+  Stream<double> invalidNumbers();
+}
+@AdeleFailure('fixture.failure')
+final class FixtureFailure implements Exception {
+  const FixtureFailure({required this.code, required this.message, required this.details});
+  final String code;
+  final String message;
+  final Map<String, Object?> details;
+}
+''',
+        '''
+import 'dart:async';
+
+import 'package:generated_contract_fixture/fixture.dart';
+import 'package:test/test.dart';
+
+void main() {
+  test('classifies boundary TypeErrors narrowly', () async {
+    final dispatcher = FixtureServiceDispatcher(_UnsoundService());
+    Future<Map<String, Object?>> run(String mode) async {
+      final events = <Map<String, Object?>>[];
+      await dispatcher.handle({
+        'kind': 'streamOpen',
+        'requestId': mode.hashCode,
+        'method': fixtureServiceEventsId,
+        'payload': {'mode': mode},
+      }, events.add);
+      await dispatcher.handle({
+        'kind': 'streamCredit',
+        'requestId': mode.hashCode,
+        'credit': 1,
+      }, events.add);
+      while (events.isEmpty) await Future<void>.delayed(Duration.zero);
+      return events.single;
+    }
+    for (final mode in ['wrongReturn', 'wrongItem']) {
+      final event = await run(mode);
+      expect(event['kind'], 'streamFailure');
+      expect((event['error'] as Map)['code'], 'backend_contract_violation');
+    }
+    final event = await run('ordinaryFailure');
+    expect((event['error'] as Map)['code'], 'internal_error');
+    final service = _UnsoundService();
+    final barrierDispatcher = FixtureServiceDispatcher(service);
+    final barrierEvents = <Map<String, Object?>>[];
+    await barrierDispatcher.handle({
+      'kind': 'streamOpen',
+      'requestId': 99,
+      'method': fixtureServiceInvalidNumbersId,
+      'payload': {},
+    }, barrierEvents.add);
+    await barrierDispatcher.handle({
+      'kind': 'streamCredit',
+      'requestId': 99,
+      'credit': 1,
+    }, barrierEvents.add);
+    await service.cancelStarted.future;
+    expect(barrierEvents, isEmpty);
+    bool closed = false;
+    final closing = barrierDispatcher.close().then((_) => closed = true);
+    expect(closed, isFalse);
+    service.releaseCancel.complete();
+    await closing;
+    expect(barrierEvents, hasLength(1));
+    expect((barrierEvents.single['error'] as Map)['code'], 'backend_contract_violation');
+    expect(service.cancelCalls, 1);
+    await dispatcher.close();
+  });
+}
+
+final class _UnsoundService implements FixtureService {
+  final Completer<void> cancelStarted = Completer<void>();
+  final Completer<void> releaseCancel = Completer<void>();
+  int cancelCalls = 0;
+  @override
+  Future<String> ping(String value) async => value;
+
+  @override
+  Stream<String> events(String mode) {
+    if (mode == 'wrongReturn') return _dynamicValue(7);
+    if (mode == 'wrongItem') {
+      return _dynamicValue(Stream<Object?>.value(7));
+    }
+    return (() async* { throw StateError('ordinary'); })();
+  }
+
+  @override
+  Stream<double> invalidNumbers() {
+    late final StreamController<double> controller;
+    controller = StreamController<double>(
+      onListen: () => controller.add(double.nan),
+      onCancel: () async {
+        cancelCalls++;
+        cancelStarted.complete();
+        await releaseCancel.future;
+      },
+    );
+    return controller.stream;
+  }
+}
+
+dynamic _dynamicValue(Object? value) => value;
+''',
+        analyze: false,
+      );
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
     'generated dispatcher contains invalid failure details',
     () async {
       await _runGeneratedFixture(
@@ -866,16 +1077,18 @@ ${_minimalContract(namedValue: true)}'''),
       _minimalContract(
         namedValue: true,
       ).replaceFirst('Future<String> ping', 'String ping'),
-      'Service methods must return Future<T>.',
+      'Service methods must return Future<T> or Stream<T>.',
     );
   });
 
-  test('rejects Stream returns', () async {
-    await _expectDiagnostic(
-      _minimalContract(
-        namedValue: true,
-      ).replaceFirst('Future<String> ping', 'Stream<String> ping'),
-      'Service methods must return Future<T>.',
+  test('accepts Stream returns', () async {
+    expect(
+      await _generate(
+        _minimalContract(
+          namedValue: true,
+        ).replaceFirst('Future<String> ping', 'Stream<String> ping'),
+      ),
+      contains('Stream<String> ping'),
     );
   });
 
@@ -2378,7 +2591,11 @@ Future<_Fixture> _fixtureWithSupport(
   return fixture;
 }
 
-Future<void> _runGeneratedFixture(String source, String tests) async {
+Future<void> _runGeneratedFixture(
+  String source,
+  String tests, {
+  bool analyze = true,
+}) async {
   final fixture = await _fixture(source);
   final repository = _repository();
   final lib = Directory(p.join(fixture.directory.path, 'lib'))..createSync();
@@ -2404,7 +2621,7 @@ dev_dependencies:
   final output = await const ContractGenerator().generate(sourceFile);
   await const ContractGenerator().write(output);
   await _runDart(fixture.directory, const ['pub', 'get']);
-  await _runDart(fixture.directory, const ['analyze']);
+  if (analyze) await _runDart(fixture.directory, const ['analyze']);
   await _runDart(fixture.directory, const ['test']);
 }
 

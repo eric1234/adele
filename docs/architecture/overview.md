@@ -2,10 +2,10 @@
 
 ## Status
 
-ADELE's maintained foundation proves source compilation, unary typed transport,
+ADELE's maintained foundation proves source compilation, unary and server-streaming typed transport,
 interpreted frontend execution, active capability routing, and the Phase IV-A
 semantic agent-execution vertical on Linux x64. It does not implement plugin
-discovery, packaging, profiles, sandboxing, generated streaming/cancellation,
+discovery, packaging, profiles, sandboxing,
 or a real model provider. Plugin-facing APIs remain experimental.
 
 ## System shape
@@ -47,8 +47,8 @@ This shape is proven only on Linux x64 Flutter profile mode. Direct external AOT
 loading inside stock Flutter failed. Backend isolation is not a claim of
 security sandboxing.
 
-Contract source can be shared by the frontend and backend. Future generation
-is intended to hide ports, serialization, request IDs, subscriptions,
+Contract source can be shared by the frontend and backend. Generated transport
+hides ports, serialization, request IDs, subscriptions,
 cancellation, dispatch, and structured transport errors behind typed async
 proxies and dispatchers. Values crossing a runtime boundary are reconstructed
 values, not shared object identities, and should normally be immutable
@@ -94,8 +94,9 @@ workflows belong in plugins rather than in the kernel.
 Phase IV-A uses a development-only application strategy and fixture-specific
 unary scripted model capability to prove a generation-safe
 model/tool/approval/tool/model cycle through real AOT providers. The kernel
-model port is stream-shaped; generated plugin transport remains unary until
-Phase II-B.
+model port is stream-shaped. Phase II-B now provides generated typed streaming,
+while the Phase IV-A adapter intentionally remains on unary transport until
+remaining Phase IV switches it explicitly.
 
 The long-term self-hosting goal is for ADELE to develop ADELE itself. That goal
 does not change the Phase 0 rule to prefer small, working boundaries and avoid
@@ -111,6 +112,7 @@ Linux x64 Flutter profile mode proves the core vertical path. Remaining work is:
 | Shared process-host loading | Proven on Linux x64 profile mode. |
 | Eval compilation and rendering | Proven with pinned eval dependencies and documented workarounds. |
 | Typed request/response communication | Proven manually for the workspace reference fixture. |
+| Typed server-streaming and cancellation | Proven through the scripted-model AOT fixture with one-item flow control. |
 | Rebuild and reload | Proven for three cycles without orphan host processes. |
 | Cross-platform and release behavior | Unproven on Windows, macOS, and release mode. |
 | Packaging and sandboxing | Unproven; process isolation is not a sandbox. |

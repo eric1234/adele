@@ -3,7 +3,7 @@ import 'package:scripted_model_contract/scripted_model_contract.dart';
 import 'package:test/test.dart';
 
 void main() {
-  const ScriptedModelProvider provider = ScriptedModelProvider();
+  final ScriptedModelProvider provider = ScriptedModelProvider();
   const ScriptedToolDefinition tool = ScriptedToolDefinition(
     name: ScriptedModelProvider.toolName,
     description: 'Inspect.',

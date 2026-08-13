@@ -1,7 +1,7 @@
 # Contract Codegen
 
 `contract_codegen` is the internal deterministic generator for experimental
-ADELE request/response contracts. It uses the pinned analyzer and
+ADELE unary and server-streaming contracts. It uses the pinned analyzer and
 `AnalysisContextCollection` to resolve semantic elements, then extracts a
 package-agnostic model, validates it, and emits the contract-owned generated
 part. It does not parse source text as a schema and has no fixture templates.
@@ -33,8 +33,8 @@ experimental `ResourceRef` scalar. Unsupported declarations fail with source
 path and one-based line and column `ContractDiagnostic` locations attached to
 the most precise relevant import, declaration, member, parameter, or type node.
 
-Phase II is a deliberately constrained IDL embedded in Dart. It remains unary
-and local to one declaration library, with exactly one
+Phase II is a deliberately constrained IDL embedded in Dart. It supports unary
+`Future<T>` and server-streaming `Stream<T>` methods and remains local to one declaration library, with exactly one
 non-empty service. Services may contain only abstract instance methods. Annotated
 schema cannot be imported or recursively cycle through nullable values or lists.
 Values require final fields and matching required named field-formal constructor
@@ -56,10 +56,10 @@ not temporary parser omissions, and may remain permanent.
 
 Transported types are a closed semantic set. `String`, `bool`, `int`, `double`,
 `List`, `Map`, `Uri`, and `Object` must be exact `dart:core` declarations; the
-outer method `Future` must be the exact `dart:async` declaration; and
+outer method `Future` or `Stream` must be the exact `dart:async` declaration; and
 `ResourceRef` must resolve to its canonical plugin API declaration. Same-named
 lookalikes are rejected. Analyzer aliases are rejected recursively at every
-transported type position, including the outer `Future`, while unrelated aliases
+transported type position, including the outer wrapper, while unrelated aliases
 outside the schema remain allowed. Service parameters must be explicitly typed
 required positionals; optional, named, covariant, initializing-formal,
 super-formal, function-typed, and implicitly dynamic parameters are rejected.
@@ -83,3 +83,9 @@ boundary that catches every constructor exception; declared-failure
 reconstruction is contained the same way. Recursive JSON maps use identity-based
 active-path cycle detection, allowing shared acyclic references, and a
 conservative maximum container depth of 64.
+
+Generated stream clients are lazy and single-subscription. Generated
+dispatchers retain active iterators, encode one item per credit, classify one
+terminal state, propagate cancellation to iterator cancellation, and cancel all
+producers on idempotent close. Transport stream identifiers and credit messages
+remain outside generated service APIs.

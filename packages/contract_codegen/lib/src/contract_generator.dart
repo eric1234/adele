@@ -55,12 +55,21 @@ final class ServiceModel {
 }
 
 final class MethodModel {
-  const MethodModel(this.name, this.id, this.returnType, this.parameters);
+  const MethodModel(
+    this.name,
+    this.id,
+    this.kind,
+    this.returnType,
+    this.parameters,
+  );
   final String name;
   final String id;
+  final MethodKind kind;
   final TypeModel returnType;
   final List<FieldModel> parameters;
 }
+
+enum MethodKind { unary, serverStream }
 
 final class ValueModel {
   const ValueModel(this.name, this.id, this.fields);
@@ -538,13 +547,36 @@ final class _Extractor {
       final DartType returnType = method.returnType;
       final TypeAnnotation? returnTypeNode = methodNode.returnType;
       if (returnTypeNode == null) {
-        _fail(methodNode, 'Service methods must return Future<T>.');
+        _fail(
+          methodNode,
+          'Service methods must return Future<T> or Stream<T>.',
+        );
       }
+      final MethodKind methodKind;
       if (returnType is! InterfaceType ||
           returnType.alias != null ||
-          !_isSdkType(returnType, 'dart:async', 'Future') ||
+          returnType.nullabilitySuffix == NullabilitySuffix.question ||
           returnType.typeArguments.length != 1) {
-        _fail(returnTypeNode, 'Service methods must return Future<T>.');
+        _fail(
+          returnTypeNode,
+          'Service methods must return Future<T> or Stream<T>.',
+        );
+      } else if (_isSdkType(returnType, 'dart:async', 'Future')) {
+        methodKind = MethodKind.unary;
+      } else if (_isSdkType(returnType, 'dart:async', 'Stream')) {
+        methodKind = MethodKind.serverStream;
+      } else {
+        _fail(
+          returnTypeNode,
+          'Service methods must return Future<T> or Stream<T>.',
+        );
+      }
+      if (methodKind == MethodKind.serverStream &&
+          returnType.typeArguments.single is VoidType) {
+        _fail(
+          _returnArgumentNode(returnTypeNode),
+          'Stream<void> service methods are not supported.',
+        );
       }
       final List<FieldModel> parameters = <FieldModel>[];
       for (final FormalParameterElement parameter in method.formalParameters) {
@@ -591,9 +623,10 @@ final class _Extractor {
         MethodModel(
           method.name!,
           methodId,
+          methodKind,
           _type(
             returnType.typeArguments.single,
-            _futureArgumentNode(returnTypeNode),
+            _returnArgumentNode(returnTypeNode),
           ),
           List.unmodifiable(parameters),
         ),
@@ -1098,7 +1131,7 @@ final class _Extractor {
     };
   }
 
-  TypeAnnotation _futureArgumentNode(TypeAnnotation node) {
+  TypeAnnotation _returnArgumentNode(TypeAnnotation node) {
     if (node case NamedType(:final typeArguments?)) {
       return typeArguments.arguments.single;
     }
@@ -1243,7 +1276,16 @@ const Set<String> _fixedGeneratedSymbols = <String>{
   'AdeleProtocolException',
   'AdeleRemoteFailure',
   'AdeleRequestChannel',
+  'AdeleStreamChannel',
+  'AdeleBackendDispatcher',
+  'AdeleStreamIterator',
+  'AdeleCompleter',
+  'AdeleLazyStream',
+  'adeleDecodedStream',
   'Future',
+  'Stream',
+  'StreamController',
+  'Completer',
   'String',
   'bool',
   'int',
@@ -1255,6 +1297,8 @@ const Set<String> _fixedGeneratedSymbols = <String>{
   'Object',
   'Exception',
   'FormatException',
+  'StateError',
+  'TypeError',
   '_contractMap',
   '_contractFields',
   '_contractList',
@@ -1272,6 +1316,8 @@ const Set<String> _fixedGeneratedSymbols = <String>{
   '_decodeContractEnvelope',
   '_ContractUnknownMethod',
   '_contractFailure',
+  '_contractStreamFailure',
+  '_ContractStreamState',
 };
 
 final class DartContractEmitter {
@@ -1375,13 +1421,20 @@ final class DartContractEmitter {
     List<FailureModel> failures,
   ) {
     out.writeln(
-      'final class ${service.name}Client implements ${service.name} { const ${service.name}Client(this._adeleChannel); final AdeleRequestChannel _adeleChannel;',
+      'final class ${service.name}Client implements ${service.name} { const ${service.name}Client(AdeleRequestChannel _adeleChannel) : _adeleChannel = _adeleChannel; final AdeleRequestChannel _adeleChannel;',
     );
     for (final MethodModel method in service.methods) {
       final String error = _local('error');
-      out.writeln(
-        '@override Future<${method.returnType.dart}> ${method.name}(${method.parameters.map((FieldModel p) => '${p.type.dart} ${p.name}').join(',')}) async { try { ${_clientResult(service, method)} } on AdeleRemoteFailure catch($error) { ${_failureSwitch(failures, error)} } }',
-      );
+      if (method.kind == MethodKind.unary) {
+        out.writeln(
+          '@override Future<${method.returnType.dart}> ${method.name}(${method.parameters.map((FieldModel p) => '${p.type.dart} ${p.name}').join(',')}) async { try { ${_clientResult(service, method)} } on AdeleRemoteFailure catch($error) { ${_failureSwitch(failures, error)} } }',
+        );
+      } else {
+        final String raw = _local('raw');
+        out.writeln(
+          '@override Stream<${method.returnType.dart}> ${method.name}(${method.parameters.map((FieldModel p) => '${p.type.dart} ${p.name}').join(',')}) => AdeleLazyStream<${method.returnType.dart}>((_adeleOnData0, _adeleOnError1, _adeleOnDone2, _adeleCancelOnError3) { final _adeleStreamChannel4 = this._adeleChannel; if (_adeleStreamChannel4 is! AdeleStreamChannel) throw StateError(${_literal('This generated method requires an AdeleStreamChannel.')}); final $raw = _adeleStreamChannel4.stream(${_lower(service.name)}${_cap(method.name)}Id, <String, Object?>{${method.parameters.map((FieldModel p) => '${_literal(p.id)}: ${_encode(p.type, p.name)}').join(',')}}); return adeleDecodedStream<${method.returnType.dart}>($raw, (Object? _adeleItem5) => ${_decode(method.returnType, '_adeleItem5', method.name)}, (Object $error) { if ($error is AdeleRemoteFailure) { ${_streamFailureSwitch(failures, error)} } return $error; }).listen(_adeleOnData0, onError: _adeleOnError1, onDone: _adeleOnDone2, cancelOnError: _adeleCancelOnError3); });',
+        );
+      }
     }
     out.writeln('}');
   }
@@ -1391,10 +1444,25 @@ final class DartContractEmitter {
     ServiceModel service,
     List<FailureModel> failures,
   ) {
+    final List<MethodModel> unary = service.methods
+        .where((MethodModel method) => method.kind == MethodKind.unary)
+        .toList(growable: false);
+    final List<MethodModel> streams = service.methods
+        .where((MethodModel method) => method.kind == MethodKind.serverStream)
+        .toList(growable: false);
+    final String unaryIds = unary.isEmpty
+        ? '<String>{}'
+        : '{${unary.map((MethodModel method) => '${_lower(service.name)}${_cap(method.name)}Id').join(',')}}';
+    final String streamIds = streams.isEmpty
+        ? '<String>{}'
+        : '{${streams.map((MethodModel method) => '${_lower(service.name)}${_cap(method.name)}Id').join(',')}}';
+    final String streamFields = streams.isEmpty
+        ? 'Future<void> _adeleOrdinaryTail = Future<void>.value(); final Set<Future<void>> _adeleOperations = <Future<void>>{}; Future<void>? _adeleCloseFuture; bool _adeleClosed = false;'
+        : 'final Map<int, _ContractStreamState> _adeleStreams = <int, _ContractStreamState>{}; Future<void> _adeleOrdinaryTail = Future<void>.value(); final Set<Future<void>> _adeleOperations = <Future<void>>{}; final Set<Future<void>> _adeleCancellations = <Future<void>>{}; Future<void>? _adeleCloseFuture; bool _adeleClosed = false;';
     out.writeln(
-      'abstract interface class ${service.name}RequestDispatcher { Future<Map<String, Object?>> dispatch(Map<Object?, Object?> _adeleRequest0); } final class ${service.name}Dispatcher implements ${service.name}RequestDispatcher { const ${service.name}Dispatcher(this._adeleService); final ${service.name} _adeleService; @override Future<Map<String, Object?>> dispatch(Map<Object?, Object?> _adeleRequest0) async { final _adeleRequestId1 = _adeleRequest0[\'requestId\']; late final String _adeleMethod2; try { _adeleMethod2 = _decodeContractEnvelope(_adeleRequest0); } on AdeleProtocolException catch(_adeleError3) { return _contractFailure(_adeleRequestId1, null, \'invalid_request\', _adeleError3.message, const {}); } if (!const {${service.methods.map((MethodModel method) => '${_lower(service.name)}${_cap(method.name)}Id').join(',')}}.contains(_adeleMethod2)) return _contractFailure(_adeleRequestId1, null, \'unknown_method\', \'Unknown method.\', const {}); late final Map<Object?, Object?> _adelePayload4; try { _adelePayload4 = _contractMap(_adeleRequest0[\'payload\'], \'request payload\'); } on AdeleProtocolException catch(_adeleError5) { return _contractFailure(_adeleRequestId1, null, \'invalid_request\', _adeleError5.message, const {}); } late final Object? _adeleArguments6; try { _adeleArguments6 = switch(_adeleMethod2) {',
+      'abstract interface class ${service.name}RequestDispatcher implements AdeleBackendDispatcher {} final class ${service.name}Dispatcher implements ${service.name}RequestDispatcher { ${service.name}Dispatcher(this._adeleService); final ${service.name} _adeleService; $streamFields @override Future<Map<String, Object?>> dispatch(Map<Object?, Object?> _adeleRequest0) { if (_adeleClosed) return Future<Map<String, Object?>>.error(StateError(\'The dispatcher is closed.\')); return _adeleScheduleOrdinary<Map<String, Object?>>(() => _adeleDispatchCore(_adeleRequest0)); } Future<Map<String, Object?>> _adeleDispatchCore(Map<Object?, Object?> _adeleRequest0) async { final _adeleRequestId1 = _adeleRequest0[\'requestId\']; late final String _adeleMethod2; try { _adeleMethod2 = _decodeContractEnvelope(_adeleRequest0, \'request\'); } on AdeleProtocolException catch(_adeleError3) { return _contractFailure(_adeleRequestId1, null, \'invalid_request\', _adeleError3.message, const {}); } if (!const $unaryIds.contains(_adeleMethod2)) return _contractFailure(_adeleRequestId1, null, ${streams.isEmpty ? "'unknown_method'" : "const $streamIds.contains(_adeleMethod2) ? 'wrong_method_kind' : 'unknown_method'"}, ${streams.isEmpty ? "'Unknown method.'" : "const $streamIds.contains(_adeleMethod2) ? 'Streaming method requires stream-open.' : 'Unknown method.'"}, const {}); late final Map<Object?, Object?> _adelePayload4; try { _adelePayload4 = _contractMap(_adeleRequest0[\'payload\'], \'request payload\'); } on AdeleProtocolException catch(_adeleError5) { return _contractFailure(_adeleRequestId1, null, \'invalid_request\', _adeleError5.message, const {}); } late final Object? _adeleArguments6; try { _adeleArguments6 = switch(_adeleMethod2) {',
     );
-    for (final MethodModel method in service.methods) {
+    for (final MethodModel method in unary) {
       out.writeln(
         '${_lower(service.name)}${_cap(method.name)}Id => ${_decodeArguments(method, '_adelePayload4')},',
       );
@@ -1402,7 +1470,7 @@ final class DartContractEmitter {
     out.writeln(
       "_ => throw const _ContractUnknownMethod(), }; } on _ContractUnknownMethod { return _contractFailure(_adeleRequestId1, null, 'unknown_method', 'Unknown method.', const {}); } on AdeleProtocolException catch(_adeleError7) { return _contractFailure(_adeleRequestId1, null, 'invalid_request', _adeleError7.message, const {}); } late final Object? _adeleResult8; try { _adeleResult8 = await switch(_adeleMethod2) {",
     );
-    for (final MethodModel method in service.methods) {
+    for (final MethodModel method in unary) {
       out.writeln(
         '${_lower(service.name)}${_cap(method.name)}Id => ${_invokeMethod(method, '_adeleArguments6')},',
       );
@@ -1416,21 +1484,94 @@ final class DartContractEmitter {
     out.writeln(
       "} on _ContractUnknownMethod { return _contractFailure(_adeleRequestId1, null, 'unknown_method', 'Unknown method.', const {}); } on Object catch(_adeleError10) { return _contractFailure(_adeleRequestId1, null, 'internal_error', 'The backend request failed unexpectedly.', const {}); } try { final _adeleEncoded11 = switch(_adeleMethod2) {",
     );
-    for (final MethodModel method in service.methods) {
+    for (final MethodModel method in unary) {
       out.writeln(
         '${_lower(service.name)}${_cap(method.name)}Id => ${_encode(method.returnType, '(_adeleResult8 as ${method.returnType.dart})')},',
       );
     }
     out.writeln(
-      "_ => throw const _ContractUnknownMethod(), }; return {'kind': 'response', 'requestId': _adeleRequestId1, 'ok': true, 'payload': _adeleEncoded11}; } on Object { return _contractFailure(_adeleRequestId1, null, 'backend_contract_violation', 'The backend violated its generated contract.', const {}); } } } String _decodeContractEnvelope(Map<Object?, Object?> _adeleRequest0) { _contractFields(_adeleRequest0, const {'kind', 'requestId', 'method', 'payload'}, 'request envelope'); if (_adeleRequest0['requestId'] is! int || _adeleRequest0['kind'] != 'request' || _adeleRequest0['method'] is! String) throw const AdeleProtocolException('Malformed request envelope.'); return _adeleRequest0['method'] as String; } final class _ContractUnknownMethod implements Exception { const _ContractUnknownMethod(); }",
+      "_ => throw const _ContractUnknownMethod(), }; return {'kind': 'response', 'requestId': _adeleRequestId1, 'ok': true, 'payload': _adeleEncoded11}; } on Object { return _contractFailure(_adeleRequestId1, null, 'backend_contract_violation', 'The backend violated its generated contract.', const {}); } }",
     );
+    if (streams.isEmpty) {
+      out.writeln(
+        '@override Future<void> handle(Map<Object?, Object?> _adeleCommand0, void Function(Map<String, Object?>) _adeleSend1) { if (_adeleClosed) return Future<void>.value(); return _adeleScheduleOrdinary<void>(() async => _adeleSend1(await _adeleDispatchCore(_adeleCommand0))); } Future<T> _adeleScheduleOrdinary<T>(Future<T> Function() _adeleBody0) { final Future<T> _adeleResult1 = _adeleOrdinaryTail.then((_) => _adeleBody0()); late final Future<void> _adeleSettlement2; _adeleSettlement2 = _adeleResult1.then<void>((_) {}, onError: (_, _) {}).whenComplete(() => _adeleOperations.remove(_adeleSettlement2)); _adeleOrdinaryTail = _adeleSettlement2; _adeleOperations.add(_adeleSettlement2); return _adeleResult1; } @override Future<void> close() => _adeleCloseFuture ??= _adeleClose(); Future<void> _adeleClose() async { _adeleClosed = true; await Future.wait<void>(_adeleOperations.toList(growable: false)); } }',
+      );
+    } else {
+      out.writeln(
+        '@override Future<void> handle(Map<Object?, Object?> _adeleCommand0, void Function(Map<String, Object?>) _adeleSend1) { final _adeleKind2 = _adeleCommand0[\'kind\']; if (_adeleKind2 == \'request\') { if (_adeleClosed) return Future<void>.value(); return _adeleScheduleOrdinary<void>(() async => _adeleSend1(await _adeleDispatchCore(_adeleCommand0))); } if (_adeleKind2 == \'streamOpen\') { if (_adeleClosed) return Future<void>.value(); final _adeleRequestId3 = _adeleCommand0[\'requestId\']; if (_adeleRequestId3 is! int || _adeleStreams.containsKey(_adeleRequestId3)) { _adeleSend1(_contractStreamFailure(_adeleRequestId3, null, \'invalid_request\', \'Malformed stream-open request.\', const {})); return Future<void>.value(); } final _adeleState4 = _ContractStreamState.opening(_adeleRequestId3); _adeleStreams[_adeleRequestId3] = _adeleState4; return _adeleScheduleOrdinary<void>(() => _adeleOpenStream(_adeleState4, _adeleCommand0, _adeleSend1)); } final _adeleRequestId3 = _adeleCommand0[\'requestId\']; if (_adeleRequestId3 is! int) return Future<void>.value(); final _adeleState4 = _adeleStreams[_adeleRequestId3]; if (_adeleKind2 == \'streamCredit\') { final _adeleCredit5 = _adeleCommand0[\'credit\']; if (_adeleState4 != null && _adeleCredit5 is int && _adeleCredit5 > 0) { _adeleState4.credit += _adeleCredit5; _adelePump(_adeleState4, _adeleSend1); } return Future<void>.value(); } if (_adeleKind2 == \'streamCancel\') return _adeleCancelAndAcknowledge(_adeleRequestId3, _adeleSend1); return Future<void>.value(); } Future<T> _adeleScheduleOrdinary<T>(Future<T> Function() _adeleBody0) { final Future<T> _adeleResult1 = _adeleOrdinaryTail.then((_) => _adeleBody0()); late final Future<void> _adeleSettlement2; _adeleSettlement2 = _adeleResult1.then<void>((_) {}, onError: (_, _) {}).whenComplete(() => _adeleOperations.remove(_adeleSettlement2)); _adeleOrdinaryTail = _adeleSettlement2; _adeleOperations.add(_adeleSettlement2); return _adeleResult1; }',
+      );
+      out.writeln(
+        'Future<void> _adeleOpenStream(_ContractStreamState _adeleState0, Map<Object?, Object?> _adeleRequest0, void Function(Map<String, Object?>) _adeleSend1) async { final _adeleRequestId2 = _adeleState0.requestId; try { if (_adeleState0.done) return; late final String _adeleMethod3; late final Map<Object?, Object?> _adelePayload4; late final List<Object?> _adeleArguments5; try { _adeleMethod3 = _decodeContractEnvelope(_adeleRequest0, \'streamOpen\'); if (!const $streamIds.contains(_adeleMethod3)) { final _adeleWrongKind6 = const $unaryIds.contains(_adeleMethod3); _adeleFinish(_adeleState0, _adeleSend1, _contractStreamFailure(_adeleRequestId2, null, _adeleWrongKind6 ? \'wrong_method_kind\' : \'unknown_method\', _adeleWrongKind6 ? \'Unary method requires request.\' : \'Unknown method.\', const {})); return; } _adelePayload4 = _contractMap(_adeleRequest0[\'payload\'], \'request payload\'); _adeleArguments5 = switch (_adeleMethod3) {',
+      );
+      for (final MethodModel method in streams) {
+        out.writeln(
+          '${_lower(service.name)}${_cap(method.name)}Id => ${_decodeArguments(method, '_adelePayload4')},',
+        );
+      }
+      out.writeln(
+        "_ => throw const _ContractUnknownMethod(), }; } on AdeleProtocolException catch(_adeleError7) { _adeleFinish(_adeleState0, _adeleSend1, _contractStreamFailure(_adeleRequestId2, null, 'invalid_request', _adeleError7.message, const {})); return; } try { final Stream<Object?> _adeleSource8 = switch (_adeleMethod3) {",
+      );
+      for (final MethodModel method in streams) {
+        out.writeln(
+          '${_lower(service.name)}${_cap(method.name)}Id => ${_invokeStreamMethod(method, '_adeleArguments5')},',
+        );
+      }
+      out.writeln(
+        "_ => throw const _ContractUnknownMethod(), }; if (_adeleState0.done) { await AdeleStreamIterator<Object?>(_adeleSource8).cancel(); return; } _adeleState0.method = _adeleMethod3; _adeleState0.iterator = AdeleStreamIterator<Object?>(_adeleSource8); _adelePump(_adeleState0, _adeleSend1); }",
+      );
+      for (final FailureModel failure in failures) {
+        out.writeln(
+          "on ${failure.name} catch(_adeleError9) { try { _adeleFinish(_adeleState0, _adeleSend1, _contractStreamFailure(_adeleRequestId2, ${_lower(failure.name)}TypeId, _adeleError9.code, _adeleError9.message, _contractJsonMap(_adeleError9.details, 'failure details'))); } on Object { _adeleFinish(_adeleState0, _adeleSend1, _contractStreamFailure(_adeleRequestId2, null, 'backend_contract_violation', 'The backend violated its generated contract.', const {})); } }",
+        );
+      }
+      out.writeln(
+        "on TypeError { _adeleFinish(_adeleState0, _adeleSend1, _contractStreamFailure(_adeleRequestId2, null, 'backend_contract_violation', 'The backend violated its generated contract.', const {})); }",
+      );
+      out.writeln(
+        "on Object { _adeleFinish(_adeleState0, _adeleSend1, _contractStreamFailure(_adeleRequestId2, null, 'internal_error', 'The backend stream failed unexpectedly.', const {})); } } finally { if (!_adeleState0.openingSettled.isCompleted) _adeleState0.openingSettled.complete(); } }",
+      );
+      out.writeln(
+        'Future<void> _adelePump(_ContractStreamState _adeleState0, void Function(Map<String, Object?>) _adeleSend1) async { final _adeleIterator2 = _adeleState0.iterator; if (_adeleState0.pumping || _adeleState0.done || _adeleIterator2 == null) return; _adeleState0.pumping = true; try { while (!_adeleState0.done && _adeleState0.credit > 0) { _adeleState0.credit--; late final bool _adeleHasItem2; try { _adeleHasItem2 = await _adeleIterator2.moveNext(); }',
+      );
+      for (final FailureModel failure in failures) {
+        out.writeln(
+          "on ${failure.name} catch(_adeleError3) { try { _adeleFinish(_adeleState0, _adeleSend1, _contractStreamFailure(_adeleState0.requestId, ${_lower(failure.name)}TypeId, _adeleError3.code, _adeleError3.message, _contractJsonMap(_adeleError3.details, 'failure details'))); } on Object { _adeleFinish(_adeleState0, _adeleSend1, _contractStreamFailure(_adeleState0.requestId, null, 'backend_contract_violation', 'The backend violated its generated contract.', const {})); } return; }",
+        );
+      }
+      out.writeln(
+        "on TypeError { _adeleFailAndCancel(_adeleState0, _adeleSend1, _contractStreamFailure(_adeleState0.requestId, null, 'backend_contract_violation', 'The backend violated its generated contract.', const {})); return; }",
+      );
+      out.writeln(
+        "on Object { _adeleFinish(_adeleState0, _adeleSend1, _contractStreamFailure(_adeleState0.requestId, null, 'internal_error', 'The backend stream failed unexpectedly.', const {})); return; } if (_adeleState0.done || _adeleStreams[_adeleState0.requestId] != _adeleState0) return; if (!_adeleHasItem2) { _adeleFinish(_adeleState0, _adeleSend1, {'kind': 'streamDone', 'requestId': _adeleState0.requestId}); return; } try { final _adeleEncoded4 = switch (_adeleState0.method) {",
+      );
+      for (final MethodModel method in streams) {
+        out.writeln(
+          '${_lower(service.name)}${_cap(method.name)}Id => ${_encode(method.returnType, '(_adeleIterator2.current as ${method.returnType.dart})')},',
+        );
+      }
+      out.writeln(
+        "_ => throw const _ContractUnknownMethod(), }; _adeleSend1({'kind': 'streamItem', 'requestId': _adeleState0.requestId, 'payload': _adeleEncoded4}); } on Object { _adeleFailAndCancel(_adeleState0, _adeleSend1, _contractStreamFailure(_adeleState0.requestId, null, 'backend_contract_violation', 'The backend violated its generated contract.', const {})); return; } } } finally { _adeleState0.pumping = false; if (!_adeleState0.done && _adeleState0.credit > 0 && _adeleState0.iterator != null) _adelePump(_adeleState0, _adeleSend1); } } void _adeleFinish(_ContractStreamState _adeleState0, void Function(Map<String, Object?>) _adeleSend1, Map<String, Object?> _adeleTerminal2) { if (_adeleState0.done || _adeleStreams.remove(_adeleState0.requestId) != _adeleState0) return; _adeleState0.done = true; _adeleSend1(_adeleTerminal2); } void _adeleFailAndCancel(_ContractStreamState _adeleState0, void Function(Map<String, Object?>) _adeleSend1, Map<String, Object?> _adeleTerminal2) { if (_adeleState0.done || _adeleStreams.remove(_adeleState0.requestId) != _adeleState0) return; _adeleState0.done = true; _adeleTrackCancellation(_adeleState0, onSettled: () => _adeleSend1(_adeleTerminal2)); } Future<void> _adeleCancelAndAcknowledge(int _adeleRequestId0, void Function(Map<String, Object?>) _adeleSend1) async { if (await _adeleCancel(_adeleRequestId0)) _adeleSend1({'kind': 'streamCancelled', 'requestId': _adeleRequestId0}); } Future<void> _adeleTrackCancellation(_ContractStreamState _adeleState0, {void Function()? onSettled}) { late final Future<void> _adeleCancellation1; _adeleCancellation1 = (() async { await _adeleState0.openingSettled.future; try { await _adeleState0.iterator?.cancel(); } on Object { return; } })().then<void>((_) => onSettled?.call()).whenComplete(() => _adeleCancellations.remove(_adeleCancellation1)); _adeleCancellations.add(_adeleCancellation1); return _adeleCancellation1; } Future<bool> _adeleCancel(int _adeleRequestId0) { final _adeleState1 = _adeleStreams.remove(_adeleRequestId0); if (_adeleState1 == null || _adeleState1.done) return Future<bool>.value(false); _adeleState1.done = true; return _adeleTrackCancellation(_adeleState1).then((_) => true); } @override Future<void> close() => _adeleCloseFuture ??= _adeleClose(); Future<void> _adeleClose() async { _adeleClosed = true; final _adeleIds0 = _adeleStreams.keys.toList(growable: false); await Future.wait<bool>(_adeleIds0.map(_adeleCancel)); await Future.wait<void>(_adeleOperations.toList(growable: false)); await Future.wait<void>(_adeleCancellations.toList(growable: false)); } } String _decodeContractEnvelope(Map<Object?, Object?> _adeleRequest0, String _adeleKind1) { _contractFields(_adeleRequest0, const {'kind', 'requestId', 'method', 'payload'}, 'request envelope'); if (_adeleRequest0['requestId'] is! int || _adeleRequest0['kind'] != _adeleKind1 || _adeleRequest0['method'] is! String) throw const AdeleProtocolException('Malformed request envelope.'); return _adeleRequest0['method'] as String; } final class _ContractUnknownMethod implements Exception { const _ContractUnknownMethod(); } final class _ContractStreamState { _ContractStreamState.opening(this.requestId); final int requestId; final AdeleCompleter<void> openingSettled = AdeleCompleter<void>(); String? method; AdeleStreamIterator<Object?>? iterator; int credit = 0; bool pumping = false; bool done = false; } ",
+      );
+    }
+    if (streams.isEmpty) {
+      out.writeln(
+        "String _decodeContractEnvelope(Map<Object?, Object?> _adeleRequest0, String _adeleKind1) { _contractFields(_adeleRequest0, const {'kind', 'requestId', 'method', 'payload'}, 'request envelope'); if (_adeleRequest0['requestId'] is! int || _adeleRequest0['kind'] != _adeleKind1 || _adeleRequest0['method'] is! String) throw const AdeleProtocolException('Malformed request envelope.'); return _adeleRequest0['method'] as String; } final class _ContractUnknownMethod implements Exception { const _ContractUnknownMethod(); }",
+      );
+    }
     out.writeln(
       "Map<String, Object?> _contractFailure(Object? _adeleRequestId0, String? _adeleDeclaredFailureType1, String _adeleCode2, String _adeleMessage3, Map<String, Object?> _adeleDetails4) => {'kind': 'response', if(_adeleRequestId0 is int) 'requestId': _adeleRequestId0, 'ok': false, 'error': {if(_adeleDeclaredFailureType1 != null) 'declaredFailureType': _adeleDeclaredFailureType1, 'code': _adeleCode2, 'message': _adeleMessage3, 'details': _adeleDetails4}};",
     );
+    if (streams.isNotEmpty) {
+      out.writeln(
+        "Map<String, Object?> _contractStreamFailure(Object? _adeleRequestId0, String? _adeleDeclaredFailureType1, String _adeleCode2, String _adeleMessage3, Map<String, Object?> _adeleDetails4) => {'kind': 'streamFailure', if(_adeleRequestId0 is int) 'requestId': _adeleRequestId0, 'error': {if(_adeleDeclaredFailureType1 != null) 'declaredFailureType': _adeleDeclaredFailureType1, 'code': _adeleCode2, 'message': _adeleMessage3, 'details': _adeleDetails4}};",
+      );
+    }
   }
 
   String _failureSwitch(List<FailureModel> failures, String error) =>
       "switch($error.declaredFailureType) { ${failures.map((FailureModel f) => "case ${_lower(f.name)}TypeId: final _adeleDetails0 = _contractJsonMap($error.details, 'failure details'); throw _contractConstruct(${_literal(f.name)}, () => ${f.name}(code: $error.code, message: $error.message, details: _adeleDetails0));").join()} default: rethrow; }";
+  String _streamFailureSwitch(List<FailureModel> failures, String error) =>
+      "switch($error.declaredFailureType) { ${failures.map((FailureModel f) => "case ${_lower(f.name)}TypeId: final _adeleDetails8 = _contractJsonMap($error.details, 'failure details'); throw _contractConstruct(${_literal(f.name)}, () => ${f.name}(code: $error.code, message: $error.message, details: _adeleDetails8));").join()} default: break; }";
   String _decodeArguments(MethodModel method, String payload) {
     final String fields = method.parameters
         .map((FieldModel parameter) => _literal(parameter.id))
@@ -1452,9 +1593,21 @@ final class DartContractEmitter {
       for (int index = 0; index < method.parameters.length; index++)
         '_adeleValues0[$index] as ${method.parameters[index].type.dart}',
     ].join(',');
-    final String invocation =
-        'await this._adeleService.${method.name}($values)';
-    return "(() async { final _adeleValues0 = $arguments as List<Object?>; ${method.returnType.kind == TypeKind.void_ ? '$invocation; return null;' : 'return $invocation;'} })()";
+    final String invocation = method.parameters.isEmpty
+        ? 'await this._adeleService.${method.name}()'
+        : 'await this._adeleService.${method.name}($values)';
+    final String argumentsLocal = method.parameters.isEmpty
+        ? ''
+        : 'final _adeleValues0 = $arguments as List<Object?>;';
+    return "(() async { $argumentsLocal ${method.returnType.kind == TypeKind.void_ ? '$invocation; return null;' : 'return $invocation;'} })()";
+  }
+
+  String _invokeStreamMethod(MethodModel method, String arguments) {
+    final String values = <String>[
+      for (int index = 0; index < method.parameters.length; index++)
+        '$arguments[$index] as ${method.parameters[index].type.dart}',
+    ].join(',');
+    return 'this._adeleService.${method.name}($values).map<Object?>((Object? _adeleItem) => _adeleItem)';
   }
 
   String _encode(TypeModel type, String value) {
