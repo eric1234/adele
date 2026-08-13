@@ -352,14 +352,22 @@ final class PluginBackendHost {
         if (stream == null) return;
         final Completer<void> cancellation = stream.cancelCompleter ??=
             Completer<void>();
+        final Completer<void> forwarded = stream.cancelForwardedCompleter ??=
+            Completer<void>();
         if (!stream.cancelSent) {
           stream.cancelSent = true;
           _sendStreamControl(id, pluginId, 'streamCancel');
         }
-        try {
-          await cancellation.future.timeout(_shutdownTimeout);
-        } on TimeoutException {
-          await _retireCancellationOwner(id, stream);
+        await Future.any<void>(<Future<void>>[
+          cancellation.future,
+          forwarded.future,
+        ]);
+        if (!cancellation.isCompleted) {
+          try {
+            await cancellation.future.timeout(_shutdownTimeout);
+          } on TimeoutException {
+            await _retireCancellationOwner(id, stream);
+          }
         }
       },
     );
@@ -473,7 +481,8 @@ final class PluginBackendHost {
         case 'streamItem' ||
             'streamDone' ||
             'streamFailure' ||
-            'streamCancelled') {
+            'streamCancelled' ||
+            'streamCancelForwarded') {
       _handleStreamMessage(rawRequestId, message);
       return;
     }
@@ -521,6 +530,9 @@ final class PluginBackendHost {
         } else {
           stream.creditWithheld = true;
         }
+      case 'streamCancelForwarded':
+        final Completer<void>? forwarded = stream.cancelForwardedCompleter;
+        if (forwarded != null && !forwarded.isCompleted) forwarded.complete();
       case 'streamDone':
         _finishStream(requestId);
       case 'streamFailure':
@@ -543,6 +555,8 @@ final class PluginBackendHost {
     if (cancellation != null && !cancellation.isCompleted) {
       cancellation.complete();
     }
+    final Completer<void>? forwarded = stream.cancelForwardedCompleter;
+    if (forwarded != null && !forwarded.isCompleted) forwarded.complete();
     if (cancelled && error == null) return;
     if (error != null) stream.controller.addError(error, stackTrace);
     unawaited(stream.controller.close());
@@ -707,6 +721,7 @@ final class _PendingPluginStream {
   String get pluginId => owner.pluginId;
   final StreamController<Object?> controller;
   Completer<void>? cancelCompleter;
+  Completer<void>? cancelForwardedCompleter;
   bool cancelSent = false;
   bool creditWithheld = false;
   int outstandingCredit = 0;

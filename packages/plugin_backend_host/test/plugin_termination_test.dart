@@ -731,6 +731,113 @@ void main() {
     },
     timeout: const Timeout(Duration(minutes: 2)),
   );
+
+  for (final settles in <bool>[true, false]) {
+    test(
+      'consumer cancellation containment ${settles ? 'waits for settlement' : 'retires stuck generation'}',
+      () async {
+        final host = await _startHost(dartaotruntime, hostArtifact);
+        addTearDown(() async {
+          if (!host.isClosed) await host.close(graceful: false);
+        });
+        final plugin = await host.startPlugin(
+          pluginId: 'consumer-containment-$settles',
+          artifactUri: pluginArtifact.uri,
+          arguments: const <String>['wait'],
+        );
+        final peer = await host.startPlugin(
+          pluginId: 'consumer-containment-peer-$settles',
+          artifactUri: pluginArtifact.uri,
+          arguments: const <String>['wait'],
+        );
+        final subscription = plugin
+            .stream(
+              settles
+                  ? 'stream-cancel-malformed-settle'
+                  : 'stream-cancel-malformed-stuck',
+              const {},
+            )
+            .listen((_) {});
+        final cancelling = subscription.cancel();
+        if (settles) {
+          await cancelling.timeout(const Duration(seconds: 2));
+          expect(plugin.isClosed, isFalse);
+          expect(await plugin.request('ping', const {}), <String, Object?>{
+            'alive': true,
+          });
+          await plugin.close();
+        } else {
+          await plugin.terminated.timeout(const Duration(seconds: 5));
+          await cancelling.timeout(const Duration(seconds: 1));
+          expect(plugin.isClosed, isTrue);
+        }
+        expect(await peer.request('ping', const {}), <String, Object?>{
+          'alive': true,
+        });
+        await peer.close();
+        await host.close();
+      },
+      timeout: const Timeout(Duration(minutes: 2)),
+    );
+  }
+
+  test('emits forwarding acknowledgement after plugin cancel send', () async {
+    final emitted = <Map<String, Object?>>[];
+    final host = AdeleBackendHost(
+      send: (message) {
+        emitted.add(message);
+        return true;
+      },
+    );
+    addTearDown(() => host.shutdown(notify: false));
+    await host.handle(<String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'startPlugin',
+      'requestId': 30,
+      'pluginId': 'cancel-forwarding',
+      'artifactUri': pluginKernel.uri.toString(),
+      'arguments': <String>['wait'],
+    });
+    await host.handle(<String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'streamOpen',
+      'requestId': 31,
+      'pluginId': 'cancel-forwarding',
+      'method': 'long',
+      'payload': <String, Object?>{},
+    });
+    await host.handle(<String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'streamCancel',
+      'requestId': 31,
+      'pluginId': 'cancel-forwarding',
+    });
+    expect(
+      emitted.any(
+        (message) =>
+            message['kind'] == 'streamCancelForwarded' &&
+            message['requestId'] == 31,
+      ),
+      isTrue,
+    );
+    await host.handle(<String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'request',
+      'requestId': 32,
+      'pluginId': 'cancel-forwarding',
+      'method': 'stream-cancel-count',
+      'payload': <String, Object?>{},
+    });
+    while (!emitted.any(
+      (message) => message['kind'] == 'response' && message['requestId'] == 32,
+    )) {
+      await Future<void>.delayed(Duration.zero);
+    }
+    expect(
+      emitted.singleWhere((message) => message['requestId'] == 32)['payload'],
+      1,
+    );
+  });
 }
 
 Future<PluginBackendHost> _startHost(String dartaotruntime, File hostArtifact) {

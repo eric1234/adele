@@ -203,6 +203,8 @@ void main() {
           ...encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}),
           if (starts == 1) ...encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginFailed', 'pluginId': message['pluginId'], 'requestIds': [], 'error': {'code': 'plugin_exited', 'message': 'exited during startup'}}),
         ]);
+      } else if (message['kind'] == 'streamCancel') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamCancelForwarded', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
       } else if (message['kind'] == 'stopPlugin') {
         stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginStopped', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
       } else if (message['kind'] == 'shutdownHost') {
@@ -280,6 +282,8 @@ void main() {
     for (final message in decoder.add(bytes)) {
       if (message['kind'] == 'startPlugin') {
         stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'streamCancel') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamCancelForwarded', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
       } else if (message['kind'] == 'stopPlugin') {
         exit(9);
       }
@@ -392,6 +396,8 @@ void main() {
     for (final message in decoder.add(bytes)) {
       if (message['kind'] == 'startPlugin') {
         stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'streamCancel') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamCancelForwarded', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
       } else if (message['kind'] == 'stopPlugin') {
         stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginStopped', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
       } else if (message['kind'] == 'shutdownHost') {
@@ -561,6 +567,7 @@ void main() {
       } else if (message['kind'] == 'streamCancel') {
         final id = message['requestId'] as int;
         sequences.remove(id);
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamCancelForwarded', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
         stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamCancelled', 'requestId': id, 'pluginId': message['pluginId']}));
       } else if (message['kind'] == 'stopPlugin') {
         stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginStopped', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
@@ -655,6 +662,7 @@ void main() {
         credits++;
         if (credits > 1) stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'diagnostic', 'stage': 'test', 'message': 'duplicate-credit'}));
       } else if (message['kind'] == 'streamCancel') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamCancelForwarded', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
         stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamCancelled', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
       }
     }
@@ -694,6 +702,8 @@ void main() {
     for (final message in decoder.add(bytes)) {
       if (message['kind'] == 'startPlugin') {
         stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'streamCancel') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamCancelForwarded', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
       } else if (message['kind'] == 'stopPlugin') {
         stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginStopped', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
       } else if (message['kind'] == 'shutdownHost') {
@@ -722,6 +732,71 @@ void main() {
     );
     expect(replacement.isClosed, isFalse);
     await replacement.close();
+    await host.close();
+  });
+
+  test('cancellation timeout starts only after host forwarding', () async {
+    final _FakeHost fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  Map<String, Object?>? pendingCancel;
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'streamCancel') {
+        pendingCancel = message;
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'diagnostic', 'stage': 'test', 'message': 'cancel-queued'}));
+      } else if (message['kind'] == 'request' && message['method'] == 'forward-cancel') {
+        final cancel = pendingCancel!;
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamCancelForwarded', 'requestId': cancel['requestId'], 'pluginId': cancel['pluginId']}));
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamCancelled', 'requestId': cancel['requestId'], 'pluginId': cancel['pluginId']}));
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'response', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'ok': true, 'payload': true}));
+      } else if (message['kind'] == 'request') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'response', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'ok': true, 'payload': 'alive'}));
+      } else if (message['kind'] == 'stopPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginStopped', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'shutdownHost') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostStopped', 'requestId': message['requestId']}));
+        exit(0);
+      }
+    }
+  });
+}
+''');
+    addTearDown(fake.dispose);
+    final queued = Completer<void>();
+    final host = await fake.start(
+      shutdownTimeout: const Duration(milliseconds: 50),
+      onDiagnostic: (message) {
+        if (message.contains('cancel-queued') && !queued.isCompleted) {
+          queued.complete();
+        }
+      },
+    );
+    final connection = await host.startPlugin(
+      pluginId: 'forwarding-delay',
+      artifactUri: Uri.file('/unused.aot'),
+    );
+    final helper = await host.startPlugin(
+      pluginId: 'forwarding-helper',
+      artifactUri: Uri.file('/unused.aot'),
+    );
+    final subscription = connection.stream('events', const {}).listen((_) {});
+    bool cancelled = false;
+    final cancelling = subscription.cancel().then((_) => cancelled = true);
+    await queued.future;
+    await Future<void>.delayed(const Duration(milliseconds: 75));
+    expect(cancelled, isFalse);
+    expect(connection.isClosed, isFalse);
+    await helper.request('forward-cancel', const {});
+    await cancelling;
+    expect(await connection.request('ping', const {}), 'alive');
+    await connection.close();
+    await helper.close();
     await host.close();
   });
 

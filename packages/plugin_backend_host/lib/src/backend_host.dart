@@ -151,7 +151,15 @@ final class AdeleBackendHost {
     final String pluginId = _requireString(message, 'pluginId');
     final _PluginIsolate? plugin = _plugins[pluginId];
     if (plugin == null) throw StateError('Plugin $pluginId is not running.');
-    plugin.streamControl(message, kind);
+    final bool forwarded = plugin.streamControl(message, kind);
+    if (kind == 'streamCancel' && forwarded) {
+      _send(<String, Object?>{
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'streamCancelForwarded',
+        'requestId': message['requestId'],
+        'pluginId': pluginId,
+      });
+    }
   }
 
   void _pluginTerminated(
@@ -365,13 +373,13 @@ final class _PluginIsolate {
     });
   }
 
-  void streamControl(Map<String, Object?> message, String kind) {
+  bool streamControl(Map<String, Object?> message, String kind) {
     final Object? outerRequestId = message['requestId'];
     if (outerRequestId is! int) {
       throw const FormatException('Missing request ID.');
     }
     final int? pluginRequestId = _pluginStreamIdsByOuter[outerRequestId];
-    if (pluginRequestId == null) return;
+    if (pluginRequestId == null) return false;
     final _HostPluginStream stream = _streams[pluginRequestId]!;
     if (kind == 'streamCredit') {
       final Object? credit = message['credit'];
@@ -383,7 +391,7 @@ final class _PluginIsolate {
           code: 'stream_protocol_violation',
           message: 'Invalid stream credit.',
         );
-        return;
+        return false;
       }
       stream.credit += credit;
       _commands.send(<String, Object?>{
@@ -391,14 +399,16 @@ final class _PluginIsolate {
         'requestId': pluginRequestId,
         'credit': credit,
       });
+      return true;
     } else {
-      if (stream.cancelling) return;
+      if (stream.cancelling) return false;
       stream.cancelling = true;
       stream.cancelOrigin = _StreamCancelOrigin.consumer;
       _commands.send(<String, Object?>{
         'kind': 'streamCancel',
         'requestId': pluginRequestId,
       });
+      return true;
     }
   }
 
@@ -545,7 +555,14 @@ final class _PluginIsolate {
         );
         return;
       }
-      if (stream.cancelOrigin == _StreamCancelOrigin.hostAbort) {
+      if (stream.containmentAbortPending) {
+        if (stream.cancelOrigin == _StreamCancelOrigin.consumer) {
+          stream.containmentAbortPending = false;
+          stream.abortTimeout?.cancel();
+          stream.abortTimeout = null;
+          _finishStream(stream, raw);
+          return;
+        }
         _settleHostAbort(stream);
         return;
       }
@@ -624,28 +641,39 @@ final class _PluginIsolate {
     required String code,
     required String message,
   }) {
-    if (stream.abortTerminalSent) return;
-    stream.cancelling = true;
-    stream.cancelOrigin = _StreamCancelOrigin.hostAbort;
-    stream.abortTerminalSent = true;
-    _commands.send(<String, Object?>{
-      'kind': 'streamCancel',
-      'requestId': stream.pluginRequestId,
-    });
-    final Map<String, Object?> terminal = <String, Object?>{
-      'protocolVersion': backendHostProtocolVersion,
-      'kind': 'streamFailure',
-      'requestId': stream.outerRequestId,
-      'pluginId': pluginId,
-      'error': <String, Object?>{'code': code, 'message': message},
-    };
-    if (!_sendStreamTerminal(stream, terminal)) {
-      _isolate.kill(priority: Isolate.immediate);
-      return;
+    if (stream.containmentAbortPending) return;
+    stream.containmentAbortPending = true;
+    final bool consumerCancellation =
+        stream.cancelOrigin == _StreamCancelOrigin.consumer;
+    if (!stream.cancelling) {
+      stream.cancelling = true;
+      stream.cancelOrigin = _StreamCancelOrigin.hostAbort;
+      _commands.send(<String, Object?>{
+        'kind': 'streamCancel',
+        'requestId': stream.pluginRequestId,
+      });
+    }
+    if (!consumerCancellation) {
+      stream.abortTerminalSent = true;
+      final Map<String, Object?> terminal = <String, Object?>{
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'streamFailure',
+        'requestId': stream.outerRequestId,
+        'pluginId': pluginId,
+        'error': <String, Object?>{'code': code, 'message': message},
+      };
+      if (!_sendStreamTerminal(stream, terminal)) {
+        _isolate.kill(priority: Isolate.immediate);
+        return;
+      }
+    } else {
+      _diagnostic(
+        'Plugin $pluginId violated stream protocol while cancellation was pending.',
+      );
     }
     stream.abortTimeout = Timer(_pluginLifecycleTimeout, () {
       if (_streams[stream.pluginRequestId] != stream ||
-          stream.cancelOrigin != _StreamCancelOrigin.hostAbort) {
+          !stream.containmentAbortPending) {
         return;
       }
       _diagnostic(
@@ -759,6 +787,7 @@ final class _HostPluginStream {
   bool cancelling = false;
   _StreamCancelOrigin? cancelOrigin;
   bool abortTerminalSent = false;
+  bool containmentAbortPending = false;
   Timer? abortTimeout;
 }
 

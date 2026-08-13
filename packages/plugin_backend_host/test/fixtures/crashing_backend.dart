@@ -83,6 +83,21 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       final int id = message['requestId']! as int;
       final String? method = streams[id];
       streamCancels++;
+      if (method == 'stream-cancel-malformed-settle' ||
+          method == 'stream-cancel-malformed-stuck') {
+        responsePort.send(<String, Object?>{
+          'kind': 'response',
+          'requestId': id,
+          'ok': true,
+        });
+        if (method == 'stream-cancel-malformed-settle') {
+          responsePort.send(<String, Object?>{
+            'kind': 'streamCancelled',
+            'requestId': id,
+          });
+        }
+        continue;
+      }
       if (method == 'stream-large-item-no-ack') continue;
       streams.remove(id);
       sequences.remove(id);

@@ -76,6 +76,9 @@ stop/forced-isolate termination. Local correlation is not silently abandoned,
 and a later replacement generation is not affected by stale timeout work.
 If that exact generation is already stopping, cancellation joins the published
 in-flight stop instead of treating active-map removal as settlement.
+The producer-settlement timeout starts only after the shared host confirms that
+it forwarded cancellation to the exact plugin stream; shared-host command queue
+latency is not treated as producer failure.
 
 Host lifecycle state distinguishes consumer cancellation, plugin-generation
 shutdown, and host containment aborts. Only consumer cancellation produces a
@@ -88,6 +91,10 @@ retires that exact plugin generation while leaving unrelated generations alive.
 Impossible cross-plugin stream correlation or item-without-credit frames emitted
 by the shared backend host invalidate multiplexing trust and therefore fail all
 host users while deterministically terminating and reaping that host process.
+If protocol containment races an existing consumer cancellation, the consumer
+origin remains authoritative: no synthetic containment terminal completes the
+cancel early, and settlement still requires a real producer terminal or exact
+generation retirement.
 
 If a preferred stream terminal cannot be framed, the host sends a small
 `response_too_large` or `response_encoding_failed` fallback. Failure to send
