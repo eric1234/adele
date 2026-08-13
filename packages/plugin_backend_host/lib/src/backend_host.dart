@@ -21,6 +21,17 @@ final class AdeleBackendHost {
   final Map<String, _PluginIsolate> _plugins = <String, _PluginIsolate>{};
   bool _shutDown = false;
 
+  void noteStreamCancelRequested(Map<String, Object?> message) {
+    if (message['protocolVersion'] != backendHostProtocolVersion ||
+        message['kind'] != 'streamCancel') {
+      return;
+    }
+    final Object? pluginId = message['pluginId'];
+    final Object? requestId = message['requestId'];
+    if (pluginId is! String || requestId is! int) return;
+    _plugins[pluginId]?.noteStreamCancelRequested(requestId);
+  }
+
   Future<bool> handle(Map<String, Object?> message) async {
     final Object? requestId = message['requestId'];
     if (message['protocolVersion'] != backendHostProtocolVersion) {
@@ -151,15 +162,7 @@ final class AdeleBackendHost {
     final String pluginId = _requireString(message, 'pluginId');
     final _PluginIsolate? plugin = _plugins[pluginId];
     if (plugin == null) throw StateError('Plugin $pluginId is not running.');
-    final bool forwarded = plugin.streamControl(message, kind);
-    if (kind == 'streamCancel' && forwarded) {
-      _send(<String, Object?>{
-        'protocolVersion': backendHostProtocolVersion,
-        'kind': 'streamCancelForwarded',
-        'requestId': message['requestId'],
-        'pluginId': pluginId,
-      });
-    }
+    plugin.streamControl(message, kind);
   }
 
   void _pluginTerminated(
@@ -401,15 +404,32 @@ final class _PluginIsolate {
       });
       return true;
     } else {
-      if (stream.cancelling) return false;
-      stream.cancelling = true;
-      stream.cancelOrigin = _StreamCancelOrigin.consumer;
-      _commands.send(<String, Object?>{
-        'kind': 'streamCancel',
-        'requestId': pluginRequestId,
-      });
-      return true;
+      return _forwardConsumerCancellation(stream);
     }
+  }
+
+  void noteStreamCancelRequested(int outerRequestId) {
+    final int? pluginRequestId = _pluginStreamIdsByOuter[outerRequestId];
+    if (pluginRequestId == null) return;
+    _streams[pluginRequestId]?.consumerCancellationRequested = true;
+  }
+
+  bool _forwardConsumerCancellation(_HostPluginStream stream) {
+    stream.consumerCancellationRequested = true;
+    if (stream.cancelling) return false;
+    stream.cancelling = true;
+    stream.cancelOrigin = _StreamCancelOrigin.consumer;
+    _commands.send(<String, Object?>{
+      'kind': 'streamCancel',
+      'requestId': stream.pluginRequestId,
+    });
+    _send(<String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'streamCancelForwarded',
+      'requestId': stream.outerRequestId,
+      'pluginId': pluginId,
+    });
+    return true;
   }
 
   Future<void> stop() async {
@@ -644,7 +664,11 @@ final class _PluginIsolate {
     if (stream.containmentAbortPending) return;
     stream.containmentAbortPending = true;
     final bool consumerCancellation =
+        stream.consumerCancellationRequested ||
         stream.cancelOrigin == _StreamCancelOrigin.consumer;
+    if (consumerCancellation && !stream.cancelling) {
+      _forwardConsumerCancellation(stream);
+    }
     if (!stream.cancelling) {
       stream.cancelling = true;
       stream.cancelOrigin = _StreamCancelOrigin.hostAbort;
@@ -788,6 +812,7 @@ final class _HostPluginStream {
   _StreamCancelOrigin? cancelOrigin;
   bool abortTerminalSent = false;
   bool containmentAbortPending = false;
+  bool consumerCancellationRequested = false;
   Timer? abortTimeout;
 }
 

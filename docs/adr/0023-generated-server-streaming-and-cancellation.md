@@ -92,9 +92,10 @@ Impossible cross-plugin stream correlation or item-without-credit frames emitted
 by the shared backend host invalidate multiplexing trust and therefore fail all
 host users while deterministically terminating and reaping that host process.
 If protocol containment races an existing consumer cancellation, the consumer
-origin remains authoritative: no synthetic containment terminal completes the
-cancel early, and settlement still requires a real producer terminal or exact
-generation retirement.
+origin remains authoritative from the moment the shared host receives the
+request, even while normal forwarding is queued: no synthetic containment
+terminal completes the cancel early, and settlement still requires a real
+producer terminal or exact generation retirement.
 
 If a preferred stream terminal cannot be framed, the host sends a small
 `response_too_large` or `response_encoding_failed` fallback. Failure to send

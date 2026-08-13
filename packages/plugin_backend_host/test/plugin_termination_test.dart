@@ -838,6 +838,80 @@ void main() {
       1,
     );
   });
+
+  test(
+    'ingress cancellation intent survives pre-forward containment',
+    () async {
+      final emitted = <Map<String, Object?>>[];
+      final host = AdeleBackendHost(
+        send: (message) {
+          emitted.add(message);
+          return true;
+        },
+      );
+      addTearDown(() => host.shutdown(notify: false));
+      await host.handle(<String, Object?>{
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'startPlugin',
+        'requestId': 40,
+        'pluginId': 'ingress-cancel',
+        'artifactUri': pluginKernel.uri.toString(),
+        'arguments': <String>['wait'],
+      });
+      await host.handle(<String, Object?>{
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'streamOpen',
+        'requestId': 41,
+        'pluginId': 'ingress-cancel',
+        'method': 'stream-malformed',
+        'payload': <String, Object?>{},
+      });
+      final cancel = <String, Object?>{
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'streamCancel',
+        'requestId': 41,
+        'pluginId': 'ingress-cancel',
+      };
+      host.noteStreamCancelRequested(cancel);
+      await host.handle(<String, Object?>{
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'streamCredit',
+        'requestId': 41,
+        'pluginId': 'ingress-cancel',
+        'credit': 1,
+      });
+      while (!emitted.any(
+        (message) =>
+            message['kind'] == 'streamCancelled' && message['requestId'] == 41,
+      )) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      await host.handle(cancel);
+      expect(
+        emitted.where(
+          (message) =>
+              message['kind'] == 'streamCancelForwarded' &&
+              message['requestId'] == 41,
+        ),
+        hasLength(1),
+      );
+      expect(
+        emitted.where(
+          (message) =>
+              message['kind'] == 'streamFailure' && message['requestId'] == 41,
+        ),
+        isEmpty,
+      );
+      expect(
+        emitted.where(
+          (message) =>
+              message['kind'] == 'streamCancelled' &&
+              message['requestId'] == 41,
+        ),
+        hasLength(1),
+      );
+    },
+  );
 }
 
 Future<PluginBackendHost> _startHost(String dartaotruntime, File hostArtifact) {

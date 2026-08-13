@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:plugin_backend_host/plugin_backend_host.dart';
 
 Future<void> main() async {
+  final AdeleBackendHost host = AdeleBackendHost(send: _send);
   final BackendHostFrameDecoder decoder = BackendHostFrameDecoder();
   final StreamController<Map<String, Object?>> messages =
       StreamController<Map<String, Object?>>();
@@ -12,6 +13,7 @@ Future<void> main() async {
     (List<int> bytes) {
       try {
         for (final Map<String, Object?> message in decoder.add(bytes)) {
+          host.noteStreamCancelRequested(message);
           messages.add(message);
         }
       } on Object catch (error, stackTrace) {
@@ -25,7 +27,6 @@ Future<void> main() async {
     cancelOnError: true,
   );
 
-  final AdeleBackendHost host = AdeleBackendHost(send: _send);
   _send(<String, Object?>{
     'protocolVersion': backendHostProtocolVersion,
     'kind': 'hostHello',
