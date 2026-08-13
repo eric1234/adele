@@ -521,14 +521,15 @@ final class PluginBackendHost {
       );
       return;
     }
+    if (_isHostStreamKind(message['kind']) &&
+        !_validHostStreamFrame(requestId, stream, message)) {
+      _hostProtocolViolation(
+        'The backend host returned a malformed stream frame.',
+      );
+      return;
+    }
     switch (message['kind']) {
       case 'streamItem':
-        if (!_validHostStreamItem(requestId, stream, message)) {
-          _hostProtocolViolation(
-            'The backend host returned a malformed stream item.',
-          );
-          return;
-        }
         if (stream.outstandingCredit != 1) {
           _hostProtocolViolation(
             'The backend host returned a stream item without credit.',
@@ -566,24 +567,38 @@ final class PluginBackendHost {
     }
   }
 
-  bool _validHostStreamItem(
+  bool _validHostStreamFrame(
     int requestId,
     _PendingPluginStream stream,
     Map<String, Object?> message,
-  ) =>
-      message.length == 5 &&
-      message.keys.toSet().containsAll(const <String>{
+  ) {
+    final Object? kind = message['kind'];
+    final Set<String> expected = switch (kind) {
+      'streamItem' => const <String>{
         'protocolVersion',
         'kind',
         'requestId',
         'pluginId',
         'payload',
-      }) &&
-      message['protocolVersion'] == backendHostProtocolVersion &&
-      message['kind'] == 'streamItem' &&
-      message['requestId'] == requestId &&
-      message['pluginId'] == stream.pluginId &&
-      message.containsKey('payload');
+      },
+      'streamFailure' => const <String>{
+        'protocolVersion',
+        'kind',
+        'requestId',
+        'pluginId',
+        'error',
+      },
+      'streamDone' || 'streamCancelled' || 'streamCancelForwarded' =>
+        const <String>{'protocolVersion', 'kind', 'requestId', 'pluginId'},
+      _ => const <String>{},
+    };
+    return expected.isNotEmpty &&
+        message.length == expected.length &&
+        message.keys.toSet().containsAll(expected) &&
+        message['protocolVersion'] == backendHostProtocolVersion &&
+        message['requestId'] == requestId &&
+        message['pluginId'] == stream.pluginId;
+  }
 
   void _finishStream(
     int requestId, {

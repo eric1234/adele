@@ -1239,6 +1239,47 @@ Future<void> main() async {
     expect(alive.exitCode, isNot(0));
   });
 
+  for (final kind in <String>['streamDone', 'streamFailure']) {
+    test('malformed $kind envelope kills host', () async {
+      final _FakeHost fake = _FakeHost.create('''
+import 'dart:async';
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+Future<void> main() async {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'streamOpen') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': ${kind == 'streamDone' ? 'backendHostProtocolVersion + 1' : 'backendHostProtocolVersion'}, 'kind': '$kind', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      }
+    }
+  });
+  await Completer<void>().future;
+}
+''');
+      addTearDown(fake.dispose);
+      final host = await fake.start();
+      final int pid = host.processId;
+      final connection = await host.startPlugin(
+        pluginId: 'malformed-terminal',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      await expectLater(
+        connection.stream('events', const {}),
+        emitsError(isA<PluginConnectionClosed>()),
+      );
+      await host.close().timeout(const Duration(seconds: 2));
+      final ProcessResult alive = await Process.run('kill', <String>[
+        '-0',
+        '$pid',
+      ]);
+      expect(alive.exitCode, isNot(0));
+    });
+  }
+
   test('cancellation timeout joins exact in-flight plugin stop', () async {
     final _FakeHost fake = _FakeHost.create('''
 import 'dart:io';
