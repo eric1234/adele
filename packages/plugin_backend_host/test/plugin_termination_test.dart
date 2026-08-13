@@ -449,6 +449,88 @@ void main() {
     timeout: const Timeout(Duration(minutes: 2)),
   );
 
+  for (final method in <String>[
+    'stream-failure-null-declared',
+    'stream-failure-declared-no-details',
+    'stream-failure-null-details',
+  ]) {
+    test(
+      'contains malformed stream failure metadata $method',
+      () async {
+        final host = await _startHost(dartaotruntime, hostArtifact);
+        addTearDown(() async {
+          if (!host.isClosed) await host.close(graceful: false);
+        });
+        final plugin = await host.startPlugin(
+          pluginId: method,
+          artifactUri: pluginArtifact.uri,
+          arguments: const <String>['wait'],
+        );
+        final peer = await host.startPlugin(
+          pluginId: '$method-peer',
+          artifactUri: pluginArtifact.uri,
+          arguments: const <String>['wait'],
+        );
+        await expectLater(
+          plugin.stream(method, const {}),
+          emitsError(
+            isA<PluginRemoteFailure>().having(
+              (failure) => failure.code,
+              'code',
+              'stream_protocol_violation',
+            ),
+          ),
+        );
+        expect(await plugin.request('ping', const {}), <String, Object?>{
+          'alive': true,
+        });
+        expect(await peer.request('ping', const {}), <String, Object?>{
+          'alive': true,
+        });
+        await plugin.close();
+        await peer.close();
+        await host.close();
+      },
+      timeout: const Timeout(Duration(minutes: 2)),
+    );
+  }
+
+  for (final method in <String>[
+    'stream-failure-compact',
+    'stream-failure-declared',
+  ]) {
+    test(
+      'accepts valid stream failure metadata $method',
+      () async {
+        final host = await _startHost(dartaotruntime, hostArtifact);
+        addTearDown(() async {
+          if (!host.isClosed) await host.close(graceful: false);
+        });
+        final plugin = await host.startPlugin(
+          pluginId: method,
+          artifactUri: pluginArtifact.uri,
+          arguments: const <String>['wait'],
+        );
+        await expectLater(
+          plugin.stream(method, const {}),
+          emitsError(
+            isA<PluginRemoteFailure>().having(
+              (failure) => failure.code,
+              'code',
+              'fixture_failure',
+            ),
+          ),
+        );
+        expect(await plugin.request('ping', const {}), <String, Object?>{
+          'alive': true,
+        });
+        await plugin.close();
+        await host.close();
+      },
+      timeout: const Timeout(Duration(minutes: 2)),
+    );
+  }
+
   test(
     'retires plugin for stream frame without request ID',
     () async {

@@ -647,17 +647,26 @@ final class _PluginIsolate {
         raw['requestId'] != stream.pluginRequestId) {
       return false;
     }
-    final Object? error = raw['error'];
-    if (error is! Map ||
-        error['code'] is! String ||
-        error['message'] is! String) {
+    return _validStreamFailureError(raw['error']);
+  }
+
+  bool _validStreamFailureError(Object? value) {
+    if (value is! Map ||
+        value['code'] is! String ||
+        value['message'] is! String) {
       return false;
     }
-    final Object? declaredFailureType = error['declaredFailureType'];
-    final Object? details = error['details'];
-    return (declaredFailureType == null || declaredFailureType is String) &&
-        (details == null || details is Map);
+    final bool hasDetails = value.containsKey('details');
+    if (hasDetails && !_isStringKeyedMap(value['details'])) return false;
+    final bool hasDeclaredFailure = value.containsKey('declaredFailureType');
+    if (hasDeclaredFailure && value['declaredFailureType'] is! String) {
+      return false;
+    }
+    return !hasDeclaredFailure || hasDetails;
   }
+
+  bool _isStringKeyedMap(Object? value) =>
+      value is Map && value.keys.every((Object? key) => key is String);
 
   void _finishStream(_HostPluginStream stream, Map<Object?, Object?> raw) {
     final Map<String, Object?> response = <String, Object?>{

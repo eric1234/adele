@@ -79,6 +79,28 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
             'details': <String, Object?>{'value': 'x' * (8 * 1024 * 1024 + 1)},
           },
         });
+      } else if (method.startsWith('stream-failure-')) {
+        final Map<String, Object?> error = <String, Object?>{
+          'code': 'fixture_failure',
+          'message': 'failure',
+        };
+        if (method == 'stream-failure-compact') {
+          // Compact undeclared failures intentionally omit optional metadata.
+        } else if (method == 'stream-failure-declared') {
+          error['declaredFailureType'] = 'fixture.failure';
+          error['details'] = <String, Object?>{'value': 1};
+        } else if (method == 'stream-failure-null-declared') {
+          error['declaredFailureType'] = null;
+        } else if (method == 'stream-failure-declared-no-details') {
+          error['declaredFailureType'] = 'fixture.failure';
+        } else if (method == 'stream-failure-null-details') {
+          error['details'] = null;
+        }
+        responsePort.send(<String, Object?>{
+          'kind': 'streamFailure',
+          'requestId': id,
+          'error': error,
+        });
       } else {
         final int sequence = sequences[id]!;
         sequences[id] = sequence + 1;
