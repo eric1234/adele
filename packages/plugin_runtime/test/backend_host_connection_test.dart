@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:plugin_runtime/plugin_runtime.dart';
@@ -1004,6 +1005,88 @@ void main() {
     );
     expect(await connection.request('ping', const {}), 'alive');
     await connection.close();
+    await host.close();
+  });
+
+  for (final error in <Map<String, Object?>>[
+    <String, Object?>{
+      'code': 'with_details',
+      'message': 'details',
+      'details': <String, Object?>{'value': 1},
+    },
+    <String, Object?>{
+      'code': 'declared',
+      'message': 'declared',
+      'declaredFailureType': 'fixture.failure',
+      'details': <String, Object?>{},
+    },
+  ]) {
+    test('accepts valid stream error shape ${error['code']}', () async {
+      final _FakeHost fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      if (message['kind'] == 'streamOpen') stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'error', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'error': ${jsonEncode(error)}}));
+      if (message['kind'] == 'stopPlugin') stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginStopped', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      if (message['kind'] == 'shutdownHost') { stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostStopped', 'requestId': message['requestId']})); exit(0); }
+    }
+  });
+}
+''');
+      addTearDown(fake.dispose);
+      final host = await fake.start();
+      final connection = await host.startPlugin(
+        pluginId: 'valid-error',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      await expectLater(
+        connection.stream('events', const {}),
+        emitsError(
+          isA<PluginRemoteFailure>().having(
+            (failure) => failure.code,
+            'code',
+            error['code'],
+          ),
+        ),
+      );
+      expect(host.isClosed, isFalse);
+      await connection.close();
+      await host.close();
+    });
+  }
+
+  test('rejects stream error with non-map details', () async {
+    final _FakeHost fake = _FakeHost.create('''
+import 'dart:async';
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+Future<void> main() async {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      if (message['kind'] == 'streamOpen') stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'error', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'error': {'code': 'bad', 'message': 'bad', 'details': []}}));
+    }
+  });
+  await Completer<void>().future;
+}
+''');
+    addTearDown(fake.dispose);
+    final host = await fake.start();
+    final connection = await host.startPlugin(
+      pluginId: 'bad-details',
+      artifactUri: Uri.file('/unused.aot'),
+    );
+    await expectLater(
+      connection.stream('events', const {}),
+      emitsError(isA<PluginConnectionClosed>()),
+    );
     await host.close();
   });
 

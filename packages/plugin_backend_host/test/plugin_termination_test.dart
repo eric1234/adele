@@ -410,6 +410,46 @@ void main() {
   }
 
   test(
+    'contains non-stream response for active plugin stream',
+    () async {
+      final host = await _startHost(dartaotruntime, hostArtifact);
+      addTearDown(() async {
+        if (!host.isClosed) await host.close(graceful: false);
+      });
+      final plugin = await host.startPlugin(
+        pluginId: 'active-stream-wrong-kind',
+        artifactUri: pluginArtifact.uri,
+        arguments: const <String>['wait'],
+      );
+      final peer = await host.startPlugin(
+        pluginId: 'active-stream-peer',
+        artifactUri: pluginArtifact.uri,
+        arguments: const <String>['wait'],
+      );
+      await expectLater(
+        plugin.stream('stream-malformed', const {}),
+        emitsError(
+          isA<PluginRemoteFailure>().having(
+            (failure) => failure.code,
+            'code',
+            'stream_protocol_violation',
+          ),
+        ),
+      );
+      expect(await plugin.request('ping', const {}), <String, Object?>{
+        'alive': true,
+      });
+      expect(await peer.request('ping', const {}), <String, Object?>{
+        'alive': true,
+      });
+      await plugin.close();
+      await peer.close();
+      await host.close();
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
     'retires plugin for stream frame without request ID',
     () async {
       final host = await _startHost(dartaotruntime, hostArtifact);

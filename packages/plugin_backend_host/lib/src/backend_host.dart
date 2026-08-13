@@ -480,15 +480,15 @@ final class _PluginIsolate {
     }
     final int pluginRequestId = raw['requestId'] as int;
     final _HostPluginStream? stream = _streams[pluginRequestId];
-    if (_isPluginStreamResponseKind(raw['kind'])) {
-      if (stream == null) {
-        _diagnostic(
-          'Uncorrelatable stream response ID $pluginRequestId from $pluginId.',
-        );
-        _isolate.kill(priority: Isolate.immediate);
-        return;
-      }
+    if (stream != null) {
       _handleStreamResponse(stream, raw);
+      return;
+    }
+    if (_isPluginStreamResponseKind(raw['kind'])) {
+      _diagnostic(
+        'Uncorrelatable stream response ID $pluginRequestId from $pluginId.',
+      );
+      _isolate.kill(priority: Isolate.immediate);
       return;
     }
     if (pluginRequestId == _shutdownRequestId) {

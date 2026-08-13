@@ -618,7 +618,10 @@ final class PluginBackendHost {
         (error is Map &&
             error['code'] is String &&
             error['message'] is String &&
-            error['details'] is Map);
+            (!error.containsKey('details') ||
+                _isStringKeyedMap(error['details'])) &&
+            (!error.containsKey('declaredFailureType') ||
+                error['declaredFailureType'] is String));
     return expected.isNotEmpty &&
         message.length == expected.length &&
         message.keys.toSet().containsAll(expected) &&
@@ -627,6 +630,9 @@ final class PluginBackendHost {
         message['pluginId'] == stream.pluginId &&
         validError;
   }
+
+  bool _isStringKeyedMap(Object? value) =>
+      value is Map && value.keys.every((Object? key) => key is String);
 
   void _finishStream(
     int requestId, {
