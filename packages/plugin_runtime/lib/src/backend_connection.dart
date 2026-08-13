@@ -614,14 +614,8 @@ final class PluginBackendHost {
     };
     final Object? error = message['error'];
     final bool validError =
-        kind != 'error' ||
-        (error is Map &&
-            error['code'] is String &&
-            error['message'] is String &&
-            (!error.containsKey('details') ||
-                _isStringKeyedMap(error['details'])) &&
-            (!error.containsKey('declaredFailureType') ||
-                error['declaredFailureType'] is String));
+        (kind != 'error' && kind != 'streamFailure') ||
+        _validRemoteError(error);
     return expected.isNotEmpty &&
         message.length == expected.length &&
         message.keys.toSet().containsAll(expected) &&
@@ -633,6 +627,21 @@ final class PluginBackendHost {
 
   bool _isStringKeyedMap(Object? value) =>
       value is Map && value.keys.every((Object? key) => key is String);
+
+  bool _validRemoteError(Object? value) {
+    if (value is! Map ||
+        value['code'] is! String ||
+        value['message'] is! String) {
+      return false;
+    }
+    final bool hasDetails = value.containsKey('details');
+    if (hasDetails && !_isStringKeyedMap(value['details'])) return false;
+    final bool hasDeclaredFailure = value.containsKey('declaredFailureType');
+    if (hasDeclaredFailure && value['declaredFailureType'] is! String) {
+      return false;
+    }
+    return !hasDeclaredFailure || hasDetails;
+  }
 
   void _finishStream(
     int requestId, {

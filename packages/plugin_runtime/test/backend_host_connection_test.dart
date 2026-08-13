@@ -1090,6 +1090,117 @@ Future<void> main() async {
     await host.close();
   });
 
+  for (final error in <Map<String, Object?>>[
+    <String, Object?>{'code': 'compact_failure', 'message': 'compact'},
+    <String, Object?>{
+      'code': 'structured_failure',
+      'message': 'structured',
+      'details': <String, Object?>{'value': 1},
+    },
+    <String, Object?>{
+      'code': 'declared_failure',
+      'message': 'declared',
+      'declaredFailureType': 'fixture.failure',
+      'details': <String, Object?>{},
+    },
+  ]) {
+    test('accepts valid streamFailure shape ${error['code']}', () async {
+      final _FakeHost fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      if (message['kind'] == 'streamOpen') stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamFailure', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'error': ${jsonEncode(error)}}));
+      if (message['kind'] == 'stopPlugin') stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginStopped', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      if (message['kind'] == 'shutdownHost') { stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostStopped', 'requestId': message['requestId']})); exit(0); }
+    }
+  });
+}
+''');
+      addTearDown(fake.dispose);
+      final host = await fake.start();
+      final connection = await host.startPlugin(
+        pluginId: 'valid-stream-failure',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      await expectLater(
+        connection.stream('events', const {}),
+        emitsError(
+          isA<PluginRemoteFailure>().having(
+            (failure) => failure.code,
+            'code',
+            error['code'],
+          ),
+        ),
+      );
+      expect(host.isClosed, isFalse);
+      await connection.close();
+      await host.close();
+    });
+  }
+
+  for (final entry in <Object?>[
+    <String, Object?>{},
+    <String, Object?>{'code': 'bad', 'message': 'bad', 'details': <Object?>[]},
+    <String, Object?>{
+      'code': 'bad',
+      'message': 'bad',
+      'declaredFailureType': 'fixture.failure',
+    },
+  ].asMap().entries) {
+    final int index = entry.key;
+    final Object? error = entry.value;
+    test('rejects malformed streamFailure payload $index', () async {
+      final _FakeHost fake = _FakeHost.create('''
+import 'dart:async';
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+Future<void> main() async {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      if (message['kind'] == 'streamOpen') stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamFailure', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'error': ${jsonEncode(error)}}));
+    }
+  });
+  await Completer<void>().future;
+}
+''');
+      addTearDown(fake.dispose);
+      final host = await fake.start();
+      final int pid = host.processId;
+      final connection = await host.startPlugin(
+        pluginId: 'invalid-stream-failure',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      final errors = <Object>[];
+      final terminal = Completer<void>();
+      connection
+          .stream('events', const {})
+          .listen(
+            (_) {},
+            onError: (Object error) {
+              errors.add(error);
+              terminal.complete();
+            },
+          );
+      await terminal.future;
+      expect(errors.single, isA<PluginConnectionClosed>());
+      expect(errors.single, isNot(isA<PluginRemoteFailure>()));
+      await host.close().timeout(const Duration(seconds: 2));
+      final ProcessResult alive = await Process.run('kill', <String>[
+        '-0',
+        '$pid',
+      ]);
+      expect(alive.exitCode, isNot(0));
+    });
+  }
+
   for (final owner in <String?>['wrong-owner', null]) {
     test(
       'generic stream error with ${owner == null ? 'missing' : 'wrong'} owner kills host',
