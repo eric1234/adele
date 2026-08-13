@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
@@ -146,6 +147,8 @@ void main() {
       expect(happy.run.state, RunState.completed);
       expect(happyTool.invocationCount, 1);
       expect(happyModel.invocationCount, 2);
+      expect(modelA.streamCount, 2);
+      expect(modelA.requestCount, 0);
       expect(happy.session.snapshot().entries, <Matcher>[
         isA<UserSessionMessage>(),
         isA<AssistantSessionMessage>().having(
@@ -365,6 +368,7 @@ void main() {
       expect(staleModel.invocationCount, 1);
       expect(replacementModel.invocationCount, 0);
       expect(modelB.requestCount, 0);
+      expect(modelB.streamCount, 0);
       expect(staleModelRun.run.state, RunState.failed);
       expect(
         staleModelRun.run.failure,
@@ -400,6 +404,34 @@ void main() {
       expect(fresh.run.state, RunState.completed);
       expect(replacementModel.invocationCount, 2);
       expect(replacementTool.invocationCount, 1);
+
+      final ScriptedModelFixtureServiceClient modelProbeClient =
+          ScriptedModelFixtureServiceClient(modelB.connection);
+      await modelProbeClient.resetStreamProbe();
+      final ScriptedModelCapabilityAdapter cancellableModel =
+          ScriptedModelCapabilityAdapter(
+            registry.resolve(scriptedModelFixtureCapability),
+          );
+      final List<ModelEvent> cancellationEvents = <ModelEvent>[];
+      final StreamSubscription<ModelEvent> cancellationSubscription =
+          cancellableModel
+              .invoke(_longModelRequest())
+              .listen(cancellationEvents.add);
+      await _waitForProbe(
+        modelProbeClient,
+        (ScriptedModelStreamProbe probe) =>
+            probe.active == 1 && probe.advanced > 0,
+      );
+      await cancellationSubscription.cancel().timeout(
+        const Duration(seconds: 2),
+      );
+      final ScriptedModelStreamProbe cancelledProbe = await _waitForProbe(
+        modelProbeClient,
+        (ScriptedModelStreamProbe probe) =>
+            probe.active == 0 && probe.cancellations == 1,
+      );
+      expect(cancelledProbe.advanced, greaterThan(0));
+      expect(cancellationEvents, isEmpty);
 
       final ResourceInspectorToolExecutable failingTool =
           ResourceInspectorToolExecutable(
@@ -604,6 +636,7 @@ final class _ActiveProvider {
   final _CountingRequestChannel channel;
 
   int get requestCount => channel.requestCount;
+  int get streamCount => channel.streamCount;
 }
 
 final class _TestCapabilityActivation {
@@ -621,16 +654,49 @@ final class _TestCapabilityActivation {
   }
 }
 
-final class _CountingRequestChannel implements AdeleRequestChannel {
+final class _CountingRequestChannel implements AdeleStreamChannel {
   _CountingRequestChannel(this.delegate);
 
-  final AdeleRequestChannel delegate;
+  final AdeleStreamChannel delegate;
   int requestCount = 0;
+  int streamCount = 0;
 
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) {
     requestCount++;
     return delegate.request(method, payload);
+  }
+
+  @override
+  Stream<Object?> stream(String method, Map<String, Object?> payload) {
+    streamCount++;
+    return delegate.stream(method, payload);
+  }
+}
+
+SemanticModelRequest _longModelRequest() => SemanticModelRequest(
+  invocationId: ModelInvocationId('adapter-cancellation-model-1'),
+  input: <SemanticModelInputItem>[
+    SemanticMessageInput(
+      role: SemanticMessageRole.user,
+      content: 'fixture:long-stream',
+    ),
+  ],
+  tools: MaterializedToolSet(const <MaterializedTool>[]),
+);
+
+Future<ScriptedModelStreamProbe> _waitForProbe(
+  ScriptedModelFixtureService client,
+  bool Function(ScriptedModelStreamProbe probe) predicate,
+) async {
+  final DateTime deadline = DateTime.now().add(const Duration(seconds: 2));
+  while (true) {
+    final ScriptedModelStreamProbe probe = await client.streamProbe();
+    if (predicate(probe)) return probe;
+    if (DateTime.now().isAfter(deadline)) {
+      throw TimeoutException('Scripted-model stream probe did not settle.');
+    }
+    await Future<void>.delayed(Duration.zero);
   }
 }
 

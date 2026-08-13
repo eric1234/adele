@@ -12,8 +12,9 @@ Contracts and capabilities solve different problems:
 The constrained Phase II-A generated unary transport and Phase II-B generated
 server-streaming transport are
 implemented for `workspace_demo`. The Phase IV-A scripted model fixture also
-uses this unary generator behind an application adapter that emits kernel
-semantic model events; it is not the final common ModelProvider contract.
+retains a generated unary reference method, while the Phase IV application
+adapter consumes its generated server stream and emits kernel semantic model
+events incrementally; it is not the final common ModelProvider contract.
 Capability transport plus Phase III active
 provider registration, deterministic discovery, exact-major resolution, and
 generated-client invocation are implemented for the maintained

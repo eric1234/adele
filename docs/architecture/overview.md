@@ -91,12 +91,13 @@ without introducing profile-management APIs.
 models, tools, editors, Git integrations, terminals, UI, and specialized agent
 workflows belong in plugins rather than in the kernel.
 
-Phase IV-A uses a development-only application strategy and fixture-specific
-unary scripted model capability to prove a generation-safe
+Phase IV uses a development-only application strategy and fixture-specific
+scripted model capability to prove a generation-safe
 model/tool/approval/tool/model cycle through real AOT providers. The kernel
-model port is stream-shaped. Phase II-B now provides generated typed streaming,
-while the Phase IV-A adapter intentionally remains on unary transport until
-remaining Phase IV switches it explicitly.
+model port is stream-shaped, and the application adapter now consumes the
+fixture through Phase II-B generated typed streaming while preserving exact
+generation binding and consumer cancellation. This fixture-specific adapter is
+not the future common model-provider capability.
 
 The long-term self-hosting goal is for ADELE to develop ADELE itself. That goal
 does not change the Phase 0 rule to prefer small, working boundaries and avoid

@@ -616,7 +616,8 @@ For clarity:
 ```text
 Phase II-A — generated unary typed transport          complete
 Phase IV-A — semantic agent-execution foundation      complete
-Phase II-B — generated streaming + cancellation       pending
+Phase II-B — generated streaming + cancellation       complete
+Phase IV-B1 — scripted adapter streaming integration  complete
 ```
 
 Recommended near-term sequence:
@@ -626,7 +627,9 @@ Phase IV-A — semantic agent-execution foundation
     ↓
 Phase II-B — generated typed streaming/cancellation
     ↓
-remaining Phase IV — streamed model vertical,
+Phase IV-B1 — scripted adapter streaming integration
+    ↓
+remaining Phase IV — common model-provider capability,
                       one real provider,
                       minimal orchestration
     ↓
@@ -635,7 +638,10 @@ Phase V — minimum self-hosting plugin set
 Phase VI — cross the self-hosting boundary
 ```
 
-This lets Phase IV-A define the semantic stream consumer using the existing unary scripted fixture, then lets Phase II-B implement only transport semantics required by a concrete consumer.
+This let Phase IV-A define the semantic stream consumer using the existing
+unary scripted fixture, Phase II-B implement the transport semantics required
+by that concrete consumer, and Phase IV-B1 connect the two without introducing
+the future common provider abstraction.
 
 ## Phase IV-A target
 
@@ -692,11 +698,18 @@ Phase II-B should extend generated typed transport with the minimum required str
 
 Do not predesign distributed resumable streams or arbitrary bidirectional streaming without a concrete consumer.
 
+## Phase IV-B1 integration
+
+After II-B, the application adapter switched the scripted model to true
+generated streaming. It maps text and tool-call items incrementally, keeps
+transport probe items outside the kernel, preserves exact-generation failure,
+and propagates outer subscription cancellation to the generated producer. The
+unary fixture method remains regression/reference infrastructure.
+
 ## Remaining Phase IV target
 
-After II-B:
+After IV-B1:
 
-- run the scripted model through true generated streaming;
 - establish the first common model-provider capability contract;
 - integrate one real model provider;
 - implement the first simple chat/coding workflow strategy;

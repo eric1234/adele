@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:agent_kernel/agent_kernel.dart';
@@ -19,56 +21,118 @@ final class ScriptedModelCapabilityAdapter implements ModelPort {
   int get invocationCount => _invocationCount;
 
   @override
-  Stream<ModelEvent> invoke(SemanticModelRequest request) async* {
-    try {
-      final ScriptedModelFixtureService client =
-          ScriptedModelFixtureServiceClient(_binding.requestChannel);
-      _invocationCount++;
-      final ScriptedModelResponse response = await client.invoke(
-        ScriptedModelRequest(
-          messages: request.input
-              .map(_toScriptedMessage)
-              .toList(growable: false),
-          tools: request.tools.tools
-              .map(
-                (MaterializedTool tool) => ScriptedToolDefinition(
-                  name: tool.modelDefinition.alias,
-                  description: tool.modelDefinition.description,
-                  argumentsSchema: tool.modelDefinition.argumentsSchema,
-                ),
-              )
-              .toList(growable: false),
+  Stream<ModelEvent> invoke(SemanticModelRequest request) {
+    late final StreamController<ModelEvent> controller;
+    StreamSubscription<ScriptedModelStreamItem>? subscription;
+    bool terminal = false;
+
+    void fail(Object error, StackTrace stackTrace) {
+      if (terminal) return;
+      terminal = true;
+      controller.add(
+        ModelInvocationFailedEvent(
+          invocationId: request.invocationId,
+          error: error,
+          stackTrace: stackTrace,
         ),
       );
-      if (response.content.isNotEmpty) {
-        yield ModelOutputItemCompleted(
-          invocationId: request.invocationId,
-          item: ModelTextOutput(response.content),
-        );
-      }
-      final ScriptedToolCall? call = response.toolCall;
-      if (call != null) {
-        yield ModelOutputItemCompleted(
-          invocationId: request.invocationId,
-          item: ModelToolProposalOutput(
-            ProviderToolProposal(
-              providerCallId: call.id,
-              alias: call.name,
-              arguments: call.arguments,
-            ),
-          ),
-        );
-      }
-      yield ModelInvocationCompletedEvent(invocationId: request.invocationId);
-    } on Object catch (error, stackTrace) {
-      yield ModelInvocationFailedEvent(
-        invocationId: request.invocationId,
-        error: error,
-        stackTrace: stackTrace,
-      );
+      unawaited(controller.close());
     }
+
+    controller = StreamController<ModelEvent>(
+      sync: true,
+      onListen: () {
+        try {
+          final ScriptedModelFixtureService client =
+              ScriptedModelFixtureServiceClient(_binding.streamChannel);
+          _invocationCount++;
+          subscription = client
+              .invokeStream(
+                ScriptedModelRequest(
+                  messages: request.input
+                      .map(_toScriptedMessage)
+                      .toList(growable: false),
+                  tools: request.tools.tools
+                      .map(
+                        (MaterializedTool tool) => ScriptedToolDefinition(
+                          name: tool.modelDefinition.alias,
+                          description: tool.modelDefinition.description,
+                          argumentsSchema: tool.modelDefinition.argumentsSchema,
+                        ),
+                      )
+                      .toList(growable: false),
+                ),
+              )
+              .listen(
+                (ScriptedModelStreamItem item) {
+                  if (terminal) return;
+                  try {
+                    final ModelOutputItem? output = _toModelOutput(item);
+                    if (output != null) {
+                      controller.add(
+                        ModelOutputItemCompleted(
+                          invocationId: request.invocationId,
+                          item: output,
+                        ),
+                      );
+                    }
+                  } on Object catch (error, stackTrace) {
+                    unawaited(subscription?.cancel());
+                    fail(error, stackTrace);
+                  }
+                },
+                onError: fail,
+                onDone: () {
+                  if (terminal) return;
+                  terminal = true;
+                  controller.add(
+                    ModelInvocationCompletedEvent(
+                      invocationId: request.invocationId,
+                    ),
+                  );
+                  unawaited(controller.close());
+                },
+              );
+        } on Object catch (error, stackTrace) {
+          fail(error, stackTrace);
+        }
+      },
+      onPause: () => subscription?.pause(),
+      onResume: () => subscription?.resume(),
+      onCancel: () async {
+        terminal = true;
+        await subscription?.cancel();
+      },
+    );
+    return controller.stream;
   }
 }
+
+ModelOutputItem? _toModelOutput(ScriptedModelStreamItem item) =>
+    switch (item.kind) {
+      ScriptedModelStreamItemKind.text => ModelTextOutput(
+        item.text ??
+            (throw const FormatException(
+              'A scripted-model text stream item requires text.',
+            )),
+      ),
+      ScriptedModelStreamItemKind.toolCall => ModelToolProposalOutput(
+        _toProviderToolProposal(
+          item.toolCall ??
+              (throw const FormatException(
+                'A scripted-model tool-call stream item requires a tool call.',
+              )),
+        ),
+      ),
+      ScriptedModelStreamItemKind.probe => null,
+    };
+
+ProviderToolProposal _toProviderToolProposal(ScriptedToolCall call) =>
+    ProviderToolProposal(
+      providerCallId: call.id,
+      alias: call.name,
+      arguments: call.arguments,
+    );
 
 final class ResourceInspectorToolExecutable implements ToolExecutable {
   ResourceInspectorToolExecutable(this._binding);
