@@ -474,6 +474,12 @@ final class PluginBackendHost {
     }
     final Object? rawRequestId = message['requestId'];
     if (rawRequestId is! int) {
+      if (_isHostStreamKind(message['kind'])) {
+        _hostProtocolViolation(
+          'The backend host returned an uncorrelatable stream frame.',
+        );
+        return;
+      }
       _onDiagnostic?.call('Host message without request ID ignored: $message');
       return;
     }
@@ -493,6 +499,15 @@ final class PluginBackendHost {
     }
     completer.complete(message);
   }
+
+  bool _isHostStreamKind(Object? kind) => switch (kind) {
+    'streamItem' ||
+    'streamDone' ||
+    'streamFailure' ||
+    'streamCancelled' ||
+    'streamCancelForwarded' => true,
+    _ => false,
+  };
 
   void _handleStreamMessage(int requestId, Map<String, Object?> message) {
     final _PendingPluginStream? stream = _streams[requestId];

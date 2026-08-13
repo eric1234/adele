@@ -1200,6 +1200,45 @@ Future<void> main() async {
     expect(alive.exitCode, isNot(0));
   });
 
+  test('streamCancelForwarded without request ID kills host', () async {
+    final _FakeHost fake = _FakeHost.create('''
+import 'dart:async';
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+Future<void> main() async {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+      } else if (message['kind'] == 'streamCancel') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamCancelForwarded', 'pluginId': message['pluginId']}));
+      }
+    }
+  });
+  await Completer<void>().future;
+}
+''');
+    addTearDown(fake.dispose);
+    final host = await fake.start();
+    final int pid = host.processId;
+    final connection = await host.startPlugin(
+      pluginId: 'missing-forward-id',
+      artifactUri: Uri.file('/unused.aot'),
+    );
+    final subscription = connection.stream('events', const {}).listen((_) {});
+    await subscription.cancel().timeout(const Duration(seconds: 2));
+    expect(host.isClosed, isTrue);
+    expect(connection.isClosed, isTrue);
+    await host.close().timeout(const Duration(seconds: 2));
+    final ProcessResult alive = await Process.run('kill', <String>[
+      '-0',
+      '$pid',
+    ]);
+    expect(alive.exitCode, isNot(0));
+  });
+
   test('cancellation timeout joins exact in-flight plugin stop', () async {
     final _FakeHost fake = _FakeHost.create('''
 import 'dart:io';
