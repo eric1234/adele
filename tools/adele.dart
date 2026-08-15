@@ -5,6 +5,11 @@ _packages = <({String name, String path, bool flutter})>[
   (name: 'adele_desktop', path: 'app', flutter: true),
   (name: 'adele_plugin_api', path: 'packages/plugin_api', flutter: false),
   (name: 'adele_contract', path: 'packages/contract', flutter: false),
+  (
+    name: 'adele_model_provider',
+    path: 'packages/model_provider',
+    flutter: false,
+  ),
   (name: 'contract_codegen', path: 'packages/contract_codegen', flutter: false),
   (name: 'adele_capabilities', path: 'packages/capabilities', flutter: false),
   (name: 'plugin_runtime', path: 'packages/plugin_runtime', flutter: false),
@@ -129,6 +134,12 @@ Future<void> main(List<String> arguments) async {
         await _run('adele_plugin_api', 'dart', <String>[
           'test',
         ], workingDirectory: 'packages/plugin_api');
+        await _run(
+          'adele_model_provider',
+          'dart',
+          <String>['test'],
+          workingDirectory: 'packages/model_provider',
+        );
         await _run('adele_capabilities', 'dart', <String>[
           'test',
         ], workingDirectory: 'packages/capabilities');

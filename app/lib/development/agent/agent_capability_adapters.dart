@@ -174,6 +174,8 @@ ModelProviderRequest _toProviderRequest(
   toolChoice: adapter.toolChoice,
   maxOutputTokens: adapter.maxOutputTokens,
   providerOptions: adapter.providerOptions,
+  // Invocation-native reuse needs explicit Session/Run ownership and
+  // compatibility policy; canonical semantic replay remains authoritative.
   nativeState: null,
 );
 

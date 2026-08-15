@@ -36,9 +36,15 @@ model, identities, and native state remain optional metadata. Normal provider
 API failures use semantic terminals; declared failure is contract/backend-only.
 
 Item and invocation native state are opaque JSON-compatible envelopes bound to
-the exact provider/model compatibility context. They are neither canonical
-conversation meaning nor common reasoning. The kernel retains the complete
-kind, compatibility, and data envelope unchanged through model/tool/model replay.
+the exact provider/model/route compatibility context. They are neither
+canonical conversation meaning nor common reasoning. The kernel retains each
+complete kind, compatibility, and data envelope intact. Item-level metadata is
+replayed through the current model/tool/model continuation. Invocation-level
+state is retained on terminal and Run observation and is representable on the
+public request, but automatic reuse is deliberately deferred until ownership
+and compatibility policy are established. Canonical semantic history remains
+the current continuation authority; adapter-local caching could leak state
+between unrelated Sessions or Runs.
 
 EOF is not success. EOF or transport failure before terminal fails invocation;
 teardown after terminal does not replace settlement. Post-terminal events are
