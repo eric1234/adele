@@ -239,6 +239,44 @@ void main() {
     await cancelled.future;
   });
 
+  test('adapter snapshots nested provider options at construction', () async {
+    final Map<String, Object?> nested = <String, Object?>{'mode': 'original'};
+    final List<Object?> values = <Object?>['original'];
+    final _ProviderChannel channel = _ProviderChannel(
+      events: Stream<ModelProviderEvent>.value(_terminal()),
+    );
+    final ModelProviderCapabilityAdapter adapter =
+        ModelProviderCapabilityAdapter(
+          _binding(channel),
+          selectedModel: 'scripted-v1',
+          providerOptions: <String, Object?>{
+            'nested': nested,
+            'values': values,
+          },
+        );
+    nested['mode'] = 'mutated';
+    values.add('mutated');
+
+    await adapter.invoke(_request()).toList();
+
+    final Map<Object?, Object?> encodedRequest =
+        channel.lastPayload!['request']! as Map<Object?, Object?>;
+    expect(encodedRequest['providerOptions'], const <String, Object?>{
+      'nested': <String, Object?>{'mode': 'original'},
+      'values': <Object?>['original'],
+    });
+    expect(
+      () =>
+          (adapter.providerOptions['nested']! as Map<String, Object?>)['mode'] =
+              'late',
+      throwsUnsupportedError,
+    );
+    expect(
+      () => (adapter.providerOptions['values']! as List<Object?>).add('late'),
+      throwsUnsupportedError,
+    );
+  });
+
   test('ResourceInspector validates its exact argument shape', () {
     final ResourceInspectorToolExecutable executable =
         ResourceInspectorToolExecutable(_resourceBinding());

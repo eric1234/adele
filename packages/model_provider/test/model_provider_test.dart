@@ -273,7 +273,53 @@ void main() {
       );
     },
   );
+
+  test('structured snapshots reject cycles and excessive depth', () {
+    final Map<String, Object?> cyclicMap = <String, Object?>{};
+    cyclicMap['self'] = cyclicMap;
+    expect(() => _optionsRequest(cyclicMap), throwsFormatException);
+    final List<Object?> cyclicList = <Object?>[];
+    cyclicList.add(cyclicList);
+    expect(
+      () => _optionsRequest(<String, Object?>{'list': cyclicList}),
+      throwsFormatException,
+    );
+    final Map<String, Object?> deep = <String, Object?>{};
+    Map<String, Object?> cursor = deep;
+    for (int i = 0; i < 65; i++) {
+      final Map<String, Object?> next = <String, Object?>{};
+      cursor['next'] = next;
+      cursor = next;
+    }
+    expect(() => _optionsRequest(deep), throwsFormatException);
+  });
+
+  test('structured snapshots allow shared acyclic references', () {
+    final Map<String, Object?> shared = <String, Object?>{'value': true};
+    final ModelProviderRequest request = _optionsRequest(<String, Object?>{
+      'left': shared,
+      'right': shared,
+    });
+    expect(request.providerOptions['left'], const <String, Object?>{
+      'value': true,
+    });
+    expect(request.providerOptions['right'], const <String, Object?>{
+      'value': true,
+    });
+  });
 }
+
+ModelProviderRequest _optionsRequest(Map<String, Object?> options) =>
+    ModelProviderRequest(
+      model: 'scripted-v1',
+      instructions: '',
+      input: const <ModelProviderInput>[],
+      tools: const <ModelProviderTool>[],
+      toolChoice: ModelProviderToolChoice.none,
+      maxOutputTokens: null,
+      providerOptions: options,
+      nativeState: null,
+    );
 
 ModelProviderRequest _request() => ModelProviderRequest(
   model: 'scripted-v1',

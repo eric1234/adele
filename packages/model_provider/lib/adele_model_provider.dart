@@ -1,6 +1,8 @@
 /// Common plugin-facing model-provider capability contract.
 library;
 
+import 'dart:collection' as collection;
+
 import 'package:adele_capabilities/adele_capabilities.dart' as capabilities;
 import 'package:adele_contract/adele_contract.dart';
 
@@ -406,15 +408,13 @@ void _requireOptionalNonEmpty(String? value, String label) {
   if (value != null) _requireNonEmpty(value, label);
 }
 
-Map<String, Object?> _freezeJsonMap(Map<String, Object?> source) =>
-    Map<String, Object?>.unmodifiable(
-      source.map(
-        (String key, Object? value) =>
-            MapEntry<String, Object?>(key, _freezeJsonValue(value)),
-      ),
-    );
+const int _jsonMaxDepth = 64;
 
-Object? _freezeJsonValue(Object? value) {
+Map<String, Object?> _freezeJsonMap(Map<String, Object?> source) =>
+    _freezeJsonValue(source, 0, collection.HashSet<Object>.identity())!
+        as Map<String, Object?>;
+
+Object? _freezeJsonValue(Object? value, int depth, Set<Object> active) {
   if (value == null || value is bool || value is String || value is int) {
     return value;
   }
@@ -424,10 +424,40 @@ Object? _freezeJsonValue(Object? value) {
     }
     return value;
   }
-  if (value is List<Object?>) {
-    return List<Object?>.unmodifiable(value.map(_freezeJsonValue));
+  if (depth >= _jsonMaxDepth) {
+    throw const FormatException(
+      'JSON-compatible value exceeds maximum depth 64.',
+    );
   }
-  if (value is Map<String, Object?>) return _freezeJsonMap(value);
+  if (value is List<Object?>) {
+    if (!active.add(value)) {
+      throw const FormatException('Cyclic JSON-compatible value.');
+    }
+    try {
+      return List<Object?>.unmodifiable(
+        value.map((Object? item) => _freezeJsonValue(item, depth + 1, active)),
+      );
+    } finally {
+      active.remove(value);
+    }
+  }
+  if (value is Map<String, Object?>) {
+    if (!active.add(value)) {
+      throw const FormatException('Cyclic JSON-compatible value.');
+    }
+    try {
+      return Map<String, Object?>.unmodifiable(
+        value.map(
+          (String key, Object? item) => MapEntry<String, Object?>(
+            key,
+            _freezeJsonValue(item, depth + 1, active),
+          ),
+        ),
+      );
+    } finally {
+      active.remove(value);
+    }
+  }
   throw FormatException(
     'Unsupported JSON-compatible value: ${value.runtimeType}.',
   );

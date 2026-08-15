@@ -1301,6 +1301,53 @@ dynamic _dynamicValue(Object? value) => value;
     );
   });
 
+  test('accepts exact collection snapshot constructor parameters', () async {
+    final String generated = await _generate('''
+import 'package:adele_contract/adele_contract.dart';
+part 'fixture.g.dart';
+@AdeleValue('fixture.value')
+final class FixtureValue {
+  FixtureValue({required List<String> values, required Map<String, Object?> data})
+      : values = List<String>.unmodifiable(values),
+        data = Map<String, Object?>.unmodifiable(data);
+  final List<String> values;
+  final Map<String, Object?> data;
+}
+@AdeleFailure('fixture.failure')
+final class FixtureFailure implements Exception {
+  const FixtureFailure({required this.code, required this.message, required this.details});
+  final String code; final String message; final Map<String, Object?> details;
+}
+@AdeleService('fixture')
+abstract interface class FixtureService {
+  @AdeleMethod('ping') Future<FixtureValue> ping(FixtureValue value);
+}
+''');
+    expect(generated, contains('FixtureValue(data:'));
+  });
+
+  test('rejects scalar snapshot constructor parameters', () async {
+    await _expectDiagnostic(
+      _minimalContract(namedValue: true).replaceFirst(
+        'const FixtureValue({required this.value});',
+        'const FixtureValue({required String value}) : value = value;',
+      ),
+      'except exact-type List and Map<String, Object?> snapshot parameters',
+    );
+  });
+
+  test('rejects collection snapshot parameter type mismatch', () async {
+    await _expectDiagnostic(
+      _minimalContract(namedValue: true)
+          .replaceFirst('String value', 'List<String> value')
+          .replaceFirst(
+            'const FixtureValue({required this.value});',
+            'FixtureValue({required List<Object> value}) : value = value.cast<String>();',
+          ),
+      'must have exactly the same type',
+    );
+  });
+
   test('rejects nullable recursive annotated value schemas', () async {
     await _expectDiagnostic(_recursiveValueContract('Node?'), 'schema cycles');
   });

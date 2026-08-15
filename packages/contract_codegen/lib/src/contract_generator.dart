@@ -373,11 +373,17 @@ final class _Extractor {
           'Field ${field.name} and its required named constructor parameter must have exactly the same type.',
         );
       }
-      if (parameter is! FieldFormalParameterElement ||
-          parameter.field?.name != field.name) {
+      final bool fieldFormal =
+          parameter is FieldFormalParameterElement &&
+          parameter.field?.name == field.name;
+      final bool snapshotCollection =
+          parameter is! FieldFormalParameterElement &&
+          (_isSdkType(field.type, 'dart:core', 'List') ||
+              _isCanonicalJsonMap(field.type));
+      if (!fieldFormal && !snapshotCollection) {
         _fail(
           node,
-          'Value constructor parameters must be required named field-formal parameters.',
+          'Value constructor parameters must be required named field-formal parameters, except exact-type List and Map<String, Object?> snapshot parameters.',
         );
       }
       fields.add(

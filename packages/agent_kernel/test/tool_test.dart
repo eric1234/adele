@@ -159,6 +159,53 @@ void main() {
         ToolProposalFailureKind.invalidArguments,
       );
     });
+
+    test('tool proposal failure rejects empty model-facing messages', () {
+      for (final String message in <String>['', '  ']) {
+        expect(
+          () => ToolProposalFailure(
+            kind: ToolProposalFailureKind.invalidArguments,
+            providerCallId: 'provider-1',
+            alias: 'inspect_resource',
+            message: message,
+          ),
+          throwsFormatException,
+        );
+      }
+    });
+
+    for (final ({FormatException error, String expected}) fixture
+        in <({FormatException error, String expected})>[
+          (
+            error: const ToolArgumentValidationException(''),
+            expected: 'The proposed tool arguments are invalid.',
+          ),
+          (
+            error: const FormatException('Specific validation.'),
+            expected: 'Specific validation.',
+          ),
+        ]) {
+      test('normalizes validator message ${fixture.expected}', () {
+        final ToolProposalResolution resolution = const ToolInvocationResolver()
+            .resolve(
+              invocationId: ToolInvocationId('tool-1'),
+              proposal: ProviderToolProposal(
+                providerCallId: 'provider-1',
+                alias: 'inspect_resource',
+                arguments: const <String, Object?>{},
+              ),
+              tools:
+                  (ToolCatalog()
+                        ..register(_throwingRegistration(fixture.error)))
+                      .materialize(),
+              context: testExecutionContext(),
+            );
+        final ToolProposalFailure failure =
+            (resolution as RejectedToolProposal).failure;
+        expect(failure.message, fixture.expected);
+        expect(failure.cause, same(fixture.error));
+      });
+    }
   });
 
   group('policy and approval', () {
@@ -354,3 +401,43 @@ void main() {
     });
   });
 }
+
+final class _ThrowingValidator implements ToolExecutable {
+  _ThrowingValidator(this.error);
+
+  final FormatException error;
+
+  @override
+  CanonicalToolArguments validateAndNormalize(
+    Map<String, Object?> proposedArguments,
+  ) => throw error;
+
+  @override
+  Future<EffectDescription> describe(
+    CanonicalToolArguments arguments,
+    ToolExecutionContext context,
+  ) => throw StateError('Unused.');
+
+  @override
+  Stream<ToolExecutionEvent> execute(
+    CanonicalToolArguments arguments,
+    ToolExecutionContext context,
+  ) => throw StateError('Unused.');
+
+  @override
+  void validateBinding() {}
+}
+
+ToolRegistration _throwingRegistration(FormatException error) =>
+    ToolRegistration(
+      definition: ToolDefinition(
+        id: ToolId('dev.adele.tool.resource-inspection'),
+        description: 'Inspect one resource.',
+      ),
+      modelDefinition: ModelToolDefinition(
+        alias: 'inspect_resource',
+        description: 'Inspect one resource.',
+        argumentsSchema: const <String, Object?>{'type': 'object'},
+      ),
+      executable: _ThrowingValidator(error),
+    );

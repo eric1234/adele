@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
@@ -19,7 +20,7 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
     this.toolChoice = ModelProviderToolChoice.auto,
     Map<String, Object?> providerOptions = const <String, Object?>{},
   }) : selectedModel = _requireNonEmpty(selectedModel, 'Selected model'),
-       providerOptions = Map<String, Object?>.unmodifiable(providerOptions);
+       providerOptions = _freezeJsonMap(providerOptions);
 
   final ProviderBinding _binding;
   final String selectedModel;
@@ -568,4 +569,55 @@ Uri _resourceUri(CanonicalToolArguments arguments) =>
 String _requireNonEmpty(String value, String label) {
   if (value.trim().isEmpty) throw FormatException('$label must not be empty.');
   return value;
+}
+
+const int _jsonMaxDepth = 64;
+
+Map<String, Object?> _freezeJsonMap(Map<String, Object?> source) =>
+    _freezeJsonValue(source, 0, HashSet<Object>.identity())!
+        as Map<String, Object?>;
+
+Object? _freezeJsonValue(Object? value, int depth, Set<Object> active) {
+  if (value == null || value is bool || value is String || value is int) {
+    return value;
+  }
+  if (value is double) {
+    if (!value.isFinite) {
+      throw const FormatException('Structured values require finite doubles.');
+    }
+    return value;
+  }
+  if (depth >= _jsonMaxDepth) {
+    throw const FormatException('Structured value exceeds maximum depth 64.');
+  }
+  if (value is List<Object?>) {
+    if (!active.add(value)) {
+      throw const FormatException('Cyclic structured value.');
+    }
+    try {
+      return List<Object?>.unmodifiable(
+        value.map((Object? item) => _freezeJsonValue(item, depth + 1, active)),
+      );
+    } finally {
+      active.remove(value);
+    }
+  }
+  if (value is Map<String, Object?>) {
+    if (!active.add(value)) {
+      throw const FormatException('Cyclic structured value.');
+    }
+    try {
+      return Map<String, Object?>.unmodifiable(
+        value.map(
+          (String key, Object? item) => MapEntry<String, Object?>(
+            key,
+            _freezeJsonValue(item, depth + 1, active),
+          ),
+        ),
+      );
+    } finally {
+      active.remove(value);
+    }
+  }
+  throw FormatException('Unsupported structured value: ${value.runtimeType}.');
 }
