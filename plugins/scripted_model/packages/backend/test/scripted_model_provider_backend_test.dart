@@ -438,6 +438,15 @@ void main() {
     );
   });
 
+  test('extra native item before fixed replay window is invalid', () async {
+    final List<ModelProviderInput> input = _validContinuation()
+      ..insert(1, _foreignNativeInput());
+    _expectInvalidContinuation(
+      await provider.invoke(_request(input: input)).toList(),
+      'invalid_native_replay',
+    );
+  });
+
   for (final ({String name, ModelProviderInput trailing}) fixture
       in <({String name, ModelProviderInput trailing})>[
         (name: 'user', trailing: _user(text: 'New request.')),
@@ -630,3 +639,16 @@ ModelProviderInput _nativeInput(int index, {String? itemId, String? kind}) =>
         data: ScriptedCommonModelProvider.nativeData[index],
       ),
     );
+
+ModelProviderInput _foreignNativeInput() => ModelProviderInput(
+  kind: ModelProviderInputKind.nativeItem,
+  itemId: 'foreign-native-item',
+  message: null,
+  toolProposal: null,
+  toolOutcome: null,
+  nativeMetadata: ModelProviderNativeEnvelope(
+    kind: 'foreign-native-v1',
+    compatibility: const <String, Object?>{'model': 'foreign-model'},
+    data: const <String, Object?>{'opaque': 'foreign'},
+  ),
+);

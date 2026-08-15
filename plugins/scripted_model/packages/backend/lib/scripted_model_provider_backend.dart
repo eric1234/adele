@@ -174,7 +174,9 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
         )
         .toList(growable: false);
     if (nativeItems.isNotEmpty &&
-        (!_matchesNative(request.input, proposalIndex - 3, 0) ||
+        (nativeItems.length !=
+                ScriptedCommonModelProvider.nativeItemIds.length ||
+            !_matchesNative(request.input, proposalIndex - 3, 0) ||
             !_matchesNative(request.input, proposalIndex - 1, 1) ||
             !_matchesNative(request.input, proposalIndex + 1, 2))) {
       yield _failure(
