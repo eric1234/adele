@@ -373,6 +373,48 @@ void main() {
       expect(events.last.terminal!.usage!.outputTokens, 10);
     },
   );
+
+  for (final ({String name, ModelProviderInput trailing}) fixture
+      in <({String name, ModelProviderInput trailing})>[
+        (name: 'user', trailing: _user(text: 'New request.')),
+        (name: 'proposal', trailing: _proposal()),
+      ]) {
+    test('continuation rejects trailing ${fixture.name}', () async {
+      final List<ModelProviderEvent> events = await provider
+          .invoke(
+            _request(
+              input: <ModelProviderInput>[
+                _user(),
+                _initialAssistantText(),
+                _proposal(),
+                _outcome(),
+                fixture.trailing,
+              ],
+            ),
+          )
+          .toList();
+      _expectInvalidContinuation(events, 'trailing_tool_history');
+      expect(events.single.kind, ModelProviderEventKind.terminal);
+    });
+  }
+
+  test('trailing history takes precedence over output limit', () async {
+    final List<ModelProviderEvent> events = await provider
+        .invoke(
+          _request(
+            input: <ModelProviderInput>[
+              _user(),
+              _initialAssistantText(),
+              _proposal(),
+              _outcome(),
+              _user(text: 'New request.'),
+            ],
+            maxOutputTokens: 1,
+          ),
+        )
+        .toList();
+    _expectInvalidContinuation(events, 'trailing_tool_history');
+  });
 }
 
 void _expectInvalidContinuation(List<ModelProviderEvent> events, String code) {
@@ -404,16 +446,13 @@ ModelProviderRequest _request({
   nativeState: null,
 );
 
-ModelProviderInput _user() => ModelProviderInput(
+ModelProviderInput _user({String text = 'Inspect.'}) => ModelProviderInput(
   kind: ModelProviderInputKind.message,
   itemId: null,
   message: ModelProviderMessage(
     role: ModelProviderMessageRole.user,
     content: <ModelProviderContent>[
-      ModelProviderContent(
-        kind: ModelProviderContentKind.text,
-        text: 'Inspect.',
-      ),
+      ModelProviderContent(kind: ModelProviderContentKind.text, text: text),
     ],
   ),
   toolProposal: null,

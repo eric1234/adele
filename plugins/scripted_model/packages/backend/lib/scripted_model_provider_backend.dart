@@ -185,6 +185,14 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
       );
       return;
     }
+    if (outcomeIndex != request.input.length - 1) {
+      yield _failure(
+        ModelProviderFailureKind.invalidRequest,
+        'trailing_tool_history',
+        'The scripted provider does not support input after the continuation outcome.',
+      );
+      return;
+    }
     if (_exceedsOutputLimit(request, 10)) {
       yield _outputLimitTerminal('response-2-limit', inputTokens: 24);
       return;
