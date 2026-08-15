@@ -228,6 +228,61 @@ void main() {
       ModelProviderIncompleteReason.outputLimit,
     );
   });
+
+  test(
+    'continuation below output limit emits only incomplete terminal',
+    () async {
+      final List<ModelProviderEvent> events = await provider
+          .invoke(
+            _request(
+              input: <ModelProviderInput>[_user(), _proposal(), _outcome()],
+              maxOutputTokens: 9,
+            ),
+          )
+          .toList();
+      expect(events, hasLength(1));
+      expect(events.single.kind, ModelProviderEventKind.terminal);
+      expect(
+        events.single.terminal!.settlement,
+        ModelProviderSettlement.incomplete,
+      );
+      expect(
+        events.single.terminal!.incompleteReason,
+        ModelProviderIncompleteReason.outputLimit,
+      );
+      expect(events.single.terminal!.usage!.outputTokens, 0);
+    },
+  );
+
+  test(
+    'continuation at output limit emits normal completed response',
+    () async {
+      final List<ModelProviderEvent> events = await provider
+          .invoke(
+            _request(
+              input: <ModelProviderInput>[_user(), _proposal(), _outcome()],
+              maxOutputTokens: 10,
+            ),
+          )
+          .toList();
+      expect(
+        events.where(
+          (ModelProviderEvent event) =>
+              event.kind == ModelProviderEventKind.observation,
+        ),
+        hasLength(1),
+      );
+      expect(
+        events.where((ModelProviderEvent event) => event.output?.text != null),
+        hasLength(1),
+      );
+      expect(
+        events.last.terminal!.settlement,
+        ModelProviderSettlement.completed,
+      );
+      expect(events.last.terminal!.usage!.outputTokens, 10);
+    },
+  );
 }
 
 void _expectInvalidContinuation(List<ModelProviderEvent> events, String code) {

@@ -157,6 +157,10 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
       );
       return;
     }
+    if (_exceedsOutputLimit(request, 10)) {
+      yield _outputLimitTerminal('response-2-limit', inputTokens: 24);
+      return;
+    }
     yield _observation('Inspection received: ');
     final String finalText = switch (outcome.status) {
       ModelProviderToolOutcomeStatus.success =>
@@ -170,10 +174,6 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
       ModelProviderToolOutcomeStatus.indeterminate =>
         'The inspection result is indeterminate.',
     };
-    if (_exceedsOutputLimit(request, 10)) {
-      yield _outputLimitTerminal('response-2-limit', inputTokens: 24);
-      return;
-    }
     yield _text(finalText, 'text-item-2');
     yield _terminal('response-2', inputTokens: 24, outputTokens: 10);
   }
