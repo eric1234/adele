@@ -36,6 +36,16 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
       return;
     }
     if (outcomes.isEmpty) {
+      if (request.input.any(
+        (ModelProviderInput item) => item.toolProposal != null,
+      )) {
+        yield _failure(
+          ModelProviderFailureKind.invalidRequest,
+          'orphan_tool_proposal',
+          'The scripted provider cannot continue a tool proposal without its outcome.',
+        );
+        return;
+      }
       final List<ModelProviderInput> users = request.input
           .where(
             (ModelProviderInput item) =>

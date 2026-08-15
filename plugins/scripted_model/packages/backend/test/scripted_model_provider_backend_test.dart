@@ -80,6 +80,27 @@ void main() {
     _expectInvalidContinuation(events, 'missing_user_context');
   });
 
+  for (final ModelProviderToolChoice choice in <ModelProviderToolChoice>[
+    ModelProviderToolChoice.auto,
+    ModelProviderToolChoice.none,
+  ]) {
+    test(
+      'proposal-only history is invalid before ${choice.name} handling',
+      () async {
+        final List<ModelProviderEvent> events = await provider
+            .invoke(
+              _request(
+                input: <ModelProviderInput>[_user(), _proposal()],
+                toolChoice: choice,
+              ),
+            )
+            .toList();
+        _expectInvalidContinuation(events, 'orphan_tool_proposal');
+        expect(events.single.kind, ModelProviderEventKind.terminal);
+      },
+    );
+  }
+
   test('user context after proposal cannot justify continuation', () async {
     final List<ModelProviderEvent> events = await provider
         .invoke(
