@@ -5,6 +5,9 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
   static const String toolName = 'inspect_resource';
   static const String callId = 'inspect-call-1';
   static const String itemId = 'proposal-item-1';
+  static const String initialText =
+      'Inspecting the deterministic Phase IV resource.';
+  static const String textItemId = 'text-item-1';
   static const String resourceUri = 'file:///tmp/adele-phase-iv.txt';
   static const String nativeKind = 'scripted-item-v1';
   static const Map<String, Object?> nativeCompatibility = <String, Object?>{
@@ -88,10 +91,7 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
         return;
       }
       yield _observation('Inspecting ');
-      yield _text(
-        'Inspecting the deterministic Phase IV resource.',
-        'text-item-1',
-      );
+      yield _text(initialText, textItemId);
       yield _proposal(
         userText == 'fixture:tool-domain-failure'
             ? 'fail:///adele-phase-iv.txt'
@@ -164,6 +164,24 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
         ModelProviderFailureKind.invalidRequest,
         'missing_replay_metadata',
         'The proposal correlation or native metadata was not replayed.',
+      );
+      return;
+    }
+    final int textIndex = proposalIndex - 1;
+    final ModelProviderInput? replayedText = textIndex >= 0
+        ? request.input[textIndex]
+        : null;
+    if (replayedText?.message?.role != ModelProviderMessageRole.assistant ||
+        replayedText?.message?.content.length != 1 ||
+        replayedText?.message?.content.single.kind !=
+            ModelProviderContentKind.text ||
+        replayedText?.message?.content.single.text != initialText ||
+        replayedText?.itemId != textItemId ||
+        replayedText?.nativeMetadata != null) {
+      yield _failure(
+        ModelProviderFailureKind.invalidRequest,
+        'missing_replay_text',
+        "The scripted provider's completed assistant text was not replayed exactly.",
       );
       return;
     }

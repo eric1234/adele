@@ -142,6 +142,65 @@ void main() {
     _expectInvalidContinuation(events, 'missing_replay_metadata');
   });
 
+  test('missing authoritative replay text is invalid', () async {
+    final List<ModelProviderEvent> events = await provider
+        .invoke(
+          _request(
+            input: <ModelProviderInput>[_user(), _proposal(), _outcome()],
+          ),
+        )
+        .toList();
+    _expectInvalidContinuation(events, 'missing_replay_text');
+  });
+
+  test('altered authoritative replay text is invalid', () async {
+    final List<ModelProviderEvent> events = await provider
+        .invoke(
+          _request(
+            input: <ModelProviderInput>[
+              _user(),
+              _initialAssistantText(text: 'Altered text.'),
+              _proposal(),
+              _outcome(),
+            ],
+          ),
+        )
+        .toList();
+    _expectInvalidContinuation(events, 'missing_replay_text');
+  });
+
+  test('wrong replay text item ID is invalid', () async {
+    final List<ModelProviderEvent> events = await provider
+        .invoke(
+          _request(
+            input: <ModelProviderInput>[
+              _user(),
+              _initialAssistantText(itemId: 'wrong-text-item'),
+              _proposal(),
+              _outcome(),
+            ],
+          ),
+        )
+        .toList();
+    _expectInvalidContinuation(events, 'missing_replay_text');
+  });
+
+  test('replay text after proposal is invalid', () async {
+    final List<ModelProviderEvent> events = await provider
+        .invoke(
+          _request(
+            input: <ModelProviderInput>[
+              _user(),
+              _proposal(),
+              _initialAssistantText(),
+              _outcome(),
+            ],
+          ),
+        )
+        .toList();
+    _expectInvalidContinuation(events, 'missing_replay_text');
+  });
+
   test('orphan outcome cannot hide before a valid continuation', () async {
     final List<ModelProviderEvent> events = await provider
         .invoke(
@@ -256,7 +315,12 @@ void main() {
       final List<ModelProviderEvent> events = await provider
           .invoke(
             _request(
-              input: <ModelProviderInput>[_user(), _proposal(), _outcome()],
+              input: <ModelProviderInput>[
+                _user(),
+                _initialAssistantText(),
+                _proposal(),
+                _outcome(),
+              ],
               maxOutputTokens: 9,
             ),
           )
@@ -281,7 +345,12 @@ void main() {
       final List<ModelProviderEvent> events = await provider
           .invoke(
             _request(
-              input: <ModelProviderInput>[_user(), _proposal(), _outcome()],
+              input: <ModelProviderInput>[
+                _user(),
+                _initialAssistantText(),
+                _proposal(),
+                _outcome(),
+              ],
               maxOutputTokens: 10,
             ),
           )
@@ -370,6 +439,23 @@ ModelProviderInput _proposal({
     compatibility: ScriptedCommonModelProvider.nativeCompatibility,
     data: ScriptedCommonModelProvider.proposalMetadata,
   ),
+);
+
+ModelProviderInput _initialAssistantText({
+  String text = ScriptedCommonModelProvider.initialText,
+  String itemId = ScriptedCommonModelProvider.textItemId,
+}) => ModelProviderInput(
+  kind: ModelProviderInputKind.message,
+  itemId: itemId,
+  message: ModelProviderMessage(
+    role: ModelProviderMessageRole.assistant,
+    content: <ModelProviderContent>[
+      ModelProviderContent(kind: ModelProviderContentKind.text, text: text),
+    ],
+  ),
+  toolProposal: null,
+  toolOutcome: null,
+  nativeMetadata: null,
 );
 
 ModelProviderInput _outcome({
