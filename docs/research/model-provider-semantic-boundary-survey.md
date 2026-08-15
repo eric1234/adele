@@ -8,6 +8,9 @@ This document records the source research that informed ADELE's first common mod
 
 It does not define a stable public API. Exact Dart types, capability identifiers, persistence schemas, provider configuration, authentication, and future capability-major evolution remain implementation decisions. Accepted current behavior belongs in `docs/architecture/`; durable architectural decisions belong in ADRs where useful.
 
+The resulting decision is recorded in
+[`../adr/0024-common-model-provider-capability.md`](../adr/0024-common-model-provider-capability.md).
+
 This survey builds on [`agent-harness-semantic-boundary-survey.md`](agent-harness-semantic-boundary-survey.md). The earlier survey established the broad provider boundary:
 
 ```text

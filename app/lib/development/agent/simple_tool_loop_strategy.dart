@@ -114,15 +114,31 @@ final class DevelopmentToolLoopStrategy {
     }
     for (final ModelOutputItem item in turn.output) {
       switch (item) {
-        case ModelTextOutput(:final content):
+        case ModelTextOutput(
+          :final content,
+          :final providerItemId,
+          :final providerNativeMetadata,
+        ):
           _runItems.add(
             SemanticMessageInput(
               role: SemanticMessageRole.assistant,
               content: content,
+              providerItemId: providerItemId,
+              providerNativeMetadata: providerNativeMetadata,
             ),
           );
-        case ModelToolProposalOutput(:final proposal):
-          _runItems.add(SemanticToolProposalInput(proposal: proposal));
+        case ModelToolProposalOutput(
+          :final proposal,
+          :final providerItemId,
+          :final providerNativeMetadata,
+        ):
+          _runItems.add(
+            SemanticToolProposalInput(
+              proposal: proposal,
+              providerItemId: providerItemId,
+              providerNativeMetadata: providerNativeMetadata,
+            ),
+          );
       }
     }
     final ToolProposalResolution resolution = _invocationResolver.resolve(
@@ -154,6 +170,14 @@ final class DevelopmentToolLoopStrategy {
       observation = await collectModelInvocation(
         model.invoke(request),
         invocationId: request.invocationId,
+        onObservation: (ModelObservation observation) {
+          run.record(
+            ModelObservationObserved(
+              invocationId: request.invocationId,
+              observation: observation,
+            ),
+          );
+        },
         onOutput: (ModelOutputItem item) {
           output.add(item);
           run.record(

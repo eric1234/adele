@@ -64,6 +64,69 @@ void main() {
       throwsA(isA<ModelInvocationContractException>()),
     );
   });
+
+  test(
+    'observations remain separate from authoritative completed output',
+    () async {
+      final ModelInvocationId id = ModelInvocationId('observations');
+      final ModelInvocationObservation observation =
+          await collectModelInvocation(
+            Stream<ModelEvent>.fromIterable(<ModelEvent>[
+              ModelObservationEvent(
+                invocationId: id,
+                observation: ModelTextDeltaObservation('Part'),
+              ),
+              ModelOutputItemCompleted(
+                invocationId: id,
+                item: ModelTextOutput('Complete'),
+              ),
+              ModelInvocationCompletedEvent(
+                invocationId: id,
+                metadata: ModelTerminalMetadata(
+                  effectiveModel: 'effective-v1',
+                  providerNativeState: const <String, Object?>{
+                    'cursor': 'opaque',
+                  },
+                ),
+              ),
+            ]),
+            invocationId: id,
+          );
+
+      expect(observation.observations, hasLength(1));
+      expect(observation.output, hasLength(1));
+      expect(
+        (observation.output.single as ModelTextOutput).content,
+        'Complete',
+      );
+      expect(
+        (observation.terminal as ModelInvocationCompletedEvent)
+            .metadata
+            .effectiveModel,
+        'effective-v1',
+      );
+    },
+  );
+
+  test('provider-native item metadata is retained immutably', () {
+    final Map<String, Object?> metadata = <String, Object?>{
+      'signed': <Object?>['opaque'],
+    };
+    final ModelToolProposalOutput output = ModelToolProposalOutput(
+      ProviderToolProposal(
+        providerCallId: 'call-1',
+        alias: 'inspect_resource',
+        arguments: const <String, Object?>{},
+      ),
+      providerItemId: 'item-1',
+      providerNativeMetadata: metadata,
+    );
+    (metadata['signed']! as List<Object?>).add('changed');
+    expect(output.providerItemId, 'item-1');
+    expect(output.providerNativeMetadata, const <String, Object?>{
+      'signed': <Object?>['opaque'],
+    });
+  });
 }
 
 SemanticModelRequest _request(String id) => SemanticModelRequest(

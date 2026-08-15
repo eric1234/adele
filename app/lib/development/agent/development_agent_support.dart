@@ -21,6 +21,7 @@ final class DevelopmentContextAssembler implements ContextAssembler {
   SemanticModelRequest assemble(ContextAssemblyInput input) =>
       SemanticModelRequest(
         invocationId: input.invocationId,
+        instructions: '',
         input: <SemanticModelInputItem>[
           for (final SessionEntry entry in input.session.entries)
             SemanticMessageInput(

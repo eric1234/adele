@@ -249,6 +249,16 @@ final class ModelOutputObserved extends ExecutionEvent {
   final ModelOutputItem item;
 }
 
+final class ModelObservationObserved extends ExecutionEvent {
+  const ModelObservationObserved({
+    required this.invocationId,
+    required this.observation,
+  });
+
+  final ModelInvocationId invocationId;
+  final ModelObservation observation;
+}
+
 final class ModelInvocationCompleted extends ExecutionEvent {
   const ModelInvocationCompleted(this.invocationId);
 

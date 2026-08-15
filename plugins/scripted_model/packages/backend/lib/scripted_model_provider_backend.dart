@@ -1,0 +1,199 @@
+import 'package:adele_model_provider/adele_model_provider.dart';
+
+final class ScriptedCommonModelProvider implements ModelProviderService {
+  static const String model = 'scripted-v1';
+  static const String toolName = 'inspect_resource';
+  static const String callId = 'inspect-call-1';
+  static const String itemId = 'proposal-item-1';
+  static const String resourceUri = 'file:///tmp/adele-phase-iv.txt';
+  static const Map<String, Object?> proposalMetadata = <String, Object?>{
+    'scriptedProof': 'proposal-native-v1',
+  };
+
+  @override
+  Stream<ModelProviderEvent> invoke(ModelProviderRequest request) async* {
+    if (request.model != model) {
+      yield _failure(
+        ModelProviderFailureKind.unsupportedRequest,
+        'unsupported_model',
+        'The scripted provider supports only $model.',
+      );
+      return;
+    }
+    final List<ModelProviderInput> outcomes = request.input
+        .where((ModelProviderInput item) => item.toolOutcome != null)
+        .toList(growable: false);
+    if (outcomes.isEmpty) {
+      if (!request.tools.any(
+        (ModelProviderTool tool) => tool.name == toolName,
+      )) {
+        yield _failure(
+          ModelProviderFailureKind.invalidRequest,
+          'tool_unavailable',
+          'The inspect_resource tool was not offered.',
+        );
+        return;
+      }
+      final String userText = request.input
+          .where(
+            (ModelProviderInput item) =>
+                item.message?.role == ModelProviderMessageRole.user,
+          )
+          .last
+          .message!
+          .content
+          .map((ModelProviderContent content) => content.text)
+          .join();
+      yield _observation('Inspecting ');
+      yield _text(
+        'Inspecting the deterministic Phase IV resource.',
+        'text-item-1',
+      );
+      yield _proposal(
+        userText == 'fixture:tool-domain-failure'
+            ? 'fail:///adele-phase-iv.txt'
+            : resourceUri,
+      );
+      yield _terminal('response-1', inputTokens: 12, outputTokens: 8);
+      return;
+    }
+    final ModelProviderToolOutcome outcome = outcomes.last.toolOutcome!;
+    final ModelProviderInput proposalInput = request.input.lastWhere(
+      (ModelProviderInput item) => item.toolProposal?.callId == outcome.callId,
+    );
+    if (outcome.callId != callId ||
+        proposalInput.toolProposal?.itemId != itemId ||
+        proposalInput.toolProposal?.nativeMetadata?.data['scriptedProof'] !=
+            proposalMetadata['scriptedProof']) {
+      yield _failure(
+        ModelProviderFailureKind.malformedResponse,
+        'missing_replay_metadata',
+        'The proposal correlation or native metadata was not replayed.',
+      );
+      return;
+    }
+    yield _observation('Inspection received: ');
+    final String finalText = switch (outcome.status) {
+      ModelProviderToolOutcomeStatus.success =>
+        'Inspection received: ${outcome.content}',
+      ModelProviderToolOutcomeStatus.rejected =>
+        'The inspection was rejected; the run is complete.',
+      ModelProviderToolOutcomeStatus.failed =>
+        'Inspection failed: ${outcome.content}',
+      ModelProviderToolOutcomeStatus.cancelled =>
+        'The inspection was cancelled; the run is complete.',
+      ModelProviderToolOutcomeStatus.indeterminate =>
+        'The inspection result is indeterminate.',
+    };
+    yield _text(finalText, 'text-item-2');
+    yield _terminal('response-2', inputTokens: 24, outputTokens: 10);
+  }
+}
+
+ModelProviderEvent _observation(String delta) => ModelProviderEvent(
+  kind: ModelProviderEventKind.observation,
+  observation: ModelProviderObservation(
+    kind: ModelProviderObservationKind.textDelta,
+    textDelta: delta,
+    itemId: null,
+  ),
+  output: null,
+  terminal: null,
+);
+
+ModelProviderEvent _text(String text, String itemId) => ModelProviderEvent(
+  kind: ModelProviderEventKind.output,
+  observation: null,
+  output: ModelProviderOutput(
+    kind: ModelProviderOutputKind.text,
+    text: text,
+    toolProposal: null,
+    itemId: itemId,
+    nativeMetadata: null,
+  ),
+  terminal: null,
+);
+
+ModelProviderEvent _proposal(String uri) => ModelProviderEvent(
+  kind: ModelProviderEventKind.output,
+  observation: null,
+  output: ModelProviderOutput(
+    kind: ModelProviderOutputKind.toolProposal,
+    text: null,
+    toolProposal: ModelProviderToolProposal(
+      callId: ScriptedCommonModelProvider.callId,
+      name: ScriptedCommonModelProvider.toolName,
+      arguments: <String, Object?>{'uri': uri},
+      itemId: ScriptedCommonModelProvider.itemId,
+      nativeMetadata: ModelProviderNativeEnvelope(
+        kind: 'scripted-item-v1',
+        compatibility: const <String, Object?>{
+          'model': ScriptedCommonModelProvider.model,
+        },
+        data: ScriptedCommonModelProvider.proposalMetadata,
+      ),
+    ),
+    itemId: ScriptedCommonModelProvider.itemId,
+    nativeMetadata: null,
+  ),
+  terminal: null,
+);
+
+ModelProviderEvent _terminal(
+  String responseId, {
+  required int inputTokens,
+  required int outputTokens,
+}) => ModelProviderEvent(
+  kind: ModelProviderEventKind.terminal,
+  observation: null,
+  output: null,
+  terminal: ModelProviderTerminal(
+    settlement: ModelProviderSettlement.completed,
+    incompleteReason: null,
+    failure: null,
+    providerStopReason: 'scripted_complete',
+    usage: ModelProviderUsage(
+      inputTokens: inputTokens,
+      outputTokens: outputTokens,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      providerDetails: const <String, Object?>{'fixture': true},
+    ),
+    effectiveModel: ScriptedCommonModelProvider.model,
+    responseId: responseId,
+    requestId: 'request-$responseId',
+    nativeState: ModelProviderNativeEnvelope(
+      kind: 'scripted-invocation-v1',
+      compatibility: const <String, Object?>{
+        'model': ScriptedCommonModelProvider.model,
+      },
+      data: <String, Object?>{'response': responseId},
+    ),
+  ),
+);
+
+ModelProviderEvent _failure(
+  ModelProviderFailureKind kind,
+  String code,
+  String message,
+) => ModelProviderEvent(
+  kind: ModelProviderEventKind.terminal,
+  observation: null,
+  output: null,
+  terminal: ModelProviderTerminal(
+    settlement: ModelProviderSettlement.failed,
+    incompleteReason: null,
+    failure: ModelProviderFailure(
+      kind: kind,
+      providerCode: code,
+      providerMessage: message,
+      providerDetails: const <String, Object?>{},
+    ),
+    providerStopReason: 'scripted_failure',
+    usage: null,
+    effectiveModel: ScriptedCommonModelProvider.model,
+    responseId: null,
+    requestId: null,
+    nativeState: null,
+  ),
+);
