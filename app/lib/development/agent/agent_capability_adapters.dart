@@ -215,89 +215,98 @@ ModelProviderRequest _toProviderRequest(
   nativeState: null,
 );
 
-ModelProviderInput _toProviderInput(SemanticModelInputItem item) =>
-    switch (item) {
-      SemanticMessageInput(
-        :final role,
-        :final content,
-        :final providerItemId,
-        :final providerNativeMetadata,
-      ) =>
-        ModelProviderInput(
-          kind: ModelProviderInputKind.message,
-          itemId: providerItemId,
-          message: ModelProviderMessage(
-            role: switch (role) {
-              SemanticMessageRole.user => ModelProviderMessageRole.user,
-              SemanticMessageRole.assistant =>
-                ModelProviderMessageRole.assistant,
-            },
-            content: <ModelProviderContent>[
-              ModelProviderContent(
-                kind: ModelProviderContentKind.text,
-                text: content,
-              ),
-            ],
+ModelProviderInput _toProviderInput(
+  SemanticModelInputItem item,
+) => switch (item) {
+  SemanticNativeInput(:final providerItemId, :final providerNativeMetadata) =>
+    ModelProviderInput(
+      kind: ModelProviderInputKind.nativeItem,
+      itemId: providerItemId,
+      message: null,
+      toolProposal: null,
+      toolOutcome: null,
+      nativeMetadata: _toProviderNativeEnvelope(providerNativeMetadata),
+    ),
+  SemanticMessageInput(
+    :final role,
+    :final content,
+    :final providerItemId,
+    :final providerNativeMetadata,
+  ) =>
+    ModelProviderInput(
+      kind: ModelProviderInputKind.message,
+      itemId: providerItemId,
+      message: ModelProviderMessage(
+        role: switch (role) {
+          SemanticMessageRole.user => ModelProviderMessageRole.user,
+          SemanticMessageRole.assistant => ModelProviderMessageRole.assistant,
+        },
+        content: <ModelProviderContent>[
+          ModelProviderContent(
+            kind: ModelProviderContentKind.text,
+            text: content,
           ),
-          toolProposal: null,
-          toolOutcome: null,
-          nativeMetadata: _toProviderNativeEnvelope(providerNativeMetadata),
-        ),
-      SemanticToolProposalInput(
-        :final proposal,
-        :final providerItemId,
-        :final providerNativeMetadata,
-      ) =>
-        ModelProviderInput(
-          kind: ModelProviderInputKind.toolProposal,
-          itemId: providerItemId,
-          message: null,
-          toolProposal: ModelProviderToolProposal(
-            callId: proposal.providerCallId,
-            name: proposal.alias,
-            arguments: proposal.arguments,
-          ),
-          toolOutcome: null,
-          nativeMetadata: _toProviderNativeEnvelope(providerNativeMetadata),
-        ),
-      SemanticToolOutcomeInput(:final providerCallId, :final outcome) =>
-        ModelProviderInput(
-          kind: ModelProviderInputKind.toolOutcome,
-          itemId: null,
-          message: null,
-          toolProposal: null,
-          toolOutcome: ModelProviderToolOutcome(
-            callId: providerCallId,
-            status: switch (outcome.disposition) {
-              ToolOutcomeDisposition.success =>
-                ModelProviderToolOutcomeStatus.success,
-              ToolOutcomeDisposition.userRejected ||
-              ToolOutcomeDisposition.policyDenied =>
-                ModelProviderToolOutcomeStatus.rejected,
-              ToolOutcomeDisposition.failure =>
-                ModelProviderToolOutcomeStatus.failed,
-              ToolOutcomeDisposition.cancelled =>
-                ModelProviderToolOutcomeStatus.cancelled,
-              ToolOutcomeDisposition.indeterminate =>
-                ModelProviderToolOutcomeStatus.indeterminate,
-            },
-            content: outcome.modelContent,
-          ),
-          nativeMetadata: null,
-        ),
-      SemanticToolProposalFailureInput(:final failure) => ModelProviderInput(
-        kind: ModelProviderInputKind.toolOutcome,
-        itemId: null,
-        message: null,
-        toolProposal: null,
-        toolOutcome: ModelProviderToolOutcome(
-          callId: failure.providerCallId,
-          status: ModelProviderToolOutcomeStatus.failed,
-          content: failure.message,
-        ),
-        nativeMetadata: null,
+        ],
       ),
-    };
+      toolProposal: null,
+      toolOutcome: null,
+      nativeMetadata: _toProviderNativeEnvelope(providerNativeMetadata),
+    ),
+  SemanticToolProposalInput(
+    :final proposal,
+    :final providerItemId,
+    :final providerNativeMetadata,
+  ) =>
+    ModelProviderInput(
+      kind: ModelProviderInputKind.toolProposal,
+      itemId: providerItemId,
+      message: null,
+      toolProposal: ModelProviderToolProposal(
+        callId: proposal.providerCallId,
+        name: proposal.alias,
+        arguments: proposal.arguments,
+      ),
+      toolOutcome: null,
+      nativeMetadata: _toProviderNativeEnvelope(providerNativeMetadata),
+    ),
+  SemanticToolOutcomeInput(:final providerCallId, :final outcome) =>
+    ModelProviderInput(
+      kind: ModelProviderInputKind.toolOutcome,
+      itemId: null,
+      message: null,
+      toolProposal: null,
+      toolOutcome: ModelProviderToolOutcome(
+        callId: providerCallId,
+        status: switch (outcome.disposition) {
+          ToolOutcomeDisposition.success =>
+            ModelProviderToolOutcomeStatus.success,
+          ToolOutcomeDisposition.userRejected ||
+          ToolOutcomeDisposition.policyDenied =>
+            ModelProviderToolOutcomeStatus.rejected,
+          ToolOutcomeDisposition.failure =>
+            ModelProviderToolOutcomeStatus.failed,
+          ToolOutcomeDisposition.cancelled =>
+            ModelProviderToolOutcomeStatus.cancelled,
+          ToolOutcomeDisposition.indeterminate =>
+            ModelProviderToolOutcomeStatus.indeterminate,
+        },
+        content: outcome.modelContent,
+      ),
+      nativeMetadata: null,
+    ),
+  SemanticToolProposalFailureInput(:final failure) => ModelProviderInput(
+    kind: ModelProviderInputKind.toolOutcome,
+    itemId: null,
+    message: null,
+    toolProposal: null,
+    toolOutcome: ModelProviderToolOutcome(
+      callId: failure.providerCallId,
+      status: ModelProviderToolOutcomeStatus.failed,
+      content: failure.message,
+    ),
+    nativeMetadata: null,
+  ),
+};
 
 ModelProviderNativeEnvelope? _toProviderNativeEnvelope(
   ModelNativeEnvelope? envelope,
@@ -327,6 +336,10 @@ ModelObservation _toModelObservation(ModelProviderObservation observation) =>
 
 ModelOutputItem _toModelOutput(ModelProviderOutput output) =>
     switch (output.kind) {
+      ModelProviderOutputKind.nativeItem => ModelNativeOutput(
+        providerItemId: output.itemId,
+        providerNativeMetadata: _toKernelNativeEnvelope(output.nativeMetadata)!,
+      ),
       ModelProviderOutputKind.text => ModelTextOutput(
         output.text!,
         providerItemId: output.itemId,

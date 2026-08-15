@@ -139,6 +139,42 @@ void main() {
     });
   });
 
+  test('consecutive native-only outputs remain distinct and ordered', () {
+    final List<ModelOutputItem> output = <ModelOutputItem>[
+      ModelNativeOutput(
+        providerItemId: 'native-1',
+        providerNativeMetadata: ModelNativeEnvelope(
+          kind: 'first-v1',
+          compatibility: const <String, Object?>{'model': 'v1'},
+          data: const <String, Object?>{'opaque': 'first'},
+        ),
+      ),
+      ModelNativeOutput(
+        providerItemId: 'native-2',
+        providerNativeMetadata: ModelNativeEnvelope(
+          kind: 'second-v1',
+          compatibility: const <String, Object?>{'model': 'v1'},
+          data: const <String, Object?>{'opaque': 'second'},
+        ),
+      ),
+    ];
+
+    expect(output.map((item) => item.runtimeType), <Type>[
+      ModelNativeOutput,
+      ModelNativeOutput,
+    ]);
+    expect(
+      output.map((item) => (item as ModelNativeOutput).providerItemId),
+      <String?>['native-1', 'native-2'],
+    );
+    expect(
+      output.map(
+        (item) => (item as ModelNativeOutput).providerNativeMetadata.kind,
+      ),
+      <String>['first-v1', 'second-v1'],
+    );
+  });
+
   test('semantic message accepts nonempty whitespace content', () {
     expect(
       SemanticMessageInput(

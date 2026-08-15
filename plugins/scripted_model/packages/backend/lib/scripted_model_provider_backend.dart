@@ -16,6 +16,27 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
   static const Map<String, Object?> proposalMetadata = <String, Object?>{
     'scriptedProof': 'proposal-native-v1',
   };
+  static const List<String> nativeItemIds = <String>[
+    'native-item-a',
+    'native-item-b',
+    'native-item-c',
+  ];
+  static const List<String> nativeKinds = <String>[
+    'scripted-native-a-v1',
+    'scripted-native-b-v2',
+    'scripted-native-c-v3',
+  ];
+  static const List<Map<String, Object?>> nativeCompatibilities =
+      <Map<String, Object?>>[
+        <String, Object?>{'model': model, 'route': 'alpha'},
+        <String, Object?>{'model': model, 'route': 'beta'},
+        <String, Object?>{'model': model, 'route': 'gamma'},
+      ];
+  static const List<Map<String, Object?>> nativeData = <Map<String, Object?>>[
+    <String, Object?>{'opaque': 'native-a', 'sequence': 1},
+    <String, Object?>{'opaque': 'native-b', 'sequence': 2},
+    <String, Object?>{'opaque': 'native-c', 'sequence': 3},
+  ];
 
   @override
   Stream<ModelProviderEvent> invoke(ModelProviderRequest request) async* {
@@ -91,12 +112,15 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
         return;
       }
       yield _observation('Inspecting ');
+      yield _native(0);
       yield _text(initialText, textItemId);
+      yield _native(1);
       yield _proposal(
         userText == 'fixture:tool-domain-failure'
             ? 'fail:///adele-phase-iv.txt'
             : resourceUri,
       );
+      yield _native(2);
       yield _terminal('response-1', inputTokens: 12, outputTokens: 8);
       return;
     }
@@ -143,6 +167,25 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
       );
       return;
     }
+    final List<ModelProviderInput> nativeItems = request.input
+        .where(
+          (ModelProviderInput item) =>
+              item.kind == ModelProviderInputKind.nativeItem,
+        )
+        .toList(growable: false);
+    if (nativeItems.isNotEmpty &&
+        (nativeItems.length !=
+                ScriptedCommonModelProvider.nativeItemIds.length ||
+            !_matchesNative(request.input, proposalIndex - 3, 0) ||
+            !_matchesNative(request.input, proposalIndex - 1, 1) ||
+            !_matchesNative(request.input, proposalIndex + 1, 2))) {
+      yield _failure(
+        ModelProviderFailureKind.invalidRequest,
+        'invalid_native_replay',
+        'The scripted provider native items were not replayed exactly in order.',
+      );
+      return;
+    }
     final String initialUserText = priorUsers.last.message!.content
         .map((ModelProviderContent content) => content.text)
         .join();
@@ -167,7 +210,7 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
       );
       return;
     }
-    final int textIndex = proposalIndex - 1;
+    final int textIndex = proposalIndex - 2;
     final ModelProviderInput? replayedText = textIndex >= 0
         ? request.input[textIndex]
         : null;
@@ -185,7 +228,18 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
       );
       return;
     }
-    if (outcomeIndex != proposalIndex + 1) {
+    if (nativeItems.isEmpty ||
+        !_matchesNative(request.input, proposalIndex - 3, 0) ||
+        !_matchesNative(request.input, proposalIndex - 1, 1) ||
+        !_matchesNative(request.input, proposalIndex + 1, 2)) {
+      yield _failure(
+        ModelProviderFailureKind.invalidRequest,
+        'invalid_native_replay',
+        'The scripted provider native items were not replayed exactly in order.',
+      );
+      return;
+    }
+    if (outcomeIndex != proposalIndex + 2) {
       yield _failure(
         ModelProviderFailureKind.invalidRequest,
         'intervening_tool_history',
@@ -223,6 +277,34 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
   }
 }
 
+bool _matchesNative(List<ModelProviderInput> input, int index, int expected) {
+  if (index < 0 || index >= input.length) return false;
+  final ModelProviderInput item = input[index];
+  return item.kind == ModelProviderInputKind.nativeItem &&
+      item.message == null &&
+      item.toolProposal == null &&
+      item.toolOutcome == null &&
+      item.itemId == ScriptedCommonModelProvider.nativeItemIds[expected] &&
+      _mapsEqual(
+        item.nativeMetadata?.compatibility,
+        ScriptedCommonModelProvider.nativeCompatibilities[expected],
+      ) &&
+      item.nativeMetadata?.kind ==
+          ScriptedCommonModelProvider.nativeKinds[expected] &&
+      _mapsEqual(
+        item.nativeMetadata?.data,
+        ScriptedCommonModelProvider.nativeData[expected],
+      );
+}
+
+bool _mapsEqual(Map<String, Object?>? actual, Map<String, Object?> expected) {
+  if (actual == null || actual.length != expected.length) return false;
+  for (final MapEntry<String, Object?> entry in expected.entries) {
+    if (actual[entry.key] != entry.value) return false;
+  }
+  return true;
+}
+
 bool _exceedsOutputLimit(ModelProviderRequest request, int requiredTokens) =>
     request.maxOutputTokens != null &&
     request.maxOutputTokens! < requiredTokens;
@@ -247,6 +329,23 @@ ModelProviderEvent _text(String text, String itemId) => ModelProviderEvent(
     toolProposal: null,
     itemId: itemId,
     nativeMetadata: null,
+  ),
+  terminal: null,
+);
+
+ModelProviderEvent _native(int index) => ModelProviderEvent(
+  kind: ModelProviderEventKind.output,
+  observation: null,
+  output: ModelProviderOutput(
+    kind: ModelProviderOutputKind.nativeItem,
+    text: null,
+    toolProposal: null,
+    itemId: ScriptedCommonModelProvider.nativeItemIds[index],
+    nativeMetadata: ModelProviderNativeEnvelope(
+      kind: ScriptedCommonModelProvider.nativeKinds[index],
+      compatibility: ScriptedCommonModelProvider.nativeCompatibilities[index],
+      data: ScriptedCommonModelProvider.nativeData[index],
+    ),
   ),
   terminal: null,
 );

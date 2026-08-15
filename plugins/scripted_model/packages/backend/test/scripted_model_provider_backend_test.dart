@@ -317,8 +317,11 @@ void main() {
             _request(
               input: <ModelProviderInput>[
                 _user(),
+                ..._nativeReplay().take(1),
                 _initialAssistantText(),
+                _nativeReplay()[1],
                 _proposal(),
+                _nativeReplay()[2],
                 _outcome(),
               ],
               maxOutputTokens: 9,
@@ -347,8 +350,11 @@ void main() {
             _request(
               input: <ModelProviderInput>[
                 _user(),
+                ..._nativeReplay().take(1),
                 _initialAssistantText(),
+                _nativeReplay()[1],
                 _proposal(),
+                _nativeReplay()[2],
                 _outcome(),
               ],
               maxOutputTokens: 10,
@@ -374,6 +380,73 @@ void main() {
     },
   );
 
+  test('first invocation emits native items around semantic output', () async {
+    final List<ModelProviderOutput> output =
+        (await provider.invoke(_request()).toList())
+            .map((event) => event.output)
+            .whereType<ModelProviderOutput>()
+            .toList();
+    expect(output.map((item) => item.kind), <ModelProviderOutputKind>[
+      ModelProviderOutputKind.nativeItem,
+      ModelProviderOutputKind.text,
+      ModelProviderOutputKind.nativeItem,
+      ModelProviderOutputKind.toolProposal,
+      ModelProviderOutputKind.nativeItem,
+    ]);
+  });
+
+  test('exact native replay continuation succeeds', () async {
+    final List<ModelProviderEvent> events = await provider
+        .invoke(_request(input: _validContinuation()))
+        .toList();
+    expect(events.last.terminal!.settlement, ModelProviderSettlement.completed);
+  });
+
+  test('missing native item is invalid', () async {
+    final List<ModelProviderInput> input = _validContinuation()..removeAt(3);
+    _expectInvalidContinuation(
+      await provider.invoke(_request(input: input)).toList(),
+      'invalid_native_replay',
+    );
+  });
+
+  test('reordered native item is invalid', () async {
+    final List<ModelProviderInput> input = _validContinuation();
+    final ModelProviderInput item = input.removeAt(3);
+    input.insert(1, item);
+    _expectInvalidContinuation(
+      await provider.invoke(_request(input: input)).toList(),
+      'invalid_native_replay',
+    );
+  });
+
+  test('altered native envelope is invalid', () async {
+    final List<ModelProviderInput> input = _validContinuation();
+    input[3] = _nativeInput(1, kind: 'altered-v1');
+    _expectInvalidContinuation(
+      await provider.invoke(_request(input: input)).toList(),
+      'invalid_native_replay',
+    );
+  });
+
+  test('altered native item ID is invalid', () async {
+    final List<ModelProviderInput> input = _validContinuation();
+    input[5] = _nativeInput(2, itemId: 'altered-native-id');
+    _expectInvalidContinuation(
+      await provider.invoke(_request(input: input)).toList(),
+      'invalid_native_replay',
+    );
+  });
+
+  test('extra native item before fixed replay window is invalid', () async {
+    final List<ModelProviderInput> input = _validContinuation()
+      ..insert(1, _foreignNativeInput());
+    _expectInvalidContinuation(
+      await provider.invoke(_request(input: input)).toList(),
+      'invalid_native_replay',
+    );
+  });
+
   for (final ({String name, ModelProviderInput trailing}) fixture
       in <({String name, ModelProviderInput trailing})>[
         (name: 'user', trailing: _user(text: 'New request.')),
@@ -384,10 +457,7 @@ void main() {
           .invoke(
             _request(
               input: <ModelProviderInput>[
-                _user(),
-                _initialAssistantText(),
-                _proposal(),
-                _outcome(),
+                ..._validContinuation(),
                 fixture.trailing,
               ],
             ),
@@ -412,8 +482,11 @@ void main() {
             _request(
               input: <ModelProviderInput>[
                 _user(),
+                _nativeInput(0),
                 _initialAssistantText(),
+                _nativeInput(1),
                 _proposal(),
+                _nativeInput(2),
                 fixture.intervening,
                 _outcome(),
               ],
@@ -430,10 +503,7 @@ void main() {
         .invoke(
           _request(
             input: <ModelProviderInput>[
-              _user(),
-              _initialAssistantText(),
-              _proposal(),
-              _outcome(),
+              ..._validContinuation(),
               _user(text: 'New request.'),
             ],
             maxOutputTokens: 1,
@@ -538,4 +608,47 @@ ModelProviderInput _outcome({
     content: 'done',
   ),
   nativeMetadata: null,
+);
+
+List<ModelProviderInput> _validContinuation() => <ModelProviderInput>[
+  _user(),
+  _nativeInput(0),
+  _initialAssistantText(),
+  _nativeInput(1),
+  _proposal(),
+  _nativeInput(2),
+  _outcome(),
+];
+
+List<ModelProviderInput> _nativeReplay() => <ModelProviderInput>[
+  _nativeInput(0),
+  _nativeInput(1),
+  _nativeInput(2),
+];
+
+ModelProviderInput _nativeInput(int index, {String? itemId, String? kind}) =>
+    ModelProviderInput(
+      kind: ModelProviderInputKind.nativeItem,
+      itemId: itemId ?? ScriptedCommonModelProvider.nativeItemIds[index],
+      message: null,
+      toolProposal: null,
+      toolOutcome: null,
+      nativeMetadata: ModelProviderNativeEnvelope(
+        kind: kind ?? ScriptedCommonModelProvider.nativeKinds[index],
+        compatibility: ScriptedCommonModelProvider.nativeCompatibilities[index],
+        data: ScriptedCommonModelProvider.nativeData[index],
+      ),
+    );
+
+ModelProviderInput _foreignNativeInput() => ModelProviderInput(
+  kind: ModelProviderInputKind.nativeItem,
+  itemId: 'foreign-native-item',
+  message: null,
+  toolProposal: null,
+  toolOutcome: null,
+  nativeMetadata: ModelProviderNativeEnvelope(
+    kind: 'foreign-native-v1',
+    compatibility: const <String, Object?>{'model': 'foreign-model'},
+    data: const <String, Object?>{'opaque': 'foreign'},
+  ),
 );
