@@ -127,6 +127,152 @@ void main() {
     ).invoke(_request()).single;
     expect(event.output!.text, ' ');
   });
+
+  test(
+    'lazy invocation serializes construction-time request snapshots',
+    () async {
+      final List<ModelProviderContent> messageContent = <ModelProviderContent>[
+        ModelProviderContent(
+          kind: ModelProviderContentKind.text,
+          text: 'original message',
+        ),
+      ];
+      final Map<String, Object?> proposalArguments = <String, Object?>{
+        'uri': 'file:///original',
+      };
+      final Map<String, Object?> schema = <String, Object?>{
+        'properties': <String, Object?>{
+          'uri': <String, Object?>{'type': 'string'},
+        },
+      };
+      final Map<String, Object?> compatibility = <String, Object?>{
+        'model': 'original-model',
+      };
+      final Map<String, Object?> nativeData = <String, Object?>{
+        'tokens': <Object?>['original-token'],
+      };
+      final List<ModelProviderInput> input = <ModelProviderInput>[
+        ModelProviderInput(
+          kind: ModelProviderInputKind.message,
+          itemId: null,
+          message: ModelProviderMessage(
+            role: ModelProviderMessageRole.user,
+            content: messageContent,
+          ),
+          toolProposal: null,
+          toolOutcome: null,
+          nativeMetadata: null,
+        ),
+        ModelProviderInput(
+          kind: ModelProviderInputKind.toolProposal,
+          itemId: 'item-1',
+          message: null,
+          toolProposal: ModelProviderToolProposal(
+            callId: 'call-1',
+            name: 'inspect_resource',
+            arguments: proposalArguments,
+          ),
+          toolOutcome: null,
+          nativeMetadata: ModelProviderNativeEnvelope(
+            kind: 'item-v1',
+            compatibility: compatibility,
+            data: nativeData,
+          ),
+        ),
+      ];
+      final ModelProviderInput retainedInput = input.first;
+      final List<ModelProviderTool> tools = <ModelProviderTool>[
+        ModelProviderTool(
+          name: 'inspect_resource',
+          description: 'Inspect.',
+          argumentsSchema: schema,
+        ),
+      ];
+      final Map<String, Object?> nestedOptions = <String, Object?>{
+        'enabled': true,
+      };
+      final List<Object?> optionList = <Object?>['original-option'];
+      final Map<String, Object?> providerOptions = <String, Object?>{
+        'nested': nestedOptions,
+        'list': optionList,
+      };
+      final ModelProviderRequest request = ModelProviderRequest(
+        model: 'scripted-v1',
+        instructions: '',
+        input: input,
+        tools: tools,
+        toolChoice: ModelProviderToolChoice.auto,
+        maxOutputTokens: null,
+        providerOptions: providerOptions,
+        nativeState: null,
+      );
+      final _CapturingChannel channel = _CapturingChannel();
+      final Stream<ModelProviderEvent> stream = ModelProviderServiceClient(
+        channel,
+      ).invoke(request);
+
+      input.clear();
+      tools.clear();
+      providerOptions['late'] = true;
+      nestedOptions['enabled'] = false;
+      optionList.add('late-option');
+      proposalArguments['uri'] = 'file:///mutated';
+      (schema['properties']! as Map<String, Object?>).clear();
+      compatibility['model'] = 'mutated-model';
+      (nativeData['tokens']! as List<Object?>).add('late-token');
+      messageContent.add(
+        ModelProviderContent(
+          kind: ModelProviderContentKind.text,
+          text: 'late message',
+        ),
+      );
+
+      await stream.toList();
+
+      final Map<String, Object?> encoded = channel.encodedRequest!;
+      final List<Object?> encodedInput = encoded['input']! as List<Object?>;
+      expect(encodedInput, hasLength(2));
+      expect(
+        ((encodedInput[0]! as Map<String, Object?>)['message']!
+            as Map<String, Object?>)['content'],
+        hasLength(1),
+      );
+      final Map<String, Object?> proposalInput =
+          encodedInput[1]! as Map<String, Object?>;
+      expect(
+        (proposalInput['toolProposal']! as Map<String, Object?>)['arguments'],
+        const <String, Object?>{'uri': 'file:///original'},
+      );
+      final Map<String, Object?> native =
+          proposalInput['nativeMetadata']! as Map<String, Object?>;
+      expect(native['compatibility'], const <String, Object?>{
+        'model': 'original-model',
+      });
+      expect(native['data'], const <String, Object?>{
+        'tokens': <Object?>['original-token'],
+      });
+      expect(encoded['tools'], hasLength(1));
+      expect(
+        ((encoded['tools']! as List<Object?>).single!
+            as Map<String, Object?>)['argumentsSchema'],
+        const <String, Object?>{
+          'properties': <String, Object?>{
+            'uri': <String, Object?>{'type': 'string'},
+          },
+        },
+      );
+      expect(encoded['providerOptions'], const <String, Object?>{
+        'nested': <String, Object?>{'enabled': true},
+        'list': <Object?>['original-option'],
+      });
+      expect(() => request.input.add(retainedInput), throwsUnsupportedError);
+      expect(() => request.tools.clear(), throwsUnsupportedError);
+      expect(
+        () => request.providerOptions['late'] = true,
+        throwsUnsupportedError,
+      );
+    },
+  );
 }
 
 ModelProviderRequest _request() => ModelProviderRequest(
@@ -263,6 +409,22 @@ final class _Channel implements AdeleStreamChannel {
   Stream<Object?> stream(String method, Map<String, Object?> payload) {
     streams++;
     return Stream<Object?>.value(event);
+  }
+}
+
+final class _CapturingChannel implements AdeleStreamChannel {
+  Map<String, Object?>? encodedRequest;
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) =>
+      throw StateError('Unary transport is forbidden.');
+
+  @override
+  Stream<Object?> stream(String method, Map<String, Object?> payload) {
+    encodedRequest = Map<String, Object?>.from(
+      payload['request']! as Map<Object?, Object?>,
+    );
+    return const Stream<Object?>.empty();
   }
 }
 

@@ -120,6 +120,38 @@ void main() {
         .toList();
     _expectInvalidContinuation(events, 'missing_replay_metadata');
   });
+
+  test('orphan outcome cannot hide before a valid continuation', () async {
+    final List<ModelProviderEvent> events = await provider
+        .invoke(
+          _request(
+            input: <ModelProviderInput>[
+              _user(),
+              _outcome(callId: 'orphan-call'),
+              _proposal(),
+              _outcome(),
+            ],
+          ),
+        )
+        .toList();
+    _expectInvalidContinuation(events, 'unsupported_tool_history');
+  });
+
+  test('two plausible outcomes exceed scripted history support', () async {
+    final List<ModelProviderEvent> events = await provider
+        .invoke(
+          _request(
+            input: <ModelProviderInput>[
+              _user(),
+              _proposal(),
+              _outcome(),
+              _outcome(),
+            ],
+          ),
+        )
+        .toList();
+    _expectInvalidContinuation(events, 'unsupported_tool_history');
+  });
 }
 
 void _expectInvalidContinuation(List<ModelProviderEvent> events, String code) {
@@ -187,13 +219,15 @@ ModelProviderInput _proposal({
   ),
 );
 
-ModelProviderInput _outcome() => ModelProviderInput(
+ModelProviderInput _outcome({
+  String callId = ScriptedCommonModelProvider.callId,
+}) => ModelProviderInput(
   kind: ModelProviderInputKind.toolOutcome,
   itemId: null,
   message: null,
   toolProposal: null,
   toolOutcome: ModelProviderToolOutcome(
-    callId: ScriptedCommonModelProvider.callId,
+    callId: callId,
     status: ModelProviderToolOutcomeStatus.success,
     content: 'done',
   ),

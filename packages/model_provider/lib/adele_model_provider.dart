@@ -56,9 +56,10 @@ enum ModelProviderFailureKind {
 final class ModelProviderNativeEnvelope {
   ModelProviderNativeEnvelope({
     required this.kind,
-    required this.compatibility,
-    required this.data,
-  }) {
+    required Map<String, Object?> compatibility,
+    required Map<String, Object?> data,
+  }) : compatibility = _freezeJsonMap(compatibility),
+       data = _freezeJsonMap(data) {
     _requireNonEmpty(kind, 'Native state kind');
   }
 
@@ -81,7 +82,10 @@ final class ModelProviderContent {
 
 @AdeleValue('modelProvider.message')
 final class ModelProviderMessage {
-  ModelProviderMessage({required this.role, required this.content}) {
+  ModelProviderMessage({
+    required this.role,
+    required List<ModelProviderContent> content,
+  }) : content = List<ModelProviderContent>.unmodifiable(content) {
     if (content.isEmpty) {
       throw const FormatException('A message requires content.');
     }
@@ -96,8 +100,8 @@ final class ModelProviderToolProposal {
   ModelProviderToolProposal({
     required this.callId,
     required this.name,
-    required this.arguments,
-  }) {
+    required Map<String, Object?> arguments,
+  }) : arguments = _freezeJsonMap(arguments) {
     _requireNonEmpty(callId, 'Provider call ID');
     _requireNonEmpty(name, 'Tool name');
   }
@@ -162,8 +166,8 @@ final class ModelProviderTool {
   ModelProviderTool({
     required this.name,
     required this.description,
-    required this.argumentsSchema,
-  }) {
+    required Map<String, Object?> argumentsSchema,
+  }) : argumentsSchema = _freezeJsonMap(argumentsSchema) {
     _requireNonEmpty(name, 'Tool name');
     _requireNonEmpty(description, 'Tool description');
   }
@@ -178,13 +182,15 @@ final class ModelProviderRequest {
   ModelProviderRequest({
     required this.model,
     required this.instructions,
-    required this.input,
-    required this.tools,
+    required List<ModelProviderInput> input,
+    required List<ModelProviderTool> tools,
     required this.toolChoice,
     required this.maxOutputTokens,
-    required this.providerOptions,
+    required Map<String, Object?> providerOptions,
     required this.nativeState,
-  }) {
+  }) : input = List<ModelProviderInput>.unmodifiable(input),
+       tools = List<ModelProviderTool>.unmodifiable(tools),
+       providerOptions = _freezeJsonMap(providerOptions) {
     _requireNonEmpty(model, 'Selected model');
     if (maxOutputTokens != null && maxOutputTokens! <= 0) {
       throw const FormatException('Maximum output tokens must be positive.');
@@ -398,4 +404,31 @@ void _requireNonEmpty(String value, String label) {
 
 void _requireOptionalNonEmpty(String? value, String label) {
   if (value != null) _requireNonEmpty(value, label);
+}
+
+Map<String, Object?> _freezeJsonMap(Map<String, Object?> source) =>
+    Map<String, Object?>.unmodifiable(
+      source.map(
+        (String key, Object? value) =>
+            MapEntry<String, Object?>(key, _freezeJsonValue(value)),
+      ),
+    );
+
+Object? _freezeJsonValue(Object? value) {
+  if (value == null || value is bool || value is String || value is int) {
+    return value;
+  }
+  if (value is double) {
+    if (!value.isFinite) {
+      throw const FormatException('JSON-compatible doubles must be finite.');
+    }
+    return value;
+  }
+  if (value is List<Object?>) {
+    return List<Object?>.unmodifiable(value.map(_freezeJsonValue));
+  }
+  if (value is Map<String, Object?>) return _freezeJsonMap(value);
+  throw FormatException(
+    'Unsupported JSON-compatible value: ${value.runtimeType}.',
+  );
 }

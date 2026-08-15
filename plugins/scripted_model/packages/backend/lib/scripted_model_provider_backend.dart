@@ -27,6 +27,14 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
     final List<ModelProviderInput> outcomes = request.input
         .where((ModelProviderInput item) => item.toolOutcome != null)
         .toList(growable: false);
+    if (outcomes.length > 1) {
+      yield _failure(
+        ModelProviderFailureKind.invalidRequest,
+        'unsupported_tool_history',
+        'The scripted provider supports exactly one continuation outcome.',
+      );
+      return;
+    }
     if (outcomes.isEmpty) {
       final List<ModelProviderInput> users = request.input
           .where(
