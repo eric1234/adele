@@ -326,6 +326,75 @@ void main() {
     expect(consumerCompleted, isTrue);
   });
 
+  test(
+    'synchronous consumer pause is applied after transport assignment',
+    () async {
+      final Completer<void> providerPaused = Completer<void>();
+      final Completer<void> providerResumed = Completer<void>();
+      final Completer<void> releaseConsumer = Completer<void>();
+      final List<ModelEvent> delivered = <ModelEvent>[];
+      late final StreamController<ModelProviderEvent> source;
+      source = StreamController<ModelProviderEvent>(
+        sync: true,
+        onListen: () => source.add(_delta('first')),
+        onPause: () {
+          if (!providerPaused.isCompleted) providerPaused.complete();
+        },
+        onResume: () {
+          if (!providerResumed.isCompleted) providerResumed.complete();
+        },
+      );
+      final Future<List<ModelEvent>> result =
+          ModelProviderCapabilityAdapter(
+            _binding(_ProviderChannel(events: source.stream)),
+            selectedModel: 'scripted-v1',
+          ).invoke(_request()).asyncMap((ModelEvent event) async {
+            delivered.add(event);
+            if (delivered.length == 1) await releaseConsumer.future;
+            return event;
+          }).toList();
+
+      await providerPaused.future.timeout(const Duration(seconds: 1));
+      source.add(_delta('second'));
+      expect(delivered, hasLength(1));
+      releaseConsumer.complete();
+      await providerResumed.future.timeout(const Duration(seconds: 1));
+      source.add(_terminal());
+
+      expect(await result.timeout(const Duration(seconds: 1)), hasLength(3));
+    },
+  );
+
+  test(
+    'synchronous setup failure with take one does not await transport',
+    () async {
+      final StateError setupFailure = StateError('synchronous setup failure');
+      final ModelProviderCapabilityAdapter adapter =
+          ModelProviderCapabilityAdapter(
+            _binding(_ThrowingStreamChannel(setupFailure)),
+            selectedModel: 'scripted-v1',
+          );
+
+      for (final Stream<ModelEvent> stream in <Stream<ModelEvent>>[
+        adapter.invoke(_request()).take(1),
+        adapter.invoke(_request()),
+      ]) {
+        final List<ModelEvent> events = await stream.toList().timeout(
+          const Duration(seconds: 1),
+        );
+        expect(events, hasLength(1));
+        expect(
+          events.single,
+          isA<ModelInvocationFailedEvent>().having(
+            (ModelInvocationFailedEvent event) => event.error,
+            'error',
+            same(setupFailure),
+          ),
+        );
+      }
+    },
+  );
+
   test('adapter snapshots nested provider options at construction', () async {
     final Map<String, Object?> nested = <String, Object?>{'mode': 'original'};
     final List<Object?> values = <Object?>['original'];
@@ -581,6 +650,20 @@ final class _ProviderChannel implements AdeleStreamChannel {
     lastPayload = payload;
     return events.map<Object?>(_encodeEvent);
   }
+}
+
+final class _ThrowingStreamChannel implements AdeleStreamChannel {
+  const _ThrowingStreamChannel(this.error);
+
+  final Object error;
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) =>
+      throw StateError('Unary transport is forbidden.');
+
+  @override
+  Stream<Object?> stream(String method, Map<String, Object?> payload) =>
+      throw error;
 }
 
 Map<String, Object?> _encodeEvent(

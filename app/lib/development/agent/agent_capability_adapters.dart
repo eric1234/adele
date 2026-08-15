@@ -38,6 +38,8 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
     StreamSubscription<ModelProviderEvent>? subscription;
     Completer<void>? transportCancellation;
     bool transportCancellationStarted = false;
+    bool transportSetupComplete = false;
+    bool consumerPaused = false;
     bool adapterCloseInitiated = false;
     bool semanticTerminal = false;
     bool settled = false;
@@ -47,7 +49,10 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
           Completer<void>();
       if (transportCancellationStarted) return cancellation.future;
       final StreamSubscription<ModelProviderEvent>? current = subscription;
-      if (current == null) return cancellation.future;
+      if (current == null) {
+        if (transportSetupComplete) cancellation.complete();
+        return cancellation.future;
+      }
       transportCancellationStarted = true;
       current.cancel().then(
         cancellation.complete,
@@ -128,7 +133,7 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
                         closeAdapterStream();
                     }
                   } on Object catch (error, stackTrace) {
-                    unawaited(subscription?.cancel());
+                    containSettledTransportCancellation();
                     fail(error, stackTrace);
                   }
                 },
@@ -156,19 +161,26 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
                 },
               );
           subscription = created;
+          transportSetupComplete = true;
           if (transportCancellation != null) {
             requestTransportCancellation();
+          } else if (consumerPaused) {
+            created.pause();
           }
         } on Object catch (error, stackTrace) {
-          final Completer<void>? cancellation = transportCancellation;
-          if (cancellation != null && !cancellation.isCompleted) {
-            cancellation.completeError(error, stackTrace);
-          }
+          transportSetupComplete = true;
           fail(error, stackTrace);
+          if (transportCancellation != null) requestTransportCancellation();
         }
       },
-      onPause: () => subscription?.pause(),
-      onResume: () => subscription?.resume(),
+      onPause: () {
+        consumerPaused = true;
+        subscription?.pause();
+      },
+      onResume: () {
+        consumerPaused = false;
+        subscription?.resume();
+      },
       onCancel: () async {
         if (adapterCloseInitiated) return;
         settled = true;
