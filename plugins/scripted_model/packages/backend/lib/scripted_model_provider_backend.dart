@@ -185,6 +185,14 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
       );
       return;
     }
+    if (outcomeIndex != proposalIndex + 1) {
+      yield _failure(
+        ModelProviderFailureKind.invalidRequest,
+        'intervening_tool_history',
+        'The scripted provider does not support input between its proposal and outcome.',
+      );
+      return;
+    }
     if (outcomeIndex != request.input.length - 1) {
       yield _failure(
         ModelProviderFailureKind.invalidRequest,

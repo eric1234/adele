@@ -398,6 +398,33 @@ void main() {
     });
   }
 
+  for (final ({String name, ModelProviderInput intervening}) fixture
+      in <({String name, ModelProviderInput intervening})>[
+        (name: 'user', intervening: _user(text: 'New request.')),
+        (
+          name: 'unrelated proposal',
+          intervening: _proposal(callId: 'unrelated-call'),
+        ),
+      ]) {
+    test('continuation rejects intervening ${fixture.name}', () async {
+      final List<ModelProviderEvent> events = await provider
+          .invoke(
+            _request(
+              input: <ModelProviderInput>[
+                _user(),
+                _initialAssistantText(),
+                _proposal(),
+                fixture.intervening,
+                _outcome(),
+              ],
+            ),
+          )
+          .toList();
+      _expectInvalidContinuation(events, 'intervening_tool_history');
+      expect(events.single.kind, ModelProviderEventKind.terminal);
+    });
+  }
+
   test('trailing history takes precedence over output limit', () async {
     final List<ModelProviderEvent> events = await provider
         .invoke(
@@ -463,12 +490,13 @@ ModelProviderInput _user({String text = 'Inspect.'}) => ModelProviderInput(
 ModelProviderInput _proposal({
   String name = ScriptedCommonModelProvider.toolName,
   String uri = ScriptedCommonModelProvider.resourceUri,
+  String callId = ScriptedCommonModelProvider.callId,
 }) => ModelProviderInput(
   kind: ModelProviderInputKind.toolProposal,
   itemId: ScriptedCommonModelProvider.itemId,
   message: null,
   toolProposal: ModelProviderToolProposal(
-    callId: ScriptedCommonModelProvider.callId,
+    callId: callId,
     name: name,
     arguments: <String, Object?>{'uri': uri},
   ),
