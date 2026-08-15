@@ -16,6 +16,7 @@ void main() {
       final _ProviderChannel channel = _ProviderChannel(
         events: Stream<ModelProviderEvent>.fromIterable(<ModelProviderEvent>[
           _delta('Inspecting '),
+          _native('native-1', 'reasoning-v1'),
           _text('Inspecting.', 'text-1'),
           _proposal('call-1', 'item-1'),
           _terminal(),
@@ -42,6 +43,12 @@ void main() {
           'delta',
           'Inspecting ',
         ),
+        isA<ModelOutputItemCompleted>().having(
+          (ModelOutputItemCompleted event) =>
+              (event.item as ModelNativeOutput).providerItemId,
+          'native item ID',
+          'native-1',
+        ),
         isA<ModelOutputItemCompleted>(),
         isA<ModelOutputItemCompleted>().having(
           (ModelOutputItemCompleted event) =>
@@ -52,13 +59,55 @@ void main() {
         isA<ModelInvocationSettledEvent>(),
       ]);
       final ModelToolProposalOutput proposal =
-          (events[2] as ModelOutputItemCompleted).item
+          (events[3] as ModelOutputItemCompleted).item
               as ModelToolProposalOutput;
       expect(proposal.proposal.providerCallId, 'call-1');
       expect(proposal.providerNativeMetadata!.kind, 'fixture-v1');
       expect(proposal.providerNativeMetadata!.data['signed'], 'opaque');
     },
   );
+
+  test('common adapter lowers native-only semantic input exactly', () async {
+    final _ProviderChannel channel = _ProviderChannel(
+      events: Stream<ModelProviderEvent>.value(_terminal()),
+    );
+    await ModelProviderCapabilityAdapter(
+          _binding(channel),
+          selectedModel: 'scripted-v1',
+        )
+        .invoke(
+          SemanticModelRequest(
+            invocationId: ModelInvocationId('native-replay'),
+            input: <SemanticModelInputItem>[
+              SemanticNativeInput(
+                providerItemId: 'native-1',
+                providerNativeMetadata: ModelNativeEnvelope(
+                  kind: 'reasoning-v1',
+                  compatibility: const <String, Object?>{'route': 'fixture'},
+                  data: const <String, Object?>{'opaque': 'signed'},
+                ),
+              ),
+            ],
+            tools: MaterializedToolSet(const <MaterializedTool>[]),
+          ),
+        )
+        .toList();
+
+    final Map<Object?, Object?> request =
+        channel.lastPayload!['request']! as Map<Object?, Object?>;
+    final Map<Object?, Object?> input =
+        (request['input']! as List<Object?>).single! as Map<Object?, Object?>;
+    expect(input['kind'], 'nativeItem');
+    expect(input['itemId'], 'native-1');
+    expect(input['message'], isNull);
+    expect(input['toolProposal'], isNull);
+    expect(input['toolOutcome'], isNull);
+    expect(input['nativeMetadata'], <String, Object?>{
+      'kind': 'reasoning-v1',
+      'compatibility': <String, Object?>{'route': 'fixture'},
+      'data': <String, Object?>{'opaque': 'signed'},
+    });
+  });
 
   test(
     'common adapter preserves partial output before semantic failure',
@@ -513,6 +562,23 @@ ModelProviderEvent _text(String text, String itemId) => ModelProviderEvent(
     toolProposal: null,
     itemId: itemId,
     nativeMetadata: null,
+  ),
+  terminal: null,
+);
+
+ModelProviderEvent _native(String itemId, String kind) => ModelProviderEvent(
+  kind: ModelProviderEventKind.output,
+  observation: null,
+  output: ModelProviderOutput(
+    kind: ModelProviderOutputKind.nativeItem,
+    text: null,
+    toolProposal: null,
+    itemId: itemId,
+    nativeMetadata: ModelProviderNativeEnvelope(
+      kind: kind,
+      compatibility: const <String, Object?>{'route': 'fixture'},
+      data: const <String, Object?>{'opaque': 'signed'},
+    ),
   ),
   terminal: null,
 );

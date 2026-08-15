@@ -200,6 +200,11 @@ general settled events, and typed Run observation retains their settlement and
 metadata. The provisional development strategy never executes proposals from
 incomplete or refused turns.
 
+Opaque provider-native state may either be metadata intrinsically attached to
+a semantic item or an independent native-only ordered item. Native-only items
+carry no common text, tool, reasoning, or compaction meaning; the kernel retains
+their exact list position for compatible model/tool/model replay.
+
 # Tool semantic model
 
 ## Tool identity

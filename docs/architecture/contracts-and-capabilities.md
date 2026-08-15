@@ -21,6 +21,10 @@ settlement.
 Ordered input/output wrappers exclusively own optional provider item identity
 and native metadata; tool-proposal payloads own only tool-call correlation,
 name, and arguments.
+The ordered input/output union also has one native-only item whose required
+opaque envelope occupies an independent list position without semantic
+text/tool payload. This preserves provider item cardinality and order while
+keeping provider-specific reasoning or compaction outside common semantics.
 Capability transport plus Phase III active
 provider registration, deterministic discovery, exact-major resolution, and
 generated-client invocation are implemented for the maintained

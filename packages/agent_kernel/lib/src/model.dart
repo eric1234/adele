@@ -23,6 +23,18 @@ sealed class SemanticModelInputItem {
   const SemanticModelInputItem();
 }
 
+final class SemanticNativeInput extends SemanticModelInputItem {
+  SemanticNativeInput({
+    required this.providerNativeMetadata,
+    this.providerItemId,
+  }) {
+    _requireOptionalNonEmpty(providerItemId, 'Provider item ID');
+  }
+
+  final String? providerItemId;
+  final ModelNativeEnvelope providerNativeMetadata;
+}
+
 final class SemanticMessageInput extends SemanticModelInputItem {
   SemanticMessageInput({
     required this.role,
@@ -94,6 +106,18 @@ final class SemanticModelRequest {
 
 sealed class ModelOutputItem {
   const ModelOutputItem();
+}
+
+final class ModelNativeOutput extends ModelOutputItem {
+  ModelNativeOutput({
+    required this.providerNativeMetadata,
+    this.providerItemId,
+  }) {
+    _requireOptionalNonEmpty(providerItemId, 'Provider item ID');
+  }
+
+  final String? providerItemId;
+  final ModelNativeEnvelope providerNativeMetadata;
 }
 
 final class ModelTextOutput extends ModelOutputItem {

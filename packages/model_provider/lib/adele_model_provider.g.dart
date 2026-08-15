@@ -1534,6 +1534,7 @@ ModelProviderInputKind _decodeModelProviderInputKind(Object? _adeleValue484) {
     'message' => ModelProviderInputKind.message,
     'toolProposal' => ModelProviderInputKind.toolProposal,
     'toolOutcome' => ModelProviderInputKind.toolOutcome,
+    'nativeItem' => ModelProviderInputKind.nativeItem,
     _ => throw AdeleProtocolException(
       'Unknown ModelProviderInputKind: ' + _adeleValue484 + '.',
     ),
@@ -1573,6 +1574,7 @@ ModelProviderOutputKind _decodeModelProviderOutputKind(Object? _adeleValue487) {
   return switch (_adeleValue487) {
     'text' => ModelProviderOutputKind.text,
     'toolProposal' => ModelProviderOutputKind.toolProposal,
+    'nativeItem' => ModelProviderOutputKind.nativeItem,
     _ => throw AdeleProtocolException(
       'Unknown ModelProviderOutputKind: ' + _adeleValue487 + '.',
     ),

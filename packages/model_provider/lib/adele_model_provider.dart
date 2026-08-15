@@ -14,7 +14,7 @@ final capabilities.CapabilityKey modelProviderCapability =
 
 enum ModelProviderMessageRole { user, assistant }
 
-enum ModelProviderInputKind { message, toolProposal, toolOutcome }
+enum ModelProviderInputKind { message, toolProposal, toolOutcome, nativeItem }
 
 enum ModelProviderContentKind { text }
 
@@ -32,7 +32,7 @@ enum ModelProviderEventKind { observation, output, terminal }
 
 enum ModelProviderObservationKind { textDelta }
 
-enum ModelProviderOutputKind { text, toolProposal }
+enum ModelProviderOutputKind { text, toolProposal, nativeItem }
 
 enum ModelProviderSettlement { completed, incomplete, refused, failed }
 
@@ -141,11 +141,14 @@ final class ModelProviderInput {
         (message == null ? 0 : 1) +
         (toolProposal == null ? 0 : 1) +
         (toolOutcome == null ? 0 : 1);
-    if (payloads != 1 ||
+    final bool nativeMatches =
+        kind == ModelProviderInputKind.nativeItem && nativeMetadata != null;
+    if ((nativeMatches ? 1 : 0) + payloads != 1 ||
         (kind == ModelProviderInputKind.message) != (message != null) ||
         (kind == ModelProviderInputKind.toolProposal) !=
             (toolProposal != null) ||
-        (kind == ModelProviderInputKind.toolOutcome) != (toolOutcome != null)) {
+        (kind == ModelProviderInputKind.toolOutcome) != (toolOutcome != null) ||
+        (kind == ModelProviderInputKind.nativeItem) != nativeMatches) {
       throw const FormatException(
         'Input kind must match exactly one input payload.',
       );
@@ -240,9 +243,15 @@ final class ModelProviderOutput {
         kind == ModelProviderOutputKind.text && text != null;
     final bool proposalMatches =
         kind == ModelProviderOutputKind.toolProposal && toolProposal != null;
-    if ((textMatches ? 1 : 0) + (proposalMatches ? 1 : 0) != 1 ||
+    final bool nativeMatches =
+        kind == ModelProviderOutputKind.nativeItem && nativeMetadata != null;
+    if ((textMatches ? 1 : 0) +
+                (proposalMatches ? 1 : 0) +
+                (nativeMatches ? 1 : 0) !=
+            1 ||
         (text != null && !textMatches) ||
-        (toolProposal != null && !proposalMatches)) {
+        (toolProposal != null && !proposalMatches) ||
+        (kind == ModelProviderOutputKind.nativeItem) != nativeMatches) {
       throw const FormatException(
         'Output kind must match exactly one output payload.',
       );

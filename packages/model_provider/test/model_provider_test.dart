@@ -28,6 +28,23 @@ void main() {
     expect(request.nativeState!.data, const <String, Object?>{'cursor': 'abc'});
   });
 
+  test('consecutive native-only items remain distinct and ordered', () {
+    final List<ModelProviderInput> input = <ModelProviderInput>[
+      _nativeInput('native-1', 'first-v1'),
+      _nativeInput('native-2', 'second-v1'),
+    ];
+
+    expect(input.map((item) => item.kind), <ModelProviderInputKind>[
+      ModelProviderInputKind.nativeItem,
+      ModelProviderInputKind.nativeItem,
+    ]);
+    expect(input.map((item) => item.itemId), <String?>['native-1', 'native-2']);
+    expect(input.map((item) => item.nativeMetadata!.kind), <String>[
+      'first-v1',
+      'second-v1',
+    ]);
+  });
+
   test('multiple completed proposals and usage round-trip', () {
     final List<ModelProviderEvent> events = <ModelProviderEvent>[
       _proposal('call-1', 'item-1'),
@@ -76,6 +93,27 @@ void main() {
         cacheReadTokens: null,
         cacheWriteTokens: null,
         providerDetails: const <String, Object?>{},
+      ),
+      throwsFormatException,
+    );
+    expect(
+      () => ModelProviderInput(
+        kind: ModelProviderInputKind.nativeItem,
+        message: null,
+        toolProposal: null,
+        toolOutcome: null,
+        itemId: null,
+        nativeMetadata: null,
+      ),
+      throwsFormatException,
+    );
+    expect(
+      () => ModelProviderOutput(
+        kind: ModelProviderOutputKind.nativeItem,
+        text: 'semantic payload',
+        toolProposal: null,
+        itemId: null,
+        nativeMetadata: _native('native'),
       ),
       throwsFormatException,
     );
@@ -506,6 +544,20 @@ ModelProviderNativeEnvelope _native(String kind) => ModelProviderNativeEnvelope(
   compatibility: const <String, Object?>{'model': 'scripted-v1'},
   data: const <String, Object?>{'opaque': 'value'},
 );
+
+ModelProviderInput _nativeInput(String itemId, String kind) =>
+    ModelProviderInput(
+      kind: ModelProviderInputKind.nativeItem,
+      message: null,
+      toolProposal: null,
+      toolOutcome: null,
+      itemId: itemId,
+      nativeMetadata: ModelProviderNativeEnvelope(
+        kind: kind,
+        compatibility: const <String, Object?>{'model': 'scripted-v1'},
+        data: <String, Object?>{'item': itemId},
+      ),
+    );
 
 final class _Channel implements AdeleStreamChannel {
   _Channel({Map<String, Object?>? event}) : event = event ?? _encodedTerminal();

@@ -135,6 +135,16 @@ final class DevelopmentToolLoopStrategy {
     }
     for (final ModelOutputItem item in turn.output) {
       switch (item) {
+        case ModelNativeOutput(
+          :final providerItemId,
+          :final providerNativeMetadata,
+        ):
+          _runItems.add(
+            SemanticNativeInput(
+              providerItemId: providerItemId,
+              providerNativeMetadata: providerNativeMetadata,
+            ),
+          );
         case ModelTextOutput(
           :final content,
           :final providerItemId,
@@ -205,6 +215,8 @@ final class DevelopmentToolLoopStrategy {
             ModelOutputObserved(invocationId: request.invocationId, item: item),
           );
           switch (item) {
+            case ModelNativeOutput():
+              break;
             case ModelTextOutput(:final content):
               text.write(content);
             case ModelToolProposalOutput(proposal: final value):
