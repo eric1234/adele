@@ -176,6 +176,38 @@ void main() {
     },
   );
 
+  test('take one terminal awaits the same blocked transport cleanup', () async {
+    final Completer<void> cancellationStarted = Completer<void>();
+    final Completer<void> releaseCancellation = Completer<void>();
+    late final StreamController<ModelProviderEvent> source;
+    source = StreamController<ModelProviderEvent>(
+      sync: true,
+      onListen: () => source.add(_terminal()),
+      onCancel: () async {
+        cancellationStarted.complete();
+        await releaseCancellation.future;
+      },
+    );
+    bool consumerCompleted = false;
+    final Future<List<ModelEvent>> result =
+        ModelProviderCapabilityAdapter(
+          _binding(_ProviderChannel(events: source.stream)),
+          selectedModel: 'scripted-v1',
+        ).invoke(_request()).take(1).toList().whenComplete(() {
+          consumerCompleted = true;
+        });
+
+    await cancellationStarted.future.timeout(const Duration(seconds: 1));
+    expect(consumerCompleted, isFalse);
+    releaseCancellation.complete();
+
+    final List<ModelEvent> events = await result.timeout(
+      const Duration(seconds: 1),
+    );
+    expect(events, <Matcher>[isA<ModelInvocationSettledEvent>()]);
+    expect(consumerCompleted, isTrue);
+  });
+
   test('synchronous terminal eventually cancels assigned transport', () async {
     final Completer<void> cancelled = Completer<void>();
     late final StreamController<ModelProviderEvent> source;

@@ -36,20 +36,40 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
   Stream<ModelEvent> invoke(SemanticModelRequest request) {
     late final StreamController<ModelEvent> controller;
     StreamSubscription<ModelProviderEvent>? subscription;
-    Completer<void>? pendingConsumerCancellation;
+    Completer<void>? transportCancellation;
+    bool transportCancellationStarted = false;
+    bool adapterCloseInitiated = false;
     bool semanticTerminal = false;
     bool settled = false;
 
-    void cancelSettledTransport() {
+    Future<void> requestTransportCancellation() {
+      final Completer<void> cancellation = transportCancellation ??=
+          Completer<void>();
+      if (transportCancellationStarted) return cancellation.future;
       final StreamSubscription<ModelProviderEvent>? current = subscription;
-      if (current == null) return;
-      unawaited(() async {
-        try {
-          await current.cancel();
-        } on Object {
-          // Semantic terminal is authoritative; cleanup cannot replace it.
-        }
-      }());
+      if (current == null) return cancellation.future;
+      transportCancellationStarted = true;
+      current.cancel().then(
+        cancellation.complete,
+        onError: cancellation.completeError,
+      );
+      return cancellation.future;
+    }
+
+    void containSettledTransportCancellation() {
+      unawaited(
+        requestTransportCancellation().then<void>(
+          (_) {},
+          onError: (_, _) {
+            // Semantic terminal is authoritative; cleanup cannot replace it.
+          },
+        ),
+      );
+    }
+
+    void closeAdapterStream() {
+      adapterCloseInitiated = true;
+      unawaited(controller.close());
     }
 
     void fail(Object error, StackTrace stackTrace) {
@@ -62,7 +82,7 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
           stackTrace: stackTrace,
         ),
       );
-      unawaited(controller.close());
+      closeAdapterStream();
     }
 
     controller = StreamController<ModelEvent>(
@@ -104,8 +124,8 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
                         semanticTerminal = true;
                         settled = true;
                         controller.add(terminal);
-                        unawaited(controller.close());
-                        cancelSettledTransport();
+                        containSettledTransportCancellation();
+                        closeAdapterStream();
                     }
                   } on Object catch (error, stackTrace) {
                     unawaited(subscription?.cancel());
@@ -115,7 +135,7 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
                 onError: (Object error, StackTrace stackTrace) {
                   if (semanticTerminal) {
                     settled = true;
-                    unawaited(controller.close());
+                    closeAdapterStream();
                   } else {
                     fail(error, stackTrace);
                   }
@@ -132,23 +152,17 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
                     return;
                   }
                   settled = true;
-                  unawaited(controller.close());
+                  closeAdapterStream();
                 },
               );
           subscription = created;
-          final Completer<void>? pending = pendingConsumerCancellation;
-          if (pending != null) {
-            created.cancel().then(
-              pending.complete,
-              onError: pending.completeError,
-            );
-          } else if (settled) {
-            cancelSettledTransport();
+          if (transportCancellation != null) {
+            requestTransportCancellation();
           }
         } on Object catch (error, stackTrace) {
-          final Completer<void>? pending = pendingConsumerCancellation;
-          if (pending != null && !pending.isCompleted) {
-            pending.completeError(error, stackTrace);
+          final Completer<void>? cancellation = transportCancellation;
+          if (cancellation != null && !cancellation.isCompleted) {
+            cancellation.completeError(error, stackTrace);
           }
           fail(error, stackTrace);
         }
@@ -156,16 +170,9 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
       onPause: () => subscription?.pause(),
       onResume: () => subscription?.resume(),
       onCancel: () async {
-        if (settled) return;
+        if (adapterCloseInitiated) return;
         settled = true;
-        final StreamSubscription<ModelProviderEvent>? current = subscription;
-        if (current != null) {
-          await current.cancel();
-          return;
-        }
-        final Completer<void> pending = pendingConsumerCancellation ??=
-            Completer<void>();
-        await pending.future;
+        await requestTransportCancellation();
       },
     );
     return controller.stream;
