@@ -187,7 +187,7 @@ void main() {
           ModelObservationObserved,
           ModelOutputObserved,
           ModelOutputObserved,
-          ModelInvocationCompleted,
+          ModelInvocationSettled,
           ToolInvocationPrepared,
           ToolPolicyEvaluated,
           RunInterrupted,
@@ -199,7 +199,7 @@ void main() {
           ModelInvocationStarted,
           ModelObservationObserved,
           ModelOutputObserved,
-          ModelInvocationCompleted,
+          ModelInvocationSettled,
           RunCompleted,
         ],
       );

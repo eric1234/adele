@@ -3,6 +3,20 @@ import 'tool.dart';
 
 enum SemanticMessageRole { user, assistant }
 
+final class ModelNativeEnvelope {
+  ModelNativeEnvelope({
+    required String kind,
+    required Map<String, Object?> compatibility,
+    required Map<String, Object?> data,
+  }) : kind = _requireNonEmpty(kind, 'Model native envelope kind'),
+       compatibility = _freezeMap(compatibility),
+       data = _freezeMap(data);
+
+  final String kind;
+  final Map<String, Object?> compatibility;
+  final Map<String, Object?> data;
+}
+
 sealed class SemanticModelInputItem {
   const SemanticModelInputItem();
 }
@@ -12,8 +26,8 @@ final class SemanticMessageInput extends SemanticModelInputItem {
     required this.role,
     required this.content,
     this.providerItemId,
-    Map<String, Object?> providerNativeMetadata = const <String, Object?>{},
-  }) : providerNativeMetadata = _freezeMap(providerNativeMetadata) {
+    this.providerNativeMetadata,
+  }) {
     if (content.trim().isEmpty) {
       throw const FormatException(
         'Semantic message content must not be empty.',
@@ -25,7 +39,7 @@ final class SemanticMessageInput extends SemanticModelInputItem {
   final SemanticMessageRole role;
   final String content;
   final String? providerItemId;
-  final Map<String, Object?> providerNativeMetadata;
+  final ModelNativeEnvelope? providerNativeMetadata;
 }
 
 final class SemanticToolOutcomeInput extends SemanticModelInputItem {
@@ -46,14 +60,14 @@ final class SemanticToolProposalInput extends SemanticModelInputItem {
   SemanticToolProposalInput({
     required this.proposal,
     this.providerItemId,
-    Map<String, Object?> providerNativeMetadata = const <String, Object?>{},
-  }) : providerNativeMetadata = _freezeMap(providerNativeMetadata) {
+    this.providerNativeMetadata,
+  }) {
     _requireOptionalNonEmpty(providerItemId, 'Provider item ID');
   }
 
   final ProviderToolProposal proposal;
   final String? providerItemId;
-  final Map<String, Object?> providerNativeMetadata;
+  final ModelNativeEnvelope? providerNativeMetadata;
 }
 
 final class SemanticToolProposalFailureInput extends SemanticModelInputItem {
@@ -84,8 +98,8 @@ final class ModelTextOutput extends ModelOutputItem {
   ModelTextOutput(
     this.content, {
     this.providerItemId,
-    Map<String, Object?> providerNativeMetadata = const <String, Object?>{},
-  }) : providerNativeMetadata = _freezeMap(providerNativeMetadata) {
+    this.providerNativeMetadata,
+  }) {
     if (content.isEmpty) {
       throw const FormatException('Model text output must not be empty.');
     }
@@ -94,21 +108,21 @@ final class ModelTextOutput extends ModelOutputItem {
 
   final String content;
   final String? providerItemId;
-  final Map<String, Object?> providerNativeMetadata;
+  final ModelNativeEnvelope? providerNativeMetadata;
 }
 
 final class ModelToolProposalOutput extends ModelOutputItem {
   ModelToolProposalOutput(
     this.proposal, {
     this.providerItemId,
-    Map<String, Object?> providerNativeMetadata = const <String, Object?>{},
-  }) : providerNativeMetadata = _freezeMap(providerNativeMetadata) {
+    this.providerNativeMetadata,
+  }) {
     _requireOptionalNonEmpty(providerItemId, 'Provider item ID');
   }
 
   final ProviderToolProposal proposal;
   final String? providerItemId;
-  final Map<String, Object?> providerNativeMetadata;
+  final ModelNativeEnvelope? providerNativeMetadata;
 }
 
 sealed class ModelObservation {
@@ -222,8 +236,8 @@ final class ModelTerminalMetadata {
     this.providerRequestId,
     this.providerStopReason,
     this.usage,
-    Map<String, Object?> providerNativeState = const <String, Object?>{},
-  }) : providerNativeState = _freezeMap(providerNativeState) {
+    this.providerNativeState,
+  }) {
     _requireOptionalNonEmpty(effectiveModel, 'Effective model');
     _requireOptionalNonEmpty(providerResponseId, 'Provider response ID');
     _requireOptionalNonEmpty(providerRequestId, 'Provider request ID');
@@ -235,15 +249,15 @@ final class ModelTerminalMetadata {
   final String? providerRequestId;
   final String? providerStopReason;
   final ModelUsage? usage;
-  final Map<String, Object?> providerNativeState;
+  final ModelNativeEnvelope? providerNativeState;
 }
 
 sealed class ModelTerminalEvent extends ModelEvent {
   const ModelTerminalEvent(super.invocationId);
 }
 
-final class ModelInvocationCompletedEvent extends ModelTerminalEvent {
-  ModelInvocationCompletedEvent({
+final class ModelInvocationSettledEvent extends ModelTerminalEvent {
+  ModelInvocationSettledEvent({
     required ModelInvocationId invocationId,
     this.settlement = ModelSettlement.completed,
     this.incompleteReason,
@@ -268,10 +282,12 @@ final class ModelInvocationFailedEvent extends ModelTerminalEvent {
     required ModelInvocationId invocationId,
     required this.error,
     this.stackTrace,
+    this.semanticTerminalMetadata,
   }) : super(invocationId);
 
   final Object error;
   final StackTrace? stackTrace;
+  final ModelTerminalMetadata? semanticTerminalMetadata;
 }
 
 abstract interface class ModelPort {
@@ -338,6 +354,11 @@ void _requireOptionalNonEmpty(String? value, String label) {
   if (value != null && value.trim().isEmpty) {
     throw FormatException('$label must not be empty.');
   }
+}
+
+String _requireNonEmpty(String value, String label) {
+  if (value.trim().isEmpty) throw FormatException('$label must not be empty.');
+  return value;
 }
 
 Map<String, Object?> _freezeMap(Map<String, Object?> source) =>

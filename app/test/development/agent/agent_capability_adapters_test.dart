@@ -49,8 +49,14 @@ void main() {
           'item ID',
           'item-1',
         ),
-        isA<ModelInvocationCompletedEvent>(),
+        isA<ModelInvocationSettledEvent>(),
       ]);
+      final ModelToolProposalOutput proposal =
+          (events[2] as ModelOutputItemCompleted).item
+              as ModelToolProposalOutput;
+      expect(proposal.proposal.providerCallId, 'call-1');
+      expect(proposal.providerNativeMetadata!.kind, 'fixture-v1');
+      expect(proposal.providerNativeMetadata!.data['signed'], 'opaque');
     },
   );
 
@@ -80,6 +86,20 @@ void main() {
           ),
         ),
       ]);
+      final ModelInvocationFailedEvent failure =
+          events.last as ModelInvocationFailedEvent;
+      expect(failure.semanticTerminalMetadata!.effectiveModel, 'scripted-v1');
+      expect(failure.semanticTerminalMetadata!.providerRequestId, 'request-f');
+      expect(
+        failure.semanticTerminalMetadata!.providerResponseId,
+        'response-f',
+      );
+      expect(failure.semanticTerminalMetadata!.providerStopReason, 'error');
+      expect(failure.semanticTerminalMetadata!.usage!.inputTokens, 4);
+      expect(
+        failure.semanticTerminalMetadata!.providerNativeState!.kind,
+        'failure-state-v1',
+      );
     },
   );
 
@@ -107,8 +127,36 @@ void main() {
       selectedModel: 'scripted-v1',
     ).invoke(_request()).toList();
     expect(mapped, hasLength(1));
-    expect(mapped.single, isA<ModelInvocationCompletedEvent>());
+    expect(mapped.single, isA<ModelInvocationSettledEvent>());
   });
+
+  for (final ({String name, ModelProviderEvent event}) lateEvent
+      in <({String name, ModelProviderEvent event})>[
+        (name: 'output', event: _text('Late.', 'late-1')),
+        (name: 'terminal', event: _terminal()),
+      ]) {
+    test('terminal followed by ${lateEvent.name} fails promptly', () async {
+      final List<ModelEvent> mapped = await ModelProviderCapabilityAdapter(
+        _binding(
+          _ProviderChannel(
+            events: Stream<ModelProviderEvent>.fromIterable(
+              <ModelProviderEvent>[_terminal(), lateEvent.event],
+            ),
+          ),
+        ),
+        selectedModel: 'scripted-v1',
+      ).invoke(_request()).toList().timeout(const Duration(seconds: 1));
+      expect(mapped.first, isA<ModelInvocationSettledEvent>());
+      expect(
+        mapped.last,
+        isA<ModelInvocationFailedEvent>().having(
+          (ModelInvocationFailedEvent event) => event.error,
+          'error',
+          isA<ModelInvocationContractException>(),
+        ),
+      );
+    });
+  }
 
   test('consumer cancellation reaches underlying stream', () async {
     final Completer<void> cancelled = Completer<void>();
@@ -135,10 +183,45 @@ void main() {
       }).snapshot,
       const <String, Object?>{'uri': 'file:///tmp/example.dart'},
     );
-    expect(
-      () => executable.validateAndNormalize(const <String, Object?>{'uri': 42}),
-      throwsA(isA<ToolArgumentValidationException>()),
+    for (final Map<String, Object?> invalid in <Map<String, Object?>>[
+      const <String, Object?>{},
+      const <String, Object?>{'uri': 42},
+      const <String, Object?>{'uri': 'relative/path'},
+      const <String, Object?>{'uri': 'file:///tmp/example.dart', 'extra': true},
+    ]) {
+      expect(
+        () => executable.validateAndNormalize(invalid),
+        throwsA(isA<ToolArgumentValidationException>()),
+      );
+    }
+  });
+
+  test('ResourceInspector unavailable endpoint does not dispatch', () async {
+    final _UnusedChannel channel = _UnusedChannel();
+    bool available = true;
+    final ResourceInspectorToolExecutable executable =
+        ResourceInspectorToolExecutable(
+          _resourceBinding(channel: channel, isAvailable: () => available),
+        );
+    final CanonicalToolArguments arguments = executable.validateAndNormalize(
+      const <String, Object?>{'uri': 'file:///tmp/example.dart'},
     );
+    available = false;
+    final ToolOutcome outcome =
+        (await executable
+                    .execute(
+                      arguments,
+                      ToolExecutionContext(
+                        runId: RunId('run-1'),
+                        sessionId: SessionId('session-1'),
+                      ),
+                    )
+                    .single
+                as ToolExecutionTerminal)
+            .outcome;
+    expect(outcome.failureKind, ToolFailureKind.infrastructure);
+    expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
+    expect(channel.requestCount, 0);
   });
 }
 
@@ -186,15 +269,13 @@ ModelProviderEvent _proposal(String callId, String itemId) =>
           callId: callId,
           name: 'inspect_resource',
           arguments: const <String, Object?>{'uri': 'file:///tmp/example.dart'},
-          itemId: itemId,
-          nativeMetadata: ModelProviderNativeEnvelope(
-            kind: 'fixture-v1',
-            compatibility: const <String, Object?>{},
-            data: const <String, Object?>{'signed': 'opaque'},
-          ),
         ),
         itemId: itemId,
-        nativeMetadata: null,
+        nativeMetadata: ModelProviderNativeEnvelope(
+          kind: 'fixture-v1',
+          compatibility: const <String, Object?>{},
+          data: const <String, Object?>{'signed': 'opaque'},
+        ),
       ),
       terminal: null,
     );
@@ -230,11 +311,21 @@ ModelProviderEvent _failedTerminal() => ModelProviderEvent(
       providerDetails: const <String, Object?>{},
     ),
     providerStopReason: 'error',
-    usage: null,
-    effectiveModel: null,
-    responseId: null,
-    requestId: null,
-    nativeState: null,
+    usage: ModelProviderUsage(
+      inputTokens: 4,
+      outputTokens: 2,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      providerDetails: const <String, Object?>{},
+    ),
+    effectiveModel: 'scripted-v1',
+    responseId: 'response-f',
+    requestId: 'request-f',
+    nativeState: ModelProviderNativeEnvelope(
+      kind: 'failure-state-v1',
+      compatibility: const <String, Object?>{'model': 'scripted-v1'},
+      data: const <String, Object?>{'cursor': 'failed'},
+    ),
   ),
 );
 
@@ -257,7 +348,10 @@ ProviderBinding _binding(AdeleStreamChannel channel) {
   return registry.resolve(modelProviderCapability);
 }
 
-ProviderBinding _resourceBinding() {
+ProviderBinding _resourceBinding({
+  AdeleRequestChannel? channel,
+  bool Function()? isAvailable,
+}) {
   final CapabilityRegistry registry = CapabilityRegistry();
   registry.register(
     provider: ProviderDescriptor(
@@ -268,9 +362,9 @@ ProviderBinding _resourceBinding() {
       serviceId: resourceInspectorServiceId,
     ),
     endpoint: AdeleRequestChannelEndpoint(
-      channel: _UnusedChannel(),
+      channel: channel ?? _UnusedChannel(),
       serviceId: resourceInspectorServiceId,
-      isAvailable: () => true,
+      isAvailable: isAvailable ?? () => true,
     ),
   );
   return registry.resolve(resourceInspectCapability);
@@ -332,10 +426,6 @@ Map<String, Object?> _encodeProposal(ModelProviderToolProposal proposal) =>
       'callId': proposal.callId,
       'name': proposal.name,
       'arguments': proposal.arguments,
-      'itemId': proposal.itemId,
-      'nativeMetadata': proposal.nativeMetadata == null
-          ? null
-          : _encodeNative(proposal.nativeMetadata!),
     };
 
 Map<String, Object?> _encodeTerminal(ModelProviderTerminal terminal) =>
@@ -376,7 +466,11 @@ Map<String, Object?> _encodeNative(ModelProviderNativeEnvelope native) =>
     };
 
 final class _UnusedChannel implements AdeleRequestChannel {
+  int requestCount = 0;
+
   @override
-  Future<Object?> request(String method, Map<String, Object?> payload) =>
-      throw StateError('Unused.');
+  Future<Object?> request(String method, Map<String, Object?> payload) async {
+    requestCount++;
+    throw StateError('Unused.');
+  }
 }

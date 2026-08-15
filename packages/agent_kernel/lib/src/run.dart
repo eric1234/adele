@@ -259,20 +259,30 @@ final class ModelObservationObserved extends ExecutionEvent {
   final ModelObservation observation;
 }
 
-final class ModelInvocationCompleted extends ExecutionEvent {
-  const ModelInvocationCompleted(this.invocationId);
+final class ModelInvocationSettled extends ExecutionEvent {
+  const ModelInvocationSettled({
+    required this.invocationId,
+    required this.settlement,
+    required this.incompleteReason,
+    required this.metadata,
+  });
 
   final ModelInvocationId invocationId;
+  final ModelSettlement settlement;
+  final ModelIncompleteReason? incompleteReason;
+  final ModelTerminalMetadata metadata;
 }
 
 final class ModelInvocationFailed extends ExecutionEvent {
   const ModelInvocationFailed({
     required this.invocationId,
     required this.error,
+    this.semanticTerminalMetadata,
   });
 
   final ModelInvocationId invocationId;
   final Object error;
+  final ModelTerminalMetadata? semanticTerminalMetadata;
 }
 
 final class ToolInvocationPrepared extends ExecutionEvent {

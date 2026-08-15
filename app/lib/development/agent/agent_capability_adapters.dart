@@ -39,7 +39,7 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
     bool settled = false;
 
     void fail(Object error, StackTrace stackTrace) {
-      if (settled || semanticTerminal) return;
+      if (settled) return;
       settled = true;
       controller.add(
         ModelInvocationFailedEvent(
@@ -49,6 +49,22 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
         ),
       );
       unawaited(controller.close());
+    }
+
+    void contractViolation(String message) {
+      if (settled) return;
+      settled = true;
+      controller.add(
+        ModelInvocationFailedEvent(
+          invocationId: request.invocationId,
+          error: ModelInvocationContractException(message),
+          stackTrace: StackTrace.current,
+        ),
+      );
+      unawaited(() async {
+        await subscription?.cancel();
+        await controller.close();
+      }());
     }
 
     controller = StreamController<ModelEvent>(
@@ -63,13 +79,10 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
               .invoke(_toProviderRequest(request, this))
               .listen(
                 (ModelProviderEvent event) {
-                  if (settled || semanticTerminal) {
-                    unawaited(subscription?.cancel());
-                    fail(
-                      const ModelInvocationContractException(
-                        'The provider emitted an event after semantic terminal.',
-                      ),
-                      StackTrace.current,
+                  if (settled) return;
+                  if (semanticTerminal) {
+                    contractViolation(
+                      'The provider emitted an event after semantic terminal.',
                     );
                     return;
                   }
@@ -92,13 +105,12 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
                           ),
                         );
                       case ModelProviderEventKind.terminal:
-                        semanticTerminal = true;
-                        controller.add(
-                          _toModelTerminal(
-                            request.invocationId,
-                            event.terminal!,
-                          ),
+                        final ModelTerminalEvent terminal = _toModelTerminal(
+                          request.invocationId,
+                          event.terminal!,
                         );
+                        semanticTerminal = true;
+                        controller.add(terminal);
                     }
                   } on Object catch (error, stackTrace) {
                     unawaited(subscription?.cancel());
@@ -165,99 +177,108 @@ ModelProviderRequest _toProviderRequest(
   nativeState: null,
 );
 
-ModelProviderInput _toProviderInput(
-  SemanticModelInputItem item,
-) => switch (item) {
-  SemanticMessageInput(
-    :final role,
-    :final content,
-    :final providerItemId,
-    :final providerNativeMetadata,
-  ) =>
-    ModelProviderInput(
-      kind: ModelProviderInputKind.message,
-      message: ModelProviderMessage(
-        role: switch (role) {
-          SemanticMessageRole.user => ModelProviderMessageRole.user,
-          SemanticMessageRole.assistant => ModelProviderMessageRole.assistant,
-        },
-        content: <ModelProviderContent>[
-          ModelProviderContent(
-            kind: ModelProviderContentKind.text,
-            text: content,
+ModelProviderInput _toProviderInput(SemanticModelInputItem item) =>
+    switch (item) {
+      SemanticMessageInput(
+        :final role,
+        :final content,
+        :final providerItemId,
+        :final providerNativeMetadata,
+      ) =>
+        ModelProviderInput(
+          kind: ModelProviderInputKind.message,
+          itemId: providerItemId,
+          message: ModelProviderMessage(
+            role: switch (role) {
+              SemanticMessageRole.user => ModelProviderMessageRole.user,
+              SemanticMessageRole.assistant =>
+                ModelProviderMessageRole.assistant,
+            },
+            content: <ModelProviderContent>[
+              ModelProviderContent(
+                kind: ModelProviderContentKind.text,
+                text: content,
+              ),
+            ],
           ),
-        ],
+          toolProposal: null,
+          toolOutcome: null,
+          nativeMetadata: _toProviderNativeEnvelope(providerNativeMetadata),
+        ),
+      SemanticToolProposalInput(
+        :final proposal,
+        :final providerItemId,
+        :final providerNativeMetadata,
+      ) =>
+        ModelProviderInput(
+          kind: ModelProviderInputKind.toolProposal,
+          itemId: providerItemId,
+          message: null,
+          toolProposal: ModelProviderToolProposal(
+            callId: proposal.providerCallId,
+            name: proposal.alias,
+            arguments: proposal.arguments,
+          ),
+          toolOutcome: null,
+          nativeMetadata: _toProviderNativeEnvelope(providerNativeMetadata),
+        ),
+      SemanticToolOutcomeInput(:final providerCallId, :final outcome) =>
+        ModelProviderInput(
+          kind: ModelProviderInputKind.toolOutcome,
+          itemId: null,
+          message: null,
+          toolProposal: null,
+          toolOutcome: ModelProviderToolOutcome(
+            callId: providerCallId,
+            status: switch (outcome.disposition) {
+              ToolOutcomeDisposition.success =>
+                ModelProviderToolOutcomeStatus.success,
+              ToolOutcomeDisposition.userRejected ||
+              ToolOutcomeDisposition.policyDenied =>
+                ModelProviderToolOutcomeStatus.rejected,
+              ToolOutcomeDisposition.failure =>
+                ModelProviderToolOutcomeStatus.failed,
+              ToolOutcomeDisposition.cancelled =>
+                ModelProviderToolOutcomeStatus.cancelled,
+              ToolOutcomeDisposition.indeterminate =>
+                ModelProviderToolOutcomeStatus.indeterminate,
+            },
+            content: outcome.modelContent,
+          ),
+          nativeMetadata: null,
+        ),
+      SemanticToolProposalFailureInput(:final failure) => ModelProviderInput(
+        kind: ModelProviderInputKind.toolOutcome,
+        itemId: null,
+        message: null,
+        toolProposal: null,
+        toolOutcome: ModelProviderToolOutcome(
+          callId: failure.providerCallId,
+          status: ModelProviderToolOutcomeStatus.failed,
+          content: failure.message,
+        ),
+        nativeMetadata: null,
       ),
-      toolProposal: null,
-      toolOutcome: null,
-      nativeMetadata: _nativeMetadata(providerItemId, providerNativeMetadata),
-    ),
-  SemanticToolProposalInput(
-    :final proposal,
-    :final providerItemId,
-    :final providerNativeMetadata,
-  ) =>
-    ModelProviderInput(
-      kind: ModelProviderInputKind.toolProposal,
-      message: null,
-      toolProposal: ModelProviderToolProposal(
-        callId: proposal.providerCallId,
-        name: proposal.alias,
-        arguments: proposal.arguments,
-        itemId: providerItemId,
-        nativeMetadata: _nativeMetadata(null, providerNativeMetadata),
-      ),
-      toolOutcome: null,
-      nativeMetadata: null,
-    ),
-  SemanticToolOutcomeInput(:final providerCallId, :final outcome) =>
-    ModelProviderInput(
-      kind: ModelProviderInputKind.toolOutcome,
-      message: null,
-      toolProposal: null,
-      toolOutcome: ModelProviderToolOutcome(
-        callId: providerCallId,
-        status: switch (outcome.disposition) {
-          ToolOutcomeDisposition.success =>
-            ModelProviderToolOutcomeStatus.success,
-          ToolOutcomeDisposition.userRejected ||
-          ToolOutcomeDisposition.policyDenied =>
-            ModelProviderToolOutcomeStatus.rejected,
-          ToolOutcomeDisposition.failure =>
-            ModelProviderToolOutcomeStatus.failed,
-          ToolOutcomeDisposition.cancelled =>
-            ModelProviderToolOutcomeStatus.cancelled,
-          ToolOutcomeDisposition.indeterminate =>
-            ModelProviderToolOutcomeStatus.indeterminate,
-        },
-        content: outcome.modelContent,
-      ),
-      nativeMetadata: null,
-    ),
-  SemanticToolProposalFailureInput(:final failure) => ModelProviderInput(
-    kind: ModelProviderInputKind.toolOutcome,
-    message: null,
-    toolProposal: null,
-    toolOutcome: ModelProviderToolOutcome(
-      callId: failure.providerCallId,
-      status: ModelProviderToolOutcomeStatus.failed,
-      content: failure.message,
-    ),
-    nativeMetadata: null,
-  ),
-};
+    };
 
-ModelProviderNativeEnvelope? _nativeMetadata(
-  String? itemId,
-  Map<String, Object?> metadata,
-) => metadata.isEmpty
+ModelProviderNativeEnvelope? _toProviderNativeEnvelope(
+  ModelNativeEnvelope? envelope,
+) => envelope == null
     ? null
     : ModelProviderNativeEnvelope(
-        kind: 'kernel-item-v1',
-        compatibility: <String, Object?>{
-          if (itemId case final String value) 'itemId': value,
-        },
-        data: metadata,
+        kind: envelope.kind,
+        compatibility: envelope.compatibility,
+        data: envelope.data,
+      );
+
+ModelNativeEnvelope? _toKernelNativeEnvelope(
+  ModelProviderNativeEnvelope? envelope,
+) => envelope == null
+    ? null
+    : ModelNativeEnvelope(
+        kind: envelope.kind,
+        compatibility: envelope.compatibility,
+        data: envelope.data,
       );
 
 ModelObservation _toModelObservation(ModelProviderObservation observation) =>
@@ -271,16 +292,12 @@ ModelOutputItem _toModelOutput(ModelProviderOutput output) =>
       ModelProviderOutputKind.text => ModelTextOutput(
         output.text!,
         providerItemId: output.itemId,
-        providerNativeMetadata:
-            output.nativeMetadata?.data ?? const <String, Object?>{},
+        providerNativeMetadata: _toKernelNativeEnvelope(output.nativeMetadata),
       ),
       ModelProviderOutputKind.toolProposal => ModelToolProposalOutput(
         _toProviderToolProposal(output.toolProposal!),
-        providerItemId: output.itemId ?? output.toolProposal!.itemId,
-        providerNativeMetadata:
-            output.nativeMetadata?.data ??
-            output.toolProposal!.nativeMetadata?.data ??
-            const <String, Object?>{},
+        providerItemId: output.itemId,
+        providerNativeMetadata: _toKernelNativeEnvelope(output.nativeMetadata),
       ),
     };
 
@@ -300,14 +317,15 @@ ModelTerminalEvent _toModelTerminal(
     return ModelInvocationFailedEvent(
       invocationId: invocationId,
       error: ModelFailure(
-        kind: ModelFailureKind.values.byName(failure.kind.name),
+        kind: _toModelFailureKind(failure.kind),
         providerCode: failure.providerCode,
         providerMessage: failure.providerMessage,
         providerDetails: failure.providerDetails,
       ),
+      semanticTerminalMetadata: _toTerminalMetadata(terminal),
     );
   }
-  return ModelInvocationCompletedEvent(
+  return ModelInvocationSettledEvent(
     invocationId: invocationId,
     settlement: switch (terminal.settlement) {
       ModelProviderSettlement.completed => ModelSettlement.completed,
@@ -317,8 +335,13 @@ ModelTerminalEvent _toModelTerminal(
     },
     incompleteReason: terminal.incompleteReason == null
         ? null
-        : ModelIncompleteReason.values.byName(terminal.incompleteReason!.name),
-    metadata: ModelTerminalMetadata(
+        : _toModelIncompleteReason(terminal.incompleteReason!),
+    metadata: _toTerminalMetadata(terminal),
+  );
+}
+
+ModelTerminalMetadata _toTerminalMetadata(ModelProviderTerminal terminal) =>
+    ModelTerminalMetadata(
       effectiveModel: terminal.effectiveModel,
       providerResponseId: terminal.responseId,
       providerRequestId: terminal.requestId,
@@ -332,11 +355,36 @@ ModelTerminalEvent _toModelTerminal(
               cacheWriteTokens: terminal.usage!.cacheWriteTokens,
               providerDetails: terminal.usage!.providerDetails,
             ),
-      providerNativeState:
-          terminal.nativeState?.data ?? const <String, Object?>{},
-    ),
-  );
-}
+      providerNativeState: _toKernelNativeEnvelope(terminal.nativeState),
+    );
+
+ModelFailureKind _toModelFailureKind(
+  ModelProviderFailureKind kind,
+) => switch (kind) {
+  ModelProviderFailureKind.invalidRequest => ModelFailureKind.invalidRequest,
+  ModelProviderFailureKind.unsupportedRequest =>
+    ModelFailureKind.unsupportedRequest,
+  ModelProviderFailureKind.authentication => ModelFailureKind.authentication,
+  ModelProviderFailureKind.permission => ModelFailureKind.permission,
+  ModelProviderFailureKind.rateLimited => ModelFailureKind.rateLimited,
+  ModelProviderFailureKind.unavailable => ModelFailureKind.unavailable,
+  ModelProviderFailureKind.capacity => ModelFailureKind.capacity,
+  ModelProviderFailureKind.transport => ModelFailureKind.transport,
+  ModelProviderFailureKind.malformedResponse =>
+    ModelFailureKind.malformedResponse,
+  ModelProviderFailureKind.providerFailure => ModelFailureKind.providerFailure,
+  ModelProviderFailureKind.unknown => ModelFailureKind.unknown,
+};
+
+ModelIncompleteReason _toModelIncompleteReason(
+  ModelProviderIncompleteReason reason,
+) => switch (reason) {
+  ModelProviderIncompleteReason.outputLimit =>
+    ModelIncompleteReason.outputLimit,
+  ModelProviderIncompleteReason.contextLimit =>
+    ModelIncompleteReason.contextLimit,
+  ModelProviderIncompleteReason.other => ModelIncompleteReason.other,
+};
 
 final class ResourceInspectorToolExecutable implements ToolExecutable {
   ResourceInspectorToolExecutable(this._binding);

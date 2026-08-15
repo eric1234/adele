@@ -102,6 +102,27 @@ final class DevelopmentToolLoopStrategy {
       _fail(turn.failure!);
       return;
     }
+    final ModelInvocationSettledEvent settlement = turn.settlement!;
+    switch (settlement.settlement) {
+      case ModelSettlement.completed:
+        break;
+      case ModelSettlement.incomplete:
+        _fail(
+          ModelInvocationIncomplete(
+            reason: settlement.incompleteReason!,
+            metadata: settlement.metadata,
+          ),
+        );
+        return;
+      case ModelSettlement.refused:
+        if (turn.text.trim().isEmpty) {
+          _fail(StateError('The model refused without assistant output.'));
+          return;
+        }
+        session.append(AssistantSessionMessage(turn.text));
+        run.complete();
+        return;
+    }
     final ProviderToolProposal? proposal = turn.proposal;
     if (proposal == null) {
       if (turn.text.trim().isEmpty) {
@@ -197,19 +218,31 @@ final class DevelopmentToolLoopStrategy {
         },
       );
       switch (observation.terminal) {
-        case ModelInvocationCompletedEvent():
-          run.record(ModelInvocationCompleted(request.invocationId));
+        case final ModelInvocationSettledEvent terminal:
+          run.record(
+            ModelInvocationSettled(
+              invocationId: request.invocationId,
+              settlement: terminal.settlement,
+              incompleteReason: terminal.incompleteReason,
+              metadata: terminal.metadata,
+            ),
+          );
           return _ModelTurn(
             text: text.toString(),
             proposal: proposal,
             failure: null,
             output: output,
+            settlement: terminal,
           );
-        case ModelInvocationFailedEvent(:final error):
+        case ModelInvocationFailedEvent(
+          :final error,
+          :final semanticTerminalMetadata,
+        ):
           run.record(
             ModelInvocationFailed(
               invocationId: request.invocationId,
               error: error,
+              semanticTerminalMetadata: semanticTerminalMetadata,
             ),
           );
           return _ModelTurn(
@@ -217,6 +250,7 @@ final class DevelopmentToolLoopStrategy {
             proposal: proposal,
             failure: error,
             output: output,
+            settlement: null,
           );
       }
     } on Object catch (error) {
@@ -228,6 +262,7 @@ final class DevelopmentToolLoopStrategy {
         proposal: proposal,
         failure: error,
         output: output,
+        settlement: null,
       );
     }
   }
@@ -423,10 +458,22 @@ final class _ModelTurn {
     required this.proposal,
     required this.failure,
     required this.output,
+    required this.settlement,
   });
 
   final String text;
   final ProviderToolProposal? proposal;
   final Object? failure;
   final List<ModelOutputItem> output;
+  final ModelInvocationSettledEvent? settlement;
+}
+
+final class ModelInvocationIncomplete implements Exception {
+  const ModelInvocationIncomplete({
+    required this.reason,
+    required this.metadata,
+  });
+
+  final ModelIncompleteReason reason;
+  final ModelTerminalMetadata metadata;
 }

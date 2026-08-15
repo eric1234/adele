@@ -86,7 +86,14 @@ void main() {
       sessionId: SessionId('session-1'),
     )..start();
     run.record(ModelInvocationStarted(ModelInvocationId('model-1')));
-    run.record(ModelInvocationCompleted(ModelInvocationId('model-1')));
+    run.record(
+      ModelInvocationSettled(
+        invocationId: ModelInvocationId('model-1'),
+        settlement: ModelSettlement.completed,
+        incompleteReason: null,
+        metadata: ModelTerminalMetadata(),
+      ),
+    );
     expect(
       () => run.record(const RunCompleted()),
       throwsA(isA<InvalidRunOperation>()),
@@ -102,7 +109,7 @@ void main() {
       <Matcher>[
         isA<RunStarted>(),
         isA<ModelInvocationStarted>(),
-        isA<ModelInvocationCompleted>(),
+        isA<ModelInvocationSettled>(),
         isA<RunCompleted>(),
       ],
     );

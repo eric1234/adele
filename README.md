@@ -26,7 +26,8 @@ development-only AOT provider implements the common generated ModelProvider stre
 and a generation-bound ResourceInspector capability into those kernel ports.
 The common adapter separates live text observations from authoritative output,
 requires explicit semantic terminal settlement, retains item-native replay
-metadata, and preserves exact provider-generation binding. The scripted
+metadata as complete kind/compatibility/data envelopes, and preserves exact
+provider-generation binding. The scripted
 fixture unary/stream/probe service remains regression infrastructure.
 
 ## Toolchain

@@ -26,6 +26,9 @@ optional opaque invocation state. Authentication is not invocation data.
 Events separate nonauthoritative text deltas, authoritative completed text or
 tool proposals, and one explicit semantic terminal. Multiple proposals are
 legal. Tool call, provider item, response, and request IDs remain distinct.
+Provider item ID and native metadata belong only to the ordered input/output
+item wrapper; the nested tool-proposal payload contains only call ID, name, and
+arguments. This leaves one authority for item identity and state.
 
 Settlement is completed, incomplete with a coarse reason, refused, or failed
 with a small host-behavior classification. Provider details, usage, effective
@@ -34,11 +37,18 @@ API failures use semantic terminals; declared failure is contract/backend-only.
 
 Item and invocation native state are opaque JSON-compatible envelopes bound to
 the exact provider/model compatibility context. They are neither canonical
-conversation meaning nor common reasoning.
+conversation meaning nor common reasoning. The kernel retains the complete
+kind, compatibility, and data envelope unchanged through model/tool/model replay.
 
 EOF is not success. EOF or transport failure before terminal fails invocation;
 teardown after terminal does not replace settlement. Post-terminal events are
 violations. Consumer cancellation remains transport lifecycle.
+
+Kernel terminal events represent completed, incomplete, and refused settlement
+without naming all three "completed". Run journal events retain settlement and
+terminal metadata. The provisional strategy fails incomplete turns without tool
+execution and treats refusal explicitly, completing only when authoritative
+refusal text exists.
 
 The adapter retains one exact `ProviderBinding`; stale generations never
 silently migrate. A second scripted AOT entrypoint implements the common

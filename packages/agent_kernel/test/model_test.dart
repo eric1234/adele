@@ -18,7 +18,7 @@ void main() {
       (events[1] as ModelOutputItemCompleted).item,
       isA<ModelToolProposalOutput>(),
     );
-    expect(events.last, isA<ModelInvocationCompletedEvent>());
+    expect(events.last, isA<ModelInvocationSettledEvent>());
     expect(
       events.map((ModelEvent event) => event.invocationId),
       everyElement(request.invocationId),
@@ -53,7 +53,7 @@ void main() {
     await expectLater(
       collectModelInvocation(
         Stream<ModelEvent>.fromIterable(<ModelEvent>[
-          ModelInvocationCompletedEvent(invocationId: id),
+          ModelInvocationSettledEvent(invocationId: id),
           ModelInvocationFailedEvent(
             invocationId: id,
             error: StateError('late failure'),
@@ -80,13 +80,15 @@ void main() {
                 invocationId: id,
                 item: ModelTextOutput('Complete'),
               ),
-              ModelInvocationCompletedEvent(
+              ModelInvocationSettledEvent(
                 invocationId: id,
                 metadata: ModelTerminalMetadata(
                   effectiveModel: 'effective-v1',
-                  providerNativeState: const <String, Object?>{
-                    'cursor': 'opaque',
-                  },
+                  providerNativeState: ModelNativeEnvelope(
+                    kind: 'cursor-v1',
+                    compatibility: const <String, Object?>{'model': 'v1'},
+                    data: const <String, Object?>{'cursor': 'opaque'},
+                  ),
                 ),
               ),
             ]),
@@ -100,7 +102,7 @@ void main() {
         'Complete',
       );
       expect(
-        (observation.terminal as ModelInvocationCompletedEvent)
+        (observation.terminal as ModelInvocationSettledEvent)
             .metadata
             .effectiveModel,
         'effective-v1',
@@ -119,11 +121,20 @@ void main() {
         arguments: const <String, Object?>{},
       ),
       providerItemId: 'item-1',
-      providerNativeMetadata: metadata,
+      providerNativeMetadata: ModelNativeEnvelope(
+        kind: 'signed-v1',
+        compatibility: const <String, Object?>{'model': 'v1'},
+        data: metadata,
+      ),
     );
     (metadata['signed']! as List<Object?>).add('changed');
     expect(output.providerItemId, 'item-1');
-    expect(output.providerNativeMetadata, const <String, Object?>{
+    expect(output.providerNativeMetadata!.kind, 'signed-v1');
+    expect(
+      output.providerNativeMetadata!.compatibility,
+      const <String, Object?>{'model': 'v1'},
+    );
+    expect(output.providerNativeMetadata!.data, const <String, Object?>{
       'signed': <Object?>['opaque'],
     });
   });
@@ -156,7 +167,7 @@ final class _CompletingModel implements ModelPort {
         ),
       ),
     );
-    yield ModelInvocationCompletedEvent(invocationId: request.invocationId);
+    yield ModelInvocationSettledEvent(invocationId: request.invocationId);
   }
 }
 

@@ -802,288 +802,301 @@ const String modelProviderInputTypeId = 'modelProvider.input';
 Map<String, Object?> _encodeModelProviderInput(
   ModelProviderInput _adeleValue89,
 ) => <String, Object?>{
-  'kind': _adeleValue89.kind.name,
-  'message': switch (_adeleValue89.message) {
-    final _adeleNonNullValue93? => _encodeModelProviderMessage(
-      _adeleNonNullValue93,
-    ),
+  'itemId': switch (_adeleValue89.itemId) {
+    final _adeleNonNullValue91? => _adeleNonNullValue91,
     null => null,
   },
-  'nativeMetadata': switch (_adeleValue89.nativeMetadata) {
-    final _adeleNonNullValue97? => _encodeModelProviderNativeEnvelope(
+  'kind': _adeleValue89.kind.name,
+  'message': switch (_adeleValue89.message) {
+    final _adeleNonNullValue97? => _encodeModelProviderMessage(
       _adeleNonNullValue97,
     ),
     null => null,
   },
-  'toolOutcome': switch (_adeleValue89.toolOutcome) {
-    final _adeleNonNullValue101? => _encodeModelProviderToolOutcome(
+  'nativeMetadata': switch (_adeleValue89.nativeMetadata) {
+    final _adeleNonNullValue101? => _encodeModelProviderNativeEnvelope(
       _adeleNonNullValue101,
     ),
     null => null,
   },
-  'toolProposal': switch (_adeleValue89.toolProposal) {
-    final _adeleNonNullValue105? => _encodeModelProviderToolProposal(
+  'toolOutcome': switch (_adeleValue89.toolOutcome) {
+    final _adeleNonNullValue105? => _encodeModelProviderToolOutcome(
       _adeleNonNullValue105,
     ),
     null => null,
   },
+  'toolProposal': switch (_adeleValue89.toolProposal) {
+    final _adeleNonNullValue109? => _encodeModelProviderToolProposal(
+      _adeleNonNullValue109,
+    ),
+    null => null,
+  },
 };
-ModelProviderInput _decodeModelProviderInput(Object? _adeleValue108) {
-  final _adeleMap109 = _contractMap(_adeleValue108, 'ModelProviderInput');
-  _contractFields(_adeleMap109, const {
+ModelProviderInput _decodeModelProviderInput(Object? _adeleValue112) {
+  final _adeleMap113 = _contractMap(_adeleValue112, 'ModelProviderInput');
+  _contractFields(_adeleMap113, const {
+    'itemId',
     'kind',
     'message',
     'nativeMetadata',
     'toolOutcome',
     'toolProposal',
   }, 'ModelProviderInput');
-  final _adeleField110 = _decodeModelProviderInputKind(_adeleMap109['kind']);
-  final _adeleField111 = switch (_adeleMap109['message']) {
-    final _adeleNonNullValue118? => _decodeModelProviderMessage(
-      _adeleNonNullValue118,
+  final _adeleField114 = switch (_adeleMap113['itemId']) {
+    final _adeleNonNullValue121? => _contractString(
+      _adeleNonNullValue121,
+      'itemId',
     ),
     null => null,
   };
-  final _adeleField112 = switch (_adeleMap109['nativeMetadata']) {
-    final _adeleNonNullValue122? => _decodeModelProviderNativeEnvelope(
-      _adeleNonNullValue122,
+  final _adeleField115 = _decodeModelProviderInputKind(_adeleMap113['kind']);
+  final _adeleField116 = switch (_adeleMap113['message']) {
+    final _adeleNonNullValue127? => _decodeModelProviderMessage(
+      _adeleNonNullValue127,
     ),
     null => null,
   };
-  final _adeleField113 = switch (_adeleMap109['toolOutcome']) {
-    final _adeleNonNullValue126? => _decodeModelProviderToolOutcome(
-      _adeleNonNullValue126,
+  final _adeleField117 = switch (_adeleMap113['nativeMetadata']) {
+    final _adeleNonNullValue131? => _decodeModelProviderNativeEnvelope(
+      _adeleNonNullValue131,
     ),
     null => null,
   };
-  final _adeleField114 = switch (_adeleMap109['toolProposal']) {
-    final _adeleNonNullValue130? => _decodeModelProviderToolProposal(
-      _adeleNonNullValue130,
+  final _adeleField118 = switch (_adeleMap113['toolOutcome']) {
+    final _adeleNonNullValue135? => _decodeModelProviderToolOutcome(
+      _adeleNonNullValue135,
+    ),
+    null => null,
+  };
+  final _adeleField119 = switch (_adeleMap113['toolProposal']) {
+    final _adeleNonNullValue139? => _decodeModelProviderToolProposal(
+      _adeleNonNullValue139,
     ),
     null => null,
   };
   return _contractConstruct(
     'ModelProviderInput',
     () => ModelProviderInput(
-      kind: _adeleField110,
-      message: _adeleField111,
-      nativeMetadata: _adeleField112,
-      toolOutcome: _adeleField113,
-      toolProposal: _adeleField114,
+      itemId: _adeleField114,
+      kind: _adeleField115,
+      message: _adeleField116,
+      nativeMetadata: _adeleField117,
+      toolOutcome: _adeleField118,
+      toolProposal: _adeleField119,
     ),
   );
 }
 
 const String modelProviderMessageTypeId = 'modelProvider.message';
 Map<String, Object?> _encodeModelProviderMessage(
-  ModelProviderMessage _adeleValue133,
+  ModelProviderMessage _adeleValue142,
 ) => <String, Object?>{
-  'content': _adeleValue133.content
-      .map((_adeleElement134) => _encodeModelProviderContent(_adeleElement134))
+  'content': _adeleValue142.content
+      .map((_adeleElement143) => _encodeModelProviderContent(_adeleElement143))
       .toList(growable: false),
-  'role': _adeleValue133.role.name,
+  'role': _adeleValue142.role.name,
 };
-ModelProviderMessage _decodeModelProviderMessage(Object? _adeleValue140) {
-  final _adeleMap141 = _contractMap(_adeleValue140, 'ModelProviderMessage');
-  _contractFields(_adeleMap141, const {
+ModelProviderMessage _decodeModelProviderMessage(Object? _adeleValue149) {
+  final _adeleMap150 = _contractMap(_adeleValue149, 'ModelProviderMessage');
+  _contractFields(_adeleMap150, const {
     'content',
     'role',
   }, 'ModelProviderMessage');
-  final _adeleField142 = List<ModelProviderContent>.unmodifiable(
+  final _adeleField151 = List<ModelProviderContent>.unmodifiable(
     _contractList(
-      _adeleMap141['content'],
+      _adeleMap150['content'],
       'content',
-    ).map((_adeleElement144) => _decodeModelProviderContent(_adeleElement144)),
+    ).map((_adeleElement153) => _decodeModelProviderContent(_adeleElement153)),
   );
-  final _adeleField143 = _decodeModelProviderMessageRole(_adeleMap141['role']);
+  final _adeleField152 = _decodeModelProviderMessageRole(_adeleMap150['role']);
   return _contractConstruct(
     'ModelProviderMessage',
-    () => ModelProviderMessage(content: _adeleField142, role: _adeleField143),
+    () => ModelProviderMessage(content: _adeleField151, role: _adeleField152),
   );
 }
 
 const String modelProviderNativeEnvelopeTypeId = 'modelProvider.nativeEnvelope';
 Map<String, Object?> _encodeModelProviderNativeEnvelope(
-  ModelProviderNativeEnvelope _adeleValue150,
+  ModelProviderNativeEnvelope _adeleValue159,
 ) => <String, Object?>{
-  'compatibility': _contractJsonMap(_adeleValue150.compatibility, 'map'),
-  'data': _contractJsonMap(_adeleValue150.data, 'map'),
-  'kind': _adeleValue150.kind,
+  'compatibility': _contractJsonMap(_adeleValue159.compatibility, 'map'),
+  'data': _contractJsonMap(_adeleValue159.data, 'map'),
+  'kind': _adeleValue159.kind,
 };
 ModelProviderNativeEnvelope _decodeModelProviderNativeEnvelope(
-  Object? _adeleValue157,
+  Object? _adeleValue166,
 ) {
-  final _adeleMap158 = _contractMap(
-    _adeleValue157,
+  final _adeleMap167 = _contractMap(
+    _adeleValue166,
     'ModelProviderNativeEnvelope',
   );
-  _contractFields(_adeleMap158, const {
+  _contractFields(_adeleMap167, const {
     'compatibility',
     'data',
     'kind',
   }, 'ModelProviderNativeEnvelope');
-  final _adeleField159 = _contractJsonMap(
-    _adeleMap158['compatibility'],
+  final _adeleField168 = _contractJsonMap(
+    _adeleMap167['compatibility'],
     'compatibility',
   );
-  final _adeleField160 = _contractJsonMap(_adeleMap158['data'], 'data');
-  final _adeleField161 = _contractString(_adeleMap158['kind'], 'kind');
+  final _adeleField169 = _contractJsonMap(_adeleMap167['data'], 'data');
+  final _adeleField170 = _contractString(_adeleMap167['kind'], 'kind');
   return _contractConstruct(
     'ModelProviderNativeEnvelope',
     () => ModelProviderNativeEnvelope(
-      compatibility: _adeleField159,
-      data: _adeleField160,
-      kind: _adeleField161,
+      compatibility: _adeleField168,
+      data: _adeleField169,
+      kind: _adeleField170,
     ),
   );
 }
 
 const String modelProviderObservationTypeId = 'modelProvider.observation';
 Map<String, Object?> _encodeModelProviderObservation(
-  ModelProviderObservation _adeleValue168,
+  ModelProviderObservation _adeleValue177,
 ) => <String, Object?>{
-  'itemId': switch (_adeleValue168.itemId) {
-    final _adeleNonNullValue170? => _adeleNonNullValue170,
+  'itemId': switch (_adeleValue177.itemId) {
+    final _adeleNonNullValue179? => _adeleNonNullValue179,
     null => null,
   },
-  'kind': _adeleValue168.kind.name,
-  'textDelta': _adeleValue168.textDelta,
+  'kind': _adeleValue177.kind.name,
+  'textDelta': _adeleValue177.textDelta,
 };
 ModelProviderObservation _decodeModelProviderObservation(
-  Object? _adeleValue177,
+  Object? _adeleValue186,
 ) {
-  final _adeleMap178 = _contractMap(_adeleValue177, 'ModelProviderObservation');
-  _contractFields(_adeleMap178, const {
+  final _adeleMap187 = _contractMap(_adeleValue186, 'ModelProviderObservation');
+  _contractFields(_adeleMap187, const {
     'itemId',
     'kind',
     'textDelta',
   }, 'ModelProviderObservation');
-  final _adeleField179 = switch (_adeleMap178['itemId']) {
-    final _adeleNonNullValue183? => _contractString(
-      _adeleNonNullValue183,
+  final _adeleField188 = switch (_adeleMap187['itemId']) {
+    final _adeleNonNullValue192? => _contractString(
+      _adeleNonNullValue192,
       'itemId',
     ),
     null => null,
   };
-  final _adeleField180 = _decodeModelProviderObservationKind(
-    _adeleMap178['kind'],
+  final _adeleField189 = _decodeModelProviderObservationKind(
+    _adeleMap187['kind'],
   );
-  final _adeleField181 = _contractString(
-    _adeleMap178['textDelta'],
+  final _adeleField190 = _contractString(
+    _adeleMap187['textDelta'],
     'textDelta',
   );
   return _contractConstruct(
     'ModelProviderObservation',
     () => ModelProviderObservation(
-      itemId: _adeleField179,
-      kind: _adeleField180,
-      textDelta: _adeleField181,
+      itemId: _adeleField188,
+      kind: _adeleField189,
+      textDelta: _adeleField190,
     ),
   );
 }
 
 const String modelProviderOutputTypeId = 'modelProvider.output';
 Map<String, Object?> _encodeModelProviderOutput(
-  ModelProviderOutput _adeleValue190,
+  ModelProviderOutput _adeleValue199,
 ) => <String, Object?>{
-  'itemId': switch (_adeleValue190.itemId) {
-    final _adeleNonNullValue192? => _adeleNonNullValue192,
+  'itemId': switch (_adeleValue199.itemId) {
+    final _adeleNonNullValue201? => _adeleNonNullValue201,
     null => null,
   },
-  'kind': _adeleValue190.kind.name,
-  'nativeMetadata': switch (_adeleValue190.nativeMetadata) {
-    final _adeleNonNullValue198? => _encodeModelProviderNativeEnvelope(
-      _adeleNonNullValue198,
+  'kind': _adeleValue199.kind.name,
+  'nativeMetadata': switch (_adeleValue199.nativeMetadata) {
+    final _adeleNonNullValue207? => _encodeModelProviderNativeEnvelope(
+      _adeleNonNullValue207,
     ),
     null => null,
   },
-  'text': switch (_adeleValue190.text) {
-    final _adeleNonNullValue202? => _adeleNonNullValue202,
+  'text': switch (_adeleValue199.text) {
+    final _adeleNonNullValue211? => _adeleNonNullValue211,
     null => null,
   },
-  'toolProposal': switch (_adeleValue190.toolProposal) {
-    final _adeleNonNullValue206? => _encodeModelProviderToolProposal(
-      _adeleNonNullValue206,
+  'toolProposal': switch (_adeleValue199.toolProposal) {
+    final _adeleNonNullValue215? => _encodeModelProviderToolProposal(
+      _adeleNonNullValue215,
     ),
     null => null,
   },
 };
-ModelProviderOutput _decodeModelProviderOutput(Object? _adeleValue209) {
-  final _adeleMap210 = _contractMap(_adeleValue209, 'ModelProviderOutput');
-  _contractFields(_adeleMap210, const {
+ModelProviderOutput _decodeModelProviderOutput(Object? _adeleValue218) {
+  final _adeleMap219 = _contractMap(_adeleValue218, 'ModelProviderOutput');
+  _contractFields(_adeleMap219, const {
     'itemId',
     'kind',
     'nativeMetadata',
     'text',
     'toolProposal',
   }, 'ModelProviderOutput');
-  final _adeleField211 = switch (_adeleMap210['itemId']) {
-    final _adeleNonNullValue217? => _contractString(
-      _adeleNonNullValue217,
+  final _adeleField220 = switch (_adeleMap219['itemId']) {
+    final _adeleNonNullValue226? => _contractString(
+      _adeleNonNullValue226,
       'itemId',
     ),
     null => null,
   };
-  final _adeleField212 = _decodeModelProviderOutputKind(_adeleMap210['kind']);
-  final _adeleField213 = switch (_adeleMap210['nativeMetadata']) {
-    final _adeleNonNullValue223? => _decodeModelProviderNativeEnvelope(
-      _adeleNonNullValue223,
+  final _adeleField221 = _decodeModelProviderOutputKind(_adeleMap219['kind']);
+  final _adeleField222 = switch (_adeleMap219['nativeMetadata']) {
+    final _adeleNonNullValue232? => _decodeModelProviderNativeEnvelope(
+      _adeleNonNullValue232,
     ),
     null => null,
   };
-  final _adeleField214 = switch (_adeleMap210['text']) {
-    final _adeleNonNullValue227? => _contractString(
-      _adeleNonNullValue227,
+  final _adeleField223 = switch (_adeleMap219['text']) {
+    final _adeleNonNullValue236? => _contractString(
+      _adeleNonNullValue236,
       'text',
     ),
     null => null,
   };
-  final _adeleField215 = switch (_adeleMap210['toolProposal']) {
-    final _adeleNonNullValue231? => _decodeModelProviderToolProposal(
-      _adeleNonNullValue231,
+  final _adeleField224 = switch (_adeleMap219['toolProposal']) {
+    final _adeleNonNullValue240? => _decodeModelProviderToolProposal(
+      _adeleNonNullValue240,
     ),
     null => null,
   };
   return _contractConstruct(
     'ModelProviderOutput',
     () => ModelProviderOutput(
-      itemId: _adeleField211,
-      kind: _adeleField212,
-      nativeMetadata: _adeleField213,
-      text: _adeleField214,
-      toolProposal: _adeleField215,
+      itemId: _adeleField220,
+      kind: _adeleField221,
+      nativeMetadata: _adeleField222,
+      text: _adeleField223,
+      toolProposal: _adeleField224,
     ),
   );
 }
 
 const String modelProviderRequestTypeId = 'modelProvider.request';
 Map<String, Object?> _encodeModelProviderRequest(
-  ModelProviderRequest _adeleValue234,
+  ModelProviderRequest _adeleValue243,
 ) => <String, Object?>{
-  'input': _adeleValue234.input
-      .map((_adeleElement235) => _encodeModelProviderInput(_adeleElement235))
+  'input': _adeleValue243.input
+      .map((_adeleElement244) => _encodeModelProviderInput(_adeleElement244))
       .toList(growable: false),
-  'instructions': _adeleValue234.instructions,
-  'maxOutputTokens': switch (_adeleValue234.maxOutputTokens) {
-    final _adeleNonNullValue242? => _adeleNonNullValue242,
+  'instructions': _adeleValue243.instructions,
+  'maxOutputTokens': switch (_adeleValue243.maxOutputTokens) {
+    final _adeleNonNullValue251? => _adeleNonNullValue251,
     null => null,
   },
-  'model': _adeleValue234.model,
-  'nativeState': switch (_adeleValue234.nativeState) {
-    final _adeleNonNullValue248? => _encodeModelProviderNativeEnvelope(
-      _adeleNonNullValue248,
+  'model': _adeleValue243.model,
+  'nativeState': switch (_adeleValue243.nativeState) {
+    final _adeleNonNullValue257? => _encodeModelProviderNativeEnvelope(
+      _adeleNonNullValue257,
     ),
     null => null,
   },
-  'providerOptions': _contractJsonMap(_adeleValue234.providerOptions, 'map'),
-  'toolChoice': _adeleValue234.toolChoice.name,
-  'tools': _adeleValue234.tools
-      .map((_adeleElement255) => _encodeModelProviderTool(_adeleElement255))
+  'providerOptions': _contractJsonMap(_adeleValue243.providerOptions, 'map'),
+  'toolChoice': _adeleValue243.toolChoice.name,
+  'tools': _adeleValue243.tools
+      .map((_adeleElement264) => _encodeModelProviderTool(_adeleElement264))
       .toList(growable: false),
 };
-ModelProviderRequest _decodeModelProviderRequest(Object? _adeleValue259) {
-  final _adeleMap260 = _contractMap(_adeleValue259, 'ModelProviderRequest');
-  _contractFields(_adeleMap260, const {
+ModelProviderRequest _decodeModelProviderRequest(Object? _adeleValue268) {
+  final _adeleMap269 = _contractMap(_adeleValue268, 'ModelProviderRequest');
+  _contractFields(_adeleMap269, const {
     'input',
     'instructions',
     'maxOutputTokens',
@@ -1093,105 +1106,105 @@ ModelProviderRequest _decodeModelProviderRequest(Object? _adeleValue259) {
     'toolChoice',
     'tools',
   }, 'ModelProviderRequest');
-  final _adeleField261 = List<ModelProviderInput>.unmodifiable(
+  final _adeleField270 = List<ModelProviderInput>.unmodifiable(
     _contractList(
-      _adeleMap260['input'],
+      _adeleMap269['input'],
       'input',
-    ).map((_adeleElement269) => _decodeModelProviderInput(_adeleElement269)),
+    ).map((_adeleElement278) => _decodeModelProviderInput(_adeleElement278)),
   );
-  final _adeleField262 = _contractString(
-    _adeleMap260['instructions'],
+  final _adeleField271 = _contractString(
+    _adeleMap269['instructions'],
     'instructions',
   );
-  final _adeleField263 = switch (_adeleMap260['maxOutputTokens']) {
-    final _adeleNonNullValue276? => _contractInt(
-      _adeleNonNullValue276,
+  final _adeleField272 = switch (_adeleMap269['maxOutputTokens']) {
+    final _adeleNonNullValue285? => _contractInt(
+      _adeleNonNullValue285,
       'maxOutputTokens',
     ),
     null => null,
   };
-  final _adeleField264 = _contractString(_adeleMap260['model'], 'model');
-  final _adeleField265 = switch (_adeleMap260['nativeState']) {
-    final _adeleNonNullValue282? => _decodeModelProviderNativeEnvelope(
-      _adeleNonNullValue282,
+  final _adeleField273 = _contractString(_adeleMap269['model'], 'model');
+  final _adeleField274 = switch (_adeleMap269['nativeState']) {
+    final _adeleNonNullValue291? => _decodeModelProviderNativeEnvelope(
+      _adeleNonNullValue291,
     ),
     null => null,
   };
-  final _adeleField266 = _contractJsonMap(
-    _adeleMap260['providerOptions'],
+  final _adeleField275 = _contractJsonMap(
+    _adeleMap269['providerOptions'],
     'providerOptions',
   );
-  final _adeleField267 = _decodeModelProviderToolChoice(
-    _adeleMap260['toolChoice'],
+  final _adeleField276 = _decodeModelProviderToolChoice(
+    _adeleMap269['toolChoice'],
   );
-  final _adeleField268 = List<ModelProviderTool>.unmodifiable(
+  final _adeleField277 = List<ModelProviderTool>.unmodifiable(
     _contractList(
-      _adeleMap260['tools'],
+      _adeleMap269['tools'],
       'tools',
-    ).map((_adeleElement289) => _decodeModelProviderTool(_adeleElement289)),
+    ).map((_adeleElement298) => _decodeModelProviderTool(_adeleElement298)),
   );
   return _contractConstruct(
     'ModelProviderRequest',
     () => ModelProviderRequest(
-      input: _adeleField261,
-      instructions: _adeleField262,
-      maxOutputTokens: _adeleField263,
-      model: _adeleField264,
-      nativeState: _adeleField265,
-      providerOptions: _adeleField266,
-      toolChoice: _adeleField267,
-      tools: _adeleField268,
+      input: _adeleField270,
+      instructions: _adeleField271,
+      maxOutputTokens: _adeleField272,
+      model: _adeleField273,
+      nativeState: _adeleField274,
+      providerOptions: _adeleField275,
+      toolChoice: _adeleField276,
+      tools: _adeleField277,
     ),
   );
 }
 
 const String modelProviderTerminalTypeId = 'modelProvider.terminal';
 Map<String, Object?> _encodeModelProviderTerminal(
-  ModelProviderTerminal _adeleValue293,
+  ModelProviderTerminal _adeleValue302,
 ) => <String, Object?>{
-  'effectiveModel': switch (_adeleValue293.effectiveModel) {
-    final _adeleNonNullValue295? => _adeleNonNullValue295,
+  'effectiveModel': switch (_adeleValue302.effectiveModel) {
+    final _adeleNonNullValue304? => _adeleNonNullValue304,
     null => null,
   },
-  'failure': switch (_adeleValue293.failure) {
-    final _adeleNonNullValue299? => _encodeModelProviderFailure(
-      _adeleNonNullValue299,
+  'failure': switch (_adeleValue302.failure) {
+    final _adeleNonNullValue308? => _encodeModelProviderFailure(
+      _adeleNonNullValue308,
     ),
     null => null,
   },
-  'incompleteReason': switch (_adeleValue293.incompleteReason) {
-    final _adeleNonNullValue303? => _adeleNonNullValue303.name,
+  'incompleteReason': switch (_adeleValue302.incompleteReason) {
+    final _adeleNonNullValue312? => _adeleNonNullValue312.name,
     null => null,
   },
-  'nativeState': switch (_adeleValue293.nativeState) {
-    final _adeleNonNullValue307? => _encodeModelProviderNativeEnvelope(
-      _adeleNonNullValue307,
+  'nativeState': switch (_adeleValue302.nativeState) {
+    final _adeleNonNullValue316? => _encodeModelProviderNativeEnvelope(
+      _adeleNonNullValue316,
     ),
     null => null,
   },
-  'providerStopReason': switch (_adeleValue293.providerStopReason) {
-    final _adeleNonNullValue311? => _adeleNonNullValue311,
+  'providerStopReason': switch (_adeleValue302.providerStopReason) {
+    final _adeleNonNullValue320? => _adeleNonNullValue320,
     null => null,
   },
-  'requestId': switch (_adeleValue293.requestId) {
-    final _adeleNonNullValue315? => _adeleNonNullValue315,
+  'requestId': switch (_adeleValue302.requestId) {
+    final _adeleNonNullValue324? => _adeleNonNullValue324,
     null => null,
   },
-  'responseId': switch (_adeleValue293.responseId) {
-    final _adeleNonNullValue319? => _adeleNonNullValue319,
+  'responseId': switch (_adeleValue302.responseId) {
+    final _adeleNonNullValue328? => _adeleNonNullValue328,
     null => null,
   },
-  'settlement': _adeleValue293.settlement.name,
-  'usage': switch (_adeleValue293.usage) {
-    final _adeleNonNullValue325? => _encodeModelProviderUsage(
-      _adeleNonNullValue325,
+  'settlement': _adeleValue302.settlement.name,
+  'usage': switch (_adeleValue302.usage) {
+    final _adeleNonNullValue334? => _encodeModelProviderUsage(
+      _adeleNonNullValue334,
     ),
     null => null,
   },
 };
-ModelProviderTerminal _decodeModelProviderTerminal(Object? _adeleValue328) {
-  final _adeleMap329 = _contractMap(_adeleValue328, 'ModelProviderTerminal');
-  _contractFields(_adeleMap329, const {
+ModelProviderTerminal _decodeModelProviderTerminal(Object? _adeleValue337) {
+  final _adeleMap338 = _contractMap(_adeleValue337, 'ModelProviderTerminal');
+  _contractFields(_adeleMap338, const {
     'effectiveModel',
     'failure',
     'incompleteReason',
@@ -1202,313 +1215,286 @@ ModelProviderTerminal _decodeModelProviderTerminal(Object? _adeleValue328) {
     'settlement',
     'usage',
   }, 'ModelProviderTerminal');
-  final _adeleField330 = switch (_adeleMap329['effectiveModel']) {
-    final _adeleNonNullValue340? => _contractString(
-      _adeleNonNullValue340,
+  final _adeleField339 = switch (_adeleMap338['effectiveModel']) {
+    final _adeleNonNullValue349? => _contractString(
+      _adeleNonNullValue349,
       'effectiveModel',
     ),
     null => null,
   };
-  final _adeleField331 = switch (_adeleMap329['failure']) {
-    final _adeleNonNullValue344? => _decodeModelProviderFailure(
-      _adeleNonNullValue344,
+  final _adeleField340 = switch (_adeleMap338['failure']) {
+    final _adeleNonNullValue353? => _decodeModelProviderFailure(
+      _adeleNonNullValue353,
     ),
     null => null,
   };
-  final _adeleField332 = switch (_adeleMap329['incompleteReason']) {
-    final _adeleNonNullValue348? => _decodeModelProviderIncompleteReason(
-      _adeleNonNullValue348,
+  final _adeleField341 = switch (_adeleMap338['incompleteReason']) {
+    final _adeleNonNullValue357? => _decodeModelProviderIncompleteReason(
+      _adeleNonNullValue357,
     ),
     null => null,
   };
-  final _adeleField333 = switch (_adeleMap329['nativeState']) {
-    final _adeleNonNullValue352? => _decodeModelProviderNativeEnvelope(
-      _adeleNonNullValue352,
+  final _adeleField342 = switch (_adeleMap338['nativeState']) {
+    final _adeleNonNullValue361? => _decodeModelProviderNativeEnvelope(
+      _adeleNonNullValue361,
     ),
     null => null,
   };
-  final _adeleField334 = switch (_adeleMap329['providerStopReason']) {
-    final _adeleNonNullValue356? => _contractString(
-      _adeleNonNullValue356,
+  final _adeleField343 = switch (_adeleMap338['providerStopReason']) {
+    final _adeleNonNullValue365? => _contractString(
+      _adeleNonNullValue365,
       'providerStopReason',
     ),
     null => null,
   };
-  final _adeleField335 = switch (_adeleMap329['requestId']) {
-    final _adeleNonNullValue360? => _contractString(
-      _adeleNonNullValue360,
+  final _adeleField344 = switch (_adeleMap338['requestId']) {
+    final _adeleNonNullValue369? => _contractString(
+      _adeleNonNullValue369,
       'requestId',
     ),
     null => null,
   };
-  final _adeleField336 = switch (_adeleMap329['responseId']) {
-    final _adeleNonNullValue364? => _contractString(
-      _adeleNonNullValue364,
+  final _adeleField345 = switch (_adeleMap338['responseId']) {
+    final _adeleNonNullValue373? => _contractString(
+      _adeleNonNullValue373,
       'responseId',
     ),
     null => null,
   };
-  final _adeleField337 = _decodeModelProviderSettlement(
-    _adeleMap329['settlement'],
+  final _adeleField346 = _decodeModelProviderSettlement(
+    _adeleMap338['settlement'],
   );
-  final _adeleField338 = switch (_adeleMap329['usage']) {
-    final _adeleNonNullValue370? => _decodeModelProviderUsage(
-      _adeleNonNullValue370,
+  final _adeleField347 = switch (_adeleMap338['usage']) {
+    final _adeleNonNullValue379? => _decodeModelProviderUsage(
+      _adeleNonNullValue379,
     ),
     null => null,
   };
   return _contractConstruct(
     'ModelProviderTerminal',
     () => ModelProviderTerminal(
-      effectiveModel: _adeleField330,
-      failure: _adeleField331,
-      incompleteReason: _adeleField332,
-      nativeState: _adeleField333,
-      providerStopReason: _adeleField334,
-      requestId: _adeleField335,
-      responseId: _adeleField336,
-      settlement: _adeleField337,
-      usage: _adeleField338,
+      effectiveModel: _adeleField339,
+      failure: _adeleField340,
+      incompleteReason: _adeleField341,
+      nativeState: _adeleField342,
+      providerStopReason: _adeleField343,
+      requestId: _adeleField344,
+      responseId: _adeleField345,
+      settlement: _adeleField346,
+      usage: _adeleField347,
     ),
   );
 }
 
 const String modelProviderToolTypeId = 'modelProvider.tool';
 Map<String, Object?> _encodeModelProviderTool(
-  ModelProviderTool _adeleValue373,
+  ModelProviderTool _adeleValue382,
 ) => <String, Object?>{
-  'argumentsSchema': _contractJsonMap(_adeleValue373.argumentsSchema, 'map'),
-  'description': _adeleValue373.description,
-  'name': _adeleValue373.name,
+  'argumentsSchema': _contractJsonMap(_adeleValue382.argumentsSchema, 'map'),
+  'description': _adeleValue382.description,
+  'name': _adeleValue382.name,
 };
-ModelProviderTool _decodeModelProviderTool(Object? _adeleValue380) {
-  final _adeleMap381 = _contractMap(_adeleValue380, 'ModelProviderTool');
-  _contractFields(_adeleMap381, const {
+ModelProviderTool _decodeModelProviderTool(Object? _adeleValue389) {
+  final _adeleMap390 = _contractMap(_adeleValue389, 'ModelProviderTool');
+  _contractFields(_adeleMap390, const {
     'argumentsSchema',
     'description',
     'name',
   }, 'ModelProviderTool');
-  final _adeleField382 = _contractJsonMap(
-    _adeleMap381['argumentsSchema'],
+  final _adeleField391 = _contractJsonMap(
+    _adeleMap390['argumentsSchema'],
     'argumentsSchema',
   );
-  final _adeleField383 = _contractString(
-    _adeleMap381['description'],
+  final _adeleField392 = _contractString(
+    _adeleMap390['description'],
     'description',
   );
-  final _adeleField384 = _contractString(_adeleMap381['name'], 'name');
+  final _adeleField393 = _contractString(_adeleMap390['name'], 'name');
   return _contractConstruct(
     'ModelProviderTool',
     () => ModelProviderTool(
-      argumentsSchema: _adeleField382,
-      description: _adeleField383,
-      name: _adeleField384,
+      argumentsSchema: _adeleField391,
+      description: _adeleField392,
+      name: _adeleField393,
     ),
   );
 }
 
 const String modelProviderToolOutcomeTypeId = 'modelProvider.toolOutcome';
 Map<String, Object?> _encodeModelProviderToolOutcome(
-  ModelProviderToolOutcome _adeleValue391,
+  ModelProviderToolOutcome _adeleValue400,
 ) => <String, Object?>{
-  'callId': _adeleValue391.callId,
-  'content': _adeleValue391.content,
-  'status': _adeleValue391.status.name,
+  'callId': _adeleValue400.callId,
+  'content': _adeleValue400.content,
+  'status': _adeleValue400.status.name,
 };
 ModelProviderToolOutcome _decodeModelProviderToolOutcome(
-  Object? _adeleValue398,
+  Object? _adeleValue407,
 ) {
-  final _adeleMap399 = _contractMap(_adeleValue398, 'ModelProviderToolOutcome');
-  _contractFields(_adeleMap399, const {
+  final _adeleMap408 = _contractMap(_adeleValue407, 'ModelProviderToolOutcome');
+  _contractFields(_adeleMap408, const {
     'callId',
     'content',
     'status',
   }, 'ModelProviderToolOutcome');
-  final _adeleField400 = _contractString(_adeleMap399['callId'], 'callId');
-  final _adeleField401 = _contractString(_adeleMap399['content'], 'content');
-  final _adeleField402 = _decodeModelProviderToolOutcomeStatus(
-    _adeleMap399['status'],
+  final _adeleField409 = _contractString(_adeleMap408['callId'], 'callId');
+  final _adeleField410 = _contractString(_adeleMap408['content'], 'content');
+  final _adeleField411 = _decodeModelProviderToolOutcomeStatus(
+    _adeleMap408['status'],
   );
   return _contractConstruct(
     'ModelProviderToolOutcome',
     () => ModelProviderToolOutcome(
-      callId: _adeleField400,
-      content: _adeleField401,
-      status: _adeleField402,
+      callId: _adeleField409,
+      content: _adeleField410,
+      status: _adeleField411,
     ),
   );
 }
 
 const String modelProviderToolProposalTypeId = 'modelProvider.toolProposal';
 Map<String, Object?> _encodeModelProviderToolProposal(
-  ModelProviderToolProposal _adeleValue409,
+  ModelProviderToolProposal _adeleValue418,
 ) => <String, Object?>{
-  'arguments': _contractJsonMap(_adeleValue409.arguments, 'map'),
-  'callId': _adeleValue409.callId,
-  'itemId': switch (_adeleValue409.itemId) {
-    final _adeleNonNullValue415? => _adeleNonNullValue415,
-    null => null,
-  },
-  'name': _adeleValue409.name,
-  'nativeMetadata': switch (_adeleValue409.nativeMetadata) {
-    final _adeleNonNullValue421? => _encodeModelProviderNativeEnvelope(
-      _adeleNonNullValue421,
-    ),
-    null => null,
-  },
+  'arguments': _contractJsonMap(_adeleValue418.arguments, 'map'),
+  'callId': _adeleValue418.callId,
+  'name': _adeleValue418.name,
 };
 ModelProviderToolProposal _decodeModelProviderToolProposal(
-  Object? _adeleValue424,
+  Object? _adeleValue425,
 ) {
-  final _adeleMap425 = _contractMap(
-    _adeleValue424,
+  final _adeleMap426 = _contractMap(
+    _adeleValue425,
     'ModelProviderToolProposal',
   );
-  _contractFields(_adeleMap425, const {
+  _contractFields(_adeleMap426, const {
     'arguments',
     'callId',
-    'itemId',
     'name',
-    'nativeMetadata',
   }, 'ModelProviderToolProposal');
-  final _adeleField426 = _contractJsonMap(
-    _adeleMap425['arguments'],
+  final _adeleField427 = _contractJsonMap(
+    _adeleMap426['arguments'],
     'arguments',
   );
-  final _adeleField427 = _contractString(_adeleMap425['callId'], 'callId');
-  final _adeleField428 = switch (_adeleMap425['itemId']) {
-    final _adeleNonNullValue436? => _contractString(
-      _adeleNonNullValue436,
-      'itemId',
-    ),
-    null => null,
-  };
-  final _adeleField429 = _contractString(_adeleMap425['name'], 'name');
-  final _adeleField430 = switch (_adeleMap425['nativeMetadata']) {
-    final _adeleNonNullValue442? => _decodeModelProviderNativeEnvelope(
-      _adeleNonNullValue442,
-    ),
-    null => null,
-  };
+  final _adeleField428 = _contractString(_adeleMap426['callId'], 'callId');
+  final _adeleField429 = _contractString(_adeleMap426['name'], 'name');
   return _contractConstruct(
     'ModelProviderToolProposal',
     () => ModelProviderToolProposal(
-      arguments: _adeleField426,
-      callId: _adeleField427,
-      itemId: _adeleField428,
+      arguments: _adeleField427,
+      callId: _adeleField428,
       name: _adeleField429,
-      nativeMetadata: _adeleField430,
     ),
   );
 }
 
 const String modelProviderUsageTypeId = 'modelProvider.usage';
 Map<String, Object?> _encodeModelProviderUsage(
-  ModelProviderUsage _adeleValue445,
+  ModelProviderUsage _adeleValue436,
 ) => <String, Object?>{
-  'cacheReadTokens': switch (_adeleValue445.cacheReadTokens) {
-    final _adeleNonNullValue447? => _adeleNonNullValue447,
+  'cacheReadTokens': switch (_adeleValue436.cacheReadTokens) {
+    final _adeleNonNullValue438? => _adeleNonNullValue438,
     null => null,
   },
-  'cacheWriteTokens': switch (_adeleValue445.cacheWriteTokens) {
-    final _adeleNonNullValue451? => _adeleNonNullValue451,
+  'cacheWriteTokens': switch (_adeleValue436.cacheWriteTokens) {
+    final _adeleNonNullValue442? => _adeleNonNullValue442,
     null => null,
   },
-  'inputTokens': switch (_adeleValue445.inputTokens) {
-    final _adeleNonNullValue455? => _adeleNonNullValue455,
+  'inputTokens': switch (_adeleValue436.inputTokens) {
+    final _adeleNonNullValue446? => _adeleNonNullValue446,
     null => null,
   },
-  'outputTokens': switch (_adeleValue445.outputTokens) {
-    final _adeleNonNullValue459? => _adeleNonNullValue459,
+  'outputTokens': switch (_adeleValue436.outputTokens) {
+    final _adeleNonNullValue450? => _adeleNonNullValue450,
     null => null,
   },
-  'providerDetails': _contractJsonMap(_adeleValue445.providerDetails, 'map'),
+  'providerDetails': _contractJsonMap(_adeleValue436.providerDetails, 'map'),
 };
-ModelProviderUsage _decodeModelProviderUsage(Object? _adeleValue464) {
-  final _adeleMap465 = _contractMap(_adeleValue464, 'ModelProviderUsage');
-  _contractFields(_adeleMap465, const {
+ModelProviderUsage _decodeModelProviderUsage(Object? _adeleValue455) {
+  final _adeleMap456 = _contractMap(_adeleValue455, 'ModelProviderUsage');
+  _contractFields(_adeleMap456, const {
     'cacheReadTokens',
     'cacheWriteTokens',
     'inputTokens',
     'outputTokens',
     'providerDetails',
   }, 'ModelProviderUsage');
-  final _adeleField466 = switch (_adeleMap465['cacheReadTokens']) {
-    final _adeleNonNullValue472? => _contractInt(
-      _adeleNonNullValue472,
+  final _adeleField457 = switch (_adeleMap456['cacheReadTokens']) {
+    final _adeleNonNullValue463? => _contractInt(
+      _adeleNonNullValue463,
       'cacheReadTokens',
     ),
     null => null,
   };
-  final _adeleField467 = switch (_adeleMap465['cacheWriteTokens']) {
-    final _adeleNonNullValue476? => _contractInt(
-      _adeleNonNullValue476,
+  final _adeleField458 = switch (_adeleMap456['cacheWriteTokens']) {
+    final _adeleNonNullValue467? => _contractInt(
+      _adeleNonNullValue467,
       'cacheWriteTokens',
     ),
     null => null,
   };
-  final _adeleField468 = switch (_adeleMap465['inputTokens']) {
-    final _adeleNonNullValue480? => _contractInt(
-      _adeleNonNullValue480,
+  final _adeleField459 = switch (_adeleMap456['inputTokens']) {
+    final _adeleNonNullValue471? => _contractInt(
+      _adeleNonNullValue471,
       'inputTokens',
     ),
     null => null,
   };
-  final _adeleField469 = switch (_adeleMap465['outputTokens']) {
-    final _adeleNonNullValue484? => _contractInt(
-      _adeleNonNullValue484,
+  final _adeleField460 = switch (_adeleMap456['outputTokens']) {
+    final _adeleNonNullValue475? => _contractInt(
+      _adeleNonNullValue475,
       'outputTokens',
     ),
     null => null,
   };
-  final _adeleField470 = _contractJsonMap(
-    _adeleMap465['providerDetails'],
+  final _adeleField461 = _contractJsonMap(
+    _adeleMap456['providerDetails'],
     'providerDetails',
   );
   return _contractConstruct(
     'ModelProviderUsage',
     () => ModelProviderUsage(
-      cacheReadTokens: _adeleField466,
-      cacheWriteTokens: _adeleField467,
-      inputTokens: _adeleField468,
-      outputTokens: _adeleField469,
-      providerDetails: _adeleField470,
+      cacheReadTokens: _adeleField457,
+      cacheWriteTokens: _adeleField458,
+      inputTokens: _adeleField459,
+      outputTokens: _adeleField460,
+      providerDetails: _adeleField461,
     ),
   );
 }
 
 ModelProviderContentKind _decodeModelProviderContentKind(
-  Object? _adeleValue489,
+  Object? _adeleValue480,
 ) {
-  if (_adeleValue489 is! String)
+  if (_adeleValue480 is! String)
     throw AdeleProtocolException('Expected ModelProviderContentKind.');
-  return switch (_adeleValue489) {
+  return switch (_adeleValue480) {
     'text' => ModelProviderContentKind.text,
     _ => throw AdeleProtocolException(
-      'Unknown ModelProviderContentKind: ' + _adeleValue489 + '.',
+      'Unknown ModelProviderContentKind: ' + _adeleValue480 + '.',
     ),
   };
 }
 
-ModelProviderEventKind _decodeModelProviderEventKind(Object? _adeleValue490) {
-  if (_adeleValue490 is! String)
+ModelProviderEventKind _decodeModelProviderEventKind(Object? _adeleValue481) {
+  if (_adeleValue481 is! String)
     throw AdeleProtocolException('Expected ModelProviderEventKind.');
-  return switch (_adeleValue490) {
+  return switch (_adeleValue481) {
     'observation' => ModelProviderEventKind.observation,
     'output' => ModelProviderEventKind.output,
     'terminal' => ModelProviderEventKind.terminal,
     _ => throw AdeleProtocolException(
-      'Unknown ModelProviderEventKind: ' + _adeleValue490 + '.',
+      'Unknown ModelProviderEventKind: ' + _adeleValue481 + '.',
     ),
   };
 }
 
 ModelProviderFailureKind _decodeModelProviderFailureKind(
-  Object? _adeleValue491,
+  Object? _adeleValue482,
 ) {
-  if (_adeleValue491 is! String)
+  if (_adeleValue482 is! String)
     throw AdeleProtocolException('Expected ModelProviderFailureKind.');
-  return switch (_adeleValue491) {
+  return switch (_adeleValue482) {
     'invalidRequest' => ModelProviderFailureKind.invalidRequest,
     'unsupportedRequest' => ModelProviderFailureKind.unsupportedRequest,
     'authentication' => ModelProviderFailureKind.authentication,
@@ -1521,117 +1507,117 @@ ModelProviderFailureKind _decodeModelProviderFailureKind(
     'providerFailure' => ModelProviderFailureKind.providerFailure,
     'unknown' => ModelProviderFailureKind.unknown,
     _ => throw AdeleProtocolException(
-      'Unknown ModelProviderFailureKind: ' + _adeleValue491 + '.',
+      'Unknown ModelProviderFailureKind: ' + _adeleValue482 + '.',
     ),
   };
 }
 
 ModelProviderIncompleteReason _decodeModelProviderIncompleteReason(
-  Object? _adeleValue492,
+  Object? _adeleValue483,
 ) {
-  if (_adeleValue492 is! String)
+  if (_adeleValue483 is! String)
     throw AdeleProtocolException('Expected ModelProviderIncompleteReason.');
-  return switch (_adeleValue492) {
+  return switch (_adeleValue483) {
     'outputLimit' => ModelProviderIncompleteReason.outputLimit,
     'contextLimit' => ModelProviderIncompleteReason.contextLimit,
     'other' => ModelProviderIncompleteReason.other,
     _ => throw AdeleProtocolException(
-      'Unknown ModelProviderIncompleteReason: ' + _adeleValue492 + '.',
+      'Unknown ModelProviderIncompleteReason: ' + _adeleValue483 + '.',
     ),
   };
 }
 
-ModelProviderInputKind _decodeModelProviderInputKind(Object? _adeleValue493) {
-  if (_adeleValue493 is! String)
+ModelProviderInputKind _decodeModelProviderInputKind(Object? _adeleValue484) {
+  if (_adeleValue484 is! String)
     throw AdeleProtocolException('Expected ModelProviderInputKind.');
-  return switch (_adeleValue493) {
+  return switch (_adeleValue484) {
     'message' => ModelProviderInputKind.message,
     'toolProposal' => ModelProviderInputKind.toolProposal,
     'toolOutcome' => ModelProviderInputKind.toolOutcome,
     _ => throw AdeleProtocolException(
-      'Unknown ModelProviderInputKind: ' + _adeleValue493 + '.',
+      'Unknown ModelProviderInputKind: ' + _adeleValue484 + '.',
     ),
   };
 }
 
 ModelProviderMessageRole _decodeModelProviderMessageRole(
-  Object? _adeleValue494,
+  Object? _adeleValue485,
 ) {
-  if (_adeleValue494 is! String)
+  if (_adeleValue485 is! String)
     throw AdeleProtocolException('Expected ModelProviderMessageRole.');
-  return switch (_adeleValue494) {
+  return switch (_adeleValue485) {
     'user' => ModelProviderMessageRole.user,
     'assistant' => ModelProviderMessageRole.assistant,
     _ => throw AdeleProtocolException(
-      'Unknown ModelProviderMessageRole: ' + _adeleValue494 + '.',
+      'Unknown ModelProviderMessageRole: ' + _adeleValue485 + '.',
     ),
   };
 }
 
 ModelProviderObservationKind _decodeModelProviderObservationKind(
-  Object? _adeleValue495,
+  Object? _adeleValue486,
 ) {
-  if (_adeleValue495 is! String)
+  if (_adeleValue486 is! String)
     throw AdeleProtocolException('Expected ModelProviderObservationKind.');
-  return switch (_adeleValue495) {
+  return switch (_adeleValue486) {
     'textDelta' => ModelProviderObservationKind.textDelta,
     _ => throw AdeleProtocolException(
-      'Unknown ModelProviderObservationKind: ' + _adeleValue495 + '.',
+      'Unknown ModelProviderObservationKind: ' + _adeleValue486 + '.',
     ),
   };
 }
 
-ModelProviderOutputKind _decodeModelProviderOutputKind(Object? _adeleValue496) {
-  if (_adeleValue496 is! String)
+ModelProviderOutputKind _decodeModelProviderOutputKind(Object? _adeleValue487) {
+  if (_adeleValue487 is! String)
     throw AdeleProtocolException('Expected ModelProviderOutputKind.');
-  return switch (_adeleValue496) {
+  return switch (_adeleValue487) {
     'text' => ModelProviderOutputKind.text,
     'toolProposal' => ModelProviderOutputKind.toolProposal,
     _ => throw AdeleProtocolException(
-      'Unknown ModelProviderOutputKind: ' + _adeleValue496 + '.',
+      'Unknown ModelProviderOutputKind: ' + _adeleValue487 + '.',
     ),
   };
 }
 
-ModelProviderSettlement _decodeModelProviderSettlement(Object? _adeleValue497) {
-  if (_adeleValue497 is! String)
+ModelProviderSettlement _decodeModelProviderSettlement(Object? _adeleValue488) {
+  if (_adeleValue488 is! String)
     throw AdeleProtocolException('Expected ModelProviderSettlement.');
-  return switch (_adeleValue497) {
+  return switch (_adeleValue488) {
     'completed' => ModelProviderSettlement.completed,
     'incomplete' => ModelProviderSettlement.incomplete,
     'refused' => ModelProviderSettlement.refused,
     'failed' => ModelProviderSettlement.failed,
     _ => throw AdeleProtocolException(
-      'Unknown ModelProviderSettlement: ' + _adeleValue497 + '.',
+      'Unknown ModelProviderSettlement: ' + _adeleValue488 + '.',
     ),
   };
 }
 
-ModelProviderToolChoice _decodeModelProviderToolChoice(Object? _adeleValue498) {
-  if (_adeleValue498 is! String)
+ModelProviderToolChoice _decodeModelProviderToolChoice(Object? _adeleValue489) {
+  if (_adeleValue489 is! String)
     throw AdeleProtocolException('Expected ModelProviderToolChoice.');
-  return switch (_adeleValue498) {
+  return switch (_adeleValue489) {
     'auto' => ModelProviderToolChoice.auto,
     'none' => ModelProviderToolChoice.none,
     _ => throw AdeleProtocolException(
-      'Unknown ModelProviderToolChoice: ' + _adeleValue498 + '.',
+      'Unknown ModelProviderToolChoice: ' + _adeleValue489 + '.',
     ),
   };
 }
 
 ModelProviderToolOutcomeStatus _decodeModelProviderToolOutcomeStatus(
-  Object? _adeleValue499,
+  Object? _adeleValue490,
 ) {
-  if (_adeleValue499 is! String)
+  if (_adeleValue490 is! String)
     throw AdeleProtocolException('Expected ModelProviderToolOutcomeStatus.');
-  return switch (_adeleValue499) {
+  return switch (_adeleValue490) {
     'success' => ModelProviderToolOutcomeStatus.success,
     'rejected' => ModelProviderToolOutcomeStatus.rejected,
     'failed' => ModelProviderToolOutcomeStatus.failed,
     'cancelled' => ModelProviderToolOutcomeStatus.cancelled,
     'indeterminate' => ModelProviderToolOutcomeStatus.indeterminate,
     _ => throw AdeleProtocolException(
-      'Unknown ModelProviderToolOutcomeStatus: ' + _adeleValue499 + '.',
+      'Unknown ModelProviderToolOutcomeStatus: ' + _adeleValue490 + '.',
     ),
   };
 }

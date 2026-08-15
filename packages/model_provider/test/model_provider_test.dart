@@ -23,7 +23,8 @@ void main() {
       ModelProviderInputKind.toolOutcome,
     ]);
     expect(request.input[1].toolProposal!.callId, 'call-1');
-    expect(request.input[1].toolProposal!.itemId, 'item-9');
+    expect(request.input[1].itemId, 'item-9');
+    expect(request.input[1].nativeMetadata!.kind, 'item-v1');
     expect(request.nativeState!.data, const <String, Object?>{'cursor': 'abc'});
   });
 
@@ -87,6 +88,7 @@ ModelProviderRequest _request() => ModelProviderRequest(
   input: <ModelProviderInput>[
     ModelProviderInput(
       kind: ModelProviderInputKind.message,
+      itemId: null,
       message: ModelProviderMessage(
         role: ModelProviderMessageRole.user,
         content: <ModelProviderContent>[
@@ -102,19 +104,19 @@ ModelProviderRequest _request() => ModelProviderRequest(
     ),
     ModelProviderInput(
       kind: ModelProviderInputKind.toolProposal,
+      itemId: 'item-9',
       message: null,
       toolProposal: ModelProviderToolProposal(
         callId: 'call-1',
         name: 'inspect_resource',
         arguments: const <String, Object?>{'uri': 'file:///tmp/a'},
-        itemId: 'item-9',
-        nativeMetadata: _native('item'),
       ),
       toolOutcome: null,
-      nativeMetadata: null,
+      nativeMetadata: _native('item'),
     ),
     ModelProviderInput(
       kind: ModelProviderInputKind.toolOutcome,
+      itemId: null,
       message: null,
       toolProposal: null,
       toolOutcome: ModelProviderToolOutcome(
@@ -153,11 +155,9 @@ ModelProviderEvent _proposal(String callId, String itemId) =>
           callId: callId,
           name: 'inspect_resource',
           arguments: const <String, Object?>{'uri': 'file:///tmp/a'},
-          itemId: itemId,
-          nativeMetadata: _native('item'),
         ),
         itemId: itemId,
-        nativeMetadata: null,
+        nativeMetadata: _native('item'),
       ),
       terminal: null,
     );

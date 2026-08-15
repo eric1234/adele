@@ -6,6 +6,10 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
   static const String callId = 'inspect-call-1';
   static const String itemId = 'proposal-item-1';
   static const String resourceUri = 'file:///tmp/adele-phase-iv.txt';
+  static const String nativeKind = 'scripted-item-v1';
+  static const Map<String, Object?> nativeCompatibility = <String, Object?>{
+    'model': model,
+  };
   static const Map<String, Object?> proposalMetadata = <String, Object?>{
     'scriptedProof': 'proposal-native-v1',
   };
@@ -24,6 +28,26 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
         .where((ModelProviderInput item) => item.toolOutcome != null)
         .toList(growable: false);
     if (outcomes.isEmpty) {
+      final List<ModelProviderInput> users = request.input
+          .where(
+            (ModelProviderInput item) =>
+                item.message?.role == ModelProviderMessageRole.user,
+          )
+          .toList(growable: false);
+      if (users.isEmpty) {
+        yield _failure(
+          ModelProviderFailureKind.invalidRequest,
+          'missing_user_context',
+          'The scripted provider requires initial user context.',
+        );
+        return;
+      }
+      if (request.toolChoice == ModelProviderToolChoice.none) {
+        yield _observation('No tool requested.');
+        yield _text('No tool invocation was requested.', 'text-item-none');
+        yield _terminal('response-none', inputTokens: 6, outputTokens: 5);
+        return;
+      }
       if (!request.tools.any(
         (ModelProviderTool tool) => tool.name == toolName,
       )) {
@@ -34,14 +58,7 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
         );
         return;
       }
-      final String userText = request.input
-          .where(
-            (ModelProviderInput item) =>
-                item.message?.role == ModelProviderMessageRole.user,
-          )
-          .last
-          .message!
-          .content
+      final String userText = users.last.message!.content
           .map((ModelProviderContent content) => content.text)
           .join();
       yield _observation('Inspecting ');
@@ -58,15 +75,31 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
       return;
     }
     final ModelProviderToolOutcome outcome = outcomes.last.toolOutcome!;
-    final ModelProviderInput proposalInput = request.input.lastWhere(
-      (ModelProviderInput item) => item.toolProposal?.callId == outcome.callId,
-    );
-    if (outcome.callId != callId ||
-        proposalInput.toolProposal?.itemId != itemId ||
-        proposalInput.toolProposal?.nativeMetadata?.data['scriptedProof'] !=
-            proposalMetadata['scriptedProof']) {
+    final List<ModelProviderInput> matchingProposals = request.input
+        .where(
+          (ModelProviderInput item) =>
+              item.toolProposal?.callId == outcome.callId,
+        )
+        .toList(growable: false);
+    if (matchingProposals.isEmpty) {
       yield _failure(
-        ModelProviderFailureKind.malformedResponse,
+        ModelProviderFailureKind.invalidRequest,
+        'orphan_tool_outcome',
+        'The tool outcome has no preceding correlated proposal.',
+      );
+      return;
+    }
+    final ModelProviderInput proposalInput = matchingProposals.last;
+    if (outcome.callId != callId ||
+        proposalInput.itemId != itemId ||
+        proposalInput.nativeMetadata?.kind != nativeKind ||
+        proposalInput.nativeMetadata?.compatibility['model'] != model ||
+        proposalInput.nativeMetadata?.compatibility.length != 1 ||
+        proposalInput.nativeMetadata?.data['scriptedProof'] !=
+            proposalMetadata['scriptedProof'] ||
+        proposalInput.nativeMetadata?.data.length != 1) {
+      yield _failure(
+        ModelProviderFailureKind.invalidRequest,
         'missing_replay_metadata',
         'The proposal correlation or native metadata was not replayed.',
       );
@@ -124,17 +157,13 @@ ModelProviderEvent _proposal(String uri) => ModelProviderEvent(
       callId: ScriptedCommonModelProvider.callId,
       name: ScriptedCommonModelProvider.toolName,
       arguments: <String, Object?>{'uri': uri},
-      itemId: ScriptedCommonModelProvider.itemId,
-      nativeMetadata: ModelProviderNativeEnvelope(
-        kind: 'scripted-item-v1',
-        compatibility: const <String, Object?>{
-          'model': ScriptedCommonModelProvider.model,
-        },
-        data: ScriptedCommonModelProvider.proposalMetadata,
-      ),
     ),
     itemId: ScriptedCommonModelProvider.itemId,
-    nativeMetadata: null,
+    nativeMetadata: ModelProviderNativeEnvelope(
+      kind: ScriptedCommonModelProvider.nativeKind,
+      compatibility: ScriptedCommonModelProvider.nativeCompatibility,
+      data: ScriptedCommonModelProvider.proposalMetadata,
+    ),
   ),
   terminal: null,
 );

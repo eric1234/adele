@@ -194,6 +194,12 @@ completed tool proposals, and explicit terminal settlement. Item IDs and opaque
 item metadata survive model/tool/model continuation without becoming canonical
 Session meaning. Stream EOF is not semantic success.
 
+The kernel retains each native envelope's kind, compatibility, and opaque data
+as one immutable value. Completed, incomplete, and refused terminals are
+general settled events, and typed Run observation retains their settlement and
+metadata. The provisional development strategy never executes proposals from
+incomplete or refused turns.
+
 # Tool semantic model
 
 ## Tool identity

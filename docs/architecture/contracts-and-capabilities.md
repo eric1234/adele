@@ -18,6 +18,9 @@ events incrementally. The public `adele_model_provider` package now defines
 capability major 1 with generated streaming, typed ordered input, live text
 observations, authoritative completed output, and explicit semantic terminal
 settlement.
+Ordered input/output wrappers exclusively own optional provider item identity
+and native metadata; tool-proposal payloads own only tool-call correlation,
+name, and arguments.
 Capability transport plus Phase III active
 provider registration, deterministic discovery, exact-major resolution, and
 generated-client invocation are implemented for the maintained

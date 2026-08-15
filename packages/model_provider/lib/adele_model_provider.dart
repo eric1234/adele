@@ -97,19 +97,14 @@ final class ModelProviderToolProposal {
     required this.callId,
     required this.name,
     required this.arguments,
-    required this.itemId,
-    required this.nativeMetadata,
   }) {
     _requireNonEmpty(callId, 'Provider call ID');
     _requireNonEmpty(name, 'Tool name');
-    _requireOptionalNonEmpty(itemId, 'Provider item ID');
   }
 
   final String callId;
   final String name;
   final Map<String, Object?> arguments;
-  final String? itemId;
-  final ModelProviderNativeEnvelope? nativeMetadata;
 }
 
 @AdeleValue('modelProvider.toolOutcome')
@@ -135,6 +130,7 @@ final class ModelProviderInput {
     required this.message,
     required this.toolProposal,
     required this.toolOutcome,
+    required this.itemId,
     required this.nativeMetadata,
   }) {
     final int payloads =
@@ -150,12 +146,14 @@ final class ModelProviderInput {
         'Input kind must match exactly one input payload.',
       );
     }
+    _requireOptionalNonEmpty(itemId, 'Provider item ID');
   }
 
   final ModelProviderInputKind kind;
   final ModelProviderMessage? message;
   final ModelProviderToolProposal? toolProposal;
   final ModelProviderToolOutcome? toolOutcome;
+  final String? itemId;
   final ModelProviderNativeEnvelope? nativeMetadata;
 }
 
