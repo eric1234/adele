@@ -36,6 +36,7 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
   Stream<ModelEvent> invoke(SemanticModelRequest request) {
     late final StreamController<ModelEvent> controller;
     StreamSubscription<ModelProviderEvent>? subscription;
+    Completer<void>? pendingConsumerCancellation;
     bool semanticTerminal = false;
     bool settled = false;
 
@@ -135,8 +136,20 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
                 },
               );
           subscription = created;
-          if (settled) cancelSettledTransport();
+          final Completer<void>? pending = pendingConsumerCancellation;
+          if (pending != null) {
+            created.cancel().then(
+              pending.complete,
+              onError: pending.completeError,
+            );
+          } else if (settled) {
+            cancelSettledTransport();
+          }
         } on Object catch (error, stackTrace) {
+          final Completer<void>? pending = pendingConsumerCancellation;
+          if (pending != null && !pending.isCompleted) {
+            pending.completeError(error, stackTrace);
+          }
           fail(error, stackTrace);
         }
       },
@@ -144,7 +157,14 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
       onResume: () => subscription?.resume(),
       onCancel: () async {
         settled = true;
-        await subscription?.cancel();
+        final StreamSubscription<ModelProviderEvent>? current = subscription;
+        if (current != null) {
+          await current.cancel();
+          return;
+        }
+        final Completer<void> pending = pendingConsumerCancellation ??=
+            Completer<void>();
+        await pending.future;
       },
     );
     return controller.stream;

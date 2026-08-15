@@ -268,8 +268,8 @@ final class ModelProviderFailure {
     required this.kind,
     required this.providerCode,
     required this.providerMessage,
-    required this.providerDetails,
-  }) {
+    required Map<String, Object?> providerDetails,
+  }) : providerDetails = _freezeJsonMap(providerDetails) {
     _requireOptionalNonEmpty(providerCode, 'Provider failure code');
     _requireOptionalNonEmpty(providerMessage, 'Provider failure message');
   }
@@ -287,8 +287,8 @@ final class ModelProviderUsage {
     required this.outputTokens,
     required this.cacheReadTokens,
     required this.cacheWriteTokens,
-    required this.providerDetails,
-  }) {
+    required Map<String, Object?> providerDetails,
+  }) : providerDetails = _freezeJsonMap(providerDetails) {
     for (final int? count in <int?>[
       inputTokens,
       outputTokens,

@@ -307,6 +307,75 @@ void main() {
       'value': true,
     });
   });
+
+  test('failure and usage snapshot nested provider details', () {
+    final Map<String, Object?> failureNested = <String, Object?>{
+      'code': 'original',
+    };
+    final List<Object?> failureItems = <Object?>['original'];
+    final Map<String, Object?> failureSource = <String, Object?>{
+      'nested': failureNested,
+      'items': failureItems,
+    };
+    final ModelProviderFailure failure = ModelProviderFailure(
+      kind: ModelProviderFailureKind.providerFailure,
+      providerCode: null,
+      providerMessage: null,
+      providerDetails: failureSource,
+    );
+    failureNested['code'] = 'mutated';
+    failureItems.add('mutated');
+    failureSource['late'] = true;
+    expect(failure.providerDetails, const <String, Object?>{
+      'nested': <String, Object?>{'code': 'original'},
+      'items': <Object?>['original'],
+    });
+    expect(
+      () =>
+          (failure.providerDetails['nested']! as Map<String, Object?>)['code'] =
+              'late',
+      throwsUnsupportedError,
+    );
+
+    final Map<String, Object?> usageNested = <String, Object?>{
+      'tier': 'original',
+    };
+    final List<Object?> usageItems = <Object?>['original'];
+    final ModelProviderUsage usage = ModelProviderUsage(
+      inputTokens: null,
+      outputTokens: null,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      providerDetails: <String, Object?>{
+        'nested': usageNested,
+        'items': usageItems,
+      },
+    );
+    usageNested['tier'] = 'mutated';
+    usageItems.add('mutated');
+    expect(usage.providerDetails, const <String, Object?>{
+      'nested': <String, Object?>{'tier': 'original'},
+      'items': <Object?>['original'],
+    });
+    expect(
+      () => (usage.providerDetails['items']! as List<Object?>).add('late'),
+      throwsUnsupportedError,
+    );
+  });
+
+  test('terminal provider details reject cyclic structures', () {
+    final Map<String, Object?> cyclic = <String, Object?>{};
+    cyclic['self'] = cyclic;
+    expect(
+      () => ModelProviderFailure(
+        kind: ModelProviderFailureKind.providerFailure,
+        providerCode: null,
+        providerMessage: null,
+        providerDetails: cyclic,
+      ),
+      throwsFormatException,
+    );
+  });
 }
 
 ModelProviderRequest _optionsRequest(Map<String, Object?> options) =>

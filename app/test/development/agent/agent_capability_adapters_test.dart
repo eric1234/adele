@@ -239,6 +239,35 @@ void main() {
     await cancelled.future;
   });
 
+  test('synchronous consumer cancellation awaits assigned transport', () async {
+    final Completer<void> cancellationStarted = Completer<void>();
+    final Completer<void> releaseCancellation = Completer<void>();
+    late final StreamController<ModelProviderEvent> source;
+    source = StreamController<ModelProviderEvent>(
+      sync: true,
+      onListen: () => source.add(_delta('first')),
+      onCancel: () async {
+        cancellationStarted.complete();
+        await releaseCancellation.future;
+      },
+    );
+    bool consumerCompleted = false;
+    final Future<List<ModelEvent>> result =
+        ModelProviderCapabilityAdapter(
+          _binding(_ProviderChannel(events: source.stream)),
+          selectedModel: 'scripted-v1',
+        ).invoke(_request()).take(1).toList().whenComplete(() {
+          consumerCompleted = true;
+        });
+
+    await cancellationStarted.future.timeout(const Duration(seconds: 1));
+    expect(consumerCompleted, isFalse);
+    releaseCancellation.complete();
+
+    expect(await result.timeout(const Duration(seconds: 1)), hasLength(1));
+    expect(consumerCompleted, isTrue);
+  });
+
   test('adapter snapshots nested provider options at construction', () async {
     final Map<String, Object?> nested = <String, Object?>{'mode': 'original'};
     final List<Object?> values = <Object?>['original'];
