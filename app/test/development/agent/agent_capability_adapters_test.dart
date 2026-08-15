@@ -130,33 +130,25 @@ void main() {
     expect(mapped.single, isA<ModelInvocationSettledEvent>());
   });
 
-  for (final ({String name, ModelProviderEvent event}) lateEvent
-      in <({String name, ModelProviderEvent event})>[
-        (name: 'output', event: _text('Late.', 'late-1')),
-        (name: 'terminal', event: _terminal()),
-      ]) {
-    test('terminal followed by ${lateEvent.name} fails promptly', () async {
+  test(
+    'semantic terminal settles while provider transport remains open',
+    () async {
+      final Completer<void> cancelled = Completer<void>();
+      late final StreamController<ModelProviderEvent> source;
+      source = StreamController<ModelProviderEvent>(
+        onListen: () => source.add(_terminal()),
+        onCancel: () => cancelled.complete(),
+      );
+
       final List<ModelEvent> mapped = await ModelProviderCapabilityAdapter(
-        _binding(
-          _ProviderChannel(
-            events: Stream<ModelProviderEvent>.fromIterable(
-              <ModelProviderEvent>[_terminal(), lateEvent.event],
-            ),
-          ),
-        ),
+        _binding(_ProviderChannel(events: source.stream)),
         selectedModel: 'scripted-v1',
       ).invoke(_request()).toList().timeout(const Duration(seconds: 1));
-      expect(mapped.first, isA<ModelInvocationSettledEvent>());
-      expect(
-        mapped.last,
-        isA<ModelInvocationFailedEvent>().having(
-          (ModelInvocationFailedEvent event) => event.error,
-          'error',
-          isA<ModelInvocationContractException>(),
-        ),
-      );
-    });
-  }
+
+      expect(mapped, <Matcher>[isA<ModelInvocationSettledEvent>()]);
+      await cancelled.future.timeout(const Duration(seconds: 1));
+    },
+  );
 
   test('consumer cancellation reaches underlying stream', () async {
     final Completer<void> cancelled = Completer<void>();

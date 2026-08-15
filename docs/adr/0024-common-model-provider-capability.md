@@ -46,9 +46,13 @@ and compatibility policy are established. Canonical semantic history remains
 the current continuation authority; adapter-local caching could leak state
 between unrelated Sessions or Runs.
 
-EOF is not success. EOF or transport failure before terminal fails invocation;
-teardown after terminal does not replace settlement. Post-terminal events are
-violations. Consumer cancellation remains transport lifecycle.
+EOF before terminal is not success. A semantic terminal settles the invocation;
+the adapter closes its semantic stream promptly and cancels remaining provider
+transport without awaiting teardown. Transport failure before terminal fails
+the invocation, while teardown after terminal cannot replace settlement.
+Providers must not emit semantic events after terminal, but the adapter does not
+delay settlement to inspect for hypothetical later events. Consumer cancellation
+remains transport lifecycle and awaits underlying cancellation.
 
 Kernel terminal events represent completed, incomplete, and refused settlement
 without naming all three "completed". Run journal events retain settlement and

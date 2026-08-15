@@ -51,22 +51,6 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
       unawaited(controller.close());
     }
 
-    void contractViolation(String message) {
-      if (settled) return;
-      settled = true;
-      controller.add(
-        ModelInvocationFailedEvent(
-          invocationId: request.invocationId,
-          error: ModelInvocationContractException(message),
-          stackTrace: StackTrace.current,
-        ),
-      );
-      unawaited(() async {
-        await subscription?.cancel();
-        await controller.close();
-      }());
-    }
-
     controller = StreamController<ModelEvent>(
       sync: true,
       onListen: () {
@@ -79,13 +63,7 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
               .invoke(_toProviderRequest(request, this))
               .listen(
                 (ModelProviderEvent event) {
-                  if (settled) return;
-                  if (semanticTerminal) {
-                    contractViolation(
-                      'The provider emitted an event after semantic terminal.',
-                    );
-                    return;
-                  }
+                  if (settled || semanticTerminal) return;
                   try {
                     switch (event.kind) {
                       case ModelProviderEventKind.observation:
@@ -110,7 +88,10 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
                           event.terminal!,
                         );
                         semanticTerminal = true;
+                        settled = true;
                         controller.add(terminal);
+                        unawaited(controller.close());
+                        unawaited(subscription?.cancel());
                     }
                   } on Object catch (error, stackTrace) {
                     unawaited(subscription?.cancel());

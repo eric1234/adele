@@ -23,6 +23,10 @@ on:
       - ".tool-versions"
       - ".github/workflows/runtime-smoke.yaml"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   smoke:
     runs-on: ubuntu-latest

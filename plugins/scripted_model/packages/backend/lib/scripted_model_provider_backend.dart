@@ -74,8 +74,11 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
       yield _terminal('response-1', inputTokens: 12, outputTokens: 8);
       return;
     }
-    final ModelProviderToolOutcome outcome = outcomes.last.toolOutcome!;
+    final ModelProviderInput outcomeInput = outcomes.last;
+    final ModelProviderToolOutcome outcome = outcomeInput.toolOutcome!;
+    final int outcomeIndex = request.input.lastIndexOf(outcomeInput);
     final List<ModelProviderInput> matchingProposals = request.input
+        .take(outcomeIndex)
         .where(
           (ModelProviderInput item) =>
               item.toolProposal?.callId == outcome.callId,
@@ -90,7 +93,24 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
       return;
     }
     final ModelProviderInput proposalInput = matchingProposals.last;
+    final String initialUserText = request.input
+        .take(outcomeIndex)
+        .where(
+          (ModelProviderInput item) =>
+              item.message?.role == ModelProviderMessageRole.user,
+        )
+        .last
+        .message!
+        .content
+        .map((ModelProviderContent content) => content.text)
+        .join();
+    final String expectedUri = initialUserText == 'fixture:tool-domain-failure'
+        ? 'fail:///adele-phase-iv.txt'
+        : resourceUri;
     if (outcome.callId != callId ||
+        proposalInput.toolProposal?.name != toolName ||
+        proposalInput.toolProposal?.arguments.length != 1 ||
+        proposalInput.toolProposal?.arguments['uri'] != expectedUri ||
         proposalInput.itemId != itemId ||
         proposalInput.nativeMetadata?.kind != nativeKind ||
         proposalInput.nativeMetadata?.compatibility['model'] != model ||

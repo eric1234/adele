@@ -61,6 +61,55 @@ void main() {
       'orphan_tool_outcome',
     );
   });
+
+  test('tool outcome before its matching proposal is invalid', () async {
+    final List<ModelProviderEvent> events = await provider
+        .invoke(
+          _request(
+            input: <ModelProviderInput>[_user(), _outcome(), _proposal()],
+          ),
+        )
+        .toList();
+    _expectInvalidContinuation(events, 'orphan_tool_outcome');
+  });
+
+  test('wrong replayed tool name is invalid', () async {
+    final List<ModelProviderEvent> events = await provider
+        .invoke(
+          _request(
+            input: <ModelProviderInput>[
+              _user(),
+              _proposal(name: 'wrong_tool'),
+              _outcome(),
+            ],
+          ),
+        )
+        .toList();
+    _expectInvalidContinuation(events, 'missing_replay_metadata');
+  });
+
+  test('wrong replayed arguments are invalid', () async {
+    final List<ModelProviderEvent> events = await provider
+        .invoke(
+          _request(
+            input: <ModelProviderInput>[
+              _user(),
+              _proposal(uri: 'file:///tmp/wrong.txt'),
+              _outcome(),
+            ],
+          ),
+        )
+        .toList();
+    _expectInvalidContinuation(events, 'missing_replay_metadata');
+  });
+}
+
+void _expectInvalidContinuation(List<ModelProviderEvent> events, String code) {
+  expect(
+    events.single.terminal!.failure!.kind,
+    ModelProviderFailureKind.invalidRequest,
+  );
+  expect(events.single.terminal!.failure!.providerCode, code);
 }
 
 ModelProviderRequest _request({
@@ -97,5 +146,38 @@ ModelProviderInput _user() => ModelProviderInput(
   ),
   toolProposal: null,
   toolOutcome: null,
+  nativeMetadata: null,
+);
+
+ModelProviderInput _proposal({
+  String name = ScriptedCommonModelProvider.toolName,
+  String uri = ScriptedCommonModelProvider.resourceUri,
+}) => ModelProviderInput(
+  kind: ModelProviderInputKind.toolProposal,
+  itemId: ScriptedCommonModelProvider.itemId,
+  message: null,
+  toolProposal: ModelProviderToolProposal(
+    callId: ScriptedCommonModelProvider.callId,
+    name: name,
+    arguments: <String, Object?>{'uri': uri},
+  ),
+  toolOutcome: null,
+  nativeMetadata: ModelProviderNativeEnvelope(
+    kind: ScriptedCommonModelProvider.nativeKind,
+    compatibility: ScriptedCommonModelProvider.nativeCompatibility,
+    data: ScriptedCommonModelProvider.proposalMetadata,
+  ),
+);
+
+ModelProviderInput _outcome() => ModelProviderInput(
+  kind: ModelProviderInputKind.toolOutcome,
+  itemId: null,
+  message: null,
+  toolProposal: null,
+  toolOutcome: ModelProviderToolOutcome(
+    callId: ScriptedCommonModelProvider.callId,
+    status: ModelProviderToolOutcomeStatus.success,
+    content: 'done',
+  ),
   nativeMetadata: null,
 );
