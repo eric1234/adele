@@ -152,6 +152,82 @@ void main() {
         .toList();
     _expectInvalidContinuation(events, 'unsupported_tool_history');
   });
+
+  test('duplicate proposal correlations are invalid', () async {
+    final List<ModelProviderEvent> events = await provider
+        .invoke(
+          _request(
+            input: <ModelProviderInput>[
+              _user(),
+              _proposal(),
+              _proposal(),
+              _outcome(),
+            ],
+          ),
+        )
+        .toList();
+    _expectInvalidContinuation(events, 'ambiguous_tool_proposal');
+  });
+
+  test(
+    'first invocation below output limit is incomplete without proposal',
+    () async {
+      final List<ModelProviderEvent> events = await provider
+          .invoke(_request(maxOutputTokens: 7))
+          .toList();
+      expect(
+        events.where((ModelProviderEvent event) => event.output != null),
+        isEmpty,
+      );
+      expect(
+        events.single.terminal!.settlement,
+        ModelProviderSettlement.incomplete,
+      );
+      expect(
+        events.single.terminal!.incompleteReason,
+        ModelProviderIncompleteReason.outputLimit,
+      );
+      expect(events.single.terminal!.usage!.outputTokens, 0);
+    },
+  );
+
+  test(
+    'first invocation at output limit retains completed proposal path',
+    () async {
+      final List<ModelProviderEvent> events = await provider
+          .invoke(_request(maxOutputTokens: 8))
+          .toList();
+      expect(
+        events.where(
+          (ModelProviderEvent event) => event.output?.toolProposal != null,
+        ),
+        hasLength(1),
+      );
+      expect(
+        events.last.terminal!.settlement,
+        ModelProviderSettlement.completed,
+      );
+    },
+  );
+
+  test('no-tool response honors output limit', () async {
+    final List<ModelProviderEvent> events = await provider
+        .invoke(
+          _request(
+            toolChoice: ModelProviderToolChoice.none,
+            maxOutputTokens: 4,
+          ),
+        )
+        .toList();
+    expect(
+      events.single.terminal!.settlement,
+      ModelProviderSettlement.incomplete,
+    );
+    expect(
+      events.single.terminal!.incompleteReason,
+      ModelProviderIncompleteReason.outputLimit,
+    );
+  });
 }
 
 void _expectInvalidContinuation(List<ModelProviderEvent> events, String code) {
@@ -165,6 +241,7 @@ void _expectInvalidContinuation(List<ModelProviderEvent> events, String code) {
 ModelProviderRequest _request({
   ModelProviderToolChoice toolChoice = ModelProviderToolChoice.auto,
   List<ModelProviderInput>? input,
+  int? maxOutputTokens,
 }) => ModelProviderRequest(
   model: ScriptedCommonModelProvider.model,
   instructions: '',
@@ -177,7 +254,7 @@ ModelProviderRequest _request({
     ),
   ],
   toolChoice: toolChoice,
-  maxOutputTokens: null,
+  maxOutputTokens: maxOutputTokens,
   providerOptions: const <String, Object?>{},
   nativeState: null,
 );

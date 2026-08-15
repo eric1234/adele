@@ -156,6 +156,7 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
       onPause: () => subscription?.pause(),
       onResume: () => subscription?.resume(),
       onCancel: () async {
+        if (settled) return;
         settled = true;
         final StreamSubscription<ModelProviderEvent>? current = subscription;
         if (current != null) {

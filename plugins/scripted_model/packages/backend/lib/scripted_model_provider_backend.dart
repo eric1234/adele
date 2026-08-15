@@ -51,6 +51,10 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
         return;
       }
       if (request.toolChoice == ModelProviderToolChoice.none) {
+        if (_exceedsOutputLimit(request, 5)) {
+          yield _outputLimitTerminal('response-none-limit', inputTokens: 6);
+          return;
+        }
         yield _observation('No tool requested.');
         yield _text('No tool invocation was requested.', 'text-item-none');
         yield _terminal('response-none', inputTokens: 6, outputTokens: 5);
@@ -69,6 +73,10 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
       final String userText = users.last.message!.content
           .map((ModelProviderContent content) => content.text)
           .join();
+      if (_exceedsOutputLimit(request, 8)) {
+        yield _outputLimitTerminal('response-1-limit', inputTokens: 12);
+        return;
+      }
       yield _observation('Inspecting ');
       yield _text(
         'Inspecting the deterministic Phase IV resource.',
@@ -100,7 +108,15 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
       );
       return;
     }
-    final ModelProviderInput proposalInput = matchingProposals.last;
+    if (matchingProposals.length > 1) {
+      yield _failure(
+        ModelProviderFailureKind.invalidRequest,
+        'ambiguous_tool_proposal',
+        'The tool outcome matches multiple preceding proposals.',
+      );
+      return;
+    }
+    final ModelProviderInput proposalInput = matchingProposals.single;
     final int proposalIndex = request.input.lastIndexOf(proposalInput);
     final List<ModelProviderInput> priorUsers = request.input
         .take(proposalIndex)
@@ -154,10 +170,18 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
       ModelProviderToolOutcomeStatus.indeterminate =>
         'The inspection result is indeterminate.',
     };
+    if (_exceedsOutputLimit(request, 10)) {
+      yield _outputLimitTerminal('response-2-limit', inputTokens: 24);
+      return;
+    }
     yield _text(finalText, 'text-item-2');
     yield _terminal('response-2', inputTokens: 24, outputTokens: 10);
   }
 }
+
+bool _exceedsOutputLimit(ModelProviderRequest request, int requiredTokens) =>
+    request.maxOutputTokens != null &&
+    request.maxOutputTokens! < requiredTokens;
 
 ModelProviderEvent _observation(String delta) => ModelProviderEvent(
   kind: ModelProviderEventKind.observation,
@@ -234,6 +258,32 @@ ModelProviderEvent _terminal(
       },
       data: <String, Object?>{'response': responseId},
     ),
+  ),
+);
+
+ModelProviderEvent _outputLimitTerminal(
+  String responseId, {
+  required int inputTokens,
+}) => ModelProviderEvent(
+  kind: ModelProviderEventKind.terminal,
+  observation: null,
+  output: null,
+  terminal: ModelProviderTerminal(
+    settlement: ModelProviderSettlement.incomplete,
+    incompleteReason: ModelProviderIncompleteReason.outputLimit,
+    failure: null,
+    providerStopReason: 'scripted_output_limit',
+    usage: ModelProviderUsage(
+      inputTokens: inputTokens,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      providerDetails: const <String, Object?>{'fixture': true},
+    ),
+    effectiveModel: ScriptedCommonModelProvider.model,
+    responseId: responseId,
+    requestId: 'request-$responseId',
+    nativeState: null,
   ),
 );
 

@@ -4,6 +4,54 @@ import 'package:adele_contract/adele_contract.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('JSON snapshots are deep immutable construction-time values', () {
+    final Map<String, Object?> nested = <String, Object?>{'value': 'original'};
+    final List<Object?> items = <Object?>['original'];
+    final Map<String, Object?> source = <String, Object?>{
+      'nested': nested,
+      'items': items,
+    };
+    final Map<String, Object?> snapshot = adeleSnapshotJsonMap(source);
+    nested['value'] = 'mutated';
+    items.add('mutated');
+    expect(snapshot, const <String, Object?>{
+      'nested': <String, Object?>{'value': 'original'},
+      'items': <Object?>['original'],
+    });
+    expect(
+      () => (snapshot['nested']! as Map<String, Object?>)['value'] = 'late',
+      throwsUnsupportedError,
+    );
+  });
+
+  test('JSON snapshots reject cycles depth and nonfinite doubles', () {
+    final Map<String, Object?> cyclic = <String, Object?>{};
+    cyclic['self'] = cyclic;
+    expect(() => adeleSnapshotJsonMap(cyclic), throwsFormatException);
+    final Map<String, Object?> deep = <String, Object?>{};
+    Map<String, Object?> cursor = deep;
+    for (int i = 0; i < 65; i++) {
+      final Map<String, Object?> next = <String, Object?>{};
+      cursor['next'] = next;
+      cursor = next;
+    }
+    expect(() => adeleSnapshotJsonMap(deep), throwsFormatException);
+    expect(
+      () => adeleSnapshotJsonMap(<String, Object?>{'value': double.nan}),
+      throwsFormatException,
+    );
+  });
+
+  test('JSON snapshots accept shared acyclic containers', () {
+    final Map<String, Object?> shared = <String, Object?>{'value': true};
+    expect(
+      adeleSnapshotJsonMap(<String, Object?>{'left': shared, 'right': shared}),
+      const <String, Object?>{
+        'left': <String, Object?>{'value': true},
+        'right': <String, Object?>{'value': true},
+      },
+    );
+  });
   test('remote failure preserves structured details', () {
     const AdeleRemoteFailure failure = _Failure(
       code: 'denied',

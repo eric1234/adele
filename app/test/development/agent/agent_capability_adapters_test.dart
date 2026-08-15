@@ -150,6 +150,32 @@ void main() {
     },
   );
 
+  test(
+    'semantic completion does not await blocked transport cleanup',
+    () async {
+      final Completer<void> cancellationStarted = Completer<void>();
+      final Completer<void> releaseCancellation = Completer<void>();
+      late final StreamController<ModelProviderEvent> source;
+      source = StreamController<ModelProviderEvent>(
+        sync: true,
+        onListen: () => source.add(_terminal()),
+        onCancel: () async {
+          cancellationStarted.complete();
+          await releaseCancellation.future;
+        },
+      );
+
+      final List<ModelEvent> mapped = await ModelProviderCapabilityAdapter(
+        _binding(_ProviderChannel(events: source.stream)),
+        selectedModel: 'scripted-v1',
+      ).invoke(_request()).toList().timeout(const Duration(seconds: 1));
+
+      expect(mapped, <Matcher>[isA<ModelInvocationSettledEvent>()]);
+      await cancellationStarted.future.timeout(const Duration(seconds: 1));
+      releaseCancellation.complete();
+    },
+  );
+
   test('synchronous terminal eventually cancels assigned transport', () async {
     final Completer<void> cancelled = Completer<void>();
     late final StreamController<ModelProviderEvent> source;

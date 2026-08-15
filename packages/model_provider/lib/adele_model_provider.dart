@@ -1,8 +1,6 @@
 /// Common plugin-facing model-provider capability contract.
 library;
 
-import 'dart:collection' as collection;
-
 import 'package:adele_capabilities/adele_capabilities.dart' as capabilities;
 import 'package:adele_contract/adele_contract.dart';
 
@@ -60,8 +58,8 @@ final class ModelProviderNativeEnvelope {
     required this.kind,
     required Map<String, Object?> compatibility,
     required Map<String, Object?> data,
-  }) : compatibility = _freezeJsonMap(compatibility),
-       data = _freezeJsonMap(data) {
+  }) : compatibility = adeleSnapshotJsonMap(compatibility),
+       data = adeleSnapshotJsonMap(data) {
     _requireNonEmpty(kind, 'Native state kind');
   }
 
@@ -103,7 +101,7 @@ final class ModelProviderToolProposal {
     required this.callId,
     required this.name,
     required Map<String, Object?> arguments,
-  }) : arguments = _freezeJsonMap(arguments) {
+  }) : arguments = adeleSnapshotJsonMap(arguments) {
     _requireNonEmpty(callId, 'Provider call ID');
     _requireNonEmpty(name, 'Tool name');
   }
@@ -169,7 +167,7 @@ final class ModelProviderTool {
     required this.name,
     required this.description,
     required Map<String, Object?> argumentsSchema,
-  }) : argumentsSchema = _freezeJsonMap(argumentsSchema) {
+  }) : argumentsSchema = adeleSnapshotJsonMap(argumentsSchema) {
     _requireNonEmpty(name, 'Tool name');
     _requireNonEmpty(description, 'Tool description');
   }
@@ -192,7 +190,7 @@ final class ModelProviderRequest {
     required this.nativeState,
   }) : input = List<ModelProviderInput>.unmodifiable(input),
        tools = List<ModelProviderTool>.unmodifiable(tools),
-       providerOptions = _freezeJsonMap(providerOptions) {
+       providerOptions = adeleSnapshotJsonMap(providerOptions) {
     _requireNonEmpty(model, 'Selected model');
     if (maxOutputTokens != null && maxOutputTokens! <= 0) {
       throw const FormatException('Maximum output tokens must be positive.');
@@ -269,7 +267,7 @@ final class ModelProviderFailure {
     required this.providerCode,
     required this.providerMessage,
     required Map<String, Object?> providerDetails,
-  }) : providerDetails = _freezeJsonMap(providerDetails) {
+  }) : providerDetails = adeleSnapshotJsonMap(providerDetails) {
     _requireOptionalNonEmpty(providerCode, 'Provider failure code');
     _requireOptionalNonEmpty(providerMessage, 'Provider failure message');
   }
@@ -288,7 +286,7 @@ final class ModelProviderUsage {
     required this.cacheReadTokens,
     required this.cacheWriteTokens,
     required Map<String, Object?> providerDetails,
-  }) : providerDetails = _freezeJsonMap(providerDetails) {
+  }) : providerDetails = adeleSnapshotJsonMap(providerDetails) {
     for (final int? count in <int?>[
       inputTokens,
       outputTokens,
@@ -406,59 +404,4 @@ void _requireNonEmpty(String value, String label) {
 
 void _requireOptionalNonEmpty(String? value, String label) {
   if (value != null) _requireNonEmpty(value, label);
-}
-
-const int _jsonMaxDepth = 64;
-
-Map<String, Object?> _freezeJsonMap(Map<String, Object?> source) =>
-    _freezeJsonValue(source, 0, collection.HashSet<Object>.identity())!
-        as Map<String, Object?>;
-
-Object? _freezeJsonValue(Object? value, int depth, Set<Object> active) {
-  if (value == null || value is bool || value is String || value is int) {
-    return value;
-  }
-  if (value is double) {
-    if (!value.isFinite) {
-      throw const FormatException('JSON-compatible doubles must be finite.');
-    }
-    return value;
-  }
-  if (depth >= _jsonMaxDepth) {
-    throw const FormatException(
-      'JSON-compatible value exceeds maximum depth 64.',
-    );
-  }
-  if (value is List<Object?>) {
-    if (!active.add(value)) {
-      throw const FormatException('Cyclic JSON-compatible value.');
-    }
-    try {
-      return List<Object?>.unmodifiable(
-        value.map((Object? item) => _freezeJsonValue(item, depth + 1, active)),
-      );
-    } finally {
-      active.remove(value);
-    }
-  }
-  if (value is Map<String, Object?>) {
-    if (!active.add(value)) {
-      throw const FormatException('Cyclic JSON-compatible value.');
-    }
-    try {
-      return Map<String, Object?>.unmodifiable(
-        value.map(
-          (String key, Object? item) => MapEntry<String, Object?>(
-            key,
-            _freezeJsonValue(item, depth + 1, active),
-          ),
-        ),
-      );
-    } finally {
-      active.remove(value);
-    }
-  }
-  throw FormatException(
-    'Unsupported JSON-compatible value: ${value.runtimeType}.',
-  );
 }

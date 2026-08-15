@@ -379,7 +379,8 @@ final class _Extractor {
       final bool snapshotCollection =
           parameter is! FieldFormalParameterElement &&
           (_isSdkType(field.type, 'dart:core', 'List') ||
-              _isCanonicalJsonMap(field.type));
+              _isCanonicalJsonMap(field.type)) &&
+          _isCanonicalSnapshotInitializer(constructor, field, parameter);
       if (!fieldFormal && !snapshotCollection) {
         _fail(
           node,
@@ -955,6 +956,57 @@ final class _Extractor {
       type.typeArguments.length == 2 &&
       _isCanonicalString(type.typeArguments.first) &&
       _isCanonicalNullableObject(type.typeArguments.last);
+
+  bool _isCanonicalSnapshotInitializer(
+    ConstructorElement constructor,
+    FieldElement field,
+    FormalParameterElement parameter,
+  ) {
+    final ConstructorDeclaration declaration = result.unit.declarations
+        .whereType<ClassDeclaration>()
+        .expand((ClassDeclaration value) => value.members)
+        .whereType<ConstructorDeclaration>()
+        .firstWhere(
+          (ConstructorDeclaration value) =>
+              value.declaredFragment?.element == constructor,
+        );
+    final ConstructorFieldInitializer? initializer = declaration.initializers
+        .whereType<ConstructorFieldInitializer>()
+        .where(
+          (ConstructorFieldInitializer value) =>
+              value.fieldName.element == field,
+        )
+        .firstOrNull;
+    if (initializer == null) return false;
+    final Expression expression = initializer.expression;
+    if (_isSdkType(field.type, 'dart:core', 'List')) {
+      if (expression is! InstanceCreationExpression ||
+          expression.argumentList.arguments.length != 1 ||
+          expression.argumentList.arguments.single is! SimpleIdentifier ||
+          (expression.argumentList.arguments.single as SimpleIdentifier)
+                  .element !=
+              parameter) {
+        return false;
+      }
+      final ConstructorElement? target = expression.constructorName.element;
+      return expression.constructorName.name?.name == 'unmodifiable' &&
+          target?.enclosingElement.name == 'List' &&
+          target?.library.uri.toString() == 'dart:core';
+    }
+    if (expression is! MethodInvocation ||
+        expression.argumentList.arguments.length != 1 ||
+        expression.argumentList.arguments.single is! SimpleIdentifier ||
+        (expression.argumentList.arguments.single as SimpleIdentifier)
+                .element !=
+            parameter) {
+      return false;
+    }
+    return expression.target == null &&
+        expression.methodName.element is TopLevelFunctionElement &&
+        expression.methodName.element!.name == 'adeleSnapshotJsonMap' &&
+        expression.methodName.element!.library?.uri.toString() ==
+            'package:adele_contract/adele_contract.dart';
+  }
 
   TypeModel _type(DartType type, AstNode node) {
     if (type.alias != null) {

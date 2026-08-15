@@ -1,3 +1,5 @@
+import 'dart:collection';
+
 import 'identifiers.dart';
 import 'tool.dart';
 
@@ -362,14 +364,12 @@ String _requireNonEmpty(String value, String label) {
 }
 
 Map<String, Object?> _freezeMap(Map<String, Object?> source) =>
-    Map<String, Object?>.unmodifiable(
-      source.map(
-        (String key, Object? value) =>
-            MapEntry<String, Object?>(key, _freezeValue(value)),
-      ),
-    );
+    _freezeValue(source, 0, HashSet<Object>.identity())!
+        as Map<String, Object?>;
 
-Object? _freezeValue(Object? value) {
+const int _structuredMaxDepth = 64;
+
+Object? _freezeValue(Object? value, int depth, Set<Object> active) {
   if (value == null || value is bool || value is String || value is int) {
     return value;
   }
@@ -379,10 +379,38 @@ Object? _freezeValue(Object? value) {
     }
     return value;
   }
-  if (value is List<Object?>) {
-    return List<Object?>.unmodifiable(value.map(_freezeValue));
+  if (depth >= _structuredMaxDepth) {
+    throw const FormatException('Structured value exceeds maximum depth 64.');
   }
-  if (value is Map<String, Object?>) return _freezeMap(value);
+  if (value is List<Object?>) {
+    if (!active.add(value)) {
+      throw const FormatException('Cyclic structured value.');
+    }
+    try {
+      return List<Object?>.unmodifiable(
+        value.map((Object? item) => _freezeValue(item, depth + 1, active)),
+      );
+    } finally {
+      active.remove(value);
+    }
+  }
+  if (value is Map<String, Object?>) {
+    if (!active.add(value)) {
+      throw const FormatException('Cyclic structured value.');
+    }
+    try {
+      return Map<String, Object?>.unmodifiable(
+        value.map(
+          (String key, Object? item) => MapEntry<String, Object?>(
+            key,
+            _freezeValue(item, depth + 1, active),
+          ),
+        ),
+      );
+    } finally {
+      active.remove(value);
+    }
+  }
   throw FormatException('Unsupported structured value: ${value.runtimeType}.');
 }
 

@@ -155,6 +155,39 @@ void main() {
       throwsFormatException,
     );
   });
+
+  test('model metadata rejects cycles and excessive depth', () {
+    final Map<String, Object?> cyclic = <String, Object?>{};
+    cyclic['self'] = cyclic;
+    expect(
+      () => ModelNativeEnvelope(
+        kind: 'native-v1',
+        compatibility: cyclic,
+        data: const <String, Object?>{},
+      ),
+      throwsFormatException,
+    );
+    final Map<String, Object?> deep = <String, Object?>{};
+    Map<String, Object?> cursor = deep;
+    for (int i = 0; i < 65; i++) {
+      final Map<String, Object?> next = <String, Object?>{};
+      cursor['next'] = next;
+      cursor = next;
+    }
+    expect(() => ModelUsage(providerDetails: deep), throwsFormatException);
+  });
+
+  test('model metadata accepts shared acyclic references', () {
+    final Map<String, Object?> shared = <String, Object?>{'value': true};
+    final ModelFailure failure = ModelFailure(
+      kind: ModelFailureKind.providerFailure,
+      providerDetails: <String, Object?>{'left': shared, 'right': shared},
+    );
+    expect(failure.providerDetails, const <String, Object?>{
+      'left': <String, Object?>{'value': true},
+      'right': <String, Object?>{'value': true},
+    });
+  });
 }
 
 SemanticModelRequest _request(String id) => SemanticModelRequest(
