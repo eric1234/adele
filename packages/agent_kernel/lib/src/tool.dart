@@ -195,10 +195,11 @@ final class ToolProposalFailure {
     required this.kind,
     required String providerCallId,
     required String alias,
-    required this.message,
+    required String message,
     this.cause,
   }) : providerCallId = _requireNonEmpty(providerCallId, 'Provider call ID'),
-       alias = _requireNonEmpty(alias, 'Proposed model tool alias');
+       alias = _requireNonEmpty(alias, 'Proposed model tool alias'),
+       message = _requireNonEmpty(message, 'Tool proposal failure message');
 
   final ToolProposalFailureKind kind;
   final String providerCallId;
@@ -259,7 +260,9 @@ final class ToolInvocationResolver {
           kind: ToolProposalFailureKind.invalidArguments,
           providerCallId: proposal.providerCallId,
           alias: proposal.alias,
-          message: error.message,
+          message: error.message.trim().isEmpty
+              ? 'The proposed tool arguments are invalid.'
+              : error.message,
           cause: error,
         ),
       );

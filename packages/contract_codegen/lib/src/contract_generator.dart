@@ -373,11 +373,18 @@ final class _Extractor {
           'Field ${field.name} and its required named constructor parameter must have exactly the same type.',
         );
       }
-      if (parameter is! FieldFormalParameterElement ||
-          parameter.field?.name != field.name) {
+      final bool fieldFormal =
+          parameter is FieldFormalParameterElement &&
+          parameter.field?.name == field.name;
+      final bool snapshotCollection =
+          parameter is! FieldFormalParameterElement &&
+          (_isSdkType(field.type, 'dart:core', 'List') ||
+              _isCanonicalJsonMap(field.type)) &&
+          _isCanonicalSnapshotInitializer(constructor, field, parameter);
+      if (!fieldFormal && !snapshotCollection) {
         _fail(
           node,
-          'Value constructor parameters must be required named field-formal parameters.',
+          'Value constructor parameters must be required named field-formal parameters, except exact-type List and Map<String, Object?> snapshot parameters.',
         );
       }
       fields.add(
@@ -950,6 +957,57 @@ final class _Extractor {
       _isCanonicalString(type.typeArguments.first) &&
       _isCanonicalNullableObject(type.typeArguments.last);
 
+  bool _isCanonicalSnapshotInitializer(
+    ConstructorElement constructor,
+    FieldElement field,
+    FormalParameterElement parameter,
+  ) {
+    final ConstructorDeclaration declaration = result.unit.declarations
+        .whereType<ClassDeclaration>()
+        .expand((ClassDeclaration value) => value.members)
+        .whereType<ConstructorDeclaration>()
+        .firstWhere(
+          (ConstructorDeclaration value) =>
+              value.declaredFragment?.element == constructor,
+        );
+    final ConstructorFieldInitializer? initializer = declaration.initializers
+        .whereType<ConstructorFieldInitializer>()
+        .where(
+          (ConstructorFieldInitializer value) =>
+              value.fieldName.element == field,
+        )
+        .firstOrNull;
+    if (initializer == null) return false;
+    final Expression expression = initializer.expression;
+    if (_isSdkType(field.type, 'dart:core', 'List')) {
+      if (expression is! InstanceCreationExpression ||
+          expression.argumentList.arguments.length != 1 ||
+          expression.argumentList.arguments.single is! SimpleIdentifier ||
+          (expression.argumentList.arguments.single as SimpleIdentifier)
+                  .element !=
+              parameter) {
+        return false;
+      }
+      final ConstructorElement? target = expression.constructorName.element;
+      return expression.constructorName.name?.name == 'unmodifiable' &&
+          target?.enclosingElement.name == 'List' &&
+          target?.library.uri.toString() == 'dart:core';
+    }
+    if (expression is! MethodInvocation ||
+        expression.argumentList.arguments.length != 1 ||
+        expression.argumentList.arguments.single is! SimpleIdentifier ||
+        (expression.argumentList.arguments.single as SimpleIdentifier)
+                .element !=
+            parameter) {
+      return false;
+    }
+    return expression.target == null &&
+        expression.methodName.element is TopLevelFunctionElement &&
+        expression.methodName.element!.name == 'adeleSnapshotJsonMap' &&
+        expression.methodName.element!.library?.uri.toString() ==
+            'package:adele_contract/adele_contract.dart';
+  }
+
   TypeModel _type(DartType type, AstNode node) {
     if (type.alias != null) {
       _fail(
@@ -1327,7 +1385,7 @@ final class DartContractEmitter {
     _nextLocal = 0;
     final StringBuffer out = StringBuffer(
       '// GENERATED CODE - DO NOT MODIFY BY HAND.\n'
-      '// ignore_for_file: curly_braces_in_flow_control_structures, no_leading_underscores_for_local_identifiers, prefer_interpolation_to_compose_strings, unnecessary_nullable_for_final_variable_declarations, unnecessary_this, unused_catch_clause, unused_element, use_null_aware_elements\n\n'
+      '// ignore_for_file: curly_braces_in_flow_control_structures, dead_code, no_leading_underscores_for_local_identifiers, prefer_interpolation_to_compose_strings, unnecessary_nullable_for_final_variable_declarations, unnecessary_this, unused_catch_clause, unused_element, unused_local_variable, use_null_aware_elements\n\n'
       'part of ${_literal(p.basename(model.sourcePath))};\n\n',
     );
     for (final ServiceModel service in model.services) {

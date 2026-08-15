@@ -7,6 +7,7 @@ public contracts and plugin-facing APIs
   adele_plugin_api
   adele_contract
   adele_capabilities
+  adele_model_provider
             ^
 internal host implementations
   plugin_runtime
@@ -29,6 +30,7 @@ desktop application. All packages are initially private to the repository via
 | `adele_contract` | Experimental plugin-facing | Dart SDK; other lightweight public packages only if a concrete need emerges | Flutter, internal host packages, application code, analyzer/compiler internals, `build_runner` |
 | `adele_capabilities` | Experimental plugin-facing | Dart SDK and lightweight public contract types when required | Flutter, internal host packages, application code |
 | `adele_plugin_api` | Experimental plugin-facing | Dart SDK and lightweight public packages when required | Flutter unless a future UI API explicitly establishes a boundary; internal host packages; application code |
+| `adele_model_provider` | Experimental plugin-facing | Dart SDK, `adele_contract`, and `adele_capabilities` | Flutter, internal host packages, application code, concrete providers |
 | `plugin_runtime` | Internal, pure Dart | Dart SDK, public packages, and concrete acyclic internal dependencies | Flutter, application code, plugin implementations |
 | `plugin_builder` | Internal, pure Dart | Dart SDK, public packages, and build dependencies selected when implementation begins | Flutter UI, application code, plugin implementations as linked host dependencies |
 | `agent_kernel` | Internal, pure Dart | Dart SDK, public packages, and concrete acyclic internal dependencies | Flutter, application code, concrete providers, tools, editors, workflows, or plugin implementations |
@@ -50,6 +52,7 @@ A plugin may depend on these public surfaces as needed:
 adele_plugin_api
 adele_contract
 adele_capabilities
+adele_model_provider
 future plugin-facing UI APIs
 ```
 

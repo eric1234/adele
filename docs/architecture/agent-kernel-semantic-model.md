@@ -2,7 +2,7 @@
 
 ## Status
 
-**Guiding architecture; Phase IV-A foundation implemented**
+**Guiding architecture; Phase IV-B2 common provider vertical implemented**
 
 This document records the semantic boundaries ADELE intends to preserve while implementing its agent execution substrate. It is more specific than the non-normative research survey, but it is **not** a stable public extension API and does not freeze exact Dart type names, persistence schemas, or contribution APIs.
 
@@ -187,6 +187,18 @@ The kernel should not make unary `Future<ModelResponse>` its fundamental abstrac
 Provider-specific lowering handles protocol roles/items, reasoning formats, hosted tools, provider-only options, cache controls, endpoint/auth details, model-family quirks, and provider continuation identifiers.
 
 Provider-native continuation is optional and compatibility-bound. Switching provider/model may require explicit replay or lossy projection.
+
+Capability major 1 now implements distinct instructions, ordered typed
+message/tool input, live text-delta observations, completed text and multiple
+completed tool proposals, and explicit terminal settlement. Item IDs and opaque
+item metadata survive model/tool/model continuation without becoming canonical
+Session meaning. Stream EOF is not semantic success.
+
+The kernel retains each native envelope's kind, compatibility, and opaque data
+as one immutable value. Completed, incomplete, and refused terminals are
+general settled events, and typed Run observation retains their settlement and
+metadata. The provisional development strategy never executes proposals from
+incomplete or refused turns.
 
 # Tool semantic model
 
@@ -618,6 +630,7 @@ Phase II-A — generated unary typed transport          complete
 Phase IV-A — semantic agent-execution foundation      complete
 Phase II-B — generated streaming + cancellation       complete
 Phase IV-B1 — scripted adapter streaming integration  complete
+Phase IV-B2 — common ModelProvider scripted vertical  complete
 ```
 
 Recommended near-term sequence:
@@ -629,9 +642,9 @@ Phase II-B — generated typed streaming/cancellation
     ↓
 Phase IV-B1 — scripted adapter streaming integration
     ↓
-remaining Phase IV — common model-provider capability,
+remaining Phase IV — OpenAI/Codex auth research,
                       one real provider,
-                      minimal orchestration
+                      minimal Agent/workflow refinement
     ↓
 Phase V — minimum self-hosting plugin set
     ↓
@@ -708,9 +721,9 @@ unary fixture method remains regression/reference infrastructure.
 
 ## Remaining Phase IV target
 
-After IV-B1:
+After IV-B2:
 
-- establish the first common model-provider capability contract;
+- research OpenAI/Codex subscription-backed authentication and routing;
 - integrate one real model provider;
 - implement the first simple chat/coding workflow strategy;
 - prove a model can request a workspace tool and continue from the result through the intended capability/plugin architecture.

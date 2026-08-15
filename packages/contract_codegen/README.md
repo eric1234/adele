@@ -37,8 +37,12 @@ Phase II is a deliberately constrained IDL embedded in Dart. It supports unary
 `Future<T>` and server-streaming `Stream<T>` methods and remains local to one declaration library, with exactly one
 non-empty service. Services may contain only abstract instance methods. Annotated
 schema cannot be imported or recursively cycle through nullable values or lists.
-Values require final fields and matching required named field-formal constructor
-parameters with exact types. Failure constructors have the corresponding fixed
+Values require final fields and matching exact-type required named constructor
+parameters. List fields may use same-name ordinary parameters only through
+`List<T>.unmodifiable(parameter)` initializers; canonical `Map<String, Object?>`
+fields may do so only through the exported
+`adeleSnapshotJsonMap(parameter)` initializer. All other fields remain
+field-formal. Failure constructors have the corresponding fixed
 reconstructible shape. URI values must be absolute and parseable, and wire IDs
 use ASCII alphanumeric segments separated by single dots, hyphens, or
 underscores. Generic annotated declarations are rejected. The generated part URI

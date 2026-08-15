@@ -3,6 +3,64 @@
 library;
 
 import 'dart:async';
+import 'dart:collection';
+
+const int _adeleJsonMaxDepth = 64;
+
+Map<String, Object?> adeleSnapshotJsonMap(Map<String, Object?> source) =>
+    _adeleSnapshotJsonValue(source, 0, HashSet<Object>.identity())!
+        as Map<String, Object?>;
+
+Object? _adeleSnapshotJsonValue(Object? value, int depth, Set<Object> active) {
+  if (value == null || value is bool || value is String || value is int) {
+    return value;
+  }
+  if (value is double) {
+    if (!value.isFinite) {
+      throw const FormatException('JSON-compatible doubles must be finite.');
+    }
+    return value;
+  }
+  if (depth >= _adeleJsonMaxDepth) {
+    throw const FormatException(
+      'JSON-compatible value exceeds maximum depth 64.',
+    );
+  }
+  if (value is List<Object?>) {
+    if (!active.add(value)) {
+      throw const FormatException('Cyclic JSON-compatible value.');
+    }
+    try {
+      return List<Object?>.unmodifiable(
+        value.map(
+          (Object? item) => _adeleSnapshotJsonValue(item, depth + 1, active),
+        ),
+      );
+    } finally {
+      active.remove(value);
+    }
+  }
+  if (value is Map<String, Object?>) {
+    if (!active.add(value)) {
+      throw const FormatException('Cyclic JSON-compatible value.');
+    }
+    try {
+      return Map<String, Object?>.unmodifiable(
+        value.map(
+          (String key, Object? item) => MapEntry<String, Object?>(
+            key,
+            _adeleSnapshotJsonValue(item, depth + 1, active),
+          ),
+        ),
+      );
+    } finally {
+      active.remove(value);
+    }
+  }
+  throw FormatException(
+    'Unsupported JSON-compatible value: ${value.runtimeType}.',
+  );
+}
 
 final class AdeleService {
   const AdeleService(this.id);

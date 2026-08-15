@@ -9,6 +9,7 @@ environment:
 resolution: workspace
 
 dependencies:
+  adele_model_provider: ^0.1.0
   scripted_model_contract: ^0.1.0
 
 dev_dependencies:

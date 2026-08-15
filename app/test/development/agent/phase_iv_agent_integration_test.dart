@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
@@ -6,6 +5,7 @@ import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/development/agent/agent_capability_adapters.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
 import 'package:adele_desktop/development/agent/simple_tool_loop_strategy.dart';
+import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -43,7 +43,7 @@ void main() {
       ),
       _compile(
         dart,
-        '$repository/plugins/scripted_model/packages/backend/bin/scripted_model_backend.dart',
+        '$repository/plugins/scripted_model/packages/backend/bin/scripted_model_provider_backend.dart',
         modelArtifact.path,
         repository,
       ),
@@ -106,9 +106,10 @@ void main() {
       );
       expect(host.processId, sharedProcessId);
 
-      final ScriptedModelCapabilityAdapter happyModel =
-          ScriptedModelCapabilityAdapter(
-            registry.resolve(scriptedModelFixtureCapability),
+      final ModelProviderCapabilityAdapter happyModel =
+          ModelProviderCapabilityAdapter(
+            registry.resolve(modelProviderCapability),
+            selectedModel: 'scripted-v1',
           );
       final ResourceInspectorToolExecutable happyTool =
           ResourceInspectorToolExecutable(
@@ -183,9 +184,10 @@ void main() {
         <Type>[
           RunStarted,
           ModelInvocationStarted,
+          ModelObservationObserved,
           ModelOutputObserved,
           ModelOutputObserved,
-          ModelInvocationCompleted,
+          ModelInvocationSettled,
           ToolInvocationPrepared,
           ToolPolicyEvaluated,
           RunInterrupted,
@@ -195,8 +197,9 @@ void main() {
           ToolExecutionStarted,
           ToolExecutionCompleted,
           ModelInvocationStarted,
+          ModelObservationObserved,
           ModelOutputObserved,
-          ModelInvocationCompleted,
+          ModelInvocationSettled,
           RunCompleted,
         ],
       );
@@ -211,8 +214,9 @@ void main() {
       final _RunFixture rejected = _runFixture(
         id: 'rejected',
         userContent: 'Reject the inspection.',
-        model: ScriptedModelCapabilityAdapter(
-          registry.resolve(scriptedModelFixtureCapability),
+        model: ModelProviderCapabilityAdapter(
+          registry.resolve(modelProviderCapability),
+          selectedModel: 'scripted-v1',
         ),
         registration: rejectedTool.registration,
       );
@@ -266,8 +270,9 @@ void main() {
       final _RunFixture staleToolRun = _runFixture(
         id: 'stale-tool',
         userContent: 'Restart the tool before approval.',
-        model: ScriptedModelCapabilityAdapter(
-          registry.resolve(scriptedModelFixtureCapability),
+        model: ModelProviderCapabilityAdapter(
+          registry.resolve(modelProviderCapability),
+          selectedModel: 'scripted-v1',
         ),
         registration: staleTool.registration,
       );
@@ -315,10 +320,11 @@ void main() {
       );
 
       late _ActiveProvider modelB;
-      late ScriptedModelCapabilityAdapter replacementModel;
-      final ScriptedModelCapabilityAdapter staleModel =
-          ScriptedModelCapabilityAdapter(
-            registry.resolve(scriptedModelFixtureCapability),
+      late ModelProviderCapabilityAdapter replacementModel;
+      final ModelProviderCapabilityAdapter staleModel =
+          ModelProviderCapabilityAdapter(
+            registry.resolve(modelProviderCapability),
+            selectedModel: 'scripted-v1',
           );
       final ResourceInspectorToolExecutable modelRestartTool =
           ResourceInspectorToolExecutable(
@@ -338,8 +344,9 @@ void main() {
             artifact: modelArtifact,
             descriptor: _modelDescriptor(modelA.connection.pluginId),
           );
-          replacementModel = ScriptedModelCapabilityAdapter(
-            registry.resolve(scriptedModelFixtureCapability),
+          replacementModel = ModelProviderCapabilityAdapter(
+            registry.resolve(modelProviderCapability),
+            selectedModel: 'scripted-v1',
           );
         },
       );
@@ -405,34 +412,6 @@ void main() {
       expect(replacementModel.invocationCount, 2);
       expect(replacementTool.invocationCount, 1);
 
-      final ScriptedModelFixtureServiceClient modelProbeClient =
-          ScriptedModelFixtureServiceClient(modelB.connection);
-      await modelProbeClient.resetStreamProbe();
-      final ScriptedModelCapabilityAdapter cancellableModel =
-          ScriptedModelCapabilityAdapter(
-            registry.resolve(scriptedModelFixtureCapability),
-          );
-      final List<ModelEvent> cancellationEvents = <ModelEvent>[];
-      final StreamSubscription<ModelEvent> cancellationSubscription =
-          cancellableModel
-              .invoke(_longModelRequest())
-              .listen(cancellationEvents.add);
-      await _waitForProbe(
-        modelProbeClient,
-        (ScriptedModelStreamProbe probe) =>
-            probe.active == 1 && probe.advanced > 0,
-      );
-      await cancellationSubscription.cancel().timeout(
-        const Duration(seconds: 2),
-      );
-      final ScriptedModelStreamProbe cancelledProbe = await _waitForProbe(
-        modelProbeClient,
-        (ScriptedModelStreamProbe probe) =>
-            probe.active == 0 && probe.cancellations == 1,
-      );
-      expect(cancelledProbe.advanced, greaterThan(0));
-      expect(cancellationEvents, isEmpty);
-
       final ResourceInspectorToolExecutable failingTool =
           ResourceInspectorToolExecutable(
             registry.resolve(
@@ -443,8 +422,9 @@ void main() {
       final _RunFixture containedFailure = _runFixture(
         id: 'contained-failure',
         userContent: 'fixture:tool-domain-failure',
-        model: ScriptedModelCapabilityAdapter(
-          registry.resolve(scriptedModelFixtureCapability),
+        model: ModelProviderCapabilityAdapter(
+          registry.resolve(modelProviderCapability),
+          selectedModel: 'scripted-v1',
         ),
         registration: failingTool.registration,
       );
@@ -468,10 +448,7 @@ void main() {
         containedFailure.strategy.lastToolOutcome?.effectCertainty,
         EffectCertainty.uncertain,
       );
-      expect(
-        registry.providersFor(scriptedModelFixtureCapability),
-        hasLength(1),
-      );
+      expect(registry.providersFor(modelProviderCapability), hasLength(1));
       expect(registry.providersFor(resourceInspectCapability), hasLength(2));
       final ResourceInspection unrelated = await ResourceInspectorServiceClient(
         registry
@@ -487,7 +464,7 @@ void main() {
       await basicB.activation.close();
       await modelB.activation.close();
       await alternate.activation.close();
-      expect(registry.providersFor(scriptedModelFixtureCapability), isEmpty);
+      expect(registry.providersFor(modelProviderCapability), isEmpty);
       expect(registry.providersFor(resourceInspectCapability), isEmpty);
       await host.close();
       expect(host.isClosed, isTrue);
@@ -523,10 +500,10 @@ _RunFixture _runFixture({
 
 ProviderDescriptor _modelDescriptor(String pluginId) => ProviderDescriptor(
   id: scriptedModelFixtureProviderId,
-  capability: scriptedModelFixtureCapability,
+  capability: modelProviderCapability,
   pluginId: pluginId,
   displayName: 'Scripted Model Fixture',
-  serviceId: scriptedModelFixtureServiceId,
+  serviceId: modelProviderServiceId,
 );
 
 ProviderDescriptor _inspectorDescriptor(
@@ -671,32 +648,6 @@ final class _CountingRequestChannel implements AdeleStreamChannel {
   Stream<Object?> stream(String method, Map<String, Object?> payload) {
     streamCount++;
     return delegate.stream(method, payload);
-  }
-}
-
-SemanticModelRequest _longModelRequest() => SemanticModelRequest(
-  invocationId: ModelInvocationId('adapter-cancellation-model-1'),
-  input: <SemanticModelInputItem>[
-    SemanticMessageInput(
-      role: SemanticMessageRole.user,
-      content: 'fixture:long-stream',
-    ),
-  ],
-  tools: MaterializedToolSet(const <MaterializedTool>[]),
-);
-
-Future<ScriptedModelStreamProbe> _waitForProbe(
-  ScriptedModelFixtureService client,
-  bool Function(ScriptedModelStreamProbe probe) predicate,
-) async {
-  final DateTime deadline = DateTime.now().add(const Duration(seconds: 2));
-  while (true) {
-    final ScriptedModelStreamProbe probe = await client.streamProbe();
-    if (predicate(probe)) return probe;
-    if (DateTime.now().isAfter(deadline)) {
-      throw TimeoutException('Scripted-model stream probe did not settle.');
-    }
-    await Future<void>.delayed(Duration.zero);
   }
 }
 

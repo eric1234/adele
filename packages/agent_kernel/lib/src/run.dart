@@ -249,20 +249,47 @@ final class ModelOutputObserved extends ExecutionEvent {
   final ModelOutputItem item;
 }
 
-final class ModelInvocationCompleted extends ExecutionEvent {
-  const ModelInvocationCompleted(this.invocationId);
+final class ModelObservationObserved extends ExecutionEvent {
+  const ModelObservationObserved({
+    required this.invocationId,
+    required this.observation,
+  });
 
   final ModelInvocationId invocationId;
+  final ModelObservation observation;
+}
+
+final class ModelInvocationSettled extends ExecutionEvent {
+  ModelInvocationSettled({
+    required this.invocationId,
+    required this.settlement,
+    required this.incompleteReason,
+    required this.metadata,
+  }) {
+    if ((settlement == ModelSettlement.incomplete) !=
+        (incompleteReason != null)) {
+      throw const FormatException(
+        'Only incomplete settlement requires an incomplete reason.',
+      );
+    }
+  }
+
+  final ModelInvocationId invocationId;
+  final ModelSettlement settlement;
+  final ModelIncompleteReason? incompleteReason;
+  final ModelTerminalMetadata metadata;
 }
 
 final class ModelInvocationFailed extends ExecutionEvent {
   const ModelInvocationFailed({
     required this.invocationId,
     required this.error,
+    this.semanticTerminalMetadata,
   });
 
   final ModelInvocationId invocationId;
   final Object error;
+  final ModelTerminalMetadata? semanticTerminalMetadata;
 }
 
 final class ToolInvocationPrepared extends ExecutionEvent {

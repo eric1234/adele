@@ -23,6 +23,47 @@ void main() {
     },
   );
 
+  test('incomplete settlement fails without executing proposed tool', () async {
+    final _StrategyFixture fixture = _fixture(
+      ToolPolicyDecision.allow,
+      settlement: ModelSettlement.incomplete,
+    );
+
+    await fixture.strategy.start();
+
+    expect(fixture.run.state, RunState.failed);
+    expect(fixture.run.failure, isA<ModelInvocationIncomplete>());
+    expect(fixture.executable.executions, 0);
+    expect(
+      fixture.run.journal.records
+          .map((ExecutionEventRecord record) => record.event)
+          .whereType<ModelInvocationSettled>()
+          .single
+          .settlement,
+      ModelSettlement.incomplete,
+    );
+  });
+
+  test('refused settlement records refusal and never executes tool', () async {
+    final _StrategyFixture fixture = _fixture(
+      ToolPolicyDecision.allow,
+      settlement: ModelSettlement.refused,
+    );
+
+    await fixture.strategy.start();
+
+    expect(fixture.run.state, RunState.completed);
+    expect(fixture.executable.executions, 0);
+    expect(
+      fixture.run.journal.records
+          .map((ExecutionEventRecord record) => record.event)
+          .whereType<ModelInvocationSettled>()
+          .single
+          .settlement,
+      ModelSettlement.refused,
+    );
+  });
+
   test('continuation preserves proposal-before-text output order', () async {
     final _StrategyFixture fixture = _fixture(
       ToolPolicyDecision.allow,
@@ -105,6 +146,7 @@ _StrategyFixture _fixture(
   ContextAssembler contextAssembler = const DevelopmentContextAssembler(),
   String modelAlias = 'inspect_resource',
   bool proposalBeforeText = false,
+  ModelSettlement settlement = ModelSettlement.completed,
 }) {
   final DevelopmentSessionHistory session = DevelopmentSessionHistory(
     SessionId('session-1'),
@@ -113,6 +155,7 @@ _StrategyFixture _fixture(
   final _Model model = _Model(
     alias: modelAlias,
     proposalBeforeText: proposalBeforeText,
+    settlement: settlement,
   );
   final _Executable executable = _Executable();
   final ToolCatalog catalog = ToolCatalog()
@@ -160,10 +203,15 @@ final class _StrategyFixture {
 }
 
 final class _Model implements ModelPort {
-  _Model({required this.alias, required this.proposalBeforeText});
+  _Model({
+    required this.alias,
+    required this.proposalBeforeText,
+    required this.settlement,
+  });
 
   final String alias;
   final bool proposalBeforeText;
+  final ModelSettlement settlement;
   int invocations = 0;
   bool sawCorrelatedContinuation = false;
   bool sawPreservedOutputOrder = false;
@@ -179,23 +227,30 @@ final class _Model implements ModelPort {
         .whereType<SemanticToolProposalFailureInput>()
         .toList(growable: false);
     if (outcomes.isEmpty && proposalFailures.isEmpty) {
-      yield ModelOutputItemCompleted(
-        invocationId: request.invocationId,
-        item: ModelToolProposalOutput(
-          ProviderToolProposal(
-            providerCallId: 'provider-1',
-            alias: alias,
-            arguments: const <String, Object?>{
-              'uri': 'file:///tmp/example.dart',
-            },
-          ),
-        ),
-      );
-      if (proposalBeforeText) {
+      if (settlement == ModelSettlement.refused) {
         yield ModelOutputItemCompleted(
           invocationId: request.invocationId,
-          item: ModelTextOutput('Text after proposal.'),
+          item: ModelTextOutput('I cannot perform that request.'),
         );
+      } else {
+        yield ModelOutputItemCompleted(
+          invocationId: request.invocationId,
+          item: ModelToolProposalOutput(
+            ProviderToolProposal(
+              providerCallId: 'provider-1',
+              alias: alias,
+              arguments: const <String, Object?>{
+                'uri': 'file:///tmp/example.dart',
+              },
+            ),
+          ),
+        );
+        if (proposalBeforeText) {
+          yield ModelOutputItemCompleted(
+            invocationId: request.invocationId,
+            item: ModelTextOutput('Text after proposal.'),
+          );
+        }
       }
     } else {
       if (outcomes.isNotEmpty) {
@@ -224,7 +279,14 @@ final class _Model implements ModelPort {
         item: ModelTextOutput('Complete.'),
       );
     }
-    yield ModelInvocationCompletedEvent(invocationId: request.invocationId);
+    yield ModelInvocationSettledEvent(
+      invocationId: request.invocationId,
+      settlement: settlement,
+      incompleteReason: settlement == ModelSettlement.incomplete
+          ? ModelIncompleteReason.outputLimit
+          : null,
+      metadata: ModelTerminalMetadata(effectiveModel: 'fixture-v1'),
+    );
   }
 }
 

@@ -86,7 +86,14 @@ void main() {
       sessionId: SessionId('session-1'),
     )..start();
     run.record(ModelInvocationStarted(ModelInvocationId('model-1')));
-    run.record(ModelInvocationCompleted(ModelInvocationId('model-1')));
+    run.record(
+      ModelInvocationSettled(
+        invocationId: ModelInvocationId('model-1'),
+        settlement: ModelSettlement.completed,
+        incompleteReason: null,
+        metadata: ModelTerminalMetadata(),
+      ),
+    );
     expect(
       () => run.record(const RunCompleted()),
       throwsA(isA<InvalidRunOperation>()),
@@ -102,7 +109,7 @@ void main() {
       <Matcher>[
         isA<RunStarted>(),
         isA<ModelInvocationStarted>(),
-        isA<ModelInvocationCompleted>(),
+        isA<ModelInvocationSettled>(),
         isA<RunCompleted>(),
       ],
     );
@@ -112,6 +119,54 @@ void main() {
       ),
       throwsUnsupportedError,
     );
+  });
+
+  test('model settlement journal events enforce incomplete reasons', () {
+    final ModelInvocationId id = ModelInvocationId('model-settlement');
+    final ModelTerminalMetadata metadata = ModelTerminalMetadata();
+    for (final ({ModelSettlement settlement, ModelIncompleteReason? reason})
+        valid
+        in <({ModelSettlement settlement, ModelIncompleteReason? reason})>[
+          (settlement: ModelSettlement.completed, reason: null),
+          (settlement: ModelSettlement.refused, reason: null),
+          (
+            settlement: ModelSettlement.incomplete,
+            reason: ModelIncompleteReason.outputLimit,
+          ),
+        ]) {
+      expect(
+        ModelInvocationSettled(
+          invocationId: id,
+          settlement: valid.settlement,
+          incompleteReason: valid.reason,
+          metadata: metadata,
+        ),
+        isA<ModelInvocationSettled>(),
+      );
+    }
+    for (final ({ModelSettlement settlement, ModelIncompleteReason? reason})
+        invalid
+        in <({ModelSettlement settlement, ModelIncompleteReason? reason})>[
+          (
+            settlement: ModelSettlement.completed,
+            reason: ModelIncompleteReason.outputLimit,
+          ),
+          (
+            settlement: ModelSettlement.refused,
+            reason: ModelIncompleteReason.contextLimit,
+          ),
+          (settlement: ModelSettlement.incomplete, reason: null),
+        ]) {
+      expect(
+        () => ModelInvocationSettled(
+          invocationId: id,
+          settlement: invalid.settlement,
+          incompleteReason: invalid.reason,
+          metadata: metadata,
+        ),
+        throwsFormatException,
+      );
+    }
   });
 
   test(

@@ -22,11 +22,13 @@ Phase IV separates canonical Session history, Run lifecycle, context
 assembly, streaming-shaped semantic model events, immutable tool
 materialization, ToolInvocation, effect description, policy, approval, tool
 execution, structured outcomes, and typed execution observation. Its
-development-only AOT fixture adapts the scripted model's generated typed stream
+development-only AOT provider implements the common generated ModelProvider stream
 and a generation-bound ResourceInspector capability into those kernel ports.
-The scripted-model application adapter preserves incremental output and
-generated consumer cancellation through the shared-host AOT runtime; the unary
-fixture method remains as regression/reference infrastructure.
+The common adapter separates live text observations from authoritative output,
+requires explicit semantic terminal settlement, retains item-native replay
+metadata as complete kind/compatibility/data envelopes, and preserves exact
+provider-generation binding. The scripted
+fixture unary/stream/probe service remains regression infrastructure.
 
 ## Toolchain
 
@@ -84,6 +86,7 @@ app/                         single Flutter desktop application
 packages/plugin_api/         adele_plugin_api (experimental public)
 packages/contract/           adele_contract (experimental public)
 packages/contract_codegen/   contract_codegen (internal, pure Dart)
+packages/model_provider/     adele_model_provider (experimental public)
 packages/capabilities/       adele_capabilities (experimental public)
 packages/plugin_runtime/     plugin_runtime (internal, pure Dart)
 packages/plugin_backend_host/ shared backend host (internal, pure Dart)
@@ -132,9 +135,8 @@ types in Phase 0.
 
 ## Next Work
 
-Continue remaining Phase IV by establishing the first common model-provider
-capability, integrating one real provider, and proving the minimal streamed
-model/tool loop.
+Continue remaining Phase IV with targeted OpenAI/Codex subscription-auth
+research, the first real provider, and minimal Agent/workflow refinement.
 Windows, macOS, release packaging,
 current Flutter compatibility, packaging/discovery, and eval-stack
 modernization also remain open. See `docs/architecture/overview.md` and ADRs

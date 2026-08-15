@@ -1,194 +1,613 @@
+import 'dart:async';
+
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/development/agent/agent_capability_adapters.dart';
+import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:resource_inspector_contract/resource_inspector_contract.dart';
-import 'package:scripted_model_contract/scripted_model_contract.dart';
 
 void main() {
   test(
-    'ResourceInspector validates and normalizes its exact argument shape',
-    () {
-      final ResourceInspectorToolExecutable executable =
-          ResourceInspectorToolExecutable(_binding());
-
-      final CanonicalToolArguments valid = executable.validateAndNormalize(
-        const <String, Object?>{'uri': 'file:///tmp/example.dart'},
-      );
-      expect(valid.snapshot, const <String, Object?>{
-        'uri': 'file:///tmp/example.dart',
-      });
-
-      for (final Map<String, Object?> invalid in <Map<String, Object?>>[
-        const <String, Object?>{},
-        const <String, Object?>{'uri': 42},
-        const <String, Object?>{'uri': 'relative/path.dart'},
-        const <String, Object?>{
-          'uri': 'file:///tmp/example.dart',
-          'extra': true,
-        },
-      ]) {
-        expect(
-          () => executable.validateAndNormalize(invalid),
-          throwsA(isA<ToolArgumentValidationException>()),
-        );
-      }
-    },
-  );
-
-  test(
-    'endpoint rejection before dispatch has known-no-effect certainty',
+    'common adapter lowers request and maps observations and output',
     () async {
-      final _UnusedChannel channel = _UnusedChannel();
-      bool available = true;
-      final ResourceInspectorToolExecutable executable =
-          ResourceInspectorToolExecutable(
-            _binding(channel: channel, isAvailable: () => available),
-          );
-      final CanonicalToolArguments arguments = executable.validateAndNormalize(
-        const <String, Object?>{'uri': 'file:///tmp/example.dart'},
+      final _ProviderChannel channel = _ProviderChannel(
+        events: Stream<ModelProviderEvent>.fromIterable(<ModelProviderEvent>[
+          _delta('Inspecting '),
+          _text('Inspecting.', 'text-1'),
+          _proposal('call-1', 'item-1'),
+          _terminal(),
+        ]),
       );
-      available = false;
+      final ModelProviderCapabilityAdapter adapter =
+          ModelProviderCapabilityAdapter(
+            _binding(channel),
+            selectedModel: 'scripted-v1',
+            maxOutputTokens: 200,
+            toolChoice: ModelProviderToolChoice.none,
+            providerOptions: const <String, Object?>{'fixture': true},
+          );
 
-      final List<ToolExecutionEvent> events = await executable
-          .execute(
-            arguments,
-            ToolExecutionContext(
-              runId: RunId('run-1'),
-              sessionId: SessionId('session-1'),
-            ),
-          )
-          .toList();
-      final ToolOutcome outcome =
-          (events.single as ToolExecutionTerminal).outcome;
+      final List<ModelEvent> events = await adapter.invoke(_request()).toList();
 
-      expect(outcome.failureKind, ToolFailureKind.infrastructure);
-      expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
       expect(channel.requestCount, 0);
+      expect(channel.streamCount, 1);
+      expect(channel.lastPayload!['request'], isA<Map<Object?, Object?>>());
+      expect(events, <Matcher>[
+        isA<ModelObservationEvent>().having(
+          (ModelObservationEvent event) =>
+              (event.observation as ModelTextDeltaObservation).delta,
+          'delta',
+          'Inspecting ',
+        ),
+        isA<ModelOutputItemCompleted>(),
+        isA<ModelOutputItemCompleted>().having(
+          (ModelOutputItemCompleted event) =>
+              (event.item as ModelToolProposalOutput).providerItemId,
+          'item ID',
+          'item-1',
+        ),
+        isA<ModelInvocationSettledEvent>(),
+      ]);
+      final ModelToolProposalOutput proposal =
+          (events[2] as ModelOutputItemCompleted).item
+              as ModelToolProposalOutput;
+      expect(proposal.proposal.providerCallId, 'call-1');
+      expect(proposal.providerNativeMetadata!.kind, 'fixture-v1');
+      expect(proposal.providerNativeMetadata!.data['signed'], 'opaque');
     },
   );
 
-  test('ScriptedModel maps streamed items and ignores probes', () async {
-    final _ScriptedStreamChannel channel = _ScriptedStreamChannel(
-      items: Stream<ScriptedModelStreamItem>.fromIterable(
-        <ScriptedModelStreamItem>[
-          const ScriptedModelStreamItem(
-            kind: ScriptedModelStreamItemKind.probe,
-            text: null,
-            toolCall: null,
-            sequence: 0,
-          ),
-          const ScriptedModelStreamItem(
-            kind: ScriptedModelStreamItemKind.text,
-            text: 'Inspecting.',
-            toolCall: null,
-            sequence: null,
-          ),
-          const ScriptedModelStreamItem(
-            kind: ScriptedModelStreamItemKind.toolCall,
-            text: null,
-            toolCall: ScriptedToolCall(
-              id: 'call-1',
-              name: 'inspect_resource',
-              arguments: <String, Object?>{'uri': 'file:///tmp/example.dart'},
-            ),
-            sequence: null,
-          ),
-        ],
-      ),
-    );
-    final ModelInvocationId invocationId = ModelInvocationId('model-1');
-
-    final List<ModelEvent> events = await ScriptedModelCapabilityAdapter(
-      _scriptedBinding(channel),
-    ).invoke(_modelRequest(invocationId)).toList();
-
-    expect(channel.requestCount, 0);
-    expect(channel.streamCount, 1);
-    expect(events, <Matcher>[
-      isA<ModelOutputItemCompleted>().having(
-        (ModelOutputItemCompleted event) =>
-            (event.item as ModelTextOutput).content,
-        'text',
-        'Inspecting.',
-      ),
-      isA<ModelOutputItemCompleted>().having(
-        (ModelOutputItemCompleted event) =>
-            (event.item as ModelToolProposalOutput).proposal.providerCallId,
-        'provider call ID',
-        'call-1',
-      ),
-      isA<ModelInvocationCompletedEvent>(),
-    ]);
-    expect(
-      events.every((ModelEvent event) => event.invocationId == invocationId),
-      isTrue,
-    );
-  });
-
   test(
-    'ScriptedModel preserves partial output before stream failure',
+    'common adapter preserves partial output before semantic failure',
     () async {
-      final _ScriptedStreamChannel channel = _ScriptedStreamChannel(
-        items: Stream<ScriptedModelStreamItem>.multi((controller) {
-          controller.add(
-            const ScriptedModelStreamItem(
-              kind: ScriptedModelStreamItemKind.text,
-              text: 'Partial.',
-              toolCall: null,
-              sequence: null,
-            ),
-          );
-          controller.addError(StateError('provider failed'));
-        }),
+      final _ProviderChannel channel = _ProviderChannel(
+        events: Stream<ModelProviderEvent>.fromIterable(<ModelProviderEvent>[
+          _text('Partial.', 'partial-1'),
+          _failedTerminal(),
+        ]),
       );
-
-      final List<ModelEvent> events = await ScriptedModelCapabilityAdapter(
-        _scriptedBinding(channel),
-      ).invoke(_modelRequest(ModelInvocationId('model-2'))).toList();
+      final List<ModelEvent> events = await ModelProviderCapabilityAdapter(
+        _binding(channel),
+        selectedModel: 'scripted-v1',
+      ).invoke(_request()).toList();
 
       expect(events, <Matcher>[
         isA<ModelOutputItemCompleted>(),
         isA<ModelInvocationFailedEvent>().having(
           (ModelInvocationFailedEvent event) => event.error,
-          'error',
-          isA<StateError>(),
+          'structured failure',
+          isA<ModelFailure>().having(
+            (ModelFailure failure) => failure.kind,
+            'kind',
+            ModelFailureKind.rateLimited,
+          ),
         ),
       ]);
+      final ModelInvocationFailedEvent failure =
+          events.last as ModelInvocationFailedEvent;
+      expect(failure.semanticTerminalMetadata!.effectiveModel, 'scripted-v1');
+      expect(failure.semanticTerminalMetadata!.providerRequestId, 'request-f');
+      expect(
+        failure.semanticTerminalMetadata!.providerResponseId,
+        'response-f',
+      );
+      expect(failure.semanticTerminalMetadata!.providerStopReason, 'error');
+      expect(failure.semanticTerminalMetadata!.usage!.inputTokens, 4);
+      expect(
+        failure.semanticTerminalMetadata!.providerNativeState!.kind,
+        'failure-state-v1',
+      );
     },
   );
 
-  test('ScriptedModel fails malformed stream items', () async {
-    final _ScriptedStreamChannel channel = _ScriptedStreamChannel(
-      items: Stream<ScriptedModelStreamItem>.value(
-        const ScriptedModelStreamItem(
-          kind: ScriptedModelStreamItemKind.text,
-          text: null,
-          toolCall: null,
-          sequence: null,
+  test('EOF before semantic terminal fails', () async {
+    final List<ModelEvent> events = await ModelProviderCapabilityAdapter(
+      _binding(
+        _ProviderChannel(
+          events: Stream<ModelProviderEvent>.value(_text('Partial.', 'p')),
         ),
       ),
+      selectedModel: 'scripted-v1',
+    ).invoke(_request()).toList();
+    expect(events.last, isA<ModelInvocationFailedEvent>());
+  });
+
+  test('transport error after terminal does not replace settlement', () async {
+    final Stream<ModelProviderEvent> events = Stream<ModelProviderEvent>.multi((
+      controller,
+    ) {
+      controller.add(_terminal());
+      controller.addError(StateError('late teardown'));
+    });
+    final List<ModelEvent> mapped = await ModelProviderCapabilityAdapter(
+      _binding(_ProviderChannel(events: events)),
+      selectedModel: 'scripted-v1',
+    ).invoke(_request()).toList();
+    expect(mapped, hasLength(1));
+    expect(mapped.single, isA<ModelInvocationSettledEvent>());
+  });
+
+  test(
+    'semantic terminal settles while provider transport remains open',
+    () async {
+      final Completer<void> cancelled = Completer<void>();
+      late final StreamController<ModelProviderEvent> source;
+      source = StreamController<ModelProviderEvent>(
+        onListen: () => source.add(_terminal()),
+        onCancel: () => cancelled.complete(),
+      );
+
+      final List<ModelEvent> mapped = await ModelProviderCapabilityAdapter(
+        _binding(_ProviderChannel(events: source.stream)),
+        selectedModel: 'scripted-v1',
+      ).invoke(_request()).toList().timeout(const Duration(seconds: 1));
+
+      expect(mapped, <Matcher>[isA<ModelInvocationSettledEvent>()]);
+      await cancelled.future.timeout(const Duration(seconds: 1));
+    },
+  );
+
+  test(
+    'semantic completion does not await blocked transport cleanup',
+    () async {
+      final Completer<void> cancellationStarted = Completer<void>();
+      final Completer<void> releaseCancellation = Completer<void>();
+      late final StreamController<ModelProviderEvent> source;
+      source = StreamController<ModelProviderEvent>(
+        sync: true,
+        onListen: () => source.add(_terminal()),
+        onCancel: () async {
+          cancellationStarted.complete();
+          await releaseCancellation.future;
+        },
+      );
+
+      final List<ModelEvent> mapped = await ModelProviderCapabilityAdapter(
+        _binding(_ProviderChannel(events: source.stream)),
+        selectedModel: 'scripted-v1',
+      ).invoke(_request()).toList().timeout(const Duration(seconds: 1));
+
+      expect(mapped, <Matcher>[isA<ModelInvocationSettledEvent>()]);
+      await cancellationStarted.future.timeout(const Duration(seconds: 1));
+      releaseCancellation.complete();
+    },
+  );
+
+  test('take one terminal awaits the same blocked transport cleanup', () async {
+    final Completer<void> cancellationStarted = Completer<void>();
+    final Completer<void> releaseCancellation = Completer<void>();
+    late final StreamController<ModelProviderEvent> source;
+    source = StreamController<ModelProviderEvent>(
+      sync: true,
+      onListen: () => source.add(_terminal()),
+      onCancel: () async {
+        cancellationStarted.complete();
+        await releaseCancellation.future;
+      },
+    );
+    bool consumerCompleted = false;
+    final Future<List<ModelEvent>> result =
+        ModelProviderCapabilityAdapter(
+          _binding(_ProviderChannel(events: source.stream)),
+          selectedModel: 'scripted-v1',
+        ).invoke(_request()).take(1).toList().whenComplete(() {
+          consumerCompleted = true;
+        });
+
+    await cancellationStarted.future.timeout(const Duration(seconds: 1));
+    expect(consumerCompleted, isFalse);
+    releaseCancellation.complete();
+
+    final List<ModelEvent> events = await result.timeout(
+      const Duration(seconds: 1),
+    );
+    expect(events, <Matcher>[isA<ModelInvocationSettledEvent>()]);
+    expect(consumerCompleted, isTrue);
+  });
+
+  test('synchronous terminal eventually cancels assigned transport', () async {
+    final Completer<void> cancelled = Completer<void>();
+    late final StreamController<ModelProviderEvent> source;
+    source = StreamController<ModelProviderEvent>(
+      sync: true,
+      onListen: () => source.add(_terminal()),
+      onCancel: () => cancelled.complete(),
     );
 
-    final List<ModelEvent> events = await ScriptedModelCapabilityAdapter(
-      _scriptedBinding(channel),
-    ).invoke(_modelRequest(ModelInvocationId('model-3'))).toList();
+    final List<ModelEvent> mapped = await ModelProviderCapabilityAdapter(
+      _binding(_ProviderChannel(events: source.stream)),
+      selectedModel: 'scripted-v1',
+    ).invoke(_request()).toList().timeout(const Duration(seconds: 1));
 
-    expect(events, hasLength(1));
-    expect(
-      events.single,
-      isA<ModelInvocationFailedEvent>().having(
-        (ModelInvocationFailedEvent event) => event.error,
-        'error',
-        isA<FormatException>(),
+    expect(mapped, <Matcher>[isA<ModelInvocationSettledEvent>()]);
+    await cancelled.future.timeout(const Duration(seconds: 1));
+  });
+
+  test('whitespace completed text maps and lowers for replay', () async {
+    final List<ModelEvent> events = await ModelProviderCapabilityAdapter(
+      _binding(
+        _ProviderChannel(
+          events: Stream<ModelProviderEvent>.fromIterable(<ModelProviderEvent>[
+            _text(' ', 'space-1'),
+            _terminal(),
+          ]),
+        ),
       ),
+      selectedModel: 'scripted-v1',
+    ).invoke(_request()).toList();
+    final ModelTextOutput output =
+        (events.first as ModelOutputItemCompleted).item as ModelTextOutput;
+    expect(output.content, ' ');
+
+    final _ProviderChannel replayChannel = _ProviderChannel(
+      events: Stream<ModelProviderEvent>.value(_terminal()),
     );
+    await ModelProviderCapabilityAdapter(
+          _binding(replayChannel),
+          selectedModel: 'scripted-v1',
+        )
+        .invoke(
+          SemanticModelRequest(
+            invocationId: ModelInvocationId('replay-space'),
+            input: <SemanticModelInputItem>[
+              SemanticMessageInput(
+                role: SemanticMessageRole.assistant,
+                content: output.content,
+              ),
+            ],
+            tools: MaterializedToolSet(const <MaterializedTool>[]),
+          ),
+        )
+        .toList();
+    expect(replayChannel.streamCount, 1);
+  });
+
+  test('terminal settlement contains transport cancellation failure', () async {
+    late final StreamController<ModelProviderEvent> source;
+    source = StreamController<ModelProviderEvent>(
+      onListen: () => source.add(_terminal()),
+      onCancel: () async => throw StateError('cleanup failed'),
+    );
+
+    final List<ModelEvent> mapped = await ModelProviderCapabilityAdapter(
+      _binding(_ProviderChannel(events: source.stream)),
+      selectedModel: 'scripted-v1',
+    ).invoke(_request()).toList().timeout(const Duration(seconds: 1));
+    await Future<void>.delayed(Duration.zero);
+
+    expect(mapped, <Matcher>[isA<ModelInvocationSettledEvent>()]);
+  });
+
+  test('consumer cancellation reaches underlying stream', () async {
+    final Completer<void> cancelled = Completer<void>();
+    final StreamController<ModelProviderEvent> source =
+        StreamController<ModelProviderEvent>(
+          onCancel: () => cancelled.complete(),
+        );
+    final StreamSubscription<ModelEvent> subscription =
+        ModelProviderCapabilityAdapter(
+          _binding(_ProviderChannel(events: source.stream)),
+          selectedModel: 'scripted-v1',
+        ).invoke(_request()).listen((_) {});
+
+    await subscription.cancel();
+    await cancelled.future;
+  });
+
+  test('synchronous consumer cancellation awaits assigned transport', () async {
+    final Completer<void> cancellationStarted = Completer<void>();
+    final Completer<void> releaseCancellation = Completer<void>();
+    late final StreamController<ModelProviderEvent> source;
+    source = StreamController<ModelProviderEvent>(
+      sync: true,
+      onListen: () => source.add(_delta('first')),
+      onCancel: () async {
+        cancellationStarted.complete();
+        await releaseCancellation.future;
+      },
+    );
+    bool consumerCompleted = false;
+    final Future<List<ModelEvent>> result =
+        ModelProviderCapabilityAdapter(
+          _binding(_ProviderChannel(events: source.stream)),
+          selectedModel: 'scripted-v1',
+        ).invoke(_request()).take(1).toList().whenComplete(() {
+          consumerCompleted = true;
+        });
+
+    await cancellationStarted.future.timeout(const Duration(seconds: 1));
+    expect(consumerCompleted, isFalse);
+    releaseCancellation.complete();
+
+    expect(await result.timeout(const Duration(seconds: 1)), hasLength(1));
+    expect(consumerCompleted, isTrue);
+  });
+
+  test(
+    'synchronous consumer pause is applied after transport assignment',
+    () async {
+      final Completer<void> providerPaused = Completer<void>();
+      final Completer<void> providerResumed = Completer<void>();
+      final Completer<void> releaseConsumer = Completer<void>();
+      final List<ModelEvent> delivered = <ModelEvent>[];
+      late final StreamController<ModelProviderEvent> source;
+      source = StreamController<ModelProviderEvent>(
+        sync: true,
+        onListen: () => source.add(_delta('first')),
+        onPause: () {
+          if (!providerPaused.isCompleted) providerPaused.complete();
+        },
+        onResume: () {
+          if (!providerResumed.isCompleted) providerResumed.complete();
+        },
+      );
+      final Future<List<ModelEvent>> result =
+          ModelProviderCapabilityAdapter(
+            _binding(_ProviderChannel(events: source.stream)),
+            selectedModel: 'scripted-v1',
+          ).invoke(_request()).asyncMap((ModelEvent event) async {
+            delivered.add(event);
+            if (delivered.length == 1) await releaseConsumer.future;
+            return event;
+          }).toList();
+
+      await providerPaused.future.timeout(const Duration(seconds: 1));
+      source.add(_delta('second'));
+      expect(delivered, hasLength(1));
+      releaseConsumer.complete();
+      await providerResumed.future.timeout(const Duration(seconds: 1));
+      source.add(_terminal());
+
+      expect(await result.timeout(const Duration(seconds: 1)), hasLength(3));
+    },
+  );
+
+  test(
+    'synchronous setup failure with take one does not await transport',
+    () async {
+      final StateError setupFailure = StateError('synchronous setup failure');
+      final ModelProviderCapabilityAdapter adapter =
+          ModelProviderCapabilityAdapter(
+            _binding(_ThrowingStreamChannel(setupFailure)),
+            selectedModel: 'scripted-v1',
+          );
+
+      for (final Stream<ModelEvent> stream in <Stream<ModelEvent>>[
+        adapter.invoke(_request()).take(1),
+        adapter.invoke(_request()),
+      ]) {
+        final List<ModelEvent> events = await stream.toList().timeout(
+          const Duration(seconds: 1),
+        );
+        expect(events, hasLength(1));
+        expect(
+          events.single,
+          isA<ModelInvocationFailedEvent>().having(
+            (ModelInvocationFailedEvent event) => event.error,
+            'error',
+            same(setupFailure),
+          ),
+        );
+      }
+    },
+  );
+
+  test('adapter snapshots nested provider options at construction', () async {
+    final Map<String, Object?> nested = <String, Object?>{'mode': 'original'};
+    final List<Object?> values = <Object?>['original'];
+    final _ProviderChannel channel = _ProviderChannel(
+      events: Stream<ModelProviderEvent>.value(_terminal()),
+    );
+    final ModelProviderCapabilityAdapter adapter =
+        ModelProviderCapabilityAdapter(
+          _binding(channel),
+          selectedModel: 'scripted-v1',
+          providerOptions: <String, Object?>{
+            'nested': nested,
+            'values': values,
+          },
+        );
+    nested['mode'] = 'mutated';
+    values.add('mutated');
+
+    await adapter.invoke(_request()).toList();
+
+    final Map<Object?, Object?> encodedRequest =
+        channel.lastPayload!['request']! as Map<Object?, Object?>;
+    expect(encodedRequest['providerOptions'], const <String, Object?>{
+      'nested': <String, Object?>{'mode': 'original'},
+      'values': <Object?>['original'],
+    });
+    expect(
+      () =>
+          (adapter.providerOptions['nested']! as Map<String, Object?>)['mode'] =
+              'late',
+      throwsUnsupportedError,
+    );
+    expect(
+      () => (adapter.providerOptions['values']! as List<Object?>).add('late'),
+      throwsUnsupportedError,
+    );
+  });
+
+  test('ResourceInspector validates its exact argument shape', () {
+    final ResourceInspectorToolExecutable executable =
+        ResourceInspectorToolExecutable(_resourceBinding());
+    expect(
+      executable.validateAndNormalize(const <String, Object?>{
+        'uri': 'file:///tmp/example.dart',
+      }).snapshot,
+      const <String, Object?>{'uri': 'file:///tmp/example.dart'},
+    );
+    for (final Map<String, Object?> invalid in <Map<String, Object?>>[
+      const <String, Object?>{},
+      const <String, Object?>{'uri': 42},
+      const <String, Object?>{'uri': 'relative/path'},
+      const <String, Object?>{'uri': 'file:///tmp/example.dart', 'extra': true},
+    ]) {
+      expect(
+        () => executable.validateAndNormalize(invalid),
+        throwsA(isA<ToolArgumentValidationException>()),
+      );
+    }
+  });
+
+  test('ResourceInspector unavailable endpoint does not dispatch', () async {
+    final _UnusedChannel channel = _UnusedChannel();
+    bool available = true;
+    final ResourceInspectorToolExecutable executable =
+        ResourceInspectorToolExecutable(
+          _resourceBinding(channel: channel, isAvailable: () => available),
+        );
+    final CanonicalToolArguments arguments = executable.validateAndNormalize(
+      const <String, Object?>{'uri': 'file:///tmp/example.dart'},
+    );
+    available = false;
+    final ToolOutcome outcome =
+        (await executable
+                    .execute(
+                      arguments,
+                      ToolExecutionContext(
+                        runId: RunId('run-1'),
+                        sessionId: SessionId('session-1'),
+                      ),
+                    )
+                    .single
+                as ToolExecutionTerminal)
+            .outcome;
+    expect(outcome.failureKind, ToolFailureKind.infrastructure);
+    expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
+    expect(channel.requestCount, 0);
   });
 }
 
-ProviderBinding _binding({
+SemanticModelRequest _request() => SemanticModelRequest(
+  invocationId: ModelInvocationId('model-1'),
+  instructions: 'Be concise.',
+  input: <SemanticModelInputItem>[
+    SemanticMessageInput(role: SemanticMessageRole.user, content: 'Inspect.'),
+  ],
+  tools: MaterializedToolSet(const <MaterializedTool>[]),
+);
+
+ModelProviderEvent _delta(String text) => ModelProviderEvent(
+  kind: ModelProviderEventKind.observation,
+  observation: ModelProviderObservation(
+    kind: ModelProviderObservationKind.textDelta,
+    textDelta: text,
+    itemId: null,
+  ),
+  output: null,
+  terminal: null,
+);
+
+ModelProviderEvent _text(String text, String itemId) => ModelProviderEvent(
+  kind: ModelProviderEventKind.output,
+  observation: null,
+  output: ModelProviderOutput(
+    kind: ModelProviderOutputKind.text,
+    text: text,
+    toolProposal: null,
+    itemId: itemId,
+    nativeMetadata: null,
+  ),
+  terminal: null,
+);
+
+ModelProviderEvent _proposal(String callId, String itemId) =>
+    ModelProviderEvent(
+      kind: ModelProviderEventKind.output,
+      observation: null,
+      output: ModelProviderOutput(
+        kind: ModelProviderOutputKind.toolProposal,
+        text: null,
+        toolProposal: ModelProviderToolProposal(
+          callId: callId,
+          name: 'inspect_resource',
+          arguments: const <String, Object?>{'uri': 'file:///tmp/example.dart'},
+        ),
+        itemId: itemId,
+        nativeMetadata: ModelProviderNativeEnvelope(
+          kind: 'fixture-v1',
+          compatibility: const <String, Object?>{},
+          data: const <String, Object?>{'signed': 'opaque'},
+        ),
+      ),
+      terminal: null,
+    );
+
+ModelProviderEvent _terminal() => ModelProviderEvent(
+  kind: ModelProviderEventKind.terminal,
+  observation: null,
+  output: null,
+  terminal: ModelProviderTerminal(
+    settlement: ModelProviderSettlement.completed,
+    incompleteReason: null,
+    failure: null,
+    providerStopReason: 'stop',
+    usage: null,
+    effectiveModel: 'scripted-v1',
+    responseId: 'response-1',
+    requestId: 'request-1',
+    nativeState: null,
+  ),
+);
+
+ModelProviderEvent _failedTerminal() => ModelProviderEvent(
+  kind: ModelProviderEventKind.terminal,
+  observation: null,
+  output: null,
+  terminal: ModelProviderTerminal(
+    settlement: ModelProviderSettlement.failed,
+    incompleteReason: null,
+    failure: ModelProviderFailure(
+      kind: ModelProviderFailureKind.rateLimited,
+      providerCode: '429',
+      providerMessage: 'Slow down.',
+      providerDetails: const <String, Object?>{},
+    ),
+    providerStopReason: 'error',
+    usage: ModelProviderUsage(
+      inputTokens: 4,
+      outputTokens: 2,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      providerDetails: const <String, Object?>{},
+    ),
+    effectiveModel: 'scripted-v1',
+    responseId: 'response-f',
+    requestId: 'request-f',
+    nativeState: ModelProviderNativeEnvelope(
+      kind: 'failure-state-v1',
+      compatibility: const <String, Object?>{'model': 'scripted-v1'},
+      data: const <String, Object?>{'cursor': 'failed'},
+    ),
+  ),
+);
+
+ProviderBinding _binding(AdeleStreamChannel channel) {
+  final CapabilityRegistry registry = CapabilityRegistry();
+  registry.register(
+    provider: ProviderDescriptor(
+      id: ProviderId('dev.adele.fixture.common-model'),
+      capability: modelProviderCapability,
+      pluginId: 'dev.adele.fixture.common-model-plugin',
+      displayName: 'Common Model Fixture',
+      serviceId: modelProviderServiceId,
+    ),
+    endpoint: AdeleRequestChannelEndpoint(
+      channel: channel,
+      serviceId: modelProviderServiceId,
+      isAvailable: () => true,
+    ),
+  );
+  return registry.resolve(modelProviderCapability);
+}
+
+ProviderBinding _resourceBinding({
   AdeleRequestChannel? channel,
   bool Function()? isAvailable,
 }) {
@@ -210,36 +629,114 @@ ProviderBinding _binding({
   return registry.resolve(resourceInspectCapability);
 }
 
-ProviderBinding _scriptedBinding(AdeleStreamChannel channel) {
-  final CapabilityRegistry registry = CapabilityRegistry();
-  registry.register(
-    provider: ProviderDescriptor(
-      id: scriptedModelFixtureProviderId,
-      capability: scriptedModelFixtureCapability,
-      pluginId: 'dev.adele.scripted-model-fixture-plugin',
-      displayName: 'Scripted Model Fixture',
-      serviceId: scriptedModelFixtureServiceId,
-    ),
-    endpoint: AdeleRequestChannelEndpoint(
-      channel: channel,
-      serviceId: scriptedModelFixtureServiceId,
-      isAvailable: () => true,
-    ),
-  );
-  return registry.resolve(scriptedModelFixtureCapability);
+final class _ProviderChannel implements AdeleStreamChannel {
+  _ProviderChannel({required this.events});
+
+  final Stream<ModelProviderEvent> events;
+  int requestCount = 0;
+  int streamCount = 0;
+  Map<String, Object?>? lastPayload;
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) async {
+    requestCount++;
+    throw StateError('The model adapter must not use unary transport.');
+  }
+
+  @override
+  Stream<Object?> stream(String method, Map<String, Object?> payload) {
+    streamCount++;
+    expect(method, modelProviderServiceInvokeId);
+    lastPayload = payload;
+    return events.map<Object?>(_encodeEvent);
+  }
 }
 
-SemanticModelRequest _modelRequest(ModelInvocationId invocationId) =>
-    SemanticModelRequest(
-      invocationId: invocationId,
-      input: <SemanticModelInputItem>[
-        SemanticMessageInput(
-          role: SemanticMessageRole.user,
-          content: 'Inspect the resource.',
-        ),
-      ],
-      tools: MaterializedToolSet(const <MaterializedTool>[]),
-    );
+final class _ThrowingStreamChannel implements AdeleStreamChannel {
+  const _ThrowingStreamChannel(this.error);
+
+  final Object error;
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) =>
+      throw StateError('Unary transport is forbidden.');
+
+  @override
+  Stream<Object?> stream(String method, Map<String, Object?> payload) =>
+      throw error;
+}
+
+Map<String, Object?> _encodeEvent(
+  ModelProviderEvent event,
+) => <String, Object?>{
+  'kind': event.kind.name,
+  'observation': event.observation == null
+      ? null
+      : <String, Object?>{
+          'kind': event.observation!.kind.name,
+          'textDelta': event.observation!.textDelta,
+          'itemId': event.observation!.itemId,
+        },
+  'output': event.output == null ? null : _encodeOutput(event.output!),
+  'terminal': event.terminal == null ? null : _encodeTerminal(event.terminal!),
+};
+
+Map<String, Object?> _encodeOutput(ModelProviderOutput output) =>
+    <String, Object?>{
+      'kind': output.kind.name,
+      'text': output.text,
+      'toolProposal': output.toolProposal == null
+          ? null
+          : _encodeProposal(output.toolProposal!),
+      'itemId': output.itemId,
+      'nativeMetadata': output.nativeMetadata == null
+          ? null
+          : _encodeNative(output.nativeMetadata!),
+    };
+
+Map<String, Object?> _encodeProposal(ModelProviderToolProposal proposal) =>
+    <String, Object?>{
+      'callId': proposal.callId,
+      'name': proposal.name,
+      'arguments': proposal.arguments,
+    };
+
+Map<String, Object?> _encodeTerminal(ModelProviderTerminal terminal) =>
+    <String, Object?>{
+      'settlement': terminal.settlement.name,
+      'incompleteReason': terminal.incompleteReason?.name,
+      'failure': terminal.failure == null
+          ? null
+          : <String, Object?>{
+              'kind': terminal.failure!.kind.name,
+              'providerCode': terminal.failure!.providerCode,
+              'providerMessage': terminal.failure!.providerMessage,
+              'providerDetails': terminal.failure!.providerDetails,
+            },
+      'providerStopReason': terminal.providerStopReason,
+      'usage': terminal.usage == null
+          ? null
+          : <String, Object?>{
+              'inputTokens': terminal.usage!.inputTokens,
+              'outputTokens': terminal.usage!.outputTokens,
+              'cacheReadTokens': terminal.usage!.cacheReadTokens,
+              'cacheWriteTokens': terminal.usage!.cacheWriteTokens,
+              'providerDetails': terminal.usage!.providerDetails,
+            },
+      'effectiveModel': terminal.effectiveModel,
+      'responseId': terminal.responseId,
+      'requestId': terminal.requestId,
+      'nativeState': terminal.nativeState == null
+          ? null
+          : _encodeNative(terminal.nativeState!),
+    };
+
+Map<String, Object?> _encodeNative(ModelProviderNativeEnvelope native) =>
+    <String, Object?>{
+      'kind': native.kind,
+      'compatibility': native.compatibility,
+      'data': native.data,
+    };
 
 final class _UnusedChannel implements AdeleRequestChannel {
   int requestCount = 0;
@@ -247,44 +744,6 @@ final class _UnusedChannel implements AdeleRequestChannel {
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) async {
     requestCount++;
-    throw StateError('The unavailable endpoint must not dispatch a request.');
+    throw StateError('Unused.');
   }
 }
-
-final class _ScriptedStreamChannel implements AdeleStreamChannel {
-  _ScriptedStreamChannel({required this.items});
-
-  final Stream<ScriptedModelStreamItem> items;
-  int requestCount = 0;
-  int streamCount = 0;
-
-  @override
-  Future<Object?> request(String method, Map<String, Object?> payload) async {
-    requestCount++;
-    throw StateError(
-      'The scripted-model adapter must not use unary transport.',
-    );
-  }
-
-  @override
-  Stream<Object?> stream(String method, Map<String, Object?> payload) {
-    streamCount++;
-    expect(method, scriptedModelFixtureServiceInvokeStreamId);
-    return items.map<Object?>(_encodeStreamItem);
-  }
-}
-
-Map<String, Object?> _encodeStreamItem(ScriptedModelStreamItem item) =>
-    <String, Object?>{
-      'kind': item.kind.name,
-      'text': item.text,
-      'toolCall': switch (item.toolCall) {
-        final ScriptedToolCall call => <String, Object?>{
-          'id': call.id,
-          'name': call.name,
-          'arguments': call.arguments,
-        },
-        null => null,
-      },
-      'sequence': item.sequence,
-    };

@@ -1301,6 +1301,107 @@ dynamic _dynamicValue(Object? value) => value;
     );
   });
 
+  test('accepts exact collection snapshot constructor parameters', () async {
+    final String generated = await _generate('''
+import 'package:adele_contract/adele_contract.dart';
+part 'fixture.g.dart';
+@AdeleValue('fixture.value')
+final class FixtureValue {
+  FixtureValue({required List<String> values, required Map<String, Object?> data})
+      : values = List<String>.unmodifiable(values),
+        data = adeleSnapshotJsonMap(data);
+  final List<String> values;
+  final Map<String, Object?> data;
+}
+@AdeleFailure('fixture.failure')
+final class FixtureFailure implements Exception {
+  const FixtureFailure({required this.code, required this.message, required this.details});
+  final String code; final String message; final Map<String, Object?> details;
+}
+@AdeleService('fixture')
+abstract interface class FixtureService {
+  @AdeleMethod('ping') Future<FixtureValue> ping(FixtureValue value);
+}
+''');
+    expect(generated, contains('FixtureValue(data:'));
+  });
+
+  test('rejects scalar snapshot constructor parameters', () async {
+    await _expectDiagnostic(
+      _minimalContract(namedValue: true).replaceFirst(
+        'const FixtureValue({required this.value});',
+        'const FixtureValue({required String value}) : value = value;',
+      ),
+      'except exact-type List and Map<String, Object?> snapshot parameters',
+    );
+  });
+
+  test('rejects collection snapshot parameter type mismatch', () async {
+    await _expectDiagnostic(
+      _minimalContract(namedValue: true)
+          .replaceFirst('String value', 'List<String> value')
+          .replaceFirst(
+            'const FixtureValue({required this.value});',
+            'FixtureValue({required List<Object> value}) : value = value.cast<String>();',
+          ),
+      'must have exactly the same type',
+    );
+  });
+
+  for (final ({String name, String initializer}) fixture
+      in <({String name, String initializer})>[
+        (name: 'list reversal', initializer: 'values.reversed.toList()'),
+        (
+          name: 'list wrong parameter',
+          initializer: 'List<String>.unmodifiable(other)',
+        ),
+        (name: 'arbitrary list helper', initializer: 'snapshot(values)'),
+      ]) {
+    test('rejects ${fixture.name} snapshot initializer', () async {
+      await _expectDiagnostic(
+        _collectionSnapshotContract(
+          listInitializer: fixture.initializer,
+          extraParameter: fixture.name == 'list wrong parameter'
+              ? ', required List<String> other'
+              : '',
+          helper: fixture.name == 'arbitrary list helper'
+              ? 'List<String> snapshot(List<String> value) => List.unmodifiable(value);'
+              : '',
+        ),
+        'snapshot parameters',
+      );
+    });
+  }
+
+  for (final ({String name, String initializer, String helper}) fixture
+      in <({String name, String initializer, String helper})>[
+        (name: 'constant map', initializer: 'const {}', helper: ''),
+        (
+          name: 'local map helper',
+          initializer: 'localSnapshot(data)',
+          helper:
+              'Map<String, Object?> localSnapshot(Map<String, Object?> value) => Map.unmodifiable(value);',
+        ),
+        (
+          name: 'canonical map wrong parameter',
+          initializer: 'adeleSnapshotJsonMap(other)',
+          helper: '',
+        ),
+      ]) {
+    test('rejects ${fixture.name} snapshot initializer', () async {
+      await _expectDiagnostic(
+        _collectionSnapshotContract(
+          mapInitializer: fixture.initializer,
+          extraParameter: fixture.name == 'canonical map wrong parameter'
+              ? ', required Map<String, Object?> other'
+              : '',
+          helper: fixture.helper,
+        ),
+        'snapshot parameters',
+      );
+    });
+  }
+
   test('rejects nullable recursive annotated value schemas', () async {
     await _expectDiagnostic(_recursiveValueContract('Node?'), 'schema cycles');
   });
@@ -1722,6 +1823,35 @@ Future<String> _generate(String source) async {
   final fixture = await _fixture(source);
   return (await const ContractGenerator().generate(fixture.source)).contents;
 }
+
+String _collectionSnapshotContract({
+  String listInitializer = 'List<String>.unmodifiable(values)',
+  String mapInitializer = 'adeleSnapshotJsonMap(data)',
+  String extraParameter = '',
+  String helper = '',
+}) =>
+    '''
+import 'package:adele_contract/adele_contract.dart';
+part 'fixture.g.dart';
+$helper
+@AdeleValue('fixture.value')
+final class FixtureValue {
+  FixtureValue({required List<String> values, required Map<String, Object?> data$extraParameter})
+      : values = $listInitializer,
+        data = $mapInitializer;
+  final List<String> values;
+  final Map<String, Object?> data;
+}
+@AdeleFailure('fixture.failure')
+final class FixtureFailure implements Exception {
+  const FixtureFailure({required this.code, required this.message, required this.details});
+  final String code; final String message; final Map<String, Object?> details;
+}
+@AdeleService('fixture')
+abstract interface class FixtureService {
+  @AdeleMethod('ping') Future<FixtureValue> ping(FixtureValue value);
+}
+''';
 
 Future<void> _expectDiagnostic(String source, String message) async {
   final fixture = await _fixture(source);

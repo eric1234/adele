@@ -4,7 +4,8 @@
 
 ADELE's maintained foundation proves source compilation, unary and server-streaming typed transport,
 interpreted frontend execution, active capability routing, and the Phase IV-A
-semantic agent-execution vertical on Linux x64. It does not implement plugin
+semantic agent-execution vertical and common ModelProvider capability on Linux
+x64. It does not implement plugin
 discovery, packaging, profiles, sandboxing,
 or a real model provider. Plugin-facing APIs remain experimental.
 
@@ -91,13 +92,14 @@ without introducing profile-management APIs.
 models, tools, editors, Git integrations, terminals, UI, and specialized agent
 workflows belong in plugins rather than in the kernel.
 
-Phase IV uses a development-only application strategy and fixture-specific
-scripted model capability to prove a generation-safe
+Phase IV uses a development-only application strategy and common ModelProvider
+capability backed by a scripted provider to prove a generation-safe
 model/tool/approval/tool/model cycle through real AOT providers. The kernel
 model port is stream-shaped, and the application adapter now consumes the
 fixture through Phase II-B generated typed streaming while preserving exact
-generation binding and consumer cancellation. This fixture-specific adapter is
-not the future common model-provider capability.
+generation binding and consumer cancellation. Live text observations remain
+separate from completed output, semantic terminal settlement is explicit, and
+opaque item metadata survives tool continuation.
 
 The long-term self-hosting goal is for ADELE to develop ADELE itself. That goal
 does not change the Phase 0 rule to prefer small, working boundaries and avoid
