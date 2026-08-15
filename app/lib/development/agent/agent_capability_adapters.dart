@@ -71,7 +71,7 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
             _binding.streamChannel,
           );
           _invocationCount++;
-          subscription = client
+          final StreamSubscription<ModelProviderEvent> created = client
               .invoke(_toProviderRequest(request, this))
               .listen(
                 (ModelProviderEvent event) {
@@ -133,6 +133,8 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
                   unawaited(controller.close());
                 },
               );
+          subscription = created;
+          if (settled) cancelSettledTransport();
         } on Object catch (error, stackTrace) {
           fail(error, stackTrace);
         }

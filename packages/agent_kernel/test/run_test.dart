@@ -121,6 +121,54 @@ void main() {
     );
   });
 
+  test('model settlement journal events enforce incomplete reasons', () {
+    final ModelInvocationId id = ModelInvocationId('model-settlement');
+    final ModelTerminalMetadata metadata = ModelTerminalMetadata();
+    for (final ({ModelSettlement settlement, ModelIncompleteReason? reason})
+        valid
+        in <({ModelSettlement settlement, ModelIncompleteReason? reason})>[
+          (settlement: ModelSettlement.completed, reason: null),
+          (settlement: ModelSettlement.refused, reason: null),
+          (
+            settlement: ModelSettlement.incomplete,
+            reason: ModelIncompleteReason.outputLimit,
+          ),
+        ]) {
+      expect(
+        ModelInvocationSettled(
+          invocationId: id,
+          settlement: valid.settlement,
+          incompleteReason: valid.reason,
+          metadata: metadata,
+        ),
+        isA<ModelInvocationSettled>(),
+      );
+    }
+    for (final ({ModelSettlement settlement, ModelIncompleteReason? reason})
+        invalid
+        in <({ModelSettlement settlement, ModelIncompleteReason? reason})>[
+          (
+            settlement: ModelSettlement.completed,
+            reason: ModelIncompleteReason.outputLimit,
+          ),
+          (
+            settlement: ModelSettlement.refused,
+            reason: ModelIncompleteReason.contextLimit,
+          ),
+          (settlement: ModelSettlement.incomplete, reason: null),
+        ]) {
+      expect(
+        () => ModelInvocationSettled(
+          invocationId: id,
+          settlement: invalid.settlement,
+          incompleteReason: invalid.reason,
+          metadata: metadata,
+        ),
+        throwsFormatException,
+      );
+    }
+  });
+
   test(
     'Run remains waiting until every outstanding interruption resolves',
     () async {

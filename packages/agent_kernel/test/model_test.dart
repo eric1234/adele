@@ -138,6 +138,23 @@ void main() {
       'signed': <Object?>['opaque'],
     });
   });
+
+  test('semantic message accepts nonempty whitespace content', () {
+    expect(
+      SemanticMessageInput(
+        role: SemanticMessageRole.assistant,
+        content: ' ',
+      ).content,
+      ' ',
+    );
+    expect(
+      () => SemanticMessageInput(
+        role: SemanticMessageRole.assistant,
+        content: '',
+      ),
+      throwsFormatException,
+    );
+  });
 }
 
 SemanticModelRequest _request(String id) => SemanticModelRequest(

@@ -108,6 +108,25 @@ void main() {
     ).invoke(_request()).single;
     expect(event.observation!.textDelta, ' ');
   });
+
+  test('completed text rejects empty but accepts whitespace content', () {
+    expect(() => _textOutput(''), throwsFormatException);
+    expect(_textOutput(' ').text, ' ');
+    expect(
+      ModelProviderContent(
+        kind: ModelProviderContentKind.text,
+        text: '\n',
+      ).text,
+      '\n',
+    );
+  });
+
+  test('generated client decodes whitespace-only completed text', () async {
+    final ModelProviderEvent event = await ModelProviderServiceClient(
+      _Channel(event: _encodedTextOutput(' ')),
+    ).invoke(_request()).single;
+    expect(event.output!.text, ' ');
+  });
 }
 
 ModelProviderRequest _request() => ModelProviderRequest(
@@ -190,6 +209,14 @@ ModelProviderEvent _proposal(String callId, String itemId) =>
       terminal: null,
     );
 
+ModelProviderOutput _textOutput(String text) => ModelProviderOutput(
+  kind: ModelProviderOutputKind.text,
+  text: text,
+  toolProposal: null,
+  itemId: null,
+  nativeMetadata: null,
+);
+
 ModelProviderEvent _terminal() => ModelProviderEvent(
   kind: ModelProviderEventKind.terminal,
   observation: null,
@@ -247,6 +274,19 @@ Map<String, Object?> _encodedDelta(String delta) => <String, Object?>{
     'itemId': null,
   },
   'output': null,
+  'terminal': null,
+};
+
+Map<String, Object?> _encodedTextOutput(String text) => <String, Object?>{
+  'kind': 'output',
+  'observation': null,
+  'output': <String, Object?>{
+    'kind': 'text',
+    'text': text,
+    'toolProposal': null,
+    'itemId': null,
+    'nativeMetadata': null,
+  },
   'terminal': null,
 };
 

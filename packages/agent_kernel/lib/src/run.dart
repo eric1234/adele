@@ -260,12 +260,19 @@ final class ModelObservationObserved extends ExecutionEvent {
 }
 
 final class ModelInvocationSettled extends ExecutionEvent {
-  const ModelInvocationSettled({
+  ModelInvocationSettled({
     required this.invocationId,
     required this.settlement,
     required this.incompleteReason,
     required this.metadata,
-  });
+  }) {
+    if ((settlement == ModelSettlement.incomplete) !=
+        (incompleteReason != null)) {
+      throw const FormatException(
+        'Only incomplete settlement requires an incomplete reason.',
+      );
+    }
+  }
 
   final ModelInvocationId invocationId;
   final ModelSettlement settlement;

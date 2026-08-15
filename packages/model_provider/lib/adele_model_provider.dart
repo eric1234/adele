@@ -70,8 +70,8 @@ final class ModelProviderNativeEnvelope {
 @AdeleValue('modelProvider.content')
 final class ModelProviderContent {
   ModelProviderContent({required this.kind, required this.text}) {
-    if (kind == ModelProviderContentKind.text) {
-      _requireNonEmpty(text, 'Text content');
+    if (kind == ModelProviderContentKind.text && text.isEmpty) {
+      throw const FormatException('Text content must not be empty.');
     }
   }
 
@@ -241,7 +241,9 @@ final class ModelProviderOutput {
         'Output kind must match exactly one output payload.',
       );
     }
-    if (text != null) _requireNonEmpty(text!, 'Completed text');
+    if (text != null && text!.isEmpty) {
+      throw const FormatException('Completed text must not be empty.');
+    }
     _requireOptionalNonEmpty(itemId, 'Provider item ID');
   }
 

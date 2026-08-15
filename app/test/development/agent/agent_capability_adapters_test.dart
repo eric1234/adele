@@ -150,6 +150,63 @@ void main() {
     },
   );
 
+  test('synchronous terminal eventually cancels assigned transport', () async {
+    final Completer<void> cancelled = Completer<void>();
+    late final StreamController<ModelProviderEvent> source;
+    source = StreamController<ModelProviderEvent>(
+      sync: true,
+      onListen: () => source.add(_terminal()),
+      onCancel: () => cancelled.complete(),
+    );
+
+    final List<ModelEvent> mapped = await ModelProviderCapabilityAdapter(
+      _binding(_ProviderChannel(events: source.stream)),
+      selectedModel: 'scripted-v1',
+    ).invoke(_request()).toList().timeout(const Duration(seconds: 1));
+
+    expect(mapped, <Matcher>[isA<ModelInvocationSettledEvent>()]);
+    await cancelled.future.timeout(const Duration(seconds: 1));
+  });
+
+  test('whitespace completed text maps and lowers for replay', () async {
+    final List<ModelEvent> events = await ModelProviderCapabilityAdapter(
+      _binding(
+        _ProviderChannel(
+          events: Stream<ModelProviderEvent>.fromIterable(<ModelProviderEvent>[
+            _text(' ', 'space-1'),
+            _terminal(),
+          ]),
+        ),
+      ),
+      selectedModel: 'scripted-v1',
+    ).invoke(_request()).toList();
+    final ModelTextOutput output =
+        (events.first as ModelOutputItemCompleted).item as ModelTextOutput;
+    expect(output.content, ' ');
+
+    final _ProviderChannel replayChannel = _ProviderChannel(
+      events: Stream<ModelProviderEvent>.value(_terminal()),
+    );
+    await ModelProviderCapabilityAdapter(
+          _binding(replayChannel),
+          selectedModel: 'scripted-v1',
+        )
+        .invoke(
+          SemanticModelRequest(
+            invocationId: ModelInvocationId('replay-space'),
+            input: <SemanticModelInputItem>[
+              SemanticMessageInput(
+                role: SemanticMessageRole.assistant,
+                content: output.content,
+              ),
+            ],
+            tools: MaterializedToolSet(const <MaterializedTool>[]),
+          ),
+        )
+        .toList();
+    expect(replayChannel.streamCount, 1);
+  });
+
   test('terminal settlement contains transport cancellation failure', () async {
     late final StreamController<ModelProviderEvent> source;
     source = StreamController<ModelProviderEvent>(

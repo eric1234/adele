@@ -28,7 +28,7 @@ final class SemanticMessageInput extends SemanticModelInputItem {
     this.providerItemId,
     this.providerNativeMetadata,
   }) {
-    if (content.trim().isEmpty) {
+    if (content.isEmpty) {
       throw const FormatException(
         'Semantic message content must not be empty.',
       );
