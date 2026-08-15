@@ -80,6 +80,34 @@ void main() {
       throwsFormatException,
     );
   });
+
+  test('text deltas reject empty but accept whitespace chunks', () {
+    expect(
+      () => ModelProviderObservation(
+        kind: ModelProviderObservationKind.textDelta,
+        textDelta: '',
+        itemId: null,
+      ),
+      throwsFormatException,
+    );
+    for (final String delta in <String>[' ', '\n']) {
+      expect(
+        ModelProviderObservation(
+          kind: ModelProviderObservationKind.textDelta,
+          textDelta: delta,
+          itemId: null,
+        ).textDelta,
+        delta,
+      );
+    }
+  });
+
+  test('generated client decodes a whitespace-only text delta', () async {
+    final ModelProviderEvent event = await ModelProviderServiceClient(
+      _Channel(event: _encodedDelta(' ')),
+    ).invoke(_request()).single;
+    expect(event.observation!.textDelta, ' ');
+  });
 }
 
 ModelProviderRequest _request() => ModelProviderRequest(
@@ -192,6 +220,9 @@ ModelProviderNativeEnvelope _native(String kind) => ModelProviderNativeEnvelope(
 );
 
 final class _Channel implements AdeleStreamChannel {
+  _Channel({Map<String, Object?>? event}) : event = event ?? _encodedTerminal();
+
+  final Map<String, Object?> event;
   int requests = 0;
   int streams = 0;
 
@@ -204,32 +235,47 @@ final class _Channel implements AdeleStreamChannel {
   @override
   Stream<Object?> stream(String method, Map<String, Object?> payload) {
     streams++;
-    final ModelProviderTerminal terminal = _terminal().terminal!;
-    return Stream<Object?>.value(<String, Object?>{
-      'kind': 'terminal',
-      'observation': null,
-      'output': null,
-      'terminal': <String, Object?>{
-        'settlement': terminal.settlement.name,
-        'incompleteReason': null,
-        'failure': null,
-        'providerStopReason': terminal.providerStopReason,
-        'usage': <String, Object?>{
-          'inputTokens': terminal.usage!.inputTokens,
-          'outputTokens': terminal.usage!.outputTokens,
-          'cacheReadTokens': terminal.usage!.cacheReadTokens,
-          'cacheWriteTokens': terminal.usage!.cacheWriteTokens,
-          'providerDetails': terminal.usage!.providerDetails,
-        },
-        'effectiveModel': terminal.effectiveModel,
-        'responseId': terminal.responseId,
-        'requestId': terminal.requestId,
-        'nativeState': <String, Object?>{
-          'kind': terminal.nativeState!.kind,
-          'compatibility': terminal.nativeState!.compatibility,
-          'data': terminal.nativeState!.data,
-        },
-      },
-    });
+    return Stream<Object?>.value(event);
   }
+}
+
+Map<String, Object?> _encodedDelta(String delta) => <String, Object?>{
+  'kind': 'observation',
+  'observation': <String, Object?>{
+    'kind': 'textDelta',
+    'textDelta': delta,
+    'itemId': null,
+  },
+  'output': null,
+  'terminal': null,
+};
+
+Map<String, Object?> _encodedTerminal() {
+  final ModelProviderTerminal terminal = _terminal().terminal!;
+  return <String, Object?>{
+    'kind': 'terminal',
+    'observation': null,
+    'output': null,
+    'terminal': <String, Object?>{
+      'settlement': terminal.settlement.name,
+      'incompleteReason': null,
+      'failure': null,
+      'providerStopReason': terminal.providerStopReason,
+      'usage': <String, Object?>{
+        'inputTokens': terminal.usage!.inputTokens,
+        'outputTokens': terminal.usage!.outputTokens,
+        'cacheReadTokens': terminal.usage!.cacheReadTokens,
+        'cacheWriteTokens': terminal.usage!.cacheWriteTokens,
+        'providerDetails': terminal.usage!.providerDetails,
+      },
+      'effectiveModel': terminal.effectiveModel,
+      'responseId': terminal.responseId,
+      'requestId': terminal.requestId,
+      'nativeState': <String, Object?>{
+        'kind': terminal.nativeState!.kind,
+        'compatibility': terminal.nativeState!.compatibility,
+        'data': terminal.nativeState!.data,
+      },
+    },
+  };
 }

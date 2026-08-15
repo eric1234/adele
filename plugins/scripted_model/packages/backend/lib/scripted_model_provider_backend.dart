@@ -93,15 +93,23 @@ final class ScriptedCommonModelProvider implements ModelProviderService {
       return;
     }
     final ModelProviderInput proposalInput = matchingProposals.last;
-    final String initialUserText = request.input
-        .take(outcomeIndex)
+    final int proposalIndex = request.input.lastIndexOf(proposalInput);
+    final List<ModelProviderInput> priorUsers = request.input
+        .take(proposalIndex)
         .where(
           (ModelProviderInput item) =>
               item.message?.role == ModelProviderMessageRole.user,
         )
-        .last
-        .message!
-        .content
+        .toList(growable: false);
+    if (priorUsers.isEmpty) {
+      yield _failure(
+        ModelProviderFailureKind.invalidRequest,
+        'missing_user_context',
+        'The scripted provider requires user context before the proposal.',
+      );
+      return;
+    }
+    final String initialUserText = priorUsers.last.message!.content
         .map((ModelProviderContent content) => content.text)
         .join();
     final String expectedUri = initialUserText == 'fixture:tool-domain-failure'

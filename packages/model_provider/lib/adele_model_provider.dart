@@ -209,7 +209,9 @@ final class ModelProviderObservation {
     required this.itemId,
   }) {
     if (kind == ModelProviderObservationKind.textDelta) {
-      _requireNonEmpty(textDelta, 'Text delta');
+      if (textDelta.isEmpty) {
+        throw const FormatException('Text delta must not be empty.');
+      }
     }
     _requireOptionalNonEmpty(itemId, 'Provider item ID');
   }

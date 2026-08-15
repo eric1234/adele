@@ -150,6 +150,22 @@ void main() {
     },
   );
 
+  test('terminal settlement contains transport cancellation failure', () async {
+    late final StreamController<ModelProviderEvent> source;
+    source = StreamController<ModelProviderEvent>(
+      onListen: () => source.add(_terminal()),
+      onCancel: () async => throw StateError('cleanup failed'),
+    );
+
+    final List<ModelEvent> mapped = await ModelProviderCapabilityAdapter(
+      _binding(_ProviderChannel(events: source.stream)),
+      selectedModel: 'scripted-v1',
+    ).invoke(_request()).toList().timeout(const Duration(seconds: 1));
+    await Future<void>.delayed(Duration.zero);
+
+    expect(mapped, <Matcher>[isA<ModelInvocationSettledEvent>()]);
+  });
+
   test('consumer cancellation reaches underlying stream', () async {
     final Completer<void> cancelled = Completer<void>();
     final StreamController<ModelProviderEvent> source =

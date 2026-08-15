@@ -73,6 +73,24 @@ void main() {
     _expectInvalidContinuation(events, 'orphan_tool_outcome');
   });
 
+  test('proposal and outcome without prior user context are invalid', () async {
+    final List<ModelProviderEvent> events = await provider
+        .invoke(_request(input: <ModelProviderInput>[_proposal(), _outcome()]))
+        .toList();
+    _expectInvalidContinuation(events, 'missing_user_context');
+  });
+
+  test('user context after proposal cannot justify continuation', () async {
+    final List<ModelProviderEvent> events = await provider
+        .invoke(
+          _request(
+            input: <ModelProviderInput>[_proposal(), _user(), _outcome()],
+          ),
+        )
+        .toList();
+    _expectInvalidContinuation(events, 'missing_user_context');
+  });
+
   test('wrong replayed tool name is invalid', () async {
     final List<ModelProviderEvent> events = await provider
         .invoke(

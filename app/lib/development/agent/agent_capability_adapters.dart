@@ -38,6 +38,18 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
     bool semanticTerminal = false;
     bool settled = false;
 
+    void cancelSettledTransport() {
+      final StreamSubscription<ModelProviderEvent>? current = subscription;
+      if (current == null) return;
+      unawaited(() async {
+        try {
+          await current.cancel();
+        } on Object {
+          // Semantic terminal is authoritative; cleanup cannot replace it.
+        }
+      }());
+    }
+
     void fail(Object error, StackTrace stackTrace) {
       if (settled) return;
       settled = true;
@@ -91,7 +103,7 @@ final class ModelProviderCapabilityAdapter implements ModelPort {
                         settled = true;
                         controller.add(terminal);
                         unawaited(controller.close());
-                        unawaited(subscription?.cancel());
+                        cancelSettledTransport();
                     }
                   } on Object catch (error, stackTrace) {
                     unawaited(subscription?.cancel());
