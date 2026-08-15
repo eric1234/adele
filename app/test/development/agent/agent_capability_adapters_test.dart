@@ -5,6 +5,7 @@ import 'package:agent_kernel/agent_kernel.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:resource_inspector_contract/resource_inspector_contract.dart';
+import 'package:scripted_model_contract/scripted_model_contract.dart';
 
 void main() {
   test(
@@ -68,6 +69,123 @@ void main() {
       expect(channel.requestCount, 0);
     },
   );
+
+  test('ScriptedModel maps streamed items and ignores probes', () async {
+    final _ScriptedStreamChannel channel = _ScriptedStreamChannel(
+      items: Stream<ScriptedModelStreamItem>.fromIterable(
+        <ScriptedModelStreamItem>[
+          const ScriptedModelStreamItem(
+            kind: ScriptedModelStreamItemKind.probe,
+            text: null,
+            toolCall: null,
+            sequence: 0,
+          ),
+          const ScriptedModelStreamItem(
+            kind: ScriptedModelStreamItemKind.text,
+            text: 'Inspecting.',
+            toolCall: null,
+            sequence: null,
+          ),
+          const ScriptedModelStreamItem(
+            kind: ScriptedModelStreamItemKind.toolCall,
+            text: null,
+            toolCall: ScriptedToolCall(
+              id: 'call-1',
+              name: 'inspect_resource',
+              arguments: <String, Object?>{'uri': 'file:///tmp/example.dart'},
+            ),
+            sequence: null,
+          ),
+        ],
+      ),
+    );
+    final ModelInvocationId invocationId = ModelInvocationId('model-1');
+
+    final List<ModelEvent> events = await ScriptedModelCapabilityAdapter(
+      _scriptedBinding(channel),
+    ).invoke(_modelRequest(invocationId)).toList();
+
+    expect(channel.requestCount, 0);
+    expect(channel.streamCount, 1);
+    expect(events, <Matcher>[
+      isA<ModelOutputItemCompleted>().having(
+        (ModelOutputItemCompleted event) =>
+            (event.item as ModelTextOutput).content,
+        'text',
+        'Inspecting.',
+      ),
+      isA<ModelOutputItemCompleted>().having(
+        (ModelOutputItemCompleted event) =>
+            (event.item as ModelToolProposalOutput).proposal.providerCallId,
+        'provider call ID',
+        'call-1',
+      ),
+      isA<ModelInvocationCompletedEvent>(),
+    ]);
+    expect(
+      events.every((ModelEvent event) => event.invocationId == invocationId),
+      isTrue,
+    );
+  });
+
+  test(
+    'ScriptedModel preserves partial output before stream failure',
+    () async {
+      final _ScriptedStreamChannel channel = _ScriptedStreamChannel(
+        items: Stream<ScriptedModelStreamItem>.multi((controller) {
+          controller.add(
+            const ScriptedModelStreamItem(
+              kind: ScriptedModelStreamItemKind.text,
+              text: 'Partial.',
+              toolCall: null,
+              sequence: null,
+            ),
+          );
+          controller.addError(StateError('provider failed'));
+        }),
+      );
+
+      final List<ModelEvent> events = await ScriptedModelCapabilityAdapter(
+        _scriptedBinding(channel),
+      ).invoke(_modelRequest(ModelInvocationId('model-2'))).toList();
+
+      expect(events, <Matcher>[
+        isA<ModelOutputItemCompleted>(),
+        isA<ModelInvocationFailedEvent>().having(
+          (ModelInvocationFailedEvent event) => event.error,
+          'error',
+          isA<StateError>(),
+        ),
+      ]);
+    },
+  );
+
+  test('ScriptedModel fails malformed stream items', () async {
+    final _ScriptedStreamChannel channel = _ScriptedStreamChannel(
+      items: Stream<ScriptedModelStreamItem>.value(
+        const ScriptedModelStreamItem(
+          kind: ScriptedModelStreamItemKind.text,
+          text: null,
+          toolCall: null,
+          sequence: null,
+        ),
+      ),
+    );
+
+    final List<ModelEvent> events = await ScriptedModelCapabilityAdapter(
+      _scriptedBinding(channel),
+    ).invoke(_modelRequest(ModelInvocationId('model-3'))).toList();
+
+    expect(events, hasLength(1));
+    expect(
+      events.single,
+      isA<ModelInvocationFailedEvent>().having(
+        (ModelInvocationFailedEvent event) => event.error,
+        'error',
+        isA<FormatException>(),
+      ),
+    );
+  });
 }
 
 ProviderBinding _binding({
@@ -92,6 +210,37 @@ ProviderBinding _binding({
   return registry.resolve(resourceInspectCapability);
 }
 
+ProviderBinding _scriptedBinding(AdeleStreamChannel channel) {
+  final CapabilityRegistry registry = CapabilityRegistry();
+  registry.register(
+    provider: ProviderDescriptor(
+      id: scriptedModelFixtureProviderId,
+      capability: scriptedModelFixtureCapability,
+      pluginId: 'dev.adele.scripted-model-fixture-plugin',
+      displayName: 'Scripted Model Fixture',
+      serviceId: scriptedModelFixtureServiceId,
+    ),
+    endpoint: AdeleRequestChannelEndpoint(
+      channel: channel,
+      serviceId: scriptedModelFixtureServiceId,
+      isAvailable: () => true,
+    ),
+  );
+  return registry.resolve(scriptedModelFixtureCapability);
+}
+
+SemanticModelRequest _modelRequest(ModelInvocationId invocationId) =>
+    SemanticModelRequest(
+      invocationId: invocationId,
+      input: <SemanticModelInputItem>[
+        SemanticMessageInput(
+          role: SemanticMessageRole.user,
+          content: 'Inspect the resource.',
+        ),
+      ],
+      tools: MaterializedToolSet(const <MaterializedTool>[]),
+    );
+
 final class _UnusedChannel implements AdeleRequestChannel {
   int requestCount = 0;
 
@@ -101,3 +250,41 @@ final class _UnusedChannel implements AdeleRequestChannel {
     throw StateError('The unavailable endpoint must not dispatch a request.');
   }
 }
+
+final class _ScriptedStreamChannel implements AdeleStreamChannel {
+  _ScriptedStreamChannel({required this.items});
+
+  final Stream<ScriptedModelStreamItem> items;
+  int requestCount = 0;
+  int streamCount = 0;
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) async {
+    requestCount++;
+    throw StateError(
+      'The scripted-model adapter must not use unary transport.',
+    );
+  }
+
+  @override
+  Stream<Object?> stream(String method, Map<String, Object?> payload) {
+    streamCount++;
+    expect(method, scriptedModelFixtureServiceInvokeStreamId);
+    return items.map<Object?>(_encodeStreamItem);
+  }
+}
+
+Map<String, Object?> _encodeStreamItem(ScriptedModelStreamItem item) =>
+    <String, Object?>{
+      'kind': item.kind.name,
+      'text': item.text,
+      'toolCall': switch (item.toolCall) {
+        final ScriptedToolCall call => <String, Object?>{
+          'id': call.id,
+          'name': call.name,
+          'arguments': call.arguments,
+        },
+        null => null,
+      },
+      'sequence': item.sequence,
+    };

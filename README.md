@@ -18,15 +18,15 @@ both through generated transport. These are internal reference fixtures, not
 product UI. Plugin installation, packaging, permissions, sandboxing, and
 general third-party APIs are not implemented.
 
-Phase IV-A separates canonical Session history, Run lifecycle, context
+Phase IV separates canonical Session history, Run lifecycle, context
 assembly, streaming-shaped semantic model events, immutable tool
 materialization, ToolInvocation, effect description, policy, approval, tool
 execution, structured outcomes, and typed execution observation. Its
-development-only AOT fixture adapts a generated unary scripted model capability
+development-only AOT fixture adapts the scripted model's generated typed stream
 and a generation-bound ResourceInspector capability into those kernel ports.
-The scripted-model contract now also has a generated typed stream proven through
-the shared-host AOT runtime. The Phase IV-A application adapter intentionally
-continues using the unary method as a regression boundary.
+The scripted-model application adapter preserves incremental output and
+generated consumer cancellation through the shared-host AOT runtime; the unary
+fixture method remains as regression/reference infrastructure.
 
 ## Toolchain
 
@@ -132,9 +132,9 @@ types in Phase 0.
 
 ## Next Work
 
-Continue remaining Phase IV by switching the scripted-model adapter to the
-generated stream, establishing the first common model-provider capability,
-integrating one real provider, and proving the minimal streamed model/tool loop.
+Continue remaining Phase IV by establishing the first common model-provider
+capability, integrating one real provider, and proving the minimal streamed
+model/tool loop.
 Windows, macOS, release packaging,
 current Flutter compatibility, packaging/discovery, and eval-stack
 modernization also remain open. See `docs/architecture/overview.md` and ADRs
