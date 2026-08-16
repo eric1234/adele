@@ -1,4 +1,114 @@
 import 'dart:io';
+import 'dart:math' as math;
+
+import 'test_runner.dart';
+
+const int _maximumDefaultTestJobs = 2;
+
+const List<TestTarget> testTargets = <TestTarget>[
+  TestTarget(
+    name: 'adele_tools',
+    path: '.',
+    executable: 'dart',
+    arguments: <String>['test', 'test/tools'],
+  ),
+  TestTarget(
+    name: 'adele_contract',
+    path: 'packages/contract',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
+    name: 'contract_codegen',
+    path: 'packages/contract_codegen',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
+    name: 'adele_plugin_api',
+    path: 'packages/plugin_api',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
+    name: 'adele_model_provider',
+    path: 'packages/model_provider',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
+    name: 'adele_capabilities',
+    path: 'packages/capabilities',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
+    name: 'agent_kernel',
+    path: 'packages/agent_kernel',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
+    name: 'plugin_builder',
+    path: 'packages/plugin_builder',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
+    name: 'plugin_runtime',
+    path: 'packages/plugin_runtime',
+    executable: 'dart',
+    arguments: <String>['test', '--timeout', '10s'],
+  ),
+  TestTarget(
+    name: 'plugin_backend_host',
+    path: 'packages/plugin_backend_host',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
+    name: 'resource_inspector_contract',
+    path: 'plugins/resource_inspector/packages/contract',
+    executable: 'dart',
+    arguments: <String>['test', '--timeout', '4m'],
+  ),
+  TestTarget(
+    name: 'scripted_model_contract',
+    path: 'plugins/scripted_model/packages/contract',
+    executable: 'dart',
+    arguments: <String>['test', '--timeout', '4m'],
+  ),
+  TestTarget(
+    name: 'scripted_model_backend',
+    path: 'plugins/scripted_model/packages/backend',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
+    name: 'openai_model_provider_backend',
+    path: 'plugins/openai/packages/backend',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
+    name: 'workspace_demo_contract',
+    path: 'plugins/workspace_demo/packages/contract',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
+    name: 'workspace_demo_backend',
+    path: 'plugins/workspace_demo/packages/backend',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
+    name: 'adele_desktop',
+    path: 'app',
+    executable: 'flutter',
+    arguments: <String>['test'],
+  ),
+];
 
 const List<({String name, String path, bool flutter})>
 _packages = <({String name, String path, bool flutter})>[
@@ -119,7 +229,12 @@ Future<void> main(List<String> arguments) async {
         await _run('repository tools', 'dart', <String>[
           'analyze',
           '--fatal-infos',
-          'tools/adele.dart',
+          'tools',
+        ]);
+        await _run('repository tool tests', 'dart', <String>[
+          'analyze',
+          '--fatal-infos',
+          'test/tools',
         ]);
         for (final package in _packages) {
           await _run(
@@ -131,80 +246,9 @@ Future<void> main(List<String> arguments) async {
         }
         return;
       case 'test':
-        await _run('adele_contract', 'dart', <String>[
-          'test',
-        ], workingDirectory: 'packages/contract');
-        await _run('contract_codegen', 'dart', <String>[
-          'test',
-        ], workingDirectory: 'packages/contract_codegen');
-        await _run('adele_plugin_api', 'dart', <String>[
-          'test',
-        ], workingDirectory: 'packages/plugin_api');
-        await _run(
-          'adele_model_provider',
-          'dart',
-          <String>['test'],
-          workingDirectory: 'packages/model_provider',
+        exitCode = await _runTests(
+          parseTestJobs(arguments.skip(1).toList(growable: false)),
         );
-        await _run('adele_capabilities', 'dart', <String>[
-          'test',
-        ], workingDirectory: 'packages/capabilities');
-        await _run('agent_kernel', 'dart', <String>[
-          'test',
-        ], workingDirectory: 'packages/agent_kernel');
-        await _run('plugin_builder', 'dart', <String>[
-          'test',
-        ], workingDirectory: 'packages/plugin_builder');
-        await _run('plugin_runtime', 'dart', <String>[
-          'test',
-          '--timeout',
-          '10s',
-        ], workingDirectory: 'packages/plugin_runtime');
-        await _run(
-          'plugin_backend_host',
-          'dart',
-          <String>['test'],
-          workingDirectory: 'packages/plugin_backend_host',
-        );
-        await _run(
-          'resource_inspector_contract',
-          'dart',
-          <String>['test', '--timeout', '4m'],
-          workingDirectory: 'plugins/resource_inspector/packages/contract',
-        );
-        await _run(
-          'scripted_model_contract',
-          'dart',
-          <String>['test', '--timeout', '4m'],
-          workingDirectory: 'plugins/scripted_model/packages/contract',
-        );
-        await _run(
-          'scripted_model_backend',
-          'dart',
-          <String>['test'],
-          workingDirectory: 'plugins/scripted_model/packages/backend',
-        );
-        await _run(
-          'openai_model_provider_backend',
-          'dart',
-          <String>['test'],
-          workingDirectory: 'plugins/openai/packages/backend',
-        );
-        await _run(
-          'workspace_demo_contract',
-          'dart',
-          <String>['test'],
-          workingDirectory: 'plugins/workspace_demo/packages/contract',
-        );
-        await _run(
-          'workspace_demo_backend',
-          'dart',
-          <String>['test'],
-          workingDirectory: 'plugins/workspace_demo/packages/backend',
-        );
-        await _run('adele_desktop', 'flutter', <String>[
-          'test',
-        ], workingDirectory: 'app');
         return;
       case 'check':
         await main(<String>['generate', '--check']);
@@ -274,12 +318,104 @@ Future<void> main(List<String> arguments) async {
         exitCode = 64;
         return;
     }
+  } on TestUsageException catch (failure) {
+    stderr.writeln('ERROR: ${failure.message}');
+    _usage();
+    exitCode = 64;
   } on _CommandFailure catch (failure) {
     stderr.writeln(
       'FAILED: ${failure.label} exited with code ${failure.exitCode}.',
     );
     exitCode = failure.exitCode;
   }
+}
+
+int defaultTestJobs([int? numberOfProcessors]) {
+  return math.min(
+    _maximumDefaultTestJobs,
+    math.max(1, numberOfProcessors ?? Platform.numberOfProcessors),
+  );
+}
+
+int parseTestJobs(List<String> arguments, {int? numberOfProcessors}) {
+  int? jobs;
+  for (int index = 0; index < arguments.length; index++) {
+    final String argument = arguments[index];
+    String? value;
+    if (argument == '--jobs') {
+      if (index + 1 >= arguments.length) {
+        throw const TestUsageException('--jobs requires a positive integer.');
+      }
+      value = arguments[++index];
+    } else if (argument.startsWith('--jobs=')) {
+      value = argument.substring('--jobs='.length);
+    } else {
+      throw TestUsageException('Unknown test option: $argument');
+    }
+    if (jobs != null) {
+      throw const TestUsageException('--jobs may only be specified once.');
+    }
+    if (!RegExp(r'^[1-9][0-9]*$').hasMatch(value)) {
+      throw TestUsageException(
+        'Invalid --jobs value "$value"; expected a positive integer.',
+      );
+    }
+    jobs = int.tryParse(value);
+    if (jobs == null) {
+      throw TestUsageException(
+        'Invalid --jobs value "$value"; expected a positive integer.',
+      );
+    }
+  }
+  return jobs ?? defaultTestJobs(numberOfProcessors);
+}
+
+Future<int> _runTests(int jobs) async {
+  stdout.writeln(
+    'Running ${testTargets.length} test targets with up to $jobs jobs.',
+  );
+  final TestRunSummary summary = await runTestTargets(
+    targets: testTargets,
+    jobs: jobs,
+    execute: (TestTarget target) async {
+      final Process process = await Process.start(
+        target.executable,
+        target.arguments,
+        mode: ProcessStartMode.inheritStdio,
+        runInShell: Platform.isWindows,
+        workingDirectory: target.path,
+      );
+      return process.exitCode;
+    },
+    onStart: (TestTarget target) {
+      stdout.writeln('==> START test: ${target.name}');
+    },
+    onComplete: (TestTargetResult result) {
+      final String elapsed = formatTestDuration(result.elapsed);
+      if (result.passed) {
+        stdout.writeln('==> PASS test: ${result.target.name} ($elapsed)');
+      } else {
+        stdout.writeln(
+          '==> FAIL test: ${result.target.name} '
+          '($elapsed, exit ${result.exitCode})',
+        );
+        if (result.error case final Object error) stderr.writeln(error);
+      }
+    },
+  );
+
+  if (summary.failures.isNotEmpty) {
+    stderr.writeln('FAILED TEST TARGETS:');
+    for (final TestTargetResult failure in summary.failures) {
+      stderr.writeln('  ${failure.target.name} (exit ${failure.exitCode})');
+    }
+  }
+  stdout.writeln(
+    'TEST SUMMARY: total ${summary.results.length}, passed ${summary.passed}, '
+    'failed ${summary.failures.length}, '
+    'elapsed ${formatTestDuration(summary.elapsed)}',
+  );
+  return summary.succeeded ? 0 : summary.failures.first.exitCode;
 }
 
 Future<void> _run(
@@ -365,7 +501,7 @@ Commands:
   format [--check]   Format or verify formatting for all Dart files.
   generate [--check] Generate or verify committed contract transport files.
   analyze            Analyze every package and identify failures.
-  test               Run public value tests and desktop widget tests.
+  test [--jobs N]    Run tests with at most N package processes (default: up to 2).
   check              Verify formatting, analysis, and tests.
   run [device] [--debug|--profile|--release]
                      Run the desktop app in an explicit mode.
@@ -381,4 +517,10 @@ final class _CommandFailure implements Exception {
 
   final String label;
   final int exitCode;
+}
+
+final class TestUsageException implements Exception {
+  const TestUsageException(this.message);
+
+  final String message;
 }

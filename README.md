@@ -57,7 +57,7 @@ dart tools/adele.dart run linux     # use macos or windows on those hosts
 dart tools/adele.dart format
 dart tools/adele.dart generate
 dart tools/adele.dart analyze
-dart tools/adele.dart test
+dart tools/adele.dart test --jobs 2
 dart tools/adele.dart check
 dart tools/adele.dart build linux
 ```
@@ -75,9 +75,10 @@ dart tools/adele.dart smoke linux --profile
 `bootstrap` uses the standard Dart pub workspace through Flutter's pub command.
 `generate` deterministically updates committed experimental contract transport;
 `generate --check` rejects stale outputs and is included in `check`.
-The command driver has no package dependencies, fails on the first failed
-package, and names that package. `check` verifies formatting, analysis, and all
-implemented tests, including committed generated-output freshness.
+The command driver runs package test suites through a bounded worker pool and
+reports every failed package after all targets settle. `check` verifies
+formatting, analysis, and all implemented tests, including committed
+generated-output freshness.
 
 ## Repository
 

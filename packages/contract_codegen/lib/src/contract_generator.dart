@@ -8,6 +8,7 @@ import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/dart/element/nullability_suffix.dart';
 import 'package:analyzer/dart/element/type.dart';
 import 'package:analyzer/diagnostic/diagnostic.dart';
+import 'package:dart_style/dart_style.dart';
 import 'package:path/path.dart' as p;
 
 final class ContractDiagnostic implements Exception {
@@ -160,7 +161,9 @@ final class ContractGenerator {
     }
     final ContractModel model = _Extractor(result).extract();
     final String unformatted = DartContractEmitter().emit(model);
-    final String formatted = await _format(unformatted, source.parent);
+    final String formatted = DartFormatter(
+      languageVersion: DartFormatter.latestLanguageVersion,
+    ).format(unformatted, uri: source.uri);
     final String sourceDirectory = p.normalize(absolute.parent.path);
     final String destination = p.normalize(
       p.join(sourceDirectory, model.partUri),
@@ -1775,26 +1778,5 @@ final class DartContractEmitter {
     }
     escaped.write("'");
     return escaped.toString();
-  }
-}
-
-Future<String> _format(String source, Directory workingDirectory) async {
-  final Directory temporaryDirectory = await Directory.systemTemp.createTemp(
-    'contract_codegen.',
-  );
-  try {
-    final File input = File(p.join(temporaryDirectory.path, 'contract.g.dart'));
-    await input.writeAsString(source);
-    final ProcessResult result = await Process.run(
-      Platform.resolvedExecutable,
-      <String>['format', input.path],
-      workingDirectory: workingDirectory.path,
-    );
-    if (result.exitCode != 0) {
-      throw StateError('dart format failed: ${result.stderr}');
-    }
-    return input.readAsString();
-  } finally {
-    await temporaryDirectory.delete(recursive: true);
   }
 }
