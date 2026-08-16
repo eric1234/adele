@@ -20,6 +20,41 @@ void main() {
       );
     });
 
+    test('allows HTTPS and loopback HTTP endpoints only', () {
+      final List<OpenAiModelProvider> allowed = <OpenAiModelProvider>[
+        OpenAiModelProvider(apiKey: 'fake-openai-key'),
+        OpenAiModelProvider(
+          apiKey: 'fake-openai-key',
+          endpoint: Uri.parse('https://example.test/v1/responses'),
+        ),
+        OpenAiModelProvider(
+          apiKey: 'fake-openai-key',
+          endpoint: Uri.parse('http://localhost:8080/v1/responses'),
+        ),
+        OpenAiModelProvider(
+          apiKey: 'fake-openai-key',
+          endpoint: Uri.parse('http://127.0.0.1:8080/v1/responses'),
+        ),
+        OpenAiModelProvider(
+          apiKey: 'fake-openai-key',
+          endpoint: Uri.parse('http://[::1]:8080/v1/responses'),
+        ),
+      ];
+      addTearDown(() {
+        for (final OpenAiModelProvider provider in allowed) {
+          provider.close();
+        }
+      });
+
+      expect(
+        () => OpenAiModelProvider(
+          apiKey: 'fake-openai-key',
+          endpoint: Uri.parse('http://example.test/v1/responses'),
+        ),
+        throwsArgumentError,
+      );
+    });
+
     test('lowers request and preserves streamed/completed authority', () async {
       late Map<String, Object?> captured;
       final _FakeServer server = await _FakeServer.start((request) async {
@@ -203,6 +238,19 @@ void main() {
           'call_id': 'call_1',
           'name': 'inspect_resource',
           'arguments': '{"uri":"file:///tmp/test.txt"}',
+          'status': 'completed',
+        });
+        expect(input[2], <String, Object?>{
+          'type': 'message',
+          'role': 'assistant',
+          'content': <Object?>[
+            <String, Object?>{
+              'type': 'output_text',
+              'text': 'Inspecting.',
+              'annotations': <Object?>[],
+            },
+          ],
+          'id': 'msg_1',
           'status': 'completed',
         });
         expect(input[6], <String, Object?>{
@@ -389,6 +437,70 @@ void main() {
       expect(terminal.failure?.providerCode, 'invalid_utf8');
     });
 
+    for (final (String name, Map<String, Object?> part, String code)
+        in <(String, Map<String, Object?>, String)>[
+          (
+            'missing annotations',
+            <String, Object?>{'type': 'output_text', 'text': 'Text.'},
+            'invalid_output_text_annotations',
+          ),
+          (
+            'malformed annotations',
+            <String, Object?>{
+              'type': 'output_text',
+              'text': 'Text.',
+              'annotations': 'invalid',
+            },
+            'invalid_output_text_annotations',
+          ),
+          (
+            'nonempty annotations',
+            <String, Object?>{
+              'type': 'output_text',
+              'text': 'Text.',
+              'annotations': <Object?>[
+                <String, Object?>{
+                  'type': 'url_citation',
+                  'url': 'https://example.test',
+                },
+              ],
+            },
+            'unsupported_output_text_annotations',
+          ),
+        ]) {
+      test('rejects $name in completed output text', () async {
+        final _FakeServer server = await _FakeServer.start((request) async {
+          await request.drain<void>();
+          _sse(
+            request.response,
+            _outputDone(<String, Object?>{
+              'type': 'message',
+              'id': 'msg_annotations',
+              'role': 'assistant',
+              'status': 'completed',
+              'content': <Object?>[part],
+            }),
+          );
+          await request.response.close();
+        });
+        addTearDown(server.close);
+        final OpenAiModelProvider provider = OpenAiModelProvider(
+          apiKey: 'fake-openai-key',
+          endpoint: server.responsesUri,
+        );
+        addTearDown(provider.close);
+
+        final ModelProviderTerminal terminal =
+            (await provider.invoke(_request()).toList()).single.terminal!;
+
+        expect(
+          terminal.failure?.kind,
+          ModelProviderFailureKind.malformedResponse,
+        );
+        expect(terminal.failure?.providerCode, code);
+      });
+    }
+
     for (final (int status, ModelProviderFailureKind kind)
         in <(int, ModelProviderFailureKind)>[
           (400, ModelProviderFailureKind.invalidRequest),
@@ -432,6 +544,50 @@ void main() {
         expect(terminal.failure.toString(), isNot(contains('fake-openai-key')));
       });
     }
+
+    test('settles oversized HTTP error without waiting for EOF', () async {
+      var serverWrites = 0;
+      final _FakeServer server = await _FakeServer.start((request) async {
+        await request.drain<void>();
+        request.response.statusCode = HttpStatus.internalServerError;
+        request.response.write('x' * (17 * 1024));
+        await request.response.flush();
+        try {
+          while (true) {
+            request.response.write('x' * 1024);
+            await request.response.flush();
+            serverWrites++;
+            await Future<void>.delayed(const Duration(milliseconds: 20));
+          }
+        } on Object {
+          // Cancellation is the expected server-side settlement.
+        }
+      });
+      addTearDown(server.close);
+      final OpenAiModelProvider provider = OpenAiModelProvider(
+        apiKey: 'fake-openai-key',
+        endpoint: server.responsesUri,
+      );
+      addTearDown(provider.close);
+
+      final ModelProviderTerminal terminal =
+          (await provider
+                  .invoke(_request())
+                  .toList()
+                  .timeout(const Duration(seconds: 2)))
+              .single
+              .terminal!;
+
+      expect(terminal.failure?.kind, ModelProviderFailureKind.unavailable);
+      expect(
+        terminal.failure?.providerDetails['responseBodyTruncated'],
+        isTrue,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      final int writesAfterSettlement = serverWrites;
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(serverWrites, writesAfterSettlement);
+    });
 
     for (final (String name, Future<void> Function(HttpRequest) serve)
         in <(String, Future<void> Function(HttpRequest))>[

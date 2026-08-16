@@ -245,6 +245,19 @@ void main() {
         'arguments': '{"uri":"file:///tmp/adele-phase-iv.txt"}',
         'status': 'completed',
       });
+      expect(secondInput[2], <String, Object?>{
+        'type': 'message',
+        'role': 'assistant',
+        'content': <Object?>[
+          <String, Object?>{
+            'type': 'output_text',
+            'text': 'Inspecting the resource.',
+            'annotations': <Object?>[],
+          },
+        ],
+        'id': 'msg_1',
+        'status': 'completed',
+      });
       expect((secondInput[6]! as Map<String, Object?>)['call_id'], 'call_1');
       expect(
         (secondInput[6]! as Map<String, Object?>)['output'],

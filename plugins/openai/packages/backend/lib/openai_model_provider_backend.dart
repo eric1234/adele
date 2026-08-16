@@ -24,6 +24,13 @@ final class OpenAiModelProvider implements ModelProviderService {
         (_endpoint.scheme != 'http' && _endpoint.scheme != 'https')) {
       throw ArgumentError.value(endpoint, 'endpoint', 'Must be HTTP(S).');
     }
+    if (_endpoint.scheme == 'http' && !_isLoopbackHost(_endpoint.host)) {
+      throw ArgumentError.value(
+        endpoint,
+        'endpoint',
+        'Plaintext OpenAI endpoints must be loopback.',
+      );
+    }
   }
 
   final String _apiKey;
@@ -337,6 +344,8 @@ Map<String, Object?> _lowerInput(ModelProviderInput input) {
                     ? 'input_text'
                     : 'output_text',
                 'text': content.text,
+                if (message.role == ModelProviderMessageRole.assistant)
+                  'annotations': <Object?>[],
               },
             )
             .toList(growable: false),
@@ -599,6 +608,19 @@ final class _ResponsesNormalizer {
           }
           switch (part['type']) {
             case 'output_text':
+              final Object? annotations = part['annotations'];
+              if (annotations is! List<Object?>) {
+                throw const _OpenAiResponseException(
+                  'invalid_output_text_annotations',
+                  'OpenAI output text annotations were missing or malformed.',
+                );
+              }
+              if (annotations.isNotEmpty) {
+                throw const _OpenAiResponseException(
+                  'unsupported_output_text_annotations',
+                  'OpenAI output text annotations are not supported in B4.',
+                );
+              }
               text.write(_requiredString(part, 'text'));
             case 'refusal':
               refusal.write(_requiredString(part, 'refusal'));
@@ -856,24 +878,47 @@ final class _ResponsesNormalizer {
 
 Future<_BoundedBody> _readBoundedBody(HttpClientResponse response) async {
   final BytesBuilder bytes = BytesBuilder(copy: false);
-  var truncated = false;
-  await for (final List<int> chunk in response) {
-    final int remaining = _maximumErrorBodyBytes - bytes.length;
-    if (remaining <= 0) {
-      truncated = true;
-      continue;
-    }
-    if (chunk.length > remaining) {
-      bytes.add(chunk.take(remaining).toList(growable: false));
-      truncated = true;
-    } else {
-      bytes.add(chunk);
-    }
-  }
-  return _BoundedBody(
-    utf8.decode(bytes.takeBytes(), allowMalformed: true),
-    truncated,
+  late StreamSubscription<List<int>> subscription;
+  final Completer<_BoundedBody> result = Completer<_BoundedBody>();
+  subscription = response.listen(
+    (List<int> chunk) {
+      if (result.isCompleted) return;
+      final int remaining = _maximumErrorBodyBytes - bytes.length;
+      if (chunk.length <= remaining) {
+        bytes.add(chunk);
+        return;
+      }
+      if (remaining > 0) {
+        bytes.add(chunk.take(remaining).toList(growable: false));
+      }
+      result.complete(
+        _BoundedBody(
+          utf8.decode(bytes.takeBytes(), allowMalformed: true),
+          true,
+        ),
+      );
+      unawaited(subscription.cancel());
+    },
+    onError: result.completeError,
+    onDone: () {
+      if (!result.isCompleted) {
+        result.complete(
+          _BoundedBody(
+            utf8.decode(bytes.takeBytes(), allowMalformed: true),
+            false,
+          ),
+        );
+      }
+    },
+    cancelOnError: true,
   );
+  return result.future;
+}
+
+bool _isLoopbackHost(String host) {
+  if (host.toLowerCase() == 'localhost') return true;
+  final InternetAddress? address = InternetAddress.tryParse(host);
+  return address?.isLoopback ?? false;
 }
 
 _HttpFailure _classifyHttpFailure(
