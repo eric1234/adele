@@ -230,6 +230,10 @@ Future<void> main(List<String> arguments) async {
           'analyze',
           '--fatal-infos',
           'tools',
+        ]);
+        await _run('repository tool tests', 'dart', <String>[
+          'analyze',
+          '--fatal-infos',
           'test/tools',
         ]);
         for (final package in _packages) {
