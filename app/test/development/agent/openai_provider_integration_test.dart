@@ -194,6 +194,7 @@ void main() {
 
       expect(run.state, RunState.waiting);
       expect(outbound, hasLength(1));
+      expect(outbound.single['parallel_tool_calls'], isFalse);
       final ToolApprovalInterruption approval =
           run.interruptions.values.single as ToolApprovalInterruption;
       expect(approval.toolId, resourceInspectionToolId);
@@ -213,6 +214,7 @@ void main() {
       expect(tool.invocationCount, 1);
       expect(modelAdapter.invocationCount, 2);
       expect(outbound, hasLength(2));
+      expect(outbound[1]['parallel_tool_calls'], isFalse);
       expect(
         (session.snapshot().entries.last as AssistantSessionMessage).content,
         'The resource inspection is complete.',

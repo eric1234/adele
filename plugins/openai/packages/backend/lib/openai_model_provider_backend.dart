@@ -182,12 +182,21 @@ final class OpenAiModelProvider implements ModelProviderService {
               },
               onError: (Object error, StackTrace stackTrace) {
                 if (cancelled || settled) return;
-                fail(
-                  ModelProviderFailureKind.transport,
-                  'stream_transport',
-                  'The OpenAI response stream failed.',
-                  requestId: requestId,
-                );
+                if (error is FormatException) {
+                  fail(
+                    ModelProviderFailureKind.malformedResponse,
+                    'invalid_utf8',
+                    'The OpenAI response stream was not valid UTF-8.',
+                    requestId: requestId,
+                  );
+                } else {
+                  fail(
+                    ModelProviderFailureKind.transport,
+                    'stream_transport',
+                    'The OpenAI response stream failed.',
+                    requestId: requestId,
+                  );
+                }
               },
               onDone: () {
                 if (cancelled || settled) return;
@@ -303,6 +312,7 @@ Map<String, Object?> _lowerRequest(ModelProviderRequest request) {
       ModelProviderToolChoice.auto => 'auto',
       ModelProviderToolChoice.none => 'none',
     },
+    'parallel_tool_calls': false,
     if (request.maxOutputTokens != null)
       'max_output_tokens': request.maxOutputTokens,
     'include': <String>['reasoning.encrypted_content'],
@@ -614,7 +624,7 @@ final class _ResponsesNormalizer {
             'A completed OpenAI message had no output.',
           );
         }
-        sawRefusal = refusal.isNotEmpty;
+        sawRefusal = sawRefusal || refusal.isNotEmpty;
         final String? phase = _optionalString(item['phase']);
         emit(
           _outputEvent(

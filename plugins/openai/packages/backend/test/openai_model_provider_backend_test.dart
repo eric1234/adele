@@ -62,6 +62,7 @@ void main() {
       expect(captured['stream'], isTrue);
       expect(captured['max_output_tokens'], 42);
       expect(captured['tool_choice'], 'auto');
+      expect(captured['parallel_tool_calls'], isFalse);
       expect(captured['include'], <Object?>['reasoning.encrypted_content']);
       expect(captured['tools'], <Object?>[
         <String, Object?>{
@@ -328,6 +329,64 @@ void main() {
           (await provider.invoke(_request()).toList()).single.terminal!;
       expect(other.incompleteReason, ModelProviderIncompleteReason.other);
       expect(other.providerStopReason, 'content_filter');
+    });
+
+    test('keeps refusal sticky across later assistant output', () async {
+      final _FakeServer server = await _FakeServer.start((request) async {
+        await request.drain<void>();
+        _sse(request.response, _outputDone(_refusal('msg_refuse', 'No.')));
+        _sse(
+          request.response,
+          _outputDone(_message('msg_text', 'Explanation.')),
+        );
+        _sse(request.response, _completed('resp_refuse'));
+        await request.response.close();
+      });
+      addTearDown(server.close);
+      final OpenAiModelProvider provider = OpenAiModelProvider(
+        apiKey: 'fake-openai-key',
+        endpoint: server.responsesUri,
+      );
+      addTearDown(provider.close);
+
+      final List<ModelProviderEvent> events = await provider
+          .invoke(_request())
+          .toList();
+
+      expect(
+        events.map((event) => event.output?.text).whereType<String>(),
+        <String>['No.', 'Explanation.'],
+      );
+      expect(events.last.terminal?.settlement, ModelProviderSettlement.refused);
+    });
+
+    test('classifies invalid UTF-8 as malformed response', () async {
+      final _FakeServer server = await _FakeServer.start((request) async {
+        await request.drain<void>();
+        request.response.statusCode = HttpStatus.ok;
+        request.response.headers.contentType = ContentType(
+          'text',
+          'event-stream',
+          charset: 'utf-8',
+        );
+        request.response.add(<int>[0xc3, 0x28]);
+        await request.response.close();
+      });
+      addTearDown(server.close);
+      final OpenAiModelProvider provider = OpenAiModelProvider(
+        apiKey: 'fake-openai-key',
+        endpoint: server.responsesUri,
+      );
+      addTearDown(provider.close);
+
+      final ModelProviderTerminal terminal =
+          (await provider.invoke(_request()).toList()).single.terminal!;
+
+      expect(
+        terminal.failure?.kind,
+        ModelProviderFailureKind.malformedResponse,
+      );
+      expect(terminal.failure?.providerCode, 'invalid_utf8');
     });
 
     for (final (int status, ModelProviderFailureKind kind)
