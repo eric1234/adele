@@ -119,7 +119,11 @@ void main() {
               configurationContext: connection.defaultConfigurationContext,
             ),
             PluginCapabilityExposure(
-              provider: _provider(capability, contextASecondId.value),
+              provider: _provider(
+                capability,
+                contextASecondId.value,
+                serviceId: 'resourceSummarizer',
+              ),
               configurationContext: connection.defaultConfigurationContext,
             ),
             PluginCapabilityExposure(
@@ -132,6 +136,7 @@ void main() {
         );
     final Map<String, Object?> semanticPayload = <String, Object?>{
       'configurationContext': 'configuration-b',
+      'serviceId': 'spoofedService',
       'value': 'same semantic request',
     };
     final ProviderBinding contextAFirst = registry.resolve(
@@ -163,14 +168,13 @@ void main() {
     expect(secondResult, isA<Map<String, Object?>>());
     expect(contextBResult, isA<Map<String, Object?>>());
     final Map<String, Object?> firstMap = firstResult! as Map<String, Object?>;
-    final Map<String, Object?> secondMap = secondResult!
-        as Map<String, Object?>;
-    final Map<String, Object?> contextBMap = contextBResult!
-        as Map<String, Object?>;
-    expect(
-      firstMap['configurationContext'],
-      secondMap['configurationContext'],
-    );
+    final Map<String, Object?> secondMap =
+        secondResult! as Map<String, Object?>;
+    final Map<String, Object?> contextBMap =
+        contextBResult! as Map<String, Object?>;
+    expect(firstMap['configurationContext'], secondMap['configurationContext']);
+    expect(firstMap['serviceId'], 'resourceInspector');
+    expect(secondMap['serviceId'], 'resourceSummarizer');
     expect(
       firstMap['configurationContext'],
       isNot(contextBMap['configurationContext']),
@@ -201,7 +205,10 @@ void main() {
     );
 
     expect(
-      () => second.channelFor(first.defaultConfigurationContext),
+      () => second.channelFor(
+        first.defaultConfigurationContext,
+        'resourceInspector',
+      ),
       throwsArgumentError,
     );
 
@@ -254,12 +261,13 @@ ProviderDescriptor _provider(
   CapabilityKey capability,
   String id, {
   String pluginId = 'dev.adele.provider',
+  String serviceId = 'resourceInspector',
 }) => ProviderDescriptor(
   id: ProviderId(id),
   capability: capability,
   pluginId: pluginId,
   displayName: id,
-  serviceId: 'resourceInspector',
+  serviceId: serviceId,
 );
 
 final class _FakeHost {
@@ -291,14 +299,14 @@ void main() {
         ${failOnRequest
           ? "stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginFailed', 'pluginId': message['pluginId'], 'requestIds': [message['requestId']], 'error': {'code': 'plugin_exited', 'message': 'failed'}}));"
           : contextEcho
-          ? "stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'response', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'ok': true, 'payload': {'configurationContext': message['configurationContext'], 'payload': message['payload']}}));"
+          ? "stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'response', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'ok': true, 'payload': {'configurationContext': message['configurationContext'], 'serviceId': message['serviceId'], 'payload': message['payload']}}));"
           : "stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'response', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'ok': true, 'payload': {}}));"}
       } else if (message['kind'] == 'streamOpen') {
         streams[message['requestId'] as int] = message;
       } else if (message['kind'] == 'streamCredit') {
         final open = streams.remove(message['requestId']);
         if (open != null) {
-          stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamItem', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'payload': {'configurationContext': open['configurationContext'], 'payload': open['payload']}}));
+          stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamItem', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'payload': {'configurationContext': open['configurationContext'], 'serviceId': open['serviceId'], 'payload': open['payload']}}));
           stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamDone', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
         }
       } else if (message['kind'] == 'shutdownHost') {

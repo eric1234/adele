@@ -2,10 +2,10 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
 
+import 'package:adele_contract/adele_contract.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 const Duration _pluginLifecycleTimeout = Duration(seconds: 2);
-const int _configurationContextProtocolVersion = 1;
 
 typedef BackendHostSend = bool Function(Map<String, Object?> message);
 typedef BackendHostDiagnostic = void Function(String message);
@@ -297,8 +297,8 @@ final class _PluginIsolate {
       ]).timeout(const Duration(seconds: 5));
       if (ready is! Map ||
           ready['commandPort'] is! SendPort ||
-          ready['configurationContextProtocolVersion'] !=
-              _configurationContextProtocolVersion) {
+          ready['pluginBackendProtocolVersion'] !=
+              adelePluginBackendProtocolVersion) {
         throw StateError('Invalid plugin handshake: $ready');
       }
       final _PluginIsolate plugin = _PluginIsolate._(
@@ -339,6 +339,7 @@ final class _PluginIsolate {
       message,
       'configurationContext',
     );
+    final String serviceId = _requireString(message, 'serviceId');
     final Object? payload = message['payload'];
     if (payload is! Map) {
       throw const FormatException('Request payload must be a map.');
@@ -349,6 +350,7 @@ final class _PluginIsolate {
       'kind': 'request',
       'requestId': pluginRequestId,
       'configurationContext': configurationContext,
+      'serviceId': serviceId,
       'method': method,
       'payload': payload,
     });
@@ -378,6 +380,7 @@ final class _PluginIsolate {
       message,
       'configurationContext',
     );
+    final String serviceId = _requireString(message, 'serviceId');
     final Object? payload = message['payload'];
     if (payload is! Map) {
       throw const FormatException('Request payload must be a map.');
@@ -395,6 +398,7 @@ final class _PluginIsolate {
       'kind': 'streamOpen',
       'requestId': pluginRequestId,
       'configurationContext': configurationContext,
+      'serviceId': serviceId,
       'method': method,
       'payload': payload,
     });

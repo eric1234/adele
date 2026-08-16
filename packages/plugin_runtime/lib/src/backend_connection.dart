@@ -5,6 +5,8 @@ import 'package:adele_contract/adele_contract.dart';
 
 import 'backend_host_protocol.dart';
 
+const String _rawPluginServiceId = 'plugin';
+
 typedef PluginDiagnosticSink = void Function(String message);
 
 final class PluginRemoteFailure implements AdeleRemoteFailure {
@@ -278,6 +280,7 @@ final class PluginBackendHost {
   Future<Object?> _request(
     PluginBackendConnection owner,
     String configurationContext,
+    String serviceId,
     String method,
     Map<String, Object?> payload,
   ) async {
@@ -292,6 +295,7 @@ final class PluginBackendHost {
       pluginId: pluginId,
       fields: <String, Object?>{
         'configurationContext': configurationContext,
+        'serviceId': serviceId,
         'method': method,
         'payload': payload,
       },
@@ -303,6 +307,7 @@ final class PluginBackendHost {
   Stream<Object?> _stream(
     PluginBackendConnection owner,
     String configurationContext,
+    String serviceId,
     String method,
     Map<String, Object?> payload,
   ) {
@@ -343,6 +348,7 @@ final class PluginBackendHost {
             'requestId': id,
             'pluginId': pluginId,
             'configurationContext': configurationContext,
+            'serviceId': serviceId,
             'method': method,
             'payload': payload,
           });
@@ -832,6 +838,7 @@ final class PluginBackendConnection implements AdeleStreamChannel {
     return _host._request(
       this,
       defaultConfigurationContext._wireValue,
+      _rawPluginServiceId,
       method,
       payload,
     );
@@ -847,6 +854,7 @@ final class PluginBackendConnection implements AdeleStreamChannel {
     return _host._stream(
       this,
       defaultConfigurationContext._wireValue,
+      _rawPluginServiceId,
       method,
       payload,
     );
@@ -861,7 +869,10 @@ final class PluginBackendConnection implements AdeleStreamChannel {
     return ConfigurationContextId._(this, opaqueId);
   }
 
-  AdeleStreamChannel channelFor(ConfigurationContextId context) {
+  AdeleStreamChannel channelFor(
+    ConfigurationContextId context,
+    String serviceId,
+  ) {
     if (!identical(context._owner, this)) {
       throw ArgumentError.value(
         context,
@@ -869,7 +880,10 @@ final class PluginBackendConnection implements AdeleStreamChannel {
         'Configuration context belongs to another plugin generation.',
       );
     }
-    return _ConfigurationContextChannel(this, context._wireValue);
+    if (serviceId.isEmpty) {
+      throw ArgumentError.value(serviceId, 'serviceId', 'Service ID is empty.');
+    }
+    return _ConfigurationContextChannel(this, context._wireValue, serviceId);
   }
 
   Future<void> close() {
@@ -887,16 +901,19 @@ final class _ConfigurationContextChannel implements AdeleStreamChannel {
   const _ConfigurationContextChannel(
     this._connection,
     this._configurationContext,
+    this._serviceId,
   );
 
   final PluginBackendConnection _connection;
   final String _configurationContext;
+  final String _serviceId;
 
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) =>
       _connection._host._request(
         _connection,
         _configurationContext,
+        _serviceId,
         method,
         payload,
       );
@@ -906,6 +923,7 @@ final class _ConfigurationContextChannel implements AdeleStreamChannel {
       _connection._host._stream(
         _connection,
         _configurationContext,
+        _serviceId,
         method,
         payload,
       );

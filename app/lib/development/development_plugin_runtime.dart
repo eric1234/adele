@@ -160,7 +160,12 @@ final class DevelopmentPluginRuntime {
       );
       await _startCapabilityExample(hostBuild.artifact.parent);
       final WorkspaceDemoEvalBridge bridge = WorkspaceDemoEvalBridge(
-        service: WorkspaceDemoServiceClient(_connection!),
+        service: WorkspaceDemoServiceClient(
+          _connection!.channelFor(
+            _connection!.defaultConfigurationContext,
+            workspaceDemoServiceId,
+          ),
+        ),
         developmentRoot: ResourceRef(
           uri: configuration.developmentDirectory.uri,
         ),

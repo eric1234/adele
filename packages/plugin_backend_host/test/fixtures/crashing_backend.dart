@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:isolate';
 
+import 'package:adele_contract/adele_contract.dart';
+
 Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   final Map<Object?, Object?> bootstrap =
       bootstrapMessage! as Map<Object?, Object?>;
@@ -16,8 +18,8 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   bootstrapPort.send(<String, Object?>{
     'kind': 'ready',
     'commandPort': commands.sendPort,
-    if (arguments.single != 'legacy-handshake')
-      'configurationContextProtocolVersion': 1,
+    if (arguments.single != 'incompatible-handshake')
+      'pluginBackendProtocolVersion': adelePluginBackendProtocolVersion,
   });
   if (arguments.single == 'exit-immediately') {
     await Future<void>.delayed(const Duration(milliseconds: 100));

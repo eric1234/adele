@@ -37,14 +37,16 @@ share one context, and one plugin generation may host several contexts.
 Capability registration explicitly associates each `ProviderDescriptor` with
 one `ConfigurationContextId` through `PluginCapabilityExposure`. The resulting
 endpoint owns a channel scoped to the exact plugin connection generation and
-context. Generated clients still call only `request(method, payload)` or
-`stream(method, payload)`; the concrete channel adds `configurationContext` to
-the request or stream-open envelope.
+context plus the descriptor's exact `serviceId`. Generated clients still call
+only `request(method, payload)` or `stream(method, payload)`; the concrete
+channel adds `configurationContext` and `serviceId` to the request or
+stream-open envelope.
 
-The backend host requires and forwards the context beside method and payload.
+The backend host requires and forwards context and service identity beside
+method and payload.
 The plugin-side `AdeleConfigurationContextRouter` validates the context,
-selects the configuration-scoped service by generated service/method identity,
-removes transport metadata, and
+selects the dispatcher by exact `(configurationContext, serviceId)`, removes
+transport metadata, and
 then delegates the original generated command shape to a generated dispatcher.
 Generated contracts and dispatchers remain configuration-unaware. Missing,
 malformed, and unknown contexts fail closed. Semantic payload cannot select or
@@ -63,14 +65,13 @@ absence of context. Plugin lifecycle and host-control operations remain scoped
 to the plugin generation and do not require a capability configuration
 context.
 
-Backend-host protocol version 3 makes the context mandatory for capability
-request and stream-open frames. Version 2 is not forward compatible: a v2
-component could omit or discard the context and silently execute against the
-wrong configured state. Runtime and backend-host artifacts therefore continue
-to fail startup on version mismatch and must be deployed atomically.
-Plugin isolate startup also acknowledges context-aware command handling before
-the host publishes the generation as ready, so an older plugin artifact cannot
-silently ignore the new metadata.
+The initial backend-host framed protocol, version 1, makes context and service
+identity mandatory for capability request and stream-open frames. Runtime and
+backend-host artifacts fail startup on version mismatch and must be deployed
+atomically. Plugin isolate startup separately acknowledges the initial generic
+plugin-backend command protocol before the host publishes the generation as
+ready, so an incompatible plugin artifact cannot silently ignore required
+metadata.
 
 ## Consequences
 

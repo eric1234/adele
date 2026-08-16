@@ -9,6 +9,7 @@ environment:
 resolution: workspace
 
 dependencies:
+  adele_contract: ^0.1.0
   plugin_runtime: ^0.1.0
 
 dev_dependencies:

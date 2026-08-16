@@ -286,7 +286,10 @@ Future<_Activation> _startProvider({
   final CapabilityRegistration registration = registry.register(
     provider: descriptor,
     endpoint: AdeleRequestChannelEndpoint(
-      channel: connection,
+      channel: connection.channelFor(
+        connection.defaultConfigurationContext,
+        descriptor.serviceId,
+      ),
       serviceId: descriptor.serviceId,
       isAvailable: () => !connection.isClosed,
     ),

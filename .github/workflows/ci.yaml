@@ -12,6 +12,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install pinned Flutter toolchain
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.38.10
+          cache: true
+
+      - name: Check formatting
+        run: dart tools/adele.dart format --check
+
   verify:
     runs-on: ubuntu-latest
     steps:
@@ -38,9 +54,6 @@ jobs:
 
       - name: Check generated contracts
         run: dart tools/adele.dart generate --check
-
-      - name: Check formatting
-        run: dart tools/adele.dart format --check
 
       - name: Analyze packages
         run: dart tools/adele.dart analyze

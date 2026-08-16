@@ -37,7 +37,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   bootstrapPort.send(<String, Object?>{
     'kind': 'ready',
     'commandPort': commands.sendPort,
-    'configurationContextProtocolVersion': 1,
+    'pluginBackendProtocolVersion': adelePluginBackendProtocolVersion,
   });
 
   await for (final Object? message in commands) {

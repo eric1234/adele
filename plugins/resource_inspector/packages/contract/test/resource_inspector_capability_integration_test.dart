@@ -157,10 +157,14 @@ void main() {
         'Alternate Inspector',
       );
       await expectLater(
-        basic.request(
-          resourceInspectorServiceInspectId,
-          const <String, Object?>{'resource': 'malformed'},
-        ),
+        basic
+            .channelFor(
+              basic.defaultConfigurationContext,
+              resourceInspectorServiceId,
+            )
+            .request(resourceInspectorServiceInspectId, const <String, Object?>{
+              'resource': 'malformed',
+            }),
         throwsA(
           isA<PluginRemoteFailure>().having(
             (PluginRemoteFailure value) => value.code,

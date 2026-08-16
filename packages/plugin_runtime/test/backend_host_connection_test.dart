@@ -6,12 +6,12 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:test/test.dart';
 
 void main() {
-  test('rejects protocol v2 before plugin activation', () async {
+  test('rejects mismatched protocol before plugin activation', () async {
     final _FakeHost fake = _FakeHost.create('''
 import 'dart:io';
 import 'package:plugin_runtime/plugin_runtime.dart';
 void main() {
-  stdout.add(encodeBackendHostFrame({'protocolVersion': 2, 'kind': 'hostHello'}));
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion + 1, 'kind': 'hostHello'}));
   stdin.listen((_) {});
 }
 ''');

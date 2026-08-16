@@ -34,15 +34,14 @@ terminal classification, cancellation, and idempotent shutdown. Entrypoints
 supply command maps and a send callback without owning stream identifiers or
 subscriptions.
 
-Backend-host protocol version 2 extends the existing framed JSON and isolate
-protocol with stream open, item, done, failure, credit, cancel, and cancellation
+The initial backend-host framed protocol, version 1, includes unary request and
+response plus stream open, item, done, failure, credit, cancel, and cancellation
 acknowledgement messages. Correlation identifiers remain runtime-local and are
-removed exactly once. Unary framing remains intact.
+removed exactly once.
 
-Protocol v2 is an atomic runtime/backend-host artifact boundary. Startup rejects
-a mismatched host before any plugin activation; deployments and rollbacks must
-replace both artifacts together. Version 1 negotiation is not retained because
-it cannot provide the required stream lifecycle semantics.
+The protocol is an atomic runtime/backend-host artifact boundary. Startup
+rejects a mismatched host before any plugin activation; deployments and
+rollbacks must replace both artifacts together.
 
 Flow control uses a fixed one-item window. Runtime state explicitly tracks the
 single outstanding credit. Pause stops replacement credit; resume grants only a

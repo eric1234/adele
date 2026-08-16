@@ -46,7 +46,7 @@ void main() {
     );
   });
 
-  test('rejects plugin without configuration-context handshake', () async {
+  test('rejects plugin with incompatible backend handshake', () async {
     final PluginBackendHost host = await PluginBackendHost.start(
       dartaotruntimeExecutable: dartaotruntime,
       hostArtifactPath: hostArtifact.path,
@@ -57,9 +57,9 @@ void main() {
 
     await expectLater(
       host.startPlugin(
-        pluginId: 'legacy-context-plugin',
+        pluginId: 'incompatible-backend-plugin',
         artifactUri: pluginArtifact.uri,
-        arguments: const <String>['legacy-handshake'],
+        arguments: const <String>['incompatible-handshake'],
       ),
       throwsA(
         isA<PluginRemoteFailure>().having(
@@ -819,6 +819,7 @@ void main() {
         'requestId': 2,
         'pluginId': 'invalid-credit',
         'configurationContext': 'default',
+        'serviceId': 'fixture',
         'method': 'long',
         'payload': <String, Object?>{},
       });
@@ -850,6 +851,7 @@ void main() {
         'requestId': 3,
         'pluginId': 'invalid-credit',
         'configurationContext': 'default',
+        'serviceId': 'fixture',
         'method': 'stream-cancel-count',
         'payload': <String, Object?>{},
       });
@@ -919,6 +921,7 @@ void main() {
         'requestId': 3,
         'pluginId': 'double-send-failure',
         'configurationContext': 'default',
+        'serviceId': 'fixture',
         'method': 'stream-large-terminal',
         'payload': <String, Object?>{},
       });
@@ -943,6 +946,7 @@ void main() {
         'requestId': 4,
         'pluginId': 'healthy-peer',
         'configurationContext': 'default',
+        'serviceId': 'fixture',
         'method': 'ping',
         'payload': <String, Object?>{},
       });
@@ -1032,6 +1036,7 @@ void main() {
       'requestId': 31,
       'pluginId': 'cancel-forwarding',
       'configurationContext': 'default',
+      'serviceId': 'fixture',
       'method': 'long',
       'payload': <String, Object?>{},
     });
@@ -1055,6 +1060,7 @@ void main() {
       'requestId': 32,
       'pluginId': 'cancel-forwarding',
       'configurationContext': 'default',
+      'serviceId': 'fixture',
       'method': 'stream-cancel-count',
       'payload': <String, Object?>{},
     });
@@ -1095,6 +1101,7 @@ void main() {
         'requestId': 41,
         'pluginId': 'ingress-cancel',
         'configurationContext': 'default',
+        'serviceId': 'fixture',
         'method': 'stream-malformed',
         'payload': <String, Object?>{},
       });
@@ -1176,6 +1183,7 @@ void main() {
       'requestId': 51,
       'pluginId': 'pre-admission-cancel',
       'configurationContext': 'default',
+      'serviceId': 'fixture',
       'method': 'stream-malformed',
       'payload': <String, Object?>{},
     });
@@ -1214,6 +1222,7 @@ void main() {
       'requestId': 52,
       'pluginId': 'pre-admission-cancel',
       'configurationContext': 'default',
+      'serviceId': 'fixture',
       'method': 'stream-cancel-count',
       'payload': <String, Object?>{},
     });
@@ -1223,6 +1232,7 @@ void main() {
       'requestId': 53,
       'pluginId': 'pre-admission-cancel',
       'configurationContext': 'default',
+      'serviceId': 'fixture',
       'method': 'ping',
       'payload': <String, Object?>{},
     });
@@ -1273,6 +1283,7 @@ void main() {
       'requestId': 61,
       'pluginId': 'discard-cancel',
       'configurationContext': 'default',
+      'serviceId': 'fixture',
       'method': 'stream-malformed',
       'payload': <String, Object?>{},
     });

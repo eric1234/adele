@@ -78,7 +78,10 @@ final class PluginCapabilityActivation {
           registry.register(
             provider: provider,
             endpoint: AdeleRequestChannelEndpoint(
-              channel: connection.channelFor(exposure.configurationContext),
+              channel: connection.channelFor(
+                exposure.configurationContext,
+                provider.serviceId,
+              ),
               serviceId: provider.serviceId,
               isAvailable: () => !connection.isClosed,
             ),

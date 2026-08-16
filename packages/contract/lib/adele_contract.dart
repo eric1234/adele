@@ -6,6 +6,7 @@ import 'dart:async';
 import 'dart:collection';
 
 const int _adeleJsonMaxDepth = 64;
+const int adelePluginBackendProtocolVersion = 1;
 
 Map<String, Object?> adeleSnapshotJsonMap(Map<String, Object?> source) =>
     _adeleSnapshotJsonValue(source, 0, HashSet<Object>.identity())!
@@ -186,19 +187,8 @@ final class AdeleConfigurationContextRouter {
         );
         return Future<void>.value();
       }
-      final Object? method = command['method'];
-      String? selectedServiceId;
-      if (method is String) {
-        for (final MapEntry<String, AdeleBackendDispatcher> service
-            in services.entries) {
-          if (method.startsWith('${service.key}.') &&
-              (selectedServiceId == null ||
-                  service.key.length > selectedServiceId.length)) {
-            selectedServiceId = service.key;
-            dispatcher = service.value;
-          }
-        }
-      }
+      final Object? serviceId = command['serviceId'];
+      dispatcher = serviceId is String ? services[serviceId] : null;
       if (dispatcher == null) {
         _reject(
           kind,
@@ -219,9 +209,10 @@ final class AdeleConfigurationContextRouter {
       return Future<void>.value();
     }
 
-    final Map<Object?, Object?> generatedCommand = Map<Object?, Object?>.of(
-      command,
-    )..remove('configurationContext');
+    final Map<Object?, Object?> generatedCommand =
+        Map<Object?, Object?>.of(command)
+          ..remove('configurationContext')
+          ..remove('serviceId');
     bool terminalSent = false;
     void containFailure(Object _) {
       if (!terminalSent) _dispatchFailure(kind, requestId, send);

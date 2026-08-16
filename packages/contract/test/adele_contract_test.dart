@@ -178,6 +178,7 @@ void main() {
         'kind': 'request',
         'requestId': 1,
         'configurationContext': 'a',
+        'serviceId': 'fixture',
         'method': 'fixture.invoke',
         'payload': <String, Object?>{'configurationContext': 'b'},
       }, events.add);
@@ -185,6 +186,15 @@ void main() {
         'kind': 'request',
         'requestId': 4,
         'configurationContext': 'a',
+        'serviceId': 'fixture',
+        'method': 'other.invoke',
+        'payload': <String, Object?>{},
+      }, events.add);
+      await router.handle(<Object?, Object?>{
+        'kind': 'request',
+        'requestId': 5,
+        'configurationContext': 'a',
+        'serviceId': 'other',
         'method': 'other.invoke',
         'payload': <String, Object?>{},
       }, events.add);
@@ -192,6 +202,7 @@ void main() {
         'kind': 'streamOpen',
         'requestId': 2,
         'configurationContext': 'a',
+        'serviceId': 'fixture',
         'method': 'fixture.watch',
         'payload': <String, Object?>{},
       }, events.add);
@@ -199,6 +210,7 @@ void main() {
         'kind': 'streamOpen',
         'requestId': 3,
         'configurationContext': 'b',
+        'serviceId': 'fixture',
         'method': 'fixture.watch',
         'payload': <String, Object?>{},
       }, events.add);
@@ -213,14 +225,16 @@ void main() {
       }, events.add);
 
       expect(events.first['payload'], 'context-a');
-      expect(contextA.commands, hasLength(3));
+      expect(contextA.commands, hasLength(4));
       expect(contextB.commands, hasLength(2));
       expect(otherService.commands, hasLength(1));
-      expect(events[1]['payload'], 'other');
+      expect(events[1]['payload'], 'context-a');
+      expect(events[2]['payload'], 'other');
       expect(
         contextA.commands.every(
           (Map<Object?, Object?> command) =>
-              !command.containsKey('configurationContext'),
+              !command.containsKey('configurationContext') &&
+              !command.containsKey('serviceId'),
         ),
         isTrue,
       );
@@ -242,6 +256,7 @@ void main() {
     await router.handle(<Object?, Object?>{
       'kind': 'request',
       'requestId': 1,
+      'serviceId': 'fixture',
       'method': 'fixture.invoke',
       'payload': <String, Object?>{},
     }, events.add);
@@ -249,6 +264,7 @@ void main() {
       'kind': 'streamOpen',
       'requestId': 2,
       'configurationContext': 'unknown',
+      'serviceId': 'fixture',
       'method': 'fixture.watch',
       'payload': <String, Object?>{},
     }, events.add);
@@ -256,6 +272,7 @@ void main() {
       'kind': 'request',
       'requestId': 3,
       'configurationContext': 7,
+      'serviceId': 'fixture',
       'method': 'fixture.invoke',
       'payload': <String, Object?>{},
     }, events.add);
@@ -293,6 +310,7 @@ void main() {
         'kind': 'streamOpen',
         'requestId': 1,
         'configurationContext': 'default',
+        'serviceId': 'fixture',
         'method': 'fixture.watch',
         'payload': <String, Object?>{},
       }, events.add);
@@ -325,6 +343,7 @@ void main() {
       'kind': 'streamOpen',
       'requestId': 1,
       'configurationContext': 'default',
+      'serviceId': 'fixture',
       'method': 'fixture.watch',
       'payload': <String, Object?>{},
     }, events.add);
@@ -357,6 +376,7 @@ void main() {
         'kind': 'streamOpen',
         'requestId': 1,
         'configurationContext': 'default',
+        'serviceId': 'fixture',
         'method': 'fixture.watch',
         'payload': <String, Object?>{},
       },

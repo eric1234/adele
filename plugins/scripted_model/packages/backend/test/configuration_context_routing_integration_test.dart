@@ -126,7 +126,10 @@ void main() {
         pluginId: _pluginId,
         artifactUri: pluginArtifact.uri,
       );
-      expect(() => generationB.channelFor(contextA), throwsArgumentError);
+      expect(
+        () => generationB.channelFor(contextA, scriptedModelFixtureServiceId),
+        throwsArgumentError,
+      );
       final PluginCapabilityActivation activationB = await _register(
         generationB,
         registry,

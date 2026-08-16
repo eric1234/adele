@@ -42,7 +42,12 @@ void main() {
         artifactUri: pluginArtifact.uri,
       );
       final ScriptedModelFixtureServiceClient clientA =
-          ScriptedModelFixtureServiceClient(generationA);
+          ScriptedModelFixtureServiceClient(
+            generationA.channelFor(
+              generationA.defaultConfigurationContext,
+              scriptedModelFixtureServiceId,
+            ),
+          );
       final List<ScriptedModelStreamItem> ordinary = await clientA
           .invokeStream(_ordinaryRequest())
           .toList();
@@ -114,7 +119,10 @@ void main() {
       );
       final List<ScriptedModelStreamItem> fresh =
           await ScriptedModelFixtureServiceClient(
-            generationB,
+            generationB.channelFor(
+              generationB.defaultConfigurationContext,
+              scriptedModelFixtureServiceId,
+            ),
           ).invokeStream(_ordinaryRequest()).toList();
       expect(fresh, hasLength(2));
       await generationA.close();

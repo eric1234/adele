@@ -113,7 +113,8 @@ This keeps stale transport failure local to the plugin and ahead of compilation.
 
 Server-streaming uses the existing shared backend-host path. Generated clients
 open lazily and decode ordered typed items. Generated dispatchers hide producer
-iteration, cancellation, and terminal failure mapping. Protocol v3 uses a fixed
+iteration, cancellation, and terminal failure mapping. The initial protocol,
+version 1, uses a fixed
 one-item credit window, so paused consumers stop producer advancement after the
 already-granted item and cancellation reaches the producer iterator. Streams
 remain bound to their exact provider generation and fail rather than migrating
@@ -187,10 +188,11 @@ overrides.
 
 Active capability endpoints are bound to one opaque, generation-specific
 configuration context. Several provider descriptors and services may share one
-context, while one plugin generation may host several contexts. The context is
-transport metadata supplied by the scoped endpoint channel, not semantic
-contract data or provider identity. Request and stream-open carry it separately
-from generated method payloads; later stream control remains request-ID based.
+context, while one plugin generation may host several contexts. Context and
+the endpoint's exact service ID are transport metadata supplied by the scoped
+endpoint channel, not semantic contract data or provider identity. Request and
+stream-open carry them separately from generated method payloads; later stream
+control remains request-ID based.
 
 Provider-instance persistence, account and credential management, discovery,
 selection, and profile-aware routing are not implemented in Phase 0.
