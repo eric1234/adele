@@ -89,7 +89,7 @@ void main() {
   group('--jobs', () {
     test('uses a processor-bounded default', () {
       expect(parseTestJobs(const <String>[], numberOfProcessors: 2), 2);
-      expect(parseTestJobs(const <String>[], numberOfProcessors: 32), 4);
+      expect(parseTestJobs(const <String>[], numberOfProcessors: 32), 2);
       expect(parseTestJobs(const <String>[], numberOfProcessors: 0), 1);
     });
 

@@ -57,7 +57,7 @@ dart tools/adele.dart run linux     # use macos or windows on those hosts
 dart tools/adele.dart format
 dart tools/adele.dart generate
 dart tools/adele.dart analyze
-dart tools/adele.dart test --jobs 4
+dart tools/adele.dart test --jobs 2
 dart tools/adele.dart check
 dart tools/adele.dart build linux
 ```

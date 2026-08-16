@@ -3,7 +3,7 @@ import 'dart:math' as math;
 
 import 'test_runner.dart';
 
-const int _maximumDefaultTestJobs = 4;
+const int _maximumDefaultTestJobs = 2;
 
 const List<TestTarget> testTargets = <TestTarget>[
   TestTarget(
@@ -497,7 +497,7 @@ Commands:
   format [--check]   Format or verify formatting for all Dart files.
   generate [--check] Generate or verify committed contract transport files.
   analyze            Analyze every package and identify failures.
-  test [--jobs N]    Run tests with at most N package processes (default: up to 4).
+  test [--jobs N]    Run tests with at most N package processes (default: up to 2).
   check              Verify formatting, analysis, and tests.
   run [device] [--debug|--profile|--release]
                      Run the desktop app in an explicit mode.
