@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:isolate';
 
+import 'package:adele_contract/adele_contract.dart';
 import 'package:scripted_model_backend/scripted_model_backend.dart';
 import 'package:scripted_model_contract/scripted_model_contract.dart';
 
@@ -13,17 +14,29 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   if (bootstrapPort is! SendPort || responsePort is! SendPort) {
     throw ArgumentError.value(bootstrapMessage, 'bootstrapMessage');
   }
+  final Object? defaultConfigurationContext =
+      bootstrapMessage['defaultConfigurationContext'];
+  if (defaultConfigurationContext is! String) {
+    throw ArgumentError.value(bootstrapMessage, 'bootstrapMessage');
+  }
   final ReceivePort requests = ReceivePort();
   final ScriptedModelFixtureServiceDispatcher dispatcher =
       ScriptedModelFixtureServiceDispatcher(ScriptedModelProvider());
+  final AdeleConfigurationContextRouter router =
+      AdeleConfigurationContextRouter.single(
+        configurationContext: defaultConfigurationContext,
+        serviceId: scriptedModelFixtureServiceId,
+        dispatcher: dispatcher,
+      );
   bootstrapPort.send(<String, Object?>{
     'kind': 'ready',
     'commandPort': requests.sendPort,
+    'pluginBackendProtocolVersion': adelePluginBackendProtocolVersion,
   });
   await for (final Object? request in requests) {
     if (request is! Map) continue;
     if (request['method'] == 'shutdown' && request['requestId'] is int) {
-      await dispatcher.close();
+      await router.close();
       responsePort.send(<String, Object?>{
         'kind': 'response',
         'requestId': request['requestId'],
@@ -33,6 +46,6 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       requests.close();
       continue;
     }
-    unawaited(dispatcher.handle(request, responsePort.send));
+    unawaited(router.handle(request, responsePort.send));
   }
 }

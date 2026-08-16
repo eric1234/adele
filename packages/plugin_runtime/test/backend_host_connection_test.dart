@@ -6,6 +6,28 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('rejects mismatched protocol before plugin activation', () async {
+    final _FakeHost fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion + 1, 'kind': 'hostHello'}));
+  stdin.listen((_) {});
+}
+''');
+    addTearDown(fake.dispose);
+    await expectLater(
+      fake.start(),
+      throwsA(
+        isA<BackendHostProtocolException>().having(
+          (BackendHostProtocolException error) => error.message,
+          'message',
+          contains('host protocol'),
+        ),
+      ),
+    );
+  });
+
   test('times out startup and terminates the host', () async {
     final _FakeHost fake = _FakeHost.create('''
 import 'dart:async';

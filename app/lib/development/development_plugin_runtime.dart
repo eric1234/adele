@@ -160,7 +160,12 @@ final class DevelopmentPluginRuntime {
       );
       await _startCapabilityExample(hostBuild.artifact.parent);
       final WorkspaceDemoEvalBridge bridge = WorkspaceDemoEvalBridge(
-        service: WorkspaceDemoServiceClient(_connection!),
+        service: WorkspaceDemoServiceClient(
+          _connection!.channelFor(
+            _connection!.defaultConfigurationContext,
+            workspaceDemoServiceId,
+          ),
+        ),
         developmentRoot: ResourceRef(
           uri: configuration.developmentDirectory.uri,
         ),
@@ -238,13 +243,16 @@ final class DevelopmentPluginRuntime {
         await PluginCapabilityActivation.register(
           connection: connection,
           registry: capabilityRegistry,
-          providers: <ProviderDescriptor>[
-            ProviderDescriptor(
-              id: value.providerId,
-              capability: resourceInspectCapability,
-              pluginId: value.pluginId,
-              displayName: value.displayName,
-              serviceId: resourceInspectorServiceId,
+          exposures: <PluginCapabilityExposure>[
+            PluginCapabilityExposure(
+              provider: ProviderDescriptor(
+                id: value.providerId,
+                capability: resourceInspectCapability,
+                pluginId: value.pluginId,
+                displayName: value.displayName,
+                serviceId: resourceInspectorServiceId,
+              ),
+              configurationContext: connection.defaultConfigurationContext,
             ),
           ],
         ),

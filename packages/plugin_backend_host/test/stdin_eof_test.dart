@@ -51,6 +51,7 @@ void main() {
           'kind': 'startPlugin',
           'requestId': 1,
           'pluginId': 'eof-plugin',
+          'defaultConfigurationContext': 'default',
           'artifactUri': pluginArtifact.uri.toString(),
           'arguments': <String>['acknowledge-hang'],
         }),

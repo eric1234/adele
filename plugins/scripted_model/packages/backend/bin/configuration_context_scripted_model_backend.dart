@@ -2,8 +2,10 @@ import 'dart:async';
 import 'dart:isolate';
 
 import 'package:adele_contract/adele_contract.dart';
-import 'package:resource_inspector_basic_backend/resource_inspector_basic_backend.dart';
-import 'package:resource_inspector_contract/resource_inspector_contract.dart';
+import 'package:scripted_model_backend/scripted_model_backend.dart';
+import 'package:scripted_model_contract/scripted_model_contract.dart';
+
+const String _configurationB = 'configuration-b';
 
 Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   if (bootstrapMessage is! Map) {
@@ -11,22 +13,32 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   }
   final Object? bootstrapPort = bootstrapMessage['bootstrapPort'];
   final Object? responsePort = bootstrapMessage['responsePort'];
-  if (bootstrapPort is! SendPort || responsePort is! SendPort) {
-    throw ArgumentError.value(bootstrapMessage, 'bootstrapMessage');
-  }
   final Object? defaultConfigurationContext =
       bootstrapMessage['defaultConfigurationContext'];
-  if (defaultConfigurationContext is! String) {
+  if (bootstrapPort is! SendPort ||
+      responsePort is! SendPort ||
+      defaultConfigurationContext is! String) {
     throw ArgumentError.value(bootstrapMessage, 'bootstrapMessage');
   }
   final ReceivePort requests = ReceivePort();
-  final ResourceInspectorServiceDispatcher dispatcher =
-      ResourceInspectorServiceDispatcher(const BasicResourceInspector());
+  final ScriptedModelFixtureServiceDispatcher configurationA =
+      ScriptedModelFixtureServiceDispatcher(
+        ScriptedModelProvider(configurationLabel: 'configuration-a'),
+      );
+  final ScriptedModelFixtureServiceDispatcher configurationB =
+      ScriptedModelFixtureServiceDispatcher(
+        ScriptedModelProvider(configurationLabel: 'configuration-b'),
+      );
   final AdeleConfigurationContextRouter router =
-      AdeleConfigurationContextRouter.single(
-        configurationContext: defaultConfigurationContext,
-        serviceId: resourceInspectorServiceId,
-        dispatcher: dispatcher,
+      AdeleConfigurationContextRouter(
+        contexts: <String, Map<String, AdeleBackendDispatcher>>{
+          defaultConfigurationContext: <String, AdeleBackendDispatcher>{
+            scriptedModelFixtureServiceId: configurationA,
+          },
+          _configurationB: <String, AdeleBackendDispatcher>{
+            scriptedModelFixtureServiceId: configurationB,
+          },
+        },
       );
   bootstrapPort.send(<String, Object?>{
     'kind': 'ready',

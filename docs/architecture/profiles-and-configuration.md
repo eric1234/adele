@@ -25,6 +25,7 @@ configurations as appropriate.
 | Preferred configured capability instance | Profile preference among named accounts/providers exposed by a plugin runtime |
 | Plugin runtime instance | Running plugin created from an activation context; normally one per context |
 | Configured capability instance | Persistent named provider, account, connection, endpoint, cluster, or device managed by a runtime |
+| Configuration context | Opaque generation-bound runtime execution scope for configured plugin state shared by one or more capability providers/services |
 | Runtime resource | Temporary session, document, process, connection, or active execution |
 
 Installing a plugin does not enable it globally. Activation is contextual and
@@ -61,6 +62,15 @@ multiple configured capability instances simultaneously. Profiles may
 eventually control availability and preferences for both plugin providers and
 configured instances without requiring duplicate installations or runtime
 copies.
+
+Each active capability endpoint executes under one explicit configuration
+context. A context is runtime metadata bound to one plugin generation; it is
+not the persistent configuration record itself. Several providers or services
+may share a context when they operate over the same configured plugin state,
+and one generation may host several contexts. Plugins with no meaningful
+user-visible configuration still use one explicit default context. This does
+not define persistence, profile override, configuration schema, or dynamic
+configuration lifecycle.
 
 Temporary browser or terminal sessions, open documents, processes, and active
 tool executions are runtime resources. They are not profile configuration,

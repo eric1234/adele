@@ -9,6 +9,7 @@ environment:
 resolution: workspace
 
 dependencies:
+  adele_contract: ^0.1.0
   adele_plugin_api: ^0.1.0
   resource_inspector_contract: ^0.1.0
 

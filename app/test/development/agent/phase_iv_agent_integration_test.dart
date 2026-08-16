@@ -532,7 +532,12 @@ Future<_ActiveProvider> _startProvider({
     pluginId: pluginId,
     artifactUri: artifact.uri,
   );
-  final _CountingRequestChannel channel = _CountingRequestChannel(connection);
+  final _CountingRequestChannel channel = _CountingRequestChannel(
+    connection.channelFor(
+      connection.defaultConfigurationContext,
+      descriptor.serviceId,
+    ),
+  );
   final CapabilityRegistration registration = registry.register(
     provider: descriptor,
     endpoint: AdeleRequestChannelEndpoint(

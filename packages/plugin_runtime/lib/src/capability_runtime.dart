@@ -20,6 +20,16 @@ final class AdeleRequestChannelEndpoint implements CapabilityEndpoint {
   bool get isAvailable => _isAvailable();
 }
 
+final class PluginCapabilityExposure {
+  const PluginCapabilityExposure({
+    required this.provider,
+    required this.configurationContext,
+  });
+
+  final ProviderDescriptor provider;
+  final ConfigurationContextId configurationContext;
+}
+
 extension ProviderBindingRequestChannel on ProviderBinding {
   AdeleRequestChannel get requestChannel =>
       endpointAs<AdeleRequestChannelEndpoint>().channel;
@@ -46,7 +56,7 @@ final class PluginCapabilityActivation {
   static Future<PluginCapabilityActivation> register({
     required PluginBackendConnection connection,
     required CapabilityRegistry registry,
-    required Iterable<ProviderDescriptor> providers,
+    required Iterable<PluginCapabilityExposure> exposures,
   }) async {
     if (connection.isClosed) {
       throw InvalidProviderRegistration(
@@ -56,7 +66,8 @@ final class PluginCapabilityActivation {
     final CapabilityRegistrationGroup registrations =
         CapabilityRegistrationGroup();
     try {
-      for (final ProviderDescriptor provider in providers) {
+      for (final PluginCapabilityExposure exposure in exposures) {
+        final ProviderDescriptor provider = exposure.provider;
         if (provider.pluginId != connection.pluginId) {
           throw InvalidProviderRegistration(
             'Provider ${provider.id} belongs to ${provider.pluginId}, not '
@@ -67,7 +78,10 @@ final class PluginCapabilityActivation {
           registry.register(
             provider: provider,
             endpoint: AdeleRequestChannelEndpoint(
-              channel: connection,
+              channel: connection.channelFor(
+                exposure.configurationContext,
+                provider.serviceId,
+              ),
               serviceId: provider.serviceId,
               isAvailable: () => !connection.isClosed,
             ),

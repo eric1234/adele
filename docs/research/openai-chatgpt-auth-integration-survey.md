@@ -73,11 +73,11 @@ The durable conclusions from the B5 research are:
    interface.
 
 9. **There is one capability-runtime prerequisite before implementing two OpenAI
-   configured instances in one plugin generation.** ADELE currently preserves
-   provider identity in the registry but does not carry configured-instance
-   identity through the backend transport. Two descriptors for the same
-   service in one plugin generation would reach the same backend service unless
-   a binding-owned route is added.
+   configurations in one plugin generation.** ADELE currently preserves
+   provider identity in the registry but does not carry the generation-bound
+   configuration context through the backend transport. Provider identity is
+   not sufficient because several providers/services may share one configured
+   plugin state. A binding-owned configuration context is required.
 
 10. **No semantic `dev.adele.model.provider` contract change is required.**
     The routing prerequisite is transport/runtime metadata below generated
@@ -246,7 +246,7 @@ At the inspected ADELE revision:
 - generated clients send only their generated method ID and semantic payload;
 - `ModelProviderServiceClient` sends `modelProvider.invoke`;
 - the backend host forwards the request/stream into the plugin isolate with
-  method and payload, but no configured-provider target;
+  method and payload, but no configuration context;
 - a generated dispatcher owns one concrete service implementation.
 
 Therefore two provider descriptors for the same generated service can be
@@ -255,8 +255,8 @@ dispatch.
 
 ## Architectural consequence
 
-Configured-instance routing must be added **below generated semantic contract
-payloads**.
+Generation-bound configuration-context routing must be added **below generated
+semantic contract payloads**.
 
 Conceptually:
 
@@ -265,19 +265,19 @@ ProviderBinding
     ↓
 generation-bound CapabilityEndpoint
     ↓
-opaque configured-instance route
+opaque configuration context
     ↓
 PluginBackendConnection
     ↓
 backend-host envelope
     ↓
-plugin configured-instance router
+plugin configuration-context router
     ↓
 selected generated dispatcher/service
 ```
 
-The route must be supplied by the binding/endpoint that was resolved from the
-registry.
+The configuration context must be supplied by the binding/endpoint that was
+resolved from the registry.
 
 It must not be selectable through:
 
@@ -292,17 +292,17 @@ This makes account selection unspoofable by semantic invocation data.
 
 ## Identity
 
-`ProviderId` is the natural candidate for this route because it already names a
-configured provider exposed by a plugin generation.
-
-A different transport-route identity is only justified if a concrete future
-case proves `ProviderId` insufficient.
+Phase IV-B5a refined this identity to `ConfigurationContextId`. `ProviderId`
+names an exposed capability provider, while a configuration context names the
+generation-bound configured plugin state under which one or more providers and
+services execute. The relationship is not one-to-one.
 
 Keep these identities distinct:
 
 ```text
 plugin ID
-provider/configured-instance ID
+configuration-context ID
+provider ID
 service ID
 generated method ID
 model ID
@@ -320,7 +320,7 @@ The change belongs to:
 - plugin transport envelope;
 - backend-host/plugin-isolate dispatch.
 
-Generated clients should remain unaware of configured-instance routing.
+Generated clients should remain unaware of configuration-context routing.
 
 This clarification matters because the research report's shorthand answer
 "no common capability change" should be read as:
@@ -933,7 +933,9 @@ binding B routes only to service B
 
 Requirements:
 
-- route identity is binding/endpoint-owned;
+- configuration context is binding/endpoint-owned;
+- multiple providers/services may share one context;
+- one generation may host multiple contexts;
 - generated semantic payload remains route-free;
 - request and stream-open both route correctly;
 - stream credit/cancel remain request-ID based after open;

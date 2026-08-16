@@ -6,6 +6,7 @@ import 'dart:async';
 import 'dart:collection';
 
 const int _adeleJsonMaxDepth = 64;
+const int adelePluginBackendProtocolVersion = 1;
 
 Map<String, Object?> adeleSnapshotJsonMap(Map<String, Object?> source) =>
     _adeleSnapshotJsonValue(source, 0, HashSet<Object>.identity())!
@@ -109,6 +110,174 @@ abstract interface class AdeleBackendDispatcher {
   );
 
   Future<void> close();
+}
+
+final class AdeleConfigurationContextRouter {
+  AdeleConfigurationContextRouter({
+    required Map<String, Map<String, AdeleBackendDispatcher>> contexts,
+  }) : _contexts =
+           Map<String, Map<String, AdeleBackendDispatcher>>.unmodifiable(
+             contexts.map(
+               (String context, Map<String, AdeleBackendDispatcher> services) =>
+                   MapEntry<String, Map<String, AdeleBackendDispatcher>>(
+                     context,
+                     Map<String, AdeleBackendDispatcher>.unmodifiable(services),
+                   ),
+             ),
+           ) {
+    if (_contexts.isEmpty ||
+        _contexts.entries.any(
+          (entry) =>
+              entry.key.isEmpty ||
+              entry.value.isEmpty ||
+              entry.value.keys.any((String serviceId) => serviceId.isEmpty),
+        )) {
+      throw ArgumentError.value(
+        contexts,
+        'contexts',
+        'Configuration contexts and services must be non-empty.',
+      );
+    }
+  }
+
+  AdeleConfigurationContextRouter.single({
+    required String configurationContext,
+    required String serviceId,
+    required AdeleBackendDispatcher dispatcher,
+  }) : this(
+         contexts: <String, Map<String, AdeleBackendDispatcher>>{
+           configurationContext: <String, AdeleBackendDispatcher>{
+             serviceId: dispatcher,
+           },
+         },
+       );
+
+  final Map<String, Map<String, AdeleBackendDispatcher>> _contexts;
+  final Map<int, AdeleBackendDispatcher> _streamOwners =
+      <int, AdeleBackendDispatcher>{};
+
+  Future<void> handle(
+    Map<Object?, Object?> command,
+    void Function(Map<String, Object?> event) send,
+  ) {
+    final Object? kind = command['kind'];
+    final Object? requestId = command['requestId'];
+    AdeleBackendDispatcher? dispatcher;
+    if (kind == 'request' || kind == 'streamOpen') {
+      final Object? configurationContext = command['configurationContext'];
+      if (configurationContext is! String || configurationContext.isEmpty) {
+        _reject(
+          kind,
+          requestId,
+          'invalid_configuration_context',
+          'Capability invocation requires a configuration context.',
+          send,
+        );
+        return Future<void>.value();
+      }
+      final Map<String, AdeleBackendDispatcher>? services =
+          _contexts[configurationContext];
+      if (services == null) {
+        _reject(
+          kind,
+          requestId,
+          'configuration_context_unavailable',
+          'The configuration context is not active in this plugin generation.',
+          send,
+        );
+        return Future<void>.value();
+      }
+      final Object? serviceId = command['serviceId'];
+      dispatcher = serviceId is String ? services[serviceId] : null;
+      if (dispatcher == null) {
+        _reject(
+          kind,
+          requestId,
+          'service_unavailable',
+          'The service is not exposed by this configuration context.',
+          send,
+        );
+        return Future<void>.value();
+      }
+      if (kind == 'streamOpen' && requestId is int) {
+        _streamOwners[requestId] = dispatcher;
+      }
+    } else if (kind == 'streamCredit' || kind == 'streamCancel') {
+      dispatcher = requestId is int ? _streamOwners[requestId] : null;
+      if (dispatcher == null) return Future<void>.value();
+    } else {
+      return Future<void>.value();
+    }
+
+    final Map<Object?, Object?> generatedCommand =
+        Map<Object?, Object?>.of(command)
+          ..remove('configurationContext')
+          ..remove('serviceId');
+    bool terminalSent = false;
+    void containFailure(Object _) {
+      if (!terminalSent) _dispatchFailure(kind, requestId, send);
+    }
+
+    try {
+      return dispatcher
+          .handle(generatedCommand, (Map<String, Object?> event) {
+            final bool terminal =
+                event['kind'] == 'response' ||
+                event['kind'] == 'streamDone' ||
+                event['kind'] == 'streamFailure' ||
+                event['kind'] == 'streamCancelled';
+            send(event);
+            if (terminal) {
+              terminalSent = true;
+              _streamOwners.remove(requestId);
+            }
+          })
+          .catchError(containFailure);
+    } on Object catch (error) {
+      containFailure(error);
+      return Future<void>.value();
+    }
+  }
+
+  Future<void> close() async {
+    _streamOwners.clear();
+    final Set<AdeleBackendDispatcher> unique =
+        HashSet<AdeleBackendDispatcher>.identity()
+          ..addAll(_contexts.values.expand((services) => services.values));
+    await Future.wait<void>(unique.map((dispatcher) => dispatcher.close()));
+  }
+
+  void _dispatchFailure(
+    Object? kind,
+    Object? requestId,
+    void Function(Map<String, Object?> event) send,
+  ) {
+    _streamOwners.remove(requestId);
+    send(<String, Object?>{
+      'kind': kind == 'request' ? 'response' : 'streamFailure',
+      'requestId': requestId,
+      if (kind == 'request') 'ok': false,
+      'error': const <String, Object?>{
+        'code': 'internal_error',
+        'message': 'Configuration-scoped backend dispatch failed.',
+      },
+    });
+  }
+
+  void _reject(
+    Object? kind,
+    Object? requestId,
+    String code,
+    String message,
+    void Function(Map<String, Object?> event) send,
+  ) {
+    send(<String, Object?>{
+      'kind': kind == 'streamOpen' ? 'streamFailure' : 'response',
+      'requestId': requestId,
+      if (kind != 'streamOpen') 'ok': false,
+      'error': <String, Object?>{'code': code, 'message': message},
+    });
+  }
 }
 
 final class AdeleStreamIterator<T> {

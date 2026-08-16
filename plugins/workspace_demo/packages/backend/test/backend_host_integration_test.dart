@@ -62,7 +62,10 @@ void main() {
         arguments: <String>[developmentRoot.path],
       );
       final DirectoryListing listing = await WorkspaceDemoServiceClient(
-        plugin,
+        plugin.channelFor(
+          plugin.defaultConfigurationContext,
+          workspaceDemoServiceId,
+        ),
       ).listDirectory(ResourceRef(uri: developmentRoot.uri));
       expect(listing.entries.single.name, 'integration.txt');
       await plugin.close();
