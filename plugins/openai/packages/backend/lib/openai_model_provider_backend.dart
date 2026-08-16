@@ -47,6 +47,7 @@ final class OpenAiModelProvider implements ModelProviderService {
     late StreamController<ModelProviderEvent> controller;
     HttpClientRequest? outboundRequest;
     StreamSubscription<String>? lines;
+    _BoundedBodyCapture? errorBodyCapture;
     bool cancelled = false;
     bool settled = false;
     Future<void>? stoppingFuture;
@@ -59,6 +60,8 @@ final class OpenAiModelProvider implements ModelProviderService {
         outboundRequest?.abort();
         final StreamSubscription<String>? subscription = lines;
         if (subscription != null) await subscription.cancel();
+        final _BoundedBodyCapture? capture = errorBodyCapture;
+        if (capture != null) await capture.cancel();
       }();
       stoppingFuture = operation;
       return operation;
@@ -128,13 +131,20 @@ final class OpenAiModelProvider implements ModelProviderService {
         }
         final String? requestId = response.headers.value('x-request-id');
         if (response.statusCode < 200 || response.statusCode >= 300) {
-          final _BoundedBody capture = await _readBoundedBody(response);
+          final _BoundedBodyCapture capture = _BoundedBodyCapture(response);
+          errorBodyCapture = capture;
+          if (stoppingFuture != null) {
+            await capture.cancel();
+            return;
+          }
+          final _BoundedBody bodyCapture = await capture.result;
+          if (cancelled) return;
           final _HttpFailure failure = _classifyHttpFailure(
             response.statusCode,
-            capture.text,
+            bodyCapture.text,
             requestId,
             response.headers.value(HttpHeaders.retryAfterHeader),
-            capture.truncated,
+            bodyCapture.truncated,
           );
           fail(
             failure.kind,
@@ -876,43 +886,59 @@ final class _ResponsesNormalizer {
   }
 }
 
-Future<_BoundedBody> _readBoundedBody(HttpClientResponse response) async {
-  final BytesBuilder bytes = BytesBuilder(copy: false);
-  late StreamSubscription<List<int>> subscription;
-  final Completer<_BoundedBody> result = Completer<_BoundedBody>();
-  subscription = response.listen(
-    (List<int> chunk) {
-      if (result.isCompleted) return;
-      final int remaining = _maximumErrorBodyBytes - bytes.length;
-      if (chunk.length <= remaining) {
-        bytes.add(chunk);
-        return;
-      }
+final class _BoundedBodyCapture {
+  _BoundedBodyCapture(HttpClientResponse response) {
+    _subscription = response.listen(
+      _add,
+      onError: _fail,
+      onDone: _finishNaturally,
+      cancelOnError: true,
+    );
+  }
+
+  final BytesBuilder _bytes = BytesBuilder(copy: false);
+  final Completer<_BoundedBody> _result = Completer<_BoundedBody>();
+  late final StreamSubscription<List<int>> _subscription;
+  Future<void>? _cancellation;
+
+  Future<_BoundedBody> get result => _result.future;
+
+  void _add(List<int> chunk) {
+    if (_result.isCompleted) return;
+    final int remaining = _maximumErrorBodyBytes - _bytes.length;
+    if (chunk.length >= remaining) {
       if (remaining > 0) {
-        bytes.add(chunk.take(remaining).toList(growable: false));
+        _bytes.add(chunk.take(remaining).toList(growable: false));
       }
-      result.complete(
-        _BoundedBody(
-          utf8.decode(bytes.takeBytes(), allowMalformed: true),
-          true,
-        ),
-      );
-      unawaited(subscription.cancel());
-    },
-    onError: result.completeError,
-    onDone: () {
-      if (!result.isCompleted) {
-        result.complete(
-          _BoundedBody(
-            utf8.decode(bytes.takeBytes(), allowMalformed: true),
-            false,
-          ),
-        );
-      }
-    },
-    cancelOnError: true,
+      _result.complete(_captured(truncated: true));
+      unawaited(cancel());
+      return;
+    }
+    _bytes.add(chunk);
+  }
+
+  void _finishNaturally() {
+    if (!_result.isCompleted) {
+      _result.complete(_captured(truncated: false));
+    }
+  }
+
+  void _fail(Object error, StackTrace stackTrace) {
+    if (!_result.isCompleted) _result.completeError(error, stackTrace);
+  }
+
+  Future<void> cancel() {
+    final Future<void>? existing = _cancellation;
+    if (existing != null) return existing;
+    final Future<void> operation = _subscription.cancel();
+    _cancellation = operation;
+    return operation;
+  }
+
+  _BoundedBody _captured({required bool truncated}) => _BoundedBody(
+    utf8.decode(_bytes.takeBytes(), allowMalformed: true),
+    truncated,
   );
-  return result.future;
 }
 
 bool _isLoopbackHost(String host) {

@@ -545,6 +545,33 @@ void main() {
       });
     }
 
+    test('settles exactly capped HTTP error without waiting for EOF', () async {
+      final _OpenErrorServer fixture = await _OpenErrorServer.start(
+        initialBytes: 16 * 1024,
+      );
+      addTearDown(fixture.close);
+      final OpenAiModelProvider provider = OpenAiModelProvider(
+        apiKey: 'fake-openai-key',
+        endpoint: fixture.server.responsesUri,
+      );
+      addTearDown(provider.close);
+
+      final ModelProviderTerminal terminal =
+          (await provider
+                  .invoke(_request())
+                  .toList()
+                  .timeout(const Duration(seconds: 2)))
+              .single
+              .terminal!;
+
+      expect(terminal.failure?.kind, ModelProviderFailureKind.unavailable);
+      expect(
+        terminal.failure?.providerDetails['responseBodyTruncated'],
+        isTrue,
+      );
+      expect(fixture.writes, lessThan(40));
+    });
+
     test('settles oversized HTTP error without waiting for EOF', () async {
       var serverWrites = 0;
       final _FakeServer server = await _FakeServer.start((request) async {
@@ -587,6 +614,26 @@ void main() {
       final int writesAfterSettlement = serverWrites;
       await Future<void>.delayed(const Duration(milliseconds: 200));
       expect(serverWrites, writesAfterSettlement);
+    });
+
+    test('consumer cancellation stops an open non-2xx body reader', () async {
+      final _OpenErrorServer fixture = await _OpenErrorServer.start(
+        initialBytes: 1024,
+      );
+      addTearDown(fixture.close);
+      final OpenAiModelProvider provider = OpenAiModelProvider(
+        apiKey: 'fake-openai-key',
+        endpoint: fixture.server.responsesUri,
+      );
+      addTearDown(provider.close);
+      final StreamSubscription<ModelProviderEvent> subscription = provider
+          .invoke(_request())
+          .listen((_) {});
+      await fixture.started.future.timeout(const Duration(seconds: 2));
+
+      await subscription.cancel().timeout(const Duration(seconds: 2));
+
+      await fixture.expectConsumptionStopped();
     });
 
     for (final (String name, Future<void> Function(HttpRequest) serve)
@@ -915,4 +962,46 @@ final class _FakeServer {
     await _subscription.cancel();
     await server.close(force: true);
   }
+}
+
+final class _OpenErrorServer {
+  _OpenErrorServer._(this.server, this.started, this._writes);
+
+  final _FakeServer server;
+  final Completer<void> started;
+  final int Function() _writes;
+
+  int get writes => _writes();
+
+  static Future<_OpenErrorServer> start({required int initialBytes}) async {
+    final Completer<void> started = Completer<void>();
+    var writes = 0;
+    final _FakeServer server = await _FakeServer.start((request) async {
+      await request.drain<void>();
+      request.response.statusCode = HttpStatus.internalServerError;
+      request.response.write('x' * initialBytes);
+      await request.response.flush();
+      started.complete();
+      try {
+        while (true) {
+          request.response.write('x' * 256);
+          await request.response.flush();
+          writes++;
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+      } on Object {
+        // Reader cancellation is the expected server-side settlement.
+      }
+    });
+    return _OpenErrorServer._(server, started, () => writes);
+  }
+
+  Future<void> expectConsumptionStopped() async {
+    await Future<void>.delayed(const Duration(seconds: 1));
+    final int writesAfterCleanup = _writes();
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    expect(_writes(), writesAfterCleanup);
+  }
+
+  Future<void> close() => server.close();
 }
