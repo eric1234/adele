@@ -97,7 +97,7 @@ jobs:
         run: dart tools/adele.dart bootstrap
 
       - name: Run tests
-        run: dart tools/adele.dart test
+        run: dart tools/adele.dart test --jobs 4
 
   build-linux:
     runs-on: ubuntu-latest
