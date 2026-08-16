@@ -22,7 +22,7 @@ const List<TestTarget> testTargets = <TestTarget>[
     name: 'contract_codegen',
     path: 'packages/contract_codegen',
     executable: 'dart',
-    arguments: <String>['test'],
+    arguments: <String>['test', '--concurrency', '2'],
   ),
   TestTarget(
     name: 'adele_plugin_api',

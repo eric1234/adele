@@ -128,7 +128,7 @@ void main() {
       const <String>[
         'adele_tools|dart|.|test test/tools',
         'adele_contract|dart|packages/contract|test',
-        'contract_codegen|dart|packages/contract_codegen|test',
+        'contract_codegen|dart|packages/contract_codegen|test --concurrency 2',
         'adele_plugin_api|dart|packages/plugin_api|test',
         'adele_model_provider|dart|packages/model_provider|test',
         'adele_capabilities|dart|packages/capabilities|test',
