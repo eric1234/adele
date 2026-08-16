@@ -1,7 +1,9 @@
 import 'package:scripted_model_contract/scripted_model_contract.dart';
 
 final class ScriptedModelProvider implements ScriptedModelFixtureService {
-  ScriptedModelProvider();
+  ScriptedModelProvider({this.configurationLabel});
+
+  final String? configurationLabel;
 
   static const String toolName = 'inspect_resource';
   static const String toolCallId = 'inspect-1';
@@ -46,7 +48,9 @@ final class ScriptedModelProvider implements ScriptedModelFixtureService {
       }
       final String currentInput = users.last.content;
       return ScriptedModelResponse(
-        content: 'Inspecting the deterministic Phase IV resource.',
+        content:
+            '${configurationLabel == null ? '' : '[$configurationLabel] '}'
+            'Inspecting the deterministic Phase IV resource.',
         toolCall: ScriptedToolCall(
           id: toolCallId,
           name: toolName,

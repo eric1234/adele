@@ -5,6 +5,7 @@ import 'dart:isolate';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 const Duration _pluginLifecycleTimeout = Duration(seconds: 2);
+const int _configurationContextProtocolVersion = 1;
 
 typedef BackendHostSend = bool Function(Map<String, Object?> message);
 typedef BackendHostDiagnostic = void Function(String message);
@@ -102,6 +103,10 @@ final class AdeleBackendHost {
       throw StateError('Plugin $pluginId is already running.');
     }
     final String artifactUri = _requireString(message, 'artifactUri');
+    final String defaultConfigurationContext = _requireString(
+      message,
+      'defaultConfigurationContext',
+    );
     final Object? rawArguments = message['arguments'];
     if (rawArguments is! List ||
         rawArguments.any((Object? value) => value is! String)) {
@@ -113,6 +118,7 @@ final class AdeleBackendHost {
       arguments: rawArguments
           .map((Object? value) => value! as String)
           .toList(growable: false),
+      defaultConfigurationContext: defaultConfigurationContext,
       send: _send,
       diagnostic: _diagnostic,
       onTerminated: _pluginTerminated,
@@ -256,6 +262,7 @@ final class _PluginIsolate {
     required String pluginId,
     required Uri artifactUri,
     required List<String> arguments,
+    required String defaultConfigurationContext,
     required BackendHostSend send,
     required BackendHostDiagnostic diagnostic,
     required _PluginTerminated onTerminated,
@@ -274,6 +281,7 @@ final class _PluginIsolate {
         <String, Object?>{
           'bootstrapPort': bootstrap.sendPort,
           'responsePort': responses.sendPort,
+          'defaultConfigurationContext': defaultConfigurationContext,
         },
         onError: errorPort.sendPort,
         onExit: exitPort.sendPort,
@@ -287,7 +295,10 @@ final class _PluginIsolate {
           throw StateError('Plugin exited before handshake.');
         }),
       ]).timeout(const Duration(seconds: 5));
-      if (ready is! Map || ready['commandPort'] is! SendPort) {
+      if (ready is! Map ||
+          ready['commandPort'] is! SendPort ||
+          ready['configurationContextProtocolVersion'] !=
+              _configurationContextProtocolVersion) {
         throw StateError('Invalid plugin handshake: $ready');
       }
       final _PluginIsolate plugin = _PluginIsolate._(
@@ -324,6 +335,10 @@ final class _PluginIsolate {
       throw const FormatException('Missing request ID.');
     }
     final String method = _requireString(message, 'method');
+    final String configurationContext = _requireString(
+      message,
+      'configurationContext',
+    );
     final Object? payload = message['payload'];
     if (payload is! Map) {
       throw const FormatException('Request payload must be a map.');
@@ -333,6 +348,7 @@ final class _PluginIsolate {
     _commands.send(<String, Object?>{
       'kind': 'request',
       'requestId': pluginRequestId,
+      'configurationContext': configurationContext,
       'method': method,
       'payload': payload,
     });
@@ -358,6 +374,10 @@ final class _PluginIsolate {
       return;
     }
     final String method = _requireString(message, 'method');
+    final String configurationContext = _requireString(
+      message,
+      'configurationContext',
+    );
     final Object? payload = message['payload'];
     if (payload is! Map) {
       throw const FormatException('Request payload must be a map.');
@@ -374,6 +394,7 @@ final class _PluginIsolate {
     _commands.send(<String, Object?>{
       'kind': 'streamOpen',
       'requestId': pluginRequestId,
+      'configurationContext': configurationContext,
       'method': method,
       'payload': payload,
     });

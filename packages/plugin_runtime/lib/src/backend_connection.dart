@@ -179,6 +179,8 @@ final class PluginBackendHost {
         fields: <String, Object?>{
           'artifactUri': artifactUri.toString(),
           'arguments': List<String>.of(arguments, growable: false),
+          'defaultConfigurationContext':
+              connection.defaultConfigurationContext._wireValue,
         },
       );
       if (response['kind'] != 'pluginReady') {
@@ -274,14 +276,25 @@ final class PluginBackendHost {
   }
 
   Future<Object?> _request(
-    String pluginId,
+    PluginBackendConnection owner,
+    String configurationContext,
     String method,
     Map<String, Object?> payload,
   ) async {
+    final String pluginId = owner.pluginId;
+    if (owner.isClosed || _plugins[pluginId] != owner) {
+      throw const PluginConnectionClosed(
+        'The plugin connection generation is closed.',
+      );
+    }
     final Map<String, Object?> response = await _command(
       kind: 'request',
       pluginId: pluginId,
-      fields: <String, Object?>{'method': method, 'payload': payload},
+      fields: <String, Object?>{
+        'configurationContext': configurationContext,
+        'method': method,
+        'payload': payload,
+      },
     );
     if (response['ok'] == true) return response['payload'];
     throw _remoteFailure(response);
@@ -289,6 +302,7 @@ final class PluginBackendHost {
 
   Stream<Object?> _stream(
     PluginBackendConnection owner,
+    String configurationContext,
     String method,
     Map<String, Object?> payload,
   ) {
@@ -328,6 +342,7 @@ final class PluginBackendHost {
             'kind': 'streamOpen',
             'requestId': id,
             'pluginId': pluginId,
+            'configurationContext': configurationContext,
             'method': method,
             'payload': payload,
           });
@@ -784,6 +799,13 @@ final class PluginBackendHost {
   }
 }
 
+final class ConfigurationContextId {
+  const ConfigurationContextId._(this._owner, this._wireValue);
+
+  final PluginBackendConnection _owner;
+  final String _wireValue;
+}
+
 final class PluginBackendConnection implements AdeleStreamChannel {
   PluginBackendConnection._({
     required PluginBackendHost host,
@@ -792,6 +814,8 @@ final class PluginBackendConnection implements AdeleStreamChannel {
 
   final PluginBackendHost _host;
   final String pluginId;
+  late final ConfigurationContextId defaultConfigurationContext =
+      ConfigurationContextId._(this, 'default');
   final Completer<Object> _termination = Completer<Object>();
   bool _closed = false;
 
@@ -805,7 +829,12 @@ final class PluginBackendConnection implements AdeleStreamChannel {
         const PluginConnectionClosed('The plugin connection is closed.'),
       );
     }
-    return _host._request(pluginId, method, payload);
+    return _host._request(
+      this,
+      defaultConfigurationContext._wireValue,
+      method,
+      payload,
+    );
   }
 
   @override
@@ -815,7 +844,32 @@ final class PluginBackendConnection implements AdeleStreamChannel {
         const PluginConnectionClosed('The plugin connection is closed.'),
       );
     }
-    return _host._stream(this, method, payload);
+    return _host._stream(
+      this,
+      defaultConfigurationContext._wireValue,
+      method,
+      payload,
+    );
+  }
+
+  ConfigurationContextId configurationContext(String opaqueId) {
+    if (opaqueId.isEmpty ||
+        opaqueId.length > 256 ||
+        opaqueId.runes.any((int rune) => rune < 0x20 || rune == 0x7f)) {
+      throw FormatException('Invalid configuration context ID.', opaqueId);
+    }
+    return ConfigurationContextId._(this, opaqueId);
+  }
+
+  AdeleStreamChannel channelFor(ConfigurationContextId context) {
+    if (!identical(context._owner, this)) {
+      throw ArgumentError.value(
+        context,
+        'context',
+        'Configuration context belongs to another plugin generation.',
+      );
+    }
+    return _ConfigurationContextChannel(this, context._wireValue);
   }
 
   Future<void> close() {
@@ -827,6 +881,34 @@ final class PluginBackendConnection implements AdeleStreamChannel {
     _closed = true;
     if (!_termination.isCompleted) _termination.complete(reason);
   }
+}
+
+final class _ConfigurationContextChannel implements AdeleStreamChannel {
+  const _ConfigurationContextChannel(
+    this._connection,
+    this._configurationContext,
+  );
+
+  final PluginBackendConnection _connection;
+  final String _configurationContext;
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) =>
+      _connection._host._request(
+        _connection,
+        _configurationContext,
+        method,
+        payload,
+      );
+
+  @override
+  Stream<Object?> stream(String method, Map<String, Object?> payload) =>
+      _connection._host._stream(
+        _connection,
+        _configurationContext,
+        method,
+        payload,
+      );
 }
 
 final class _PendingPluginStream {

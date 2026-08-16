@@ -156,6 +156,295 @@ void main() {
     expect(raw.subscription.isPaused, isFalse);
     await decodedSubscription.cancel();
   });
+
+  test(
+    'configuration router strips context and retains stream ownership',
+    () async {
+      final _RecordingDispatcher contextA = _RecordingDispatcher('context-a');
+      final _RecordingDispatcher contextB = _RecordingDispatcher('context-b');
+      final _RecordingDispatcher otherService = _RecordingDispatcher('other');
+      final AdeleConfigurationContextRouter router =
+          AdeleConfigurationContextRouter(
+            contexts: <String, Map<String, AdeleBackendDispatcher>>{
+              'a': <String, AdeleBackendDispatcher>{
+                'fixture': contextA,
+                'other': otherService,
+              },
+              'b': <String, AdeleBackendDispatcher>{'fixture': contextB},
+            },
+          );
+      final List<Map<String, Object?>> events = <Map<String, Object?>>[];
+      await router.handle(<Object?, Object?>{
+        'kind': 'request',
+        'requestId': 1,
+        'configurationContext': 'a',
+        'method': 'fixture.invoke',
+        'payload': <String, Object?>{'configurationContext': 'b'},
+      }, events.add);
+      await router.handle(<Object?, Object?>{
+        'kind': 'request',
+        'requestId': 4,
+        'configurationContext': 'a',
+        'method': 'other.invoke',
+        'payload': <String, Object?>{},
+      }, events.add);
+      await router.handle(<Object?, Object?>{
+        'kind': 'streamOpen',
+        'requestId': 2,
+        'configurationContext': 'a',
+        'method': 'fixture.watch',
+        'payload': <String, Object?>{},
+      }, events.add);
+      await router.handle(<Object?, Object?>{
+        'kind': 'streamOpen',
+        'requestId': 3,
+        'configurationContext': 'b',
+        'method': 'fixture.watch',
+        'payload': <String, Object?>{},
+      }, events.add);
+      await router.handle(<Object?, Object?>{
+        'kind': 'streamCredit',
+        'requestId': 2,
+        'credit': 1,
+      }, events.add);
+      await router.handle(<Object?, Object?>{
+        'kind': 'streamCancel',
+        'requestId': 3,
+      }, events.add);
+
+      expect(events.first['payload'], 'context-a');
+      expect(contextA.commands, hasLength(3));
+      expect(contextB.commands, hasLength(2));
+      expect(otherService.commands, hasLength(1));
+      expect(events[1]['payload'], 'other');
+      expect(
+        contextA.commands.every(
+          (Map<Object?, Object?> command) =>
+              !command.containsKey('configurationContext'),
+        ),
+        isTrue,
+      );
+      expect(contextA.commands.last['kind'], 'streamCredit');
+      expect(contextB.commands.last['kind'], 'streamCancel');
+      await router.close();
+    },
+  );
+
+  test('configuration router rejects missing and unknown contexts', () async {
+    final _RecordingDispatcher dispatcher = _RecordingDispatcher('default');
+    final AdeleConfigurationContextRouter router =
+        AdeleConfigurationContextRouter.single(
+          configurationContext: 'default',
+          serviceId: 'fixture',
+          dispatcher: dispatcher,
+        );
+    final List<Map<String, Object?>> events = <Map<String, Object?>>[];
+    await router.handle(<Object?, Object?>{
+      'kind': 'request',
+      'requestId': 1,
+      'method': 'fixture.invoke',
+      'payload': <String, Object?>{},
+    }, events.add);
+    await router.handle(<Object?, Object?>{
+      'kind': 'streamOpen',
+      'requestId': 2,
+      'configurationContext': 'unknown',
+      'method': 'fixture.watch',
+      'payload': <String, Object?>{},
+    }, events.add);
+    await router.handle(<Object?, Object?>{
+      'kind': 'request',
+      'requestId': 3,
+      'configurationContext': 7,
+      'method': 'fixture.invoke',
+      'payload': <String, Object?>{},
+    }, events.add);
+
+    expect(dispatcher.commands, isEmpty);
+    expect(events[0]['kind'], 'response');
+    expect(
+      (events[0]['error']! as Map)['code'],
+      'invalid_configuration_context',
+    );
+    expect(events[1]['kind'], 'streamFailure');
+    expect(
+      (events[1]['error']! as Map)['code'],
+      'configuration_context_unavailable',
+    );
+    expect(
+      (events[2]['error']! as Map)['code'],
+      'invalid_configuration_context',
+    );
+    await router.close();
+  });
+
+  test(
+    'configuration router contains dispatcher stream-open failure',
+    () async {
+      final _ThrowingDispatcher dispatcher = _ThrowingDispatcher();
+      final AdeleConfigurationContextRouter router =
+          AdeleConfigurationContextRouter.single(
+            configurationContext: 'default',
+            serviceId: 'fixture',
+            dispatcher: dispatcher,
+          );
+      final List<Map<String, Object?>> events = <Map<String, Object?>>[];
+      await router.handle(<Object?, Object?>{
+        'kind': 'streamOpen',
+        'requestId': 1,
+        'configurationContext': 'default',
+        'method': 'fixture.watch',
+        'payload': <String, Object?>{},
+      }, events.add);
+      await router.handle(<Object?, Object?>{
+        'kind': 'streamCredit',
+        'requestId': 1,
+        'credit': 1,
+      }, events.add);
+
+      expect(dispatcher.calls, 1);
+      expect(events, hasLength(1));
+      expect(events.single['kind'], 'streamFailure');
+      expect((events.single['error']! as Map)['code'], 'internal_error');
+      await router.close();
+    },
+  );
+
+  test('configuration router does not duplicate a sent terminal', () async {
+    final _ThrowingDispatcher dispatcher = _ThrowingDispatcher(
+      terminalBeforeThrow: true,
+    );
+    final AdeleConfigurationContextRouter router =
+        AdeleConfigurationContextRouter.single(
+          configurationContext: 'default',
+          serviceId: 'fixture',
+          dispatcher: dispatcher,
+        );
+    final List<Map<String, Object?>> events = <Map<String, Object?>>[];
+    await router.handle(<Object?, Object?>{
+      'kind': 'streamOpen',
+      'requestId': 1,
+      'configurationContext': 'default',
+      'method': 'fixture.watch',
+      'payload': <String, Object?>{},
+    }, events.add);
+    await router.handle(<Object?, Object?>{
+      'kind': 'streamCredit',
+      'requestId': 1,
+      'credit': 1,
+    }, events.add);
+
+    expect(dispatcher.calls, 1);
+    expect(events, hasLength(1));
+    expect(events.single['kind'], 'streamDone');
+    await router.close();
+  });
+
+  test('configuration router falls back when terminal send fails', () async {
+    final _ThrowingDispatcher dispatcher = _ThrowingDispatcher(
+      terminalBeforeThrow: true,
+    );
+    final AdeleConfigurationContextRouter router =
+        AdeleConfigurationContextRouter.single(
+          configurationContext: 'default',
+          serviceId: 'fixture',
+          dispatcher: dispatcher,
+        );
+    final List<Map<String, Object?>> events = <Map<String, Object?>>[];
+    bool rejectTerminal = true;
+    await router.handle(
+      <Object?, Object?>{
+        'kind': 'streamOpen',
+        'requestId': 1,
+        'configurationContext': 'default',
+        'method': 'fixture.watch',
+        'payload': <String, Object?>{},
+      },
+      (Map<String, Object?> event) {
+        if (rejectTerminal && event['kind'] == 'streamDone') {
+          rejectTerminal = false;
+          throw StateError('fixture send failure');
+        }
+        events.add(event);
+      },
+    );
+
+    expect(events, hasLength(1));
+    expect(events.single['kind'], 'streamFailure');
+    expect((events.single['error']! as Map)['code'], 'internal_error');
+    await router.close();
+  });
+}
+
+final class _ThrowingDispatcher implements AdeleBackendDispatcher {
+  _ThrowingDispatcher({this.terminalBeforeThrow = false});
+
+  final bool terminalBeforeThrow;
+  int calls = 0;
+
+  @override
+  Future<Map<String, Object?>> dispatch(Map<Object?, Object?> request) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> handle(
+    Map<Object?, Object?> command,
+    void Function(Map<String, Object?> event) send,
+  ) async {
+    calls++;
+    if (terminalBeforeThrow) {
+      send(<String, Object?>{
+        'kind': 'streamDone',
+        'requestId': command['requestId'],
+      });
+    }
+    throw StateError('fixture dispatch failure');
+  }
+
+  @override
+  Future<void> close() async {}
+}
+
+final class _RecordingDispatcher implements AdeleBackendDispatcher {
+  _RecordingDispatcher(this.label);
+
+  final String label;
+  final List<Map<Object?, Object?>> commands = <Map<Object?, Object?>>[];
+
+  @override
+  Future<Map<String, Object?>> dispatch(Map<Object?, Object?> request) async =>
+      <String, Object?>{
+        'kind': 'response',
+        'requestId': request['requestId'],
+        'ok': true,
+        'payload': label,
+      };
+
+  @override
+  Future<void> handle(
+    Map<Object?, Object?> command,
+    void Function(Map<String, Object?> event) send,
+  ) async {
+    commands.add(command);
+    switch (command['kind']) {
+      case 'request':
+        send(await dispatch(command));
+      case 'streamCredit':
+        send(<String, Object?>{
+          'kind': 'streamItem',
+          'requestId': command['requestId'],
+          'payload': label,
+        });
+      case 'streamCancel':
+        send(<String, Object?>{
+          'kind': 'streamCancelled',
+          'requestId': command['requestId'],
+        });
+    }
+  }
+
+  @override
+  Future<void> close() async {}
 }
 
 final class _SynchronousValueStream extends Stream<Object?> {

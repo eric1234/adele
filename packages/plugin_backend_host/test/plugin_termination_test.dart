@@ -46,6 +46,32 @@ void main() {
     );
   });
 
+  test('rejects plugin without configuration-context handshake', () async {
+    final PluginBackendHost host = await PluginBackendHost.start(
+      dartaotruntimeExecutable: dartaotruntime,
+      hostArtifactPath: hostArtifact.path,
+    );
+    addTearDown(() async {
+      if (!host.isClosed) await host.close(graceful: false);
+    });
+
+    await expectLater(
+      host.startPlugin(
+        pluginId: 'legacy-context-plugin',
+        artifactUri: pluginArtifact.uri,
+        arguments: const <String>['legacy-handshake'],
+      ),
+      throwsA(
+        isA<PluginRemoteFailure>().having(
+          (PluginRemoteFailure failure) => failure.code,
+          'code',
+          'host_command_failed',
+        ),
+      ),
+    );
+    await host.close();
+  });
+
   test(
     'fails pending request and restarts same plugin ID after exit',
     () async {
@@ -781,6 +807,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 1,
         'pluginId': 'invalid-credit',
+        'defaultConfigurationContext': 'default',
         'artifactUri': pluginArtifact.uri.toString(),
         'arguments': <String>['wait'],
       });
@@ -791,6 +818,7 @@ void main() {
         'kind': 'streamOpen',
         'requestId': 2,
         'pluginId': 'invalid-credit',
+        'configurationContext': 'default',
         'method': 'long',
         'payload': <String, Object?>{},
       });
@@ -821,6 +849,7 @@ void main() {
         'kind': 'request',
         'requestId': 3,
         'pluginId': 'invalid-credit',
+        'configurationContext': 'default',
         'method': 'stream-cancel-count',
         'payload': <String, Object?>{},
       });
@@ -871,6 +900,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 1,
         'pluginId': 'double-send-failure',
+        'defaultConfigurationContext': 'default',
         'artifactUri': pluginKernel.uri.toString(),
         'arguments': <String>['wait'],
       });
@@ -879,6 +909,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 2,
         'pluginId': 'healthy-peer',
+        'defaultConfigurationContext': 'default',
         'artifactUri': pluginKernel.uri.toString(),
         'arguments': <String>['wait'],
       });
@@ -887,6 +918,7 @@ void main() {
         'kind': 'streamOpen',
         'requestId': 3,
         'pluginId': 'double-send-failure',
+        'configurationContext': 'default',
         'method': 'stream-large-terminal',
         'payload': <String, Object?>{},
       });
@@ -910,6 +942,7 @@ void main() {
         'kind': 'request',
         'requestId': 4,
         'pluginId': 'healthy-peer',
+        'configurationContext': 'default',
         'method': 'ping',
         'payload': <String, Object?>{},
       });
@@ -989,6 +1022,7 @@ void main() {
       'kind': 'startPlugin',
       'requestId': 30,
       'pluginId': 'cancel-forwarding',
+      'defaultConfigurationContext': 'default',
       'artifactUri': pluginKernel.uri.toString(),
       'arguments': <String>['wait'],
     });
@@ -997,6 +1031,7 @@ void main() {
       'kind': 'streamOpen',
       'requestId': 31,
       'pluginId': 'cancel-forwarding',
+      'configurationContext': 'default',
       'method': 'long',
       'payload': <String, Object?>{},
     });
@@ -1019,6 +1054,7 @@ void main() {
       'kind': 'request',
       'requestId': 32,
       'pluginId': 'cancel-forwarding',
+      'configurationContext': 'default',
       'method': 'stream-cancel-count',
       'payload': <String, Object?>{},
     });
@@ -1049,6 +1085,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 40,
         'pluginId': 'ingress-cancel',
+        'defaultConfigurationContext': 'default',
         'artifactUri': pluginKernel.uri.toString(),
         'arguments': <String>['wait'],
       });
@@ -1057,6 +1094,7 @@ void main() {
         'kind': 'streamOpen',
         'requestId': 41,
         'pluginId': 'ingress-cancel',
+        'configurationContext': 'default',
         'method': 'stream-malformed',
         'payload': <String, Object?>{},
       });
@@ -1121,6 +1159,7 @@ void main() {
       'kind': 'startPlugin',
       'requestId': 50,
       'pluginId': 'pre-admission-cancel',
+      'defaultConfigurationContext': 'default',
       'artifactUri': pluginKernel.uri.toString(),
       'arguments': <String>['wait'],
     });
@@ -1136,6 +1175,7 @@ void main() {
       'kind': 'streamOpen',
       'requestId': 51,
       'pluginId': 'pre-admission-cancel',
+      'configurationContext': 'default',
       'method': 'stream-malformed',
       'payload': <String, Object?>{},
     });
@@ -1173,6 +1213,7 @@ void main() {
       'kind': 'request',
       'requestId': 52,
       'pluginId': 'pre-admission-cancel',
+      'configurationContext': 'default',
       'method': 'stream-cancel-count',
       'payload': <String, Object?>{},
     });
@@ -1181,6 +1222,7 @@ void main() {
       'kind': 'request',
       'requestId': 53,
       'pluginId': 'pre-admission-cancel',
+      'configurationContext': 'default',
       'method': 'ping',
       'payload': <String, Object?>{},
     });
@@ -1213,6 +1255,7 @@ void main() {
       'kind': 'startPlugin',
       'requestId': 60,
       'pluginId': 'discard-cancel',
+      'defaultConfigurationContext': 'default',
       'artifactUri': pluginKernel.uri.toString(),
       'arguments': <String>['wait'],
     });
@@ -1229,6 +1272,7 @@ void main() {
       'kind': 'streamOpen',
       'requestId': 61,
       'pluginId': 'discard-cancel',
+      'configurationContext': 'default',
       'method': 'stream-malformed',
       'payload': <String, Object?>{},
     });

@@ -25,8 +25,11 @@ void main() {
           await PluginCapabilityActivation.register(
             connection: connection,
             registry: registry,
-            providers: <ProviderDescriptor>[
-              _provider(capability, 'dev.adele.provider.inspector'),
+            exposures: <PluginCapabilityExposure>[
+              PluginCapabilityExposure(
+                provider: _provider(capability, 'dev.adele.provider.inspector'),
+                configurationContext: connection.defaultConfigurationContext,
+              ),
             ],
           );
       expect(registry.providersFor(capability), hasLength(1));
@@ -61,9 +64,15 @@ void main() {
       await PluginCapabilityActivation.register(
         connection: connection,
         registry: registry,
-        providers: <ProviderDescriptor>[
-          _provider(first, 'dev.adele.provider.inspector'),
-          _provider(second, 'dev.adele.provider.summarizer'),
+        exposures: <PluginCapabilityExposure>[
+          PluginCapabilityExposure(
+            provider: _provider(first, 'dev.adele.provider.inspector'),
+            configurationContext: connection.defaultConfigurationContext,
+          ),
+          PluginCapabilityExposure(
+            provider: _provider(second, 'dev.adele.provider.summarizer'),
+            configurationContext: connection.defaultConfigurationContext,
+          ),
         ],
       );
       await expectLater(
@@ -77,6 +86,129 @@ void main() {
       await host.close();
     },
   );
+
+  test('bindings own explicit shared configuration contexts', () async {
+    final _FakeHost fake = _FakeHost.create(contextEcho: true);
+    addTearDown(fake.dispose);
+    final PluginBackendHost host = await fake.start();
+    final CapabilityRegistry registry = CapabilityRegistry();
+    final CapabilityKey capability = CapabilityKey(
+      id: CapabilityId('dev.adele.resource.inspect'),
+      majorVersion: 1,
+    );
+    final ProviderId contextAFirstId = ProviderId(
+      'dev.adele.provider.context-a-first',
+    );
+    final ProviderId contextASecondId = ProviderId(
+      'dev.adele.provider.context-a-second',
+    );
+    final ProviderId contextBId = ProviderId(
+      'dev.adele.provider.context-b-first',
+    );
+    final PluginBackendConnection connection = await host.startPlugin(
+      pluginId: 'dev.adele.provider',
+      artifactUri: Uri.file('/unused.aot'),
+    );
+    final PluginCapabilityActivation activation =
+        await PluginCapabilityActivation.register(
+          connection: connection,
+          registry: registry,
+          exposures: <PluginCapabilityExposure>[
+            PluginCapabilityExposure(
+              provider: _provider(capability, contextAFirstId.value),
+              configurationContext: connection.defaultConfigurationContext,
+            ),
+            PluginCapabilityExposure(
+              provider: _provider(capability, contextASecondId.value),
+              configurationContext: connection.defaultConfigurationContext,
+            ),
+            PluginCapabilityExposure(
+              provider: _provider(capability, contextBId.value),
+              configurationContext: connection.configurationContext(
+                'configuration-b',
+              ),
+            ),
+          ],
+        );
+    final Map<String, Object?> semanticPayload = <String, Object?>{
+      'configurationContext': 'configuration-b',
+      'value': 'same semantic request',
+    };
+    final ProviderBinding contextAFirst = registry.resolve(
+      capability,
+      providerId: contextAFirstId,
+    );
+    final ProviderBinding contextASecond = registry.resolve(
+      capability,
+      providerId: contextASecondId,
+    );
+    final ProviderBinding contextB = registry.resolve(
+      capability,
+      providerId: contextBId,
+    );
+
+    final Object? firstResult = await contextAFirst.requestChannel.request(
+      'resourceInspector.inspect',
+      semanticPayload,
+    );
+    final Object? secondResult = await contextASecond.requestChannel.request(
+      'resourceInspector.inspect',
+      semanticPayload,
+    );
+    final Object? contextBResult = await contextB.requestChannel.request(
+      'resourceInspector.inspect',
+      semanticPayload,
+    );
+    expect(firstResult, isA<Map<String, Object?>>());
+    expect(secondResult, isA<Map<String, Object?>>());
+    expect(contextBResult, isA<Map<String, Object?>>());
+    final Map<String, Object?> firstMap = firstResult! as Map<String, Object?>;
+    final Map<String, Object?> secondMap = secondResult!
+        as Map<String, Object?>;
+    final Map<String, Object?> contextBMap = contextBResult!
+        as Map<String, Object?>;
+    expect(
+      firstMap['configurationContext'],
+      secondMap['configurationContext'],
+    );
+    expect(
+      firstMap['configurationContext'],
+      isNot(contextBMap['configurationContext']),
+    );
+    expect(firstMap['payload'], semanticPayload);
+    expect(
+      await contextB.streamChannel
+          .stream('resourceInspector.watch', semanticPayload)
+          .toList(),
+      <Object?>[contextBResult],
+    );
+
+    await activation.close();
+    await host.close();
+  });
+
+  test('configuration contexts cannot cross plugin generations', () async {
+    final _FakeHost fake = _FakeHost.create();
+    addTearDown(fake.dispose);
+    final PluginBackendHost host = await fake.start();
+    final PluginBackendConnection first = await host.startPlugin(
+      pluginId: 'dev.adele.provider.first',
+      artifactUri: Uri.file('/unused.aot'),
+    );
+    final PluginBackendConnection second = await host.startPlugin(
+      pluginId: 'dev.adele.provider.second',
+      artifactUri: Uri.file('/unused.aot'),
+    );
+
+    expect(
+      () => second.channelFor(first.defaultConfigurationContext),
+      throwsArgumentError,
+    );
+
+    await first.close();
+    await second.close();
+    await host.close();
+  });
 
   test('partial activation mismatch rolls back previous providers', () async {
     final _FakeHost fake = _FakeHost.create();
@@ -95,12 +227,18 @@ void main() {
       PluginCapabilityActivation.register(
         connection: connection,
         registry: registry,
-        providers: <ProviderDescriptor>[
-          _provider(capability, 'dev.adele.provider.first'),
-          _provider(
-            capability,
-            'dev.adele.provider.second',
-            pluginId: 'dev.adele.other',
+        exposures: <PluginCapabilityExposure>[
+          PluginCapabilityExposure(
+            provider: _provider(capability, 'dev.adele.provider.first'),
+            configurationContext: connection.defaultConfigurationContext,
+          ),
+          PluginCapabilityExposure(
+            provider: _provider(
+              capability,
+              'dev.adele.provider.second',
+              pluginId: 'dev.adele.other',
+            ),
+            configurationContext: connection.defaultConfigurationContext,
           ),
         ],
       ),
@@ -127,7 +265,10 @@ ProviderDescriptor _provider(
 final class _FakeHost {
   _FakeHost._(this.directory, this.script);
 
-  factory _FakeHost.create({bool failOnRequest = false}) {
+  factory _FakeHost.create({
+    bool failOnRequest = false,
+    bool contextEcho = false,
+  }) {
     final Directory directory = Directory(
       '${Directory.current.path}/.dart_tool/capability-runtime/'
       '${DateTime.now().microsecondsSinceEpoch}',
@@ -139,6 +280,7 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 void main() {
   stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
   final decoder = BackendHostFrameDecoder();
+  final streams = <int, Map<String, Object?>>{};
   stdin.listen((bytes) {
     for (final message in decoder.add(bytes)) {
       if (message['kind'] == 'startPlugin') {
@@ -146,7 +288,19 @@ void main() {
       } else if (message['kind'] == 'stopPlugin') {
         stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginStopped', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
       } else if (message['kind'] == 'request') {
-        ${failOnRequest ? "stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginFailed', 'pluginId': message['pluginId'], 'requestIds': [message['requestId']], 'error': {'code': 'plugin_exited', 'message': 'failed'}}));" : "stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'response', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'ok': true, 'payload': {}}));"}
+        ${failOnRequest
+          ? "stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginFailed', 'pluginId': message['pluginId'], 'requestIds': [message['requestId']], 'error': {'code': 'plugin_exited', 'message': 'failed'}}));"
+          : contextEcho
+          ? "stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'response', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'ok': true, 'payload': {'configurationContext': message['configurationContext'], 'payload': message['payload']}}));"
+          : "stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'response', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'ok': true, 'payload': {}}));"}
+      } else if (message['kind'] == 'streamOpen') {
+        streams[message['requestId'] as int] = message;
+      } else if (message['kind'] == 'streamCredit') {
+        final open = streams.remove(message['requestId']);
+        if (open != null) {
+          stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamItem', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'payload': {'configurationContext': open['configurationContext'], 'payload': open['payload']}}));
+          stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'streamDone', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+        }
       } else if (message['kind'] == 'shutdownHost') {
         stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostStopped', 'requestId': message['requestId']}));
         exit(0);

@@ -70,11 +70,14 @@ void main() {
           await PluginCapabilityActivation.register(
             connection: basic,
             registry: registry,
-            providers: <ProviderDescriptor>[
-              _descriptor(
-                id: basicResourceInspectorProviderId,
-                pluginId: basic.pluginId,
-                displayName: 'Basic Inspector',
+            exposures: <PluginCapabilityExposure>[
+              PluginCapabilityExposure(
+                provider: _descriptor(
+                  id: basicResourceInspectorProviderId,
+                  pluginId: basic.pluginId,
+                  displayName: 'Basic Inspector',
+                ),
+                configurationContext: basic.defaultConfigurationContext,
               ),
             ],
           );
@@ -82,11 +85,14 @@ void main() {
           await PluginCapabilityActivation.register(
             connection: alternate,
             registry: registry,
-            providers: <ProviderDescriptor>[
-              _descriptor(
-                id: alternateResourceInspectorProviderId,
-                pluginId: alternate.pluginId,
-                displayName: 'Alternate Inspector',
+            exposures: <PluginCapabilityExposure>[
+              PluginCapabilityExposure(
+                provider: _descriptor(
+                  id: alternateResourceInspectorProviderId,
+                  pluginId: alternate.pluginId,
+                  displayName: 'Alternate Inspector',
+                ),
+                configurationContext: alternate.defaultConfigurationContext,
               ),
             ],
           );
@@ -191,11 +197,15 @@ void main() {
           await PluginCapabilityActivation.register(
             connection: restartedBasic,
             registry: registry,
-            providers: <ProviderDescriptor>[
-              _descriptor(
-                id: basicResourceInspectorProviderId,
-                pluginId: restartedBasic.pluginId,
-                displayName: 'Basic Inspector',
+            exposures: <PluginCapabilityExposure>[
+              PluginCapabilityExposure(
+                provider: _descriptor(
+                  id: basicResourceInspectorProviderId,
+                  pluginId: restartedBasic.pluginId,
+                  displayName: 'Basic Inspector',
+                ),
+                configurationContext:
+                    restartedBasic.defaultConfigurationContext,
               ),
             ],
           );
