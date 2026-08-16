@@ -148,13 +148,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - variant: default
+          - variant: default-repeat
             concurrency: 0
-          - variant: 2
-            concurrency: 2
-          - variant: 3
-            concurrency: 3
-          - variant: 4
+          - variant: 4-repeat
             concurrency: 4
     steps:
       - name: Check out repository
@@ -176,12 +172,12 @@ jobs:
           dart --version
 
       - name: Benchmark default concurrency
-        if: matrix.variant == 'default'
+        if: matrix.concurrency == 0
         working-directory: packages/contract_codegen
         run: time dart test
 
       - name: Benchmark explicit concurrency
-        if: matrix.variant != 'default'
+        if: matrix.concurrency != 0
         working-directory: packages/contract_codegen
         run: time dart test --concurrency "${{ matrix.concurrency }}"
 
