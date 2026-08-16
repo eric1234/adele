@@ -21,6 +21,12 @@ _packages = <({String name, String path, bool flutter})>[
   (name: 'plugin_builder', path: 'packages/plugin_builder', flutter: false),
   (name: 'agent_kernel', path: 'packages/agent_kernel', flutter: false),
   (name: 'scripted_model', path: 'plugins/scripted_model', flutter: false),
+  (name: 'openai_plugin', path: 'plugins/openai', flutter: false),
+  (
+    name: 'openai_model_provider_backend',
+    path: 'plugins/openai/packages/backend',
+    flutter: false,
+  ),
   (
     name: 'scripted_model_contract',
     path: 'plugins/scripted_model/packages/contract',
@@ -177,6 +183,12 @@ Future<void> main(List<String> arguments) async {
           'dart',
           <String>['test'],
           workingDirectory: 'plugins/scripted_model/packages/backend',
+        );
+        await _run(
+          'openai_model_provider_backend',
+          'dart',
+          <String>['test'],
+          workingDirectory: 'plugins/openai/packages/backend',
         );
         await _run(
           'workspace_demo_contract',
