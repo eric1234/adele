@@ -130,6 +130,19 @@ final class PluginBackendHost {
           (String message) => onDiagnostic?.call('backend-host: $message'),
         );
     unawaited(
+      process.stdin.done.then<void>(
+        (_) {},
+        onError: (Object error) {
+          if (host._closed) return;
+          unawaited(
+            host._terminateAfterFailure(
+              PluginConnectionClosed('Backend host input failed: $error'),
+            ),
+          );
+        },
+      ),
+    );
+    unawaited(
       process.exitCode.then((int code) {
         if (host._shuttingDown &&
             host._pending.isEmpty &&
@@ -799,7 +812,11 @@ final class PluginBackendHost {
     } else {
       await _process.exitCode.timeout(_shutdownTimeout);
     }
-    await _process.stdin.close();
+    try {
+      await _process.stdin.close();
+    } on Object catch (closeError) {
+      _onDiagnostic?.call('Backend host input cleanup failed: $closeError');
+    }
     await _stdoutSubscription.cancel();
     await _stderrSubscription.cancel();
   }
