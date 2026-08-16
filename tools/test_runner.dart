@@ -6,10 +6,12 @@ final class TestTarget {
     required this.path,
     required this.executable,
     required this.arguments,
+    this.linuxDesktopDeps = false,
   });
 
   final List<String> arguments;
   final String executable;
+  final bool linuxDesktopDeps;
   final String name;
   final String path;
 }

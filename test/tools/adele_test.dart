@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:test/test.dart';
 
@@ -118,6 +119,95 @@ void main() {
     );
   });
 
+  group('test options', () {
+    test('accepts an exact target and rejects ambiguous combinations', () {
+      final TestOptions options = parseTestOptions(<String>[
+        '--target',
+        'contract_codegen',
+      ]);
+      expect(options.target, 'contract_codegen');
+      expect(options.jobs, 1);
+      expect(
+        () => parseTestOptions(<String>[
+          '--target',
+          'contract_codegen',
+          '--jobs',
+          '2',
+        ]),
+        throwsA(isA<TestUsageException>()),
+      );
+    });
+
+    test('rejects missing, duplicate, equals, and unknown target options', () {
+      for (final List<String> arguments in <List<String>>[
+        <String>['--target'],
+        <String>['--target', 'one', '--target', 'two'],
+        <String>['--target=one'],
+        <String>['--other'],
+      ]) {
+        expect(
+          () => parseTestOptions(arguments),
+          throwsA(isA<TestUsageException>()),
+          reason: arguments.toString(),
+        );
+      }
+    });
+  });
+
+  group('test plan', () {
+    test('contains every unique target exactly once with setup metadata', () {
+      final Map<String, Object?> plan =
+          jsonDecode(testPlanJson())! as Map<String, Object?>;
+      final List<Object?> include = plan['include']! as List<Object?>;
+      final List<String> names = <String>[
+        for (final Object? item in include)
+          (item! as Map<String, Object?>)['name']! as String,
+      ];
+
+      expect(include, hasLength(testTargets.length));
+      expect(names, <String>[
+        for (final TestTarget target in testTargets) target.name,
+      ]);
+      expect(names.toSet(), hasLength(testTargets.length));
+      expect(
+        include,
+        everyElement(
+          isA<Map<String, Object?>>().having(
+            (Map<String, Object?> item) => item.keys,
+            'keys',
+            unorderedEquals(<String>['name', 'linuxDesktopDeps']),
+          ),
+        ),
+      );
+      expect(
+        <String>[
+          for (final TestTarget target in testTargets)
+            if (target.linuxDesktopDeps) target.name,
+        ],
+        <String>['adele_desktop'],
+      );
+    });
+  });
+
+  group('target lookup', () {
+    test('returns the exact target', () {
+      expect(lookupTestTarget('contract_codegen').name, 'contract_codegen');
+    });
+
+    test('rejects an unknown target', () {
+      expect(
+        () => lookupTestTarget('missing'),
+        throwsA(
+          isA<TestUsageException>().having(
+            (TestUsageException failure) => failure.message,
+            'message',
+            contains('Unknown test target: missing'),
+          ),
+        ),
+      );
+    });
+  });
+
   test('target data preserves package-specific runners and timeouts', () {
     expect(
       <String>[
@@ -128,7 +218,7 @@ void main() {
       const <String>[
         'adele_tools|dart|.|test test/tools',
         'adele_contract|dart|packages/contract|test',
-        'contract_codegen|dart|packages/contract_codegen|test --concurrency 2',
+        'contract_codegen|dart|packages/contract_codegen|test',
         'adele_plugin_api|dart|packages/plugin_api|test',
         'adele_model_provider|dart|packages/model_provider|test',
         'adele_capabilities|dart|packages/capabilities|test',

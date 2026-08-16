@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
@@ -22,7 +23,7 @@ const List<TestTarget> testTargets = <TestTarget>[
     name: 'contract_codegen',
     path: 'packages/contract_codegen',
     executable: 'dart',
-    arguments: <String>['test', '--concurrency', '2'],
+    arguments: <String>['test'],
   ),
   TestTarget(
     name: 'adele_plugin_api',
@@ -107,6 +108,7 @@ const List<TestTarget> testTargets = <TestTarget>[
     path: 'app',
     executable: 'flutter',
     arguments: <String>['test'],
+    linuxDesktopDeps: true,
   ),
 ];
 
@@ -247,8 +249,14 @@ Future<void> main(List<String> arguments) async {
         return;
       case 'test':
         exitCode = await _runTests(
-          parseTestJobs(arguments.skip(1).toList(growable: false)),
+          parseTestOptions(arguments.skip(1).toList(growable: false)),
         );
+        return;
+      case 'test-plan':
+        if (arguments.length != 2 || arguments[1] != '--json') {
+          throw const TestUsageException('test-plan requires exactly --json.');
+        }
+        stdout.writeln(testPlanJson());
         return;
       case 'check':
         await main(<String>['generate', '--check']);
@@ -338,45 +346,104 @@ int defaultTestJobs([int? numberOfProcessors]) {
 }
 
 int parseTestJobs(List<String> arguments, {int? numberOfProcessors}) {
+  return parseTestOptions(
+    arguments,
+    numberOfProcessors: numberOfProcessors,
+  ).jobs;
+}
+
+final class TestOptions {
+  const TestOptions({required this.jobs, this.target});
+
+  final int jobs;
+  final String? target;
+}
+
+TestOptions parseTestOptions(
+  List<String> arguments, {
+  int? numberOfProcessors,
+}) {
   int? jobs;
+  String? target;
   for (int index = 0; index < arguments.length; index++) {
     final String argument = arguments[index];
-    String? value;
-    if (argument == '--jobs') {
-      if (index + 1 >= arguments.length) {
+    if (argument == '--jobs' || argument.startsWith('--jobs=')) {
+      if (jobs != null) {
+        throw const TestUsageException('--jobs may only be specified once.');
+      }
+      if (argument == '--jobs' && index + 1 >= arguments.length) {
         throw const TestUsageException('--jobs requires a positive integer.');
       }
-      value = arguments[++index];
-    } else if (argument.startsWith('--jobs=')) {
-      value = argument.substring('--jobs='.length);
+      final String value = argument == '--jobs'
+          ? arguments[++index]
+          : argument.substring('--jobs='.length);
+      jobs = _parseTestJobsValue(value);
+    } else if (argument == '--target') {
+      if (index + 1 >= arguments.length ||
+          arguments[index + 1].startsWith('-')) {
+        throw const TestUsageException('--target requires a target name.');
+      }
+      if (target != null) {
+        throw const TestUsageException('--target may only be specified once.');
+      }
+      target = arguments[++index];
     } else {
       throw TestUsageException('Unknown test option: $argument');
     }
-    if (jobs != null) {
-      throw const TestUsageException('--jobs may only be specified once.');
-    }
-    if (!RegExp(r'^[1-9][0-9]*$').hasMatch(value)) {
-      throw TestUsageException(
-        'Invalid --jobs value "$value"; expected a positive integer.',
-      );
-    }
-    jobs = int.tryParse(value);
-    if (jobs == null) {
-      throw TestUsageException(
-        'Invalid --jobs value "$value"; expected a positive integer.',
-      );
-    }
   }
-  return jobs ?? defaultTestJobs(numberOfProcessors);
+  if (jobs != null && target != null) {
+    throw const TestUsageException('--target and --jobs cannot be combined.');
+  }
+  return TestOptions(
+    jobs: jobs ?? (target == null ? defaultTestJobs(numberOfProcessors) : 1),
+    target: target,
+  );
 }
 
-Future<int> _runTests(int jobs) async {
+int _parseTestJobsValue(String value) {
+  final int? jobs = RegExp(r'^[1-9][0-9]*$').hasMatch(value)
+      ? int.tryParse(value)
+      : null;
+  if (jobs == null) {
+    throw TestUsageException(
+      'Invalid --jobs value "$value"; expected a positive integer.',
+    );
+  }
+  return jobs;
+}
+
+TestTarget lookupTestTarget(
+  String name, [
+  List<TestTarget> targets = testTargets,
+]) {
+  for (final TestTarget target in targets) {
+    if (target.name == name) return target;
+  }
+  throw TestUsageException('Unknown test target: $name');
+}
+
+String testPlanJson([List<TestTarget> targets = testTargets]) {
+  return jsonEncode(<String, Object>{
+    'include': <Map<String, Object>>[
+      for (final TestTarget target in targets)
+        <String, Object>{
+          'name': target.name,
+          'linuxDesktopDeps': target.linuxDesktopDeps,
+        },
+    ],
+  });
+}
+
+Future<int> _runTests(TestOptions options) async {
+  final List<TestTarget> targets = options.target == null
+      ? testTargets
+      : <TestTarget>[lookupTestTarget(options.target!)];
   stdout.writeln(
-    'Running ${testTargets.length} test targets with up to $jobs jobs.',
+    'Running ${targets.length} test targets with up to ${options.jobs} jobs.',
   );
   final TestRunSummary summary = await runTestTargets(
-    targets: testTargets,
-    jobs: jobs,
+    targets: targets,
+    jobs: options.jobs,
     execute: (TestTarget target) async {
       final Process process = await Process.start(
         target.executable,
@@ -502,6 +569,8 @@ Commands:
   generate [--check] Generate or verify committed contract transport files.
   analyze            Analyze every package and identify failures.
   test [--jobs N]    Run tests with at most N package processes (default: up to 2).
+  test --target NAME Run exactly one named test target.
+  test-plan --json   Print the CI test matrix without resolving dependencies.
   check              Verify formatting, analysis, and tests.
   run [device] [--debug|--profile|--release]
                      Run the desktop app in an explicit mode.
