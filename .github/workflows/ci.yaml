@@ -6,6 +6,16 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+    inputs:
+      test_jobs:
+        description: Package test processes for benchmark runs
+        required: true
+        default: "4"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "4"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -97,7 +107,12 @@ jobs:
         run: dart tools/adele.dart bootstrap
 
       - name: Run tests
+        if: github.event_name != 'workflow_dispatch'
         run: dart tools/adele.dart test --jobs 4
+
+      - name: Run tests benchmark
+        if: github.event_name == 'workflow_dispatch'
+        run: dart tools/adele.dart test --jobs ${{ inputs.test_jobs }}
 
   build-linux:
     runs-on: ubuntu-latest
