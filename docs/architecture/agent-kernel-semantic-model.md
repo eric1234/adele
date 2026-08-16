@@ -2,7 +2,7 @@
 
 ## Status
 
-**Guiding architecture; Phase IV-B2 common provider vertical implemented**
+**Guiding architecture; Phase IV-B4 OpenAI provider vertical implemented**
 
 This document records the semantic boundaries ADELE intends to preserve while implementing its agent execution substrate. It is more specific than the non-normative research survey, but it is **not** a stable public extension API and does not freeze exact Dart type names, persistence schemas, or contribution APIs.
 
@@ -636,6 +636,8 @@ Phase IV-A — semantic agent-execution foundation      complete
 Phase II-B — generated streaming + cancellation       complete
 Phase IV-B1 — scripted adapter streaming integration  complete
 Phase IV-B2 — common ModelProvider scripted vertical  complete
+Phase IV-B3 — ordered provider-native model items     complete
+Phase IV-B4 — OpenAI API-key Responses provider       complete
 ```
 
 Recommended near-term sequence:

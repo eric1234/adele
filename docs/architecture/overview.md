@@ -93,13 +93,17 @@ models, tools, editors, Git integrations, terminals, UI, and specialized agent
 workflows belong in plugins rather than in the kernel.
 
 Phase IV uses a development-only application strategy and common ModelProvider
-capability backed by a scripted provider to prove a generation-safe
-model/tool/approval/tool/model cycle through real AOT providers. The kernel
-model port is stream-shaped, and the application adapter now consumes the
-fixture through Phase II-B generated typed streaming while preserving exact
-generation binding and consumer cancellation. Live text observations remain
-separate from completed output, semantic terminal settlement is explicit, and
-opaque item metadata survives tool continuation.
+capability to prove generation-safe model/tool/approval/tool/model cycles
+through real AOT providers. The kernel model port is stream-shaped, and the
+application adapter consumes providers through Phase II-B generated typed
+streaming while preserving exact generation binding and consumer cancellation.
+Live text observations remain separate from completed output, semantic terminal
+settlement is explicit, and opaque item metadata survives tool continuation.
+Phase IV-B4 adds the first real provider: `dev.adele.openai` uses the public
+OpenAI API-key Responses HTTP/SSE route with `store:false` canonical ordered
+replay. Deterministic local HTTP fixtures prove native reasoning, completed
+text, function proposal, ADELE-owned tool execution, and continued Responses
+output through the shared AOT backend host.
 
 The long-term self-hosting goal is for ADELE to develop ADELE itself. That goal
 does not change the Phase 0 rule to prefer small, working boundaries and avoid

@@ -73,11 +73,13 @@ final class PluginBackendHost {
     Duration startupTimeout = const Duration(seconds: 5),
     Duration shutdownTimeout = const Duration(seconds: 2),
     PluginDiagnosticSink? onDiagnostic,
+    Map<String, String>? environment,
   }) async {
     final Process process = await Process.start(
       dartaotruntimeExecutable,
       <String>[hostArtifactPath],
       runInShell: false,
+      environment: environment,
     );
     final PluginBackendHost host = PluginBackendHost._(
       process: process,
