@@ -34,6 +34,8 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       Platform.environment['ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE'];
   final String? oauthClientId =
       Platform.environment['ADELE_OPENAI_CHATGPT_CLIENT_ID'];
+  final bool experimentalCodexClientOptIn =
+      Platform.environment[openAiExperimentalCodexClientEnvironment] == '1';
   final String? chatGptEndpointValue =
       Platform.environment['ADELE_OPENAI_CHATGPT_ENDPOINT'];
   final String? oauthIssuerValue =
@@ -42,38 +44,37 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       Platform.environment['ADELE_OPENAI_CHATGPT_REDIRECT_URI'];
   OpenAiOAuthClient? oauth;
   OpenAiModelProvider? chatGptProvider;
-  if (credentialFile != null || oauthClientId != null) {
+  if (credentialFile != null ||
+      oauthClientId != null ||
+      experimentalCodexClientOptIn) {
     if (credentialFile == null || credentialFile.isEmpty) {
       throw StateError(
         'The experimental ChatGPT configuration requires a credential file.',
       );
     }
-    final String effectiveClientId =
-        oauthClientId ?? openAiExperimentalCodexOAuthClientId;
-    if (oauthClientId == null) {
+    final OpenAiOAuthClientIdentity identity = openAiOAuthClientIdentity(
+      Platform.environment,
+      allowDevelopmentFallback: false,
+    );
+    if (identity.experimentalCodexClient) {
       stderr.writeln(
-        'EXPERIMENTAL: using the source-visible Codex OAuth public client. '
-        'This path is not a documented OpenAI third-party contract.',
+        'EXPERIMENTAL OPT-IN: using the source-visible Codex OAuth public '
+        'client. This identity is not an ADELE registration or documented '
+        'OpenAI third-party contract.',
       );
     }
     oauth = OpenAiOAuthClient(
       configuration: OpenAiOAuthConfiguration(
-        clientId: effectiveClientId,
+        clientId: identity.clientId,
         issuer: oauthIssuerValue == null ? null : Uri.parse(oauthIssuerValue),
         redirectUri: Uri.parse(
           redirectValue ?? 'http://localhost:1455/auth/callback',
         ),
-        authorizationParameters: const <String, String>{
-          'id_token_add_organizations': 'true',
-          'codex_cli_simplified_flow': 'true',
-          'originator': 'adele',
-        },
+        authorizationParameters: openAiChatGptAuthorizationParameters,
       ),
     );
     final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
-      instanceId:
-          Platform.environment['ADELE_OPENAI_CHATGPT_INSTANCE_ID'] ??
-          'development-chatgpt',
+      instanceId: openAiChatGptInstanceId(Platform.environment),
       store: FileOpenAiCredentialStore(File(credentialFile)),
       oauth: oauth,
     );

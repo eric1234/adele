@@ -135,10 +135,17 @@ final class OpenAiModelProvider implements ModelProviderService {
         );
         return;
       }
-      Future<void> send({required bool recoveredAuthorization}) async {
+      Future<void> send({
+        required bool recoveredAuthorization,
+        OpenAiChatGptAuthorization? authorization,
+      }) async {
         try {
+          final OpenAiChatGptAuthorization? chatGptAuthorization =
+              _chatGptAuth == null
+              ? null
+              : authorization ?? await _chatGptAuth.authorization();
           final OpenAiChatGptCredential? chatGptCredential =
-              _chatGptAuth == null ? null : await _chatGptAuth.authorization();
+              chatGptAuthorization?.credential;
           if (cancelled) return;
           final HttpClientRequest outgoing = await _httpClient.postUrl(
             _endpoint,
@@ -185,9 +192,13 @@ final class OpenAiModelProvider implements ModelProviderService {
                 _chatGptAuth != null &&
                 !recoveredAuthorization) {
               errorBodyCapture = null;
-              await _chatGptAuth.refresh();
+              final OpenAiChatGptAuthorization recovered = await _chatGptAuth
+                  .recoverUnauthorized(chatGptAuthorization!.revision);
               if (!cancelled) {
-                await send(recoveredAuthorization: true);
+                await send(
+                  recoveredAuthorization: true,
+                  authorization: recovered,
+                );
               }
               return;
             }

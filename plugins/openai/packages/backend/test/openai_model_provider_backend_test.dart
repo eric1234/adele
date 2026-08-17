@@ -953,6 +953,119 @@ void main() {
       );
     });
 
+    test('staggered concurrent ChatGPT 401s refresh only once', () async {
+      final Completer<void> firstOldArrived = Completer<void>();
+      final Completer<void> secondOldArrived = Completer<void>();
+      final Completer<void> releaseFirst401 = Completer<void>();
+      final Completer<void> releaseSecond401 = Completer<void>();
+      var oldTokenRequests = 0;
+      var refreshedTokenRequests = 0;
+      var refreshRequests = 0;
+      final _FakeServer server = await _FakeServer.start((request) async {
+        if (request.uri.path == '/oauth/token') {
+          refreshRequests++;
+          expect((await _jsonBody(request))['refresh_token'], 'refresh-old');
+          request.response.headers.contentType = ContentType.json;
+          request.response.write(
+            jsonEncode(<String, Object?>{
+              'access_token': 'access-current',
+              'refresh_token': 'refresh-current',
+            }),
+          );
+          await request.response.close();
+          return;
+        }
+        await request.drain<void>();
+        final String? authorization = request.headers.value(
+          HttpHeaders.authorizationHeader,
+        );
+        if (authorization == 'Bearer access-old') {
+          oldTokenRequests++;
+          if (oldTokenRequests == 1) {
+            firstOldArrived.complete();
+            await releaseFirst401.future;
+          } else {
+            secondOldArrived.complete();
+            await releaseSecond401.future;
+          }
+          request.response.statusCode = HttpStatus.unauthorized;
+          await request.response.close();
+          return;
+        }
+        expect(authorization, 'Bearer access-current');
+        refreshedTokenRequests++;
+        request.response.headers.contentType = ContentType(
+          'text',
+          'event-stream',
+          charset: 'utf-8',
+        );
+        _sse(
+          request.response,
+          _outputDone(
+            _message('msg-staggered-$refreshedTokenRequests', 'recovered'),
+          ),
+        );
+        _sse(
+          request.response,
+          _completed('resp-staggered-$refreshedTokenRequests'),
+        );
+        await request.response.close();
+      });
+      addTearDown(server.close);
+      final InMemoryOpenAiCredentialStore store =
+          InMemoryOpenAiCredentialStore();
+      final OpenAiOAuthClient oauth = _oauth(server);
+      addTearDown(oauth.close);
+      final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
+        instanceId: 'staggered-401',
+        store: store,
+        oauth: oauth,
+      );
+      await auth.install(
+        OpenAiChatGptCredential(
+          idToken: _idToken('account-staggered'),
+          accessToken: 'access-old',
+          refreshToken: 'refresh-old',
+          accountId: 'account-staggered',
+          fedRamp: false,
+          expiresAt: null,
+        ),
+      );
+      final OpenAiModelProvider provider = OpenAiModelProvider.chatGpt(
+        auth: auth,
+        endpoint: server.responsesUri,
+      );
+      addTearDown(provider.close);
+
+      final Future<List<ModelProviderEvent>> first = provider
+          .invoke(_request())
+          .toList();
+      final Future<List<ModelProviderEvent>> second = provider
+          .invoke(_request())
+          .toList();
+      await Future.wait(<Future<void>>[
+        firstOldArrived.future,
+        secondOldArrived.future,
+      ]);
+      releaseFirst401.complete();
+      while ((await store.load('staggered-401')).revision == 1) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      releaseSecond401.complete();
+      final List<List<ModelProviderEvent>> results = await Future.wait(
+        <Future<List<ModelProviderEvent>>>[first, second],
+      );
+
+      expect(
+        results.map((events) => events.last.terminal?.settlement),
+        everyElement(ModelProviderSettlement.completed),
+      );
+      expect(oldTokenRequests, 2);
+      expect(refreshedTokenRequests, 2);
+      expect(refreshRequests, 1);
+      expect((await store.load('staggered-401')).revision, 2);
+    });
+
     test(
       'ChatGPT profile reuses ordered native and tool continuation',
       () async {

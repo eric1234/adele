@@ -56,16 +56,33 @@ instances remain independent. Omitted optional refresh-token response fields
 retain their prior valid values, and refreshed account identity must match the
 bound account.
 
-The first login path is desktop browser authorization-code OAuth with PKCE S256,
-cryptographically random verifier and state, a loopback callback, state
-validation, and token exchange. OAuth issuer, client identity, redirect, and
-route data remain configurable. The development path prefers an explicitly
-configured ADELE-authorized client identity, but may use the current
-source-visible Codex public client as a clearly warned experimental fallback.
+The first login path is desktop browser authorization-code OAuth with PKCE S256
+and a loopback callback. Standard authorization URI fields, PKCE
+verifier/challenge handling, callback state and OAuth error validation,
+authorization-code exchange, and initial token parsing are delegated to
+`package:oauth2`. ADELE owns browser launching, the loopback HTTP listener,
+OpenAI-specific authorization parameters, and account-claim extraction and
+binding. Wrong-path and wrong-state loopback requests remain non-terminal; the
+library validates the legitimate callback. OAuth issuer, client identity,
+redirect, and route data remain configurable. The development command prefers
+an explicitly configured ADELE-authorized client identity, but may use the
+current source-visible Codex public client as a loudly warned experimental
+fallback.
 OpenCode, KiloCode, and Cline ship the same identity for their corresponding
 ChatGPT integrations. The fallback is an interoperability choice, not an ADELE
 OAuth registration or a stable OpenAI third-party contract. PKCE verifier and
 state exist only for one in-memory login attempt. Device login is not included.
+The normal backend does not silently select that identity: it requires either
+`ADELE_OPENAI_CHATGPT_CLIENT_ID` or the explicit
+`ADELE_OPENAI_CHATGPT_EXPERIMENTAL_CODEX_CLIENT=1` interoperability opt-in.
+
+Current Codex source still sends refresh-token requests as JSON containing
+`client_id`, `grant_type`, and `refresh_token`, while `package:oauth2` implements
+the standard form-encoded refresh request. A small OpenAI-specific adapter
+therefore retains that JSON exchange. The library is not allowed to refresh or
+mutate durable credentials automatically. Initial library credentials and
+custom refresh results are converted into ADELE's account-bound revision/CAS
+record before publication.
 
 The ChatGPT request uses its OAuth access token, exact bound
 `ChatGPT-Account-ID`, and conditional `X-OpenAI-Fedramp: true`. These headers
@@ -91,7 +108,9 @@ refresh credentials and retry once only before any ADELE `ModelProviderEvent`
 has escaped. Persistent 401 does not loop. No observation, native output, text
 output, tool proposal, or terminal can be retracted, so no retry occurs after
 one crosses the provider boundary. This is an auth exception, not a general
-retry framework.
+retry framework. Recovery retains the revision used by the rejected HTTP
+attempt. If another invocation has already committed a newer revision, the
+request retries that credential without rotating its refresh token again.
 
 Logout authoritatively commits a local credential tombstone. Best-effort remote
 revocation may be added later, but remote failure cannot preserve local login
@@ -100,8 +119,10 @@ state or allow a stale refresh to resurrect it.
 An in-memory store supports deterministic tests. A small one-writer local file
 store provides provisional development persistence with explicit corruption
 failure, atomic temporary-file replacement, and restrictive file permissions
-where supported. It is not the final production credential UX or a general
-ADELE secrets facility.
+where supported. Its full read/compare/write mutation is serialized within the
+one-writer backend process, making its in-process CAS guarantee real, and each
+atomic replacement uses a unique temporary path. It is not the final production
+credential UX or a general ADELE secrets facility.
 
 The direct ChatGPT/Codex backend path remains experimental and
 development-oriented until OpenAI provides an authorized client identity and a

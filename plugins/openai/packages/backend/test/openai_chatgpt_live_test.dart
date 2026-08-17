@@ -14,11 +14,13 @@ void main() {
       final String credentialPath = _requiredEnvironment(
         'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE',
       );
+      final OpenAiOAuthClientIdentity identity = openAiOAuthClientIdentity(
+        Platform.environment,
+        allowDevelopmentFallback: true,
+      );
       final OpenAiOAuthClient oauth = OpenAiOAuthClient(
         configuration: OpenAiOAuthConfiguration(
-          clientId:
-              Platform.environment['ADELE_OPENAI_CHATGPT_CLIENT_ID'] ??
-              openAiExperimentalCodexOAuthClientId,
+          clientId: identity.clientId,
           issuer: Uri.parse(
             Platform.environment['ADELE_OPENAI_CHATGPT_OAUTH_ISSUER'] ??
                 'https://auth.openai.com',
@@ -27,13 +29,12 @@ void main() {
             Platform.environment['ADELE_OPENAI_CHATGPT_REDIRECT_URI'] ??
                 'http://localhost:1455/auth/callback',
           ),
+          authorizationParameters: openAiChatGptAuthorizationParameters,
         ),
       );
       addTearDown(oauth.close);
       final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
-        instanceId:
-            Platform.environment['ADELE_OPENAI_CHATGPT_INSTANCE_ID'] ??
-            'development-chatgpt',
+        instanceId: openAiChatGptInstanceId(Platform.environment),
         store: FileOpenAiCredentialStore(File(credentialPath)),
         oauth: oauth,
       );

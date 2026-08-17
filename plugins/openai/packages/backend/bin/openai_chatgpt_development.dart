@@ -5,8 +5,6 @@ import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:openai_model_provider_backend/openai_model_provider_backend.dart';
 import 'package:openai_model_provider_backend/src/openai_chatgpt_auth.dart';
 
-const String _instanceId = 'development-chatgpt';
-
 Future<void> main(List<String> arguments) async {
   if (arguments.length != 1 ||
       !const <String>{'login', 'test', 'logout'}.contains(arguments.single)) {
@@ -19,20 +17,20 @@ Future<void> main(List<String> arguments) async {
   final String credentialPath =
       Platform.environment['ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE'] ??
       '${Directory.current.path}/.dart_tool/adele/development/openai-chatgpt-credentials.json';
-  final String clientId =
-      Platform.environment['ADELE_OPENAI_CHATGPT_CLIENT_ID'] ??
-      openAiExperimentalCodexOAuthClientId;
-  final bool usesExperimentalFallback =
-      Platform.environment['ADELE_OPENAI_CHATGPT_CLIENT_ID'] == null;
-  if (usesExperimentalFallback) {
+  final OpenAiOAuthClientIdentity identity = openAiOAuthClientIdentity(
+    Platform.environment,
+    allowDevelopmentFallback: true,
+  );
+  if (identity.experimentalCodexClient) {
     stderr.writeln(
-      'EXPERIMENTAL: using the source-visible Codex OAuth public client. '
-      'This path is not a documented OpenAI third-party contract.',
+      'EXPERIMENTAL DEVELOPMENT FALLBACK: using the source-visible Codex '
+      'OAuth public client. This identity is not an ADELE registration or '
+      'documented OpenAI third-party contract.',
     );
   }
   final OpenAiOAuthClient oauth = OpenAiOAuthClient(
     configuration: OpenAiOAuthConfiguration(
-      clientId: clientId,
+      clientId: identity.clientId,
       issuer: Uri.parse(
         Platform.environment['ADELE_OPENAI_CHATGPT_OAUTH_ISSUER'] ??
             'https://auth.openai.com',
@@ -41,15 +39,11 @@ Future<void> main(List<String> arguments) async {
         Platform.environment['ADELE_OPENAI_CHATGPT_REDIRECT_URI'] ??
             'http://localhost:1455/auth/callback',
       ),
-      authorizationParameters: const <String, String>{
-        'id_token_add_organizations': 'true',
-        'codex_cli_simplified_flow': 'true',
-        'originator': 'adele',
-      },
+      authorizationParameters: openAiChatGptAuthorizationParameters,
     ),
   );
   final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
-    instanceId: _instanceId,
+    instanceId: openAiChatGptInstanceId(Platform.environment),
     store: FileOpenAiCredentialStore(File(credentialPath)),
     oauth: oauth,
   );
