@@ -122,7 +122,7 @@ jobs:
         run: dart tools/adele.dart bootstrap
 
       - name: Run test target
-        run: dart tools/adele.dart test --target "${{ matrix.name }}"
+        run: dart tools/adele.dart test --target "${{ matrix.name }}" --ci
 
   test:
     name: test
@@ -139,47 +139,6 @@ jobs:
         run: |
           test "$DISCOVERY_RESULT" = success
           test "$TEST_TARGET_RESULT" = success
-
-  # TEMPORARY: Compare package-local concurrency before setting CI policy.
-  contract-codegen-benchmark:
-    name: contract_codegen benchmark / ${{ matrix.variant }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - variant: default-repeat
-            concurrency: 0
-          - variant: 4-repeat
-            concurrency: 4
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Install pinned Flutter toolchain
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          flutter-version: 3.38.10
-          cache: true
-
-      - name: Bootstrap workspace
-        run: dart tools/adele.dart bootstrap
-
-      - name: Report runner and Dart toolchain
-        run: |
-          nproc
-          dart --version
-
-      - name: Benchmark default concurrency
-        if: matrix.concurrency == 0
-        working-directory: packages/contract_codegen
-        run: time dart test
-
-      - name: Benchmark explicit concurrency
-        if: matrix.concurrency != 0
-        working-directory: packages/contract_codegen
-        run: time dart test --concurrency "${{ matrix.concurrency }}"
 
   build-linux:
     runs-on: ubuntu-latest

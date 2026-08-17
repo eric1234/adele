@@ -127,6 +127,13 @@ void main() {
       ]);
       expect(options.target, 'contract_codegen');
       expect(options.jobs, 1);
+      expect(options.ci, isFalse);
+      final TestOptions ciOptions = parseTestOptions(<String>[
+        '--target',
+        'contract_codegen',
+        '--ci',
+      ]);
+      expect(ciOptions.ci, isTrue);
       expect(
         () => parseTestOptions(<String>[
           '--target',
@@ -143,6 +150,8 @@ void main() {
         <String>['--target'],
         <String>['--target', 'one', '--target', 'two'],
         <String>['--target=one'],
+        <String>['--ci'],
+        <String>['--target', 'one', '--ci', '--ci'],
         <String>['--other'],
       ]) {
         expect(
@@ -159,9 +168,10 @@ void main() {
       final Map<String, Object?> plan =
           jsonDecode(testPlanJson())! as Map<String, Object?>;
       final List<Object?> include = plan['include']! as List<Object?>;
+      final Iterable<Map<String, Object?>> entries = include.cast();
       final List<String> names = <String>[
-        for (final Object? item in include)
-          (item! as Map<String, Object?>)['name']! as String,
+        for (final Map<String, Object?> item in entries)
+          item['name']! as String,
       ];
 
       expect(include, hasLength(testTargets.length));
@@ -175,7 +185,11 @@ void main() {
           isA<Map<String, Object?>>().having(
             (Map<String, Object?> item) => item.keys,
             'keys',
-            unorderedEquals(<String>['name', 'linuxDesktopDeps']),
+            unorderedEquals(<String>[
+              'name',
+              'linuxDesktopDeps',
+              'ciTestConcurrency',
+            ]),
           ),
         ),
       );
@@ -185,6 +199,16 @@ void main() {
             if (target.linuxDesktopDeps) target.name,
         ],
         <String>['adele_desktop'],
+      );
+      expect(
+        <String, Object?>{
+          for (final Map<String, Object?> item in entries)
+            item['name']! as String: item['ciTestConcurrency'],
+        },
+        <String, Object?>{
+          for (final TestTarget target in testTargets)
+            target.name: target.name == 'contract_codegen' ? 4 : null,
+        },
       );
     });
   });
@@ -213,12 +237,12 @@ void main() {
       <String>[
         for (final TestTarget target in testTargets)
           '${target.name}|${target.executable}|${target.path}|'
-              '${target.arguments.join(' ')}',
+              '${target.argumentsFor().join(' ')}',
       ],
       const <String>[
         'adele_tools|dart|.|test test/tools',
         'adele_contract|dart|packages/contract|test',
-        'contract_codegen|dart|packages/contract_codegen|test',
+        'contract_codegen|dart|packages/contract_codegen|test --concurrency 2',
         'adele_plugin_api|dart|packages/plugin_api|test',
         'adele_model_provider|dart|packages/model_provider|test',
         'adele_capabilities|dart|packages/capabilities|test',
@@ -235,6 +259,18 @@ void main() {
         'adele_desktop|flutter|app|test',
       ],
     );
+    final TestTarget codegen = lookupTestTarget('contract_codegen');
+    expect(codegen.argumentsFor(), <String>['test', '--concurrency', '2']);
+    expect(codegen.argumentsFor(ci: true), <String>[
+      'test',
+      '--concurrency',
+      '4',
+    ]);
+    expect(lookupTestTarget('plugin_runtime').argumentsFor(ci: true), <String>[
+      'test',
+      '--timeout',
+      '10s',
+    ]);
   });
 }
 

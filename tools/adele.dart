@@ -24,6 +24,8 @@ const List<TestTarget> testTargets = <TestTarget>[
     path: 'packages/contract_codegen',
     executable: 'dart',
     arguments: <String>['test'],
+    testConcurrency: 2,
+    ciTestConcurrency: 4,
   ),
   TestTarget(
     name: 'adele_plugin_api',
@@ -353,8 +355,9 @@ int parseTestJobs(List<String> arguments, {int? numberOfProcessors}) {
 }
 
 final class TestOptions {
-  const TestOptions({required this.jobs, this.target});
+  const TestOptions({required this.jobs, required this.ci, this.target});
 
+  final bool ci;
   final int jobs;
   final String? target;
 }
@@ -365,6 +368,7 @@ TestOptions parseTestOptions(
 }) {
   int? jobs;
   String? target;
+  bool ci = false;
   for (int index = 0; index < arguments.length; index++) {
     final String argument = arguments[index];
     if (argument == '--jobs' || argument.startsWith('--jobs=')) {
@@ -387,6 +391,11 @@ TestOptions parseTestOptions(
         throw const TestUsageException('--target may only be specified once.');
       }
       target = arguments[++index];
+    } else if (argument == '--ci') {
+      if (ci) {
+        throw const TestUsageException('--ci may only be specified once.');
+      }
+      ci = true;
     } else {
       throw TestUsageException('Unknown test option: $argument');
     }
@@ -394,8 +403,12 @@ TestOptions parseTestOptions(
   if (jobs != null && target != null) {
     throw const TestUsageException('--target and --jobs cannot be combined.');
   }
+  if (ci && target == null) {
+    throw const TestUsageException('--ci requires --target.');
+  }
   return TestOptions(
     jobs: jobs ?? (target == null ? defaultTestJobs(numberOfProcessors) : 1),
+    ci: ci,
     target: target,
   );
 }
@@ -424,11 +437,12 @@ TestTarget lookupTestTarget(
 
 String testPlanJson([List<TestTarget> targets = testTargets]) {
   return jsonEncode(<String, Object>{
-    'include': <Map<String, Object>>[
+    'include': <Map<String, Object?>>[
       for (final TestTarget target in targets)
-        <String, Object>{
+        <String, Object?>{
           'name': target.name,
           'linuxDesktopDeps': target.linuxDesktopDeps,
+          'ciTestConcurrency': target.ciTestConcurrency,
         },
     ],
   });
@@ -447,7 +461,7 @@ Future<int> _runTests(TestOptions options) async {
     execute: (TestTarget target) async {
       final Process process = await Process.start(
         target.executable,
-        target.arguments,
+        target.argumentsFor(ci: options.ci),
         mode: ProcessStartMode.inheritStdio,
         runInShell: Platform.isWindows,
         workingDirectory: target.path,
@@ -569,7 +583,8 @@ Commands:
   generate [--check] Generate or verify committed contract transport files.
   analyze            Analyze every package and identify failures.
   test [--jobs N]    Run tests with at most N package processes (default: up to 2).
-  test --target NAME Run exactly one named test target.
+  test --target NAME [--ci]
+                      Run exactly one named test target; --ci applies CI policy.
   test-plan --json   Print the CI test matrix without resolving dependencies.
   check              Verify formatting, analysis, and tests.
   run [device] [--debug|--profile|--release]
