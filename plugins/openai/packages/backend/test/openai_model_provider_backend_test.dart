@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:openai_model_provider_backend/openai_model_provider_backend.dart';
+import 'package:openai_model_provider_backend/src/openai_chatgpt_auth.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -789,6 +790,455 @@ void main() {
         expect(native.failure?.kind, ModelProviderFailureKind.invalidRequest);
       },
     );
+
+    test(
+      'ChatGPT profile binds OAuth account headers and request policy',
+      () async {
+        late HttpRequest capturedRequest;
+        final _FakeServer server = await _FakeServer.start((request) async {
+          capturedRequest = request;
+          await request.drain<void>();
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          _sse(request.response, _outputDone(_message('msg_chatgpt', 'ready')));
+          _sse(request.response, _completed('resp_chatgpt'));
+          await request.response.close();
+        });
+        addTearDown(server.close);
+        final InMemoryOpenAiCredentialStore store =
+            InMemoryOpenAiCredentialStore();
+        final OpenAiOAuthClient oauth = _oauth(server);
+        addTearDown(oauth.close);
+        final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
+          instanceId: 'personal',
+          store: store,
+          oauth: oauth,
+        );
+        await auth.install(
+          OpenAiChatGptCredential(
+            idToken: _idToken('account-personal', fedRamp: true),
+            accessToken: 'oauth-access-only',
+            refreshToken: 'oauth-refresh-only',
+            accountId: 'account-personal',
+            fedRamp: true,
+            expiresAt: DateTime.now().toUtc().add(const Duration(hours: 1)),
+          ),
+        );
+        final OpenAiModelProvider provider = OpenAiModelProvider.chatGpt(
+          auth: auth,
+          endpoint: server.responsesUri,
+        );
+        addTearDown(provider.close);
+
+        final List<ModelProviderEvent> events = await provider
+            .invoke(_request())
+            .toList();
+        expect(
+          events.last.terminal?.settlement,
+          ModelProviderSettlement.completed,
+        );
+        expect(
+          capturedRequest.headers.value(HttpHeaders.authorizationHeader),
+          'Bearer oauth-access-only',
+        );
+        expect(
+          capturedRequest.headers.value('ChatGPT-Account-ID'),
+          'account-personal',
+        );
+        expect(capturedRequest.headers.value('X-OpenAI-Fedramp'), 'true');
+        expect(capturedRequest.headers.value('originator'), isNull);
+        expect(capturedRequest.headers.value('x-codex-turn-state'), isNull);
+
+        final ModelProviderTerminal unsupported =
+            (await provider.invoke(_request(maxOutputTokens: 10)).toList())
+                .single
+                .terminal!;
+        expect(
+          unsupported.failure?.kind,
+          ModelProviderFailureKind.unsupportedRequest,
+        );
+        expect(
+          unsupported.failure?.providerCode,
+          'chatgpt_max_output_tokens_unsupported',
+        );
+      },
+    );
+
+    test('ChatGPT retries one pre-output 401 after fenced refresh', () async {
+      var responseRequests = 0;
+      var refreshRequests = 0;
+      final _FakeServer server = await _FakeServer.start((request) async {
+        if (request.uri.path == '/oauth/token') {
+          refreshRequests++;
+          final Map<String, Object?> body = await _jsonBody(request);
+          expect(body['refresh_token'], 'refresh-before');
+          request.response.headers.contentType = ContentType.json;
+          request.response.write(
+            jsonEncode(<String, Object?>{
+              'id_token': _idToken('account-retry'),
+              'access_token': 'access-after',
+              'refresh_token': 'refresh-after',
+            }),
+          );
+          await request.response.close();
+          return;
+        }
+        responseRequests++;
+        expect(
+          request.headers.value(HttpHeaders.authorizationHeader),
+          responseRequests == 1
+              ? 'Bearer access-before'
+              : 'Bearer access-after',
+        );
+        await request.drain<void>();
+        if (responseRequests == 1) {
+          request.response.statusCode = HttpStatus.unauthorized;
+          request.response.write('{"error":{"code":"expired_token"}}');
+        } else {
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          _sse(
+            request.response,
+            _outputDone(_message('msg_retry', 'recovered')),
+          );
+          _sse(request.response, _completed('resp_retry'));
+        }
+        await request.response.close();
+      });
+      addTearDown(server.close);
+      final InMemoryOpenAiCredentialStore store =
+          InMemoryOpenAiCredentialStore();
+      final OpenAiOAuthClient oauth = _oauth(server);
+      addTearDown(oauth.close);
+      final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
+        instanceId: 'retry',
+        store: store,
+        oauth: oauth,
+      );
+      await auth.install(
+        OpenAiChatGptCredential(
+          idToken: _idToken('account-retry'),
+          accessToken: 'access-before',
+          refreshToken: 'refresh-before',
+          accountId: 'account-retry',
+          fedRamp: false,
+          expiresAt: null,
+        ),
+      );
+      final OpenAiModelProvider provider = OpenAiModelProvider.chatGpt(
+        auth: auth,
+        endpoint: server.responsesUri,
+      );
+      addTearDown(provider.close);
+
+      final List<ModelProviderEvent> events = await provider
+          .invoke(_request())
+          .toList();
+      expect(events.map((ModelProviderEvent event) => event.kind), <Object?>[
+        ModelProviderEventKind.output,
+        ModelProviderEventKind.terminal,
+      ]);
+      expect(events.first.output?.text, 'recovered');
+      expect(responseRequests, 2);
+      expect(refreshRequests, 1);
+      expect(
+        (await store.load('retry')).credential?.refreshToken,
+        'refresh-after',
+      );
+    });
+
+    test(
+      'ChatGPT profile reuses ordered native and tool continuation',
+      () async {
+        final List<Map<String, Object?>> requests = <Map<String, Object?>>[];
+        final _FakeServer server = await _FakeServer.start((request) async {
+          requests.add(await _jsonBody(request));
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          if (requests.length == 1) {
+            _sse(
+              request.response,
+              _outputDone(_reasoning('rs_chat', 'enc-chat')),
+            );
+            _sse(
+              request.response,
+              _outputDone(_message('msg_chat', 'Inspect.')),
+            );
+            _sse(
+              request.response,
+              _outputDone(<String, Object?>{
+                'type': 'function_call',
+                'id': 'fc_chat',
+                'call_id': 'call_chat',
+                'name': 'inspect_resource',
+                'arguments': '{"uri":"file:///tmp/chat.txt"}',
+                'status': 'completed',
+              }),
+            );
+            _sse(request.response, _completed('resp_chat_1'));
+          } else {
+            _sse(request.response, _outputDone(_message('msg_done', 'Done.')));
+            _sse(request.response, _completed('resp_chat_2'));
+          }
+          await request.response.close();
+        });
+        addTearDown(server.close);
+        final InMemoryOpenAiCredentialStore store =
+            InMemoryOpenAiCredentialStore();
+        final OpenAiOAuthClient oauth = _oauth(server);
+        addTearDown(oauth.close);
+        final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
+          instanceId: 'semantics',
+          store: store,
+          oauth: oauth,
+        );
+        await auth.install(
+          OpenAiChatGptCredential(
+            idToken: _idToken('account-semantics'),
+            accessToken: 'access-semantics',
+            refreshToken: 'refresh-semantics',
+            accountId: 'account-semantics',
+            fedRamp: false,
+            expiresAt: null,
+          ),
+        );
+        final OpenAiModelProvider provider = OpenAiModelProvider.chatGpt(
+          auth: auth,
+          endpoint: server.responsesUri,
+        );
+        addTearDown(provider.close);
+
+        final List<ModelProviderOutput> first =
+            (await provider.invoke(_request()).toList())
+                .map((ModelProviderEvent event) => event.output)
+                .whereType<ModelProviderOutput>()
+                .toList();
+        final List<ModelProviderInput> continuation = <ModelProviderInput>[
+          _userInput(),
+          for (final ModelProviderOutput output in first) _replay(output),
+          ModelProviderInput(
+            kind: ModelProviderInputKind.toolOutcome,
+            message: null,
+            toolProposal: null,
+            toolOutcome: ModelProviderToolOutcome(
+              callId: 'call_chat',
+              status: ModelProviderToolOutcomeStatus.success,
+              content: 'chat result',
+            ),
+            itemId: null,
+            nativeMetadata: null,
+          ),
+        ];
+        final List<ModelProviderEvent> second = await provider
+            .invoke(_request(input: continuation))
+            .toList();
+        expect(
+          second.last.terminal?.settlement,
+          ModelProviderSettlement.completed,
+        );
+        expect(
+          (requests[1]['input']! as List<Object?>).map(
+            (Object? item) => (item! as Map<String, Object?>)['type'],
+          ),
+          <String>[
+            'message',
+            'reasoning',
+            'message',
+            'function_call',
+            'function_call_output',
+          ],
+        );
+        expect(
+          (requests[1]['input']! as List<Object?>)[1],
+          _reasoning('rs_chat', 'enc-chat'),
+        );
+      },
+    );
+
+    test('ChatGPT does not auth-retry after an ADELE event', () async {
+      var responseRequests = 0;
+      var refreshRequests = 0;
+      final _FakeServer server = await _FakeServer.start((request) async {
+        if (request.uri.path == '/oauth/token') {
+          refreshRequests++;
+          await request.drain<void>();
+          request.response.write('{}');
+        } else {
+          responseRequests++;
+          await request.drain<void>();
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          _sse(request.response, <String, Object?>{
+            'type': 'response.output_text.delta',
+            'delta': 'visible',
+          });
+          _sse(request.response, <String, Object?>{
+            'type': 'error',
+            'code': 'unauthorized',
+            'message': 'Authentication expired.',
+          });
+        }
+        await request.response.close();
+      });
+      addTearDown(server.close);
+      final InMemoryOpenAiCredentialStore store =
+          InMemoryOpenAiCredentialStore();
+      final OpenAiOAuthClient oauth = _oauth(server);
+      addTearDown(oauth.close);
+      final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
+        instanceId: 'post-event',
+        store: store,
+        oauth: oauth,
+      );
+      await auth.install(
+        OpenAiChatGptCredential(
+          idToken: _idToken('account-post-event'),
+          accessToken: 'access-post-event',
+          refreshToken: 'refresh-post-event',
+          accountId: 'account-post-event',
+          fedRamp: false,
+          expiresAt: null,
+        ),
+      );
+      final OpenAiModelProvider provider = OpenAiModelProvider.chatGpt(
+        auth: auth,
+        endpoint: server.responsesUri,
+      );
+      addTearDown(provider.close);
+
+      final List<ModelProviderEvent> events = await provider
+          .invoke(_request())
+          .toList();
+      expect(events.first.observation?.textDelta, 'visible');
+      expect(events.last.terminal?.settlement, ModelProviderSettlement.failed);
+      expect(responseRequests, 1);
+      expect(refreshRequests, 0);
+    });
+
+    test(
+      'cancellation during ChatGPT refresh suppresses retry and events',
+      () async {
+        final Completer<void> refreshStarted = Completer<void>();
+        final Completer<void> releaseRefresh = Completer<void>();
+        var responseRequests = 0;
+        final _FakeServer server = await _FakeServer.start((request) async {
+          if (request.uri.path == '/oauth/token') {
+            await request.drain<void>();
+            refreshStarted.complete();
+            await releaseRefresh.future;
+            request.response.headers.contentType = ContentType.json;
+            request.response.write(
+              jsonEncode(<String, Object?>{
+                'access_token': 'access-after-cancel',
+              }),
+            );
+          } else {
+            responseRequests++;
+            await request.drain<void>();
+            request.response.statusCode = HttpStatus.unauthorized;
+          }
+          await request.response.close();
+        });
+        addTearDown(server.close);
+        final InMemoryOpenAiCredentialStore store =
+            InMemoryOpenAiCredentialStore();
+        final OpenAiOAuthClient oauth = _oauth(server);
+        addTearDown(oauth.close);
+        final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
+          instanceId: 'cancel-refresh',
+          store: store,
+          oauth: oauth,
+        );
+        await auth.install(
+          OpenAiChatGptCredential(
+            idToken: _idToken('account-cancel'),
+            accessToken: 'access-before-cancel',
+            refreshToken: 'refresh-cancel',
+            accountId: 'account-cancel',
+            fedRamp: false,
+            expiresAt: null,
+          ),
+        );
+        final OpenAiModelProvider provider = OpenAiModelProvider.chatGpt(
+          auth: auth,
+          endpoint: server.responsesUri,
+        );
+        addTearDown(provider.close);
+        final List<ModelProviderEvent> events = <ModelProviderEvent>[];
+        final StreamSubscription<ModelProviderEvent> subscription = provider
+            .invoke(_request())
+            .listen(events.add);
+        await refreshStarted.future;
+        await subscription.cancel();
+        releaseRefresh.complete();
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        expect(events, isEmpty);
+        expect(responseRequests, 1);
+      },
+    );
+
+    test('persistent ChatGPT 401 performs no retry loop', () async {
+      var responseRequests = 0;
+      var refreshRequests = 0;
+      final _FakeServer server = await _FakeServer.start((request) async {
+        if (request.uri.path == '/oauth/token') {
+          refreshRequests++;
+          await request.drain<void>();
+          request.response.headers.contentType = ContentType.json;
+          request.response.write(
+            jsonEncode(<String, Object?>{'access_token': 'still-invalid'}),
+          );
+        } else {
+          responseRequests++;
+          await request.drain<void>();
+          request.response.statusCode = HttpStatus.unauthorized;
+        }
+        await request.response.close();
+      });
+      addTearDown(server.close);
+      final InMemoryOpenAiCredentialStore store =
+          InMemoryOpenAiCredentialStore();
+      final OpenAiOAuthClient oauth = _oauth(server);
+      addTearDown(oauth.close);
+      final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
+        instanceId: 'persistent-401',
+        store: store,
+        oauth: oauth,
+      );
+      await auth.install(
+        OpenAiChatGptCredential(
+          idToken: _idToken('account-401'),
+          accessToken: 'invalid',
+          refreshToken: 'refresh',
+          accountId: 'account-401',
+          fedRamp: false,
+          expiresAt: null,
+        ),
+      );
+      final OpenAiModelProvider provider = OpenAiModelProvider.chatGpt(
+        auth: auth,
+        endpoint: server.responsesUri,
+      );
+      addTearDown(provider.close);
+
+      final ModelProviderTerminal terminal =
+          (await provider.invoke(_request()).toList()).single.terminal!;
+      expect(terminal.failure?.kind, ModelProviderFailureKind.authentication);
+      expect(responseRequests, 2);
+      expect(refreshRequests, 1);
+    });
   });
 }
 
@@ -933,6 +1383,24 @@ void _sse(HttpResponse response, Map<String, Object?> event) {
 Future<Map<String, Object?>> _jsonBody(HttpRequest request) async {
   final Object? value = jsonDecode(await utf8.decoder.bind(request).join());
   return value! as Map<String, Object?>;
+}
+
+OpenAiOAuthClient _oauth(_FakeServer server) => OpenAiOAuthClient(
+  configuration: OpenAiOAuthConfiguration(
+    clientId: 'authorized-test-client',
+    issuer: Uri.parse(
+      'http://${server.server.address.address}:${server.server.port}',
+    ),
+    redirectUri: Uri.parse('http://127.0.0.1:1455/auth/callback'),
+  ),
+);
+
+String _idToken(String accountId, {bool fedRamp = false}) {
+  String encode(Object value) =>
+      base64Url.encode(utf8.encode(jsonEncode(value))).replaceAll('=', '');
+  return '${encode(<String, Object?>{'alg': 'none'})}.${encode(<String, Object?>{
+    'https://api.openai.com/auth': <String, Object?>{'chatgpt_account_id': accountId, 'chatgpt_account_is_fedramp': fedRamp},
+  })}.';
 }
 
 final class _FakeServer {
