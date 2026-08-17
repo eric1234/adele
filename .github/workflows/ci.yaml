@@ -72,13 +72,38 @@ jobs:
       - name: Analyze packages
         run: dart tools/adele.dart analyze
 
-  test:
+  discover-test-targets:
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.test-plan.outputs.matrix }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install pinned Flutter toolchain
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.38.10
+          cache: true
+
+      - name: Discover test targets
+        id: test-plan
+        run: echo "matrix=$(dart tools/adele.dart test-plan --json)" >> "$GITHUB_OUTPUT"
+
+  test-target:
+    needs: discover-test-targets
+    name: test / ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover-test-targets.outputs.matrix) }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Install Linux desktop dependencies
+        if: ${{ matrix.linuxDesktopDeps }}
         run: >-
           sudo apt-get update && sudo apt-get install -y
           clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
@@ -96,8 +121,24 @@ jobs:
       - name: Bootstrap workspace
         run: dart tools/adele.dart bootstrap
 
-      - name: Run tests
-        run: dart tools/adele.dart test --jobs 2
+      - name: Run test target
+        run: dart tools/adele.dart test --target "${{ matrix.name }}" --ci
+
+  test:
+    name: test
+    if: always()
+    needs:
+      - discover-test-targets
+      - test-target
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all test targets to pass
+        env:
+          DISCOVERY_RESULT: ${{ needs.discover-test-targets.result }}
+          TEST_TARGET_RESULT: ${{ needs.test-target.result }}
+        run: |
+          test "$DISCOVERY_RESULT" = success
+          test "$TEST_TARGET_RESULT" = success
 
   build-linux:
     runs-on: ubuntu-latest

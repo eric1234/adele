@@ -6,12 +6,28 @@ final class TestTarget {
     required this.path,
     required this.executable,
     required this.arguments,
+    this.testConcurrency,
+    this.ciTestConcurrency,
+    this.linuxDesktopDeps = false,
   });
 
   final List<String> arguments;
+  final int? ciTestConcurrency;
   final String executable;
+  final bool linuxDesktopDeps;
   final String name;
   final String path;
+  final int? testConcurrency;
+
+  List<String> argumentsFor({bool ci = false}) {
+    final int? concurrency = ci
+        ? ciTestConcurrency ?? testConcurrency
+        : testConcurrency;
+    return <String>[
+      ...arguments,
+      if (concurrency != null) ...<String>['--concurrency', '$concurrency'],
+    ];
+  }
 }
 
 final class TestTargetResult {

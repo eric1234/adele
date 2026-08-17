@@ -828,14 +828,7 @@ void main() {
         'kind': 'streamCredit',
         'requestId': 2,
         'pluginId': 'invalid-credit',
-        'credit': 1,
-      });
-      send(<String, Object?>{
-        'protocolVersion': backendHostProtocolVersion,
-        'kind': 'streamCredit',
-        'requestId': 2,
-        'pluginId': 'invalid-credit',
-        'credit': 1,
+        'credit': backendHostStreamWindow + 1,
       });
       Map<String, Object?>? failure;
       while (failure == null) {
