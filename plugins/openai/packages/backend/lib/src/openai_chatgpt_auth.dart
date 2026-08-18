@@ -62,19 +62,14 @@ final class OpenAiOAuthClientIdentity {
 }
 
 final class OpenAiChatGptCredential {
-  OpenAiChatGptCredential({
+  const OpenAiChatGptCredential({
     required this.idToken,
     required this.accessToken,
     required this.refreshToken,
     required this.accountId,
     required this.fedRamp,
     required this.expiresAt,
-  }) {
-    _validateTokenSecret(idToken, 'idToken');
-    _validateTokenSecret(accessToken, 'accessToken');
-    _validateTokenSecret(refreshToken, 'refreshToken');
-    _requiredHeaderText(accountId, 'accountId');
-  }
+  });
 
   final String idToken;
   final String accessToken;
@@ -96,9 +91,15 @@ final class OpenAiChatGptCredential {
     if (value is! Map<String, Object?>) {
       throw const FormatException('Credential record is not an object.');
     }
-    final String idToken = _requiredSecret(value, 'idToken');
-    final String accessToken = _requiredSecret(value, 'accessToken');
-    final String refreshToken = _requiredSecret(value, 'refreshToken');
+    final String idToken = _requiredIdToken(value['idToken'], 'idToken');
+    final String accessToken = _requiredAccessToken(
+      value['accessToken'],
+      'accessToken',
+    );
+    final String refreshToken = _requiredRefreshToken(
+      value['refreshToken'],
+      'refreshToken',
+    );
     final String accountId = _requiredHeaderValue(value, 'accountId');
     final Object? fedRamp = value['fedRamp'];
     if (fedRamp is! bool) {
@@ -377,30 +378,6 @@ abstract interface class OpenAiBrowserLauncher {
   Future<void> open(Uri uri);
 }
 
-final class DevelopmentOpenAiBrowserLauncher implements OpenAiBrowserLauncher {
-  const DevelopmentOpenAiBrowserLauncher({
-    required this.automaticLauncher,
-    required this.writeLine,
-  });
-
-  final OpenAiBrowserLauncher automaticLauncher;
-  final void Function(String line) writeLine;
-
-  @override
-  Future<void> open(Uri uri) async {
-    writeLine('Open this authorization URL if the browser does not launch:');
-    writeLine(uri.toString());
-    try {
-      await automaticLauncher.open(uri);
-    } on Object {
-      writeLine('Could not open the browser automatically.');
-      writeLine(
-        'Open the authorization URL above manually; waiting for the callback.',
-      );
-    }
-  }
-}
-
 typedef OpenAiBrowserProcessStarter =
     Future<void> Function(String executable, List<String> arguments);
 typedef OpenAiWindowsUrlOpener = Future<void> Function(Uri uri);
@@ -488,11 +465,13 @@ final class OpenAiOAuthConfiguration {
         'Must be HTTPS or loopback HTTP.',
       );
     }
-    if (this.issuer.hasQuery || this.issuer.hasFragment) {
+    if ((this.issuer.path.isNotEmpty && this.issuer.path != '/') ||
+        this.issuer.hasQuery ||
+        this.issuer.hasFragment) {
       throw ArgumentError.value(
         this.issuer,
         'issuer',
-        'Must not include a query or fragment.',
+        'Must be an origin without a path, query, or fragment.',
       );
     }
     if (redirectUri.scheme != 'http' || !_isLoopbackHost(redirectUri.host)) {
@@ -553,18 +532,8 @@ final class OpenAiOAuthConfiguration {
   final List<String> scopes;
   final Map<String, String> authorizationParameters;
 
-  Uri get authorizationEndpoint =>
-      _resolveIssuerEndpoint(issuer, 'oauth/authorize');
-  Uri get tokenEndpoint => _resolveIssuerEndpoint(issuer, 'oauth/token');
-}
-
-Uri _resolveIssuerEndpoint(Uri issuer, String relativePath) {
-  final String basePath = issuer.path.isEmpty
-      ? '/'
-      : issuer.path.endsWith('/')
-      ? issuer.path
-      : '${issuer.path}/';
-  return issuer.replace(path: basePath).resolve(relativePath);
+  Uri get authorizationEndpoint => issuer.resolve('/oauth/authorize');
+  Uri get tokenEndpoint => issuer.resolve('/oauth/token');
 }
 
 final class OpenAiOAuthAttempt {
@@ -694,10 +663,17 @@ final class OpenAiOAuthClient {
       'refresh_token': current.refreshToken,
     });
     try {
-      final String accessToken = _requiredTokenSecret(token, 'access_token');
-      final String? newIdToken = _optionalTokenSecret(token, 'id_token');
+      final String accessToken = _requiredAccessToken(
+        token['access_token'],
+        'access_token',
+      );
+      final String? newIdToken = token.containsKey('id_token')
+          ? _requiredIdToken(token['id_token'], 'id_token')
+          : null;
       final String idToken = newIdToken ?? current.idToken;
-      final _AccountClaims claims = _accountClaims(idToken);
+      final _AccountClaims claims = newIdToken == null
+          ? _accountClaims(idToken)
+          : _parseAccountClaims(idToken);
       if (claims.accountId != current.accountId) {
         throw const OpenAiAuthenticationException(
           'account_mismatch',
@@ -707,9 +683,9 @@ final class OpenAiOAuthClient {
       return OpenAiChatGptCredential(
         idToken: idToken,
         accessToken: accessToken,
-        refreshToken:
-            _optionalTokenSecret(token, 'refresh_token') ??
-            current.refreshToken,
+        refreshToken: token.containsKey('refresh_token')
+            ? _requiredRefreshToken(token['refresh_token'], 'refresh_token')
+            : current.refreshToken,
         accountId: current.accountId,
         fedRamp: claims.fedRamp,
         expiresAt: _refreshExpiration(token, newIdToken, _clock().toUtc()),
@@ -833,9 +809,12 @@ final class OpenAiOAuthClient {
       );
     }
 
-    final _BoundedOAuthResponse captured;
+    final List<int> responseBytes;
     try {
-      captured = await _readBoundedOAuthResponse(response);
+      responseBytes = await response
+          .expand<int>((chunk) => chunk)
+          .take(_maximumOAuthRefreshResponseBytes + 1)
+          .toList();
     } on SocketException {
       throw const OpenAiAuthenticationException(
         'oauth_refresh_transport',
@@ -849,18 +828,27 @@ final class OpenAiOAuthClient {
         failureKind: OpenAiAuthenticationFailureKind.transport,
       );
     }
+    final bool responseBodyTooLarge =
+        responseBytes.length > _maximumOAuthRefreshResponseBytes;
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      final String? providerErrorCode = captured.exceededLimit
+      final String? providerErrorCode = responseBodyTooLarge
           ? null
-          : _oauthErrorCode(utf8.decode(captured.bytes, allowMalformed: true));
+          : _oauthErrorCode(utf8.decode(responseBytes, allowMalformed: true));
       final Map<String, Object?> details = <String, Object?>{
         'httpStatus': response.statusCode,
-        if (captured.exceededLimit) 'responseBodyTooLarge': true,
+        if (responseBodyTooLarge) 'responseBodyTooLarge': true,
         if (_safeRetryAfter(response.headers) case final String retryAfter)
           'retryAfter': retryAfter,
         'oauthErrorCode': ?providerErrorCode,
       };
+      if (_clientRefreshErrors.contains(providerErrorCode)) {
+        throw OpenAiAuthenticationException(
+          'oauth_refresh_client_rejected',
+          'OpenAI rejected the configured OAuth client.',
+          safeDetails: details,
+        );
+      }
       if (response.statusCode == HttpStatus.unauthorized ||
           _permanentRefreshErrors.contains(providerErrorCode)) {
         throw OpenAiAuthenticationException(
@@ -885,7 +873,7 @@ final class OpenAiOAuthClient {
       );
     }
 
-    if (captured.exceededLimit) {
+    if (responseBodyTooLarge) {
       throw const OpenAiAuthenticationException(
         'oauth_refresh_response_too_large',
         'OpenAI returned an oversized OAuth refresh response.',
@@ -894,7 +882,7 @@ final class OpenAiOAuthClient {
       );
     }
     try {
-      final String encoded = utf8.decode(captured.bytes);
+      final String encoded = utf8.decode(responseBytes);
       final Object? decoded = jsonDecode(encoded);
       if (decoded is! Map<String, Object?>) {
         throw const FormatException('Token response is not an object.');
@@ -904,7 +892,7 @@ final class OpenAiOAuthClient {
           'Successful refresh response contained an error.',
         );
       }
-      _requiredTokenSecret(decoded, 'access_token');
+      _requiredAccessToken(decoded['access_token'], 'access_token');
       return decoded;
     } on FormatException {
       throw const OpenAiAuthenticationException(
@@ -913,38 +901,6 @@ final class OpenAiOAuthClient {
         failureKind: OpenAiAuthenticationFailureKind.malformedResponse,
       );
     }
-  }
-}
-
-final class _BoundedOAuthResponse {
-  const _BoundedOAuthResponse(this.bytes, this.exceededLimit);
-
-  final Uint8List bytes;
-  final bool exceededLimit;
-}
-
-Future<_BoundedOAuthResponse> _readBoundedOAuthResponse(
-  HttpClientResponse response,
-) async {
-  final BytesBuilder bytes = BytesBuilder(copy: false);
-  final StreamIterator<List<int>> iterator = StreamIterator<List<int>>(
-    response,
-  );
-  try {
-    while (await iterator.moveNext()) {
-      final List<int> chunk = iterator.current;
-      final int remaining = _maximumOAuthRefreshResponseBytes - bytes.length;
-      if (chunk.isNotEmpty && (remaining == 0 || chunk.length > remaining)) {
-        if (remaining > 0) bytes.add(chunk.sublist(0, remaining));
-        await iterator.cancel();
-        return _BoundedOAuthResponse(bytes.takeBytes(), true);
-      }
-      bytes.add(chunk);
-    }
-    return _BoundedOAuthResponse(bytes.takeBytes(), false);
-  } on Object {
-    await iterator.cancel();
-    rethrow;
   }
 }
 
@@ -1206,12 +1162,12 @@ final class OpenAiAuthenticationException implements Exception {
 OpenAiChatGptCredential _credentialFromInitialOAuth(
   oauth2.Credentials credential,
 ) {
-  final String idToken = _requiredOAuthSecret(credential.idToken, 'id_token');
-  final String accessToken = _requiredOAuthSecret(
+  final String idToken = _requiredIdToken(credential.idToken, 'id_token');
+  final String accessToken = _requiredAccessToken(
     credential.accessToken,
     'access_token',
   );
-  final String refreshToken = _requiredOAuthSecret(
+  final String refreshToken = _requiredRefreshToken(
     credential.refreshToken,
     'refresh_token',
   );
@@ -1228,6 +1184,17 @@ OpenAiChatGptCredential _credentialFromInitialOAuth(
 
 _AccountClaims _accountClaims(String idToken) {
   try {
+    return _parseAccountClaims(idToken);
+  } on FormatException {
+    throw const OpenAiAuthenticationException(
+      'invalid_id_token',
+      'The OpenAI ID token did not contain a valid ChatGPT account identity.',
+    );
+  }
+}
+
+_AccountClaims _parseAccountClaims(String idToken) {
+  try {
     final List<String> parts = idToken.split('.');
     if (parts.length != 3) throw const FormatException();
     final Object? decoded = jsonDecode(
@@ -1243,11 +1210,10 @@ _AccountClaims _accountClaims(String idToken) {
     final Object? fedRamp = auth['chatgpt_account_is_fedramp'];
     if (fedRamp != null && fedRamp is! bool) throw const FormatException();
     return _AccountClaims(accountId, fedRamp == true);
+  } on FormatException {
+    rethrow;
   } on Object {
-    throw const OpenAiAuthenticationException(
-      'invalid_id_token',
-      'The OpenAI ID token did not contain a valid ChatGPT account identity.',
-    );
+    throw const FormatException('Invalid ID token claims.');
   }
 }
 
@@ -1281,35 +1247,32 @@ DateTime? _idTokenExpiration(String idToken) {
   return null;
 }
 
-String _requiredSecret(Map<String, Object?> map, String key) {
-  final Object? value = map[key];
-  if (value is! String) throw FormatException('Missing required $key.');
-  return _validateTokenSecret(value, key);
+final RegExp _bearerTokenPattern = RegExp(r'^[A-Za-z0-9\-._~+/]+=*$');
+
+String _requiredAccessToken(Object? value, String name) {
+  final String token = _requiredAsciiToken(value, name);
+  if (!_bearerTokenPattern.hasMatch(token)) {
+    throw FormatException('Invalid $name.');
+  }
+  return token;
 }
 
-String _requiredOAuthSecret(String? value, String name) {
-  if (value == null) throw FormatException('Missing required $name.');
-  return _validateTokenSecret(value, name);
-}
+String _requiredIdToken(Object? value, String name) =>
+    _requiredAsciiToken(value, name);
 
-String? _optionalTokenSecret(Map<String, Object?> token, String name) {
-  if (!token.containsKey(name)) return null;
-  final Object? value = token[name];
-  if (value is! String) throw FormatException('Invalid $name.');
-  return _validateTokenSecret(value, name);
-}
+String _requiredRefreshToken(Object? value, String name) =>
+    _requiredAsciiToken(value, name, allowInternalSpace: true);
 
-String _requiredTokenSecret(Map<String, Object?> token, String name) {
-  final String? value = _optionalTokenSecret(token, name);
-  if (value == null) throw FormatException('Missing required $name.');
-  return value;
-}
-
-String _validateTokenSecret(String value, String name) {
-  if (value.isEmpty ||
-      value != value.trim() ||
-      value.contains('\r') ||
-      value.contains('\n')) {
+String _requiredAsciiToken(
+  Object? value,
+  String name, {
+  bool allowInternalSpace = false,
+}) {
+  if (value is! String || value.isEmpty || value != value.trim()) {
+    throw FormatException('Invalid $name.');
+  }
+  final int minimum = allowInternalSpace ? 0x20 : 0x21;
+  if (value.codeUnits.any((unit) => unit < minimum || unit > 0x7e)) {
     throw FormatException('Invalid $name.');
   }
   return value;
@@ -1322,8 +1285,14 @@ const Set<String> _permanentRefreshErrors = <String>{
   'refresh_token_invalidated',
 };
 
+const Set<String> _clientRefreshErrors = <String>{
+  'invalid_client',
+  'unauthorized_client',
+};
+
 const Set<String> _safeOAuthErrorCodes = <String>{
   ..._permanentRefreshErrors,
+  ..._clientRefreshErrors,
   'rate_limit',
   'rate_limit_exceeded',
   'server_error',

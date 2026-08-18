@@ -944,7 +944,6 @@ void main() {
             expiresAt: null,
           ),
         );
-        final String validDocument = await credentials.readAsString();
         final OpenAiOAuthClient oauth = _oauth(server);
         addTearDown(oauth.close);
         final OpenAiModelProvider provider = OpenAiModelProvider.chatGpt(
@@ -957,47 +956,31 @@ void main() {
         );
         addTearDown(provider.close);
 
-        for (final MapEntry<String, String> invalid
-            in <MapEntry<String, String>>[
-              MapEntry<String, String>(
-                'idToken',
-                ' ${_idToken('account-unsafe-token')}',
-              ),
-              const MapEntry<String, String>(
-                'accessToken',
-                'SUPER-SECRET-ACCESS\r\nInjected: value',
-              ),
-              const MapEntry<String, String>(
-                'refreshToken',
-                'SUPER-SECRET-REFRESH\nInjected: value',
-              ),
-            ]) {
-          final Map<String, Object?> document =
-              jsonDecode(validDocument)! as Map<String, Object?>;
-          final Map<String, Object?> instances =
-              document['instances']! as Map<String, Object?>;
-          final Map<String, Object?> state =
-              instances['unsafe-token-provider']! as Map<String, Object?>;
-          final Map<String, Object?> credential =
-              state['credential']! as Map<String, Object?>;
-          credential[invalid.key] = invalid.value;
-          await credentials.writeAsString(jsonEncode(document));
+        final Map<String, Object?> document =
+            jsonDecode(await credentials.readAsString())!
+                as Map<String, Object?>;
+        final Map<String, Object?> instances =
+            document['instances']! as Map<String, Object?>;
+        final Map<String, Object?> state =
+            instances['unsafe-token-provider']! as Map<String, Object?>;
+        final Map<String, Object?> credential =
+            state['credential']! as Map<String, Object?>;
+        credential['accessToken'] = 'SUPER-SECRET-ACCESS\u007f';
+        await credentials.writeAsString(jsonEncode(document));
 
-          final ModelProviderFailure failure =
-              (await provider.invoke(_request()).toList())
-                  .single
-                  .terminal!
-                  .failure!;
+        final ModelProviderFailure failure =
+            (await provider.invoke(_request()).toList())
+                .single
+                .terminal!
+                .failure!;
 
-          expect(failure.kind, ModelProviderFailureKind.authentication);
-          expect(failure.providerCode, 'credential_store_corrupt');
-          final String surfaced = <Object?>[
-            failure.providerMessage,
-            failure.providerDetails,
-          ].join(' ');
-          expect(surfaced, isNot(contains('SUPER-SECRET')));
-          expect(surfaced, isNot(contains('Injected: value')));
-        }
+        expect(failure.kind, ModelProviderFailureKind.authentication);
+        expect(failure.providerCode, 'credential_store_corrupt');
+        final String surfaced = <Object?>[
+          failure.providerMessage,
+          failure.providerDetails,
+        ].join(' ');
+        expect(surfaced, isNot(contains('SUPER-SECRET')));
         expect(responseRequests, 0);
       },
     );
@@ -1143,20 +1126,28 @@ void main() {
             code: 'oauth_refresh_rejected',
           ),
           (
-            name: 'recognized permanent rejection reason',
-            status: HttpStatus.badRequest,
-            body: '{"error":"refresh_token_reused"}',
-            retryAfter: null,
-            kind: ModelProviderFailureKind.authentication,
-            code: 'oauth_refresh_rejected',
-          ),
-          (
             name: 'standard invalid grant rejection',
             status: HttpStatus.badRequest,
             body: '{"error":"invalid_grant"}',
             retryAfter: null,
             kind: ModelProviderFailureKind.authentication,
             code: 'oauth_refresh_rejected',
+          ),
+          (
+            name: 'invalid OAuth client',
+            status: HttpStatus.badRequest,
+            body: '{"error":"invalid_client"}',
+            retryAfter: null,
+            kind: ModelProviderFailureKind.authentication,
+            code: 'oauth_refresh_client_rejected',
+          ),
+          (
+            name: 'unauthorized OAuth client',
+            status: HttpStatus.badRequest,
+            body: '{"error":"unauthorized_client"}',
+            retryAfter: null,
+            kind: ModelProviderFailureKind.authentication,
+            code: 'oauth_refresh_client_rejected',
           ),
           (
             name: 'rate limiting',

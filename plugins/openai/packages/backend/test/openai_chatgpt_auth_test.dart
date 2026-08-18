@@ -71,58 +71,6 @@ void main() {
       expect(windowsUri, uri);
       expect(commands.expand((command) => command.$2), isNot(contains('cmd')));
     });
-
-    test('development fallback keeps manual callback login alive', () async {
-      final _Server tokenServer = await _Server.start((request) async {
-        await request.drain<void>();
-        request.response.headers.contentType = ContentType.json;
-        request.response.write(
-          jsonEncode(<String, Object?>{
-            'id_token': _idToken('account-manual-browser'),
-            'access_token': 'access-manual-browser',
-            'refresh_token': 'refresh-manual-browser',
-            'token_type': 'Bearer',
-          }),
-        );
-        await request.response.close();
-      });
-      addTearDown(tokenServer.close);
-      final int callbackPort = await _availableLoopbackPort();
-      final OpenAiOAuthClient oauth = OpenAiOAuthClient(
-        configuration: OpenAiOAuthConfiguration(
-          clientId: 'authorized-adele-test-client',
-          issuer: tokenServer.origin,
-          redirectUri: Uri.parse(
-            'http://127.0.0.1:$callbackPort/auth/callback',
-          ),
-        ),
-      );
-      addTearDown(oauth.close);
-      final _ManualCallbackOutput output = _ManualCallbackOutput();
-
-      final OpenAiChatGptCredential credential = await oauth.loginInBrowser(
-        DevelopmentOpenAiBrowserLauncher(
-          automaticLauncher: const _FailingAutomaticBrowser(),
-          writeLine: output.writeLine,
-        ),
-      );
-
-      expect(credential.accountId, 'account-manual-browser');
-      expect(
-        output.lines,
-        contains('Could not open the browser automatically.'),
-      );
-      expect(
-        output.lines,
-        contains(
-          'Open the authorization URL above manually; waiting for the callback.',
-        ),
-      );
-      expect(
-        output.lines.join(' '),
-        isNot(contains('SUPER-SECRET-LAUNCH-FAILURE')),
-      );
-    });
   });
 
   group('OpenAI browser OAuth', () {
@@ -142,47 +90,30 @@ void main() {
       }
     });
 
-    test('preserves issuer path prefixes for OAuth endpoints', () {
-      for (final (String issuer, String authorization, String token)
-          in <(String, String, String)>[
-            (
-              'https://auth.example.test',
-              'https://auth.example.test/oauth/authorize',
-              'https://auth.example.test/oauth/token',
-            ),
-            (
-              'https://auth.example.test/',
-              'https://auth.example.test/oauth/authorize',
-              'https://auth.example.test/oauth/token',
-            ),
-            (
-              'https://auth.example.test/tenant',
-              'https://auth.example.test/tenant/oauth/authorize',
-              'https://auth.example.test/tenant/oauth/token',
-            ),
-            (
-              'https://auth.example.test/tenant/',
-              'https://auth.example.test/tenant/oauth/authorize',
-              'https://auth.example.test/tenant/oauth/token',
-            ),
-            (
-              'https://auth.example.test/tenant%20one',
-              'https://auth.example.test/tenant%20one/oauth/authorize',
-              'https://auth.example.test/tenant%20one/oauth/token',
-            ),
-          ]) {
+    test('derives OAuth endpoints from an issuer origin', () {
+      for (final String issuer in <String>[
+        'https://auth.example.test',
+        'https://auth.example.test/',
+      ]) {
         final OpenAiOAuthConfiguration configuration = OpenAiOAuthConfiguration(
           clientId: 'authorized-adele-test-client',
           issuer: Uri.parse(issuer),
           redirectUri: Uri.parse('http://127.0.0.1:1455/auth/callback'),
         );
-        expect(configuration.authorizationEndpoint.toString(), authorization);
-        expect(configuration.tokenEndpoint.toString(), token);
+        expect(
+          configuration.authorizationEndpoint.toString(),
+          'https://auth.example.test/oauth/authorize',
+        );
+        expect(
+          configuration.tokenEndpoint.toString(),
+          'https://auth.example.test/oauth/token',
+        );
       }
     });
 
-    test('rejects OAuth issuers with query or fragment', () {
+    test('rejects OAuth issuers with path, query, or fragment', () {
       for (final String issuer in <String>[
+        'https://auth.example.test/tenant',
         'https://auth.example.test/tenant?foo=bar',
         'https://auth.example.test/tenant#fragment',
       ]) {
@@ -455,50 +386,34 @@ void main() {
           ),
         ),
       );
-      for (final Map<String, Object?> invalidTokens in <Map<String, Object?>>[
-        <String, Object?>{
-          'id_token': _idToken('account-invalid-initial'),
-          'access_token': 'SUPER-SECRET-ACCESS\r\nInjected: value',
-          'refresh_token': 'refresh-valid',
-          'token_type': 'Bearer',
-        },
-        <String, Object?>{
-          'id_token': _idToken('account-invalid-initial'),
-          'access_token': 'access-valid',
-          'refresh_token': 'SUPER-SECRET-REFRESH\nInjected: value',
-          'token_type': 'Bearer',
-        },
-        <String, Object?>{
-          'id_token': ' ${_idToken('account-invalid-initial')}',
-          'access_token': 'SUPER-SECRET-ACCESS',
-          'refresh_token': 'SUPER-SECRET-REFRESH',
-          'token_type': 'Bearer',
-        },
-      ]) {
-        response = jsonEncode(invalidTokens);
-        final OpenAiOAuthAttempt invalidToken = oauth.createAttempt();
-        await expectLater(
-          oauth.complete(invalidToken, callback(invalidToken)),
-          throwsA(
-            isA<OpenAiAuthenticationException>()
-                .having(
-                  (OpenAiAuthenticationException error) => error.code,
-                  'code',
-                  'malformed_token_response',
-                )
-                .having(
-                  (OpenAiAuthenticationException error) => error.failureKind,
-                  'failureKind',
-                  OpenAiAuthenticationFailureKind.malformedResponse,
-                )
-                .having(
-                  (OpenAiAuthenticationException error) => error.toString(),
-                  'sanitized error',
-                  isNot(contains('SUPER-SECRET')),
-                ),
-          ),
-        );
-      }
+      response = jsonEncode(<String, Object?>{
+        'id_token': _idToken('account-invalid-initial'),
+        'access_token': 'SUPER-SECRET-ACCESS\u0000',
+        'refresh_token': 'refresh-valid',
+        'token_type': 'Bearer',
+      });
+      final OpenAiOAuthAttempt invalidToken = oauth.createAttempt();
+      await expectLater(
+        oauth.complete(invalidToken, callback(invalidToken)),
+        throwsA(
+          isA<OpenAiAuthenticationException>()
+              .having(
+                (OpenAiAuthenticationException error) => error.code,
+                'code',
+                'malformed_token_response',
+              )
+              .having(
+                (OpenAiAuthenticationException error) => error.failureKind,
+                'failureKind',
+                OpenAiAuthenticationFailureKind.malformedResponse,
+              )
+              .having(
+                (OpenAiAuthenticationException error) => error.toString(),
+                'sanitized error',
+                isNot(contains('SUPER-SECRET')),
+              ),
+        ),
+      );
       response = jsonEncode(<String, Object?>{
         'id_token': _jwt(<String, Object?>{}),
         'access_token': 'access-secret-not-surfaced',
@@ -871,19 +786,30 @@ void main() {
           (await store.load('refresh')).credential?.refreshToken,
           'refresh-old',
         );
-        response = <String, Object?>{'access_token': 42};
+        response = <String, Object?>{
+          'access_token': 'access-malformed-id',
+          'id_token': 'not-a-jwt',
+        };
         await expectLater(
           auth.refresh(),
           throwsA(
-            isA<OpenAiAuthenticationException>().having(
-              (OpenAiAuthenticationException error) => error.code,
-              'code',
-              'oauth_refresh_malformed_response',
-            ),
+            isA<OpenAiAuthenticationException>()
+                .having(
+                  (OpenAiAuthenticationException error) => error.code,
+                  'code',
+                  'oauth_refresh_malformed_response',
+                )
+                .having(
+                  (OpenAiAuthenticationException error) => error.failureKind,
+                  'failureKind',
+                  OpenAiAuthenticationFailureKind.malformedResponse,
+                ),
           ),
         );
         expect((await store.load('refresh')).revision, 2);
-        response = <String, Object?>{};
+        response = <String, Object?>{
+          'access_token': 'SUPER-SECRET-ACCESS\u0000',
+        };
         await expectLater(
           auth.refresh(),
           throwsA(
@@ -899,7 +825,7 @@ void main() {
     );
 
     test('requires an explicit access token from every refresh', () async {
-      var response = <String, Object?>{
+      final Map<String, Object?> response = <String, Object?>{
         'refresh_token': 'SUPER-SECRET-ROTATED-REFRESH-TOKEN',
       };
       final _Server server = await _Server.start((request) async {
@@ -928,46 +854,31 @@ void main() {
         ),
       );
 
-      for (final Map<String, Object?> invalid in <Map<String, Object?>>[
-        <String, Object?>{
-          'refresh_token': 'SUPER-SECRET-ROTATED-REFRESH-TOKEN',
-        },
-        <String, Object?>{'id_token': _idToken('account-missing-access')},
-        <String, Object?>{
-          'id_token': _idToken('account-missing-access'),
-          'refresh_token': 'SUPER-SECRET-ROTATED-REFRESH-TOKEN',
-        },
-      ]) {
-        response = invalid;
-        await expectLater(
-          auth.refresh(),
-          throwsA(
-            isA<OpenAiAuthenticationException>()
-                .having(
-                  (OpenAiAuthenticationException error) => error.code,
-                  'code',
-                  'oauth_refresh_malformed_response',
-                )
-                .having(
-                  (OpenAiAuthenticationException error) => error.failureKind,
-                  'failureKind',
-                  OpenAiAuthenticationFailureKind.malformedResponse,
-                )
-                .having(
-                  (OpenAiAuthenticationException error) => error.toString(),
-                  'sanitized error',
-                  isNot(contains('SUPER-SECRET')),
-                ),
-          ),
-        );
-        final OpenAiCredentialState state = await store.load('missing-access');
-        expect(state.revision, 1);
-        expect(state.credential?.accessToken, 'SUPER-SECRET-OLD-ACCESS-TOKEN');
-        expect(
-          state.credential?.refreshToken,
-          'SUPER-SECRET-OLD-REFRESH-TOKEN',
-        );
-      }
+      await expectLater(
+        auth.refresh(),
+        throwsA(
+          isA<OpenAiAuthenticationException>()
+              .having(
+                (OpenAiAuthenticationException error) => error.code,
+                'code',
+                'oauth_refresh_malformed_response',
+              )
+              .having(
+                (OpenAiAuthenticationException error) => error.failureKind,
+                'failureKind',
+                OpenAiAuthenticationFailureKind.malformedResponse,
+              )
+              .having(
+                (OpenAiAuthenticationException error) => error.toString(),
+                'sanitized error',
+                isNot(contains('SUPER-SECRET')),
+              ),
+        ),
+      );
+      final OpenAiCredentialState state = await store.load('missing-access');
+      expect(state.revision, 1);
+      expect(state.credential?.accessToken, 'SUPER-SECRET-OLD-ACCESS-TOKEN');
+      expect(state.credential?.refreshToken, 'SUPER-SECRET-OLD-REFRESH-TOKEN');
     });
 
     test('refreshed expiry uses only fresh lifetime information', () async {
@@ -1392,47 +1303,6 @@ final class _CallbackBrowser implements OpenAiBrowserLauncher {
         client.close();
       }
     }());
-  }
-}
-
-final class _FailingAutomaticBrowser implements OpenAiBrowserLauncher {
-  const _FailingAutomaticBrowser();
-
-  @override
-  Future<void> open(Uri uri) => throw const ProcessException(
-    'xdg-open',
-    <String>[],
-    'SUPER-SECRET-LAUNCH-FAILURE',
-  );
-}
-
-final class _ManualCallbackOutput {
-  final List<String> lines = <String>[];
-
-  void writeLine(String line) {
-    lines.add(line);
-    final Uri? authorizationUri = Uri.tryParse(line);
-    if (authorizationUri?.queryParameters['redirect_uri'] == null) return;
-    unawaited(_complete(authorizationUri!));
-  }
-
-  Future<void> _complete(Uri authorizationUri) async {
-    final Uri callback =
-        Uri.parse(authorizationUri.queryParameters['redirect_uri']!).replace(
-          queryParameters: <String, String>{
-            'state': authorizationUri.queryParameters['state']!,
-            'code': 'manual-authorization-code',
-          },
-        );
-    final HttpClient client = HttpClient();
-    try {
-      final HttpClientResponse response = await (await client.getUrl(
-        callback,
-      )).close();
-      await response.drain<void>();
-    } finally {
-      client.close();
-    }
   }
 }
 

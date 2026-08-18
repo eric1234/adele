@@ -63,7 +63,7 @@ authorization-code exchange, and initial token parsing are delegated to
 `package:oauth2`. ADELE owns browser launching, the loopback HTTP listener,
 OpenAI-specific authorization parameters, and account-claim extraction and
 binding. Wrong-path and wrong-state loopback requests remain non-terminal; the
-library validates the legitimate callback. OAuth issuer, client identity,
+library validates the legitimate callback. OAuth issuer origin, client identity,
 redirect, and route data remain configurable. The development command prefers
 an explicitly configured ADELE-authorized client identity, but may use the
 current source-visible Codex public client as a loudly warned experimental
@@ -144,6 +144,11 @@ filesystem lock. Revision comparison and atomic replacement occur while that
 lock is held, and each replacement uses a unique temporary path. This is not a
 production-grade distributed transaction store, final credential UX, or a
 general ADELE secrets facility.
+The development store applies restrictive Unix permissions where supported but
+does not manage Windows ACLs. Its file must remain in a private user-controlled
+location. Production credential protection, including Windows ACL or keyring
+integration, belongs in ADELE's future secrets facility rather than this
+experimental provider.
 Corrupt credential content fails closed as a sanitized authentication-state
 failure; ordinary filesystem access failures remain transport failures. Neither
 case automatically deletes the local store.
