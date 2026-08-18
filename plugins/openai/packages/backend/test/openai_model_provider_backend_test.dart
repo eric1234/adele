@@ -915,6 +915,94 @@ void main() {
     );
 
     test(
+      'ChatGPT rejects unsafe persisted token text before network',
+      () async {
+        var responseRequests = 0;
+        final _FakeServer server = await _FakeServer.start((request) async {
+          responseRequests++;
+          await request.drain<void>();
+          await request.response.close();
+        });
+        addTearDown(server.close);
+        final Directory directory = await Directory.systemTemp.createTemp(
+          'adele-openai-unsafe-token-provider-',
+        );
+        addTearDown(() => directory.delete(recursive: true));
+        final File credentials = File('${directory.path}/credentials.json');
+        final FileOpenAiCredentialStore store = FileOpenAiCredentialStore(
+          credentials,
+        );
+        await store.compareAndSwap(
+          'unsafe-token-provider',
+          0,
+          OpenAiChatGptCredential(
+            idToken: _idToken('account-unsafe-token'),
+            accessToken: 'access-valid',
+            refreshToken: 'refresh-valid',
+            accountId: 'account-unsafe-token',
+            fedRamp: false,
+            expiresAt: null,
+          ),
+        );
+        final String validDocument = await credentials.readAsString();
+        final OpenAiOAuthClient oauth = _oauth(server);
+        addTearDown(oauth.close);
+        final OpenAiModelProvider provider = OpenAiModelProvider.chatGpt(
+          auth: OpenAiChatGptAuth(
+            instanceId: 'unsafe-token-provider',
+            store: store,
+            oauth: oauth,
+          ),
+          endpoint: server.responsesUri,
+        );
+        addTearDown(provider.close);
+
+        for (final MapEntry<String, String> invalid
+            in <MapEntry<String, String>>[
+              MapEntry<String, String>(
+                'idToken',
+                ' ${_idToken('account-unsafe-token')}',
+              ),
+              const MapEntry<String, String>(
+                'accessToken',
+                'SUPER-SECRET-ACCESS\r\nInjected: value',
+              ),
+              const MapEntry<String, String>(
+                'refreshToken',
+                'SUPER-SECRET-REFRESH\nInjected: value',
+              ),
+            ]) {
+          final Map<String, Object?> document =
+              jsonDecode(validDocument)! as Map<String, Object?>;
+          final Map<String, Object?> instances =
+              document['instances']! as Map<String, Object?>;
+          final Map<String, Object?> state =
+              instances['unsafe-token-provider']! as Map<String, Object?>;
+          final Map<String, Object?> credential =
+              state['credential']! as Map<String, Object?>;
+          credential[invalid.key] = invalid.value;
+          await credentials.writeAsString(jsonEncode(document));
+
+          final ModelProviderFailure failure =
+              (await provider.invoke(_request()).toList())
+                  .single
+                  .terminal!
+                  .failure!;
+
+          expect(failure.kind, ModelProviderFailureKind.authentication);
+          expect(failure.providerCode, 'credential_store_corrupt');
+          final String surfaced = <Object?>[
+            failure.providerMessage,
+            failure.providerDetails,
+          ].join(' ');
+          expect(surfaced, isNot(contains('SUPER-SECRET')));
+          expect(surfaced, isNot(contains('Injected: value')));
+        }
+        expect(responseRequests, 0);
+      },
+    );
+
+    test(
       'ChatGPT keeps credential file I/O distinct from corruption',
       () async {
         var responseRequests = 0;

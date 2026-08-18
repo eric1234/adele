@@ -62,14 +62,19 @@ final class OpenAiOAuthClientIdentity {
 }
 
 final class OpenAiChatGptCredential {
-  const OpenAiChatGptCredential({
+  OpenAiChatGptCredential({
     required this.idToken,
     required this.accessToken,
     required this.refreshToken,
     required this.accountId,
     required this.fedRamp,
     required this.expiresAt,
-  });
+  }) {
+    _validateTokenSecret(idToken, 'idToken');
+    _validateTokenSecret(accessToken, 'accessToken');
+    _validateTokenSecret(refreshToken, 'refreshToken');
+    _requiredHeaderText(accountId, 'accountId');
+  }
 
   final String idToken;
   final String accessToken;
@@ -190,7 +195,10 @@ final class InMemoryOpenAiCredentialStore implements OpenAiCredentialStore {
   }
 }
 
-/// Development-only, one-writer credential persistence for self-hosting.
+/// Provisional local credential persistence for cooperating ADELE processes.
+///
+/// Mutations use process-local serialization and a stable sidecar file lock;
+/// this is not a distributed transaction store or generic secrets facility.
 final class FileOpenAiCredentialStore implements OpenAiCredentialStore {
   FileOpenAiCredentialStore(this.file);
 
@@ -367,6 +375,30 @@ final class FileOpenAiCredentialStore implements OpenAiCredentialStore {
 
 abstract interface class OpenAiBrowserLauncher {
   Future<void> open(Uri uri);
+}
+
+final class DevelopmentOpenAiBrowserLauncher implements OpenAiBrowserLauncher {
+  const DevelopmentOpenAiBrowserLauncher({
+    required this.automaticLauncher,
+    required this.writeLine,
+  });
+
+  final OpenAiBrowserLauncher automaticLauncher;
+  final void Function(String line) writeLine;
+
+  @override
+  Future<void> open(Uri uri) async {
+    writeLine('Open this authorization URL if the browser does not launch:');
+    writeLine(uri.toString());
+    try {
+      await automaticLauncher.open(uri);
+    } on Object {
+      writeLine('Could not open the browser automatically.');
+      writeLine(
+        'Open the authorization URL above manually; waiting for the callback.',
+      );
+    }
+  }
 }
 
 typedef OpenAiBrowserProcessStarter =
@@ -1250,36 +1282,36 @@ DateTime? _idTokenExpiration(String idToken) {
 }
 
 String _requiredSecret(Map<String, Object?> map, String key) {
-  final String? value = _optionalSecret(map[key]);
-  if (value == null) throw FormatException('Missing required $key.');
-  return value;
+  final Object? value = map[key];
+  if (value is! String) throw FormatException('Missing required $key.');
+  return _validateTokenSecret(value, key);
 }
 
 String _requiredOAuthSecret(String? value, String name) {
-  if (value == null || value.isEmpty) {
-    throw FormatException('Missing required $name.');
-  }
-  return value;
+  if (value == null) throw FormatException('Missing required $name.');
+  return _validateTokenSecret(value, name);
 }
-
-String? _optionalSecret(Object? value) =>
-    value is String && value.isNotEmpty ? value : null;
 
 String? _optionalTokenSecret(Map<String, Object?> token, String name) {
   if (!token.containsKey(name)) return null;
-  final String? value = _optionalSecret(token[name]);
-  if (value == null ||
-      value != value.trim() ||
-      value.contains('\r') ||
-      value.contains('\n')) {
-    throw FormatException('Invalid $name.');
-  }
-  return value;
+  final Object? value = token[name];
+  if (value is! String) throw FormatException('Invalid $name.');
+  return _validateTokenSecret(value, name);
 }
 
 String _requiredTokenSecret(Map<String, Object?> token, String name) {
   final String? value = _optionalTokenSecret(token, name);
   if (value == null) throw FormatException('Missing required $name.');
+  return value;
+}
+
+String _validateTokenSecret(String value, String name) {
+  if (value.isEmpty ||
+      value != value.trim() ||
+      value.contains('\r') ||
+      value.contains('\n')) {
+    throw FormatException('Invalid $name.');
+  }
   return value;
 }
 

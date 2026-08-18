@@ -75,7 +75,10 @@ Future<void> _runOAuthCommand(
   try {
     if (command == 'login') {
       final OpenAiChatGptCredential credential = await auth.loginInBrowser(
-        const _VisibleBrowserLauncher(),
+        DevelopmentOpenAiBrowserLauncher(
+          automaticLauncher: const DesktopOpenAiBrowserLauncher(),
+          writeLine: stdout.writeln,
+        ),
       );
       stdout.writeln(
         'ChatGPT login stored for account ${credential.accountId} at $credentialPath.',
@@ -150,18 +153,5 @@ Future<void> _testInference(OpenAiChatGptAuth auth) async {
     stdout.writeln('Authoritative output: $text');
   } finally {
     provider.close();
-  }
-}
-
-final class _VisibleBrowserLauncher implements OpenAiBrowserLauncher {
-  const _VisibleBrowserLauncher();
-
-  @override
-  Future<void> open(Uri uri) async {
-    stdout.writeln(
-      'Open this authorization URL if the browser does not launch:',
-    );
-    stdout.writeln(uri);
-    await const DesktopOpenAiBrowserLauncher().open(uri);
   }
 }

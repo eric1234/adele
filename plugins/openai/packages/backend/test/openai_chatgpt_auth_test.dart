@@ -71,6 +71,58 @@ void main() {
       expect(windowsUri, uri);
       expect(commands.expand((command) => command.$2), isNot(contains('cmd')));
     });
+
+    test('development fallback keeps manual callback login alive', () async {
+      final _Server tokenServer = await _Server.start((request) async {
+        await request.drain<void>();
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(
+          jsonEncode(<String, Object?>{
+            'id_token': _idToken('account-manual-browser'),
+            'access_token': 'access-manual-browser',
+            'refresh_token': 'refresh-manual-browser',
+            'token_type': 'Bearer',
+          }),
+        );
+        await request.response.close();
+      });
+      addTearDown(tokenServer.close);
+      final int callbackPort = await _availableLoopbackPort();
+      final OpenAiOAuthClient oauth = OpenAiOAuthClient(
+        configuration: OpenAiOAuthConfiguration(
+          clientId: 'authorized-adele-test-client',
+          issuer: tokenServer.origin,
+          redirectUri: Uri.parse(
+            'http://127.0.0.1:$callbackPort/auth/callback',
+          ),
+        ),
+      );
+      addTearDown(oauth.close);
+      final _ManualCallbackOutput output = _ManualCallbackOutput();
+
+      final OpenAiChatGptCredential credential = await oauth.loginInBrowser(
+        DevelopmentOpenAiBrowserLauncher(
+          automaticLauncher: const _FailingAutomaticBrowser(),
+          writeLine: output.writeLine,
+        ),
+      );
+
+      expect(credential.accountId, 'account-manual-browser');
+      expect(
+        output.lines,
+        contains('Could not open the browser automatically.'),
+      );
+      expect(
+        output.lines,
+        contains(
+          'Open the authorization URL above manually; waiting for the callback.',
+        ),
+      );
+      expect(
+        output.lines.join(' '),
+        isNot(contains('SUPER-SECRET-LAUNCH-FAILURE')),
+      );
+    });
   });
 
   group('OpenAI browser OAuth', () {
@@ -403,6 +455,50 @@ void main() {
           ),
         ),
       );
+      for (final Map<String, Object?> invalidTokens in <Map<String, Object?>>[
+        <String, Object?>{
+          'id_token': _idToken('account-invalid-initial'),
+          'access_token': 'SUPER-SECRET-ACCESS\r\nInjected: value',
+          'refresh_token': 'refresh-valid',
+          'token_type': 'Bearer',
+        },
+        <String, Object?>{
+          'id_token': _idToken('account-invalid-initial'),
+          'access_token': 'access-valid',
+          'refresh_token': 'SUPER-SECRET-REFRESH\nInjected: value',
+          'token_type': 'Bearer',
+        },
+        <String, Object?>{
+          'id_token': ' ${_idToken('account-invalid-initial')}',
+          'access_token': 'SUPER-SECRET-ACCESS',
+          'refresh_token': 'SUPER-SECRET-REFRESH',
+          'token_type': 'Bearer',
+        },
+      ]) {
+        response = jsonEncode(invalidTokens);
+        final OpenAiOAuthAttempt invalidToken = oauth.createAttempt();
+        await expectLater(
+          oauth.complete(invalidToken, callback(invalidToken)),
+          throwsA(
+            isA<OpenAiAuthenticationException>()
+                .having(
+                  (OpenAiAuthenticationException error) => error.code,
+                  'code',
+                  'malformed_token_response',
+                )
+                .having(
+                  (OpenAiAuthenticationException error) => error.failureKind,
+                  'failureKind',
+                  OpenAiAuthenticationFailureKind.malformedResponse,
+                )
+                .having(
+                  (OpenAiAuthenticationException error) => error.toString(),
+                  'sanitized error',
+                  isNot(contains('SUPER-SECRET')),
+                ),
+          ),
+        );
+      }
       response = jsonEncode(<String, Object?>{
         'id_token': _jwt(<String, Object?>{}),
         'access_token': 'access-secret-not-surfaced',
@@ -1296,6 +1392,47 @@ final class _CallbackBrowser implements OpenAiBrowserLauncher {
         client.close();
       }
     }());
+  }
+}
+
+final class _FailingAutomaticBrowser implements OpenAiBrowserLauncher {
+  const _FailingAutomaticBrowser();
+
+  @override
+  Future<void> open(Uri uri) => throw const ProcessException(
+    'xdg-open',
+    <String>[],
+    'SUPER-SECRET-LAUNCH-FAILURE',
+  );
+}
+
+final class _ManualCallbackOutput {
+  final List<String> lines = <String>[];
+
+  void writeLine(String line) {
+    lines.add(line);
+    final Uri? authorizationUri = Uri.tryParse(line);
+    if (authorizationUri?.queryParameters['redirect_uri'] == null) return;
+    unawaited(_complete(authorizationUri!));
+  }
+
+  Future<void> _complete(Uri authorizationUri) async {
+    final Uri callback =
+        Uri.parse(authorizationUri.queryParameters['redirect_uri']!).replace(
+          queryParameters: <String, String>{
+            'state': authorizationUri.queryParameters['state']!,
+            'code': 'manual-authorization-code',
+          },
+        );
+    final HttpClient client = HttpClient();
+    try {
+      final HttpClientResponse response = await (await client.getUrl(
+        callback,
+      )).close();
+      await response.drain<void>();
+    } finally {
+      client.close();
+    }
   }
 }
 
