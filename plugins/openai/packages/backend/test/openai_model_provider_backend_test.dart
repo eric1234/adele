@@ -1063,6 +1063,14 @@ void main() {
             code: 'oauth_refresh_rejected',
           ),
           (
+            name: 'standard invalid grant rejection',
+            status: HttpStatus.badRequest,
+            body: '{"error":"invalid_grant"}',
+            retryAfter: null,
+            kind: ModelProviderFailureKind.authentication,
+            code: 'oauth_refresh_rejected',
+          ),
+          (
             name: 'rate limiting',
             status: HttpStatus.tooManyRequests,
             body:
@@ -1078,6 +1086,15 @@ void main() {
             retryAfter: 'SUPER-SECRET-ACCESS-TOKEN',
             kind: ModelProviderFailureKind.unavailable,
             code: 'oauth_refresh_unavailable',
+          ),
+          (
+            name: 'oversized rate limiting',
+            status: HttpStatus.tooManyRequests,
+            body:
+                'SUPER-SECRET-REFRESH-TOKEN${List<String>.filled(64 * 1024 + 128, 'X').join()}',
+            retryAfter: null,
+            kind: ModelProviderFailureKind.rateLimited,
+            code: 'oauth_refresh_rate_limited',
           ),
           (
             name: 'malformed success',
@@ -1156,6 +1173,10 @@ void main() {
           expect(failure.providerCode, testCase.code);
           if (testCase.status != HttpStatus.ok) {
             expect(failure.providerDetails['httpStatus'], testCase.status);
+          }
+          if (testCase.body.length > 64 * 1024) {
+            expect(failure.providerDetails['responseBodyTooLarge'], isTrue);
+            expect(failure.providerDetails['oauthErrorCode'], isNull);
           }
           if (testCase.retryAfter != null &&
               int.tryParse(testCase.retryAfter!) != null) {

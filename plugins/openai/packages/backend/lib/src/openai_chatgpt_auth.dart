@@ -14,6 +14,7 @@ import 'package:win32/win32.dart';
 /// OAuth registration or a stable OpenAI third-party contract.
 const String openAiExperimentalCodexOAuthClientId =
     'app_EMoamEEZ73f0CkXaXp7hrann';
+const int _maximumOAuthRefreshResponseBytes = 64 * 1024;
 const String openAiDefaultChatGptInstanceId = 'development-chatgpt';
 const String openAiExperimentalCodexClientEnvironment =
     'ADELE_OPENAI_CHATGPT_EXPERIMENTAL_CODEX_CLIENT';
@@ -442,6 +443,20 @@ final class OpenAiOAuthConfiguration {
         'Path is required.',
       );
     }
+    if (redirectUri.port == 0) {
+      throw ArgumentError.value(
+        redirectUri,
+        'redirectUri',
+        'Must use a fixed nonzero callback port.',
+      );
+    }
+    if (redirectUri.hasFragment) {
+      throw ArgumentError.value(
+        redirectUri,
+        'redirectUri',
+        'Must not include a fragment.',
+      );
+    }
     if (scopes.isEmpty || scopes.any((String scope) => scope.trim().isEmpty)) {
       throw ArgumentError.value(scopes, 'scopes');
     }
@@ -603,8 +618,9 @@ final class OpenAiOAuthClient {
       'refresh_token': current.refreshToken,
     });
     try {
-      final String idToken =
-          _optionalTokenSecret(token, 'id_token') ?? current.idToken;
+      final String accessToken = _requiredTokenSecret(token, 'access_token');
+      final String? newIdToken = _optionalTokenSecret(token, 'id_token');
+      final String idToken = newIdToken ?? current.idToken;
       final _AccountClaims claims = _accountClaims(idToken);
       if (claims.accountId != current.accountId) {
         throw const OpenAiAuthenticationException(
@@ -614,15 +630,13 @@ final class OpenAiOAuthClient {
       }
       return OpenAiChatGptCredential(
         idToken: idToken,
-        accessToken:
-            _optionalTokenSecret(token, 'access_token') ?? current.accessToken,
+        accessToken: accessToken,
         refreshToken:
             _optionalTokenSecret(token, 'refresh_token') ??
             current.refreshToken,
         accountId: current.accountId,
         fedRamp: claims.fedRamp,
-        expiresAt:
-            _expiration(token, idToken, _clock().toUtc()) ?? current.expiresAt,
+        expiresAt: _refreshExpiration(token, newIdToken, _clock().toUtc()),
       );
     } on OpenAiAuthenticationException {
       rethrow;
@@ -743,15 +757,9 @@ final class OpenAiOAuthClient {
       );
     }
 
-    final List<int> responseBytes;
+    final _BoundedOAuthResponse captured;
     try {
-      responseBytes = await response.fold<List<int>>(<int>[], (
-        List<int> bytes,
-        List<int> chunk,
-      ) {
-        bytes.addAll(chunk);
-        return bytes;
-      });
+      captured = await _readBoundedOAuthResponse(response);
     } on SocketException {
       throw const OpenAiAuthenticationException(
         'oauth_refresh_transport',
@@ -767,10 +775,12 @@ final class OpenAiOAuthClient {
     }
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      final String encoded = utf8.decode(responseBytes, allowMalformed: true);
-      final String? providerErrorCode = _oauthErrorCode(encoded);
+      final String? providerErrorCode = captured.exceededLimit
+          ? null
+          : _oauthErrorCode(utf8.decode(captured.bytes, allowMalformed: true));
       final Map<String, Object?> details = <String, Object?>{
         'httpStatus': response.statusCode,
+        if (captured.exceededLimit) 'responseBodyTooLarge': true,
         if (_safeRetryAfter(response.headers) case final String retryAfter)
           'retryAfter': retryAfter,
         'oauthErrorCode': ?providerErrorCode,
@@ -799,8 +809,16 @@ final class OpenAiOAuthClient {
       );
     }
 
+    if (captured.exceededLimit) {
+      throw const OpenAiAuthenticationException(
+        'oauth_refresh_response_too_large',
+        'OpenAI returned an oversized OAuth refresh response.',
+        failureKind: OpenAiAuthenticationFailureKind.malformedResponse,
+        safeDetails: <String, Object?>{'responseBodyTooLarge': true},
+      );
+    }
     try {
-      final String encoded = utf8.decode(responseBytes);
+      final String encoded = utf8.decode(captured.bytes);
       final Object? decoded = jsonDecode(encoded);
       if (decoded is! Map<String, Object?>) {
         throw const FormatException('Token response is not an object.');
@@ -810,13 +828,7 @@ final class OpenAiOAuthClient {
           'Successful refresh response contained an error.',
         );
       }
-      if (!const <String>{
-        'id_token',
-        'access_token',
-        'refresh_token',
-      }.any(decoded.containsKey)) {
-        throw const FormatException('Refresh response contained no token.');
-      }
+      _requiredTokenSecret(decoded, 'access_token');
       return decoded;
     } on FormatException {
       throw const OpenAiAuthenticationException(
@@ -825,6 +837,38 @@ final class OpenAiOAuthClient {
         failureKind: OpenAiAuthenticationFailureKind.malformedResponse,
       );
     }
+  }
+}
+
+final class _BoundedOAuthResponse {
+  const _BoundedOAuthResponse(this.bytes, this.exceededLimit);
+
+  final Uint8List bytes;
+  final bool exceededLimit;
+}
+
+Future<_BoundedOAuthResponse> _readBoundedOAuthResponse(
+  HttpClientResponse response,
+) async {
+  final BytesBuilder bytes = BytesBuilder(copy: false);
+  final StreamIterator<List<int>> iterator = StreamIterator<List<int>>(
+    response,
+  );
+  try {
+    while (await iterator.moveNext()) {
+      final List<int> chunk = iterator.current;
+      final int remaining = _maximumOAuthRefreshResponseBytes - bytes.length;
+      if (chunk.length >= remaining) {
+        bytes.add(chunk.sublist(0, remaining));
+        await iterator.cancel();
+        return _BoundedOAuthResponse(bytes.takeBytes(), true);
+      }
+      bytes.add(chunk);
+    }
+    return _BoundedOAuthResponse(bytes.takeBytes(), false);
+  } on Object {
+    await iterator.cancel();
+    rethrow;
   }
 }
 
@@ -1131,9 +1175,9 @@ _AccountClaims _accountClaims(String idToken) {
   }
 }
 
-DateTime? _expiration(
+DateTime? _refreshExpiration(
   Map<String, Object?> token,
-  String idToken,
+  String? newIdToken,
   DateTime now,
 ) {
   if (token.containsKey('expires_in')) {
@@ -1142,7 +1186,7 @@ DateTime? _expiration(
     }
     throw const FormatException('Invalid expires_in.');
   }
-  return _idTokenExpiration(idToken);
+  return newIdToken == null ? null : _idTokenExpiration(newIdToken);
 }
 
 DateTime? _idTokenExpiration(String idToken) {
@@ -1180,11 +1224,23 @@ String? _optionalSecret(Object? value) =>
 String? _optionalTokenSecret(Map<String, Object?> token, String name) {
   if (!token.containsKey(name)) return null;
   final String? value = _optionalSecret(token[name]);
-  if (value == null) throw FormatException('Invalid $name.');
+  if (value == null ||
+      value != value.trim() ||
+      value.contains('\r') ||
+      value.contains('\n')) {
+    throw FormatException('Invalid $name.');
+  }
+  return value;
+}
+
+String _requiredTokenSecret(Map<String, Object?> token, String name) {
+  final String? value = _optionalTokenSecret(token, name);
+  if (value == null) throw FormatException('Missing required $name.');
   return value;
 }
 
 const Set<String> _permanentRefreshErrors = <String>{
+  'invalid_grant',
   'refresh_token_expired',
   'refresh_token_reused',
   'refresh_token_invalidated',
@@ -1192,7 +1248,6 @@ const Set<String> _permanentRefreshErrors = <String>{
 
 const Set<String> _safeOAuthErrorCodes = <String>{
   ..._permanentRefreshErrors,
-  'invalid_grant',
   'rate_limit',
   'rate_limit_exceeded',
   'server_error',

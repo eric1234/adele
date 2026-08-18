@@ -74,6 +74,22 @@ void main() {
   });
 
   group('OpenAI browser OAuth', () {
+    test('rejects unusable loopback redirect identities', () {
+      for (final Uri redirectUri in <Uri>[
+        Uri.parse('http://127.0.0.1:0/auth/callback'),
+        Uri.parse('http://127.0.0.1:1455/auth/callback#fragment'),
+      ]) {
+        expect(
+          () => OpenAiOAuthConfiguration(
+            clientId: 'authorized-adele-test-client',
+            redirectUri: redirectUri,
+          ),
+          throwsArgumentError,
+          reason: redirectUri.toString(),
+        );
+      }
+    });
+
     test('constructs unique state and package-owned PKCE S256 fields', () {
       final OpenAiOAuthClient oauth = OpenAiOAuthClient(
         configuration: _configuration(Uri.parse('https://auth.example.test')),
@@ -606,6 +622,7 @@ void main() {
         expect(refreshed.refreshToken, 'refresh-old');
         expect(refreshed.idToken, _idToken('account-refresh'));
         response = <String, Object?>{
+          'access_token': 'access-other',
           'id_token': _idToken('account-other'),
           'refresh_token': 'refresh-other',
         };
@@ -649,6 +666,205 @@ void main() {
         expect((await store.load('refresh')).revision, 2);
       },
     );
+
+    test('requires an explicit access token from every refresh', () async {
+      var response = <String, Object?>{
+        'refresh_token': 'SUPER-SECRET-ROTATED-REFRESH-TOKEN',
+      };
+      final _Server server = await _Server.start((request) async {
+        await request.drain<void>();
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(jsonEncode(response));
+        await request.response.close();
+      });
+      addTearDown(server.close);
+      final InMemoryOpenAiCredentialStore store =
+          InMemoryOpenAiCredentialStore();
+      final OpenAiOAuthClient oauth = OpenAiOAuthClient(
+        configuration: _configuration(server.origin),
+      );
+      addTearDown(oauth.close);
+      final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
+        instanceId: 'missing-access',
+        store: store,
+        oauth: oauth,
+      );
+      await auth.install(
+        _credential(
+          'account-missing-access',
+          'SUPER-SECRET-OLD-ACCESS-TOKEN',
+          'SUPER-SECRET-OLD-REFRESH-TOKEN',
+        ),
+      );
+
+      for (final Map<String, Object?> invalid in <Map<String, Object?>>[
+        <String, Object?>{
+          'refresh_token': 'SUPER-SECRET-ROTATED-REFRESH-TOKEN',
+        },
+        <String, Object?>{'id_token': _idToken('account-missing-access')},
+        <String, Object?>{
+          'id_token': _idToken('account-missing-access'),
+          'refresh_token': 'SUPER-SECRET-ROTATED-REFRESH-TOKEN',
+        },
+      ]) {
+        response = invalid;
+        await expectLater(
+          auth.refresh(),
+          throwsA(
+            isA<OpenAiAuthenticationException>()
+                .having(
+                  (OpenAiAuthenticationException error) => error.code,
+                  'code',
+                  'oauth_refresh_malformed_response',
+                )
+                .having(
+                  (OpenAiAuthenticationException error) => error.failureKind,
+                  'failureKind',
+                  OpenAiAuthenticationFailureKind.malformedResponse,
+                )
+                .having(
+                  (OpenAiAuthenticationException error) => error.toString(),
+                  'sanitized error',
+                  isNot(contains('SUPER-SECRET')),
+                ),
+          ),
+        );
+        final OpenAiCredentialState state = await store.load('missing-access');
+        expect(state.revision, 1);
+        expect(state.credential?.accessToken, 'SUPER-SECRET-OLD-ACCESS-TOKEN');
+        expect(
+          state.credential?.refreshToken,
+          'SUPER-SECRET-OLD-REFRESH-TOKEN',
+        );
+      }
+    });
+
+    test('refreshed expiry uses only fresh lifetime information', () async {
+      final DateTime now = DateTime.utc(2026, 8, 17, 12);
+      var response = <String, Object?>{'access_token': 'access-without-expiry'};
+      var requests = 0;
+      final _Server server = await _Server.start((request) async {
+        requests++;
+        await request.drain<void>();
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(jsonEncode(response));
+        await request.response.close();
+      });
+      addTearDown(server.close);
+      final InMemoryOpenAiCredentialStore store =
+          InMemoryOpenAiCredentialStore();
+      final OpenAiOAuthClient oauth = OpenAiOAuthClient(
+        configuration: _configuration(server.origin),
+        clock: () => now,
+      );
+      addTearDown(oauth.close);
+      OpenAiChatGptAuth owner(String instanceId) => OpenAiChatGptAuth(
+        instanceId: instanceId,
+        store: store,
+        oauth: oauth,
+        clock: () => now,
+      );
+      final OpenAiChatGptAuth unknownLifetime = owner('unknown-lifetime');
+      final DateTime staleExpiry = now.add(const Duration(minutes: 1));
+      await unknownLifetime.install(
+        OpenAiChatGptCredential(
+          idToken: _idToken('account-unknown-lifetime', expiresAt: staleExpiry),
+          accessToken: 'access-near-expiry',
+          refreshToken: 'refresh-unknown-lifetime',
+          accountId: 'account-unknown-lifetime',
+          fedRamp: false,
+          expiresAt: staleExpiry,
+        ),
+      );
+
+      final OpenAiChatGptAuthorization first = await unknownLifetime
+          .authorization();
+      expect(first.credential.accessToken, 'access-without-expiry');
+      expect(first.credential.expiresAt, isNull);
+      await unknownLifetime.authorization();
+      expect(requests, 1);
+
+      response = <String, Object?>{
+        'access_token': 'access-with-expiry',
+        'expires_in': 3600,
+      };
+      final OpenAiChatGptAuth explicitLifetime = owner('explicit-lifetime');
+      await explicitLifetime.install(
+        OpenAiChatGptCredential(
+          idToken: _idToken('account-explicit-lifetime'),
+          accessToken: 'access-near-expiry',
+          refreshToken: 'refresh-explicit-lifetime',
+          accountId: 'account-explicit-lifetime',
+          fedRamp: false,
+          expiresAt: staleExpiry,
+        ),
+      );
+
+      final OpenAiChatGptAuthorization second = await explicitLifetime
+          .authorization();
+      expect(second.credential.accessToken, 'access-with-expiry');
+      expect(second.credential.expiresAt, now.add(const Duration(hours: 1)));
+      expect(requests, 2);
+    });
+
+    test('refresh response at the cap is cancelled and not committed', () async {
+      final Completer<void> releaseResponse = Completer<void>();
+      final _Server server = await _Server.start((request) async {
+        await request.drain<void>();
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(List<String>.filled(64 * 1024, 'S').join());
+        await request.response.flush();
+        await releaseResponse.future;
+        try {
+          await request.response.close();
+        } on HttpException {
+          // The bounded client intentionally cancels before the server finishes.
+        }
+      });
+      addTearDown(() async {
+        if (!releaseResponse.isCompleted) releaseResponse.complete();
+        await server.close();
+      });
+      final InMemoryOpenAiCredentialStore store =
+          InMemoryOpenAiCredentialStore();
+      final OpenAiOAuthClient oauth = OpenAiOAuthClient(
+        configuration: _configuration(server.origin),
+      );
+      addTearDown(oauth.close);
+      final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
+        instanceId: 'oversized-success',
+        store: store,
+        oauth: oauth,
+      );
+      await auth.install(
+        _credential('account-oversized', 'access-old', 'refresh-old'),
+      );
+
+      await expectLater(
+        auth.refresh().timeout(const Duration(seconds: 5)),
+        throwsA(
+          isA<OpenAiAuthenticationException>()
+              .having(
+                (OpenAiAuthenticationException error) => error.code,
+                'code',
+                'oauth_refresh_response_too_large',
+              )
+              .having(
+                (OpenAiAuthenticationException error) => error.failureKind,
+                'failureKind',
+                OpenAiAuthenticationFailureKind.malformedResponse,
+              )
+              .having(
+                (OpenAiAuthenticationException error) => error.safeDetails,
+                'details',
+                <String, Object?>{'responseBodyTooLarge': true},
+              ),
+        ),
+      );
+      final OpenAiCredentialState state = await store.load('oversized-success');
+      expect(state.revision, 1);
+      expect(state.credential?.accessToken, 'access-old');
+    });
 
     test(
       'coalesces same instance while separate instances refresh independently',
@@ -866,12 +1082,15 @@ OpenAiChatGptCredential _credential(
   expiresAt: null,
 );
 
-String _idToken(String accountId) => _jwt(<String, Object?>{
-  'https://api.openai.com/auth': <String, Object?>{
-    'chatgpt_account_id': accountId,
-    'chatgpt_account_is_fedramp': false,
-  },
-});
+String _idToken(String accountId, {DateTime? expiresAt}) =>
+    _jwt(<String, Object?>{
+      'https://api.openai.com/auth': <String, Object?>{
+        'chatgpt_account_id': accountId,
+        'chatgpt_account_is_fedramp': false,
+      },
+      if (expiresAt != null)
+        'exp': expiresAt.toUtc().millisecondsSinceEpoch ~/ 1000,
+    });
 
 String _jwt(Map<String, Object?> payload) {
   String encode(Object value) =>

@@ -88,11 +88,18 @@ therefore retains that JSON exchange. The library is not allowed to refresh or
 mutate durable credentials automatically. Initial library credentials and
 custom refresh results are converted into ADELE's account-bound revision/CAS
 record before publication.
+Every successful refresh must explicitly return a valid access token; omitted
+ID and refresh tokens may retain their account-bound prior values. Refreshed
+access-token expiry derives only from lifetime information returned by that
+refresh, never stale credential metadata. Token response bodies are bounded and
+oversized successful responses fail as malformed without publication.
 Permanent refresh-credential rejection is classified separately from OAuth
 rate limiting, transient service failure, transport failure, and malformed
 successful provider responses. Those failures retain the existing common model
-provider kinds without introducing automatic refresh retries. Provider bodies
-are not surfaced because token responses may contain credentials.
+provider kinds without introducing automatic refresh retries. Standard OAuth
+`invalid_grant` and the known OpenAI refresh-token terminal reasons are
+credential rejection. Provider bodies are not surfaced because token responses
+may contain credentials.
 
 The ChatGPT request uses its OAuth access token, exact bound
 `ChatGPT-Account-ID`, and conditional `X-OpenAI-Fedramp: true`. These headers
