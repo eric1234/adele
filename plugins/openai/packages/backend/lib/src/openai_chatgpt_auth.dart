@@ -1336,7 +1336,7 @@ String _requiredHeaderValue(Map<String, Object?> map, String key) {
   if (value is! String || value.isEmpty || value != value.trim()) {
     throw FormatException('Missing or invalid $key.');
   }
-  if (value.contains('\r') || value.contains('\n')) {
+  if (value.codeUnits.any((unit) => unit < 0x20 || unit > 0x7e)) {
     throw FormatException('Invalid $key.');
   }
   return value;

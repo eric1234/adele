@@ -915,7 +915,7 @@ void main() {
     );
 
     test(
-      'ChatGPT rejects unsafe persisted token text before network',
+      'ChatGPT rejects unsafe persisted header text before network',
       () async {
         var responseRequests = 0;
         final _FakeServer server = await _FakeServer.start((request) async {
@@ -981,6 +981,24 @@ void main() {
           failure.providerDetails,
         ].join(' ');
         expect(surfaced, isNot(contains('SUPER-SECRET')));
+
+        credential['accessToken'] = 'access-valid';
+        credential['accountId'] = 'account\u0000bad';
+        await credentials.writeAsString(jsonEncode(document));
+        final ModelProviderFailure accountFailure =
+            (await provider.invoke(_request()).toList())
+                .single
+                .terminal!
+                .failure!;
+        expect(accountFailure.kind, ModelProviderFailureKind.authentication);
+        expect(accountFailure.providerCode, 'credential_store_corrupt');
+        expect(
+          <Object?>[
+            accountFailure.providerMessage,
+            accountFailure.providerDetails,
+          ].join(' '),
+          isNot(contains('account\u0000bad')),
+        );
         expect(responseRequests, 0);
       },
     );
