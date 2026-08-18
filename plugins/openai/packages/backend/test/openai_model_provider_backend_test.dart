@@ -955,6 +955,11 @@ void main() {
           endpoint: server.responsesUri,
         );
         addTearDown(provider.close);
+        final OpenAiChatGptCredential valid = (await store.load(
+          'unsafe-token-provider',
+        )).credential!;
+        expect(valid.accountId, 'account-unsafe-token');
+        expect(valid.fedRamp, isFalse);
 
         final Map<String, Object?> document =
             jsonDecode(await credentials.readAsString())!
@@ -999,6 +1004,27 @@ void main() {
           ].join(' '),
           isNot(contains('account\u0000bad')),
         );
+
+        credential['accountId'] = 'account-other';
+        await credentials.writeAsString(jsonEncode(document));
+        final ModelProviderFailure accountMismatch =
+            (await provider.invoke(_request()).toList())
+                .single
+                .terminal!
+                .failure!;
+        expect(accountMismatch.kind, ModelProviderFailureKind.authentication);
+        expect(accountMismatch.providerCode, 'credential_store_corrupt');
+
+        credential['accountId'] = 'account-unsafe-token';
+        credential['fedRamp'] = true;
+        await credentials.writeAsString(jsonEncode(document));
+        final ModelProviderFailure fedRampMismatch =
+            (await provider.invoke(_request()).toList())
+                .single
+                .terminal!
+                .failure!;
+        expect(fedRampMismatch.kind, ModelProviderFailureKind.authentication);
+        expect(fedRampMismatch.providerCode, 'credential_store_corrupt');
         expect(responseRequests, 0);
       },
     );
@@ -1202,6 +1228,15 @@ void main() {
             kind: ModelProviderFailureKind.malformedResponse,
             code: 'oauth_refresh_malformed_response',
           ),
+          (
+            name: 'unrepresentable refresh lifetime',
+            status: HttpStatus.ok,
+            body:
+                '{"access_token":"access-extreme-expiry","expires_in":9223372036854775807}',
+            retryAfter: null,
+            kind: ModelProviderFailureKind.malformedResponse,
+            code: 'oauth_refresh_malformed_response',
+          ),
         ]) {
       test(
         'ChatGPT classifies refresh ${testCase.name} without mutation',
@@ -1292,6 +1327,7 @@ void main() {
             'refresh-failure',
           );
           expect(state.revision, 1);
+          expect(state.credential?.accessToken, 'SUPER-SECRET-ACCESS-TOKEN');
           expect(state.credential?.refreshToken, 'SUPER-SECRET-REFRESH-TOKEN');
         },
       );

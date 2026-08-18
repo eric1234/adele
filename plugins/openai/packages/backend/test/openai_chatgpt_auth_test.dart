@@ -296,6 +296,61 @@ void main() {
       );
     });
 
+    test('preserves structured transient code-exchange failures', () async {
+      var tokenError = 'server_error';
+      final _Server server = await _Server.start((request) async {
+        await request.drain<void>();
+        request.response.statusCode = HttpStatus.badRequest;
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(
+          jsonEncode(<String, Object?>{
+            'error': tokenError,
+            'error_description': 'SUPER-SECRET-PROVIDER-DESCRIPTION',
+          }),
+        );
+        await request.response.close();
+      });
+      addTearDown(server.close);
+      final OpenAiOAuthClient oauth = OpenAiOAuthClient(
+        configuration: _configuration(server.origin),
+      );
+      addTearDown(oauth.close);
+
+      for (final String error in <String>[
+        'server_error',
+        'temporarily_unavailable',
+      ]) {
+        tokenError = error;
+        final OpenAiOAuthAttempt attempt = oauth.createAttempt();
+        await expectLater(
+          oauth.complete(
+            attempt,
+            Uri.parse(
+              'http://localhost/callback?state=${attempt.state}&code=code',
+            ),
+          ),
+          throwsA(
+            isA<OpenAiAuthenticationException>()
+                .having(
+                  (OpenAiAuthenticationException value) => value.code,
+                  'code',
+                  'oauth_token_unavailable',
+                )
+                .having(
+                  (OpenAiAuthenticationException value) => value.failureKind,
+                  'failureKind',
+                  OpenAiAuthenticationFailureKind.unavailable,
+                )
+                .having(
+                  (OpenAiAuthenticationException value) => value.toString(),
+                  'sanitized',
+                  isNot(contains('SUPER-SECRET')),
+                ),
+          ),
+        );
+      }
+    });
+
     test(
       'exchanges browser code and persists account-bound credentials',
       () async {

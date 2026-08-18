@@ -105,6 +105,10 @@ final class OpenAiChatGptCredential {
     if (fedRamp is! bool) {
       throw const FormatException('Credential FedRAMP state is invalid.');
     }
+    final _AccountClaims claims = _parseAccountClaims(idToken);
+    if (claims.accountId != accountId || claims.fedRamp != fedRamp) {
+      throw const FormatException('Credential account routing is invalid.');
+    }
     DateTime? expiresAt;
     if (value['expiresAt'] case final String encoded) {
       expiresAt = DateTime.tryParse(encoded)?.toUtc();
@@ -613,8 +617,16 @@ final class OpenAiOAuthClient {
         callbackUri.queryParameters,
       );
       return _credentialFromInitialOAuth(authorizedClient.credentials);
-    } on oauth2.AuthorizationException {
+    } on oauth2.AuthorizationException catch (error) {
       final bool callbackError = callbackUri.queryParameters['error'] != null;
+      if (!callbackError &&
+          _transientCodeExchangeErrors.contains(error.error)) {
+        throw const OpenAiAuthenticationException(
+          'oauth_token_unavailable',
+          'The OpenAI OAuth token service is temporarily unavailable.',
+          failureKind: OpenAiAuthenticationFailureKind.unavailable,
+        );
+      }
       throw OpenAiAuthenticationException(
         callbackError ? 'oauth_callback_error' : 'oauth_token_rejected',
         callbackError
@@ -1224,7 +1236,17 @@ DateTime? _refreshExpiration(
 ) {
   if (token.containsKey('expires_in')) {
     if (token['expires_in'] case final int seconds when seconds > 0) {
-      return now.add(Duration(seconds: seconds));
+      const int maximumEpochMilliseconds = 8640000000000000;
+      final int representableSeconds =
+          (maximumEpochMilliseconds - now.millisecondsSinceEpoch) ~/ 1000;
+      if (seconds > representableSeconds) {
+        throw const FormatException('Invalid expires_in.');
+      }
+      try {
+        return now.add(Duration(seconds: seconds));
+      } on Object {
+        throw const FormatException('Invalid expires_in.');
+      }
     }
     throw const FormatException('Invalid expires_in.');
   }
@@ -1288,6 +1310,11 @@ const Set<String> _permanentRefreshErrors = <String>{
 const Set<String> _clientRefreshErrors = <String>{
   'invalid_client',
   'unauthorized_client',
+};
+
+const Set<String> _transientCodeExchangeErrors = <String>{
+  'server_error',
+  'temporarily_unavailable',
 };
 
 const Set<String> _safeOAuthErrorCodes = <String>{
