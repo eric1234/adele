@@ -90,6 +90,62 @@ void main() {
       }
     });
 
+    test('preserves issuer path prefixes for OAuth endpoints', () {
+      for (final (String issuer, String authorization, String token)
+          in <(String, String, String)>[
+            (
+              'https://auth.example.test',
+              'https://auth.example.test/oauth/authorize',
+              'https://auth.example.test/oauth/token',
+            ),
+            (
+              'https://auth.example.test/',
+              'https://auth.example.test/oauth/authorize',
+              'https://auth.example.test/oauth/token',
+            ),
+            (
+              'https://auth.example.test/tenant',
+              'https://auth.example.test/tenant/oauth/authorize',
+              'https://auth.example.test/tenant/oauth/token',
+            ),
+            (
+              'https://auth.example.test/tenant/',
+              'https://auth.example.test/tenant/oauth/authorize',
+              'https://auth.example.test/tenant/oauth/token',
+            ),
+            (
+              'https://auth.example.test/tenant%20one',
+              'https://auth.example.test/tenant%20one/oauth/authorize',
+              'https://auth.example.test/tenant%20one/oauth/token',
+            ),
+          ]) {
+        final OpenAiOAuthConfiguration configuration = OpenAiOAuthConfiguration(
+          clientId: 'authorized-adele-test-client',
+          issuer: Uri.parse(issuer),
+          redirectUri: Uri.parse('http://127.0.0.1:1455/auth/callback'),
+        );
+        expect(configuration.authorizationEndpoint.toString(), authorization);
+        expect(configuration.tokenEndpoint.toString(), token);
+      }
+    });
+
+    test('rejects OAuth issuers with query or fragment', () {
+      for (final String issuer in <String>[
+        'https://auth.example.test/tenant?foo=bar',
+        'https://auth.example.test/tenant#fragment',
+      ]) {
+        expect(
+          () => OpenAiOAuthConfiguration(
+            clientId: 'authorized-adele-test-client',
+            issuer: Uri.parse(issuer),
+            redirectUri: Uri.parse('http://127.0.0.1:1455/auth/callback'),
+          ),
+          throwsArgumentError,
+          reason: issuer,
+        );
+      }
+    });
+
     test('constructs unique state and package-owned PKCE S256 fields', () {
       final OpenAiOAuthClient oauth = OpenAiOAuthClient(
         configuration: _configuration(Uri.parse('https://auth.example.test')),
@@ -484,6 +540,85 @@ void main() {
       );
     });
 
+    test(
+      'file store serializes same-revision CAS across processes',
+      () async {
+        final Directory directory = await Directory.systemTemp.createTemp(
+          'adele-openai-cross-process-cas-',
+        );
+        addTearDown(() => directory.delete(recursive: true));
+        final File credentialFile = File('${directory.path}/credentials.json');
+        final FileOpenAiCredentialStore store = FileOpenAiCredentialStore(
+          credentialFile,
+        );
+        await store.compareAndSwap(
+          'cross-process',
+          0,
+          _credential(
+            'cross-process-account',
+            'access-initial',
+            'refresh-initial',
+          ),
+        );
+        final _CredentialLockHolder holder = await _CredentialLockHolder.start(
+          lockFile: File('${credentialFile.absolute.path}.lock'),
+          readyFile: File('${directory.path}/holder.ready'),
+        );
+        addTearDown(holder.stop);
+        await holder.ready();
+        late final _CredentialStoreChild first;
+        late final _CredentialStoreChild second;
+        try {
+          first = await _CredentialStoreChild.start(
+            credentialFile: credentialFile,
+            readyFile: File('${directory.path}/first.ready'),
+            candidate: 'first',
+          );
+          addTearDown(first.stop);
+          second = await _CredentialStoreChild.start(
+            credentialFile: credentialFile,
+            readyFile: File('${directory.path}/second.ready'),
+            candidate: 'second',
+          );
+          addTearDown(second.stop);
+          await Future.wait(<Future<void>>[first.ready(), second.ready()]);
+          first.go();
+          second.go();
+          await Future<void>.delayed(const Duration(seconds: 1));
+          if (first.exited) fail(await first.diagnostics());
+          if (second.exited) fail(await second.diagnostics());
+        } finally {
+          await holder.release();
+        }
+
+        final List<Map<String, Object?>> results = await Future.wait(
+          <Future<Map<String, Object?>>>[first.result(), second.result()],
+        );
+        expect(
+          results.where((result) => result['committed'] == true),
+          hasLength(1),
+        );
+        expect(
+          results.where((result) => result['committed'] == false),
+          hasLength(1),
+        );
+        expect(results.every((result) => result['revision'] == 2), isTrue);
+        final Map<String, Object?> winner = results.singleWhere(
+          (result) => result['committed'] == true,
+        );
+        final OpenAiCredentialState finalState = await store.load(
+          'cross-process',
+        );
+        expect(finalState.revision, 2);
+        expect(
+          finalState.credential?.accessToken,
+          'access-${winner['candidate']}',
+        );
+        expect(await File('${credentialFile.absolute.path}.lock').length(), 0);
+      },
+      timeout: const Timeout(Duration(minutes: 2)),
+    );
+
     test('file-store tombstone wins against stale concurrent CAS', () async {
       final Directory directory = await Directory.systemTemp.createTemp(
         'adele-openai-store-delete-',
@@ -807,24 +942,19 @@ void main() {
       expect(requests, 2);
     });
 
-    test('refresh response at the cap is cancelled and not committed', () async {
-      final Completer<void> releaseResponse = Completer<void>();
+    test('refresh response exactly at the cap is accepted by size', () async {
+      final String token = jsonEncode(<String, Object?>{
+        'access_token': 'access-exact-limit',
+      });
+      final String responseBody =
+          '$token${List<String>.filled(64 * 1024 - token.length, ' ').join()}';
       final _Server server = await _Server.start((request) async {
         await request.drain<void>();
         request.response.headers.contentType = ContentType.json;
-        request.response.write(List<String>.filled(64 * 1024, 'S').join());
-        await request.response.flush();
-        await releaseResponse.future;
-        try {
-          await request.response.close();
-        } on HttpException {
-          // The bounded client intentionally cancels before the server finishes.
-        }
+        request.response.write(responseBody);
+        await request.response.close();
       });
-      addTearDown(() async {
-        if (!releaseResponse.isCompleted) releaseResponse.complete();
-        await server.close();
-      });
+      addTearDown(server.close);
       final InMemoryOpenAiCredentialStore store =
           InMemoryOpenAiCredentialStore();
       final OpenAiOAuthClient oauth = OpenAiOAuthClient(
@@ -832,39 +962,83 @@ void main() {
       );
       addTearDown(oauth.close);
       final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
-        instanceId: 'oversized-success',
+        instanceId: 'exact-limit',
         store: store,
         oauth: oauth,
       );
       await auth.install(
-        _credential('account-oversized', 'access-old', 'refresh-old'),
+        _credential('account-exact-limit', 'access-old', 'refresh-old'),
       );
 
-      await expectLater(
-        auth.refresh().timeout(const Duration(seconds: 5)),
-        throwsA(
-          isA<OpenAiAuthenticationException>()
-              .having(
-                (OpenAiAuthenticationException error) => error.code,
-                'code',
-                'oauth_refresh_response_too_large',
-              )
-              .having(
-                (OpenAiAuthenticationException error) => error.failureKind,
-                'failureKind',
-                OpenAiAuthenticationFailureKind.malformedResponse,
-              )
-              .having(
-                (OpenAiAuthenticationException error) => error.safeDetails,
-                'details',
-                <String, Object?>{'responseBodyTooLarge': true},
-              ),
-        ),
-      );
-      final OpenAiCredentialState state = await store.load('oversized-success');
-      expect(state.revision, 1);
-      expect(state.credential?.accessToken, 'access-old');
+      final OpenAiChatGptCredential refreshed = await auth.refresh();
+
+      expect(refreshed.accessToken, 'access-exact-limit');
+      expect((await store.load('exact-limit')).revision, 2);
     });
+
+    test(
+      'refresh response one byte over cap is cancelled and not committed',
+      () async {
+        final Completer<void> releaseResponse = Completer<void>();
+        final _Server server = await _Server.start((request) async {
+          await request.drain<void>();
+          request.response.headers.contentType = ContentType.json;
+          request.response.write(
+            List<String>.filled(64 * 1024 + 1, 'S').join(),
+          );
+          await request.response.flush();
+          await releaseResponse.future;
+          try {
+            await request.response.close();
+          } on HttpException {
+            // The bounded client intentionally cancels before the server finishes.
+          }
+        });
+        addTearDown(() async {
+          if (!releaseResponse.isCompleted) releaseResponse.complete();
+          await server.close();
+        });
+        final InMemoryOpenAiCredentialStore store =
+            InMemoryOpenAiCredentialStore();
+        final OpenAiOAuthClient oauth = OpenAiOAuthClient(
+          configuration: _configuration(server.origin),
+        );
+        addTearDown(oauth.close);
+        final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
+          instanceId: 'over-limit',
+          store: store,
+          oauth: oauth,
+        );
+        await auth.install(
+          _credential('account-oversized', 'access-old', 'refresh-old'),
+        );
+
+        await expectLater(
+          auth.refresh().timeout(const Duration(seconds: 5)),
+          throwsA(
+            isA<OpenAiAuthenticationException>()
+                .having(
+                  (OpenAiAuthenticationException error) => error.code,
+                  'code',
+                  'oauth_refresh_response_too_large',
+                )
+                .having(
+                  (OpenAiAuthenticationException error) => error.failureKind,
+                  'failureKind',
+                  OpenAiAuthenticationFailureKind.malformedResponse,
+                )
+                .having(
+                  (OpenAiAuthenticationException error) => error.safeDetails,
+                  'details',
+                  <String, Object?>{'responseBodyTooLarge': true},
+                ),
+          ),
+        );
+        final OpenAiCredentialState state = await store.load('over-limit');
+        expect(state.revision, 1);
+        expect(state.credential?.accessToken, 'access-old');
+      },
+    );
 
     test(
       'coalesces same instance while separate instances refresh independently',
@@ -1168,6 +1342,135 @@ final class _WrongThenValidCallbackBrowser implements OpenAiBrowserLauncher {
         client.close();
       }
     }());
+  }
+}
+
+final class _CredentialLockHolder {
+  _CredentialLockHolder._(this.process, this.readyFile)
+    : _stderr = utf8.decoder.bind(process.stderr).join(),
+      _exitCode = process.exitCode {
+    unawaited(process.stdout.drain<void>());
+    unawaited(_exitCode.then((_) => exited = true));
+  }
+
+  final Process process;
+  final File readyFile;
+  final Future<String> _stderr;
+  final Future<int> _exitCode;
+  bool exited = false;
+
+  static Future<_CredentialLockHolder> start({
+    required File lockFile,
+    required File readyFile,
+  }) async {
+    final Process process =
+        await Process.start(Platform.resolvedExecutable, <String>[
+          'run',
+          'test/fixtures/openai_credential_lock_holder.dart',
+          lockFile.path,
+          readyFile.path,
+        ], workingDirectory: Directory.current.path);
+    return _CredentialLockHolder._(process, readyFile);
+  }
+
+  Future<void> ready() => _waitForReadyFile(readyFile);
+
+  Future<void> release() async {
+    if (exited) return;
+    process.stdin.add(const <int>[1]);
+    await process.stdin.close();
+    final int exitCode = await _exitCode.timeout(const Duration(seconds: 30));
+    if (exitCode != 0) {
+      throw StateError('Credential lock holder failed: ${await _stderr}');
+    }
+  }
+
+  Future<void> stop() async {
+    if (!exited) process.kill();
+    try {
+      await _exitCode.timeout(const Duration(seconds: 5));
+    } on TimeoutException {
+      // Process teardown is best effort after a failed assertion.
+    }
+  }
+}
+
+final class _CredentialStoreChild {
+  _CredentialStoreChild._(this.process, this.readyFile)
+    : _stdout = utf8.decoder.bind(process.stdout).join(),
+      _stderr = utf8.decoder.bind(process.stderr).join(),
+      _exitCode = process.exitCode {
+    unawaited(_exitCode.then((_) => exited = true));
+  }
+
+  final Process process;
+  final File readyFile;
+  final Future<String> _stdout;
+  final Future<String> _stderr;
+  final Future<int> _exitCode;
+  bool exited = false;
+
+  static Future<_CredentialStoreChild> start({
+    required File credentialFile,
+    required File readyFile,
+    required String candidate,
+  }) async {
+    final Process process =
+        await Process.start(Platform.resolvedExecutable, <String>[
+          'run',
+          'test/fixtures/openai_credential_store_child.dart',
+          credentialFile.path,
+          readyFile.path,
+          'cross-process',
+          candidate,
+        ], workingDirectory: Directory.current.path);
+    return _CredentialStoreChild._(process, readyFile);
+  }
+
+  Future<void> ready() => _waitForReadyFile(readyFile);
+
+  void go() {
+    process.stdin.add(const <int>[1]);
+    unawaited(process.stdin.close());
+  }
+
+  Future<Map<String, Object?>> result() async {
+    final int exitCode = await _exitCode.timeout(const Duration(seconds: 30));
+    final String stdoutText = await _stdout;
+    final String stderrText = await _stderr;
+    if (exitCode != 0) {
+      throw StateError(
+        'Credential-store child failed with $exitCode: $stderrText',
+      );
+    }
+    final Object? decoded = jsonDecode(stdoutText);
+    if (decoded is! Map<String, Object?>) {
+      throw StateError('Credential-store child returned invalid output.');
+    }
+    return decoded;
+  }
+
+  Future<String> diagnostics() async =>
+      'child exited ${await _exitCode}; stdout=${await _stdout}; '
+      'stderr=${await _stderr}';
+
+  Future<void> stop() async {
+    if (!exited) process.kill();
+    try {
+      await _exitCode.timeout(const Duration(seconds: 5));
+    } on TimeoutException {
+      // Process teardown is best effort after a failed assertion.
+    }
+  }
+}
+
+Future<void> _waitForReadyFile(File file) async {
+  final DateTime deadline = DateTime.now().add(const Duration(seconds: 90));
+  while (!await file.exists()) {
+    if (DateTime.now().isAfter(deadline)) {
+      throw TimeoutException('Credential-store child did not become ready.');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 25));
   }
 }
 

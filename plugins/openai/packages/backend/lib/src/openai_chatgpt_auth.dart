@@ -251,6 +251,33 @@ final class FileOpenAiCredentialStore implements OpenAiCredentialStore {
     int expectedRevision,
     OpenAiChatGptCredential? credential,
   ) async {
+    await file.parent.create(recursive: true);
+    final RandomAccessFile lockHandle = await File(
+      '${file.absolute.path}.lock',
+    ).open(mode: FileMode.append);
+    var locked = false;
+    try {
+      await lockHandle.lock(FileLock.blockingExclusive);
+      locked = true;
+      return await _performLockedMutation(
+        instanceId,
+        expectedRevision,
+        credential,
+      );
+    } finally {
+      try {
+        if (locked) await lockHandle.unlock();
+      } finally {
+        await lockHandle.close();
+      }
+    }
+  }
+
+  Future<OpenAiCredentialState> _performLockedMutation(
+    String instanceId,
+    int expectedRevision,
+    OpenAiChatGptCredential? credential,
+  ) async {
     final Map<String, Object?> document = await _read();
     final OpenAiCredentialState current = _decodeState(document, instanceId);
     if (current.revision != expectedRevision) return current;
@@ -429,6 +456,13 @@ final class OpenAiOAuthConfiguration {
         'Must be HTTPS or loopback HTTP.',
       );
     }
+    if (this.issuer.hasQuery || this.issuer.hasFragment) {
+      throw ArgumentError.value(
+        this.issuer,
+        'issuer',
+        'Must not include a query or fragment.',
+      );
+    }
     if (redirectUri.scheme != 'http' || !_isLoopbackHost(redirectUri.host)) {
       throw ArgumentError.value(
         redirectUri,
@@ -487,8 +521,18 @@ final class OpenAiOAuthConfiguration {
   final List<String> scopes;
   final Map<String, String> authorizationParameters;
 
-  Uri get authorizationEndpoint => issuer.resolve('/oauth/authorize');
-  Uri get tokenEndpoint => issuer.resolve('/oauth/token');
+  Uri get authorizationEndpoint =>
+      _resolveIssuerEndpoint(issuer, 'oauth/authorize');
+  Uri get tokenEndpoint => _resolveIssuerEndpoint(issuer, 'oauth/token');
+}
+
+Uri _resolveIssuerEndpoint(Uri issuer, String relativePath) {
+  final String basePath = issuer.path.isEmpty
+      ? '/'
+      : issuer.path.endsWith('/')
+      ? issuer.path
+      : '${issuer.path}/';
+  return issuer.replace(path: basePath).resolve(relativePath);
 }
 
 final class OpenAiOAuthAttempt {
@@ -858,8 +902,8 @@ Future<_BoundedOAuthResponse> _readBoundedOAuthResponse(
     while (await iterator.moveNext()) {
       final List<int> chunk = iterator.current;
       final int remaining = _maximumOAuthRefreshResponseBytes - bytes.length;
-      if (chunk.length >= remaining) {
-        bytes.add(chunk.sublist(0, remaining));
+      if (chunk.isNotEmpty && (remaining == 0 || chunk.length > remaining)) {
+        if (remaining > 0) bytes.add(chunk.sublist(0, remaining));
         await iterator.cancel();
         return _BoundedOAuthResponse(bytes.takeBytes(), true);
       }

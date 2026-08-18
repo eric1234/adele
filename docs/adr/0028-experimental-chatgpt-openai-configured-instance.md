@@ -135,13 +135,15 @@ state or allow a stale refresh to resurrect it. Local logout depends only on the
 configured-instance identity and credential store, not OAuth client, issuer,
 redirect, or browser configuration.
 
-An in-memory store supports deterministic tests. A small one-writer local file
-store provides provisional development persistence with explicit corruption
-failure, atomic temporary-file replacement, and restrictive file permissions
-where supported. Its full read/compare/write mutation is serialized within the
-one-writer backend process, making its in-process CAS guarantee real, and each
-atomic replacement uses a unique temporary path. It is not the final production
-credential UX or a general ADELE secrets facility.
+An in-memory store supports deterministic tests. A small local file store
+provides provisional development persistence with explicit corruption failure,
+atomic temporary-file replacement, and restrictive file permissions where
+supported. Mutations remain serialized within each process and also coordinate
+cooperating backend and development-command processes through a stable sidecar
+filesystem lock. Revision comparison and atomic replacement occur while that
+lock is held, and each replacement uses a unique temporary path. This is not a
+production-grade distributed transaction store, final credential UX, or a
+general ADELE secrets facility.
 Corrupt credential content fails closed as a sanitized authentication-state
 failure; ordinary filesystem access failures remain transport failures. Neither
 case automatically deletes the local store.
