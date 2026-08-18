@@ -867,6 +867,87 @@ void main() {
       },
     );
 
+    test(
+      'ChatGPT reports corrupt credential state without transport',
+      () async {
+        var responseRequests = 0;
+        final _FakeServer server = await _FakeServer.start((request) async {
+          responseRequests++;
+          await request.drain<void>();
+          await request.response.close();
+        });
+        addTearDown(server.close);
+        final Directory directory = await Directory.systemTemp.createTemp(
+          'adele-openai-corrupt-provider-',
+        );
+        addTearDown(() => directory.delete(recursive: true));
+        final File credentials = File('${directory.path}/credentials.json');
+        await credentials.writeAsString(
+          '{SUPER-SECRET-ACCESS-TOKEN:SUPER-SECRET-REFRESH-TOKEN',
+        );
+        final OpenAiOAuthClient oauth = _oauth(server);
+        addTearDown(oauth.close);
+        final OpenAiModelProvider provider = OpenAiModelProvider.chatGpt(
+          auth: OpenAiChatGptAuth(
+            instanceId: 'corrupt-provider',
+            store: FileOpenAiCredentialStore(credentials),
+            oauth: oauth,
+          ),
+          endpoint: server.responsesUri,
+        );
+        addTearDown(provider.close);
+
+        final ModelProviderFailure failure =
+            (await provider.invoke(_request()).toList())
+                .single
+                .terminal!
+                .failure!;
+
+        expect(failure.kind, ModelProviderFailureKind.authentication);
+        expect(failure.providerCode, 'credential_store_corrupt');
+        expect(failure.providerMessage, isNot(contains('SUPER-SECRET')));
+        expect(
+          failure.providerDetails.toString(),
+          isNot(contains('SUPER-SECRET')),
+        );
+        expect(responseRequests, 0);
+      },
+    );
+
+    test(
+      'ChatGPT keeps credential file I/O distinct from corruption',
+      () async {
+        var responseRequests = 0;
+        final _FakeServer server = await _FakeServer.start((request) async {
+          responseRequests++;
+          await request.drain<void>();
+          await request.response.close();
+        });
+        addTearDown(server.close);
+        final OpenAiOAuthClient oauth = _oauth(server);
+        addTearDown(oauth.close);
+        final OpenAiModelProvider provider = OpenAiModelProvider.chatGpt(
+          auth: OpenAiChatGptAuth(
+            instanceId: 'credential-io',
+            store: const _LoadFailingCredentialStore(),
+            oauth: oauth,
+          ),
+          endpoint: server.responsesUri,
+        );
+        addTearDown(provider.close);
+
+        final ModelProviderFailure failure =
+            (await provider.invoke(_request()).toList())
+                .single
+                .terminal!
+                .failure!;
+
+        expect(failure.kind, ModelProviderFailureKind.transport);
+        expect(failure.providerCode, 'credential_store_io');
+        expect(responseRequests, 0);
+      },
+    );
+
     test('ChatGPT retries one pre-output 401 after fenced refresh', () async {
       var responseRequests = 0;
       var refreshRequests = 0;
@@ -951,6 +1032,201 @@ void main() {
         (await store.load('retry')).credential?.refreshToken,
         'refresh-after',
       );
+    });
+
+    for (final testCase
+        in <
+          ({
+            String name,
+            int status,
+            String body,
+            String? retryAfter,
+            ModelProviderFailureKind kind,
+            String code,
+          })
+        >[
+          (
+            name: 'permanent rejection',
+            status: HttpStatus.unauthorized,
+            body:
+                '{"error":{"code":"SUPER-SECRET-REFRESH-TOKEN","message":"SUPER-SECRET-ACCESS-TOKEN"}}',
+            retryAfter: null,
+            kind: ModelProviderFailureKind.authentication,
+            code: 'oauth_refresh_rejected',
+          ),
+          (
+            name: 'recognized permanent rejection reason',
+            status: HttpStatus.badRequest,
+            body: '{"error":"refresh_token_reused"}',
+            retryAfter: null,
+            kind: ModelProviderFailureKind.authentication,
+            code: 'oauth_refresh_rejected',
+          ),
+          (
+            name: 'rate limiting',
+            status: HttpStatus.tooManyRequests,
+            body:
+                '{"error":{"code":"rate_limit","message":"SUPER-SECRET-REFRESH-TOKEN"}}',
+            retryAfter: '17',
+            kind: ModelProviderFailureKind.rateLimited,
+            code: 'oauth_refresh_rate_limited',
+          ),
+          (
+            name: 'service outage',
+            status: HttpStatus.serviceUnavailable,
+            body: '{"error":{"message":"SUPER-SECRET-REFRESH-TOKEN"}}',
+            retryAfter: 'SUPER-SECRET-ACCESS-TOKEN',
+            kind: ModelProviderFailureKind.unavailable,
+            code: 'oauth_refresh_unavailable',
+          ),
+          (
+            name: 'malformed success',
+            status: HttpStatus.ok,
+            body:
+                '{"access_token":42,"provider_echo":"SUPER-SECRET-REFRESH-TOKEN"}',
+            retryAfter: null,
+            kind: ModelProviderFailureKind.malformedResponse,
+            code: 'oauth_refresh_malformed_response',
+          ),
+        ]) {
+      test(
+        'ChatGPT classifies refresh ${testCase.name} without mutation',
+        () async {
+          var responseRequests = 0;
+          var refreshRequests = 0;
+          final _FakeServer responses = await _FakeServer.start((
+            request,
+          ) async {
+            responseRequests++;
+            await request.drain<void>();
+            request.response.statusCode = HttpStatus.unauthorized;
+            await request.response.close();
+          });
+          addTearDown(responses.close);
+          final _FakeServer tokens = await _FakeServer.start((request) async {
+            refreshRequests++;
+            final Map<String, Object?> body = await _jsonBody(request);
+            expect(body['refresh_token'], 'SUPER-SECRET-REFRESH-TOKEN');
+            request.response.statusCode = testCase.status;
+            if (testCase.retryAfter case final String retryAfter) {
+              request.response.headers.set(
+                HttpHeaders.retryAfterHeader,
+                retryAfter,
+              );
+            }
+            request.response.headers.contentType = ContentType.json;
+            request.response.write(testCase.body);
+            await request.response.close();
+          });
+          addTearDown(tokens.close);
+          final InMemoryOpenAiCredentialStore store =
+              InMemoryOpenAiCredentialStore();
+          final OpenAiOAuthClient oauth = _oauthWithIssuer(
+            _serverOrigin(tokens),
+          );
+          addTearDown(oauth.close);
+          final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
+            instanceId: 'refresh-failure',
+            store: store,
+            oauth: oauth,
+          );
+          await auth.install(
+            OpenAiChatGptCredential(
+              idToken: _idToken('account-refresh-failure'),
+              accessToken: 'SUPER-SECRET-ACCESS-TOKEN',
+              refreshToken: 'SUPER-SECRET-REFRESH-TOKEN',
+              accountId: 'account-refresh-failure',
+              fedRamp: false,
+              expiresAt: null,
+            ),
+          );
+          final OpenAiModelProvider provider = OpenAiModelProvider.chatGpt(
+            auth: auth,
+            endpoint: responses.responsesUri,
+          );
+          addTearDown(provider.close);
+
+          final ModelProviderFailure failure =
+              (await provider.invoke(_request()).toList())
+                  .single
+                  .terminal!
+                  .failure!;
+
+          expect(failure.kind, testCase.kind);
+          expect(failure.providerCode, testCase.code);
+          if (testCase.status != HttpStatus.ok) {
+            expect(failure.providerDetails['httpStatus'], testCase.status);
+          }
+          if (testCase.retryAfter != null &&
+              int.tryParse(testCase.retryAfter!) != null) {
+            expect(failure.providerDetails['retryAfter'], testCase.retryAfter);
+          } else {
+            expect(failure.providerDetails['retryAfter'], isNull);
+          }
+          final String surfaced = <Object?>[
+            failure.providerMessage,
+            failure.providerDetails,
+          ].join(' ');
+          expect(surfaced, isNot(contains('SUPER-SECRET')));
+          expect(responseRequests, 1);
+          expect(refreshRequests, 1);
+          final OpenAiCredentialState state = await store.load(
+            'refresh-failure',
+          );
+          expect(state.revision, 1);
+          expect(state.credential?.refreshToken, 'SUPER-SECRET-REFRESH-TOKEN');
+        },
+      );
+    }
+
+    test('ChatGPT maps refresh transport failure without mutation', () async {
+      var responseRequests = 0;
+      final _FakeServer responses = await _FakeServer.start((request) async {
+        responseRequests++;
+        await request.drain<void>();
+        request.response.statusCode = HttpStatus.unauthorized;
+        await request.response.close();
+      });
+      addTearDown(responses.close);
+      final int unavailablePort = await _availableLoopbackPort();
+      final InMemoryOpenAiCredentialStore store =
+          InMemoryOpenAiCredentialStore();
+      final OpenAiOAuthClient oauth = _oauthWithIssuer(
+        Uri.parse('http://127.0.0.1:$unavailablePort'),
+      );
+      addTearDown(oauth.close);
+      final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
+        instanceId: 'refresh-transport',
+        store: store,
+        oauth: oauth,
+      );
+      await auth.install(
+        OpenAiChatGptCredential(
+          idToken: _idToken('account-refresh-transport'),
+          accessToken: 'SUPER-SECRET-ACCESS-TOKEN',
+          refreshToken: 'SUPER-SECRET-REFRESH-TOKEN',
+          accountId: 'account-refresh-transport',
+          fedRamp: false,
+          expiresAt: null,
+        ),
+      );
+      final OpenAiModelProvider provider = OpenAiModelProvider.chatGpt(
+        auth: auth,
+        endpoint: responses.responsesUri,
+      );
+      addTearDown(provider.close);
+
+      final ModelProviderFailure failure =
+          (await provider.invoke(_request()).toList())
+              .single
+              .terminal!
+              .failure!;
+
+      expect(failure.kind, ModelProviderFailureKind.transport);
+      expect(failure.providerCode, 'oauth_refresh_transport');
+      expect(failure.providerMessage, isNot(contains('SUPER-SECRET')));
+      expect(responseRequests, 1);
+      expect((await store.load('refresh-transport')).revision, 1);
     });
 
     test('staggered concurrent ChatGPT 401s refresh only once', () async {
@@ -1498,15 +1774,29 @@ Future<Map<String, Object?>> _jsonBody(HttpRequest request) async {
   return value! as Map<String, Object?>;
 }
 
-OpenAiOAuthClient _oauth(_FakeServer server) => OpenAiOAuthClient(
+OpenAiOAuthClient _oauth(_FakeServer server) =>
+    _oauthWithIssuer(_serverOrigin(server));
+
+OpenAiOAuthClient _oauthWithIssuer(Uri issuer) => OpenAiOAuthClient(
   configuration: OpenAiOAuthConfiguration(
     clientId: 'authorized-test-client',
-    issuer: Uri.parse(
-      'http://${server.server.address.address}:${server.server.port}',
-    ),
+    issuer: issuer,
     redirectUri: Uri.parse('http://127.0.0.1:1455/auth/callback'),
   ),
 );
+
+Uri _serverOrigin(_FakeServer server) =>
+    Uri.parse('http://${server.server.address.address}:${server.server.port}');
+
+Future<int> _availableLoopbackPort() async {
+  final HttpServer reservation = await HttpServer.bind(
+    InternetAddress.loopbackIPv4,
+    0,
+  );
+  final int port = reservation.port;
+  await reservation.close();
+  return port;
+}
 
 String _idToken(String accountId, {bool fedRamp = false}) {
   String encode(Object value) =>
@@ -1514,6 +1804,27 @@ String _idToken(String accountId, {bool fedRamp = false}) {
   return '${encode(<String, Object?>{'alg': 'none'})}.${encode(<String, Object?>{
     'https://api.openai.com/auth': <String, Object?>{'chatgpt_account_id': accountId, 'chatgpt_account_is_fedramp': fedRamp},
   })}.';
+}
+
+final class _LoadFailingCredentialStore implements OpenAiCredentialStore {
+  const _LoadFailingCredentialStore();
+
+  @override
+  Future<OpenAiCredentialState> load(String instanceId) =>
+      throw const FileSystemException('simulated credential read failure');
+
+  @override
+  Future<OpenAiCredentialState> compareAndSwap(
+    String instanceId,
+    int expectedRevision,
+    OpenAiChatGptCredential credential,
+  ) => throw UnsupportedError('not reached');
+
+  @override
+  Future<OpenAiCredentialState> delete(
+    String instanceId,
+    int expectedRevision,
+  ) => throw UnsupportedError('not reached');
 }
 
 final class _FakeServer {

@@ -68,6 +68,11 @@ redirect, and route data remain configurable. The development command prefers
 an explicitly configured ADELE-authorized client identity, but may use the
 current source-visible Codex public client as a loudly warned experimental
 fallback.
+The provisional pure-Dart desktop launcher delegates URL association to each
+operating system: `xdg-open` on Linux, `open` on macOS, and the native Windows
+Shell API through `package:win32`. It does not invoke a command shell or discover
+browsers. A future Flutter login UI should own browser launching through
+Flutter's official `url_launcher` rather than expanding this backend seam.
 OpenCode, KiloCode, and Cline ship the same identity for their corresponding
 ChatGPT integrations. The fallback is an interoperability choice, not an ADELE
 OAuth registration or a stable OpenAI third-party contract. PKCE verifier and
@@ -83,6 +88,11 @@ therefore retains that JSON exchange. The library is not allowed to refresh or
 mutate durable credentials automatically. Initial library credentials and
 custom refresh results are converted into ADELE's account-bound revision/CAS
 record before publication.
+Permanent refresh-credential rejection is classified separately from OAuth
+rate limiting, transient service failure, transport failure, and malformed
+successful provider responses. Those failures retain the existing common model
+provider kinds without introducing automatic refresh retries. Provider bodies
+are not surfaced because token responses may contain credentials.
 
 The ChatGPT request uses its OAuth access token, exact bound
 `ChatGPT-Account-ID`, and conditional `X-OpenAI-Fedramp: true`. These headers
@@ -114,7 +124,9 @@ request retries that credential without rotating its refresh token again.
 
 Logout authoritatively commits a local credential tombstone. Best-effort remote
 revocation may be added later, but remote failure cannot preserve local login
-state or allow a stale refresh to resurrect it.
+state or allow a stale refresh to resurrect it. Local logout depends only on the
+configured-instance identity and credential store, not OAuth client, issuer,
+redirect, or browser configuration.
 
 An in-memory store supports deterministic tests. A small one-writer local file
 store provides provisional development persistence with explicit corruption
@@ -123,6 +135,9 @@ where supported. Its full read/compare/write mutation is serialized within the
 one-writer backend process, making its in-process CAS guarantee real, and each
 atomic replacement uses a unique temporary path. It is not the final production
 credential UX or a general ADELE secrets facility.
+Corrupt credential content fails closed as a sanitized authentication-state
+failure; ordinary filesystem access failures remain transport failures. Neither
+case automatically deletes the local store.
 
 The direct ChatGPT/Codex backend path remains experimental and
 development-oriented until OpenAI provides an authorized client identity and a

@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ffi';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:ffi/ffi.dart';
 import 'package:oauth2/oauth2.dart' as oauth2;
+import 'package:win32/win32.dart';
 
 /// Source-visible Codex public-client identity used by current third-party
 /// harnesses. This is an experimental interoperability default, not an ADELE
@@ -338,21 +341,66 @@ abstract interface class OpenAiBrowserLauncher {
   Future<void> open(Uri uri);
 }
 
+typedef OpenAiBrowserProcessStarter =
+    Future<void> Function(String executable, List<String> arguments);
+typedef OpenAiWindowsUrlOpener = Future<void> Function(Uri uri);
+
 final class DesktopOpenAiBrowserLauncher implements OpenAiBrowserLauncher {
-  const DesktopOpenAiBrowserLauncher();
+  const DesktopOpenAiBrowserLauncher({
+    String? operatingSystem,
+    OpenAiBrowserProcessStarter? processStarter,
+    OpenAiWindowsUrlOpener? windowsUrlOpener,
+  }) : _operatingSystem = operatingSystem,
+       _processStarter = processStarter,
+       _windowsUrlOpener = windowsUrlOpener;
+
+  final String? _operatingSystem;
+  final OpenAiBrowserProcessStarter? _processStarter;
+  final OpenAiWindowsUrlOpener? _windowsUrlOpener;
 
   @override
   Future<void> open(Uri uri) async {
-    final (String, List<String>) command = switch (Platform.operatingSystem) {
+    final String operatingSystem = _operatingSystem ?? Platform.operatingSystem;
+    if (operatingSystem == 'windows') {
+      await (_windowsUrlOpener ?? _openWithWindowsShell)(uri);
+      return;
+    }
+    final (String, List<String>) command = switch (operatingSystem) {
       'macos' => ('open', <String>[uri.toString()]),
-      'windows' => ('cmd', <String>['/c', 'start', '', uri.toString()]),
       _ => ('xdg-open', <String>[uri.toString()]),
     };
-    await Process.start(
-      command.$1,
-      command.$2,
-      mode: ProcessStartMode.detached,
-    );
+    await (_processStarter ?? _startDetached)(command.$1, command.$2);
+  }
+}
+
+Future<void> _startDetached(String executable, List<String> arguments) async {
+  await Process.start(executable, arguments, mode: ProcessStartMode.detached);
+}
+
+Future<void> _openWithWindowsShell(Uri uri) async {
+  final HRESULT comResult = CoInitializeEx(COINIT_APARTMENTTHREADED);
+  if (comResult.isError && comResult != RPC_E_CHANGED_MODE) {
+    throw WindowsException(comResult);
+  }
+  final bool uninitializeCom = comResult.isOk;
+  final PWSTR encodedUri = uri.toString().toPwstr(allocator: calloc);
+  final Pointer<SHELLEXECUTEINFO> info = calloc<SHELLEXECUTEINFO>();
+  try {
+    info.ref
+      ..cbSize = sizeOf<SHELLEXECUTEINFO>()
+      // Dart console isolates have no Windows message loop.
+      ..fMask =
+          0x00000100 // SEE_MASK_NOASYNC
+      ..lpFile = encodedUri
+      ..nShow = SW_SHOWNORMAL;
+    final Win32Result<bool> result = ShellExecuteEx(info);
+    if (!result.value) {
+      throw WindowsException(result.error.toHRESULT());
+    }
+  } finally {
+    calloc.free(info);
+    calloc.free(encodedUri);
+    if (uninitializeCom) CoUninitialize();
   }
 }
 
@@ -530,6 +578,7 @@ final class OpenAiOAuthClient {
       throw const OpenAiAuthenticationException(
         'malformed_token_response',
         'OpenAI returned a malformed OAuth token response.',
+        failureKind: OpenAiAuthenticationFailureKind.malformedResponse,
       );
     } on OpenAiAuthenticationException {
       rethrow;
@@ -537,6 +586,7 @@ final class OpenAiOAuthClient {
       throw const OpenAiAuthenticationException(
         'oauth_token_transport',
         'The OpenAI OAuth token request failed.',
+        failureKind: OpenAiAuthenticationFailureKind.transport,
       );
     } finally {
       authorizedClient?.close();
@@ -578,8 +628,9 @@ final class OpenAiOAuthClient {
       rethrow;
     } on FormatException {
       throw const OpenAiAuthenticationException(
-        'malformed_token_response',
-        'OpenAI returned a malformed OAuth token response.',
+        'oauth_refresh_malformed_response',
+        'OpenAI returned a malformed OAuth refresh response.',
+        failureKind: OpenAiAuthenticationFailureKind.malformedResponse,
       );
     }
   }
@@ -600,6 +651,7 @@ final class OpenAiOAuthClient {
       throw const OpenAiAuthenticationException(
         'oauth_callback_bind_failed',
         'The OAuth loopback callback could not be started.',
+        failureKind: OpenAiAuthenticationFailureKind.transport,
       );
     }
     try {
@@ -663,28 +715,99 @@ final class OpenAiOAuthClient {
   Future<Map<String, Object?>> _postRefreshJson(
     Map<String, String> body,
   ) async {
+    final HttpClientResponse response;
     try {
       final HttpClientRequest request = await _refreshHttpClient.postUrl(
         configuration.tokenEndpoint,
       );
       request.headers.contentType = ContentType.json;
       request.write(jsonEncode(body));
-      final HttpClientResponse response = await request.close();
-      final String encoded = await utf8.decoder.bind(response).join();
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw const OpenAiAuthenticationException(
-          'oauth_token_rejected',
-          'OpenAI rejected the OAuth token request.',
+      response = await request.close();
+    } on SocketException {
+      throw const OpenAiAuthenticationException(
+        'oauth_refresh_transport',
+        'The OpenAI OAuth refresh service could not be reached.',
+        failureKind: OpenAiAuthenticationFailureKind.transport,
+      );
+    } on HandshakeException {
+      throw const OpenAiAuthenticationException(
+        'oauth_refresh_transport',
+        'The OpenAI OAuth refresh TLS connection failed.',
+        failureKind: OpenAiAuthenticationFailureKind.transport,
+      );
+    } on HttpException {
+      throw const OpenAiAuthenticationException(
+        'oauth_refresh_transport',
+        'The OpenAI OAuth refresh HTTP operation failed.',
+        failureKind: OpenAiAuthenticationFailureKind.transport,
+      );
+    }
+
+    final List<int> responseBytes;
+    try {
+      responseBytes = await response.fold<List<int>>(<int>[], (
+        List<int> bytes,
+        List<int> chunk,
+      ) {
+        bytes.addAll(chunk);
+        return bytes;
+      });
+    } on SocketException {
+      throw const OpenAiAuthenticationException(
+        'oauth_refresh_transport',
+        'The OpenAI OAuth refresh response could not be read.',
+        failureKind: OpenAiAuthenticationFailureKind.transport,
+      );
+    } on HttpException {
+      throw const OpenAiAuthenticationException(
+        'oauth_refresh_transport',
+        'The OpenAI OAuth refresh response could not be read.',
+        failureKind: OpenAiAuthenticationFailureKind.transport,
+      );
+    }
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      final String encoded = utf8.decode(responseBytes, allowMalformed: true);
+      final String? providerErrorCode = _oauthErrorCode(encoded);
+      final Map<String, Object?> details = <String, Object?>{
+        'httpStatus': response.statusCode,
+        if (_safeRetryAfter(response.headers) case final String retryAfter)
+          'retryAfter': retryAfter,
+        'oauthErrorCode': ?providerErrorCode,
+      };
+      if (response.statusCode == HttpStatus.unauthorized ||
+          _permanentRefreshErrors.contains(providerErrorCode)) {
+        throw OpenAiAuthenticationException(
+          'oauth_refresh_rejected',
+          'OpenAI rejected the stored OAuth refresh credential.',
+          safeDetails: details,
         );
       }
+      if (response.statusCode == HttpStatus.tooManyRequests) {
+        throw OpenAiAuthenticationException(
+          'oauth_refresh_rate_limited',
+          'The OpenAI OAuth refresh service rate limited the request.',
+          failureKind: OpenAiAuthenticationFailureKind.rateLimited,
+          safeDetails: details,
+        );
+      }
+      throw OpenAiAuthenticationException(
+        'oauth_refresh_unavailable',
+        'The OpenAI OAuth refresh service is temporarily unavailable.',
+        failureKind: OpenAiAuthenticationFailureKind.unavailable,
+        safeDetails: details,
+      );
+    }
+
+    try {
+      final String encoded = utf8.decode(responseBytes);
       final Object? decoded = jsonDecode(encoded);
       if (decoded is! Map<String, Object?>) {
         throw const FormatException('Token response is not an object.');
       }
       if (decoded.containsKey('error')) {
-        throw const OpenAiAuthenticationException(
-          'oauth_token_rejected',
-          'OpenAI rejected the OAuth token request.',
+        throw const FormatException(
+          'Successful refresh response contained an error.',
         );
       }
       if (!const <String>{
@@ -695,19 +818,61 @@ final class OpenAiOAuthClient {
         throw const FormatException('Refresh response contained no token.');
       }
       return decoded;
-    } on OpenAiAuthenticationException {
-      rethrow;
     } on FormatException {
       throw const OpenAiAuthenticationException(
-        'malformed_token_response',
-        'OpenAI returned a malformed OAuth token response.',
-      );
-    } on Object {
-      throw const OpenAiAuthenticationException(
-        'oauth_token_transport',
-        'The OpenAI OAuth token request failed.',
+        'oauth_refresh_malformed_response',
+        'OpenAI returned a malformed OAuth refresh response.',
+        failureKind: OpenAiAuthenticationFailureKind.malformedResponse,
       );
     }
+  }
+}
+
+Future<OpenAiCredentialState> _loadCredentialState(
+  OpenAiCredentialStore store,
+  String instanceId,
+) => _credentialStoreOperation(() => store.load(instanceId));
+
+Future<T> _credentialStoreOperation<T>(Future<T> Function() operation) async {
+  try {
+    return await operation();
+  } on FormatException {
+    throw const OpenAiAuthenticationException(
+      'credential_store_corrupt',
+      'The stored ChatGPT login state is corrupt and must be replaced.',
+    );
+  } on FileSystemException {
+    throw const OpenAiAuthenticationException(
+      'credential_store_io',
+      'The stored ChatGPT login state could not be accessed.',
+      failureKind: OpenAiAuthenticationFailureKind.transport,
+    );
+  } on ProcessException {
+    throw const OpenAiAuthenticationException(
+      'credential_store_io',
+      'The stored ChatGPT login state could not be accessed.',
+      failureKind: OpenAiAuthenticationFailureKind.transport,
+    );
+  }
+}
+
+Future<void> logoutOpenAiChatGptInstance({
+  required String instanceId,
+  required OpenAiCredentialStore store,
+}) async {
+  _requiredHeaderText(instanceId, 'instanceId');
+  final OpenAiCredentialState captured = await _loadCredentialState(
+    store,
+    instanceId,
+  );
+  final OpenAiCredentialState committed = await _credentialStoreOperation(
+    () => store.delete(instanceId, captured.revision),
+  );
+  if (!committed.committed || committed.credential != null) {
+    throw const OpenAiAuthenticationException(
+      'credential_changed',
+      'OpenAI credentials changed while logout was completing.',
+    );
   }
 }
 
@@ -733,14 +898,15 @@ final class OpenAiChatGptAuth {
   Future<OpenAiChatGptCredential> loginInBrowser(
     OpenAiBrowserLauncher launcher,
   ) async {
-    final OpenAiCredentialState captured = await store.load(instanceId);
+    final OpenAiCredentialState captured = await _loadCredentialState(
+      store,
+      instanceId,
+    );
     final OpenAiChatGptCredential credential = await oauth.loginInBrowser(
       launcher,
     );
-    final OpenAiCredentialState committed = await store.compareAndSwap(
-      instanceId,
-      captured.revision,
-      credential,
+    final OpenAiCredentialState committed = await _credentialStoreOperation(
+      () => store.compareAndSwap(instanceId, captured.revision, credential),
     );
     if (!committed.committed || committed.credential == null) {
       throw const OpenAiAuthenticationException(
@@ -754,11 +920,12 @@ final class OpenAiChatGptAuth {
   Future<OpenAiChatGptCredential> install(
     OpenAiChatGptCredential credential,
   ) async {
-    final OpenAiCredentialState captured = await store.load(instanceId);
-    final OpenAiCredentialState committed = await store.compareAndSwap(
+    final OpenAiCredentialState captured = await _loadCredentialState(
+      store,
       instanceId,
-      captured.revision,
-      credential,
+    );
+    final OpenAiCredentialState committed = await _credentialStoreOperation(
+      () => store.compareAndSwap(instanceId, captured.revision, credential),
     );
     if (!committed.committed) {
       throw const OpenAiAuthenticationException(
@@ -770,7 +937,10 @@ final class OpenAiChatGptAuth {
   }
 
   Future<OpenAiChatGptAuthorization> authorization() async {
-    final OpenAiCredentialState state = await store.load(instanceId);
+    final OpenAiCredentialState state = await _loadCredentialState(
+      store,
+      instanceId,
+    );
     final OpenAiChatGptCredential? credential = state.credential;
     if (credential == null) {
       throw const OpenAiAuthenticationException(
@@ -793,7 +963,10 @@ final class OpenAiChatGptAuth {
   }
 
   Future<OpenAiChatGptCredential> refresh() async {
-    final OpenAiCredentialState current = await store.load(instanceId);
+    final OpenAiCredentialState current = await _loadCredentialState(
+      store,
+      instanceId,
+    );
     if (current.credential == null) {
       throw const OpenAiAuthenticationException(
         'missing_credentials',
@@ -806,7 +979,10 @@ final class OpenAiChatGptAuth {
   Future<OpenAiChatGptAuthorization> recoverUnauthorized(
     int rejectedRevision,
   ) async {
-    final OpenAiCredentialState current = await store.load(instanceId);
+    final OpenAiCredentialState current = await _loadCredentialState(
+      store,
+      instanceId,
+    );
     final OpenAiChatGptCredential? credential = current.credential;
     if (credential == null) {
       throw const OpenAiAuthenticationException(
@@ -851,7 +1027,10 @@ final class OpenAiChatGptAuth {
   Future<OpenAiCredentialState> _performRefresh({
     required int expectedRevision,
   }) async {
-    final OpenAiCredentialState captured = await store.load(instanceId);
+    final OpenAiCredentialState captured = await _loadCredentialState(
+      store,
+      instanceId,
+    );
     final OpenAiChatGptCredential? current = captured.credential;
     if (current == null) {
       throw const OpenAiAuthenticationException(
@@ -863,10 +1042,8 @@ final class OpenAiChatGptAuth {
       return captured;
     }
     final OpenAiChatGptCredential refreshed = await oauth.refresh(current);
-    final OpenAiCredentialState committed = await store.compareAndSwap(
-      instanceId,
-      captured.revision,
-      refreshed,
+    final OpenAiCredentialState committed = await _credentialStoreOperation(
+      () => store.compareAndSwap(instanceId, captured.revision, refreshed),
     );
     if (!committed.committed || committed.credential == null) {
       throw const OpenAiAuthenticationException(
@@ -877,26 +1054,30 @@ final class OpenAiChatGptAuth {
     return committed;
   }
 
-  Future<void> logout() async {
-    final OpenAiCredentialState captured = await store.load(instanceId);
-    final OpenAiCredentialState committed = await store.delete(
-      instanceId,
-      captured.revision,
-    );
-    if (!committed.committed || committed.credential != null) {
-      throw const OpenAiAuthenticationException(
-        'credential_changed',
-        'OpenAI credentials changed while logout was completing.',
-      );
-    }
-  }
+  Future<void> logout() =>
+      logoutOpenAiChatGptInstance(instanceId: instanceId, store: store);
+}
+
+enum OpenAiAuthenticationFailureKind {
+  authentication,
+  rateLimited,
+  unavailable,
+  transport,
+  malformedResponse,
 }
 
 final class OpenAiAuthenticationException implements Exception {
-  const OpenAiAuthenticationException(this.code, this.message);
+  const OpenAiAuthenticationException(
+    this.code,
+    this.message, {
+    this.failureKind = OpenAiAuthenticationFailureKind.authentication,
+    this.safeDetails = const <String, Object?>{},
+  });
 
   final String code;
   final String message;
+  final OpenAiAuthenticationFailureKind failureKind;
+  final Map<String, Object?> safeDetails;
 
   @override
   String toString() => 'OpenAiAuthenticationException($code)';
@@ -1001,6 +1182,53 @@ String? _optionalTokenSecret(Map<String, Object?> token, String name) {
   final String? value = _optionalSecret(token[name]);
   if (value == null) throw FormatException('Invalid $name.');
   return value;
+}
+
+const Set<String> _permanentRefreshErrors = <String>{
+  'refresh_token_expired',
+  'refresh_token_reused',
+  'refresh_token_invalidated',
+};
+
+const Set<String> _safeOAuthErrorCodes = <String>{
+  ..._permanentRefreshErrors,
+  'invalid_grant',
+  'rate_limit',
+  'rate_limit_exceeded',
+  'server_error',
+  'temporarily_unavailable',
+};
+
+String? _oauthErrorCode(String encoded) {
+  try {
+    final Object? decoded = jsonDecode(encoded);
+    if (decoded is! Map<String, Object?>) return null;
+    final Object? error = decoded['error'];
+    final Object? candidate = switch (error) {
+      final Map<String, Object?> value => value['code'],
+      final String value => value,
+      _ => decoded['code'],
+    };
+    if (candidate is! String) return null;
+    final String normalized = candidate.toLowerCase();
+    return _safeOAuthErrorCodes.contains(normalized) ? normalized : null;
+  } on FormatException {
+    return null;
+  }
+}
+
+String? _safeRetryAfter(HttpHeaders headers) {
+  final List<String>? values = headers[HttpHeaders.retryAfterHeader];
+  if (values == null || values.length != 1) return null;
+  final String value = values.single.trim();
+  if (RegExp(r'^\d{1,10}$').hasMatch(value)) return value;
+  if (value.length > 64) return null;
+  try {
+    HttpDate.parse(value);
+    return value;
+  } on HttpException {
+    return null;
+  }
 }
 
 String _requiredHeaderValue(Map<String, Object?> map, String key) {

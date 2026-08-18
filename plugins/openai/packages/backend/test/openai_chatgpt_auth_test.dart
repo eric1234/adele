@@ -37,6 +37,42 @@ void main() {
     });
   });
 
+  group('OpenAI desktop browser launcher', () {
+    test('uses native desktop mechanisms without command shells', () async {
+      final List<(String, List<String>)> commands = <(String, List<String>)>[];
+      Future<void> capture(String executable, List<String> arguments) async {
+        commands.add((executable, arguments));
+      }
+
+      final Uri uri = Uri.parse('https://auth.example.test/oauth/authorize');
+      await DesktopOpenAiBrowserLauncher(
+        operatingSystem: 'linux',
+        processStarter: capture,
+      ).open(uri);
+      await DesktopOpenAiBrowserLauncher(
+        operatingSystem: 'macos',
+        processStarter: capture,
+      ).open(uri);
+      expect(commands.map((command) => command.$1), <String>[
+        'xdg-open',
+        'open',
+      ]);
+      expect(
+        commands.map((command) => command.$2.single),
+        everyElement(uri.toString()),
+      );
+
+      Uri? windowsUri;
+      await DesktopOpenAiBrowserLauncher(
+        operatingSystem: 'windows',
+        processStarter: (_, _) => fail('Windows must not spawn a command.'),
+        windowsUrlOpener: (Uri value) async => windowsUri = value,
+      ).open(uri);
+      expect(windowsUri, uri);
+      expect(commands.expand((command) => command.$2), isNot(contains('cmd')));
+    });
+  });
+
   group('OpenAI browser OAuth', () {
     test('constructs unique state and package-owned PKCE S256 fields', () {
       final OpenAiOAuthClient oauth = OpenAiOAuthClient(
@@ -379,12 +415,8 @@ void main() {
         expect(reloaded.revision, 1);
         expect(reloaded.credential?.accountId, 'account-file');
         if (!Platform.isWindows) {
-          final ProcessResult mode = await Process.run('stat', <String>[
-            '-c',
-            '%a',
-            file.path,
-          ]);
-          expect(mode.stdout.toString().trim(), '600');
+          final FileStat stat = await file.stat();
+          expect(stat.mode & 0x1ff, 0x180);
         }
 
         await file.writeAsString('{corrupt');
@@ -484,9 +516,60 @@ void main() {
 
       await expectLater(
         auth.install(_credential('account', 'access', 'refresh')),
-        throwsA(isA<FileSystemException>()),
+        throwsA(
+          isA<OpenAiAuthenticationException>()
+              .having(
+                (OpenAiAuthenticationException error) => error.failureKind,
+                'failureKind',
+                OpenAiAuthenticationFailureKind.transport,
+              )
+              .having(
+                (OpenAiAuthenticationException error) => error.code,
+                'code',
+                'credential_store_io',
+              ),
+        ),
       );
       expect((await store.load('failing')).credential, isNull);
+    });
+
+    test('development logout bypasses invalid OAuth configuration', () async {
+      final Directory directory = await Directory.systemTemp.createTemp(
+        'adele-openai-logout-command-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final File file = File('${directory.path}/credentials.json');
+      final FileOpenAiCredentialStore store = FileOpenAiCredentialStore(file);
+      await store.compareAndSwap(
+        'logout-command',
+        0,
+        _credential(
+          'account-logout',
+          'SUPER-SECRET-ACCESS-TOKEN',
+          'SUPER-SECRET-REFRESH-TOKEN',
+        ),
+      );
+
+      final ProcessResult result = await Process.run(
+        Platform.resolvedExecutable,
+        <String>['run', 'bin/openai_chatgpt_development.dart', 'logout'],
+        workingDirectory: Directory.current.path,
+        environment: <String, String>{
+          'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE': file.path,
+          'ADELE_OPENAI_CHATGPT_INSTANCE_ID': 'logout-command',
+          'ADELE_OPENAI_CHATGPT_CLIENT_ID': '',
+          'ADELE_OPENAI_CHATGPT_OAUTH_ISSUER': 'not-an-absolute-issuer',
+          'ADELE_OPENAI_CHATGPT_REDIRECT_URI': 'not-a-loopback-redirect',
+        },
+        includeParentEnvironment: true,
+      );
+
+      expect(result.exitCode, 0, reason: result.stderr.toString());
+      expect(result.stderr, isNot(contains('EXPERIMENTAL')));
+      expect(result.stderr, isNot(contains('SUPER-SECRET')));
+      final OpenAiCredentialState state = await store.load('logout-command');
+      expect(state.revision, 2);
+      expect(state.credential, isNull);
     });
   });
 
@@ -547,7 +630,7 @@ void main() {
             isA<OpenAiAuthenticationException>().having(
               (OpenAiAuthenticationException error) => error.code,
               'code',
-              'malformed_token_response',
+              'oauth_refresh_malformed_response',
             ),
           ),
         );
@@ -559,7 +642,7 @@ void main() {
             isA<OpenAiAuthenticationException>().having(
               (OpenAiAuthenticationException error) => error.code,
               'code',
-              'malformed_token_response',
+              'oauth_refresh_malformed_response',
             ),
           ),
         );

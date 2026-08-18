@@ -303,9 +303,21 @@ final class OpenAiModelProvider implements ModelProviderService {
         } on OpenAiAuthenticationException catch (error) {
           if (!cancelled && !settled) {
             fail(
-              ModelProviderFailureKind.authentication,
+              switch (error.failureKind) {
+                OpenAiAuthenticationFailureKind.authentication =>
+                  ModelProviderFailureKind.authentication,
+                OpenAiAuthenticationFailureKind.rateLimited =>
+                  ModelProviderFailureKind.rateLimited,
+                OpenAiAuthenticationFailureKind.unavailable =>
+                  ModelProviderFailureKind.unavailable,
+                OpenAiAuthenticationFailureKind.transport =>
+                  ModelProviderFailureKind.transport,
+                OpenAiAuthenticationFailureKind.malformedResponse =>
+                  ModelProviderFailureKind.malformedResponse,
+              },
               error.code,
               error.message,
+              details: error.safeDetails,
             );
           }
         } on SocketException {

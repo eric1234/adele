@@ -17,6 +17,31 @@ Future<void> main(List<String> arguments) async {
   final String credentialPath =
       Platform.environment['ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE'] ??
       '${Directory.current.path}/.dart_tool/adele/development/openai-chatgpt-credentials.json';
+  final String instanceId = openAiChatGptInstanceId(Platform.environment);
+  final FileOpenAiCredentialStore store = FileOpenAiCredentialStore(
+    File(credentialPath),
+  );
+  try {
+    if (arguments.single == 'logout') {
+      await logoutOpenAiChatGptInstance(instanceId: instanceId, store: store);
+      stdout.writeln('Local ChatGPT credentials were removed.');
+      return;
+    }
+    await _runOAuthCommand(arguments.single, credentialPath, instanceId, store);
+  } on OpenAiAuthenticationException catch (error) {
+    stderr.writeln(
+      'ChatGPT authentication failed [${error.code}]: ${error.message}',
+    );
+    exitCode = 1;
+  }
+}
+
+Future<void> _runOAuthCommand(
+  String command,
+  String credentialPath,
+  String instanceId,
+  OpenAiCredentialStore store,
+) async {
   final OpenAiOAuthClientIdentity identity = openAiOAuthClientIdentity(
     Platform.environment,
     allowDevelopmentFallback: true,
@@ -43,30 +68,21 @@ Future<void> main(List<String> arguments) async {
     ),
   );
   final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
-    instanceId: openAiChatGptInstanceId(Platform.environment),
-    store: FileOpenAiCredentialStore(File(credentialPath)),
+    instanceId: instanceId,
+    store: store,
     oauth: oauth,
   );
   try {
-    switch (arguments.single) {
-      case 'login':
-        final OpenAiChatGptCredential credential = await auth.loginInBrowser(
-          const _VisibleBrowserLauncher(),
-        );
-        stdout.writeln(
-          'ChatGPT login stored for account ${credential.accountId} at $credentialPath.',
-        );
-      case 'test':
-        await _testInference(auth);
-      case 'logout':
-        await auth.logout();
-        stdout.writeln('Local ChatGPT credentials were removed.');
+    if (command == 'login') {
+      final OpenAiChatGptCredential credential = await auth.loginInBrowser(
+        const _VisibleBrowserLauncher(),
+      );
+      stdout.writeln(
+        'ChatGPT login stored for account ${credential.accountId} at $credentialPath.',
+      );
+    } else {
+      await _testInference(auth);
     }
-  } on OpenAiAuthenticationException catch (error) {
-    stderr.writeln(
-      'ChatGPT authentication failed [${error.code}]: ${error.message}',
-    );
-    exitCode = 1;
   } finally {
     oauth.close();
   }
