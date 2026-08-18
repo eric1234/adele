@@ -11,6 +11,11 @@ resolution: workspace
 dependencies:
   adele_contract: ^0.1.0
   adele_model_provider: ^0.1.0
+  ffi: ^2.1.4
+  oauth2: ^2.0.5
+  win32: ^6.4.0
 
 dev_dependencies:
+  adele_capabilities: ^0.1.0
+  plugin_runtime: ^0.1.0
   test: ^1.26.3

@@ -5,8 +5,12 @@ import 'dart:typed_data';
 
 import 'package:adele_model_provider/adele_model_provider.dart';
 
+import 'src/openai_chatgpt_auth.dart';
+
 const String openAiPluginId = 'dev.adele.openai';
 const String openAiApiKeyProviderId = 'dev.adele.openai.api-key';
+const String openAiChatGptProviderId = 'dev.adele.openai.chatgpt-experimental';
+const String openAiChatGptConfigurationContext = 'chatgpt-experimental';
 const String _nativeItemKind = 'openai.responses.item.v1';
 const String _semanticMetadataKind = 'openai.responses.semantic-item.v1';
 const int _maximumErrorBodyBytes = 16 * 1024;
@@ -17,23 +21,46 @@ final class OpenAiModelProvider implements ModelProviderService {
     Uri? endpoint,
     HttpClient? httpClient,
   }) : _apiKey = _validateApiKey(apiKey),
+       _chatGptAuth = null,
+       _profile = _OpenAiRequestProfile.apiKey,
        _endpoint = endpoint ?? Uri.parse('https://api.openai.com/v1/responses'),
        _httpClient = httpClient ?? HttpClient(),
        _ownsHttpClient = httpClient == null {
-    if (!_endpoint.isAbsolute ||
-        (_endpoint.scheme != 'http' && _endpoint.scheme != 'https')) {
-      throw ArgumentError.value(endpoint, 'endpoint', 'Must be HTTP(S).');
+    _validateEndpoint(_endpoint, endpoint);
+  }
+
+  OpenAiModelProvider.chatGpt({
+    required OpenAiChatGptAuth auth,
+    Uri? endpoint,
+    HttpClient? httpClient,
+  }) : _apiKey = null,
+       _chatGptAuth = auth,
+       _profile = _OpenAiRequestProfile.chatGpt,
+       _endpoint =
+           endpoint ??
+           Uri.parse('https://chatgpt.com/backend-api/codex/responses'),
+       _httpClient = httpClient ?? HttpClient(),
+       _ownsHttpClient = httpClient == null {
+    _validateEndpoint(_endpoint, endpoint);
+  }
+
+  static void _validateEndpoint(Uri value, Uri? argument) {
+    if (!value.isAbsolute ||
+        (value.scheme != 'http' && value.scheme != 'https')) {
+      throw ArgumentError.value(argument, 'endpoint', 'Must be HTTP(S).');
     }
-    if (_endpoint.scheme == 'http' && !_isLoopbackHost(_endpoint.host)) {
+    if (value.scheme == 'http' && !_isLoopbackHost(value.host)) {
       throw ArgumentError.value(
-        endpoint,
+        argument,
         'endpoint',
         'Plaintext OpenAI endpoints must be loopback.',
       );
     }
   }
 
-  final String _apiKey;
+  final String? _apiKey;
+  final OpenAiChatGptAuth? _chatGptAuth;
+  final _OpenAiRequestProfile _profile;
   final Uri _endpoint;
   final HttpClient _httpClient;
   final bool _ownsHttpClient;
@@ -96,7 +123,7 @@ final class OpenAiModelProvider implements ModelProviderService {
     Future<void> start() async {
       final Map<String, Object?> body;
       try {
-        body = _lowerRequest(request);
+        body = _lowerRequest(request, _profile);
       } on _OpenAiRequestException catch (error) {
         fail(error.kind, error.code, error.message);
         return;
@@ -108,168 +135,227 @@ final class OpenAiModelProvider implements ModelProviderService {
         );
         return;
       }
-      try {
-        final HttpClientRequest outgoing = await _httpClient.postUrl(_endpoint);
-        if (cancelled) {
-          outgoing.abort();
-          return;
-        }
-        outboundRequest = outgoing;
-        outgoing.headers.contentType = ContentType.json;
-        outgoing.headers.set(HttpHeaders.acceptHeader, 'text/event-stream');
-        outgoing.headers.set(
-          HttpHeaders.authorizationHeader,
-          'Bearer $_apiKey',
-        );
-        outgoing.write(jsonEncode(body));
-        final HttpClientResponse response = await outgoing.close();
-        if (cancelled) {
-          await response.detachSocket().then(
-            (Socket socket) => socket.destroy(),
+      Future<void> send({
+        required bool recoveredAuthorization,
+        OpenAiChatGptAuthorization? authorization,
+      }) async {
+        try {
+          final OpenAiChatGptAuthorization? chatGptAuthorization =
+              _chatGptAuth == null
+              ? null
+              : authorization ?? await _chatGptAuth.authorization();
+          final OpenAiChatGptCredential? chatGptCredential =
+              chatGptAuthorization?.credential;
+          if (cancelled) return;
+          final HttpClientRequest outgoing = await _httpClient.postUrl(
+            _endpoint,
           );
-          return;
-        }
-        final String? requestId = response.headers.value('x-request-id');
-        if (response.statusCode < 200 || response.statusCode >= 300) {
-          final _BoundedBodyCapture capture = _BoundedBodyCapture(response);
-          errorBodyCapture = capture;
-          if (stoppingFuture != null) {
-            await capture.cancel();
+          if (cancelled) {
+            outgoing.abort();
             return;
           }
-          final _BoundedBody bodyCapture = await capture.result;
-          if (cancelled) return;
-          final _HttpFailure failure = _classifyHttpFailure(
-            response.statusCode,
-            bodyCapture.text,
-            requestId,
-            response.headers.value(HttpHeaders.retryAfterHeader),
-            bodyCapture.truncated,
+          outboundRequest = outgoing;
+          outgoing.headers.contentType = ContentType.json;
+          outgoing.headers.set(HttpHeaders.acceptHeader, 'text/event-stream');
+          outgoing.headers.set(
+            HttpHeaders.authorizationHeader,
+            'Bearer ${chatGptCredential?.accessToken ?? _apiKey!}',
           );
-          fail(
-            failure.kind,
-            failure.code,
-            failure.message,
-            details: failure.details,
-            requestId: requestId,
-          );
-          return;
-        }
-        final _SseRecordDecoder decoder = _SseRecordDecoder();
-        final _ResponsesNormalizer normalizer = _ResponsesNormalizer(
-          requestedModel: request.model,
-          requestId: requestId,
-          emit: (ModelProviderEvent event) {
-            if (cancelled || settled) return;
-            if (event.kind == ModelProviderEventKind.terminal) {
-              settled = true;
-              controller.add(event);
-              unawaited(controller.close());
-              unawaited(stopNetwork());
-            } else {
-              controller.add(event);
-            }
-          },
-        );
-        lines = response
-            .transform(utf8.decoder)
-            .transform(const LineSplitter())
-            .listen(
-              (String line) {
-                if (cancelled || settled) return;
-                try {
-                  for (final String data in decoder.addLine(line)) {
-                    normalizer.addData(data);
-                  }
-                } on _OpenAiResponseException catch (error) {
-                  fail(
-                    ModelProviderFailureKind.malformedResponse,
-                    error.code,
-                    error.message,
-                    requestId: requestId,
-                  );
-                } on Object {
-                  fail(
-                    ModelProviderFailureKind.malformedResponse,
-                    'malformed_stream',
-                    'The OpenAI response stream was malformed.',
-                    requestId: requestId,
-                  );
-                }
-              },
-              onError: (Object error, StackTrace stackTrace) {
-                if (cancelled || settled) return;
-                if (error is FormatException) {
-                  fail(
-                    ModelProviderFailureKind.malformedResponse,
-                    'invalid_utf8',
-                    'The OpenAI response stream was not valid UTF-8.',
-                    requestId: requestId,
-                  );
-                } else {
-                  fail(
-                    ModelProviderFailureKind.transport,
-                    'stream_transport',
-                    'The OpenAI response stream failed.',
-                    requestId: requestId,
-                  );
-                }
-              },
-              onDone: () {
-                if (cancelled || settled) return;
-                try {
-                  decoder.finish();
-                } on _OpenAiResponseException catch (error) {
-                  fail(
-                    ModelProviderFailureKind.malformedResponse,
-                    error.code,
-                    error.message,
-                    requestId: requestId,
-                  );
-                  return;
-                }
-                fail(
-                  ModelProviderFailureKind.malformedResponse,
-                  'missing_terminal',
-                  'The OpenAI response ended before a semantic terminal.',
-                  requestId: requestId,
-                );
-              },
+          if (chatGptCredential != null) {
+            outgoing.headers.set(
+              'ChatGPT-Account-ID',
+              chatGptCredential.accountId,
             );
-        if (controller.isPaused) lines!.pause();
-      } on SocketException {
-        if (!cancelled && !settled) {
-          fail(
-            ModelProviderFailureKind.transport,
-            'network_error',
-            'The OpenAI request could not reach the provider.',
+            if (chatGptCredential.fedRamp) {
+              outgoing.headers.set('X-OpenAI-Fedramp', 'true');
+            }
+          }
+          outgoing.write(jsonEncode(body));
+          final HttpClientResponse response = await outgoing.close();
+          if (cancelled) {
+            await response.detachSocket().then(
+              (Socket socket) => socket.destroy(),
+            );
+            return;
+          }
+          final String? requestId = response.headers.value('x-request-id');
+          if (response.statusCode < 200 || response.statusCode >= 300) {
+            final _BoundedBodyCapture capture = _BoundedBodyCapture(response);
+            errorBodyCapture = capture;
+            if (stoppingFuture != null) {
+              await capture.cancel();
+              return;
+            }
+            final _BoundedBody bodyCapture = await capture.result;
+            if (cancelled) return;
+            if (response.statusCode == HttpStatus.unauthorized &&
+                _chatGptAuth != null &&
+                !recoveredAuthorization) {
+              errorBodyCapture = null;
+              final OpenAiChatGptAuthorization recovered = await _chatGptAuth
+                  .recoverUnauthorized(chatGptAuthorization!.revision);
+              if (!cancelled) {
+                await send(
+                  recoveredAuthorization: true,
+                  authorization: recovered,
+                );
+              }
+              return;
+            }
+            final _HttpFailure failure = _classifyHttpFailure(
+              response.statusCode,
+              bodyCapture.text,
+              requestId,
+              response.headers.value(HttpHeaders.retryAfterHeader),
+              bodyCapture.truncated,
+            );
+            fail(
+              failure.kind,
+              failure.code,
+              failure.message,
+              details: failure.details,
+              requestId: requestId,
+            );
+            return;
+          }
+          final _SseRecordDecoder decoder = _SseRecordDecoder();
+          final _ResponsesNormalizer normalizer = _ResponsesNormalizer(
+            requestedModel: request.model,
+            requestId: requestId,
+            emit: (ModelProviderEvent event) {
+              if (cancelled || settled) return;
+              if (event.kind == ModelProviderEventKind.terminal) {
+                settled = true;
+                controller.add(event);
+                unawaited(controller.close());
+                unawaited(stopNetwork());
+              } else {
+                controller.add(event);
+              }
+            },
           );
-        }
-      } on HandshakeException {
-        if (!cancelled && !settled) {
-          fail(
-            ModelProviderFailureKind.transport,
-            'tls_error',
-            'The OpenAI TLS connection failed.',
-          );
-        }
-      } on HttpException {
-        if (!cancelled && !settled) {
-          fail(
-            ModelProviderFailureKind.transport,
-            'http_transport',
-            'The OpenAI HTTP operation failed.',
-          );
-        }
-      } on Object {
-        if (!cancelled && !settled) {
-          fail(
-            ModelProviderFailureKind.transport,
-            'transport_error',
-            'The OpenAI transport failed.',
-          );
+          lines = response
+              .transform(utf8.decoder)
+              .transform(const LineSplitter())
+              .listen(
+                (String line) {
+                  if (cancelled || settled) return;
+                  try {
+                    for (final String data in decoder.addLine(line)) {
+                      normalizer.addData(data);
+                    }
+                  } on _OpenAiResponseException catch (error) {
+                    fail(
+                      ModelProviderFailureKind.malformedResponse,
+                      error.code,
+                      error.message,
+                      requestId: requestId,
+                    );
+                  } on Object {
+                    fail(
+                      ModelProviderFailureKind.malformedResponse,
+                      'malformed_stream',
+                      'The OpenAI response stream was malformed.',
+                      requestId: requestId,
+                    );
+                  }
+                },
+                onError: (Object error, StackTrace stackTrace) {
+                  if (cancelled || settled) return;
+                  if (error is FormatException) {
+                    fail(
+                      ModelProviderFailureKind.malformedResponse,
+                      'invalid_utf8',
+                      'The OpenAI response stream was not valid UTF-8.',
+                      requestId: requestId,
+                    );
+                  } else {
+                    fail(
+                      ModelProviderFailureKind.transport,
+                      'stream_transport',
+                      'The OpenAI response stream failed.',
+                      requestId: requestId,
+                    );
+                  }
+                },
+                onDone: () {
+                  if (cancelled || settled) return;
+                  try {
+                    decoder.finish();
+                  } on _OpenAiResponseException catch (error) {
+                    fail(
+                      ModelProviderFailureKind.malformedResponse,
+                      error.code,
+                      error.message,
+                      requestId: requestId,
+                    );
+                    return;
+                  }
+                  fail(
+                    ModelProviderFailureKind.malformedResponse,
+                    'missing_terminal',
+                    'The OpenAI response ended before a semantic terminal.',
+                    requestId: requestId,
+                  );
+                },
+              );
+          if (controller.isPaused) lines!.pause();
+        } on OpenAiAuthenticationException catch (error) {
+          if (!cancelled && !settled) {
+            fail(
+              switch (error.failureKind) {
+                OpenAiAuthenticationFailureKind.authentication =>
+                  ModelProviderFailureKind.authentication,
+                OpenAiAuthenticationFailureKind.rateLimited =>
+                  ModelProviderFailureKind.rateLimited,
+                OpenAiAuthenticationFailureKind.unavailable =>
+                  ModelProviderFailureKind.unavailable,
+                OpenAiAuthenticationFailureKind.transport =>
+                  ModelProviderFailureKind.transport,
+                OpenAiAuthenticationFailureKind.malformedResponse =>
+                  ModelProviderFailureKind.malformedResponse,
+              },
+              error.code,
+              error.message,
+              details: error.safeDetails,
+            );
+          }
+        } on SocketException {
+          if (!cancelled && !settled) {
+            fail(
+              ModelProviderFailureKind.transport,
+              'network_error',
+              'The OpenAI request could not reach the provider.',
+            );
+          }
+        } on HandshakeException {
+          if (!cancelled && !settled) {
+            fail(
+              ModelProviderFailureKind.transport,
+              'tls_error',
+              'The OpenAI TLS connection failed.',
+            );
+          }
+        } on HttpException {
+          if (!cancelled && !settled) {
+            fail(
+              ModelProviderFailureKind.transport,
+              'http_transport',
+              'The OpenAI HTTP operation failed.',
+            );
+          }
+        } on Object {
+          if (!cancelled && !settled) {
+            fail(
+              ModelProviderFailureKind.transport,
+              'transport_error',
+              'The OpenAI transport failed.',
+            );
+          }
         }
       }
+
+      await send(recoveredAuthorization: false);
     }
 
     controller = StreamController<ModelProviderEvent>(
@@ -296,7 +382,10 @@ String _validateApiKey(String apiKey) {
   return apiKey;
 }
 
-Map<String, Object?> _lowerRequest(ModelProviderRequest request) {
+Map<String, Object?> _lowerRequest(
+  ModelProviderRequest request,
+  _OpenAiRequestProfile profile,
+) {
   if (request.providerOptions.isNotEmpty) {
     throw const _OpenAiRequestException(
       ModelProviderFailureKind.unsupportedRequest,
@@ -309,6 +398,14 @@ Map<String, Object?> _lowerRequest(ModelProviderRequest request) {
       ModelProviderFailureKind.unsupportedRequest,
       'unsupported_native_state',
       'Invocation-native continuation is not supported.',
+    );
+  }
+  if (profile == _OpenAiRequestProfile.chatGpt &&
+      request.maxOutputTokens != null) {
+    throw const _OpenAiRequestException(
+      ModelProviderFailureKind.unsupportedRequest,
+      'chatgpt_max_output_tokens_unsupported',
+      'The experimental ChatGPT Responses profile does not support an explicit output-token cap.',
     );
   }
   return <String, Object?>{
@@ -337,6 +434,8 @@ Map<String, Object?> _lowerRequest(ModelProviderRequest request) {
     'stream': true,
   };
 }
+
+enum _OpenAiRequestProfile { apiKey, chatGpt }
 
 Map<String, Object?> _lowerInput(ModelProviderInput input) {
   switch (input.kind) {
