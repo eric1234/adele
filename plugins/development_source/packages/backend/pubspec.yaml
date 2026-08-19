@@ -1,0 +1,18 @@
+name: development_source_backend
+description: Local read-only development-source provider backend.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+
+resolution: workspace
+
+dependencies:
+  adele_contract: ^0.1.0
+  development_source_contract: ^0.1.0
+
+dev_dependencies:
+  adele_capabilities: ^0.1.0
+  plugin_runtime: ^0.1.0
+  test: ^1.26.3

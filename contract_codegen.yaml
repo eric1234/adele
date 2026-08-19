@@ -1,5 +1,6 @@
 sources:
   - packages/model_provider/lib/adele_model_provider.dart
+  - plugins/development_source/packages/contract/lib/development_source_contract.dart
   - plugins/resource_inspector/packages/contract/lib/resource_inspector_contract.dart
   - plugins/scripted_model/packages/contract/lib/scripted_model_contract.dart
   - plugins/workspace_demo/packages/contract/lib/workspace_demo_contract.dart
