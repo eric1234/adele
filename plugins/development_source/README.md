@@ -10,8 +10,8 @@ files are limited to 1 MiB, queries to 256 code units, results to 100 matches,
 snippets to 500 code units, traversal to 10,000 entries, individual directories
 to 2,048 entries, and scanned file contents to 16 MiB. Search reports
 truncation when a result or traversal bound is reached. It skips links,
-unreadable, non-UTF-8, and oversized files, plus `.git`, `.dart_tool`, and
-`build` directories.
+unreadable, non-UTF-8, and oversized files, plus `.git`, `.dart_tool`, `build`,
+and `node_modules` directories.
 
 This is not ADELE's final Workspace service. It does not define workspace
 identity, persistence, project association, mutation, process execution,

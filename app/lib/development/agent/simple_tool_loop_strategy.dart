@@ -9,9 +9,17 @@ final class DevelopmentToolLoopStrategy {
     required this.model,
     required this.toolCatalog,
     required this.policy,
+    this.maxModelInvocations = 8,
   }) {
     if (run.sessionId != session.id) {
       throw ArgumentError('Run and Session identities must match.');
+    }
+    if (maxModelInvocations < 1) {
+      throw ArgumentError.value(
+        maxModelInvocations,
+        'maxModelInvocations',
+        'Must be positive.',
+      );
     }
   }
 
@@ -21,6 +29,7 @@ final class DevelopmentToolLoopStrategy {
   final ModelPort model;
   final ToolCatalog toolCatalog;
   final ToolPolicy policy;
+  final int maxModelInvocations;
   final List<SemanticModelInputItem> _runItems = <SemanticModelInputItem>[];
   final ToolInvocationResolver _invocationResolver =
       const ToolInvocationResolver();
@@ -75,6 +84,10 @@ final class DevelopmentToolLoopStrategy {
 
   Future<void> _advanceModel() async {
     if (run.state != RunState.running) return;
+    if (_nextModelInvocation > maxModelInvocations) {
+      _fail(ModelInvocationLimitExceeded(maxModelInvocations));
+      return;
+    }
     final ModelInvocationId invocationId = ModelInvocationId(
       '${run.id.value}-model-${_nextModelInvocation++}',
     );
@@ -131,6 +144,10 @@ final class DevelopmentToolLoopStrategy {
       }
       session.append(AssistantSessionMessage(turn.text));
       run.complete();
+      return;
+    }
+    if (_nextModelInvocation > maxModelInvocations) {
+      _fail(ModelInvocationLimitExceeded(maxModelInvocations));
       return;
     }
     for (final ModelOutputItem item in turn.output) {
@@ -488,4 +505,14 @@ final class ModelInvocationIncomplete implements Exception {
 
   final ModelIncompleteReason reason;
   final ModelTerminalMetadata metadata;
+}
+
+final class ModelInvocationLimitExceeded implements Exception {
+  const ModelInvocationLimitExceeded(this.maximum);
+
+  final int maximum;
+
+  @override
+  String toString() =>
+      'ModelInvocationLimitExceeded: Run exceeded $maximum model invocations.';
 }

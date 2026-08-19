@@ -3,11 +3,14 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/development/agent/agent_capability_adapters.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
+import 'package:adele_desktop/development/agent/development_source_tools.dart';
 import 'package:adele_desktop/development/agent/simple_tool_loop_strategy.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:agent_kernel/agent_kernel.dart';
+import 'package:development_source_contract/development_source_contract.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:resource_inspector_contract/resource_inspector_contract.dart';
@@ -18,6 +21,7 @@ void main() {
   late File hostArtifact;
   late File openAiArtifact;
   late File inspectorArtifact;
+  late File developmentSourceArtifact;
 
   setUpAll(() async {
     repository = Directory.current.parent.path;
@@ -30,11 +34,20 @@ void main() {
     hostArtifact = File('${artifacts.path}/host.aot');
     openAiArtifact = File('${artifacts.path}/openai.aot');
     inspectorArtifact = File('${artifacts.path}/inspector.aot');
+    developmentSourceArtifact = File(
+      '${artifacts.path}/development-source.aot',
+    );
     await Future.wait(<Future<void>>[
       _compile(
         dart,
         '$repository/packages/plugin_backend_host/bin/adele_backend_host.dart',
         hostArtifact.path,
+        repository,
+      ),
+      _compile(
+        dart,
+        '$repository/plugins/development_source/packages/backend/bin/development_source_backend.dart',
+        developmentSourceArtifact.path,
         repository,
       ),
       _compile(
@@ -270,6 +283,272 @@ void main() {
     },
     timeout: const Timeout(Duration(minutes: 4)),
   );
+
+  test(
+    'searches and reads real ADELE source through two AOT provider generations',
+    () async {
+      const String strategyPath =
+          'app/lib/development/agent/simple_tool_loop_strategy.dart';
+      final List<Map<String, Object?>> outbound = <Map<String, Object?>>[];
+      final HttpServer responses = await HttpServer.bind(
+        InternetAddress.loopbackIPv4,
+        0,
+      );
+      final StreamSubscription<HttpRequest>
+      responsesSubscription = responses.listen((HttpRequest request) {
+        unawaited(() async {
+          expect(request.uri.path, '/v1/responses');
+          final Map<String, Object?> body =
+              jsonDecode(await utf8.decoder.bind(request).join())!
+                  as Map<String, Object?>;
+          outbound.add(body);
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          switch (outbound.length) {
+            case 1:
+              final List<Object?> tools = body['tools']! as List<Object?>;
+              expect(
+                tools.map(
+                  (Object? tool) => (tool! as Map<String, Object?>)['name'],
+                ),
+                <String>['search_source_text', 'read_source_file'],
+              );
+              _sse(
+                request.response,
+                _outputDone(_reasoning('rs_search', 'encrypted-search')),
+              );
+              _sse(
+                request.response,
+                _outputDone(<String, Object?>{
+                  'type': 'function_call',
+                  'id': 'fc_search',
+                  'call_id': 'call_search',
+                  'name': 'search_source_text',
+                  'arguments':
+                      '{"literalText":"final class DevelopmentToolLoopStrategy"}',
+                  'status': 'completed',
+                }),
+              );
+              _sse(request.response, _completed('resp_search'));
+            case 2:
+              final List<Object?> input = body['input']! as List<Object?>;
+              expect(
+                input.map(
+                  (Object? item) => (item! as Map<String, Object?>)['type'],
+                ),
+                <String>[
+                  'message',
+                  'reasoning',
+                  'function_call',
+                  'function_call_output',
+                ],
+              );
+              expect(input[1], _reasoning('rs_search', 'encrypted-search'));
+              expect(
+                (input[3]! as Map<String, Object?>)['call_id'],
+                'call_search',
+              );
+              expect(
+                (input[3]! as Map<String, Object?>)['output'],
+                allOf(contains(strategyPath), contains(':4:')),
+              );
+              _sse(
+                request.response,
+                _outputDone(_reasoning('rs_read', 'encrypted-read')),
+              );
+              _sse(
+                request.response,
+                _outputDone(<String, Object?>{
+                  'type': 'function_call',
+                  'id': 'fc_read',
+                  'call_id': 'call_read',
+                  'name': 'read_source_file',
+                  'arguments': jsonEncode(<String, Object?>{
+                    'relativePath': strategyPath,
+                  }),
+                  'status': 'completed',
+                }),
+              );
+              _sse(request.response, _completed('resp_read'));
+            case 3:
+              final List<Object?> input = body['input']! as List<Object?>;
+              expect(
+                input.map(
+                  (Object? item) => (item! as Map<String, Object?>)['type'],
+                ),
+                <String>[
+                  'message',
+                  'reasoning',
+                  'function_call',
+                  'function_call_output',
+                  'reasoning',
+                  'function_call',
+                  'function_call_output',
+                ],
+              );
+              expect(input[4], _reasoning('rs_read', 'encrypted-read'));
+              expect(
+                (input[6]! as Map<String, Object?>)['call_id'],
+                'call_read',
+              );
+              expect(
+                (input[6]! as Map<String, Object?>)['output'],
+                allOf(
+                  startsWith('File: $strategyPath'),
+                  contains('final class DevelopmentToolLoopStrategy'),
+                  contains('this.maxModelInvocations = 8'),
+                ),
+              );
+              _sse(
+                request.response,
+                _outputDone(
+                  _message(
+                    'msg_final',
+                    '$strategyPath declares DevelopmentToolLoopStrategy and defaults its model-invocation limit to 8.',
+                  ),
+                ),
+              );
+              _sse(request.response, _completed('resp_final'));
+            default:
+              fail('Unexpected Responses invocation ${outbound.length}.');
+          }
+          await request.response.close();
+        }());
+      });
+      addTearDown(() async {
+        await responsesSubscription.cancel();
+        await responses.close(force: true);
+      });
+      final PluginBackendHost host = await PluginBackendHost.start(
+        dartaotruntimeExecutable: dartaotruntime,
+        hostArtifactPath: hostArtifact.path,
+        environment: <String, String>{
+          'OPENAI_API_KEY': 'fake-source-coding-key',
+          'ADELE_OPENAI_ENDPOINT':
+              'http://${responses.address.address}:${responses.port}/v1/responses',
+        },
+      );
+      final int sharedBackendHostProcess = host.processId;
+      addTearDown(() async {
+        if (!host.isClosed) await host.close(graceful: false);
+      });
+      final CapabilityRegistry registry = CapabilityRegistry();
+      final _Activation model = await _startProvider(
+        host: host,
+        registry: registry,
+        pluginId: 'dev.adele.openai',
+        artifact: openAiArtifact,
+        descriptor: ProviderDescriptor(
+          id: ProviderId('dev.adele.openai.api-key'),
+          capability: modelProviderCapability,
+          pluginId: 'dev.adele.openai',
+          displayName: 'OpenAI API Key',
+          serviceId: modelProviderServiceId,
+        ),
+      );
+      addTearDown(model.close);
+      final _Activation source = await _startProvider(
+        host: host,
+        registry: registry,
+        pluginId: 'dev.adele.plugin.development-source',
+        artifact: developmentSourceArtifact,
+        arguments: <String>[repository],
+        descriptor: ProviderDescriptor(
+          id: ProviderId('dev.adele.development-source.local'),
+          capability: developmentSourceCapability,
+          pluginId: 'dev.adele.plugin.development-source',
+          displayName: 'ADELE Development Source',
+          serviceId: developmentSourceServiceId,
+        ),
+      );
+      addTearDown(source.close);
+      expect(host.processId, sharedBackendHostProcess);
+      final ProviderBinding modelBinding = registry.resolve(
+        modelProviderCapability,
+      );
+      final ProviderBinding sourceBinding = registry.resolve(
+        developmentSourceCapability,
+      );
+      final ModelProviderCapabilityAdapter modelAdapter =
+          ModelProviderCapabilityAdapter(
+            modelBinding,
+            selectedModel: 'test-openai-model',
+          );
+      final DevelopmentSourceSearchToolExecutable searchTool =
+          DevelopmentSourceSearchToolExecutable(sourceBinding);
+      final DevelopmentSourceReadToolExecutable readTool =
+          DevelopmentSourceReadToolExecutable(sourceBinding);
+      final DevelopmentSessionHistory
+      session = DevelopmentSessionHistory(SessionId('session-source-coding'))
+        ..append(
+          UserSessionMessage(
+            'Find where DevelopmentToolLoopStrategy is declared, inspect the source, and report its path and model invocation limit.',
+          ),
+        );
+      final AgentRun run = AgentRun(
+        id: RunId('run-source-coding'),
+        sessionId: session.id,
+      );
+      final ToolCatalog catalog = ToolCatalog()
+        ..register(searchTool.registration)
+        ..register(readTool.registration);
+      final DevelopmentToolLoopStrategy strategy = DevelopmentToolLoopStrategy(
+        run: run,
+        session: session,
+        contextAssembler: const DevelopmentContextAssembler(
+          instructions:
+              'Use search_source_text and read_source_file to inspect configured source before answering.',
+        ),
+        model: modelAdapter,
+        toolCatalog: catalog,
+        policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
+      );
+
+      await strategy.start();
+
+      expect(run.state, RunState.completed);
+      expect(modelAdapter.provider, same(modelBinding.provider));
+      expect(searchTool.provider, same(sourceBinding.provider));
+      expect(readTool.provider, same(sourceBinding.provider));
+      expect(modelAdapter.invocationCount, 3);
+      expect(model.streamCount, 3);
+      expect(model.requestCount, 0);
+      expect(searchTool.invocationCount, 1);
+      expect(readTool.invocationCount, 1);
+      expect(source.requestCount, 2);
+      expect(source.streamCount, 0);
+      expect(outbound, hasLength(3));
+      expect(
+        (session.snapshot().entries.last as AssistantSessionMessage).content,
+        '$strategyPath declares DevelopmentToolLoopStrategy and defaults its model-invocation limit to 8.',
+      );
+      final List<ToolInvocationPrepared> prepared = run.journal.records
+          .map((ExecutionEventRecord record) => record.event)
+          .whereType<ToolInvocationPrepared>()
+          .toList(growable: false);
+      expect(prepared, hasLength(2));
+      expect(prepared[0].invocation.tool.definition.id, sourceTextSearchToolId);
+      expect(
+        prepared[0].invocation.tool.modelDefinition.alias,
+        'search_source_text',
+      );
+      expect(prepared[0].invocation.tool.executable, same(searchTool));
+      expect(prepared[1].invocation.tool.definition.id, sourceFileReadToolId);
+      expect(
+        prepared[1].invocation.tool.modelDefinition.alias,
+        'read_source_file',
+      );
+      expect(prepared[1].invocation.tool.executable, same(readTool));
+
+      await model.close();
+      await source.close();
+      await host.close();
+    },
+    timeout: const Timeout(Duration(minutes: 4)),
+  );
 }
 
 Future<_Activation> _startProvider({
@@ -278,23 +557,28 @@ Future<_Activation> _startProvider({
   required String pluginId,
   required File artifact,
   required ProviderDescriptor descriptor,
+  List<String> arguments = const <String>[],
 }) async {
   final PluginBackendConnection connection = await host.startPlugin(
     pluginId: pluginId,
     artifactUri: artifact.uri,
+    arguments: arguments,
+  );
+  final _CountingChannel channel = _CountingChannel(
+    connection.channelFor(
+      connection.defaultConfigurationContext,
+      descriptor.serviceId,
+    ),
   );
   final CapabilityRegistration registration = registry.register(
     provider: descriptor,
     endpoint: AdeleRequestChannelEndpoint(
-      channel: connection.channelFor(
-        connection.defaultConfigurationContext,
-        descriptor.serviceId,
-      ),
+      channel: channel,
       serviceId: descriptor.serviceId,
       isAvailable: () => !connection.isClosed,
     ),
   );
-  return _Activation(connection, registration);
+  return _Activation(connection, registration, channel);
 }
 
 Future<void> _compile(
@@ -372,13 +656,37 @@ void _sse(HttpResponse response, Map<String, Object?> event) {
 }
 
 final class _Activation {
-  const _Activation(this.connection, this.registration);
+  const _Activation(this.connection, this.registration, this.channel);
 
   final PluginBackendConnection connection;
   final CapabilityRegistration registration;
+  final _CountingChannel channel;
+
+  int get requestCount => channel.requestCount;
+  int get streamCount => channel.streamCount;
 
   Future<void> close() async {
     await registration.close();
     if (!connection.isClosed) await connection.close();
+  }
+}
+
+final class _CountingChannel implements AdeleStreamChannel {
+  _CountingChannel(this.delegate);
+
+  final AdeleStreamChannel delegate;
+  int requestCount = 0;
+  int streamCount = 0;
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) {
+    requestCount++;
+    return delegate.request(method, payload);
+  }
+
+  @override
+  Stream<Object?> stream(String method, Map<String, Object?> payload) {
+    streamCount++;
+    return delegate.stream(method, payload);
   }
 }

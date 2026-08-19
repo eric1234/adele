@@ -3,8 +3,10 @@ import 'dart:async';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/development/agent/agent_capability_adapters.dart';
+import 'package:adele_desktop/development/agent/development_source_tools.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:agent_kernel/agent_kernel.dart';
+import 'package:development_source_contract/development_source_contract.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:resource_inspector_contract/resource_inspector_contract.dart';
@@ -531,7 +533,210 @@ void main() {
     expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
     expect(channel.requestCount, 0);
   });
+
+  test('DevelopmentSource tools validate exact model argument shapes', () {
+    final DevelopmentSourceSearchToolExecutable search =
+        DevelopmentSourceSearchToolExecutable(_sourceBinding().binding);
+    final DevelopmentSourceReadToolExecutable read =
+        DevelopmentSourceReadToolExecutable(_sourceBinding().binding);
+
+    expect(search.registration.definition.id, sourceTextSearchToolId);
+    expect(search.registration.modelDefinition.alias, 'search_source_text');
+    expect(
+      search.validateAndNormalize(const <String, Object?>{
+        'literalText': 'DevelopmentToolLoopStrategy',
+      }).snapshot,
+      const <String, Object?>{'literalText': 'DevelopmentToolLoopStrategy'},
+    );
+    expect(read.registration.definition.id, sourceFileReadToolId);
+    expect(read.registration.modelDefinition.alias, 'read_source_file');
+    expect(
+      read.validateAndNormalize(const <String, Object?>{
+        'relativePath': 'app/lib/main.dart',
+      }).snapshot,
+      const <String, Object?>{'relativePath': 'app/lib/main.dart'},
+    );
+    for (final Map<String, Object?> invalid in <Map<String, Object?>>[
+      const <String, Object?>{},
+      const <String, Object?>{'literalText': 42},
+      const <String, Object?>{'literalText': 'needle', 'extra': true},
+    ]) {
+      expect(
+        () => search.validateAndNormalize(invalid),
+        throwsA(isA<ToolArgumentValidationException>()),
+      );
+    }
+    for (final Map<String, Object?> invalid in <Map<String, Object?>>[
+      const <String, Object?>{},
+      const <String, Object?>{'relativePath': 42},
+      const <String, Object?>{'relativePath': 'lib/a.dart', 'extra': true},
+    ]) {
+      expect(
+        () => read.validateAndNormalize(invalid),
+        throwsA(isA<ToolArgumentValidationException>()),
+      );
+    }
+  });
+
+  test(
+    'DevelopmentSource search returns compact and structured results',
+    () async {
+      final _SourceChannel channel = _SourceChannel(
+        responses: <String, Object?>{
+          developmentSourceServiceSearchTextId: <String, Object?>{
+            'matches': <Object?>[
+              <String, Object?>{
+                'relativePath':
+                    'app/lib/development/agent/simple_tool_loop_strategy.dart',
+                'lineNumber': 4,
+                'snippet': 'final class DevelopmentToolLoopStrategy {',
+              },
+            ],
+            'truncated': true,
+          },
+        },
+      );
+      final DevelopmentSourceSearchToolExecutable executable =
+          DevelopmentSourceSearchToolExecutable(
+            _sourceBinding(channel: channel).binding,
+          );
+      final CanonicalToolArguments arguments = executable.validateAndNormalize(
+        const <String, Object?>{
+          'literalText': 'class DevelopmentToolLoopStrategy',
+        },
+      );
+
+      final EffectDescription effects = await executable.describe(
+        arguments,
+        _toolContext,
+      );
+      final ToolOutcome outcome =
+          (await executable.execute(arguments, _toolContext).single
+                  as ToolExecutionTerminal)
+              .outcome;
+
+      expect(effects.effects, <ToolEffect>{ToolEffect.sourceRead});
+      expect(effects.targets.single.uri.toString(), 'adele-source:/');
+      expect(outcome.disposition, ToolOutcomeDisposition.success);
+      expect(
+        outcome.modelContent,
+        contains('simple_tool_loop_strategy.dart:4:'),
+      );
+      expect(outcome.modelContent, endsWith('Result set truncated.'));
+      expect(outcome.hostData['truncated'], isTrue);
+      expect(
+        (outcome.hostData['matches']! as List<Object?>).single,
+        containsPair('lineNumber', 4),
+      );
+      expect(executable.invocationCount, 1);
+    },
+  );
+
+  test('DevelopmentSource read returns source identity and content', () async {
+    final _SourceChannel channel = _SourceChannel(
+      responses: <String, Object?>{
+        developmentSourceServiceReadTextFileId: <String, Object?>{
+          'relativePath': 'app/lib/example.dart',
+          'text': 'final answer = 42;\n',
+          'sizeBytes': 19,
+        },
+      },
+    );
+    final DevelopmentSourceReadToolExecutable executable =
+        DevelopmentSourceReadToolExecutable(
+          _sourceBinding(channel: channel).binding,
+        );
+    final CanonicalToolArguments arguments = executable.validateAndNormalize(
+      const <String, Object?>{'relativePath': 'app/lib/example.dart'},
+    );
+
+    final EffectDescription effects = await executable.describe(
+      arguments,
+      _toolContext,
+    );
+    final ToolOutcome outcome =
+        (await executable.execute(arguments, _toolContext).single
+                as ToolExecutionTerminal)
+            .outcome;
+
+    expect(effects.effects, <ToolEffect>{ToolEffect.sourceRead});
+    expect(
+      effects.targets.single.uri.toString(),
+      'adele-source:/app/lib/example.dart',
+    );
+    expect(
+      outcome.modelContent,
+      'File: app/lib/example.dart\nfinal answer = 42;\n',
+    );
+    expect(outcome.hostData, containsPair('sizeBytes', 19));
+    expect(outcome.hostData, containsPair('text', 'final answer = 42;\n'));
+    expect(executable.invocationCount, 1);
+  });
+
+  test(
+    'DevelopmentSource declared failure remains structured domain data',
+    () async {
+      final DevelopmentSourceReadToolExecutable executable =
+          DevelopmentSourceReadToolExecutable(
+            _sourceBinding(
+              channel: const _SourceErrorChannel(
+                _RemoteFailure(
+                  declaredFailureType: 'developmentSource.failure',
+                  code: 'not_found',
+                  message: 'Source file was not found.',
+                  details: <String, Object?>{'relativePath': 'missing.dart'},
+                ),
+              ),
+            ).binding,
+          );
+      final CanonicalToolArguments arguments = executable.validateAndNormalize(
+        const <String, Object?>{'relativePath': 'missing.dart'},
+      );
+
+      final ToolOutcome outcome =
+          (await executable.execute(arguments, _toolContext).single
+                  as ToolExecutionTerminal)
+              .outcome;
+
+      expect(outcome.failureKind, ToolFailureKind.domain);
+      expect(outcome.hostData['code'], 'not_found');
+      expect(outcome.hostData['details'], <String, Object?>{
+        'relativePath': 'missing.dart',
+      });
+    },
+  );
+
+  test(
+    'DevelopmentSource stale tool never resolves replacement generation',
+    () async {
+      final CapabilityRegistry registry = CapabilityRegistry();
+      final _UnusedChannel generationA = _UnusedChannel();
+      final CapabilityRegistration registrationA = _registerSource(
+        registry,
+        generationA,
+      );
+      final DevelopmentSourceSearchToolExecutable executable =
+          DevelopmentSourceSearchToolExecutable(
+            registry.resolve(developmentSourceCapability),
+          );
+      await registrationA.close();
+      final _UnusedChannel generationB = _UnusedChannel();
+      addTearDown(_registerSource(registry, generationB).close);
+
+      expect(
+        executable.validateBinding,
+        throwsA(isA<StaleToolBindingException>()),
+      );
+      expect(generationA.requestCount, 0);
+      expect(generationB.requestCount, 0);
+    },
+  );
 }
+
+final ToolExecutionContext _toolContext = ToolExecutionContext(
+  runId: RunId('source-run'),
+  sessionId: SessionId('source-session'),
+);
 
 SemanticModelRequest _request() => SemanticModelRequest(
   invocationId: ModelInvocationId('model-1'),
@@ -695,6 +900,36 @@ ProviderBinding _resourceBinding({
   return registry.resolve(resourceInspectCapability);
 }
 
+_SourceBinding _sourceBinding({AdeleRequestChannel? channel}) {
+  final CapabilityRegistry registry = CapabilityRegistry();
+  final CapabilityRegistration registration = _registerSource(
+    registry,
+    channel ?? _UnusedChannel(),
+  );
+  return _SourceBinding(
+    registry.resolve(developmentSourceCapability),
+    registration,
+  );
+}
+
+CapabilityRegistration _registerSource(
+  CapabilityRegistry registry,
+  AdeleRequestChannel channel,
+) => registry.register(
+  provider: ProviderDescriptor(
+    id: ProviderId('dev.adele.development-source.local'),
+    capability: developmentSourceCapability,
+    pluginId: 'dev.adele.plugin.development-source',
+    displayName: 'Local Development Source',
+    serviceId: developmentSourceServiceId,
+  ),
+  endpoint: AdeleRequestChannelEndpoint(
+    channel: channel,
+    serviceId: developmentSourceServiceId,
+    isAvailable: () => true,
+  ),
+);
+
 final class _ProviderChannel implements AdeleStreamChannel {
   _ProviderChannel({required this.events});
 
@@ -812,4 +1047,49 @@ final class _UnusedChannel implements AdeleRequestChannel {
     requestCount++;
     throw StateError('Unused.');
   }
+}
+
+final class _SourceBinding {
+  const _SourceBinding(this.binding, this.registration);
+
+  final ProviderBinding binding;
+  final CapabilityRegistration registration;
+}
+
+final class _SourceChannel implements AdeleRequestChannel {
+  const _SourceChannel({required this.responses});
+
+  final Map<String, Object?> responses;
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) async =>
+      responses[method];
+}
+
+final class _SourceErrorChannel implements AdeleRequestChannel {
+  const _SourceErrorChannel(this.error);
+
+  final Object error;
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) =>
+      Future<Object?>.error(error);
+}
+
+final class _RemoteFailure implements AdeleRemoteFailure {
+  const _RemoteFailure({
+    required this.declaredFailureType,
+    required this.code,
+    required this.message,
+    required this.details,
+  });
+
+  @override
+  final String? declaredFailureType;
+  @override
+  final String code;
+  @override
+  final String message;
+  @override
+  final Map<String, Object?> details;
 }

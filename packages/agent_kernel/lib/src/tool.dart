@@ -286,7 +286,7 @@ final class ToolArgumentValidationException implements FormatException {
   String toString() => 'ToolArgumentValidationException: $message';
 }
 
-enum ToolEffect { resourceInspection }
+enum ToolEffect { resourceInspection, sourceRead }
 
 enum EffectUncertainty { none, uncertain }
 

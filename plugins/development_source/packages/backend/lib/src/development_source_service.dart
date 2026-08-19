@@ -17,6 +17,7 @@ const Set<String> developmentSourceExcludedDirectoryNames = <String>{
   '.git',
   '.dart_tool',
   'build',
+  'node_modules',
 };
 
 final class LocalDevelopmentSourceService implements DevelopmentSourceService {
