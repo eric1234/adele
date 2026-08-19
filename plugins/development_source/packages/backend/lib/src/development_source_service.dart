@@ -12,6 +12,7 @@ const int maximumDevelopmentSourceQueryCodeUnits = 256;
 const int maximumDevelopmentSourceSearchEntries = 10000;
 const int maximumDevelopmentSourceDirectoryEntries = 2048;
 const int maximumDevelopmentSourceSearchBytes = 16 * 1024 * 1024;
+const int _maximumInitialReadBufferBytes = 64 * 1024;
 const Set<String> developmentSourceExcludedDirectoryNames = <String>{
   '.git',
   '.dart_tool',
@@ -157,10 +158,11 @@ final class LocalDevelopmentSourceService implements DevelopmentSourceService {
   ) async {
     try {
       final File file = await _resolveRegularFile(relativePath);
-      final int length = await file.length();
-      if (length > maximumDevelopmentSourceFileBytes) return false;
-      if (!budget.canScanBytes(length)) return true;
-      final Uint8List bytes = await _readBounded(file, relativePath);
+      final Uint8List bytes = await _readBounded(
+        file,
+        relativePath,
+        searchByteLimit: budget.remainingBytes,
+      );
       if (!budget.consumeBytes(bytes.length)) return true;
       await _verifyStillConfinedRegularFile(file, relativePath);
       final String text = utf8.decode(bytes, allowMalformed: false);
@@ -179,6 +181,8 @@ final class LocalDevelopmentSourceService implements DevelopmentSourceService {
           ),
         );
       }
+    } on _SearchBudgetExceeded {
+      return true;
     } on DevelopmentSourceFailure {
       // A skipped search file may disappear, change kind, or exceed the bound.
     } on FileSystemException {
@@ -249,10 +253,15 @@ final class LocalDevelopmentSourceService implements DevelopmentSourceService {
     return File(resolved);
   }
 
-  Future<Uint8List> _readBounded(File file, String relativePath) async {
+  Future<Uint8List> _readBounded(
+    File file,
+    String relativePath, {
+    int? searchByteLimit,
+  }) async {
     final RandomAccessFile opened = await file.open();
     try {
-      if (await opened.length() > maximumDevelopmentSourceFileBytes) {
+      final int initialLength = await opened.length();
+      if (initialLength > maximumDevelopmentSourceFileBytes) {
         throw _failure(
           'file_too_large',
           'The requested file exceeds the supported size.',
@@ -260,20 +269,47 @@ final class LocalDevelopmentSourceService implements DevelopmentSourceService {
           limit: maximumDevelopmentSourceFileBytes,
         );
       }
-      final Uint8List buffer = Uint8List(maximumDevelopmentSourceFileBytes + 1);
+      if (searchByteLimit != null && initialLength > searchByteLimit) {
+        throw const _SearchBudgetExceeded();
+      }
+      final int maximumReadBytes = math.min(
+        maximumDevelopmentSourceFileBytes,
+        searchByteLimit ?? maximumDevelopmentSourceFileBytes,
+      );
+      Uint8List buffer = Uint8List(
+        math.max(
+          1,
+          math.min(
+            maximumReadBytes + 1,
+            math.min(initialLength + 1, _maximumInitialReadBufferBytes),
+          ),
+        ),
+      );
       int count = 0;
-      while (count < buffer.length) {
+      while (true) {
+        if (count == buffer.length) {
+          final int nextLength = math.min(
+            maximumReadBytes + 1,
+            buffer.length * 2,
+          );
+          final Uint8List grown = Uint8List(nextLength)
+            ..setRange(0, count, buffer);
+          buffer = grown;
+        }
         final int read = await opened.readInto(buffer, count, buffer.length);
         if (read == 0) break;
         count += read;
-      }
-      if (count > maximumDevelopmentSourceFileBytes) {
-        throw _failure(
-          'file_too_large',
-          'The requested file exceeds the supported size.',
-          relativePath: relativePath,
-          limit: maximumDevelopmentSourceFileBytes,
-        );
+        if (count > maximumDevelopmentSourceFileBytes) {
+          throw _failure(
+            'file_too_large',
+            'The requested file exceeds the supported size.',
+            relativePath: relativePath,
+            limit: maximumDevelopmentSourceFileBytes,
+          );
+        }
+        if (searchByteLimit != null && count > searchByteLimit) {
+          throw const _SearchBudgetExceeded();
+        }
       }
       return Uint8List.sublistView(buffer, 0, count);
     } finally {
@@ -313,14 +349,11 @@ final class LocalDevelopmentSourceService implements DevelopmentSourceService {
   }
 
   bool _isWithinRoot(String path) {
-    final String root = Platform.isWindows
-        ? _root.path.toLowerCase()
-        : _root.path;
-    final String candidate = Platform.isWindows ? path.toLowerCase() : path;
+    final String root = _root.path;
     final String rootPrefix = root.endsWith(Platform.pathSeparator)
         ? root
         : '$root${Platform.pathSeparator}';
-    return candidate == root || candidate.startsWith(rootPrefix);
+    return path == root || path.startsWith(rootPrefix);
   }
 }
 
@@ -420,13 +453,17 @@ final class _SearchBudget {
     return true;
   }
 
-  bool canScanBytes(int count) => count <= _remainingBytes;
+  int get remainingBytes => _remainingBytes;
 
   bool consumeBytes(int count) {
     if (count > _remainingBytes) return false;
     _remainingBytes -= count;
     return true;
   }
+}
+
+final class _SearchBudgetExceeded implements Exception {
+  const _SearchBudgetExceeded();
 }
 
 DevelopmentSourceFailure _failure(

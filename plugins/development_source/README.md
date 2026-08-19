@@ -16,3 +16,10 @@ unreadable, non-UTF-8, and oversized files, plus `.git`, `.dart_tool`, and
 This is not ADELE's final Workspace service. It does not define workspace
 identity, persistence, project association, mutation, process execution,
 indexing, watching, SCM behavior, or security sandboxing.
+
+Root confinement rejects traversal and validates ordinary symbolic-link
+resolution before and after reads. It is not descriptor-level protection
+against another local process deliberately replacing a filesystem path during
+the resolution/open race. Closing that security boundary portably would require
+a future platform-native, opened-handle or descriptor-relative filesystem
+facility; this provisional pure-Dart capability does not provide one.

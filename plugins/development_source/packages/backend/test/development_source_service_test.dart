@@ -88,6 +88,21 @@ void main() {
     );
   });
 
+  test('reads empty, tiny, and maximum-sized files', () async {
+    await File('${root.path}/empty.dart').writeAsBytes(const <int>[]);
+    await File('${root.path}/tiny.dart').writeAsString('x');
+    await File(
+      '${root.path}/maximum.dart',
+    ).writeAsBytes(List<int>.filled(maximumDevelopmentSourceFileBytes, 0x61));
+
+    expect((await service.readTextFile('empty.dart')).text, isEmpty);
+    expect((await service.readTextFile('tiny.dart')).text, 'x');
+    expect(
+      (await service.readTextFile('maximum.dart')).sizeBytes,
+      maximumDevelopmentSourceFileBytes,
+    );
+  });
+
   test('rejects a file symlink that resolves outside the root', () async {
     if (Platform.isWindows) return;
     final File outside = await File(
@@ -131,6 +146,27 @@ void main() {
     );
     expect(result.truncated, isFalse);
   });
+
+  test(
+    'does not search through a directory symlink outside the root',
+    () async {
+      if (Platform.isWindows) return;
+      final Directory outside = await Directory.systemTemp.createTemp(
+        'adele-development-source-outside-',
+      );
+      addTearDown(() => outside.delete(recursive: true));
+      await File(
+        '${outside.path}/outside.dart',
+      ).writeAsString('outside-directory-hit');
+      await Link('${root.path}/outside-link').create(outside.path);
+
+      final DevelopmentSourceSearchResult result = await service.searchText(
+        'outside-directory-hit',
+      );
+      expect(result.matches, isEmpty);
+      expect(result.truncated, isFalse);
+    },
+  );
 
   test('bounds match count and reports actual truncation', () async {
     await File('${root.path}/many.txt').writeAsString(
