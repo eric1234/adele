@@ -139,6 +139,48 @@ void main() {
       );
     },
   );
+
+  test('model invocation limit fails an accidental tool loop', () async {
+    final _StrategyFixture fixture = _fixture(
+      ToolPolicyDecision.allow,
+      alwaysPropose: true,
+      maxModelInvocations: 2,
+    );
+
+    await fixture.strategy.start();
+
+    expect(fixture.run.state, RunState.failed);
+    expect(
+      fixture.run.failure,
+      isA<ModelInvocationLimitExceeded>().having(
+        (ModelInvocationLimitExceeded error) => error.maximum,
+        'maximum',
+        2,
+      ),
+    );
+    expect(fixture.model.invocations, 2);
+    expect(fixture.executable.executions, 1);
+  });
+
+  test('development context assembler carries host instructions', () {
+    final DevelopmentSessionHistory session = DevelopmentSessionHistory(
+      SessionId('instructions-session'),
+    )..append(UserSessionMessage('Inspect source.'));
+
+    final SemanticModelRequest request =
+        const DevelopmentContextAssembler(
+          instructions: 'Use source tools before answering.',
+        ).assemble(
+          ContextAssemblyInput(
+            invocationId: ModelInvocationId('instructions-model'),
+            session: session.snapshot(),
+            runItems: const <SemanticModelInputItem>[],
+            tools: MaterializedToolSet(const <MaterializedTool>[]),
+          ),
+        );
+
+    expect(request.instructions, 'Use source tools before answering.');
+  });
 }
 
 _StrategyFixture _fixture(
@@ -147,6 +189,8 @@ _StrategyFixture _fixture(
   String modelAlias = 'inspect_resource',
   bool proposalBeforeText = false,
   ModelSettlement settlement = ModelSettlement.completed,
+  bool alwaysPropose = false,
+  int maxModelInvocations = 8,
 }) {
   final DevelopmentSessionHistory session = DevelopmentSessionHistory(
     SessionId('session-1'),
@@ -156,6 +200,7 @@ _StrategyFixture _fixture(
     alias: modelAlias,
     proposalBeforeText: proposalBeforeText,
     settlement: settlement,
+    alwaysPropose: alwaysPropose,
   );
   final _Executable executable = _Executable();
   final ToolCatalog catalog = ToolCatalog()
@@ -184,6 +229,7 @@ _StrategyFixture _fixture(
       model: model,
       toolCatalog: catalog,
       policy: DevelopmentToolPolicy(decision),
+      maxModelInvocations: maxModelInvocations,
     ),
   );
 }
@@ -207,11 +253,13 @@ final class _Model implements ModelPort {
     required this.alias,
     required this.proposalBeforeText,
     required this.settlement,
+    required this.alwaysPropose,
   });
 
   final String alias;
   final bool proposalBeforeText;
   final ModelSettlement settlement;
+  final bool alwaysPropose;
   int invocations = 0;
   bool sawCorrelatedContinuation = false;
   bool sawPreservedOutputOrder = false;
@@ -226,7 +274,7 @@ final class _Model implements ModelPort {
         .input
         .whereType<SemanticToolProposalFailureInput>()
         .toList(growable: false);
-    if (outcomes.isEmpty && proposalFailures.isEmpty) {
+    if (alwaysPropose || (outcomes.isEmpty && proposalFailures.isEmpty)) {
       if (settlement == ModelSettlement.refused) {
         yield ModelOutputItemCompleted(
           invocationId: request.invocationId,

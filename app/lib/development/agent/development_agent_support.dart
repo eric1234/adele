@@ -15,13 +15,15 @@ final class DevelopmentSessionHistory implements SessionHistoryPort {
 }
 
 final class DevelopmentContextAssembler implements ContextAssembler {
-  const DevelopmentContextAssembler();
+  const DevelopmentContextAssembler({this.instructions = ''});
+
+  final String instructions;
 
   @override
   SemanticModelRequest assemble(ContextAssemblyInput input) =>
       SemanticModelRequest(
         invocationId: input.invocationId,
-        instructions: '',
+        instructions: instructions,
         input: <SemanticModelInputItem>[
           for (final SessionEntry entry in input.session.entries)
             SemanticMessageInput(
