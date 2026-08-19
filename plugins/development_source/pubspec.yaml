@@ -1,0 +1,13 @@
+name: development_source
+description: Workspace root for the provisional development-source plugin.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+
+resolution: workspace
+
+workspace:
+  - packages/contract
+  - packages/backend

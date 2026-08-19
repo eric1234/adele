@@ -76,6 +76,19 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test', '--timeout', '4m'],
   ),
   TestTarget(
+    name: 'development_source_contract',
+    path: 'plugins/development_source/packages/contract',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
+    name: 'development_source_backend',
+    path: 'plugins/development_source/packages/backend',
+    executable: 'dart',
+    arguments: <String>['test', '--timeout', '4m'],
+    ciTestConcurrency: 1,
+  ),
+  TestTarget(
     name: 'scripted_model_contract',
     path: 'plugins/scripted_model/packages/contract',
     executable: 'dart',
@@ -91,7 +104,7 @@ const List<TestTarget> testTargets = <TestTarget>[
     name: 'openai_model_provider_backend',
     path: 'plugins/openai/packages/backend',
     executable: 'dart',
-    arguments: <String>['test'],
+    arguments: <String>['test', '--timeout', '4m'],
   ),
   TestTarget(
     name: 'workspace_demo_contract',
@@ -136,6 +149,21 @@ _packages = <({String name, String path, bool flutter})>[
   (name: 'agent_kernel', path: 'packages/agent_kernel', flutter: false),
   (name: 'scripted_model', path: 'plugins/scripted_model', flutter: false),
   (name: 'openai_plugin', path: 'plugins/openai', flutter: false),
+  (
+    name: 'development_source',
+    path: 'plugins/development_source',
+    flutter: false,
+  ),
+  (
+    name: 'development_source_contract',
+    path: 'plugins/development_source/packages/contract',
+    flutter: false,
+  ),
+  (
+    name: 'development_source_backend',
+    path: 'plugins/development_source/packages/backend',
+    flutter: false,
+  ),
   (
     name: 'openai_model_provider_backend',
     path: 'plugins/openai/packages/backend',

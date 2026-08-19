@@ -207,7 +207,11 @@ void main() {
         },
         <String, Object?>{
           for (final TestTarget target in testTargets)
-            target.name: target.name == 'contract_codegen' ? 4 : null,
+            target.name: switch (target.name) {
+              'contract_codegen' => 4,
+              'development_source_backend' => 1,
+              _ => null,
+            },
         },
       );
     });
@@ -251,9 +255,11 @@ void main() {
         'plugin_runtime|dart|packages/plugin_runtime|test --timeout 10s',
         'plugin_backend_host|dart|packages/plugin_backend_host|test',
         'resource_inspector_contract|dart|plugins/resource_inspector/packages/contract|test --timeout 4m',
+        'development_source_contract|dart|plugins/development_source/packages/contract|test',
+        'development_source_backend|dart|plugins/development_source/packages/backend|test --timeout 4m',
         'scripted_model_contract|dart|plugins/scripted_model/packages/contract|test --timeout 4m',
         'scripted_model_backend|dart|plugins/scripted_model/packages/backend|test',
-        'openai_model_provider_backend|dart|plugins/openai/packages/backend|test',
+        'openai_model_provider_backend|dart|plugins/openai/packages/backend|test --timeout 4m',
         'workspace_demo_contract|dart|plugins/workspace_demo/packages/contract|test',
         'workspace_demo_backend|dart|plugins/workspace_demo/packages/backend|test',
         'adele_desktop|flutter|app|test',
@@ -271,6 +277,10 @@ void main() {
       '--timeout',
       '10s',
     ]);
+    expect(
+      lookupTestTarget('development_source_backend').argumentsFor(ci: true),
+      <String>['test', '--timeout', '4m', '--concurrency', '1'],
+    );
   });
 }
 
