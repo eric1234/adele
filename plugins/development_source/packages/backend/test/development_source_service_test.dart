@@ -38,8 +38,8 @@ void main() {
       '/etc/passwd',
       r'C:/Windows/system.ini',
       r'C:Windows/system.ini',
-      'lib/main.dart:stream',
       r'lib\main.dart',
+      if (Platform.isWindows) 'lib/main.dart:stream',
     ]) {
       await expectLater(
         service.readTextFile(path),
@@ -147,6 +147,42 @@ void main() {
     expect(result.truncated, isTrue);
   });
 
+  test('bounds scanned file bytes and reports truncation', () async {
+    final List<int> contents = List<int>.filled(
+      maximumDevelopmentSourceFileBytes,
+      0x78,
+    );
+    final int filesWithinBudget =
+        maximumDevelopmentSourceSearchBytes ~/
+        maximumDevelopmentSourceFileBytes;
+    for (int index = 0; index <= filesWithinBudget; index++) {
+      await File('${root.path}/budget-$index.txt').writeAsBytes(contents);
+    }
+
+    final DevelopmentSourceSearchResult result = await service.searchText(
+      'absent-budget-match',
+    );
+    expect(result.matches, isEmpty);
+    expect(result.truncated, isTrue);
+  });
+
+  test('bounds entries materialized from one directory', () async {
+    final Directory crowded = await Directory('${root.path}/crowded').create();
+    for (
+      int index = 0;
+      index <= maximumDevelopmentSourceDirectoryEntries;
+      index++
+    ) {
+      await File('${crowded.path}/entry-$index.txt').writeAsString('hit');
+    }
+
+    final DevelopmentSourceSearchResult result = await service.searchText(
+      'hit',
+    );
+    expect(result.matches, isEmpty);
+    expect(result.truncated, isTrue);
+  });
+
   test('bounds long snippets while retaining the literal match', () async {
     final String line =
         '${List<String>.filled(600, 'a').join()}long-needle'
@@ -187,6 +223,17 @@ void main() {
         throwsA(_failureCode('invalid_query')),
       );
     }
+  });
+
+  test('returns POSIX colon paths that remain readable', () async {
+    if (Platform.isWindows) return;
+    await File('${root.path}/lib/a:b.dart').writeAsString('colon-hit');
+
+    final DevelopmentSourceSearchMatch match = (await service.searchText(
+      'colon-hit',
+    )).matches.single;
+    expect(match.relativePath, 'lib/a:b.dart');
+    expect((await service.readTextFile(match.relativePath)).text, 'colon-hit');
   });
 }
 

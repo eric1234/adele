@@ -9,6 +9,9 @@ const int maximumDevelopmentSourceFileBytes = 1024 * 1024;
 const int maximumDevelopmentSourceSearchMatches = 100;
 const int maximumDevelopmentSourceSnippetCodeUnits = 500;
 const int maximumDevelopmentSourceQueryCodeUnits = 256;
+const int maximumDevelopmentSourceSearchEntries = 10000;
+const int maximumDevelopmentSourceDirectoryEntries = 2048;
+const int maximumDevelopmentSourceSearchBytes = 16 * 1024 * 1024;
 const Set<String> developmentSourceExcludedDirectoryNames = <String>{
   '.git',
   '.dart_tool',
@@ -70,11 +73,13 @@ final class LocalDevelopmentSourceService implements DevelopmentSourceService {
 
     final List<DevelopmentSourceSearchMatch> matches =
         <DevelopmentSourceSearchMatch>[];
+    final _SearchBudget budget = _SearchBudget();
     final bool truncated = await _searchDirectory(
       _root,
       '',
       literalText,
       matches,
+      budget,
     );
     return DevelopmentSourceSearchResult(
       matches: matches,
@@ -87,13 +92,22 @@ final class LocalDevelopmentSourceService implements DevelopmentSourceService {
     String relativeDirectory,
     String query,
     List<DevelopmentSourceSearchMatch> matches,
+    _SearchBudget budget,
   ) async {
-    final List<FileSystemEntity> entries;
+    final List<FileSystemEntity> entries = <FileSystemEntity>[];
     try {
-      entries = await directory.list(followLinks: false).toList();
+      await for (final FileSystemEntity entry in directory.list(
+        followLinks: false,
+      )) {
+        entries.add(entry);
+        if (entries.length > maximumDevelopmentSourceDirectoryEntries) {
+          return true;
+        }
+      }
     } on FileSystemException {
       return false;
     }
+    if (!budget.consumeEntries(entries.length)) return true;
     entries.sort((FileSystemEntity left, FileSystemEntity right) {
       return _entityName(left.path).compareTo(_entityName(right.path));
     });
@@ -104,6 +118,11 @@ final class LocalDevelopmentSourceService implements DevelopmentSourceService {
       final String relativePath = relativeDirectory.isEmpty
           ? name
           : '$relativeDirectory/$name';
+      try {
+        _normalizeRelativePath(relativePath);
+      } on DevelopmentSourceFailure {
+        continue;
+      }
       final FileSystemEntityType type;
       try {
         type = await FileSystemEntity.type(entry.path, followLinks: false);
@@ -117,11 +136,14 @@ final class LocalDevelopmentSourceService implements DevelopmentSourceService {
           relativePath,
           query,
           matches,
+          budget,
         )) {
           return true;
         }
       } else if (type == FileSystemEntityType.file) {
-        if (await _searchFile(relativePath, query, matches)) return true;
+        if (await _searchFile(relativePath, query, matches, budget)) {
+          return true;
+        }
       }
     }
     return false;
@@ -131,10 +153,15 @@ final class LocalDevelopmentSourceService implements DevelopmentSourceService {
     String relativePath,
     String query,
     List<DevelopmentSourceSearchMatch> matches,
+    _SearchBudget budget,
   ) async {
     try {
       final File file = await _resolveRegularFile(relativePath);
+      final int length = await file.length();
+      if (length > maximumDevelopmentSourceFileBytes) return false;
+      if (!budget.canScanBytes(length)) return true;
       final Uint8List bytes = await _readBounded(file, relativePath);
+      if (!budget.consumeBytes(bytes.length)) return true;
       await _verifyStillConfinedRegularFile(file, relativePath);
       final String text = utf8.decode(bytes, allowMalformed: false);
       final List<String> lines = const LineSplitter().convert(text);
@@ -320,10 +347,11 @@ String _normalizeRelativePath(String value) {
       value.startsWith('/') ||
       value.startsWith('\\') ||
       value.contains('\\') ||
-      value.contains(':') ||
       value.contains('\u0000') ||
+      RegExp(r'^[A-Za-z]:').hasMatch(value) ||
       (Platform.isWindows &&
-          value.split('/').any(_isUnsupportedWindowsPathSegment))) {
+          (value.contains(':') ||
+              value.split('/').any(_isUnsupportedWindowsPathSegment)))) {
     throw _failure(
       'invalid_path',
       'A root-relative path using forward slashes is required.',
@@ -381,6 +409,25 @@ String _boundedSnippet(String line, int matchStart, int matchLength) {
 
 bool _isHighSurrogate(int codeUnit) => codeUnit >= 0xd800 && codeUnit <= 0xdbff;
 bool _isLowSurrogate(int codeUnit) => codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
+
+final class _SearchBudget {
+  int _remainingEntries = maximumDevelopmentSourceSearchEntries;
+  int _remainingBytes = maximumDevelopmentSourceSearchBytes;
+
+  bool consumeEntries(int count) {
+    if (count > _remainingEntries) return false;
+    _remainingEntries -= count;
+    return true;
+  }
+
+  bool canScanBytes(int count) => count <= _remainingBytes;
+
+  bool consumeBytes(int count) {
+    if (count > _remainingBytes) return false;
+    _remainingBytes -= count;
+    return true;
+  }
+}
 
 DevelopmentSourceFailure _failure(
   String code,
