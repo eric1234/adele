@@ -1,8 +1,9 @@
 # ADELE Capabilities
 
 `adele_capabilities` is an experimental public, pure-Dart package for concepts
-used to select which provider handles inter-plugin work. Phase 0 implements only
-the value-based `CapabilityId`.
+used to select which provider handles inter-plugin work. It includes capability
+and provider identities, descriptors, active registrations, exact-generation
+bindings, structured resolution failures, and the in-memory active registry.
 
 ## Semantics
 
@@ -14,16 +15,15 @@ that occurred, such as `ResourceChanged`, `EditorOpened`, and `PluginStarted`.
 
 Several plugins may provide one action or service. For example,
 `EditResource` may be handled by an ADELE in-app editor plugin or an external
-editor launcher plugin. Future callers must be able to detect availability,
-enumerate compatible providers, invoke ADELE's preferred provider, and
-explicitly select an alternative. Providers cannot declare themselves globally
-primary.
+editor launcher plugin. Current callers can detect availability, enumerate
+compatible active providers, invoke the deterministic default, and explicitly
+select an alternative. Providers cannot declare themselves globally primary.
 
 A single plugin runtime may expose several configured instances of one
-capability. An OpenAI plugin runtime might expose Work and Personal model
-provider configurations; other examples include accounts, clusters,
-connections, endpoints, MCP servers, editors, and devices. These are not extra
-plugin installations or extra backend copies.
+capability. The OpenAI plugin proves this with separately routed API-key and
+experimental ChatGPT model-provider contexts in one generation; other examples
+include accounts, clusters, connections, endpoints, MCP servers, editors, and
+devices. These are not extra plugin installations or extra backend copies.
 
 Temporary browser sessions, terminals, open documents, processes, connections,
 and active tool executions are runtime resources, not configured capability
@@ -38,7 +38,10 @@ Flutter and internal packages (`plugin_runtime`, `plugin_builder`,
 
 ## Deferred
 
-Registry, discovery, ranking, configured-instance discovery, preferences,
-message buses, transport, profile-aware routing, compatibility, suitability,
-and the conceptual invocation API are all deferred. Provider-selection
-precedence is deliberately undecided.
+Persistent preferences, generic configured-instance discovery/management,
+message buses, profile-aware routing, richer compatibility negotiation,
+dynamic suitability, and durable handles remain deferred. The current registry
+implements deterministic rank/ID ordering, exact-major resolution, explicit or
+default binding; generated clients consume the resulting endpoint elsewhere.
+The registry is not a production preference engine. Provider-selection
+precedence beyond that deterministic fallback is deliberately undecided.

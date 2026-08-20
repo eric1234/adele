@@ -1,9 +1,9 @@
 # Profiles and Configuration
 
-## Phase 0 status
+## Status
 
-ADELE profiles are planned but not implemented. Phase 0 and the initial Phase 1
-proof use one implicit default development profile. There is no profile
+ADELE profiles are planned but not implemented. The maintained development
+runtime uses one implicit default development profile. There is no profile
 package, profile manager, selector, persistence model, or profile-aware router.
 
 An ADELE profile is a future named collection of plugin activation, optional
@@ -57,11 +57,12 @@ when source and build context are identical.
 
 ## Activation and providers
 
-The default is one plugin runtime per activation context. A runtime can expose
-multiple configured capability instances simultaneously. Profiles may
-eventually control availability and preferences for both plugin providers and
-configured instances without requiring duplicate installations or runtime
-copies.
+The intended default is one plugin runtime per activation context, but
+activation-context lifecycle is not implemented. The maintained runtime proves
+that one plugin generation can expose multiple configured capability instances
+simultaneously. Profiles may eventually control availability and preferences
+for both plugin providers and configured instances without requiring duplicate
+installations or runtime copies.
 
 Each active capability endpoint executes under one explicit configuration
 context. A context is runtime metadata bound to one plugin generation; it is
@@ -82,11 +83,12 @@ matching and precedence remain deferred.
 
 ## Possible scopes
 
-Future configuration might involve installation, user, profile, workspace,
+Future generic configuration might involve installation, user, profile, workspace,
 and session scopes. These names are possibilities, not an implemented model or
-precedence order. Phase 0 does not define schemas, validation, nested-map
+precedence order. ADELE does not define generic schemas, validation, nested-map
 merging, list semantics, secrets, credentials, workspace overrides, or session
-overrides.
+overrides. The OpenAI plugin's private experimental ChatGPT credential store is
+not such a host-wide framework.
 
 ## Deferred profile decisions
 
@@ -96,7 +98,7 @@ overrides.
 - Workspace associations and profile-specific UI layouts.
 - Configuration schemas, overridable fields, merge behavior, and validation.
 - Preferred-provider matching, preference persistence, and precedence.
-- Provider-instance availability, account management, and selection.
+- Generic provider-instance availability, account management, and selection.
 
 ## Workspace terminology
 
@@ -104,4 +106,4 @@ The shell message `No workspace is open` does not establish a workspace model.
 Workspace identity, roots, selection, state, and its relationship to profiles
 remain intentionally undefined. `profile`, `workspace`, `project`, and
 `environment` are not interchangeable; project and environment are not
-foundational ADELE types in Phase 0.
+foundational ADELE types in the maintained implementation.

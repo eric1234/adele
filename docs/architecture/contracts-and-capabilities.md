@@ -10,11 +10,11 @@ Contracts and capabilities solve different problems:
 | Capability | Which compatible provider handles a request? |
 
 The constrained Phase II-A generated unary transport and Phase II-B generated
-server-streaming transport are
-implemented for `workspace_demo`. The Phase IV-A scripted model fixture also
-retains a generated unary reference method, while the Phase IV application
-adapter consumes its generated server stream and emits kernel semantic model
-events incrementally. The public `adele_model_provider` package now defines
+server-streaming/cancellation transport are implemented and used by maintained
+plugin contracts where applicable. The scripted model fixture retains a generated unary
+reference method, while the Phase IV application adapter consumes generated
+ModelProvider streams and emits kernel semantic model events incrementally. The
+public `adele_model_provider` package defines
 capability major 1 with generated streaming, typed ordered input, live text
 observations, authoritative completed output, and explicit semantic terminal
 settlement.
@@ -141,27 +141,24 @@ EditResource
 `-- External editor launcher plugin
 ```
 
-A future caller must be able to:
+The Phase III active registry allows a caller to:
 
 - Check whether a compatible provider is available.
 - Enumerate all compatible providers.
-- Invoke ADELE's preferred provider.
+- Invoke ADELE's deterministic default provider.
 - Explicitly select and invoke another provider.
 
-Callers must handle zero, one, or many providers. ADELE owns preference
-resolution and deterministic fallback; a provider cannot declare itself
-globally primary. Future selection may consider explicit selection, user and
-profile preferences, workspace overrides, request compatibility, resource
-scheme, media type, availability, and dynamic suitability. The matching model
-and precedence are intentionally deferred.
+Callers must handle zero, one, or many providers. The in-memory host-owned active
+registry orders discovery by higher provider rank and then stable provider ID;
+default resolution selects the first result, while explicit resolution never
+falls back. Exact positive major-version matching is provisional. Bindings
+retain one runtime generation and become stale when its registration closes.
 
-Phase III has an in-memory host-owned active registry. Discovery orders higher
-provider rank first and then stable provider ID lexically; default resolution
-selects the first result. Explicit resolution never falls back. Bindings retain
-one runtime generation and become stale when its registration closes. Exact
-positive major-version matching is provisional. Preference persistence,
-profiles, compatibility negotiation, message buses, and retained
-handles remain unimplemented.
+ADELE owns deterministic default resolution; a provider cannot declare itself
+globally primary. Persistent preferences, profile-aware and
+workspace/request-specific routing policy, richer compatibility negotiation,
+dynamic suitability, message buses, and retained/durable handles remain
+deferred.
 
 Public capability, provider, and plugin identities share a lowercase
 reverse-domain ASCII grammar. Dot-separated segments begin with a letter and
@@ -194,8 +191,17 @@ endpoint channel, not semantic contract data or provider identity. Request and
 stream-open carry them separately from generated method payloads; later stream
 control remains request-ID based.
 
-Provider-instance persistence, account and credential management, discovery,
-selection, and profile-aware routing are not implemented in Phase 0.
+ADELE does not yet have a generic host-wide configured-instance persistence,
+account, or secrets framework. The OpenAI plugin has a private experimental
+credential implementation for its ChatGPT proof; that implementation does not
+define a generic capability contract. Generic configured-instance discovery,
+selection, persistence, and profile-aware lifecycle remain deferred.
+
+The provisional DevelopmentSource plugin also illustrates the distinction
+between a sustained capability and model tools. Application composition
+projects its generation-bound read/search service into source-search and
+source-read tools; those tools are not separate ADELE capabilities and do not
+establish final Workspace semantics.
 
 ## Runtime resources
 

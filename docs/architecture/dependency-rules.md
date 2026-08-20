@@ -32,7 +32,7 @@ desktop application. All packages are initially private to the repository via
 | `adele_plugin_api` | Experimental plugin-facing | Dart SDK and lightweight public packages when required | Flutter unless a future UI API explicitly establishes a boundary; internal host packages; application code |
 | `adele_model_provider` | Experimental plugin-facing | Dart SDK, `adele_contract`, and `adele_capabilities` | Flutter, internal host packages, application code, concrete providers |
 | `plugin_runtime` | Internal, pure Dart | Dart SDK, public packages, and concrete acyclic internal dependencies | Flutter, application code, plugin implementations |
-| `plugin_builder` | Internal, pure Dart | Dart SDK, public packages, and build dependencies selected when implementation begins | Flutter UI, application code, plugin implementations as linked host dependencies |
+| `plugin_builder` | Internal, pure Dart | Dart SDK, public packages, and build dependencies required by the implemented pipeline | Flutter UI, application code, plugin implementations as linked host dependencies |
 | `agent_kernel` | Internal, pure Dart | Dart SDK, public packages, and concrete acyclic internal dependencies | Flutter, application code, concrete providers, tools, editors, workflows, or plugin implementations |
 | `adele_desktop` | Private Flutter application | Flutter and any host package needed for composition | Definitions intended as public plugin APIs; plugin implementation logic |
 
@@ -41,8 +41,9 @@ concrete use, remain acyclic, and preserve pure-Dart testability where Flutter
 is unnecessary.
 
 Contract declarations and contract generation are separate concerns.
-`adele_contract` stays lightweight; generation belongs in a future internal
-package such as `contract_codegen`, created only when implementation starts.
+`adele_contract` stays lightweight; generation belongs to the internal
+`contract_codegen` package and does not add analyzer/compiler dependencies to
+the public contract package.
 
 ## Plugin dependencies
 
@@ -99,4 +100,4 @@ package.
 - Do not create packages solely for hypothetical reuse.
 - Require a concrete responsibility and dependency boundary for every new package.
 - Keep public surfaces small and experimental through the proof-of-concept stages.
-- Do not introduce a profile package, provider-instance package, or separate application UI package in Phase 0.
+- Do not introduce a profile package, provider-instance package, or separate application UI package without a concrete implemented need.

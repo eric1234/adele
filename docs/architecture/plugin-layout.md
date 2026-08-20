@@ -39,8 +39,8 @@ choose a requested plugin's contract.
 | Backend | Privileged or native Dart behavior | Depends on the contract; never on the frontend; compiled locally to AOT and hosted in an external isolate group |
 | Frontend | Plugin UI source | Depends on the contract; never on the backend; may use Flutter; currently interpreted with pinned `flutter_eval`/`dart_eval` |
 
-Frontend/backend communication must use shared public contracts and the future
-generated transport. Source imports do not cross between their implementation
+Frontend/backend communication uses shared public contracts and generated typed
+transport. Source imports do not cross between their implementation
 packages, and crossing the runtime boundary never shares object identity.
 
 ## Distinct identities
@@ -76,11 +76,12 @@ the plugin is loaded. Installation does not imply activation.
 
 ## Runtime mapping
 
-The expected default is one plugin runtime instance per activation context.
-One runtime may expose several configured capability instances, such as Work
-and Personal accounts, without additional installations or backend copies.
-This default is not a permanent prohibition on multiple runtimes; additional
-isolation or concurrency models are deferred.
+The intended default is one plugin runtime instance per activation context;
+activation-context lifecycle is not implemented. The maintained runtime proves
+that one plugin generation may expose several configured capability instances,
+such as API-key and experimental ChatGPT providers, without additional
+installations or backend copies. This default is not a permanent prohibition
+on multiple runtimes; additional isolation or concurrency models are deferred.
 
 Temporary runtime resources are created and disposed during operation. They
 are not plugin instances and are not persistent provider configurations.
@@ -91,6 +92,12 @@ The `workspace_demo` fixture proves local AOT compilation, shared process-hosted
 loading, typed async communication, interpreted rendering, interaction, and
 rebuild/reload on Linux x64 Flutter profile mode. Windows, macOS, release mode,
 packaging, discovery, and broad plugin APIs remain unproven.
+
+Maintained backend-only plugins additionally prove generated server streaming,
+multiple generation-bound configuration contexts, real HTTP/SSE model-provider
+integration, and bounded read-only source access. These development proofs do
+not establish packaging, profile lifecycle, sandboxing, or final Workspace
+semantics.
 
 Plugin-specific typed vertical tests belong to the plugin backend package that
 owns the implementation and contract. The shared backend host package tests

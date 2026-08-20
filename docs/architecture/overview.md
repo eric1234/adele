@@ -2,12 +2,18 @@
 
 ## Status
 
-ADELE's maintained foundation proves source compilation, unary and server-streaming typed transport,
-interpreted frontend execution, active capability routing, and the Phase IV-A
-semantic agent-execution vertical and common ModelProvider capability on Linux
-x64. It does not implement plugin
-discovery, packaging, profiles, sandboxing,
-or a real model provider. Plugin-facing APIs remain experimental.
+ADELE's maintained Linux x64 foundation proves source compilation, generated
+unary and server-streaming/cancellation transport, interpreted frontend
+execution, active capability routing, and the complete Phase IV execution and
+source-inspection vertical. It includes the real OpenAI ModelProvider,
+generation-bound configured provider contexts, an explicitly experimental
+ChatGPT configured instance, and a bounded read-only DevelopmentSource
+capability. Together these prove model invocation, ADELE source search/read
+through generation-bound tools, model continuation, and a final answer.
+
+Plugin-facing APIs remain experimental. Plugin discovery, packaging, profiles,
+sandboxing, final Workspace semantics, and cross-platform release behavior are
+not implemented or proven.
 
 ## System shape
 
@@ -68,12 +74,17 @@ can be requested and which compatible provider may handle it:
 
 Capability resolution is one-to-many. Several plugins may provide the same
 action or service, and one plugin runtime may expose multiple named,
-configured instances of a capability. ADELE, not a provider, owns preferred
-provider resolution. Availability queries, provider enumeration, preference
-matching, explicit selection, and routing are future requirements only.
+configured instances of a capability. The host-owned active registry implements
+provider discovery/enumeration, deterministic default resolution, explicit
+selection, exact-major matching, and exact generation-bound routing. One plugin
+generation may route several providers through separate configuration contexts.
+Persistent preferences, profile-aware routing, richer compatibility
+negotiation, and dynamic suitability policy remain deferred. ADELE, not a
+provider, owns preferred-provider resolution.
 
-The default runtime model is one plugin runtime per activation context. That
-runtime can manage multiple configured accounts, providers, clusters,
+The intended runtime model is one plugin runtime per activation context;
+activation-context lifecycle is not implemented. The maintained runtime proves
+that one plugin generation can manage multiple configured accounts, providers, clusters,
 connections, endpoints, or devices without requiring another plugin install
 or backend copy. Temporary resources such as documents, terminal sessions,
 browser sessions, and processes are runtime resources, not configured
@@ -92,21 +103,36 @@ without introducing profile-management APIs.
 models, tools, editors, Git integrations, terminals, UI, and specialized agent
 workflows belong in plugins rather than in the kernel.
 
-Phase IV uses a development-only application strategy and common ModelProvider
-capability to prove generation-safe model/tool/approval/tool/model cycles
-through real AOT providers. The kernel model port is stream-shaped, and the
-application adapter consumes providers through Phase II-B generated typed
-streaming while preserving exact generation binding and consumer cancellation.
-Live text observations remain separate from completed output, semantic terminal
-settlement is explicit, and opaque item metadata survives tool continuation.
-Phase IV-B4 adds the first real provider: `dev.adele.openai` uses the public
-OpenAI API-key Responses HTTP/SSE route with `store:false` canonical ordered
-replay. Deterministic local HTTP fixtures prove native reasoning, completed
-text, function proposal, ADELE-owned tool execution, and continued Responses
-output through the shared AOT backend host.
+Phase IV uses a bounded development-only application strategy and the common
+ModelProvider capability to prove generation-safe model/tool/model cycles
+through real AOT providers. The strategy is not the definition of Run or a
+general Workflow system. The kernel model port is stream-shaped, and the
+application adapter consumes providers through generated typed streaming while
+preserving exact generation binding and consumer cancellation. Live text
+observations remain separate from completed output, semantic terminal
+settlement is explicit, and opaque ordered item metadata survives tool
+continuation.
+
+`dev.adele.openai` implements the public OpenAI API-key Responses HTTP/SSE route
+with `store:false` canonical ordered replay. The same plugin generation exposes
+API-key and ChatGPT configured instances through separate configuration
+contexts. The ChatGPT subscription-backed route is explicitly experimental:
+its successful live smoke is positive interoperability evidence, not a
+documented or stable OpenAI third-party integration contract.
+
+The provisional DevelopmentSource plugin exposes bounded read-only source
+search and reads under one configured root. Application composition projects
+that sustained capability into model tools rather than treating each tool as a
+separate capability. Deterministic integration uses the real shared AOT host,
+OpenAI and DevelopmentSource plugins, capability registry, adapters, tools, and
+development strategy against the ADELE checkout; only remote model responses
+come from a local fake Responses endpoint. The opt-in live ChatGPT
+source-coding smoke has also run successfully. This is the first real
+self-inspection coding vertical, not self-modification or final Workspace
+behavior.
 
 The long-term self-hosting goal is for ADELE to develop ADELE itself. That goal
-does not change the Phase 0 rule to prefer small, working boundaries and avoid
+does not change the rule to prefer small, working boundaries and avoid
 speculative APIs.
 
 ## Remaining runtime validation
@@ -118,15 +144,19 @@ Linux x64 Flutter profile mode proves the core vertical path. Remaining work is:
 | Local backend AOT compilation | Proven with the temporary matched SDK. |
 | Shared process-host loading | Proven on Linux x64 profile mode. |
 | Eval compilation and rendering | Proven with pinned eval dependencies and documented workarounds. |
-| Typed request/response communication | Proven manually for the workspace reference fixture. |
-| Typed server-streaming and cancellation | Proven through the scripted-model AOT fixture with one-item flow control. |
+| Generated typed communication | Proven across maintained unary and streaming plugin contracts. |
+| Typed server-streaming and cancellation | Proven through generated transport and the common ModelProvider path with one-item flow control. |
+| Active capability/configuration routing | Proven for deterministic discovery, explicit selection, exact generations, and separate OpenAI configuration contexts. |
+| Real OpenAI provider | Deterministic HTTP/SSE and shared-AOT integration are proven; live network tests remain explicit opt-ins. |
+| Experimental ChatGPT configured instance | Auth/routing tests and a successful opt-in source-coding smoke provide interoperability evidence, not a stable third-party contract. |
+| Model-to-source continuation | Proven against the ADELE checkout through the real read-only DevelopmentSource capability path. |
 | Rebuild and reload | Proven for three cycles without orphan host processes. |
 | Cross-platform and release behavior | Unproven on Windows, macOS, and release mode. |
 | Packaging and sandboxing | Unproven; process isolation is not a sandbox. |
 
 ## Undefined workspace semantics
 
-The shell text `No workspace is open` is only a static Phase 0 status. It does
+The shell text `No workspace is open` is only a static shell status. It does
 not define workspace identity, ownership, roots, persistence, selection, or
 lifecycle. `workspace`, `project`, `environment`, and `profile` are not
 interchangeable, and workspace semantics remain intentionally undefined.

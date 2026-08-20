@@ -4,31 +4,45 @@ ADELE is an extensible, cross-platform desktop environment for building,
 running, inspecting, and extending agent systems. The long-term goal is for
 ADELE to become capable of developing ADELE itself.
 
-ADELE's maintained foundation includes the Phase I plugin runtime proof, the
-Phase II-A generated unary contract path, Phase II-B generated server-streaming
-and cancellation, the Phase III active
-capability provider registry, and the Phase IV-A semantic agent-execution
-foundation:
-interpreted Flutter frontends and locally compiled AOT backends hosted in one
-shared child Dart runtime, with generated typed clients, codecs, backend
-dispatch, and deterministic provider selection. `workspace_demo` remains the
-Phase I/II regression fixture. `resource_inspector` runs two independent
-providers in separate isolate groups in the shared child process and invokes
-both through generated transport. These are internal reference fixtures, not
-product UI. Plugin installation, packaging, permissions, sandboxing, and
-general third-party APIs are not implemented.
+ADELE's maintained foundation now includes:
 
-Phase IV separates canonical Session history, Run lifecycle, context
-assembly, streaming-shaped semantic model events, immutable tool
-materialization, ToolInvocation, effect description, policy, approval, tool
-execution, structured outcomes, and typed execution observation. Its
-development-only AOT provider implements the common generated ModelProvider stream
-and a generation-bound ResourceInspector capability into those kernel ports.
-The common adapter separates live text observations from authoritative output,
-requires explicit semantic terminal settlement, retains item-native replay
-metadata as complete kind/compatibility/data envelopes, and preserves exact
-provider-generation binding. The scripted
-fixture unary/stream/probe service remains regression infrastructure.
+```text
+Phase I    dynamic plugin runtime proof
+Phase II   generated unary + server-streaming/cancellation transport
+Phase III  active capability registry and exact-generation routing
+Phase IV   provider-neutral agent execution + real model/source coding vertical
+```
+
+Interpreted Flutter frontends and locally compiled AOT backends run through one
+shared child Dart runtime with generated typed clients, codecs, backend
+dispatch, and deterministic provider selection. `workspace_demo` remains the
+Phase I/II regression fixture, `resource_inspector` remains the Phase III
+multi-provider capability fixture, and `scripted_model` remains deterministic
+model-provider and transport regression infrastructure. These are internal
+reference fixtures, not product UI. Plugin installation, packaging,
+permissions, sandboxing, and general third-party APIs are not implemented.
+
+Phase IV establishes provider-neutral Session/Run, context, model, tool,
+policy/approval, outcome, effect-certainty, and execution-observation semantics.
+The experimental common ModelProvider capability uses generated streaming and
+cancellation, ordered semantic and provider-native items, explicit settlement,
+and exact generation-bound routing. The real OpenAI plugin provides the public
+API-key Responses route and two separately routed configured contexts: API key
+and an explicitly experimental ChatGPT subscription-backed route. The latter
+is positive interoperability evidence, not a documented or stable OpenAI
+third-party integration contract.
+
+The provisional backend-only DevelopmentSource capability binds one read-only
+source root to a plugin generation. Application composition projects it into
+source-search and source-read model tools used by a bounded development
+strategy. Deterministic AOT integration proves a real OpenAI provider can search
+and read the checked-out ADELE source through ADELE's capability path and
+continue to a final answer; only the remote HTTP responses are scripted. The
+explicitly opt-in live ChatGPT source-coding smoke has also run successfully.
+ADELE can therefore use a real model-provider integration to inspect ADELE's
+own source through ADELE-owned, generation-bound tools and continue reasoning
+from the results. It cannot yet modify or validate its own source through this
+workflow.
 
 ## Toolchain
 
@@ -95,7 +109,9 @@ packages/plugin_builder/     plugin_builder (internal, pure Dart)
 packages/agent_kernel/       agent_kernel (internal, pure Dart)
 plugins/workspace_demo/      internal source-plugin reference fixture
 plugins/resource_inspector/  Phase III two-provider capability fixture
-plugins/scripted_model/      Phase IV-A unary plus Phase II-B stream fixture
+plugins/scripted_model/      deterministic ModelProvider/transport fixture
+plugins/openai/              real OpenAI ModelProvider; ChatGPT route experimental
+plugins/development_source/  bounded read-only configured source capability
 docs/architecture/           architecture boundaries and terminology
 docs/adr/                    architectural decision records
 tools/                       root development command driver
@@ -132,13 +148,19 @@ temporary runtime resources remain distinct concepts.
 
 The shell text "No workspace is open" does not establish workspace semantics.
 Workspace, Project, and Environment are intentionally not foundational ADELE
-types in Phase 0.
+types. A configured DevelopmentSource root does not establish final Workspace
+identity or lifecycle.
 
 ## Next Work
 
-Continue remaining Phase IV with targeted OpenAI/Codex subscription-auth
-research, the first real provider, and minimal Agent/workflow refinement.
-Windows, macOS, release packaging,
-current Flutter compatibility, packaging/discovery, and eval-stack
-modernization also remain open. See `docs/architecture/overview.md` and ADRs
-0019 through 0023.
+**Phase IV is complete.**
+
+Phase V begins the minimum self-hosting capability set and workflow needed for
+ADELE to make, inspect, validate, and review controlled changes to its own
+source. Source mutation/editing, command/validation execution, and SCM/review
+integration are upcoming implementation areas, not settled APIs or final
+architecture.
+
+Windows, macOS, release packaging, plugin packaging/discovery, sandboxing,
+current Flutter compatibility, and eval-stack modernization also remain open.
+See `docs/architecture/overview.md` and ADRs 0019 through 0028.
