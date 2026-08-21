@@ -775,7 +775,7 @@ implementation plan
 implementation
 ```
 
-This workflow is configuration-driven rather than hard-coded.
+This workflow is driven by configurable Agent instructions and tools rather than hard-coded.
 
 ---
 
@@ -807,7 +807,6 @@ Agent
     defaultModelType
     defaultReasoningEffort
     submitLabel = "Send"
-    nextAgent = optional
 ```
 
 Examples:
@@ -819,23 +818,22 @@ Ask
     model: Fast
     reasoning: Low
     submitLabel: Ask
-    nextAgent: none
 
 Requirements
     role: refine Draft Request
-    tools: prompt read/write + limited inspection
+    tools: prompt read/write + limited inspection + set_agent
     model: Fast
     reasoning: Low
     submitLabel: Refine
-    nextAgent: Plan
+    completion instruction: use set_agent to select Plan
 
 Plan
     role: produce implementation plan
-    tools: broad read/search + plan tools
+    tools: broad read/search + plan tools + set_agent
     model: Contemplative
     reasoning: High
     submitLabel: Plan
-    nextAgent: Code
+    completion instruction: use set_agent to select Code
 
 Code
     role: implement work
@@ -843,14 +841,12 @@ Code
     model: Contemplative
     reasoning: High
     submitLabel: Send
-    nextAgent: none
 
 Debug
     role: develop hypotheses, instrument, validate
     tools: development/debugging capabilities
     model: Contemplative
     reasoning: High
-    nextAgent: none
 ```
 
 ## 14.1 Initial Agent
@@ -875,13 +871,24 @@ or:
 Initial Agent: Code
 ```
 
-## 14.2 Next Agent
+## 14.2 Agent Selection Tool
 
-`nextAgent` defines a lightweight configurable workflow.
+ADELE provides a `set_agent` tool that allows the LLM to select the Agent for the next invocation.
 
-It does **not** automatically run the next Agent.
+Agent instructions can define a simple transition:
 
-Instead, after normal successful completion the next Agent becomes selected.
+```text
+Once completed, use set_agent to select Plan.
+```
+
+They can also let the LLM route work based on what it discovers:
+
+```text
+Once completed, evaluate whether the request is a bug fix or a new feature.
+For a bug fix, use set_agent to select Debug. For a new feature, select Plan.
+```
+
+`set_agent` does **not** run the selected Agent. It only changes which Agent is selected for the next user invocation. Agents should normally call it near the end of a successful run.
 
 ```text
 Requirements [Refine]
@@ -897,9 +904,9 @@ Code [Send]
 Code remains selected
 ```
 
-Stopped/failed/interrupted runs should normally remain on the current Agent.
+If an Agent does not call `set_agent`, including because a run was stopped, failed, or interrupted before routing, the current Agent remains selected.
 
-Agent IDs should be stable identifiers rather than display names so renaming Agents does not break workflow configuration.
+`set_agent` should target stable Agent identifiers rather than display names so renaming Agents does not break their instructions.
 
 ---
 
@@ -2538,7 +2545,7 @@ For SCM-backed behavior, derive ADELE state from the SCM whenever practical inst
 
 ## 58.5 Configuration defines workflow
 
-Requirements → Plan → Code should be easy out of the box but should arise from configurable Agents, tools, commands, and `nextAgent` relationships rather than hard-coded workflow logic.
+Requirements → Plan → Code should be easy out of the box but should arise from configurable Agent instructions, tools such as `set_agent`, and commands rather than hard-coded workflow logic. Agent instructions may also choose different next Agents based on the work being performed.
 
 ## 58.6 Progressive disclosure
 
