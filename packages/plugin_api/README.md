@@ -1,8 +1,8 @@
 # ADELE Plugin API
 
-`adele_plugin_api` is an experimental public package for plugin authors. Phase
-0 provides only `PluginId`, `PluginMetadata`, and `ResourceRef`. These APIs are
-not stable.
+`adele_plugin_api` is an experimental public package for plugin authors. Its
+small maintained surface provides `PluginId`, `PluginMetadata`, public-ID
+validation, and `ResourceRef`. These APIs are not stable.
 
 ## Dependencies
 
@@ -14,7 +14,7 @@ need exists. It must not depend on Flutter or internal packages such as
 
 `PluginId` is distinct from a Dart package name, display name, repository name,
 capability ID, and future profile ID. Plugin versions are opaque strings in
-Phase 0; parsing, comparison, and ranges are intentionally absent. A future
+the maintained API; parsing, comparison, and ranges are intentionally absent. A future
 phase will likely use a semantic-version implementation such as
 `package:pub_semver` rather than adding a dedicated version value wrapper.
 

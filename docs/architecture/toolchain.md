@@ -1,6 +1,6 @@
 # Toolchain Policy
 
-## Temporary integrated Phase I pin
+## Temporary integrated pin
 
 | Component | Identity |
 | --- | --- |
@@ -39,16 +39,17 @@ capability instances when source and build context are identical. Profiles do
 not inherently own compiled artifacts.
 
 The concrete cache format, compatibility checks, provenance record, and
-invalidation algorithm are deferred until compilation is implemented.
+invalidation algorithm remain deferred beyond the implemented development
+compilation pipeline.
 
-## No SDK vendoring in Phase 0
+## No SDK vendoring
 
 The repository records the exact toolchain but does not vendor Flutter or Dart.
 Vendoring would add large binaries, platform-specific content, update and
 licensing maintenance, and release-distribution concerns before the local
 plugin pipeline has proven its requirements. Developers and CI provision the
-pinned SDK externally for Phase 0.
+pinned SDK externally for the current development foundation.
 
 Bundling or provisioning a pinned SDK for end-user ADELE distributions is a
-future packaging decision. Phase 0 also excludes compiled plugin artifacts,
+future packaging decision. The repository excludes compiled plugin artifacts,
 SDK caches, and build output from source control.

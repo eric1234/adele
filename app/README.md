@@ -24,5 +24,8 @@ belong here.
 
 ## Deferred
 
-Workspace selection, ADELE profile selection, plugin loading, agent execution,
-and plugin-facing UI APIs are deferred.
+Workspace selection, ADELE profile selection, normal product plugin
+loading/discovery, product agent UI, and plugin-facing UI APIs are deferred. The
+application composition root does contain the development-only Phase IV model
+and source capability adapters, bounded tool-loop strategy, and AOT integration
+tests; these do not establish product workflow or final Workspace behavior.

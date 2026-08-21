@@ -15,7 +15,7 @@ dependency resolution, or backend compilation.
 ## Dependencies
 
 It may depend on lightweight pure-Dart build libraries and public contract
-declarations when implementation begins. It must not depend on Flutter runtime
+declarations required by the implemented pipeline. It must not depend on Flutter runtime
 UI, `adele_desktop`, plugin implementations, or `plugin_runtime`. Plugins must
 never depend on this package.
 

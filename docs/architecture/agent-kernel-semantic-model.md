@@ -2,11 +2,11 @@
 
 ## Status
 
-**Guiding architecture; Phase IV-B4 OpenAI provider vertical implemented**
+**Guiding architecture; Phase IV complete with the source-inspection coding vertical implemented**
 
 This document records the semantic boundaries ADELE intends to preserve while implementing its agent execution substrate. It is more specific than the non-normative research survey, but it is **not** a stable public extension API and does not freeze exact Dart type names, persistence schemas, or contribution APIs.
 
-It is informed by ADELE `main` through Phase III, the provisional `phase-4-agent-run` branch, the external harness survey in [`../research/agent-harness-semantic-boundary-survey.md`](../research/agent-harness-semantic-boundary-survey.md), the disposable `experiment/tool-semantics` branch, and the current product/UX conceptual model.
+It is informed by ADELE `main` through Phase IV, the provisional `phase-4-agent-run` branch, the external harness survey in [`../research/agent-harness-semantic-boundary-survey.md`](../research/agent-harness-semantic-boundary-survey.md), the disposable `experiment/tool-semantics` branch, and the current product/UX conceptual model. The architecture remains guiding and experimental rather than a stable public extension API.
 
 Existing architecture principles remain in force, especially the distinctions among plugins, contracts, capabilities, configured capability instances, provider generations, and runtime resources.
 
@@ -113,7 +113,9 @@ An Agent and a Workflow are distinct concepts.
 
 The kernel supplies execution primitives and invariants. A workflow/strategy decides what happens next.
 
-The first implementation may use a simple chat/coding strategy, but that algorithm must not define what a Run fundamentally is.
+The maintained `DevelopmentToolLoopStrategy` implements a bounded sequential
+source-inspection coding loop. That development algorithm does not define what
+a Run fundamentally is and is not a general Workflow framework.
 
 # Canonical history and context assembly
 
@@ -182,7 +184,10 @@ authoritative terminal completion or failure
 
 Useful semantic events may eventually include content blocks/deltas, reasoning, completed semantic items, tool-call proposals, usage, retry/fallback notices, errors, and terminal completion.
 
-The kernel should not make unary `Future<ModelResponse>` its fundamental abstraction. A temporary unary fixture may synthesize semantic stream events until generated transport supports streams.
+The kernel does not make unary `Future<ModelResponse>` its fundamental
+abstraction. Generated ModelProvider transport implements server streaming and
+cancellation; retained unary fixture methods are regression/reference
+infrastructure rather than the maintained application path.
 
 Provider-specific lowering handles protocol roles/items, reasoning formats, hosted tools, provider-only options, cache controls, endpoint/auth details, model-family quirks, and provider continuation identifiers.
 
@@ -230,6 +235,18 @@ Model-visible names may be sanitized, namespaced, aliased, or changed for provid
 A model-callable Tool is **not automatically an ADELE Capability**.
 
 A plugin may expose a sustained typed capability such as `WorkspaceService` and also contribute model tools such as `read_file`, `write_file`, or `search_text` whose executors project that capability into model-callable operations.
+
+The Phase IV proof applies this distinction concretely:
+
+```text
+DevelopmentSourceService capability
+    ↓ application projection
+search_source_text / read_source_file model tools
+```
+
+These development aliases are implementation evidence, not stable public API
+promises. The underlying capability is bounded and read-only and is not the
+final ADELE Workspace abstraction.
 
 Dynamic external tools such as MCP definitions may be contributed without manufacturing a separate ADELE Capability for every external function.
 
@@ -316,7 +333,8 @@ Initial conceptual variants are:
 - Tool approval;
 - User input / elicitation.
 
-Only Tool approval needs to be implemented in the earliest Phase IV slice.
+The earliest Phase IV slice implemented Tool approval. User-input elicitation
+and durable interruption handling remain deferred.
 
 Approval must bind to the exact ToolInvocation, including semantic identity, canonical arguments, effect description, and executable generation.
 
@@ -334,7 +352,10 @@ ToolProgress*
 exactly one ToolOutcome
 ```
 
-The exact Dart API may be a stream with terminal event, an execution handle with progress stream + result future, or equivalent. It should not require separate effectful `execute()` and `outcome()` operations for the same execution.
+The current internal Dart API is a stream of `ToolExecutionEvent` values with
+zero or more progress observations and exactly one terminal outcome. This is
+not a stable public API, but it preserves the invariant that one execution does
+not require separate effectful `execute()` and `outcome()` operations.
 
 Progress is nonterminal observation. Examples include status changes, stdout/stderr, partial search matches, byte/record counts, and resource startup state. Future transport/persistence may choose which progress is durable or lossy.
 
@@ -415,7 +436,11 @@ Run
 └── ExecutionEnvironment? effect/process authority
 ```
 
-Initial implementation may use one local source workspace and the local host environment. Future providers may represent containers, VMs, SSH hosts, cloud sandboxes, or plugin-provided environments.
+The initial Phase IV source implementation binds one local read-only source root
+through DevelopmentSource while execution remains on the local host. This does
+not establish final Workspace identity, source mutation authority, an execution
+environment abstraction, or a security sandbox. Future providers may represent
+containers, VMs, SSH hosts, cloud sandboxes, or plugin-provided environments.
 
 The kernel should not assume filesystem paths, processes, ports, or credentials are always local.
 
@@ -425,17 +450,21 @@ The architecture reserves both concepts.
 
 A child Run is subordinate execution that does not require an independent conversational-history object. A child Session is appropriate when delegated work needs independent context/history, persistence, inspectability, background lifetime, or later continuation.
 
-A workflow decides which form is appropriate. Phase IV does not need to implement either fully, but must not make the model incompatible with them.
+A workflow decides which form is appropriate. Phase IV did not implement either
+fully, and later designs must remain compatible with both.
 
 # Execution events and projections
 
-The kernel should emit typed semantic execution events suitable for deterministic tests, live UI projection, debugging, tracing, and future persistence.
+The kernel emits typed semantic execution observations suitable for
+deterministic tests and an in-memory Run journal, while leaving room for live UI
+projection, debugging, tracing, and future persistence.
 
 Examples may include Run lifecycle events, model invocation lifecycle, model content, tool proposal/resolution, policy evaluation, interruption creation/resolution, tool execution, progress, and tool completion.
 
 Execution events are **not** automatically the sole durable source of truth. Future persistence may use append-only facts, snapshots, projections, specialized stores, or a hybrid. Live progress and durable semantic history may use different representations.
 
-The deterministic in-memory journal idea from the first Phase IV prototype can be retained without claiming event-sourced crash recovery.
+The deterministic in-memory journal is implemented without claiming durable
+storage, event-sourced crash recovery, or replay.
 
 # Run lifecycle
 
@@ -547,13 +576,15 @@ The `phase-4-agent-run` branch is useful evidence but not accepted architecture.
 | generic tool failure implies safe retry | preserve effect certainty and indeterminate outcomes |
 | approval can re-resolve provider later | approval retains exact executable generation |
 
-ADR 0022 on the prototype branch should not be treated as an accepted `main` decision in its current form. Its generation-binding rationale is valuable; its single-run simple-chat state-machine decision should be replaced by narrower decisions during the new Phase IV design cycle.
+The accepted Phase IV implementation preserves these revised boundaries. ADR
+0022 records the resulting semantic foundation; the provisional branch remains
+historical evidence rather than the source of current truth.
 
 # Foundational now, reserved, and deferred
 
-## Foundational for Phase IV
+## Established in Phase IV
 
-Phase IV should establish enough semantic structure for:
+Phase IV established semantic structure for:
 
 - Session history versus Run execution;
 - context assembly boundary;
@@ -572,9 +603,10 @@ Phase IV should establish enough semantic structure for:
 - typed progress;
 - effect certainty/indeterminate outcome;
 - typed execution events;
-- runtime-resource references/provenance.
 
-"Establish" does not require a complete public API or persistence implementation for every concept.
+This foundation does not imply a complete public API or persistence
+implementation for every concept. Runtime-resource references remain reserved
+semantic space rather than a production runtime-resource system.
 
 ## Reserve semantic space
 
@@ -590,6 +622,7 @@ Do not fully implement yet:
 - provider-native continuation persistence;
 - model capability negotiation;
 - tracing model;
+- runtime-resource references/provenance;
 - runtime-resource lease/recovery;
 - presentation contribution API.
 
@@ -638,9 +671,12 @@ Phase IV-B1 — scripted adapter streaming integration  complete
 Phase IV-B2 — common ModelProvider scripted vertical  complete
 Phase IV-B3 — ordered provider-native model items     complete
 Phase IV-B4 — OpenAI API-key Responses provider       complete
+Phase IV-B5a — generation-bound configuration contexts complete
+Phase IV-B5b — experimental ChatGPT configured instance complete
+Phase IV closeout — DevelopmentSource coding vertical complete
 ```
 
-Recommended near-term sequence:
+Completed Phase IV sequence and next milestone:
 
 ```text
 Phase IV-A — semantic agent-execution foundation
@@ -649,19 +685,21 @@ Phase II-B — generated typed streaming/cancellation
     ↓
 Phase IV-B1 — scripted adapter streaming integration
     ↓
-remaining Phase IV — OpenAI/Codex auth research,
-                      one real provider,
-                      minimal Agent/workflow refinement
+Phase IV-B2/B3/B4 — common provider, ordered items, real OpenAI
+    ↓
+Phase IV-B5a/B5b — configured contexts + experimental ChatGPT
+    ↓
+Phase IV closeout — read-only ADELE source search/read continuation
     ↓
 Phase V — minimum self-hosting plugin set
     ↓
 Phase VI — cross the self-hosting boundary
 ```
 
-This let Phase IV-A define the semantic stream consumer using the existing
+This sequence let Phase IV-A define the semantic stream consumer using the existing
 unary scripted fixture, Phase II-B implement the transport semantics required
-by that concrete consumer, and Phase IV-B1 connect the two without introducing
-the future common provider abstraction.
+by that concrete consumer, and Phase IV-B1 connect the two before the common
+ModelProvider capability and real providers were added.
 
 ## Phase IV-A target
 
@@ -701,9 +739,9 @@ Run completion
 
 The simple strategy is test scaffolding, not the definition of Run.
 
-## Phase II-B target
+## Phase II-B result
 
-Phase II-B should extend generated typed transport with the minimum required streaming semantics:
+Phase II-B extended generated typed transport with the minimum required streaming semantics:
 
 - typed stream items;
 - ordered delivery;
@@ -726,14 +764,23 @@ transport probe items outside the kernel, preserves exact-generation failure,
 and propagates outer subscription cancellation to the generated producer. The
 unary fixture method remains regression/reference infrastructure.
 
-## Remaining Phase IV target
+## Phase IV completion result
 
-After IV-B2:
+Phase IV now proves the provider-neutral kernel semantics, common generated
+streaming ModelProvider boundary, real OpenAI provider, generation-bound
+configured contexts, experimental ChatGPT configured instance, and a bounded
+development strategy. That strategy can ask a real model to search and read the
+ADELE checkout through the generation-bound DevelopmentSource capability and
+continue to a final answer. The deterministic integration scripts only remote
+model responses; source access uses the real shared AOT host and capability
+path. The explicitly opt-in live ChatGPT source-coding smoke has also run
+successfully.
 
-- research OpenAI/Codex subscription-backed authentication and routing;
-- integrate one real model provider;
-- implement the first simple chat/coding workflow strategy;
-- prove a model can request a workspace tool and continue from the result through the intended capability/plugin architecture.
+DevelopmentSource has no mutation, indexing/watching, SCM, command execution,
+or sandbox claim. Its ordinary symlink confinement is not descriptor-level
+protection against a deliberate local path-resolution/open race. These limits
+keep the Phase IV result a self-inspection vertical rather than full
+self-hosting.
 
 # Self-hosting remains the gate
 
@@ -753,7 +800,7 @@ Editor polish, provider breadth, sophisticated orchestration, memory, and market
 
 # Invariants for future design reviews
 
-When evaluating a Phase IV design or implementation, ask:
+When evaluating later designs against the Phase IV foundation, ask:
 
 1. Does canonical Session history remain distinct from one Run and one model request?
 2. Can Run support more than one model/tool step without defining simple chat as Run itself?
