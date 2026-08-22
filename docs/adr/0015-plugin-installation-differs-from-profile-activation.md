@@ -14,4 +14,4 @@ Plugin installation and profile activation are separate states. Installing a plu
 
 ## Consequences
 
-One installation may be inactive in one activation context and active in another. Configuration and runtime state remain separate from both installation and activation. Full profile behavior remains deferred.
+One installation may be inactive in one activation context and active in another. Configuration and runtime state remain separate from both installation and activation. ADR 0029 subsequently defines the directional profile-composition and configuration model, including ordered sparse profile stacks and flat profiles; profile-management persistence, lifecycle, and other implementation mechanics remain deferred.
