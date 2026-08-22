@@ -173,4 +173,4 @@ architecture.
 
 Windows, macOS, release packaging, plugin packaging/discovery, sandboxing,
 current Flutter compatibility, and eval-stack modernization also remain open.
-See `docs/architecture/overview.md` and ADRs 0019 through 0028.
+See `docs/architecture/overview.md` and ADRs 0019 through 0029.
