@@ -2,7 +2,7 @@
 
 ## Status
 
-Deferred
+Superseded by ADR 0029
 
 ## Context
 
@@ -15,3 +15,5 @@ Full profile behavior is deferred. Current decisions use profiles only to distin
 ## Consequences
 
 Installation remains independent of profile activation, shared configuration remains independent of overrides, and runtimes and configured capability instances remain scoped by resolved activation context where applicable. Future profile behavior requires a separate decision and must preserve these distinctions from temporary runtime resources.
+
+ADR 0029 is that subsequent directional decision. This ADR remains as the historical record of why the earlier foundation intentionally avoided committing to full profile semantics.
