@@ -6,7 +6,7 @@
 
 This document captures the current direction for ADELE's built-in agent tools and the execution/presentation model around those tools.
 
-It is intentionally directional rather than contractual. The exact tool set, names, schemas, persistence model, permission system, and implementation layering may change as ADELE becomes capable of self-hosting and real usage exposes better designs. The near-term implementation may provide only a small subset of this document.
+It is intentionally directional rather than contractual. The exact tool set, names, schemas, persistence model, permission system, scheduling model, and implementation layering may change as ADELE becomes capable of self-hosting and real usage exposes better designs. The near-term implementation may provide only a small subset of this document.
 
 The purpose is to preserve the reasoning behind the current direction so later implementation work does not independently rediscover a conventional coding-agent tool surface or accidentally conflict with ADELE's product model.
 
@@ -15,7 +15,7 @@ This document should be read alongside:
 - [`../mockups/README.md`](../mockups/README.md), which describes the medium-term development-workflow UX direction;
 - [`agent-kernel-semantic-model.md`](agent-kernel-semantic-model.md), which describes lower-level Run, ToolInvocation, progress, outcome, interruption, runtime-resource, and execution-event semantics.
 
-This document sits between those two levels. It focuses on which model-callable operations are worth making first-class, why they are preferable to shell commands for common operations, and how command execution should project into ADELE's live UX.
+This document sits between those two levels. It focuses on which model-callable operations are worth making first-class, why they are preferable to shell commands for common operations, how command execution should project into ADELE's live UX, and how concurrent/asynchronous work should interact with model inference.
 
 ---
 
@@ -208,7 +208,7 @@ Those areas need separate design before becoming part of the built-in surface. T
 
 # 5. `run_command` is model-synchronous but host-live
 
-The model-facing experience of `run_command` may be a normal tool call that produces its terminal result only after the command settles.
+For an ordinary foreground command, the model-facing experience of `run_command` may be a normal tool call that produces its terminal result only after the command settles.
 
 The underlying ADELE execution must nevertheless be live from the moment execution starts.
 
@@ -233,6 +233,8 @@ The UI must not wait for the model-facing tool result before exposing the runnin
 If an agent launches a long `curl`, test run, build, or other command, the user should immediately be able to see that work in the Session activity and inspect it while it is still running.
 
 This aligns with the kernel semantic model's existing rule that one started tool execution can emit zero or more progress observations before exactly one terminal outcome.
+
+Background/detached command execution is a distinct mode discussed later; it should not require holding one model tool call open until the process eventually exits.
 
 ---
 
@@ -479,11 +481,213 @@ PTY-by-default is worth experimentation because ADELE places unusual value on pl
 
 ---
 
-# 12. Session Progress/work items are not implementation plans
+# 12. Tool concurrency and asynchronous work
+
+Agent work should not be forced into a strictly serial pattern. ADELE should allow both concurrent foreground tool execution and longer-lived background work, while keeping scheduling semantics separate from individual tool definitions.
+
+These are related but distinct capabilities.
+
+## 12.1 Parallel foreground tool invocations
+
+One model invocation may produce several independent tool proposals. ADELE should be able to execute compatible proposals concurrently and perform the next model inference after the foreground set has settled.
+
+Conceptually:
+
+```text
+Model invocation
+        ↓
+        ├── read_file(A) ─────┐
+        ├── read_file(B) ──┐  │
+        ├── search(C) ────────┤
+        └── run_command(D) ───┤
+                              ↓
+                         foreground join
+                              ↓
+                     next model invocation
+```
+
+Parallelism should not require special batch variants such as `run_command_batch`, `read_files_batch`, or `apply_patch_batch`. Each operation remains an ordinary ToolInvocation with its own identity, policy decision, progress, result, presentation, and provider-call correlation.
+
+The Run/execution scheduler decides whether proposed operations may actually execute concurrently. Reads and other independent operations are natural candidates. Mutations of the same target, commands with uncertain shared effects, provider restrictions, or executor limitations may require serialization.
+
+The guiding principle is:
+
+> Tool definitions describe operations; concurrency belongs to Run/execution scheduling.
+
+Concurrency should therefore be permitted without assuming that every combination of ToolInvocations is safe to execute simultaneously.
+
+## 12.2 Background/detached work
+
+Some work is useful to start without blocking every subsequent model turn. Examples may include:
+
+- long-running test suites or builds;
+- downloads;
+- external jobs;
+- child Runs/sub-agents;
+- other future runtime resources.
+
+For this kind of work, ADELE should allow an operation to start longer-lived asynchronous work and return control to the model while that work continues.
+
+Conceptually:
+
+```text
+Parent Run
+    ↓
+start asynchronous work #42
+    ↓
+model continues useful work ─────────────┐
+    ↓                                    │
+other tool/model turns                   │
+                                         │
+                           work #42 completes
+                                         │
+                                         ▼
+                              completion observation
+```
+
+A detached command should not be represented as one unresolved provider tool call that is secretly still running while ADELE pretends the call completed. The immediate tool operation may instead succeed by starting an independently observable command/runtime resource whose later progress and terminal state have their own identity and provenance.
+
+Exact tool schemas and the boundary between command-invocation identity and a longer-lived runtime resource remain deferred.
+
+## 12.3 Background work should not require polling
+
+ADELE should specifically avoid designs that encourage repeated model calls such as:
+
+```text
+get_status(#42)
+get_status(#42)
+get_status(#42)
+```
+
+Repeated polling wastes inference tokens while teaching the model to busy-wait on state that ADELE already knows.
+
+Instead, ADELE should retain typed asynchronous observations and make relevant unseen changes available to later context assembly. For example:
+
+```text
+Since the previous model turn:
+
+✓ Background command completed
+  dart test integration_test/
+  exit code: 1
+  <bounded relevant output>
+
+→ Child investigation still running
+  elapsed: 1m 42s
+```
+
+The exact context representation remains open. The important rule is:
+
+> If ADELE already knows relevant changing execution state, the model should normally learn about that state through subsequent context rather than needing to poll for it.
+
+A separate operation may still be useful when the model deliberately needs more detail from a large retained result. Fetching additional output is different from repeatedly asking whether work has finished.
+
+## 12.4 Context delivery and continuation are separate decisions
+
+An asynchronous observation being relevant to future inference does not automatically mean that its arrival should start an inference.
+
+For every background completion/change there are conceptually two questions:
+
+```text
+1. Should this information become eligible for future model context?
+2. Should this event make an otherwise waiting/idle Run runnable now?
+```
+
+For background work started by the agent, completion/state changes will normally be eligible for subsequent context.
+
+Whether they should trigger continuation can be selected by the launching agent/workflow or determined by workflow policy. The exact API is deferred, but conceptually an asynchronous operation may be passive or may request continuation on a relevant terminal event.
+
+For example:
+
+```text
+background command
+    passive
+        completion is recorded
+        next natural inference sees it
+        no inference is created merely because it finished
+
+background command
+    resume on completion
+        completion is recorded
+        next natural inference sees it
+        if the parent Run is otherwise waiting, completion makes it runnable
+```
+
+This same mechanism can apply to child Runs/sub-agents and future external jobs.
+
+## 12.5 Asynchronous events never interrupt an active inference
+
+An asynchronous completion must not interrupt a model invocation already in progress.
+
+Conceptually:
+
+```text
+parent inference running
+        │
+        ├──────── background work completes
+        │              ↓
+        │       observation recorded/queued
+        │
+        ▼
+parent inference settles
+        ↓
+next natural inference receives observation
+```
+
+Likewise, if foreground tool work is currently progressing, unrelated asynchronous completion can be retained for the next appropriate inference boundary.
+
+This should be an execution invariant rather than left to individual background-work implementations.
+
+## 12.6 Waiting should be event-driven and inference-free
+
+A parent Run may eventually reach a point where no useful work remains until one or more asynchronous dependencies settle.
+
+In that case the Run should be able to enter a genuine waiting state rather than spending inference tokens polling:
+
+```text
+Run running
+    ↓
+waiting for asynchronous dependency
+    ↓
+(no model inference)
+    ↓
+dependency event occurs
+    ↓
+Run becomes runnable
+    ↓
+next inference receives completion information
+```
+
+A completed Run should not normally be resurrected merely because an unrelated background resource later changes state. If the agent/workflow expects a completion to continue the Run, the Run should remain logically alive/waiting until the relevant dependency is resolved or cancelled.
+
+The exact representation of dependencies, any/all barriers, timeouts, cancellation, and scheduling is deferred.
+
+## 12.7 Typed asynchronous observations are broader than command execution
+
+The delivery/scheduling mechanism should not erase domain semantics by turning every event into an untyped "context note."
+
+Possible producers include:
+
+```text
+CommandCompleted
+ChildRunCompleted
+ExternalJobCompleted
+UserInputSupplied
+InterSessionMessage          // optional future feature
+```
+
+Each observation should retain its real type, provenance, target scope, and payload. What can be generalized is the machinery that records unseen asynchronous information, makes it available to context assembly, and optionally satisfies a continuation dependency.
+
+This is useful even if ADELE never implements explicit inter-agent messaging. A future session-search capability may often be preferable to waking another model just to answer information that already exists in Session history.
+
+Inter-session messaging therefore remains an optional specialized feature rather than a foundational requirement. The more fundamental direction is typed asynchronous observation plus event-driven continuation.
+
+---
+
+# 13. Session Progress/work items are not implementation plans
 
 The UX direction distinguishes durable/reviewable work artifacts from live Session progress.
 
-## 12.1 Implementation plan
+## 13.1 Implementation plan
 
 A plan is substantive content. In workflows such as:
 
@@ -503,7 +707,7 @@ Markdown may be an entirely appropriate representation. ADELE does not currently
 
 Future Plan-agent tools should be designed around ADELE's artifact/Draft Request workflow rather than imported from conventional agent-harness assumptions.
 
-## 12.2 Session work items
+## 13.2 Session work items
 
 Session Progress is operational state maintained while an agent works. It is concise, structured, and mutable.
 
@@ -537,7 +741,7 @@ Session work items
 
 ---
 
-# 13. Asking the user is a Run interruption, not merely another I/O function
+# 14. Asking the user is a Run interruption, not merely another I/O function
 
 ADELE needs a way for an agent to request information or a decision from the user, but the final shape deserves dedicated design.
 
@@ -559,7 +763,7 @@ Exact schemas, lifecycle, multiple simultaneous requests, cancellation, and rela
 
 ---
 
-# 14. Tool results should be specialized, not terminal-shaped by default
+# 15. Tool results should be specialized, not terminal-shaped by default
 
 The existence of `run_command` should not cause every built-in tool to inherit shell presentation semantics.
 
@@ -588,7 +792,7 @@ The same principle applies to result contracts. A rich host result may contain s
 
 ---
 
-# 15. Tool surface and execution substrate should remain separate
+# 16. Tool surface and execution substrate should remain separate
 
 Model-callable tools are one projection over deeper ADELE capabilities and services.
 
@@ -608,11 +812,11 @@ executor
 
 The tool catalog should therefore not become the primary internal API of the application.
 
-Similarly, interactive shells, command invocation resources, terminal presentations, output retention, policy decisions, and Session progress should not be collapsed into model-tool definitions simply because tools interact with them.
+Similarly, interactive shells, command invocation resources, terminal presentations, output retention, policy decisions, Session progress, asynchronous observations, and scheduling should not be collapsed into model-tool definitions simply because tools interact with them.
 
 ---
 
-# 16. Permission implications
+# 17. Permission implications
 
 The structured tool surface should improve authorization without pretending to solve command-execution security.
 
@@ -633,11 +837,13 @@ The command tool's effect description should therefore be conservative. Parsing 
 
 This is compatible with the kernel semantic model's distinction between static effect metadata, invocation-specific effect description, policy/approval, and actual environmental isolation.
 
+Parallel execution also means policy/approval is evaluated per ToolInvocation rather than once for an opaque batch. Scheduling permission is not authorization to perform effects that would otherwise be denied.
+
 Strong sandboxing remains a separate concern from model-tool authorization.
 
 ---
 
-# 17. Near-term guidance
+# 18. Near-term guidance
 
 The immediate self-hosting path does not need to implement the complete direction described here.
 
@@ -650,13 +856,19 @@ A plausible progression is:
 
 3. structured source mutation
 
-4. richer retained command-output inspection/projection
+4. support multiple foreground ToolInvocations with safe concurrency
 
-5. structured Session work items
+5. richer retained command-output inspection/projection
 
-6. user-input interruption
+6. background work/resources with typed completion observations
 
-7. specialized semantic integrations as real workflows justify them
+7. event-driven continuation without model polling
+
+8. structured Session work items
+
+9. user-input interruption
+
+10. specialized semantic integrations as real workflows justify them
 ```
 
 The actual development sequence may differ according to the current Phase roadmap and implementation constraints.
@@ -665,19 +877,25 @@ In particular, ADELE should resist implementing speculative tools simply because
 
 ---
 
-# 18. Summary principles
+# 19. Summary principles
 
 The current direction can be summarized as:
 
 1. **Command execution is foundational.** It is the universal escape hatch that makes the agent useful before a large tool catalog exists.
 2. **Structured tools exist for quality, not mere capability.** Promote common operations when precision, policy, inspectability, portability, or UX materially improves.
 3. **Keep the built-in surface small and orthogonal.** Avoid a dedicated tool for every possible operation.
-4. **Execution is live even when the model-facing call is synchronous.** Users must be able to observe and inspect running work immediately.
+4. **Execution is live even when the model-facing foreground call is synchronous.** Users must be able to observe and inspect running work immediately.
 5. **One operation can have several projections.** Chat summary, inspector detail, full console output, and model result have different purposes and budgets.
 6. **Retain streaming semantics.** Output/progress should not exist only as one final accumulated string.
 7. **Terminal rendering is presentation, not resource identity.** Agent output and user interactive shells may share the bottom console surface without becoming the same concept.
 8. **Support PTY and pipe execution.** The choice changes program behavior and should remain an execution semantic rather than a rendering assumption.
-9. **Plans and Session progress are distinct.** Plans are substantive artifacts/content; work items are structured mutable Session state; neither is the same as an ADELE Task.
-10. **User elicitation is an interruption.** The Run waits for external input; the product should model that state explicitly.
-11. **Tools project deeper services.** The model-tool catalog should not become ADELE's internal application architecture.
-12. **This direction is intentionally revisable.** Real self-hosting use should be allowed to invalidate assumptions and refine the tool set.
+9. **Parallelism belongs to execution scheduling, not batch tools.** Multiple independent ToolInvocations may run concurrently and join before the next foreground inference.
+10. **Support asynchronous/background work.** Long-running commands, child Runs, and future jobs may continue while the parent performs other useful work.
+11. **Do not make models poll state ADELE already knows.** Relevant asynchronous changes should be supplied as typed observations in later context.
+12. **Continuation is event-driven and explicit.** Background work may be passive or may make a waiting Run runnable when relevant events occur.
+13. **Never interrupt active inference with asynchronous events.** Queue observations for the next inference boundary instead.
+14. **Preserve provenance and semantics of asynchronous information.** Generalize delivery/scheduling machinery, not every event into an untyped note.
+15. **Plans and Session progress are distinct.** Plans are substantive artifacts/content; work items are structured mutable Session state; neither is the same as an ADELE Task.
+16. **User elicitation is an interruption.** The Run waits for external input; the product should model that state explicitly.
+17. **Tools project deeper services.** The model-tool catalog should not become ADELE's internal application architecture.
+18. **This direction is intentionally revisable.** Real self-hosting use should be allowed to invalidate assumptions and refine the tool set.
