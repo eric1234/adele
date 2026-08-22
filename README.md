@@ -139,12 +139,22 @@ active while running and absent after each shutdown.
 
 ## Profiles
 
-ADELE profiles are planned named collections of plugin activation, optional
-configuration overrides, and preferred providers. They are not implemented.
-The development runtime uses one implicit default development profile. Plugin
-installation, profile activation, shared plugin configuration,
-profile overrides, runtime instances, configured capability instances, and
-temporary runtime resources remain distinct concepts.
+ADELE profiles are planned sparse named composition layers for plugin
+activation, configuration overrides, provider availability, and provider
+preferences. A future window/context may use an ordered stack such as
+`Developer + Work` or `Developer + Personal`; the normal case may use only one
+or two profiles, but the architecture does not impose an arbitrary small stack
+limit. Profiles are not implemented, and the development runtime still uses one
+implicit default development profile.
+
+Activation, configuration, provider selection, configured capability instances,
+runtime instances/resources, and workbench state remain distinct concepts. An
+effectively disabled plugin is intended to disappear from that context's normal
+product and settings surface without deleting dormant persisted configuration.
+Open windows may keep independent live workbench state while remembered local
+state seeds future windows. See
+`docs/architecture/profiles-and-configuration.md` for the detailed directional
+model and deferred decisions.
 
 The shell text "No workspace is open" does not establish workspace semantics.
 Workspace, Project, and Environment are intentionally not foundational ADELE
