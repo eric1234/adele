@@ -90,14 +90,31 @@ or backend copy. Temporary resources such as documents, terminal sessions,
 browser sessions, and processes are runtime resources, not configured
 capability instances or plugin runtimes.
 
-## Profiles and agents
+## Profiles, configuration, and agents
 
-ADELE profiles are planned named collections of plugin activation, optional
-configuration overrides, and provider preferences. They are not implemented.
-Configuration is shared across profiles by default; effective configuration is
-conceptually shared plugin configuration plus optional profile overrides.
-The maintained development runtime uses one implicit development profile
-without introducing profile-management APIs.
+ADELE profiles are planned sparse named composition layers, not complete copies
+of application or plugin state. One window/context may eventually use an
+ordered stack such as `Developer + Work` or `Developer + Personal`; profiles may
+contribute plugin activation decisions, ordinary configuration overrides,
+provider availability, and provider preferences. They are not implemented, and
+the maintained development runtime still uses one implicit development profile.
+
+Ordinary configuration is intended to resolve through eligible layers such as
+user/all-profiles configuration, the ordered active profile stack, project
+configuration, and narrower resource-specific layers when a setting supports
+them. Activation, ordinary configuration, provider preference, security/policy,
+workbench state, configured capability instances, and runtime resources remain
+distinct domains rather than one universal last-writer-wins plugin state.
+
+An effectively disabled plugin should remove its normal product and settings
+surface from that context without deleting dormant persisted configuration.
+Workbench presentation state is likewise separate from ordinary configuration:
+open windows keep independent live layout state while local remembered state can
+seed subsequently opened windows.
+
+The intended direction, including settings UX, persistence, profile stacking,
+window behavior, and deferred decisions, is recorded in
+[`profiles-and-configuration.md`](profiles-and-configuration.md).
 
 `agent_kernel` is a provider-neutral execution substrate. Concrete
 models, tools, editors, Git integrations, terminals, UI, and specialized agent
