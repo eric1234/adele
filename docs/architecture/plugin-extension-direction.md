@@ -59,7 +59,7 @@ Core provides a relatively small durable substrate. Plugins provide much of the 
 Examples:
 
 ```text
-ADELE center workbench
+ADELE Main Content
     -> Agent Interaction plugin
         -> orchestration-strategy extension point
             -> Chat strategy plugin
@@ -117,7 +117,7 @@ Environment
 
 Owning the concept does not imply core supplies most of its useful behavior.
 
-For example, Task is core-owned, while a Git plugin may provision the Task's primary Environment, Accounting may associate usage aggregates with the Task and its Sessions, TODO/Progress may associate progress state with individual Sessions, and a Task Browser plugin may present all of that information.
+For example, Task is core-owned, while a Git plugin may provide the Task's primary Environment implementation, Accounting may associate usage aggregates with the Task and its Sessions, TODO/Progress may associate progress state with individual Sessions, and a Task Browser plugin may present some of that information.
 
 ## 2.3 Agent execution invariants
 
@@ -134,20 +134,29 @@ Core owns provider-neutral agent execution mechanics and safety-critical arbitra
 
 Concrete models, tools, orchestration strategies, agent definitions, editors, SCM implementations, and most presentation do not belong in the kernel.
 
-## 2.4 Top-level workbench geometry
+## 2.4 Workbench shell, commands, and input routing
 
-The host owns the broad application shell and major regions, such as:
+The host owns the broad application shell and its current physical layout, including the title/chrome area, main work area, optional auxiliary areas, status/inspection space, and stream-oriented console space.
 
-- title/chrome area;
-- optional left auxiliary region;
-- center workspace;
-- right status/inspection region;
-- bottom stream/console region;
-- command palette and global command/keybinding infrastructure.
+Those physical placements are **not** intended to become the semantic names of plugin extension points. The layout may evolve, become configurable, or move one semantic surface to another physical region without changing what a plugin says it contributes.
 
-Plugins fill those regions. A plugin occupying one region may define its own internal regions and extension points for other plugins.
+For example, a Session-status extension should remain a Session-status extension whether the stock UI currently renders it at the top of the right side, later moves it to the left, or allows the user to choose its location.
 
-Plugins do not normally invent new peer-level top-level workbench regions outside the host shell.
+Core also owns application command and keyboard-input infrastructure:
+
+- stable application Command identities and registration;
+- command enablement/applicability plumbing;
+- the Command Palette and command search/presentation;
+- keybinding registration and resolution;
+- plugin-suggested/default keybindings;
+- user/profile/project keybinding overrides where supported;
+- dispatch from menus, buttons, keybindings, or other UI affordances into the same Command operation.
+
+Plugins may register Commands and suggested keybindings. The host owns how commands are discovered, displayed, rebound, and invoked.
+
+Application Commands are not the same concept as the model-callable **Command Tool** that launches external programs. A UI Command is a host/controller trigger that should ordinarily invoke underlying domain functionality rather than define that functionality itself.
+
+Plugins may fill host surfaces and may define more-specific semantic regions inside their own surfaces. Plugins do not normally invent new peer-level top-level workbench geometry outside the host shell.
 
 ## 2.5 Security authority
 
@@ -165,9 +174,9 @@ The default rule remains that provider-specific, tool-specific, workflow-specifi
 
 Likely examples include:
 
-- directory-backed Project opening;
-- Git-backed Environment provisioning;
-- Docker- or remote-backed Environment provisioning;
+- local-directory Project selection;
+- Git-backed Environment lifecycle;
+- Docker- or remote-backed Environment lifecycle;
 - Task/Session management UI;
 - agent-interaction surfaces;
 - chat, goal, loop, or other orchestration strategies;
@@ -179,11 +188,11 @@ Likely examples include:
 - search tools;
 - command execution tools;
 - TODO/plan tools and views;
-- accounting/usage aggregation;
+- accounting/usage/quota aggregation;
 - context monitoring/compaction behavior;
 - Git integration;
 - diff/review UI;
-- source editors/viewers;
+- source editors;
 - external-editor launchers;
 - console/terminal UI.
 
@@ -217,7 +226,7 @@ There should not be one magical composition algorithm for all Extension Points.
 
 An extension generally registers broadly. The particular Extension Point determines how an implementation decides whether it applies to an operation. Core should not impose one universal declarative applicability language over every extension domain.
 
-Examples may include an implementation answering `supports(resource)`, returning no contribution for an irrelevant inference, or always participating in a specific UI region.
+Examples may include an implementation answering `supports(resource)`, returning no contribution for an irrelevant inference, or always participating in a specific semantic UI surface.
 
 ---
 
@@ -238,12 +247,12 @@ Actions and Services fit naturally as callable Extension Points.
 For example:
 
 ```text
-OpenSourceResource
+DisplaySourceFile
     providers:
-        Internal Editor
+        Internal Source Editor
         VS Code Launcher
 
-EnvironmentProvisioner
+EnvironmentProvider
     providers:
         Git Worktree
         Docker
@@ -262,24 +271,26 @@ A plugin should generally not require ADELE to activate another plugin merely be
 
 ADELE should prefer runtime discovery of typed interfaces over plugin activation dependencies.
 
-For example, Diff should not depend on the Internal Editor plugin.
+For example, Diff should not depend on the Internal Source Editor plugin.
 
 Instead:
 
 ```text
-Diff understands OpenSourceResource
+Diff understands DisplaySourceFile
 
 Current providers:
     none
-        -> file remains visible but not openable
+        -> file remains visible but cannot be displayed through that action
 
-    Internal Editor
-        -> click opens internally
+    Internal Source Editor
+        -> click displays/focuses internally
 
-    Internal Editor + VS Code Launcher
+    Internal Source Editor + VS Code Launcher
         -> configured default may handle normal click
         -> alternate action may expose both
 ```
+
+`DisplaySourceFile` intentionally does not imply that a new view must be opened. A provider may focus an already-visible editor, reveal a line in an existing view, create a new editor view, or delegate to an external editor as appropriate.
 
 If a compatible provider appears while Diff is active, future UI/actions can begin using it. If the provider disappears, those affordances become unavailable again.
 
@@ -322,7 +333,7 @@ resolved operation
     exact selected/materialized bindings remain stable
 ```
 
-For example, a new editor provider may become available to future clicks immediately, while an already-started model or tool invocation continues against the exact generation it was resolved against.
+For example, a new source-display provider may become available to future clicks immediately, while an already-started model or tool invocation continues against the exact generation it was resolved against.
 
 ---
 
@@ -337,16 +348,16 @@ Configuration may influence the default based on profile, project, or other appl
 Examples:
 
 ```text
-OpenSourceResource
-    default: Internal Editor
+DisplaySourceFile
+    default: Internal Source Editor
     alternate: VS Code
 
-EnvironmentProvisioner
+EnvironmentProvider
     default: Git Worktree
     alternate: Docker
 ```
 
-A UI may invoke the configured default on its primary action while exposing alternatives through a menu, split button, context action, command palette, or other affordance.
+A UI may invoke the configured default on its primary action while exposing alternatives through a menu, split button, context action, Command Palette, or other affordance.
 
 Host-rendered reusable UI for default-plus-alternatives is desirable where it provides consistency and compiled performance, but plugins may render bespoke UX when that produces a better experience.
 
@@ -459,7 +470,7 @@ Examples:
 
 - Event subscriber failure normally does not fail the event producer.
 - Decorative UI extension failure may omit that UI while retaining the parent surface.
-- A selected Environment provider failing to provision means that provisioning operation failed.
+- A selected Environment provider failing to establish an Environment means that lifecycle operation failed.
 - A mandatory security/policy participant failing may make it unsafe to proceed.
 - A nonessential inference-context contributor may or may not be omittable depending on that contract.
 
@@ -486,35 +497,53 @@ The same underlying domain operation might later be invoked by:
 
 - toolbar action;
 - context menu;
-- keyboard command;
-- command palette;
+- keyboard Command;
+- Command Palette;
 - LLM tool;
 - another plugin.
 
-Likewise, the internal source viewer and an external-editor launcher may provide the same OpenSourceResource-shaped functionality with very different UI behavior.
+Likewise, the Internal Source Editor and an external-editor launcher may provide the same `DisplaySourceFile` functionality with very different UI behavior.
 
 This separation should keep UI replaceable and prevent workbench widgets from becoming hidden domain APIs.
 
 ---
 
-# 14. UI composition is recursive
+# 14. UI composition is recursive and semantically named
 
-Core owns major workbench regions. Plugins may contribute content to those regions and define more specific regions inside their own surfaces.
+Core owns the current physical workbench geometry. Plugin-facing extension points should normally describe **what a contribution means**, not where today's layout happens to render it.
 
 Conceptually:
 
 ```text
-ADELE center workspace
-    -> Agent Interaction surface
+MainContentView
+    -> Agent Interaction
         -> selected Chat strategy surface
             -> session header region
             -> timeline
             -> turn-action region
             -> prompt area
                 -> prompt-accessory extension point
+
+SessionStatusContribution
+    -> TODO progress
+    -> context usage
+    -> usage/cost/quota where appropriate
+
+InspectionPresentation
+    -> tool detail
+    -> resource detail
+    -> structured operation detail
+
+StreamView / Console presentation
+    -> interactive shell
+    -> full command output
 ```
 
-ADELE does not need to understand prompt accessories.
+The stock mockups currently render Main Content in the center, Session Status at the top of the right side, Inspection below it, and stream/console views in the bottom area. Those placements are implementation/UI direction rather than semantic API names.
+
+A future layout may move those surfaces or allow user configuration without changing the extensions that plugins provide.
+
+ADELE does not need to understand Chat prompt accessories or other plugin-defined nested regions merely because the Chat plugin exposes them.
 
 ## 14.1 Host-rendered versus plugin-rendered UI
 
@@ -526,9 +555,9 @@ Host rendering is desirable for small structural pieces when it provides:
 - simpler plugin APIs;
 - reusable default/alternate provider controls.
 
-Examples may include command entries, simple status items, toolbar actions, separators, or common provider-selection controls.
+Examples may include Command entries, simple status items, actions, separators, provider-selection controls, or keybinding editors.
 
-Plugins may render arbitrary/bespoke UI when richer domain-specific presentation is valuable, including Chat, Diff, source viewing/editing, inspector bodies, artifact views, and console contents.
+Plugins may render arbitrary/bespoke UI when richer domain-specific presentation is valuable, including Chat, Diff, source editing, inspection bodies, artifact views, and consoles.
 
 ---
 
@@ -544,15 +573,16 @@ Conceptually:
 Project
     core identity/lifecycle
 
-Project-opening implementations
+ProjectSelector implementations
     Local Directory
-    future cloud-backed project
-    future remote/source provider
+    Recent Projects
+    future database/catalog-backed selector
+    future cloud/remote selector
 ```
 
-A directory-opening plugin can use the operating-system directory picker and associate the chosen source/resource context with the Project.
+A `ProjectSelector` is about how a user or operation identifies the Project to work with, not about assuming every Project is created by a local filesystem picker.
 
-A future provider could establish a Project around cloud-hosted state without changing the meaning of the core Project identity.
+The stock Local Directory selector can use the operating-system directory picker and establish/resolve a Project associated with the selected source root. A Recent Projects selector could present known Project identities. A future cloud provider could present Projects from a remote catalog.
 
 The existing mockup statement that a Project is fundamentally a directory should therefore be treated as describing the stock development composition, not the long-term core abstraction. Existing documentation should be reconciled after this direction stabilizes.
 
@@ -577,7 +607,7 @@ Task
 └── other plugin-owned state
 ```
 
-The Task/Session management UI itself is expected to be a plugin. That UI may gather information from other active interfaces and present cost, per-Session progress, environment state, or other decorations without core understanding those particular visual concepts.
+The Task/Session management UI itself is expected to be a plugin. That UI may gather information from other active interfaces and present cost, per-Session progress, Environment state, or other decorations without core understanding those visual concepts.
 
 Task-level TODO/progress is not part of the expected stock design. It may become useful later, but the near-term direction is that TODO/progress belongs to the Session whose agent is executing the work.
 
@@ -623,26 +653,63 @@ A tool such as `read_file` or `run_command` should operate through the current E
 
 ---
 
-# 18. Task and Environment relationships
+# 18. Environment providers own implementation lifecycle
 
 A Task normally has one primary Environment.
 
-Environment provisioning is itself expected to have multiple interchangeable providers:
+The general extension shape should not imply creation-only behavior. Directionally, an `EnvironmentProvider` represents an implementation capable of owning the lifecycle of Environments it creates or recognizes.
+
+That lifecycle may eventually include operations such as:
 
 ```text
-EnvironmentProvisioner
+create / establish
+reopen / reconnect / validate
+report state
+release expensive live resources while preserving history
+restore/reacquire when possible
+destroy/delete underlying resources
+```
+
+The exact lifecycle depends on concrete needs. A Git worktree, Docker container, and cloud VM have materially different resource semantics, so core should not invent a lifecycle richer than current implementations require.
+
+Multiple interchangeable implementations may be active:
+
+```text
+EnvironmentProvider
 ├── Git Worktree
 ├── Docker
 └── future remote provider
 ```
 
-Profiles/configuration can establish the default provider. Task-creation UI may offer alternatives when several are active.
+Profiles/configuration can establish the contextual default. When user choice is useful, core can expose a reusable provider-selection control as part of a Task-creation or Environment-management flow without making the Task Browser semantically depend on Environment providers.
+
+## 18.1 Task creation and Environment establishment are core-coordinated
+
+The Task Browser may offer a `New Task` affordance and collect Task-owned data such as a title. It submits that intent to the core Task-creation operation.
+
+The Task Browser should **not** directly orchestrate Git, Docker, or Environment creation.
+
+Core Task creation owns the lifecycle sequence. As part of that sequence, the applicable/default `EnvironmentProvider` can establish the Task's primary Environment. The Git plugin therefore participates in Task creation through the Environment extension/lifecycle point rather than because the Task Browser calls Git.
+
+Conceptually:
+
+```text
+Task Browser
+    -> CreateTask(title, ...)
+
+Core Task lifecycle
+    -> create durable Task identity
+    -> resolve applicable/default EnvironmentProvider
+    -> provider establishes primary Environment
+    -> associate Environment with Task
+    -> publish settled Task/Environment facts
+```
+
+The exact transaction/recovery order remains deferred. For example, if Environment creation fails after a Task identity was persisted, core may retain a Task in an explicit incomplete/error state rather than pretending the Task never existed.
 
 A Task may also own additional Environments created programmatically for child agent work.
 
-For example, one Session could create several child Sessions to independently attempt implementations with different models. Those child Sessions may share the primary Environment or use separately provisioned Environments, while all of those Environments remain associated with the parent Task's work.
-
-Exact cleanup/recovery lifecycle remains to be designed when this behavior is implemented.
+One Session could create several child Sessions to independently attempt implementations with different models. Those child Sessions may share the primary Environment or use separately established Environments, while all of those Environments remain associated with the parent Task's work.
 
 ---
 
@@ -701,7 +768,9 @@ A child Session may:
 - use another orchestration strategy;
 - receive an initial handoff/context;
 - be inspectable without being directly user-steerable;
-- be presented only by drilling into its parent Session/Task.
+- be visible primarily from the parent Session that created it.
+
+The ordinary Task Browser Session list should generally present user-level Sessions, not flatten agent-created children into the same navigation hierarchy. Child-session inspection belongs primarily inside the parent Session/orchestration experience, using common host components where that proves useful.
 
 Some explicit operation may also create a normal user-interactable Session with a handoff, but ordinary child agent work should not become top-level Task creation.
 
@@ -717,9 +786,9 @@ orchestration strategy
 initial request/handoff
 optional parent Session
 environment choice:
-    share/default
+    share parent/default
     explicitly selected existing Environment
-    provision new Environment
+    establish new Environment
 interaction/presentation metadata when needed
 ```
 
@@ -729,7 +798,7 @@ An orchestration plugin may expose this core functionality as a model tool witho
 
 # 21. Strategy-owned agent-interaction UI
 
-An Agent Interaction plugin may occupy the primary center-workspace agent surface and provide an orchestration-strategy extension point.
+An Agent Interaction plugin may provide the primary agent-interaction `MainContentView` and an orchestration-strategy extension point.
 
 Possible providers include:
 
@@ -864,7 +933,7 @@ The tool/plugin supplies validated structured information needed for policy eval
 
 Core combines applicable policy/constraints and makes the authoritative allow/deny/ask decision.
 
-Tool availability, semantic effect description, policy, human approval, environment isolation, and credential access remain distinct concerns.
+Tool availability, semantic effect description, policy, human approval, Environment isolation, and credential access remain distinct concerns.
 
 ---
 
@@ -920,14 +989,15 @@ A useful default installation currently looks approximately like:
 Core ADELE
 │
 ├── Project / Task / Session / Run / Environment identities
-├── workbench shell + settings + command infrastructure
+├── workbench shell + settings
+├── Command registry + Command Palette + keybinding system
 ├── plugin/extension runtime + default-provider selection
 ├── agent kernel + inference composition + policy authority
-├── core Session creation
+├── core Task/Session lifecycle
 └── broad core extension points/capabilities/events
 
 Stock project/task/environment plugins
-├── Local Directory Project
+├── Local Directory Project Selector
 ├── Task Browser
 └── Git
 
@@ -938,7 +1008,7 @@ Stock agent interaction plugins
 ├── Agent Configuration / Policy
 ├── Model Routing / Control
 ├── Context Monitoring / Compaction
-└── Accounting / Usage
+└── Accounting / Usage / Quota
 
 Stock model-tool plugins
 ├── Filesystem Tools
@@ -949,7 +1019,7 @@ Stock model-tool plugins
 
 Stock review/presentation plugins
 ├── Diff / Review Viewer
-├── Internal Source Viewer
+├── Internal Source Editor
 └── Console / Terminal
 
 Stock model providers
@@ -960,39 +1030,78 @@ Some of these may ultimately be combined. For example, Session Forking could rem
 
 ## 28.2 Likely core-defined extension surfaces used by the stock plugins
 
-The exact names are intentionally provisional, but the default plugin topology appears to need broad core/public concepts in approximately these families.
+The exact names are intentionally provisional. More important than the names is that UI extension points describe semantic roles rather than current physical placement.
 
-### Workbench/UI surfaces
+### Workbench/UI semantics
 
 ```text
-TitleBarContribution
-LeftAuxiliaryView
-CenterWorkspaceView
-RightStatusContribution
-InspectorPresentation / InspectorCard contribution
-BottomDockView
-Command registration
+MainContentView
+    primary substantial work content
+    stock placement: center work area
+
+NavigationView
+    contextual navigation/browsing/results
+    stock placement: optional left auxiliary area
+
+SessionStatusContribution
+    compact state about the active Session/work
+    stock placement: upper right status area
+
+InspectionPresentation
+    structured detail opened by inspecting an operation/resource
+    stock placement: lower right inspection area
+
+StreamView / ConsolePresentation
+    wide stream-oriented or terminal-like content
+    stock placement: bottom area
+
+ContextStatusContribution
+    compact state about active Project/Task/Environment/profile context
+    stock placement may include title/chrome
+
 Settings declaration/editor contribution
+    settings metadata or bespoke editing UI
 ```
 
-Core owns the outer geometry and lifecycle. Plugins provide the contents.
+These semantic names should survive layout changes. For example, moving `SessionStatusContribution` from the right side to a left region does not require renaming or redefining the extension point.
 
-The exact UI API may mix declarative host-rendered descriptors and plugin-rendered widgets rather than force one representation everywhere.
+### Application commands and keybindings
+
+Core should expose first-class infrastructure conceptually resembling:
+
+```text
+Command registration
+Command Palette/search
+Command applicability/enabled state
+suggested/default keybinding registration
+user/profile/project keybinding override resolution
+```
+
+Plugins register Commands that invoke their domain functionality and may suggest default keybindings. Core owns collision handling, rebinding, presentation, and dispatch.
+
+A plugin-rendered button should normally invoke the same Command/domain operation that could be triggered by the Command Palette or a keybinding rather than creating a UI-only implementation path.
 
 ### General callable capabilities/services
 
 ```text
-Project opener/initializer
-Environment provisioner
+ProjectSelector
+EnvironmentProvider
 Environment filesystem access
 Environment process execution
-OpenSourceResource
-OpenTerminal / open console-like resource
+DisplaySourceFile
+ConsoleService / console-resource operations
 ModelProvider
+core Task creation
 core Session creation
 ```
 
-Some of these may eventually prove too specific or too general. `OpenSourceResource`, for example, is listed as likely core/public because unrelated components such as Diff, Search, diagnostics, and code-navigation features may all want to open source without depending on one editor plugin.
+`ProjectSelector` is intentionally broader than a Project opener. Different selectors may use an OS file picker, recent Projects, a custom catalog, a database, or a remote service.
+
+`EnvironmentProvider` owns the lifecycle of its Environment implementation rather than only initial provisioning.
+
+`DisplaySourceFile` means make a source file visible at an appropriate location. It may focus an existing editor, create a new editor view, or launch an external editor.
+
+`ConsoleService` is intentionally broader than `OpenTerminal`. Depending on the resource, it may support creating a console, displaying/focusing it, attaching retained output, sending input/commands, or other console operations. Exact APIs should come from concrete use rather than treating "open" as the whole abstraction.
 
 ### Agent/tool composition
 
@@ -1012,49 +1121,50 @@ The exact inference buckets remain intentionally open, but the default plugins b
 Likely broadly useful facts include concepts such as:
 
 ```text
-ProjectCreated / ProjectOpened
+ProjectSelected / ProjectOpened
 TaskCreated
 SessionCreated
 RunStarted / RunSettled
 ModelInvocationStarted / ModelInvocationSettled
 ToolInvocationStarted / ToolInvocationSettled
-EnvironmentCreated / EnvironmentDisposed
+EnvironmentCreated / EnvironmentReleased / EnvironmentDisposed
 ```
 
 These names do not imply that every event must be persisted.
 
-## 28.3 Local Directory Project plugin
+## 28.3 Local Directory Project Selector plugin
 
 **Role**
 
-Provides the stock interpretation of opening a development Project from a local directory.
+Provides the stock way to select a development Project from a local directory.
 
 **Likely provides**
 
-- a Project-opening/initialization implementation;
-- OS directory-selection UI when invoked interactively;
-- persistent association between the core Project and the chosen local source root, using ADELE storage unless a better concrete representation emerges;
+- a `ProjectSelector` implementation;
+- OS directory-selection UI when invoked;
+- resolution/creation of a core Project associated with the chosen local source root;
+- persistent association between the core Project and the chosen local source root where needed;
 - Project display metadata derived from the directory when useful.
 
 **Likely consumes**
 
-- core Project creation/lifecycle;
+- core Project identity/lifecycle;
 - host file/directory picker integration;
 - Project persistence facilities;
-- perhaps general Project-opening commands/UI.
+- general Project-selection Commands/UI.
 
 **Does not own**
 
 - Task identity;
-- Environment provisioning;
+- Environment lifecycle;
 - Git semantics;
-- source viewing/editing.
+- source editing.
 
-A directory Project may not be a Git repository at all. Git integration becomes available independently when its own applicability rules are satisfied.
+A directory Project may not be a Git repository at all. Git integration becomes applicable independently when its own conditions are satisfied.
 
-**Without complementary plugins**
+**Future alternatives**
 
-A local Project can still exist with no Git integration, no Task Browser, and no editor. It may not be useful for the stock development workflow, but the Project plugin itself is not responsible for activating those features.
+Other `ProjectSelector` implementations could present Recent Projects, query a custom Project database, display Projects from a cloud service, or implement another selection experience without changing core Project semantics.
 
 ## 28.4 Task Browser plugin
 
@@ -1066,10 +1176,10 @@ This is presentation over core Project/Task/Session identities rather than the i
 
 **Likely provides/defines**
 
-- Project-level Task Browser center view;
-- Task selection and Task creation UI;
-- Session listing/selection/creation UI;
-- child-Session drill-down/inspection UI;
+- Project-level Task Browser `MainContentView`;
+- Task selection UI;
+- `New Task` affordance and Task-owned input such as title/description;
+- top-level/user Session listing, selection, and creation UI;
 - optional plugin-defined extension points for Task decorations, Session decorations, Task actions, and Session actions if concrete needs justify them.
 
 Possible plugin-defined interfaces might conceptually resemble:
@@ -1085,39 +1195,51 @@ Numeric priority can order decorations/actions where necessary without one plugi
 
 **Likely consumes**
 
-- core Task and Session query/mutation services;
-- Environment provisioning during interactive Task creation;
-- active Environment information;
-- optional Task/Session decoration providers;
-- host default-provider selection when several Environment provisioners exist.
+- core Project/Task/Session query and mutation services;
+- core Task-creation operation;
+- core Session-creation operation;
+- optional Task/Session decoration providers.
+
+**Does not orchestrate Environment creation**
+
+When the user creates a Task, Task Browser sends the Task intent to core. Core's Task lifecycle independently resolves the applicable/default `EnvironmentProvider` and establishes the primary Environment. Task Browser does not call Git or Docker and does not need to understand which Environment implementation is selected.
+
+If the stock Task-creation experience exposes an Environment-provider choice, that can be a reusable core provider-selection control associated with the core Task-creation flow rather than Environment-specific logic inside Task Browser.
+
+**Environment visibility while browsing**
+
+While the user is merely browsing Tasks/Sessions there may be no active Environment at all. Task Browser can show Environment metadata/status associated with a Task if such information is useful, but it should not be described as consuming "the active Environment" as a prerequisite for browsing.
 
 **Expected stock integrations**
 
-- Git-backed Environment provisioning supplies the ordinary Task environment;
-- Accounting can add cost/usage summaries;
-- TODO/Progress can add progress for active Sessions;
+- Accounting can add Task/Session cost or usage summaries;
+- TODO/Progress can add progress for individual Sessions;
 - core Run/Session state can provide active/waiting indicators;
-- child Sessions remain nested below their parent rather than becoming peer top-level Sessions by default.
+- optional Git or Environment status can appear through decorations if useful.
+
+Agent-created child Sessions are **not** expected to be normal peers in the Task Browser Session list. Their inspection belongs primarily within the parent Session that spawned them.
 
 **Without complementary plugins**
 
-The browser still shows core Tasks and Sessions. Missing cost, progress, SCM, or other decorations simply disappear.
+The browser still shows core Tasks and top-level Sessions. Missing cost, progress, SCM, or other decorations simply disappear.
 
 ## 28.5 Git plugin
 
 **Role**
 
-Provides Git-specific development behavior without making Git part of core Task, Environment, review, or source-viewing semantics.
+Provides Git-specific development behavior without making Git part of core Task, Environment, review, or source-editing semantics.
 
 One Git plugin may legitimately provide many independent extensions.
 
 **Likely provides**
 
-### Git Worktree Environment provisioner
+### Git Worktree Environment provider
 
-For the stock local-development configuration, creating a Task normally asks the configured Environment provider to create the Task's primary Environment. The Git implementation approximately creates/manages a worktree and usually a corresponding branch.
+For the stock local-development configuration, core Task creation normally resolves Git Worktree as the default applicable `EnvironmentProvider`.
 
-It then exposes the resulting Environment through the general Environment filesystem/process interfaces.
+The Git provider approximately creates/manages a worktree and usually a corresponding branch, exposes the resulting Environment through the general Environment filesystem/process interfaces, and owns lifecycle operations appropriate to that Environment.
+
+Lifecycle may include creating/reconnecting to the worktree, validating that it still exists, releasing ADELE-held resources, and deleting the worktree/branch state when the user explicitly destroys the Environment. Exact destructive behavior must be conservative and designed with real workflows.
 
 The equality of Task/environment/worktree/branch names may be a useful convention, not a core invariant.
 
@@ -1151,8 +1273,8 @@ The plugin may additionally provide:
 - status information;
 - SCM-oriented model tools;
 - commit operations;
-- Task Browser or title/status decorations;
-- commands;
+- Task Browser or context-status decorations;
+- application Commands and suggested keybindings;
 - inspectors.
 
 Those are independent registrations rather than reasons to move Git into core.
@@ -1160,27 +1282,28 @@ Those are independent registrations rather than reasons to move Git into core.
 **Likely consumes**
 
 - local Project/source-root information where applicable;
-- Environment APIs/lifecycle;
+- core Environment lifecycle contracts;
 - Diff/Review plugin-defined interfaces if Diff owns those contracts;
-- workbench/status/command extension points;
+- semantic workbench/status/Command extension points;
 - core policy for any model-callable side-effecting operations.
 
 **Without complementary plugins**
 
-Git Environment provisioning can remain useful even if Diff is disabled. Git review interfaces can remain registered even if nobody consumes them.
+Git Environment behavior can remain useful even if Diff is disabled. Git review interfaces can remain registered even if nobody consumes them.
 
 ## 28.6 Agent Interaction plugin
 
 **Role**
 
-Provides the primary agent-interaction presence in the center workspace and hosts whichever orchestration strategy a Session is permanently bound to.
+Provides the primary agent-interaction `MainContentView` and hosts whichever orchestration strategy a Session is permanently bound to.
 
 **Likely provides/defines**
 
-- high-priority center-workspace contribution for agent interaction;
+- high-priority `MainContentView` contribution for agent interaction;
 - orchestration-strategy extension point/catalog;
 - Session-creation UX for selecting among available strategies when more than one applies;
-- strategy-hosting lifecycle and common framing around the selected strategy surface.
+- strategy-hosting lifecycle and common framing around the selected strategy surface;
+- perhaps reusable parent/child Session inspection framing if experience shows that this is strategy-independent.
 
 A strategy registration likely needs enough metadata/functionality to support concepts such as:
 
@@ -1200,7 +1323,7 @@ The exact contract should be designed from the first real strategy extraction ra
 - core Session identity/lifecycle;
 - registered orchestration strategies;
 - core create-Session operation;
-- center-workspace host APIs.
+- `MainContentView` host APIs.
 
 **Does not need to understand**
 
@@ -1230,6 +1353,7 @@ It is the likely long-term home of the behavior currently represented by the pro
 - Chat timeline UI;
 - Draft Request/composer behavior;
 - presentation of user/agent messages and operation groups;
+- child-Session activity/inspection within the parent Session experience when Chat creates delegated Sessions;
 - strategy-specific continuation behavior;
 - Chat-specific events such as `ChatTurnCompleted` if useful.
 
@@ -1252,6 +1376,7 @@ The exact set should remain driven by real stock integrations. The important arc
 - structured inference composition;
 - model/tool catalogs;
 - core Session persistence facilities;
+- core child-Session query/creation facilities;
 - common timeline/composer UI packages;
 - optional tool-presentation providers;
 - optional review-feedback interfaces when another plugin wants to send structured feedback into the active Chat Session.
@@ -1261,8 +1386,8 @@ The exact set should remain driven by real stock integrations. The important arc
 - Agent Configuration adds prompt/header UI and inference context/policy;
 - Model Routing adds prompt controls and inference preferences;
 - Context Monitoring adds context status/compaction actions;
-- Accounting can add usage/cost displays;
-- TODO/Progress can show Session progress elsewhere without Chat needing to understand it;
+- Accounting can add usage/cost/quota displays;
+- TODO/Progress can show Session progress through semantic Session-status surfaces without Chat needing to understand it;
 - Session Forking adds Chat-specific fork navigation/actions;
 - Diff/Review can submit review feedback when Chat exposes or implements the expected feedback target.
 
@@ -1283,7 +1408,7 @@ This remains more speculative than the base Chat strategy because conversation f
 - Chat turn action(s) for forking from a selected point;
 - fork navigation UI in turn markers or another Chat-defined region;
 - durable fork/lineage metadata;
-- commands for navigating branches.
+- Commands for navigating branches and suggested keybindings where useful.
 
 **Likely consumes**
 
@@ -1314,7 +1439,7 @@ Defines and manages semantic agent choices and lets those choices affect UI, con
 - structured inference context contributions containing Agent instructions/persona/stock context;
 - tool-availability or policy constraints associated with the Agent;
 - display metadata such as current Agent label;
-- perhaps Agent-related commands.
+- perhaps Agent-related application Commands.
 
 **Likely consumes**
 
@@ -1380,11 +1505,11 @@ Observes or derives the effective context expected for upcoming inference, expos
 **Likely provides**
 
 - Session-level context usage/status information;
-- Chat session-header contribution showing approximate context usage;
+- `SessionStatusContribution` showing approximate context usage;
 - Chat turn action/button for compacting history through a selected turn;
-- commands/tools for requesting compaction if useful;
+- Commands/tools for requesting compaction if useful;
 - structured inference contribution representing retained compaction/summarization state;
-- perhaps inspector UI explaining context composition.
+- perhaps `InspectionPresentation` explaining context composition.
 
 **Likely consumes**
 
@@ -1396,36 +1521,56 @@ Observes or derives the effective context expected for upcoming inference, expos
 
 The exact compaction model should not be designed merely from this document. What matters directionally is that context monitoring/compaction is replaceable and does not need to be hard-coded into Chat.
 
-## 28.12 Accounting / Usage plugin
+## 28.12 Accounting / Usage / Quota plugin
 
 **Role**
 
-Tracks model usage and, where sufficient pricing information exists, computes cost across turns, Sessions, and Tasks.
+Tracks model usage, computes cost where sufficient pricing information exists, and presents provider/account quota or allowance consumption when providers expose enough information.
+
+The three concepts are related but not identical:
+
+```text
+usage
+    tokens / requests / other measured consumption
+
+cost
+    monetary estimate/actual based on provider/model pricing
+
+quota / allowance
+    provider/account limits, subscription allowances, rate-limit windows,
+    remaining capacity, reset time, or analogous provider-specific constraints
+```
 
 **Likely provides**
 
 - usage/cost aggregation service/query;
+- provider/account quota-status aggregation/query where available;
 - Session-level usage/cost display;
 - optional per-turn usage/cost presentation;
-- Task Browser decorations showing aggregate Task cost;
-- settings for cost display/accounting policy if needed.
+- Task Browser decorations showing aggregate Task cost/usage;
+- `SessionStatusContribution` or `ContextStatusContribution` for quota/allowance status where appropriate;
+- settings for cost/quota display and accounting policy if needed.
 
 **Likely consumes**
 
 - model-invocation usage events and/or retained invocation history;
 - provider/model pricing metadata where available;
+- provider/account quota/rate-limit/status interfaces where available;
 - core Session/Task identity;
 - Chat header/turn presentation extension points, optionally;
 - Task Browser decoration extension points, optionally;
+- semantic status surfaces;
 - ADELE persistence when maintaining derived aggregates.
 
 **Historical behavior**
 
 If canonical invocation history retains enough usage data, Accounting can reconstruct historical totals by query. If not, an implementation may subscribe to live events and only know usage from the point it began observing. The Event abstraction itself does not promise replay.
 
+Quota status is often inherently provider-live rather than derivable from local history. The plugin may query current provider/account information instead of persisting it as authoritative state.
+
 **Failure isolation**
 
-Accounting failure should not ordinarily fail the model invocation whose usage it is observing.
+Accounting or quota-display failure should not ordinarily fail the model invocation whose usage it is observing.
 
 ## 28.13 Filesystem Tools plugin
 
@@ -1448,7 +1593,7 @@ delete_file
 
 The exact catalog remains governed by `agent-tooling-direction.md` and concrete implementation needs.
 
-The plugin may also provide tool-specific Chat summaries, inspectors, and source-opening actions through whatever tool-presentation extension model emerges.
+The plugin may also provide tool-specific Chat summaries, `InspectionPresentation`s, and source-display actions through whatever tool-presentation extension model emerges.
 
 **Likely consumes**
 
@@ -1456,8 +1601,8 @@ The plugin may also provide tool-specific Chat summaries, inspectors, and source
 - Environment filesystem API;
 - model-tool registration/materialization;
 - core policy/approval pipeline;
-- OpenSourceResource for rich inspection when available;
-- tool-presentation/inspector extension points.
+- `DisplaySourceFile` for rich inspection when available;
+- tool-presentation/inspection extension points.
 
 **Policy role**
 
@@ -1490,20 +1635,21 @@ The default installation likely needs only one simple structured implementation 
 
 - one or more model search tools;
 - structured search results;
-- search inspector presentation;
-- perhaps a left-auxiliary Search Results view and explicit search command.
+- `InspectionPresentation` for search results;
+- perhaps a `NavigationView` for explicit user search results;
+- application Command(s) and suggested keybindings for explicit search.
 
 **Likely consumes**
 
 - Environment filesystem/search access;
 - or Environment process execution for command-backed implementations;
 - model-tool registration;
-- OpenSourceResource so result clicks can open files when a provider exists;
-- left auxiliary/inspector UI extension points.
+- `DisplaySourceFile` so result clicks can show/focus files when a provider exists;
+- navigation/inspection UI extension points.
 
-**Without a source opener**
+**Without a source-display provider**
 
-Search results remain readable but file navigation is unavailable.
+Search results remain readable but file navigation/display is unavailable.
 
 ## 28.15 Command Tool plugin
 
@@ -1518,8 +1664,8 @@ Provides the universal model-callable external-program execution escape hatch de
 - streaming progress/output observations;
 - bounded model-facing results;
 - Chat activity summary;
-- inspector presentation;
-- "open full output" integration when a console/bottom-dock provider is available;
+- `InspectionPresentation`;
+- "show full output" integration when a Console provider is available;
 - command-specific effect and policy interpretation.
 
 **Likely consumes**
@@ -1527,8 +1673,8 @@ Provides the universal model-callable external-program execution escape hatch de
 - current Environment process-execution API;
 - model-tool registration;
 - core policy/approval pipeline;
-- inspector APIs;
-- optional Console/Terminal capabilities for full-output presentation.
+- inspection APIs;
+- optional `ConsoleService` for full-output presentation and related console operations.
 
 **Policy role**
 
@@ -1536,7 +1682,7 @@ The Command plugin can parse/understand its own invocation representation, confi
 
 **Without Console/Terminal**
 
-The command tool still runs and can present bounded output in Chat/Inspector. Only the richer full-output projection is absent.
+The command tool still runs and can present bounded output in Chat/Inspection. Only the richer console projection is absent.
 
 ## 28.16 TODO / Progress plugin
 
@@ -1552,7 +1698,7 @@ A Session's orchestration may use TODOs as its visible execution checklist while
 
 - model tools for creating/updating/completing/reordering TODO items;
 - Session-scoped TODO/progress storage/query service;
-- right-sidebar status contribution showing current Session progress;
+- `SessionStatusContribution` showing current Session progress;
 - Task Browser **Session** decoration, such as progress for an active Session;
 - perhaps Chat/header progress UI if later useful.
 
@@ -1561,7 +1707,7 @@ A Session's orchestration may use TODOs as its visible execution checklist while
 - core Session identity/lifecycle;
 - model-tool registration;
 - Session-scoped ADELE persistence;
-- right status region;
+- semantic Session-status surface;
 - optional Task Browser Session-decoration extension point.
 
 **Not currently expected**
@@ -1581,16 +1727,16 @@ Provides a durable, model-editable plan as a Session artifact rather than making
 
 - model tools to read/write/update the current plan;
 - Session-scoped plan persistence or artifact identity;
-- artifact/center-workspace presentation;
-- commands for opening the plan;
-- perhaps inspector summaries.
+- `MainContentView`/artifact presentation;
+- application Command(s) and suggested keybindings for displaying the plan;
+- perhaps inspection summaries.
 
 **Likely consumes**
 
 - core Session identity;
 - model-tool registration;
 - host persistence/artifact facilities;
-- center-workspace/artifact UI extension points.
+- Main Content/artifact UI extension points.
 
 **Without the plugin**
 
@@ -1600,11 +1746,11 @@ Strategies continue to function without a formal plan tool.
 
 **Role**
 
-Provides the rich center-workspace review experience shown in the mockups without embedding Git or editor assumptions.
+Provides the rich review experience shown in the mockups without embedding Git or editor assumptions.
 
 **Likely provides/defines**
 
-- singleton Diff/Review center-workspace view;
+- singleton Diff/Review `MainContentView`;
 - scope controls such as current changes, staged/approved changes, or other review sets as supported by the active change provider;
 - change/hunk rendering and comment UI;
 - plugin-defined typed interfaces for obtaining reviewable changes and invoking review-domain operations where those concepts are not sufficiently general for core.
@@ -1623,81 +1769,90 @@ The final split should follow the actual review workflow rather than these place
 
 - one or more change/diff providers, with Git expected as the stock implementation;
 - optional approval/unapproval provider;
-- `OpenSourceResource` for opening the complete source file;
+- `DisplaySourceFile` for displaying/focusing the complete source file;
 - optional review-feedback receiver implemented by the active orchestration strategy;
-- center-workspace APIs;
-- commands/keybindings.
+- Main Content APIs;
+- application Commands/keybindings.
 
 **Default Git integration**
 
 ```text
 Diff data             <- Git
 Approve/Unapprove     <- Git staging/index implementation
-Open file             <- Internal Source Viewer by default
+Display file          <- Internal Source Editor by default
 Review comment        -> active Chat strategy feedback receiver, when available
 ```
 
 **Graceful degradation**
 
-- no `OpenSourceResource`: filename/file affordance is not linkable;
-- no approval provider: diff is read-only with approval controls absent/disabled;
+- no `DisplaySourceFile`: filename/file affordance is not navigable into a source editor;
+- no approval provider: diff still displays but approval controls are absent/disabled;
 - no review-feedback receiver: comment-to-agent affordance is unavailable;
 - no Git but another compatible change provider: Diff can remain useful.
 
 The Diff Viewer defines presentation and review interaction. It does not define Git staging semantics merely because the stock Git plugin supplies them.
 
-## 28.19 Internal Source Viewer plugin
+## 28.19 Internal Source Editor plugin
 
 **Role**
 
-Provides ADELE's stock in-app source viewing/editing experience.
+Provides ADELE's stock in-app source display **and editing** experience.
 
-The initial implementation may begin read-only and grow editing features later.
+Hand-editing is an intended part of the development workflow, not merely a hypothetical later enhancement. Users should be able to inspect a file in full context and make manual edits when that is the fastest or clearest way to proceed.
 
 **Likely provides**
 
-- `OpenSourceResource` provider;
-- center-workspace Source Group views;
+- `DisplaySourceFile` provider;
+- one or more source-editor `MainContentView`s / Source Group views;
+- source editing and save behavior through the active Environment;
 - syntax highlighting and source navigation;
-- source-related commands;
-- perhaps richer source-inspection capability to tool/diagnostic presenters.
+- application Commands and suggested keybindings;
+- dirty-state/conflict handling appropriate to Environment/source semantics;
+- perhaps richer source-inspection/navigation capability to tool/diagnostic presenters.
+
+`DisplaySourceFile` may focus an already-displayed editor rather than creating a duplicate view. Inputs may eventually include a line/range/selection to reveal.
 
 **Likely consumes**
 
 - current Environment filesystem/source APIs;
-- center-workspace Source Group hosting;
-- command/keybinding infrastructure;
+- Main Content/source-group hosting;
+- Command/keybinding infrastructure;
 - optional language/search/navigation services later.
 
 **Multiple providers**
 
-An External Editor plugin can provide the same `OpenSourceResource` capability by opening VS Code or another editor. Host configuration chooses the default, while callers may expose alternatives.
+An External Editor plugin can provide the same `DisplaySourceFile` capability by displaying the file in VS Code or another editor. Host configuration chooses the default, while callers may expose alternatives.
+
+The default internal provider being editable does not require every `DisplaySourceFile` provider to expose identical editing APIs; the capability's narrow responsibility is to make the requested source file visible through that provider.
 
 ## 28.20 Console / Terminal plugin
 
 **Role**
 
-Owns bottom-dock terminal/console presentation and user-created interactive shells.
+Owns console/terminal presentation and user-created interactive shells without reducing the abstraction to a one-shot "open terminal" action.
 
 **Likely provides**
 
-- bottom-dock Console surface;
+- `StreamView` / console presentation;
 - creation/management of interactive Environment-owned shell resources;
-- open/focus console-like resource capability;
-- read-only terminal presentation for retained command output;
+- `ConsoleService` or equivalent operations for displaying/focusing console resources;
+- sending input/commands to interactive console resources when allowed;
+- attaching/displaying retained command output in a read-only terminal presentation;
 - `+` or similar UI for creating user shells;
-- commands for opening/focusing terminals.
+- application Commands/keybindings for creating, focusing, closing, or navigating consoles.
 
 **Likely consumes**
 
 - Environment process/PTY facilities;
-- bottom-dock host APIs;
+- Stream/Console host APIs;
 - runtime-resource lifecycle;
 - command invocation output/resource references for inspected agent commands.
 
 **Important separation**
 
-Interactive user shells and agent command invocations may share terminal rendering and bottom-dock presentation but remain different semantic resources.
+Interactive user shells and agent command invocations may share terminal rendering and Stream presentation but remain different semantic resources.
+
+`ConsoleService` should not imply that every console supports every operation. A retained read-only command-output console cannot meaningfully accept arbitrary input, while an interactive shell can. The service/resource contract should expose capabilities appropriate to the specific resource.
 
 ## 28.21 OpenAI provider plugin
 
@@ -1714,6 +1869,7 @@ This is closest to a mature real plugin in the current repository and should con
 - authentication/account configuration UI;
 - model catalog/capability metadata where useful;
 - usage metadata emitted with model results;
+- provider/account quota/rate-limit/allowance information where available;
 - perhaps pricing information or a pricing interface that Accounting/Model Routing can consume.
 
 **Likely consumes**
@@ -1734,23 +1890,23 @@ Those remain separate so another provider can participate without requiring stoc
 
 ## 28.22 External Editor plugin example
 
-This is useful as a concrete non-stock-or-optional example because it tests provider substitution.
+This is useful as a concrete optional example because it tests provider substitution.
 
 **Role**
 
-Opens a source resource in an external editor such as VS Code.
+Displays a source file in an external editor such as VS Code.
 
 **Provides**
 
-- another `OpenSourceResource` provider.
+- another `DisplaySourceFile` provider.
 
 **Consumes**
 
-- source-resource/environment path material sufficient to launch the external editor;
+- source-resource/Environment path material sufficient to launch or focus the external editor;
 - Environment/local-path projection only when the current Environment supports such a projection;
 - process launching/desktop integration as appropriate.
 
-With both Internal Source Viewer and External Editor active, ADELE configuration can select the default while Diff/Search/etc. may expose the alternate provider.
+With both Internal Source Editor and External Editor active, ADELE configuration can select the default while Diff/Search/etc. may expose the alternate provider.
 
 No consumer needs to know either implementation by plugin identity.
 
@@ -1764,19 +1920,20 @@ Provides an alternative Task Environment backed by a container rather than a Git
 
 **Provides**
 
-- `EnvironmentProvisioner` implementation;
+- `EnvironmentProvider` implementation;
 - Environment filesystem API backed by the container;
 - Environment process execution backed by the container;
+- Environment lifecycle operations such as create/reconnect/release/destroy as concrete Docker behavior requires;
 - perhaps PTY/resource support.
 
 **Consumes**
 
-- Project/source material needed to construct the container environment;
+- Project/source material needed to construct the container Environment;
 - Docker runtime integration;
-- Environment lifecycle APIs;
+- core Environment lifecycle APIs;
 - configuration for image/build/mount behavior.
 
-Filesystem, Search, and Command tool plugins continue working against the resulting Environment without knowing that Docker is involved.
+Filesystem, Search, Command, and Internal Source Editor plugins continue working against the resulting Environment without knowing that Docker is involved.
 
 ---
 
@@ -1786,34 +1943,55 @@ Walking the expected stock composition through normal workflows helps expose whe
 
 These flows are illustrative rather than frozen sequence diagrams.
 
-## 29.1 Open a Project
+## 29.1 Select/open a Project
 
 ```text
-User chooses Open Project
-    -> core/default provider routing chooses Local Directory Project
-    -> Local Directory Project shows OS directory picker
-    -> core creates/opens Project identity
+User chooses Select/Open Project
+    -> host/default routing chooses Local Directory Project Selector
+    -> Local Directory selector shows OS directory picker
+    -> selected directory resolves/creates core Project identity
     -> plugin associates local source root with Project
     -> Project-level UI becomes available
 ```
 
-Git may independently notice that the Project is Git-backed and register applicable SCM/Environment functionality. Project identity does not depend on that discovery.
+Another selector could instead show Recent Projects or a remote catalog. Git may independently recognize that the resulting Project is Git-backed and register applicable behavior. Project identity does not depend on that discovery.
 
 ## 29.2 Create a Task with the stock Git Environment
 
 ```text
 Task Browser: New Task
-    -> core creates Task intent/metadata
-    -> asks available EnvironmentProvisioner implementations
+    -> Task Browser gathers Task-owned input such as title
+    -> calls core CreateTask
+    -> core creates durable Task identity
+    -> core Task lifecycle resolves applicable/default EnvironmentProvider
     -> configured default is Git Worktree
-    -> Git provisions Task Environment
-    -> Task records primary Environment association
-    -> Task Browser opens/selects Task
+    -> Git establishes primary Task Environment
+    -> core associates Environment with Task
+    -> Task creation settles
+    -> Task Browser may select/display the new Task
 ```
 
-If Docker is also active, the creation UI may expose it as an alternate. If the selected provisioner fails, Task creation/provisioning needs explicit recovery semantics rather than silently falling back to a different Environment behind the user's choice.
+Task Browser never calls Git directly and does not need to know how the primary Environment is created.
 
-## 29.3 Create a Chat Session
+If Docker is also active and the product exposes provider choice at creation time, the host can provide a generic Environment-provider choice as part of the core Task-creation flow. If the selected provider fails, Task lifecycle needs explicit recovery semantics rather than silently falling back to another provider behind the user's choice.
+
+Destroying or releasing a Task Environment later is likewise an Environment lifecycle operation, not Task Browser behavior. A Task may retain Sessions/history even when its expensive Environment resources have been released, if the selected provider and product lifecycle support that state.
+
+## 29.3 Browse Tasks and Sessions
+
+```text
+User opens Project-level Task Browser
+    -> browser queries core Tasks and top-level/user Sessions
+    -> optional decorations provide cost/progress/status
+    -> no Task/Session selection is required merely to browse
+    -> therefore there may be no active Environment
+```
+
+Selecting a Task or Session can then establish the current application context and expose that Task/Session's Environment status elsewhere.
+
+Agent-created child Sessions are not normally flattened into this top-level list. The parent Session surface is the primary place to inspect them.
+
+## 29.4 Create a Chat Session
 
 ```text
 Task Browser / Agent Interaction: New Session
@@ -1827,7 +2005,7 @@ Task Browser / Agent Interaction: New Session
 
 Agent Configuration, Model Routing, Context Monitoring, Accounting, and Session Forking may all have registrations active at this point. Chat need not coordinate their semantics directly.
 
-## 29.4 Submit a Chat turn
+## 29.5 Submit a Chat turn
 
 ```text
 User submits Draft Request
@@ -1846,7 +2024,7 @@ User submits Draft Request
 
 The prompt widgets are not what perform this composition. They are simply one way to modify plugin-owned state that later participates in resolution.
 
-## 29.5 Model changes its model/agent choice
+## 29.6 Model changes its model/agent choice
 
 ```text
 Model decides stronger model or another Agent is useful
@@ -1858,7 +2036,7 @@ Model decides stronger model or another Agent is useful
 
 The orchestration strategy can give the model guidance about when such choices are useful without hard-coding every workflow stage.
 
-## 29.6 Model reads or modifies source
+## 29.7 Model reads or modifies source
 
 ```text
 Model calls read_file/apply_patch
@@ -1869,12 +2047,14 @@ Model calls read_file/apply_patch
     -> tool uses Environment filesystem API
     -> progress/outcome emitted
     -> Chat renders compact tool activity
-    -> inspector/source presentation available when providers exist
+    -> Inspection/source presentation available when providers exist
 ```
 
 With Git Worktree Environment, the filesystem operation reaches the worktree. With Docker Environment, the same model tool reaches the container filesystem.
 
-## 29.7 Model runs a command
+A user can later choose `Display Source File` from the tool result and hand-edit the same file through the Internal Source Editor without changing the tool or Environment abstraction.
+
+## 29.8 Model runs a command
 
 ```text
 Model calls run_command
@@ -1883,38 +2063,44 @@ Model calls run_command
     -> Environment process API starts process
     -> live output events update host/UI
     -> Chat shows compact activity
-    -> Inspector shows bounded live detail
-    -> optional Open Full Output asks Console plugin to show terminal view
+    -> Inspection shows bounded live detail
+    -> optional Show Full Output asks ConsoleService to display command output
     -> bounded result returns to model when appropriate
 ```
 
-Command execution remains possible without Console; only the richest human-facing projection disappears.
+Command execution remains possible without Console/Terminal; only the richest human-facing projection disappears.
 
-## 29.8 TODO progress during a Session
+An interactive console may separately accept user/plugin input through `ConsoleService`. That is not the same as altering an already-running agent command invocation.
+
+## 29.9 TODO progress during a Session
 
 ```text
 Chat agent calls TODO tools
     -> TODO/Progress updates Session-scoped list
-    -> right status contribution updates
-    -> Task Browser may update that Session's progress indicator
+    -> SessionStatusContribution updates
+    -> Task Browser may update that Session's progress decoration
 ```
 
 Another Session in the same Task has an independent TODO list. Task workflow category remains user-controlled.
 
-## 29.9 Review changes
+## 29.10 Review changes
 
 ```text
-User opens Diff
+User displays Diff
     -> Diff Viewer asks applicable DiffSource provider for current change set
     -> Git provides stock diff data
 
 User clicks filename
-    -> Diff invokes OpenSourceResource
-    -> host default is Internal Source Viewer
-    -> source opens in center Source Group
+    -> Diff invokes DisplaySourceFile
+    -> host default is Internal Source Editor
+    -> existing editor is focused or source editor is displayed in Main Content
 
 User chooses alternate editor
     -> host routes same interface to External Editor provider
+
+User manually edits source
+    -> Internal Source Editor writes through current Environment filesystem API
+    -> Diff/Git change state updates through their normal observation paths
 
 User approves hunk
     -> Diff invokes review approval interface
@@ -1925,24 +2111,24 @@ User writes review comment to agent
     -> Chat strategy incorporates feedback according to its own semantics
 ```
 
-No step requires Diff to import Git, Internal Source Viewer, External Editor, or Chat implementation code.
+No step requires Diff to import Git, Internal Source Editor, External Editor, or Chat implementation code.
 
-## 29.10 Create child Sessions
+## 29.11 Create child Sessions
 
 ```text
 Parent Session decides to delegate work
     -> model/core tool invokes Create Session
         parentSession = current Session
         strategy = selected strategy
-        environment = share parent OR provision new
+        environment = share parent OR establish new
         handoff = generated instructions/context
     -> core creates child Session relationship
-    -> optional Environment provider provisions additional Task Environment
+    -> optional/default EnvironmentProvider establishes additional Task Environment
     -> child runs independently
-    -> parent/orchestration can inspect results
+    -> parent Session surface shows/inspects child activity/results
 ```
 
-The child is still a Session, not a Task. Presentation may keep it nested and inspectable without making it a normal user-steerable top-level Session.
+The child is still a Session, not a Task. Presentation may keep it inspectable without making it a normal user-steerable top-level Session or a peer in the Task Browser.
 
 ---
 
@@ -1958,12 +2144,16 @@ Likely examples:
 
 | Interface / extension family | Likely owner | Why |
 | --- | --- | --- |
-| Workbench top-level regions | Core | Host owns outer geometry |
-| Settings/commands | Core | Cross-cutting application infrastructure |
+| Semantic workbench surfaces (`MainContentView`, Session status, inspection, navigation, stream) | Core | Host composes global UI while placement may evolve |
+| Application Commands / Command Palette / keybindings | Core | Cross-cutting input/controller infrastructure |
+| Settings | Core | Cross-cutting configuration infrastructure |
+| ProjectSelector | Core/public | Project is core; selection methods are interchangeable |
 | ModelProvider | Core/public capability | Provider-neutral kernel boundary |
-| Environment provisioning | Core/public | Task lifecycle can use interchangeable implementations |
-| Environment filesystem/process APIs | Core/public | Tools must be environment-independent |
-| OpenSourceResource | Probably core/public | Diff, Search, diagnostics, navigation, and others may all consume it |
+| EnvironmentProvider | Core/public | Task lifecycle needs interchangeable Environment implementations and lifecycle |
+| Environment filesystem/process APIs | Core/public | Tools/editors must be Environment-independent |
+| DisplaySourceFile | Probably core/public | Diff, Search, diagnostics, navigation, and others may all consume it |
+| ConsoleService / console-resource operations | Probably core/public | Commands, user shells, inspectors, and future integrations may need more than open/focus |
+| Task creation | Core | Task identity/lifecycle is core-owned |
 | Session creation | Core | Session identity/lifecycle is core-owned |
 | Inference composition buckets | Core | Core owns stable provider-neutral invocation boundary |
 | Tool registration/execution semantics | Core/kernel-facing | Cross-strategy execution invariant |
@@ -1985,29 +2175,31 @@ The following matrix is a compact view of the same speculative topology.
 
 `P` means the plugin primarily **provides/implements** the interface. `C` means it primarily **consumes** it. `D` means the plugin likely **defines/owns** the extension point for others. Blank cells are intentionally not dependencies.
 
-| Plugin | Env provision | Env FS/process | Orchestration | Chat regions | Inference composition | Model tools | Open source | Diff/review | Task/Session decorations | Events/usage | Bottom console |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Local Directory Project |  |  |  |  |  |  |  |  |  |  |  |
-| Task Browser | C |  |  |  |  |  |  |  | D/C |  |  |
-| Git | P | P |  |  |  | optional P |  | P | optional P | optional P |  |
-| Agent Interaction |  |  | D/C |  |  |  |  |  |  |  |  |
-| Chat Strategy |  |  | P | D/C | C/P | C | optional C | optional P/C |  | P |  |
-| Session Forking |  |  |  | C/P |  |  |  |  |  |  |  |
-| Agent Configuration |  |  |  | P | P | P |  |  | optional P |  |  |
-| Model Routing |  |  |  | P | P | P |  |  | optional P |  |  |
-| Context Monitoring |  |  |  | P | P | optional P |  |  | optional P | C |  |
-| Accounting |  |  |  | optional P |  |  |  |  | P | C |  |
-| Filesystem Tools |  | C |  |  |  | P | C |  |  | P |  |
-| Search Tools |  | C |  |  |  | P | C |  |  |  |  |
-| Command Tool |  | C |  |  |  | P |  |  |  | P | C |
-| TODO / Progress |  |  |  | optional P |  | P |  |  | P | optional P |  |
-| Plan |  |  |  | optional P |  | P |  |  | optional P |  |  |
-| Diff / Review Viewer |  |  |  |  |  |  | C | D/C |  | P |  |
-| Internal Source Viewer |  | C |  |  |  |  | P |  |  |  |  |
-| Console / Terminal |  | C |  |  |  |  |  |  |  |  | P |
-| OpenAI |  |  |  |  | P via provider result/metadata |  |  |  |  | P |  |
+| Plugin | Project select | Env provider | Env FS/process | Orchestration | Chat regions | Inference composition | Model tools | Display source | Diff/review | Task/Session decorations | Events/usage/quota | Console |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Local Directory Project Selector | P |  |  |  |  |  |  |  |  |  |  |  |
+| Task Browser |  |  |  |  |  |  |  |  |  | D/C |  |  |
+| Git |  | P | P |  |  |  | optional P |  | P | optional P | optional P |  |
+| Agent Interaction |  |  |  | D/C |  |  |  |  |  |  |  |  |
+| Chat Strategy |  |  |  | P | D/C | C/P | C | optional C | optional P/C |  | P |  |
+| Session Forking |  |  |  |  | C/P |  |  |  |  |  |  |  |
+| Agent Configuration |  |  |  |  | P | P | P |  |  | optional P |  |  |
+| Model Routing |  |  |  |  | P | P | P |  |  | optional P | C |  |
+| Context Monitoring |  |  |  |  | P | P | optional P |  |  | optional P | C |  |
+| Accounting / Usage / Quota |  |  |  |  | optional P |  |  |  |  | P | C/P |  |
+| Filesystem Tools |  |  | C |  |  |  | P | C |  |  | P |  |
+| Search Tools |  |  | C |  |  |  | P | C |  |  |  |  |
+| Command Tool |  |  | C |  |  |  | P |  |  |  | P | C |
+| TODO / Progress |  |  |  |  | optional P |  | P |  |  | P | optional P |  |
+| Plan |  |  |  |  | optional P |  | P |  |  | optional P |  |  |
+| Diff / Review Viewer |  |  |  |  |  |  |  | C | D/C |  | P |  |
+| Internal Source Editor |  |  | C |  |  |  |  | P |  |  |  |  |
+| Console / Terminal |  |  | C |  |  |  |  |  |  |  |  | P |
+| OpenAI |  |  |  |  |  | P via provider result/metadata |  |  |  |  | P |  |
 
 The matrix should not be interpreted as a build graph. Most entries represent optional runtime composition against an interface, not a requirement that another particular plugin be active.
+
+Notably, Task Browser does **not** consume `EnvironmentProvider`; core Task lifecycle does. This omission is intentional and preserves the UI/domain boundary.
 
 ---
 
@@ -2021,7 +2213,7 @@ Examples:
 
 - Chat active with no model tools;
 - orchestration strategy registered with no consumer UI;
-- Diff active with no source opener;
+- Diff active with no source-display provider;
 - multiple Environment providers with one configured default;
 - no optional Accounting plugin;
 - TODO active but no Task Browser decoration consumer;
@@ -2041,7 +2233,7 @@ Known reconciliation items include:
 
 ## 33.1 Project equals directory
 
-`docs/mockups/README.md` currently describes Project as fundamentally a directory. The intended long-term direction here is that Project is an abstract core concept and local-directory Project behavior is supplied by the stock development composition.
+`docs/mockups/README.md` currently describes Project as fundamentally a directory. The intended long-term direction here is that Project is an abstract core concept and local-directory Project selection/association is supplied by the stock development composition.
 
 ## 33.2 Workspace versus Execution Environment
 
@@ -2065,6 +2257,12 @@ Earlier directional text sometimes left TODO/progress ambiguous between Task and
 
 The expected stock design now treats TODO/progress as Session-scoped. Task Browser may summarize a Session's progress, but one canonical Task TODO list is not part of the current direction.
 
+## 33.5 Physical workbench names
+
+Existing mockups and earlier draft wording sometimes describe extension surfaces by current placement such as center, left, right, or bottom.
+
+The current direction is to keep plugin-facing surfaces semantic (`MainContentView`, Session status, inspection, navigation, stream/console, and similar concepts) while documenting current stock placement separately. This keeps UI layout evolvable without turning every placement change into a plugin API change.
+
 ---
 
 # 34. Design principles emerging from this direction
@@ -2083,26 +2281,33 @@ The following principles summarize the current intended boundaries:
 10. Composition/merge/failure semantics are specific to each Extension Point.
 11. Numeric priority is preferred over direct before/after coupling where ordering is needed.
 12. UI presents and invokes domain functionality; it does not define that functionality merely by rendering controls.
-13. Core owns top-level workbench geometry; plugins may define nested UI regions and extension points within their surfaces.
-14. Project, Task, Session, Run, and Environment are core domain concepts, but their concrete useful behavior is heavily plugin-driven.
-15. Project is not intrinsically a local directory.
-16. Task is an ADELE-owned durable user-intent object.
-17. Environment is initially the practical filesystem/source + process execution context; stronger isolation remains evidence-driven.
-18. A Task normally has one primary Environment and may have additional Task-associated Environments for child agent work.
-19. Session is permanently bound to one orchestration strategy.
-20. The strategy defines the semantic structure of strategy-specific Session state.
-21. Child agent work uses parent/child Sessions rather than introducing speculative Subtask semantics.
-22. Core provides authoritative Session creation/parenting; orchestration plugins may expose it as a tool.
-23. Agent/model controls may participate independently in settings, UI, model tools, and structured inference composition.
-24. LLMs may choose agent/model state through tools rather than requiring hard-coded workflow-to-model mappings.
-25. Inference resolves into a stable snapshot; state changes affect subsequent inference.
-26. Tool plugins operate through Environment APIs rather than knowing concrete Environment implementations.
-27. Plugins may supply semantic policy information; final authorization remains host-owned.
-28. ADELE provides persistence facilities by default, while domain-native external systems may remain authoritative where appropriate.
-29. TODO/progress in the expected stock system is Session-scoped; Task-level TODOs remain a future possibility only if concrete need appears.
-30. The stock installation provides useful composition; architectural validity does not require every useful complementary plugin to be active.
-31. Do not implement speculative extension APIs merely because this long-term direction names a possible future extension point.
-32. The concrete stock plugin topology is a design hypothesis, not a dependency graph or commitment to preserve every proposed plugin boundary.
+13. Plugin-facing workbench extension points should describe semantic roles rather than current physical placement.
+14. Core owns application Command registration, the Command Palette, keybinding resolution, and user rebinding; plugins provide Commands and suggested bindings.
+15. Project, Task, Session, Run, and Environment are core domain concepts, but their concrete useful behavior is heavily plugin-driven.
+16. Project is not intrinsically a local directory; Project selection is replaceable.
+17. Task is an ADELE-owned durable user-intent object.
+18. Environment is initially the practical filesystem/source + process execution context; stronger isolation remains evidence-driven.
+19. `EnvironmentProvider` is a lifecycle/provider concept, not merely a creation/provisioning action.
+20. Core Task lifecycle, not Task Browser, coordinates establishment of the Task's primary Environment through the selected/default provider.
+21. A Task normally has one primary Environment and may have additional Task-associated Environments for child agent work.
+22. Session is permanently bound to one orchestration strategy.
+23. The strategy defines the semantic structure of strategy-specific Session state.
+24. Child agent work uses parent/child Sessions rather than introducing speculative Subtask semantics.
+25. Child Sessions are primarily surfaced from their parent Session, not flattened into normal Task Browser navigation.
+26. Core provides authoritative Session creation/parenting; orchestration plugins may expose it as a tool.
+27. Agent/model controls may participate independently in settings, UI, model tools, and structured inference composition.
+28. LLMs may choose agent/model state through tools rather than requiring hard-coded workflow-to-model mappings.
+29. Inference resolves into a stable snapshot; state changes affect subsequent inference.
+30. Tool plugins and the Internal Source Editor operate through Environment APIs rather than knowing concrete Environment implementations.
+31. Plugins may supply semantic policy information; final authorization remains host-owned.
+32. ADELE provides persistence facilities by default, while domain-native external systems may remain authoritative where appropriate.
+33. TODO/progress in the expected stock system is Session-scoped; Task-level TODOs remain a future possibility only if concrete need appears.
+34. Accounting may cover usage, cost, and provider/account quota/allowance state where data is available.
+35. `DisplaySourceFile` describes making source visible/focused; the stock Internal Source Editor is intended to support manual editing rather than being a read-only viewer.
+36. Console integration should support resource operations broader than a single "open terminal" action when the resource permits them.
+37. The stock installation provides useful composition; architectural validity does not require every useful complementary plugin to be active.
+38. Do not implement speculative extension APIs merely because this long-term direction names a possible future extension point.
+39. The concrete stock plugin topology is a design hypothesis, not a dependency graph or commitment to preserve every proposed plugin boundary.
 
 ---
 
@@ -2114,19 +2319,22 @@ This document intentionally does not yet settle:
 - exact APIs for plugin-defined extension-point packages and version compatibility;
 - whether some general interfaces should be moved into core public packages before multiple concrete consumers exist;
 - exact generic registry infrastructure shared by Capabilities, Events, and other Extension Points;
-- exact UI contribution descriptors versus arbitrary plugin-rendered widgets;
+- exact semantic workbench surface names and UI contribution descriptors versus arbitrary plugin-rendered widgets;
 - exact priority ranges/metadata and deterministic ordering rules;
 - exact provider-preference persistence and matching beyond the current profile/configuration direction;
 - exact inference-composition bucket schemas and conflict-resolution rules;
 - final Agent and model-control plugin names/responsibilities;
-- final Environment API surface and lifecycle/recovery semantics;
+- final Environment API and `EnvironmentProvider` lifecycle/recovery/release semantics;
 - Task-associated additional Environment cleanup and persistence;
+- exact core Task-creation failure/recovery semantics when Environment establishment fails;
 - exact child-Session interaction/presentation metadata;
 - strategy-specific conversation forking semantics;
 - generic history/query retention for model invocations, usage, and other events;
+- exact provider/account quota interfaces and normalization across providers;
 - exact plugin-scoped persistence APIs and schema migration;
 - final review/SCM contracts;
-- final source-resource/editor contracts;
+- final `DisplaySourceFile` and richer source-editor contracts;
+- exact `ConsoleService`/console-resource model and input capabilities;
 - exact tool-presentation extension ownership between core, Agent Interaction, Chat, and tool plugins;
 - whether Session Forking, Search, or other proposed stock responsibilities ultimately justify independent plugins;
 - cross-platform plugin packaging and sandboxing.
@@ -2147,6 +2355,8 @@ The concrete plugin topology in this document should help answer questions such 
 - whether a current direct dependency should instead become a typed interface;
 - whether an interface is broad enough to belong in core or is specific to one plugin ecosystem;
 - how a stock feature should degrade if a complementary provider is absent;
-- whether state belongs to Project, Task, Session, Environment, strategy-owned state, or an external authoritative system.
+- whether state belongs to Project, Task, Session, Environment, strategy-owned state, or an external authoritative system;
+- whether an extension point is named for its semantic role or accidentally coupled to today's UI placement;
+- whether a UI component is improperly coordinating domain lifecycle that core or another provider should own.
 
 The purpose is to make those small choices converge toward a coherent plugin-oriented product rather than hardening provisional stock behavior into ADELE core by accident.
