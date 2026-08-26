@@ -8,7 +8,7 @@ public contracts and plugin-facing APIs
   adele_contract
   adele_capabilities
   adele_model_provider
-  future core extension/UI APIs
+  future core extension/UI/orchestration APIs
   plugin-defined public extension APIs
             ^
 internal host implementations
@@ -22,7 +22,7 @@ desktop composition root
 
 Arrows point toward dependencies. Dependencies flow toward public contracts and APIs; public packages never depend on internal host packages or the desktop application. All packages are initially private to the repository via `publish_to: none`, even when described as public or plugin-facing.
 
-The maintained code currently implements only part of this picture. Plugin-defined extension API packages and general plugin-facing UI/extension APIs remain architectural direction rather than a proven package structure.
+The maintained code currently implements only part of this picture. Plugin-defined extension API packages and general plugin-facing UI/extension/orchestration APIs remain architectural direction rather than a proven package structure.
 
 ## Package boundaries
 
@@ -32,7 +32,7 @@ The maintained code currently implements only part of this picture. Plugin-defin
 | `adele_capabilities` | Experimental plugin-facing | Dart SDK and lightweight public contract types when required | Flutter, internal host packages, application code |
 | `adele_plugin_api` | Experimental plugin-facing | Dart SDK and lightweight public packages when required | Flutter unless a future UI API explicitly establishes a boundary; internal host packages; application code |
 | `adele_model_provider` | Experimental plugin-facing | Dart SDK, `adele_contract`, and `adele_capabilities` | Flutter, internal host packages, application code, concrete providers |
-| future core extension/UI APIs | Experimental plugin-facing | Only lightweight public dependencies required by concrete interfaces | Internal host packages, application code, concrete plugins |
+| future core extension/UI/orchestration APIs | Experimental plugin-facing | Only lightweight public dependencies required by concrete interfaces | Internal host packages, application code, concrete plugins |
 | plugin-defined public extension API | Experimental plugin-facing | Public/core APIs and other deliberately public interface packages needed by the concept | Another plugin's implementation packages, internal host packages, application code |
 | `plugin_runtime` | Internal, pure Dart | Dart SDK, public packages, and concrete acyclic internal dependencies | Flutter, application code, plugin implementations |
 | `plugin_builder` | Internal, pure Dart | Dart SDK, public packages, and build dependencies required by the implemented pipeline | Flutter UI, application code, plugin implementations as linked host dependencies |
@@ -52,7 +52,7 @@ adele_plugin_api
 adele_contract
 adele_capabilities
 adele_model_provider
-future core plugin-facing extension/UI APIs
+future core plugin-facing extension/UI/orchestration APIs
 public extension API packages defined by other plugins/components
 ```
 
@@ -64,6 +64,8 @@ plugin_builder
 agent_kernel
 adele_desktop
 ```
+
+This prohibition includes orchestration-strategy plugins. A Chat or Goal strategy may need Run/model/tool execution semantics, but it must obtain those through a narrow public provider-neutral orchestration/execution API backed by core. It must not import `agent_kernel` merely because the kernel implements those semantics internally.
 
 Within a source plugin, dependencies have this shape:
 
@@ -92,6 +94,10 @@ Diff plugin
 Agent-control plugin
     may depend at build time on ChatPromptAccessory API
     does NOT require Chat to be active
+
+Chat strategy plugin
+    depends at build time on core orchestration/execution API
+    does NOT depend on agent_kernel implementation
 ```
 
 At runtime, compatible registrations are discovered dynamically. If no implementation is active, the relevant affordance or integration is unavailable; ADELE should not silently enable another plugin merely to satisfy it.
@@ -106,6 +112,7 @@ This enables recursive plugin-defined extension ecosystems while avoiding a comp
 - Keep internal core packages pure Dart unless Flutter is intrinsically required.
 - Avoid dependency cycles at every layer.
 - Prefer typed runtime discovery over dependencies on implementation identities.
+- Keep `agent_kernel` internal; expose only concrete plugin-needed execution semantics through deliberately public APIs.
 - Do not create packages solely for hypothetical reuse.
 - Require a concrete responsibility and dependency boundary for every new package.
 - Keep public surfaces small and experimental through the proof-of-concept stages.
