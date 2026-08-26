@@ -2,41 +2,41 @@
 
 ## Status
 
-ADELE's maintained Linux x64 foundation proves source compilation, generated
-unary and server-streaming/cancellation transport, interpreted frontend
-execution, active capability routing, and the complete Phase IV execution and
-source-inspection vertical. It includes the real OpenAI ModelProvider,
-generation-bound configured provider contexts, an explicitly experimental
-ChatGPT configured instance, and a bounded read-only DevelopmentSource
-capability. Together these prove model invocation, ADELE source search/read
-through generation-bound tools, model continuation, and a final answer.
+ADELE's maintained Linux x64 foundation proves source compilation, generated unary and server-streaming/cancellation transport, interpreted frontend execution, active capability routing, configured provider contexts, and the Phase IV source-inspection agent vertical. It includes the real OpenAI `ModelProvider`, generation-bound configured provider contexts, an explicitly experimental ChatGPT configured instance, and a bounded read-only DevelopmentSource capability.
 
-Plugin-facing APIs remain experimental. Plugin discovery, packaging, profiles,
-sandboxing, final Workspace semantics, and cross-platform release behavior are
-not implemented or proven.
+These proofs establish transport, provider selection, exact-generation execution, model/tool/model continuation, and a provider-neutral agent kernel. They do **not** yet implement ADELE's complete product/domain model or the general recursive extension system described by the current architecture.
+
+The following remain largely or entirely unimplemented:
+
+- Project/Task/Session/Environment product persistence and lifecycle;
+- production orchestration-strategy registration;
+- parent/child Session lifecycle;
+- general plugin-defined extension points;
+- production plugin-facing UI composition;
+- application Command/Command Palette/keybinding infrastructure;
+- profile-aware provider preference and general configuration services;
+- Environment providers and mutable source tooling;
+- the expected stock plugin topology;
+- cross-platform release, packaging, and sandboxing.
+
+Public plugin-facing APIs remain experimental.
 
 ## System shape
 
-ADELE has one Flutter desktop application, `adele_desktop`, under `app/`. The
-application owns the shell, theme, private widgets, desktop integration, and
-composition of host systems. It is a composition root rather than the primary
-home of core logic.
+ADELE has one Flutter desktop application, `adele_desktop`, under `app/`. The application owns the current shell, theme, private widgets, desktop integration, and composition of host systems. It is a composition root rather than the primary home of core logic.
 
-Host implementations are split into small pure-Dart packages where Flutter is
-not required:
+Host implementations are split into small pure-Dart packages where Flutter is not required:
 
-| Package | Planned responsibility |
+| Package | Maintained/planned responsibility |
 | --- | --- |
-| `plugin_runtime` | Plugin discovery, lifecycle, artifact selection, runtime coordination, and failure reporting |
-| `plugin_builder` | Source resolution, contract generation coordination, backend and frontend builds, diagnostics, provenance, and caching |
-| `plugin_backend_host` | Shared child-process entrypoint and one external AOT isolate group per active plugin |
-| `agent_kernel` | Provider-neutral Session/Run boundaries, context/model/tool semantics, interruptions, structured outcomes, and typed execution observation |
+| `plugin_runtime` | Plugin lifecycle/runtime coordination, backend connections, and active capability routing adapters |
+| `plugin_builder` | Source resolution, contract checks/generation coordination, backend/frontend builds, diagnostics, provenance, and caching |
+| `plugin_backend_host` | Shared child-process entrypoint and one external AOT isolate group per active plugin backend |
+| `agent_kernel` | Provider-neutral Run/model/tool semantics, interruptions, policy boundary, structured outcomes, and typed execution observation |
 
 These are internal packages. Plugins must not import them.
 
-The proposed plugin system uses source as its canonical distribution format. A
-source plugin is split into contract, backend, and frontend Dart packages. The
-intended dual-runtime model is:
+The source-plugin runtime shape is:
 
 ```text
 Flutter desktop host (main Flutter isolate)
@@ -50,130 +50,163 @@ Flutter desktop host (main Flutter isolate)
         +-- one native Dart AOT isolate group per active plugin backend
 ```
 
-This shape is proven only on Linux x64 Flutter profile mode. Direct external AOT
-loading inside stock Flutter failed. Backend isolation is not a claim of
-security sandboxing.
+This shape is proven only on Linux x64 Flutter profile mode. Direct external AOT loading inside stock Flutter failed. Backend process/isolate separation is not a security sandbox.
 
-Contract source can be shared by the frontend and backend. Generated transport
-hides ports, serialization, request IDs, subscriptions,
-cancellation, dispatch, and structured transport errors behind typed async
-proxies and dispatchers. Values crossing a runtime boundary are reconstructed
-values, not shared object identities, and should normally be immutable
-snapshots.
+Contract source can be shared by plugin frontend/backend packages. Generated transport hides ports, serialization, request IDs, stream protocol, cancellation, dispatch, and structured transport errors behind typed proxies/dispatchers. Values crossing runtime boundaries are reconstructed rather than shared by identity and should normally be immutable snapshots.
 
-## Capabilities and providers
+## Recursive plugin extension direction
 
-Contracts describe how typed communication occurs. Capabilities describe what
-can be requested and which compatible provider may handle it:
+ADELE's accepted long-term model is recursively extensible:
 
-| Concept | Meaning |
-| --- | --- |
-| Action | Brokered one-shot request/response operation |
-| Service | Sustained typed capability |
-| Event | Fact that has occurred |
+```text
+ADELE core
+    -> typed extension points
+        -> plugins
+            -> plugin-defined typed extension points
+                -> other plugins
+```
 
-Capability resolution is one-to-many. Several plugins may provide the same
-action or service, and one plugin runtime may expose multiple named,
-configured instances of a capability. The host-owned active registry implements
-provider discovery/enumeration, deterministic default resolution, explicit
-selection, exact-major matching, and exact generation-bound routing. One plugin
-generation may route several providers through separate configuration contexts.
-Persistent preferences, profile-aware routing, richer compatibility
-negotiation, and dynamic suitability policy remain deferred. ADELE, not a
-provider, owns preferred-provider resolution.
+The broad rules are recorded in [`plugin-extension-model.md`](plugin-extension-model.md) and ADR 0030.
 
-The intended runtime model is one plugin runtime per activation context;
-activation-context lifecycle is not implemented. The maintained runtime proves
-that one plugin generation can manage multiple configured accounts, providers, clusters,
-connections, endpoints, or devices without requiring another plugin install
-or backend copy. Temporary resources such as documents, terminal sessions,
-browser sessions, and processes are runtime resources, not configured
-capability instances or plugin runtimes.
+Core owns durable shared identities/invariants and host infrastructure. Plugins provide much of the concrete product behavior. Plugins may publish deliberately public extension APIs for concepts they own, and other plugins may implement those interfaces without depending on one specific implementation plugin being active.
 
-## Profiles, configuration, and agents
+Runtime composition should prefer typed interface discovery over hidden activation dependencies. Zero/one/many compatible registrations may be valid depending on the extension contract.
 
-ADELE profiles are planned sparse named composition layers, not complete copies
-of application or plugin state. One window/context may eventually use an
-ordered stack such as `Developer + Work` or `Developer + Personal`; profiles may
-contribute plugin activation decisions, ordinary configuration overrides,
-provider availability, and provider preferences. They are not implemented, and
-the maintained development runtime still uses one implicit development profile.
+Capabilities remain the implemented callable-provider mechanism for Actions and Services. Events are read-only fact notifications. Other extension points may collect UI fragments or structured operation contributions without being callable capabilities.
 
-Ordinary configuration is intended to resolve through eligible layers such as
-user/all-profiles configuration, the ordered active profile stack, project
-configuration, and narrower resource-specific layers when a setting supports
-them. Activation, ordinary configuration, provider preference, security/policy,
-workbench state, configured capability instances, and runtime resources remain
-distinct domains rather than one universal last-writer-wins plugin state.
+Future extension discovery may react live to registrations appearing/disappearing, while already-resolved execution-sensitive operations continue to retain exact generation bindings.
 
-An effectively disabled plugin should remove its normal product and settings
-surface from that context without deleting dormant persisted configuration.
-Workbench presentation state is likewise separate from ordinary configuration:
-open windows keep independent live layout state while local remembered state can
-seed subsequently opened windows.
+The general extension-point runtime, plugin-defined UI extension APIs, generic Event subscription, Commands/keybindings, and multi-plugin inference composition are direction rather than implemented production systems.
 
-The intended direction, including settings UX, persistence, profile stacking,
-window behavior, and deferred decisions, is recorded in
-[`profiles-and-configuration.md`](profiles-and-configuration.md).
+## Contracts, capabilities, and providers
 
-`agent_kernel` is a provider-neutral execution substrate. Concrete
-models, tools, editors, Git integrations, terminals, UI, and specialized agent
-workflows belong in plugins rather than in the kernel.
+Contracts answer how typed communication crosses a runtime boundary. Capabilities answer which compatible provider handles a callable semantic request. Extension points are the broader architecture for typed plugin participation.
 
-Phase IV uses a bounded development-only application strategy and the common
-ModelProvider capability to prove generation-safe model/tool/model cycles
-through real AOT providers. The strategy is not the definition of Run or a
-general Workflow system. The kernel model port is stream-shaped, and the
-application adapter consumes providers through generated typed streaming while
-preserving exact generation binding and consumer cancellation. Live text
-observations remain separate from completed output, semantic terminal
-settlement is explicit, and opaque ordered item metadata survives tool
-continuation.
+Implemented capability resolution is one-to-many. Several plugins may provide the same Action/Service, and one plugin runtime may expose multiple configured instances. The host-owned active registry implements provider discovery/enumeration, deterministic rank-based default resolution, explicit selection, exact-major matching, and exact generation-bound routing.
 
-`dev.adele.openai` implements the public OpenAI API-key Responses HTTP/SSE route
-with `store:false` canonical ordered replay. The same plugin generation exposes
-API-key and ChatGPT configured instances through separate configuration
-contexts. The ChatGPT subscription-backed route is explicitly experimental:
-its successful live smoke is positive interoperability evidence, not a
-documented or stable OpenAI third-party integration contract.
+The rank-based default is a deterministic development fallback, not the final preference system. ADELE owns preferred-provider selection; future profile/project/user policy may select contextual defaults and expose explicit alternatives.
 
-The provisional DevelopmentSource plugin exposes bounded read-only source
-search and reads under one configured root. Application composition projects
-that sustained capability into model tools rather than treating each tool as a
-separate capability. Deterministic integration uses the real shared AOT host,
-OpenAI and DevelopmentSource plugins, capability registry, adapters, tools, and
-development strategy against the ADELE checkout; only remote model responses
-come from a local fake Responses endpoint. The opt-in live ChatGPT
-source-coding smoke has also run successfully. This is the first real
-self-inspection coding vertical, not self-modification or final Workspace
-behavior.
+Configured capability instances such as `OpenAI Work` and `OpenAI Personal` are distinct from plugin installations/runtime instances. Temporary documents, terminals, browser sessions, and processes are runtime resources rather than configured providers.
 
-The long-term self-hosting goal is for ADELE to develop ADELE itself. That goal
-does not change the rule to prefer small, working boundaries and avoid
-speculative APIs.
+See [`contracts-and-capabilities.md`](contracts-and-capabilities.md).
+
+## Core product-domain direction
+
+ADR 0031 accepts the following long-term shared domain identities:
+
+```text
+Project
+└── Task
+    ├── Environment(s)
+    └── Session(s)
+        ├── Run(s)
+        └── child Session(s)
+```
+
+### Project
+
+Project is an abstract core identity/lifecycle concept, not intrinsically a local directory. The expected stock development composition uses a local-directory `ProjectSelector`; future selectors may use recent projects, databases/catalogs, or remote/cloud systems.
+
+### Task
+
+Task is the durable ADELE-owned unit of user intent. Plugins may attach state and behavior without owning Task identity. Task workflow category/status remains user/domain-owned rather than being inferred automatically from execution success.
+
+### Environment
+
+Environment is initially the practical filesystem/source + process context used by Task work. A Git worktree-backed Environment may isolate source changes without isolating ports/databases/caches/etc.; Docker or remote providers may have different properties. ADELE does not claim stronger isolation than the selected provider actually supplies.
+
+A separate first-class Workspace concept is not currently required architecture. It may return later if concrete requirements demonstrate an independent semantic identity.
+
+A Task normally has one primary Environment and may own additional Environments for delegated child Session work.
+
+### Session and Run
+
+Session is a core identity/lifecycle container permanently bound to one orchestration strategy. Core does not assume every Session is chat history; strategy-specific state defines the Session's semantic contents.
+
+Run remains the core unit of execution inside a Session. The maintained development proof currently uses a chat-shaped Session representation and bounded development strategy; that is implemented evidence, not the long-term universal Session definition.
+
+A Session may create child Sessions for delegated work. Child Sessions may share an Environment or use another Task-associated Environment and are primarily surfaced through the parent Session/orchestration experience.
+
+## Agent execution
+
+`agent_kernel` remains an internal provider-neutral execution substrate. Concrete models, tools, editors, SCM integrations, terminals, orchestration strategies, and presentation belong outside the kernel.
+
+The maintained `DevelopmentToolLoopStrategy` is a bounded development-only algorithm, not the definition of Run or a general workflow system.
+
+The kernel model boundary is streaming-shaped. The common ModelProvider transport supports generated streaming/cancellation, ordered semantic input/output, live observations, terminal settlement, and provider-native item metadata. Materialized model/tool bindings remain exact-generation bound.
+
+Tool availability, materialization, policy, optional approval interruption, execution, progress, structured outcome, and effect certainty remain distinct.
+
+Future inference preparation should be structured composition rather than arbitrary request mutation. Agent policy, model routing, orchestration/history, context, tool availability, and other plugins should contribute typed material into provider-neutral buckets; resolution produces a stable invocation snapshot.
+
+See [`agent-kernel-semantic-model.md`](agent-kernel-semantic-model.md).
+
+## Expected stock development composition
+
+The default development UX is expected to be produced by a stock plugin/configuration set rather than by hard-coded ADELE core behavior. Directional stock responsibilities include:
+
+- Local Directory Project Selector;
+- Task Browser;
+- Git/Worktree Environment provider;
+- Agent Interaction + Chat strategy;
+- Agent Configuration/Policy;
+- Model Routing/Control;
+- Context Monitoring/Compaction;
+- Accounting/Usage/Quota;
+- Filesystem/Search/Command/TODO/Plan tools;
+- Diff/Review;
+- Internal Source Editor;
+- Console/Terminal;
+- OpenAI provider.
+
+The detailed, deliberately speculative decomposition is in [`stock-plugin-direction.md`](stock-plugin-direction.md). The UX manifestation is in [`../mockups/README.md`](../mockups/README.md).
+
+These documents are not implementation claims. The current app shell remains minimal and most listed plugins do not exist yet.
+
+## Profiles, configuration, commands, and workbench state
+
+Profiles are accepted as sparse named composition layers. One context may eventually use an ordered stack such as `Developer + Work`. They may contribute activation decisions, ordinary configuration overrides, provider availability, and provider preferences.
+
+The maintained runtime still uses one implicit development profile. General profile/configuration persistence, UI, and provider preference resolution are not implemented.
+
+Activation, ordinary configuration, provider preference, security/policy, workbench state, configured capability instances, and runtime state remain distinct domains.
+
+An effectively disabled plugin should remove its normal product/settings surface without deleting dormant persisted configuration.
+
+Core is expected to own application Commands, Command Palette/search, keybinding resolution, plugin-suggested defaults, and user rebinding. Those systems are architectural direction and are not yet a maintained production subsystem.
+
+Workbench extension APIs should be semantic rather than physical. Concepts such as Main Content, Session Status, Inspection, Navigation, and Stream/Console presentation should remain stable if the physical layout moves or becomes configurable.
+
+See [`profiles-and-configuration.md`](profiles-and-configuration.md) and [`plugin-extension-model.md`](plugin-extension-model.md).
+
+## Maintained self-inspection vertical
+
+`dev.adele.openai` implements the public OpenAI API-key Responses HTTP/SSE route with `store:false` canonical ordered replay. The same plugin generation exposes API-key and ChatGPT configured instances through separate generation-bound contexts. The ChatGPT subscription-backed route remains explicitly experimental interoperability evidence.
+
+The provisional DevelopmentSource plugin exposes bounded read-only source search/read under one configured root. Application composition projects that Service into model tools rather than treating each model tool as a separate ADELE capability.
+
+Deterministic integration uses the real shared AOT host, OpenAI and DevelopmentSource plugins, capability registry, adapters, tools, and development strategy against the ADELE checkout; only remote model responses come from a local fake Responses endpoint. The opt-in live ChatGPT source-coding smoke has also run successfully.
+
+This proves self-inspection, not the final Environment/source mutation model and not full self-hosting.
 
 ## Remaining runtime validation
-
-Linux x64 Flutter profile mode proves the core vertical path. Remaining work is:
 
 | Risk | Current status |
 | --- | --- |
 | Local backend AOT compilation | Proven with the temporary matched SDK. |
 | Shared process-host loading | Proven on Linux x64 profile mode. |
-| Eval compilation and rendering | Proven with pinned eval dependencies and documented workarounds. |
+| Eval compilation/rendering | Proven with pinned eval dependencies and documented workarounds. |
 | Generated typed communication | Proven across maintained unary and streaming plugin contracts. |
-| Typed server-streaming and cancellation | Proven through generated transport and the common ModelProvider path with one-item flow control. |
+| Typed streaming/cancellation | Proven through generated transport and ModelProvider with one-item flow control. |
 | Active capability/configuration routing | Proven for deterministic discovery, explicit selection, exact generations, and separate OpenAI configuration contexts. |
-| Real OpenAI provider | Deterministic HTTP/SSE and shared-AOT integration are proven; live network tests remain explicit opt-ins. |
-| Experimental ChatGPT configured instance | Auth/routing tests and a successful opt-in source-coding smoke provide interoperability evidence, not a stable third-party contract. |
-| Model-to-source continuation | Proven against the ADELE checkout through the real read-only DevelopmentSource capability path. |
-| Rebuild and reload | Proven for three cycles without orphan host processes. |
-| Cross-platform and release behavior | Unproven on Windows, macOS, and release mode. |
-| Packaging and sandboxing | Unproven; process isolation is not a sandbox. |
+| Real OpenAI provider | Deterministic HTTP/SSE/shared-AOT integration proven; live network tests remain opt-in. |
+| Experimental ChatGPT configured instance | Auth/routing tests and a successful opt-in source-coding smoke provide interoperability evidence only. |
+| Model-to-source continuation | Proven against ADELE through the read-only DevelopmentSource path. |
+| Rebuild/reload | Proven for three cycles without orphan host processes. |
+| General recursive extension system | Accepted architecture; not implemented. |
+| Project/Task/Environment product model | Accepted architecture; not implemented. |
+| Production orchestration/UI/Commands | Directional; not implemented. |
+| Cross-platform/release | Unproven on Windows, macOS, and release mode. |
+| Packaging/sandboxing | Unproven; process isolation is not a sandbox. |
 
-## Undefined workspace semantics
-
-The shell text `No workspace is open` is only a static shell status. It does
-not define workspace identity, ownership, roots, persistence, selection, or
-lifecycle. `workspace`, `project`, `environment`, and `profile` are not
-interchangeable, and workspace semantics remain intentionally undefined.
+The long-term goal remains for ADELE to develop ADELE itself. That goal does not change the preference for small working boundaries over speculative framework implementation.
