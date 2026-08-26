@@ -2,15 +2,38 @@
 
 ## Status and purpose
 
-This document captures the current UX direction for ADELE's **primary software-development workflows**.
+This document captures the current UX direction for ADELE's **primary software-development workflows with the expected stock development plugin set and default configuration**.
 
-It is intended to provide architectural and interaction context to future implementation and design agents working on ADELE. It should explain not only what the current mockups look like, but why the UI is organized this way and which traditional IDE conventions we have deliberately chosen not to adopt.
+It is intended to provide architectural and interaction context to future implementation and design agents working on ADELE. It should explain not only what the current mockups look like, but why the default UI is organized this way and which traditional IDE conventions we have deliberately chosen not to adopt.
 
-This document is **directional rather than contractual**.
+This document is **directional rather than contractual** and is not a definition of immutable ADELE core UI or domain semantics.
 
-Some of these ideas may not be part of the immediate implementation needed to make ADELE self-hosting. Likewise, once ADELE is usable for real development, experience may show that some of these decisions should change. The purpose is to establish the current product model and design philosophy so that incremental implementations move in a coherent direction rather than independently recreating conventional IDE behavior.
+The mockups should be read as one concrete composition approximately involving stock responsibilities such as:
 
-The near-term implementation may therefore be a subset of this design.
+- Local Directory Project Selector;
+- Task Browser;
+- Git-backed Environment provider;
+- Agent Interaction + Chat strategy;
+- Agent and Model configuration/policy plugins;
+- Context Monitoring and Accounting;
+- Filesystem/Search/Command/TODO/Plan tooling;
+- Diff/Review;
+- Internal Source Editor;
+- Console/Terminal;
+- OpenAI provider.
+
+Other plugin/configuration sets may provide different Project selection, orchestration strategies, Environment implementations, source editors, review systems, status summaries, or presentation details while preserving ADELE's broader architecture.
+
+The current physical layout shown here is also product direction rather than plugin API identity. A Session status contribution may currently appear on the right, for example, while a future layout could move it or make placement configurable without changing the semantic extension contract.
+
+Some ideas in this document may not be part of the immediate implementation needed to make ADELE self-hosting. Once ADELE is used for real development, experience may show that some decisions should change. The near-term implementation may therefore be a subset of this design.
+
+For canonical architectural boundaries, see:
+
+- [`../architecture/plugin-extension-model.md`](../architecture/plugin-extension-model.md);
+- [`../architecture/stock-plugin-direction.md`](../architecture/stock-plugin-direction.md);
+- [`../architecture/agent-kernel-semantic-model.md`](../architecture/agent-kernel-semantic-model.md);
+- ADR 0031 for Project/Task/Session/Environment direction.
 
 ---
 
@@ -18,7 +41,7 @@ The near-term implementation may therefore be a subset of this design.
 
 ADELE is an **Agent Development Environment**, not primarily a text editor with an AI feature.
 
-The core hierarchy is:
+The core hierarchy relevant to this UX is:
 
 ```text
 Project
@@ -28,20 +51,20 @@ Project
          └── Session
 ```
 
-Sessions operate against an **execution environment**.
+Sessions operate against an **Environment**.
 
-The common case is effectively:
+The common stock development case is effectively:
 
 ```text
 Project
     └── Task
-         └── Primary Execution Environment
+         └── Primary Environment
               ├── Session A
               ├── Session B
               └── Session C
 ```
 
-Exceptional sessions or agent subtasks may operate against isolated execution environments:
+Exceptional child Sessions may operate against additional Task-owned Environments:
 
 ```text
 Task
@@ -49,19 +72,19 @@ Task
     │    ├── Session A
     │    └── Session B
     │
-    └── Isolated Environment
-         └── Session C
+    └── Isolated/alternate Environment
+         └── child Session C
 ```
 
 ## 1.1 Project
 
-A project is fundamentally a directory opened by the user.
+A Project is an abstract ADELE-owned identity/lifecycle concept, not intrinsically a directory.
 
-Projects are selected through the normal operating-system directory-selection UI.
+The expected stock development composition provides a **Local Directory Project Selector** that uses the normal operating-system directory-selection UI and associates/resolves a Project from that directory.
 
-ADELE may also expose a command for quickly reopening or switching to a recent project.
+Other selectors may later present recent Projects, a database/catalog, a cloud service, or another Project source without changing core Project semantics.
 
-Different projects can be open in different windows. The same project may also be opened in multiple ADELE windows if desired.
+Different Projects can be open in different windows. The same Project may also be opened in multiple ADELE windows if desired.
 
 ## 1.2 Task
 
@@ -74,48 +97,54 @@ Examples:
 - `Improve terminal integration`
 - `Review backend plugin loading`
 
-A Task owns:
+A Task owns or anchors core/product state such as:
 
 - its title and optional description;
 - workflow category;
-- sessions;
-- its primary execution environment;
-- task-level usage/cost information;
-- task-related artifacts and history.
+- top-level/user Sessions;
+- its primary Environment association;
+- Task-related artifacts and history.
 
-In the normal workflow, a Task and its primary execution environment feel like one thing to the user.
+Plugins may contribute additional Task/Session summary information such as usage/cost, Session progress, Environment status, SCM state, or warnings through Task Browser extension points. Task Browser does not need to understand each contributing plugin's domain.
+
+In the normal stock workflow, a Task and its primary Environment feel closely related to the user even though Environment implementation belongs to an independent provider.
 
 ## 1.3 Session
 
-A Session is an independent agent context within a Task.
+A Session is an independent orchestration context within a Task and is permanently bound to the orchestration strategy that created it.
 
-Multiple Sessions may work against the same Task environment. This allows separate conversations and contexts without unnecessarily duplicating the filesystem.
+The mockups focus on the stock **Chat strategy**, so many examples below discuss conversation, Draft Request, timeline operations, and Chat-specific forks. Those are Chat strategy semantics, not a claim that every future orchestration strategy defines Session state the same way.
 
-Examples of named sessions might be:
+Multiple top-level Sessions may work against the same Task Environment. This allows separate contexts without unnecessarily duplicating the filesystem.
+
+Examples of named Sessions might be:
 
 - `Investigate circular dependency`
 - `Review async resolution path`
 - `Validate error propagation`
 - `Address QA feedback`
 
-Sessions should **not** normally be named `Session 1`, `Session 2`, etc. ADELE derives a meaningful name from the initial request, although the user may later rename it.
+Sessions should **not** normally be named `Session 1`, `Session 2`, etc. The stock strategy/UI can derive a meaningful name from the initial request, although the user may later rename it.
 
-A Session owns or retains state such as:
+For the stock Chat strategy, Session-owned/strategy-owned state may include:
 
 - conversation;
 - Draft Request;
 - progress/work items;
-- center workspace arrangement;
-- right-side inspections;
-- active agent and model overrides;
+- active Chat/workbench arrangement;
+- open inspections;
+- active Agent/model overrides;
 - conversation forks;
-- session-specific artifacts.
+- Session-specific artifacts;
+- child Session activity/inspection.
 
-## 1.4 Execution environment
+A different strategy may define substantially different durable state.
 
-An Execution Environment is an ADELE-level abstraction representing the filesystem/runtime context in which work occurs.
+## 1.4 Environment
 
-For the Git SCM integration, the normal implementation is expected to be approximately:
+An Environment is the ADELE-level abstraction representing the practical filesystem/source and process context in which work occurs.
+
+For the stock Git integration, the normal implementation is expected to be approximately:
 
 ```text
 ADELE Environment: sphy-4934
@@ -125,13 +154,13 @@ Git implementation:
     branch:   sphy-4934
 ```
 
-From the user's perspective this is simply one execution environment named `sphy-4934`.
+From the user's perspective this is simply one Environment named `sphy-4934`.
 
 ADELE should **not** require users to routinely reason about the distinction between Git worktrees and branches.
 
-The equality between environment name, worktree name, and branch name is a useful default convention, not a core architectural invariant. If the underlying branch changes independently, ADELE should tolerate and report that state rather than pretending the concepts cannot diverge.
+The equality between Environment name, worktree name, and branch name is a useful default convention, not a core architectural invariant. If the branch changes independently, ADELE should tolerate/report that state rather than pretend the concepts cannot diverge.
 
-Other SCM plugins may implement environments differently.
+Other Environment providers may use Docker, remote VMs, or other mechanisms. ADELE does not imply that a Git worktree Environment isolates ports, databases, caches, credentials, or every other runtime resource.
 
 ---
 
@@ -141,11 +170,11 @@ ADELE should borrow useful conventions from IDEs without cargo-culting the IDE l
 
 The important distinction is:
 
-> ADELE is task/session-centric rather than editor-centric.
+> The stock development UX is Task/Session-centric rather than editor-centric.
 
-The primary work artifacts may include:
+Primary work artifacts may include:
 
-- conversation;
+- conversation or other strategy content;
 - code review;
 - source files;
 - plans;
@@ -161,7 +190,7 @@ The shift created by agents is broadly:
 Traditional IDE
     write code → occasionally review
 
-ADELE
+ADELE stock workflow
     direct agent → review work → inspect/edit manually when useful
 ```
 
@@ -173,7 +202,7 @@ The UI should therefore optimize for:
 - navigating relevant code quickly;
 - monitoring progress;
 - inspecting tool activity;
-- moving among tasks and sessions.
+- moving among Tasks and Sessions.
 
 It should avoid forcing users to manage UI concepts that agents have made less important.
 
@@ -181,7 +210,7 @@ It should avoid forcing users to manage UI concepts that agents have made less i
 
 # 3. Active-session window shell
 
-The conceptual shell is:
+The stock Chat-oriented shell is conceptually:
 
 ```text
 ┌───────────────────────────────────────────────────────────────────────┐
@@ -195,9 +224,9 @@ The conceptual shell is:
 └───────────────────────────────────────────────────────────────────────┘
 ```
 
-Most of those surfaces are optional.
+Most surfaces are optional.
 
-A newly created Session is intentionally simple:
+A newly created stock Chat Session is intentionally simple:
 
 ```text
 ┌───────────────────────────────────────────────────────────────────────┐
@@ -210,17 +239,19 @@ A newly created Session is intentionally simple:
 └─────────────────────────────────────────────────────────┴─────────────┘
 ```
 
-The application should accumulate UI only when the work actually requires it.
+The application should accumulate UI only when work actually requires it.
+
+The physical center/right/bottom arrangement is stock product direction, not the names of plugin extension APIs. The extension architecture uses semantic concepts such as Main Content, Session Status, Inspection, Navigation, and Stream/Console presentation.
 
 ---
 
 # 4. Title bar and breadcrumb
 
-The title bar provides:
+The stock title bar provides:
 
 - ADELE logo/identity;
 - hierarchical breadcrumb;
-- execution-environment identity when applicable;
+- Environment identity when applicable;
 - help;
 - settings.
 
@@ -232,7 +263,7 @@ ADELE   adele-core > SPHY-4934 > Investigate resolver failure
                                       env: sphy-4934       ?   ⚙
 ```
 
-There is no user-profile/avatar UI. ADELE is a local desktop development application, not a collaborative social workspace.
+There is no user-profile/avatar UI in this default design. ADELE is a local desktop development application, not a collaborative social workspace.
 
 ## 4.1 Breadcrumb as navigation
 
@@ -244,15 +275,15 @@ From:
 adele-core > Refactor resolver API > Validate error propagation
 ```
 
-clicking `adele-core` returns to the project-level Task Browser with no Task selected.
+clicking `adele-core` returns to the Project-level Task Browser with no Task selected.
 
-Clicking `Refactor resolver API` returns to the same Task Browser with that Task selected and its Sessions visible.
+Clicking `Refactor resolver API` returns to the same Task Browser with that Task selected and its top-level Sessions visible.
 
-This eliminates the need for a permanent Tasks navigation icon.
+This eliminates the need for a permanent Tasks navigation icon in the stock UX.
 
 ## 4.2 Environment identity is not a switcher
 
-The environment indicator is **status/identity**, not a routine dropdown for switching environments.
+The Environment indicator is **status/identity**, not a routine dropdown for switching Environments.
 
 Normally:
 
@@ -260,61 +291,46 @@ Normally:
 env: sphy-4934
 ```
 
-Clicking it may inspect environment information.
+Clicking it may inspect Environment information.
 
 It should not imply:
 
-> Choose which environment this Session should operate against.
+> Choose which Environment this Session should operate against.
 
 Environment changes normally occur as consequences of explicit higher-level operations:
 
 ```text
 switch Task
-    → Task's environment becomes active
+    → Task's Environment becomes active
 
-switch Session within same environment
-    → environment remains unchanged
+switch Session within same Environment
+    → Environment remains unchanged
 
-switch to isolated Session
-    → isolated environment becomes active
+switch to child/isolated Session
+    → alternate Environment becomes active
 ```
 
-Before any Task/Session is active, there is no environment indicator.
+Before any Task/Session is active, there is no Environment indicator.
 
-## 4.3 Isolated environment indication
+## 4.3 Isolated/alternate Environment indication
 
-An intentionally isolated Session should make that exceptional state visible:
+An intentionally separate Environment should make that exceptional state visible:
 
 ```text
 ◇ Isolated · sphy-4934-debug
 ```
 
-Isolation is not part of the default workflow.
-
-Possible future creation operations include:
-
-- create isolated Session;
-- fork Session into isolated environment;
-- agent-created isolated subtask.
-
-Agent-created temporary subtask environments should generally remain implementation/task details rather than becoming top-level title-bar navigation choices.
+Additional Environments are not part of the default user workflow. They are expected mainly for programmatic child Session work, although explicit future user operations may expose them.
 
 ---
 
 # 5. Left auxiliary surface
 
-ADELE should **not** have a permanent VS Code-style activity rail.
+ADELE should **not** have a permanent VS Code-style activity rail in the stock development profile.
 
-Earlier mockups included permanent icons for:
+Earlier mockups included permanent icons for Tasks, Files, SCM, and Search. Further analysis showed that none justify permanent horizontal space in the default agent workflow.
 
-- Tasks;
-- Files;
-- SCM;
-- Search.
-
-Further analysis showed that none of those justify consuming permanent horizontal space in the default ADE workflow.
-
-Instead, ADELE has an **optional left auxiliary surface**.
+Instead, ADELE has an **optional left auxiliary surface** (directionally a semantic `NavigationView`-style role).
 
 Normally it is absent.
 
@@ -322,7 +338,7 @@ When useful:
 
 ```text
 ┌────────────────┬─────────────────────────────────────────────────────┐
-│ SEARCH RESULTS │ primary workspace                                   │
+│ SEARCH RESULTS │ primary work content                                │
 │                │                                                     │
 └────────────────┴─────────────────────────────────────────────────────┘
 ```
@@ -338,16 +354,11 @@ Potential auxiliary views include:
 - test-result navigation;
 - plugin-provided browsers.
 
-The surface is generally:
-
-- invoked by a command/action;
-- contextual;
-- closable;
-- one view at a time initially.
+The surface is generally invoked by a command/action, contextual, closable, and one view at a time initially.
 
 ## 5.1 Tasks
 
-Tasks do not need a permanent left-nav destination.
+Tasks do not need a permanent left-nav destination in the stock layout.
 
 Clicking the Project or Task breadcrumb provides access to the Task Browser.
 
@@ -371,7 +382,7 @@ lib/core/resolver_policy.dart
 test/resolver_test.dart
 ```
 
-A user who wants a conventional filesystem browser could eventually install a plugin that provides one.
+A user who wants a conventional filesystem browser could install a plugin that provides one.
 
 ## 5.3 Search
 
@@ -383,7 +394,7 @@ For explicit search:
 Ctrl/Cmd+Shift+F
 ```
 
-ADELE may open Search Results in the left auxiliary surface.
+ADELE may open Search Results in the auxiliary surface.
 
 Agent searches normally remain summarized in Chat unless the user explicitly inspects the results.
 
@@ -391,25 +402,17 @@ Agent searches normally remain summarized in Chat unless the user explicitly ins
 
 ADELE needs deep SCM integration but does not necessarily need to be a general graphical SCM client.
 
-ADELE should support workflow-specific SCM operations such as:
+Stock Git integration should support workflow-specific operations such as understanding changes, reviewing diffs, approving/unapproving changes, Task-level comparison, and commit Commands.
 
-- understanding changes;
-- reviewing diffs;
-- approving/unapproving changes;
-- task-level comparison;
-- committing through configured commands.
-
-Generic functionality such as branch browsers, interactive rebases, stash managers, Git graphs, etc. is not a default UX requirement.
-
-Plugins may provide richer graphical SCM clients.
+Generic branch browsers, interactive rebases, stash managers, Git graphs, etc. are not default UX requirements. Plugins may provide richer graphical SCM clients.
 
 ---
 
-# 6. Center workspace
+# 6. Center workspace / Main Content stock layout
 
-The center workspace is intentionally **one-dimensional and horizontally ordered**, rather than an arbitrary recursive tiling system.
+The stock active-session Main Content layout is intentionally **one-dimensional and horizontally ordered**, rather than an arbitrary recursive tiling system.
 
-The semantic order is:
+The current semantic order is:
 
 ```text
 Chat
@@ -426,9 +429,9 @@ Visually:
 
 Not every region is visible at all times.
 
-Key invariants:
+Current stock layout rules:
 
-- Chat is singleton.
+- Chat is singleton for the Chat strategy.
 - Diff is singleton.
 - Source Group contains zero or more visible editor views.
 - Artifact is singleton.
@@ -436,60 +439,37 @@ Key invariants:
 - only vertical pane boundaries are supported initially;
 - top-level panels are not arbitrarily reordered.
 
-The simplicity of a linear layout enables strong keyboard navigation and avoids the complexity of arbitrary horizontal/vertical split trees.
+These are UX choices for the stock composition, not requirements that every orchestration strategy render Chat or that plugin extension APIs expose `center` coordinates.
 
 ## 6.1 Width and horizontal overflow
 
-Each surface has a practical minimum useful width.
+Each surface has a practical minimum useful width. Available space is divided/shrunk until minima are reached.
 
-Available space is divided/shrunk until those minima are reached.
+If visible panels cannot fit, the Main Content workspace becomes horizontally scrollable while title/status/stream areas remain fixed in the current layout.
 
-If all visible panels cannot fit at their minimum widths, the **center workspace itself becomes horizontally scrollable**.
-
-```text
-viewport
-┌────────────────────────────────────────────────────────────┐
-│ Chat │ Diff │ File A │ File B │ File C │ Artifact ...    │
-└────────────────────────────────────────────────────────────┘
-          ← horizontally scrollable →
-```
-
-The title bar, right panel, and bottom dock remain fixed.
-
-Focusing a pane that is currently offscreen automatically scrolls the center enough to reveal it.
+Focusing an offscreen pane automatically scrolls enough to reveal it.
 
 ADELE should not automatically hide panels merely because space becomes tight. The visible set represents explicit user state.
 
 ## 6.2 Resizing
 
-Pane boundaries are draggable.
+Pane boundaries are draggable. Manual resizing redistributes space while respecting practical minima.
 
-Manual resizing redistributes space while respecting practical minimum widths.
-
-Pane widths are session workspace state.
+Pane widths are live Session/window workbench state rather than core Session semantics.
 
 ## 6.3 Focus/maximize
 
-A temporary `Focus Current View` or equivalent command may hide other center surfaces while preserving the underlying arrangement.
-
-Restoring returns to the previous layout.
+A temporary `Focus Current View` or equivalent Command may hide other Main Content surfaces while preserving the underlying arrangement. Restoring returns to the previous layout.
 
 ---
 
 # 7. Chat / Session timeline
 
-Chat is the most important primary surface.
+For the stock Chat orchestration strategy, Chat is the most important primary surface.
 
-It should not visually pretend to be two people exchanging social messages.
+It should not visually pretend to be two people exchanging social messages. There are no fake avatars, `You`, `ADELE Agent`, or unnecessary identity labels beside every message.
 
-There are no:
-
-- fake avatars;
-- `You`;
-- `ADELE Agent`;
-- unnecessary identity labels beside each message.
-
-Instead, authorship is conveyed through alignment and styling:
+Authorship is conveyed through alignment/styling:
 
 ```text
                               ┌────────────────────────┐
@@ -501,40 +481,25 @@ Instead, authorship is conveyed through alignment and styling:
 └───────────────────────────────────┘
 ```
 
-User messages are generally right-aligned.
+User messages are generally right-aligned; Agent messages left-aligned. Agent blocks remain wide enough for Markdown, code, tables, links, etc.
 
-Agent messages are generally left-aligned.
-
-Agent blocks should remain wide enough to comfortably display Markdown, code, tables, links, etc.
+A different orchestration strategy may own a substantially different Main Content surface rather than a Chat timeline.
 
 ## 7.1 Chat is logically permanent but hideable
 
-The conversation is the home of the Session.
+Within a Chat Session, the conversation is the strategy's home.
 
-Chat may be hidden temporarily to reclaim width, but this is semantically **hide/show**, not closing/destroying the conversation.
+Chat may be hidden temporarily to reclaim width, but this is hide/show rather than destroying strategy state.
 
-When restored it preserves transient state including:
-
-- scroll position;
-- current draft;
-- expanded/collapsed content;
-- attachments;
-- relevant view state.
+When restored it preserves transient view state such as scroll position, draft, expanded content, attachments, and other UI state.
 
 ---
 
 # 8. Operation groups in Chat
 
-Between visible user/agent messages ADELE displays a compact summary of agent activity.
+Between visible user/Agent messages, the stock Chat strategy displays a compact summary of agent activity.
 
-Two common operation types are:
-
-- tool calls;
-- provider-visible reasoning/activity traces.
-
-Individual operations should not fill the transcript with noise.
-
-Instead, contiguous operations between messages are grouped.
+Common operation types include tool calls and provider-visible reasoning/activity traces. Individual operations should not fill the transcript with noise; contiguous operations between messages are grouped.
 
 Example while active:
 
@@ -542,15 +507,13 @@ Example while active:
 ⌁ Investigating resolver cycle handling…
 ```
 
-Example completed:
+Completed:
 
 ```text
 ⌁ Investigated resolver cycle handling · 8 operations
 ```
 
-The active indicator may subtly pulse.
-
-Clicking the group adds an inspection card to the right panel:
+Clicking the group can create an `InspectionPresentation` in the current stock right-side inspection area:
 
 ```text
 ACTIVITY · Investigated resolver cycle handling
@@ -563,29 +526,19 @@ ACTIVITY · Investigated resolver cycle handling
 ✓ Read         resolver_test.dart
 ```
 
-Clicking a specific operation adds a separate inspection card for that operation.
+Clicking a specific operation adds a separate inspection.
 
 ## 8.1 Reasoning/provider differences
 
 ADELE should not assume every provider exposes full reasoning.
 
-The underlying concept is a provider-visible **reasoning/activity trace**.
-
-Depending on provider capabilities, ADELE may receive:
-
-- detailed reasoning;
-- a reasoning summary;
-- no reasoning.
-
-The UI displays only what the provider legitimately exposes.
+Depending on provider capabilities, ADELE may receive detailed reasoning, a reasoning summary, or no reasoning. The UI displays only what the provider legitimately exposes.
 
 ---
 
 # 9. Progressive tool representation
 
-A tool invocation may have several representations.
-
-This is a core ADELE pattern.
+A tool invocation may have several representations. This is a core product pattern even though specific renderers are plugin/extensible.
 
 Example shell search:
 
@@ -597,7 +550,7 @@ Chat
 Click:
 
 ```text
-Right inspector
+Inspection
 
 SHELL · Search for foo, bar, or baz
 
@@ -606,37 +559,30 @@ grep -RnE 'foo|bar|baz' ...
 
 Output
 first lines...
-first lines...
 ...
 
-[Open full output]
+[Show full output]
 ```
 
-Then:
-
-```text
-Bottom console dock
-
-$ grep foo|bar|baz
-```
+Then the active Console/Stream provider may show the full output.
 
 Other examples:
 
 ```text
 Shell
-    chat → inspector → bottom console
+    Chat → Inspection → Console/Stream
 
 File read
-    chat → inspector → source editor
+    Chat → Inspection → source editor
 
 File edit
-    chat → perhaps inspector → Diff
+    Chat → perhaps Inspection → Diff
 
 Search
-    chat → inspector → optional rich result
+    Chat → Inspection → optional rich result
 
 MCP
-    chat → inspector → optional rich result
+    Chat → Inspection → optional plugin-provided result
 ```
 
 Tools should not all be forced through identical presentations.
@@ -645,31 +591,25 @@ Tools should not all be forced through identical presentations.
 
 # 10. Persistent Draft Request
 
-The Chat composer is not merely a transient text box.
+The stock Chat composer is not merely a transient text box. It is a persistent, rich, Agent-editable **Draft Request document** owned by Chat strategy state for the Session.
 
-It is a persistent, rich, agent-editable **Draft Request document** owned by the Session.
+It should be continuously saved so partially written prompts are not lost across switching Sessions/Tasks, closing/reopening ADELE, or application restarts.
 
-It should be continuously saved so partially written prompts are not lost across:
-
-- switching Sessions;
-- switching Tasks;
-- closing/reopening ADELE;
-- application restarts.
-
-Conceptually:
+Conceptually for Chat:
 
 ```text
 Session
-├── conversation
-├── Draft Request
-├── progress
-├── inspections
-└── artifacts
+└── Chat strategy state
+    ├── conversation
+    ├── Draft Request
+    ├── progress references
+    ├── inspections/view state
+    └── artifacts
 ```
 
 ## 10.1 Submission
 
-Before submission, editing the Draft Request is ordinary document editing.
+Before submission, editing Draft Request is ordinary document editing.
 
 When submitted:
 
@@ -679,28 +619,19 @@ Draft Request
     → new empty Draft Request is created
 ```
 
-Editing an already-submitted historical user message is different and creates a conversation fork.
+Editing an already-submitted historical user message is different and creates a Chat conversation fork.
 
 ## 10.2 Rich text
 
-The Draft Request uses a rich-text/structured editor even in compact mode.
+Draft Request uses a rich-text/structured editor even in compact mode. It may contain Markdown-like formatting, lists, code, file references, images, and structured references.
 
-It may contain:
-
-- Markdown-like formatting;
-- lists;
-- code;
-- file references;
-- images;
-- structured references.
-
-The underlying representation should remain LLM/tool-friendly rather than becoming an opaque rich-text blob.
+The underlying representation should remain model/tool-friendly rather than opaque rich-text state.
 
 ---
 
 # 11. Expanded Draft Request
 
-The Draft Request can expand into a document-oriented editing presentation.
+Draft Request can expand into a document-oriented editing presentation.
 
 Collapsed:
 
@@ -722,48 +653,27 @@ Expanded:
 │                                             │
 │ Requirements                               │
 │ - ...                                       │
-│ - ...                                       │
 │                                             │
 ├─────────────────────────────────────────────┤
 │ document-specific instruction...            │
 └─────────────────────────────────────────────┘
 ```
 
-The expanded and collapsed forms are two views of the **same document**, not separate buffers.
-
-Chat history may be temporarily hidden within the Chat pane while the Draft Request occupies it.
-
-The normal center focus/maximize command can then give the Chat pane even more room if desired.
+Expanded/collapsed are two views of the same document. Chat history may be temporarily hidden while Draft Request occupies the pane. The normal Main Content focus/maximize Command can provide additional space.
 
 ---
 
 # 12. Requirements workflow
 
-ADELE may ship a stock `Requirements` agent.
+The stock development installation may ship a `Requirements` Agent configuration.
 
-This is not hard-coded product behavior.
-
-It is simply an Agent configuration whose context and tool access instruct it to refine the current Draft Request.
+This is not hard-coded orchestration behavior. It is Agent configuration/context/tool access that can refine the Draft Request.
 
 Example stock behavior:
 
-> Improve the prompt based on your understanding of the application. The prompt is Markdown. Perform limited investigation only where necessary to resolve important ambiguity. This is requirements definition, not implementation planning. Use `read_prompt` to inspect the current draft and `write_prompt` to update it. If the resulting request is substantial, use the expand option so the user can review it in document mode.
+> Improve the prompt based on your understanding of the application. The prompt is Markdown. Perform limited investigation only where necessary to resolve important ambiguity. This is requirements definition, not implementation planning. Use prompt tools to inspect/update the current draft. If substantial, expand it for user review.
 
-The agent may have:
-
-```text
-default model type: Fast
-default reasoning:  Low
-submit label:       Refine
-tools:
-    read_prompt
-    write_prompt
-    limited read/search capabilities
-```
-
-Project-level context such as `AGENTS.md` remains available and often provides enough application understanding without source-code investigation.
-
-A common workflow is:
+A common stock workflow is:
 
 ```text
 rough request
@@ -775,30 +685,28 @@ implementation plan
 implementation
 ```
 
-This workflow is driven by configurable Agent instructions and tools rather than hard-coded.
+This workflow is driven by configurable Agent instructions/tools and Agent/model-control plugins rather than hard-coded Chat strategy transitions.
 
 ---
 
 # 13. Document-specific AI editing
 
-Both Draft Request and Plan are agent-editable documents.
+Both Draft Request and Plan may be Agent-editable documents.
 
-They may expose a small document-specific instruction input:
+They can expose a small document-specific instruction input such as:
 
 ```text
 Rename "Due Date" to "Deadline" in the UI and data model.
                                                        Apply
 ```
 
-The resulting LLM calls count toward Session cost/usage, but do not need to appear as normal Chat turns.
-
-Agent document edits should be recorded as one editor transaction so they can be undone easily.
+Resulting inference counts toward Session usage/cost but need not appear as normal Chat turns. Agent document edits should be one editor transaction so they can be undone easily.
 
 ---
 
 # 14. Agent configuration
 
-An Agent configuration conceptually contains:
+A stock Agent Configuration/Policy plugin may define concepts resembling:
 
 ```text
 Agent
@@ -809,164 +717,43 @@ Agent
     submitLabel = "Send"
 ```
 
-Examples:
+Examples may include Ask, Requirements, Plan, Code, and Debug.
 
-```text
-Ask
-    role: answer project questions
-    tools: read/search only
-    model: Fast
-    reasoning: Low
-    submitLabel: Ask
-
-Requirements
-    role: refine Draft Request
-    tools: prompt read/write + limited inspection + set_agent
-    model: Fast
-    reasoning: Low
-    submitLabel: Refine
-    completion instruction: use set_agent to select Plan
-
-Plan
-    role: produce implementation plan
-    tools: broad read/search + plan tools + set_agent
-    model: Contemplative
-    reasoning: High
-    submitLabel: Plan
-    completion instruction: use set_agent to select Code
-
-Code
-    role: implement work
-    tools: normal development capabilities
-    model: Contemplative
-    reasoning: High
-    submitLabel: Send
-
-Debug
-    role: develop hypotheses, instrument, validate
-    tools: development/debugging capabilities
-    model: Contemplative
-    reasoning: High
-```
+These Agent definitions are plugin/configuration state that contributes to Chat UI and structured inference composition; Chat itself does not need to own the Agent-selection semantics.
 
 ## 14.1 Initial Agent
 
-ADELE configuration defines an Initial Agent.
+Configuration can define an Initial Agent, with a likely stock default of Requirements. Users may choose Plan, Code, or another Agent.
 
-A likely stock default is:
+## 14.2 Agent-selection tool
 
-```text
-Initial Agent: Requirements
-```
+The Agent plugin may provide a model-callable tool such as `set_agent`/`select_agent` that changes Agent state for the **next inference**.
 
-Users who do not want that workflow can set:
+Agent instructions can recommend transitions or let the model choose dynamically. The tool should target stable Agent IDs rather than display names.
 
-```text
-Initial Agent: Plan
-```
-
-or:
-
-```text
-Initial Agent: Code
-```
-
-## 14.2 Agent Selection Tool
-
-ADELE provides a `set_agent` tool that allows the LLM to select the Agent for the next invocation.
-
-Agent instructions can define a simple transition:
-
-```text
-Once completed, use set_agent to select Plan.
-```
-
-They can also let the LLM route work based on what it discovers:
-
-```text
-Once completed, evaluate whether the request is a bug fix or a new feature.
-For a bug fix, use set_agent to select Debug. For a new feature, select Plan.
-```
-
-`set_agent` does **not** run the selected Agent. It only changes which Agent is selected for the next user invocation. Agents should normally call it near the end of a successful run.
-
-```text
-Requirements [Refine]
-      ↓
-Plan becomes selected
-
-Plan [Plan]
-      ↓
-Code becomes selected
-
-Code [Send]
-      ↓
-Code remains selected
-```
-
-If an Agent does not call `set_agent`, including because a run was stopped, failed, or interrupted before routing, the current Agent remains selected.
-
-`set_agent` should target stable Agent identifiers rather than display names so renaming Agents does not break their instructions.
+The exact semantics are broader than a hard-coded workflow step: Chat does not invoke an Agent selector directly; Agent state participates independently in inference composition.
 
 ---
 
 # 15. Commands and skills
 
-Agents and skills/commands are related because both package reusable context, but they operate at different levels.
+Agents and skills/commands both package reusable context but operate at different levels.
 
-## Agent
+An Agent defines persistent role/policy; a Skill defines instructions for a particular invocation type such as commit, review-api, security-review, or write-tests.
 
-Defines the persistent role/policy:
+`/` can be the composer interaction for discovering/invoking skills or application Commands.
 
-- what the agent's job is;
-- tool restrictions;
-- model defaults;
-- reasoning defaults.
+Skills must not elevate Agent permissions. An Ask Agent without SCM-write access does not gain commit authority merely because `/commit` is selected.
 
-Agent context should occur relatively early in the provider payload so it participates effectively in prefix caching.
+Commands may declare required capabilities so incompatible commands can be unavailable.
 
-## Skill
-
-Defines instructions for a particular kind of invocation.
-
-Examples:
-
-- `commit`
-- `review-api`
-- `security-review`
-- `write-tests`
-
-## Slash command
-
-`/` is the composer interaction for discovering/invoking commands or skills.
-
-Example:
-
-```text
-/commit
-```
-
-could activate the configured commit skill.
-
-The same `/commit` skill may work under both Code and Debug Agents.
-
-Skills/commands must **not** elevate the Agent's allowed capabilities. An Ask Agent without SCM-write access does not gain commit access merely because `/commit` was selected.
-
-Commands may declare required capabilities so incompatible commands can be marked unavailable.
-
-Some slash commands may invoke application actions rather than skills.
+Application Command registration, Command Palette, and keybinding resolution are core host infrastructure. Plugins provide Commands and suggested bindings.
 
 ---
 
 # 16. Agent/model controls
 
-The Draft Request composer exposes:
-
-- selected Agent;
-- provider;
-- model type/profile;
-- reasoning effort;
-- Send/Refine/etc.
+The Draft Request composer may expose selected Agent, provider, semantic model type, reasoning effort, and Send/Refine/etc.
 
 Example:
 
@@ -974,38 +761,17 @@ Example:
 Code ▾        OpenAI · Cheap · High            Send
 ```
 
-Agent selection is relatively prominent.
+These controls are expected to be plugin-contributed Chat prompt accessories rather than hard-coded knowledge inside Chat.
 
-Provider/model/reasoning information is visually secondary because defaults should normally be appropriate.
+Agent selection is relatively prominent. Provider/model/reasoning are visually secondary because defaults should normally be appropriate.
 
 ## 16.1 Persistent overrides
 
-If the user changes model type or reasoning away from the Agent default, that override persists until:
-
-- the user changes it again;
-- the user explicitly resets to Agent defaults;
-- the selected Agent changes.
-
-Example:
-
-```text
-Code
-default: Contemplative · High
-
-user chooses Cheap
-
-Code        Cheap · High   ↶
-```
-
-Subsequent Code turns stay Cheap until changed/reset.
-
-Switching to another Agent initializes that Agent's defaults.
+If the user changes model type or reasoning from the Agent default, the override can persist until changed/reset or Agent changes. The state affects subsequent inference resolution, never an already-resolved invocation.
 
 ## 16.2 Model types per provider
 
-Model type describes intent, while concrete model mapping is provider-specific.
-
-Example:
+Model type describes intent while concrete mapping is provider-specific:
 
 ```text
 Cheap
@@ -1014,159 +780,55 @@ Cheap
     Google     → configured inexpensive Gemini model
 ```
 
-Selection therefore has independent dimensions:
-
-```text
-Provider:   OpenAI
-Model type: Cheap
-```
-
-which resolves to a concrete configured model.
-
-Changing provider while keeping `Cheap` preserves the user's intent.
+Provider and semantic model type are independent dimensions that resolve to a concrete configured model.
 
 ## 16.3 Custom model
 
-The user can bypass model-type mapping and select a concrete model directly.
-
-This is useful for trying newly released models without editing global configuration.
-
-The composer then displays the concrete override rather than pretending it belongs to a configured type.
+The user can bypass semantic type mapping and select a concrete model directly for experimentation. The composer should display that concrete override honestly.
 
 ---
 
 # 17. Context usage
 
-The Chat header shows measurable context usage:
+A Context Monitoring/Compaction plugin may contribute Session status such as:
 
 ```text
 Context 37%
 ```
 
-This represents the effective context expected for the next invocation given the currently selected Agent/model configuration.
+This represents effective context expected for the next invocation given current strategy/Agent/model state.
 
-Clicking it may show a breakdown such as:
-
-```text
-Context
-
-47.2k / 128k
-
-Conversation        ...
-Compacted history   ...
-Tool/context data   ...
-Agent/system         ...
-
-[Compress context]
-```
-
-Changing models may change the percentage because context-window capacity differs.
-
-The current unsent Draft Request is included in the estimate.
+A popover may show token usage/breakdown and a Compress Context action. Changing model can change the percentage because window capacity differs; the current Draft Request is included in the estimate.
 
 ## 17.1 Context compression
 
-The user can explicitly compress context.
+Explicit compression should not erase visible Chat history. Earlier content is summarized for future inference while complete history remains visible, with a timeline marker exposing the summary.
 
-Compression does not erase visible history.
-
-Instead, earlier conversation is replaced in future model context by a summary while the complete transcript remains visible.
-
-A timeline marker indicates the event:
-
-```text
-──────────── Context compressed ────────────
-Earlier conversation summarized for future turns
-```
-
-The marker can expose the generated summary.
+This behavior is replaceable/context-plugin direction rather than intrinsic Chat core semantics.
 
 ---
 
-# 18. Cost and usage
+# 18. Cost, usage, and quota
 
-Cost visibility is a core ADELE feature.
+An Accounting / Usage / Quota plugin is expected to make model consumption visible.
 
-Sessions may mix:
+Sessions may mix subscription-covered models, direct API models, local/free models, and multiple providers, so accounting should be invocation-based rather than calculated from whichever model is currently selected.
 
-- subscription-covered models;
-- direct API models;
-- local/free models;
-- multiple providers.
-
-ADELE therefore needs an invocation-level usage ledger rather than calculating cost from whichever model is currently selected.
-
-Historical invocations retain the actual provider/model/pricing basis used.
+Historical invocations retain the provider/model/usage basis actually used where the underlying retained history supports it.
 
 ## 18.1 Session-level cost
 
-The Chat header may show:
-
-```text
-Cost $0.42
-```
-
-or:
-
-```text
-Cost Included
-```
-
-A popover can distinguish:
-
-- direct billed API spend;
-- subscription-covered usage;
-- API-equivalent cost/value;
-- provider/model breakdown.
+Chat status may show `Cost $0.42` or `Cost Included`, with a richer popover for billed spend, subscription-covered usage, API-equivalent cost/value, and provider/model breakdown.
 
 ## 18.2 Turn-level cost
 
-A subtle rule separates conversational turns.
+A subtle turn affordance can expose provider/model, token usage, caching, billed cost, subscription coverage, and equivalent cost without cluttering the transcript.
 
-The rule includes a small cost/usage affordance:
+## 18.3 Subscription usage pools / quota
 
-```text
-──────────────────────────────────────────── $
-```
+When provider integrations expose quota/rate-limit/allowance information, Accounting may contribute a small usage indicator to relevant UI.
 
-Hover/click may show:
-
-```text
-Provider
-Model
-Input tokens
-Output tokens
-Cache tokens
-
-Billed cost
-Subscription-covered usage
-API-equivalent cost
-```
-
-This keeps the transcript visually clean while retaining precise accounting.
-
-## 18.3 Subscription usage pools
-
-Some providers expose subscription quota/rate-limit pools.
-
-When relevant to the currently selected provider/model, the composer may show a small usage indicator.
-
-Example:
-
-```text
-OpenAI · Cheap · High      ▰▰▰▰▰▱▱
-```
-
-Popover:
-
-```text
-5-hour pool    ███████░░░   resets in 1h 42m
-Weekly pool    █████░░░░░   resets Monday
-```
-
-Only display quota information the provider integration can actually know.
-
-If exhausting included quota changes future requests to API billing, ADELE should make that transition visible rather than allowing billing behavior to change silently.
+Only display information the provider can actually know. If quota exhaustion changes future billing behavior, the transition should be visible rather than silent.
 
 ---
 
@@ -1174,33 +836,11 @@ If exhausting included quota changes future requests to API billing, ADELE shoul
 
 ## 19.1 Images
 
-Images are added by dragging/dropping them into the Draft Request.
-
-No permanent Attach button is required initially.
-
-Dropped images appear as removable attachments before submission.
-
-If the current effective model does not support image input, ADELE should explain that and allow the user to change model/provider rather than silently changing models.
+Images can be dragged/dropped into Draft Request. If the effective model does not support images, ADELE should explain that and let the user change model/provider rather than silently changing it.
 
 ## 19.2 File references
 
-Typing `@` performs file completion:
-
-```text
-@foo
-
-app/models/foo.rb
-test/models/foo_test.rb
-lib/foo_builder.rb
-```
-
-After selection:
-
-```text
-@app/models/foo.rb
-```
-
-This is internally a structured reference containing environment/path identity rather than merely text.
+Typing `@` can perform file completion. A selected reference is internally structured around Environment/source identity rather than merely text.
 
 Possible future range forms include:
 
@@ -1209,85 +849,55 @@ Possible future range forms include:
 @foo.rb:40-80
 ```
 
-Selecting code in the Source editor should eventually allow inserting an equivalent structured reference into the Draft Request.
+Selecting code in the Source Editor should eventually allow inserting an equivalent structured reference.
 
 ---
 
 # 20. Running, stopping, and scrolling
 
-While the Agent is running:
+While the Agent runs, Send becomes Stop, active operation summary updates, and the user can interrupt execution.
 
-- Send becomes Stop;
-- the active operation-group summary may pulse/update;
-- the user can interrupt execution.
+Auto-scroll follows streaming activity only if the user is near the bottom. If the user scrolls upward, ADELE must not pull them back; it shows `Jump to latest`.
 
-Auto-scroll follows streaming activity only if the user is already near the bottom.
-
-If the user scrolls upward, ADELE must not pull them back down. Instead it shows a `Jump to latest` affordance.
-
-Approval/decision requests requiring user intervention should appear as explicit actionable timeline content rather than disappearing inside an operation group.
+Approval/decision requests requiring user intervention appear as explicit actionable timeline content rather than disappearing inside an operation group.
 
 ---
 
 # 21. Conversation forks
 
-Any historical user message can be edited.
+In the stock Chat strategy, historical user messages may be edited to create a fork while preserving the original continuation.
 
-Editing an already-submitted user message implicitly creates a fork from that point.
+Lightweight navigation such as `‹ 2 / 3 ›` can appear where forks exist. The active branch determines model context; sibling branches are excluded. Session cost still includes usage incurred on all branches.
 
-The original continuation remains preserved.
+Forking normally shares the same Environment. An explicit future operation could fork into another Environment.
 
-Where forks exist, lightweight navigation appears:
-
-```text
-‹   2 / 3   ›
-```
-
-The active fork determines model context.
-
-Sibling branches are not included in current context.
-
-Session cost, however, includes usage incurred across all branches because already-spent usage does not disappear.
-
-Forking normally shares the same execution environment.
-
-A future explicit operation may support forking into an isolated environment, but that is not currently required.
+Fork representation belongs to Chat strategy/plugin state unless future strategies demonstrate common core semantics.
 
 ---
 
-# 22. Right status/inspection stack
+# 22. Session status/inspection stack
 
-The right panel is normally visible but can be collapsed to reclaim space.
+The stock layout currently shows a right-side stack that can be collapsed.
 
-It is a **session-owned status and inspection stack**.
+Semantically it contains Session status contributions plus explicitly opened inspection presentations; those concepts should not depend on being physically right-aligned forever.
 
-It is not a generic fixed dashboard.
-
-The special top section is Session Progress.
-
-Below it are explicitly opened inspections.
+The current stock arrangement is:
 
 ```text
-SESSION PROGRESS               [fixed top]
+SESSION PROGRESS               [status contribution]
 ──────────────────────────────────────────
 Newest inspection
 ──────────────────────────────────────────
 Older inspection
-──────────────────────────────────────────
-Older inspection
 ```
 
-The whole panel scrolls vertically.
-
-New inspections appear immediately beneath Session Progress.
-
-There is no manual drag/reordering initially.
+New inspections appear immediately beneath Session Progress. Manual drag/reordering is not initially needed.
 
 ---
 
 # 23. Session Progress
 
-Once an Agent creates progress/work items, Session Progress appears automatically.
+Once the TODO/Progress plugin has Session work items, it contributes Session Progress automatically.
 
 Example:
 
@@ -1304,101 +914,31 @@ Overall progress
 ━━━━━━━━━━━━━━━━━━────────────
 ```
 
-States include at least:
+States include complete, in progress, and not started.
 
-```text
-✓ complete
-◔ in progress
-○ not started
-```
+Approximate internal progress estimates/weights may exist, but the stock UI avoids numeric percentages that imply false precision.
 
-The in-progress circle is a graphical approximate progress ring.
-
-The Agent may internally maintain a numerical estimate, but **no percentage is displayed** because the estimate is inherently approximate.
-
-Likewise the overall progress bar has no numeric percentage label.
-
-## 23.1 Work-item weights
-
-Internally, the Agent may estimate relative work weights:
-
-```text
-Investigate       0.10
-Implement         0.65
-Tests             0.20
-Documentation     0.05
-```
-
-These weights can help calculate overall progress.
-
-They are not normally user-visible.
-
-Historical actual durations may eventually help improve remaining-work estimates.
-
-## 23.2 Progress terminology
-
-Because `Task` is already a first-class ADELE object, checklist entries should preferably be called `work items`, `steps`, or similar internally rather than creating another concept called Task.
+These work items belong to an individual Session. They are not one canonical Task TODO list, and completing them does not automatically move the Task between user-controlled workflow categories.
 
 ---
 
-# 24. Right-side inspection cards
+# 24. Inspection cards
 
-Examples include:
+Examples include tool-call details, grouped operation activity, file-read details, search details, MCP invocation details, change-set metadata, and plugin-provided structured inspections.
 
-- tool-call details;
-- grouped operation activity;
-- file-read details;
-- search details;
-- MCP invocation details;
-- change-set metadata;
-- other plugin-provided structured inspections.
+Cards are independently expandable/collapsible/removable and not manually reordered initially. Closing an inspection removes its **view**, not the tool call, output, artifact, or underlying state.
 
-Cards are:
+Clicking an originating item again restores/reuses the existing inspection where appropriate.
 
-- independently expandable/collapsible;
-- individually removable;
-- not reordered manually.
-
-Collapsed headers remain informative:
-
-```text
-SEARCH · "CircularDependencyException" · 14 hits
-READ FILE · resolver_policy.dart:40-120
-MCP · github.search_issues · 8 results
-```
-
-Closing an inspection only removes its **view**.
-
-It does not delete:
-
-- the tool call;
-- historical output;
-- artifacts;
-- underlying state.
-
-Clicking the originating item again restores/reuses the existing inspection.
-
-Session Progress can similarly be hidden and restored through a command.
-
-Agent activity does **not** automatically flood the panel with cards. Most inspections appear only because the user explicitly requested them.
+Agent activity should not automatically flood Inspection with cards. Most appear because the user explicitly requests them.
 
 ---
 
-# 25. Bottom console dock
+# 25. Console / Stream presentation
 
-The bottom area is not a traditional IDE category panel.
+The stock bottom area is not a traditional IDE category panel. It is provided by the Console/Terminal plugin as an Environment-oriented stream/console experience.
 
-There are no permanent:
-
-- Terminal;
-- Command Output;
-- Problems
-
-mode tabs.
-
-Instead it is a **dynamic environment-owned console dock**.
-
-Tabs represent concrete instances:
+Tabs represent concrete resources/presentations such as:
 
 ```text
 >_ main
@@ -1409,76 +949,35 @@ $ grep CircularDependency
 
 ## 25.1 Interactive shells
 
-Interactive shells are explicitly created and writable.
-
-They persist as resources of the current execution environment.
+Interactive shells are explicitly created and writable runtime resources of the current Environment.
 
 ## 25.2 Tool output
 
-Wide/console-oriented tool output can be opened here when the user explicitly inspects it.
+Wide/console-oriented tool output opens here only when explicitly inspected; Agent execution alone does not create tabs.
 
-Agent execution alone does not create tabs.
-
-Example:
-
-```text
-Agent runs 10 commands
-    → compact tool activity in Chat
-    → zero console tabs automatically
-
-User clicks "dart test"
-    → $ dart test tab opens
-```
-
-Clicking the same invocation again focuses its existing tab.
-
-Closing the tab removes the visual representation, not the historical invocation.
+Closing a retained command-output tab removes presentation, not historical invocation data.
 
 ## 25.3 Environment ownership
 
-The console dock belongs to the execution environment.
+Interactive shell resources are Environment-owned. If two Sessions share the same Environment, switching Sessions leaves those shell resources available. Switching to another Task/Environment changes the visible Environment resources.
 
-If two Sessions share the same environment:
+A tool invocation may belong to Session history while its open Console presentation is Environment/window presentation state.
 
-```text
-Session A → Session B
-Environment unchanged
-Console dock unchanged
-```
-
-If the user switches to another Task or isolated Session:
-
-```text
-Environment A → Environment B
-Console dock A → Console dock B
-```
-
-Switching away does not automatically kill long-running shells/processes.
-
-Returning to the environment restores its dock/resources.
-
-The tool invocation itself may belong to a Session history, but its currently open console representation is environment workspace state.
+The semantic Console API should be broader than a single `OpenTerminal`: interactive resources may accept input, while retained read-only output does not.
 
 ---
 
 # 26. Diff reviewer
 
-The Diff surface is a first-class review experience, not merely another source viewer.
+The stock Diff/Review Viewer is a first-class review experience, not merely another source viewer.
 
-AI shifts development toward reviewing code, so this is one of ADELE's defining interactions.
+The stock viewer is singleton, unified initially, continuous across files/hunks, and backed by SCM/change-provider state.
 
-The viewer is:
-
-- singleton;
-- unified only initially;
-- continuous across changed files/hunks;
-- backed directly by SCM state.
-
-Side-by-side diff is deliberately postponed and may never be necessary.
+Side-by-side Diff is deliberately postponed.
 
 ## 26.1 Review scopes
 
-The scope selector uses ADELE terminology:
+The stock UX uses concepts such as:
 
 ```text
 Changes to approve
@@ -1486,49 +985,15 @@ Current changes
 Task changes
 ```
 
-### Changes to approve
-
-Default after an Agent edits code.
-
-Represents current changes not yet accepted.
-
-For Git this corresponds approximately to:
-
-```text
-unstaged modifications + new/untracked files
-```
-
-### Current changes
-
-All uncommitted work:
-
-```text
-unapproved current changes
-+ approved/staged current changes
-+ new files
-```
-
-### Task changes
-
-The complete delta attributable to the Task:
-
-```text
-committed Task work
-+ approved uncommitted work
-+ unapproved current work
-```
-
-The precise SCM computation is delegated to the SCM plugin.
+The precise SCM computation belongs to the active change/SCM provider. For Git, these map approximately to working-tree/index/HEAD/Task-branch relationships.
 
 ---
 
 # 27. SCM as source of truth
 
-ADELE should not maintain a parallel internal database of SCM acceptance state.
+ADELE should not maintain a parallel database of SCM acceptance state where the SCM natively represents it.
 
-The SCM **is** the state.
-
-For Git:
+For stock Git:
 
 ```text
 working tree vs index
@@ -1541,174 +1006,43 @@ Task branch/baseline relationship
     → Task changes
 ```
 
-Operations:
+Approve/unapprove modifies the Git index through Git's review-domain implementation. Manual/Agent edits modify the Environment filesystem. Commit modifies Git state.
 
-```text
-Approve
-    → modify Git index
+Diff watches/observes relevant filesystem/SCM changes and recomputes its projection. Manual `git add` should naturally refresh the UI rather than require ADELE/Git synchronization state.
 
-Unapprove
-    → modify Git index
-
-Manual edit
-    → modify working tree
-
-Agent edit
-    → modify working tree
-
-Commit
-    → modify HEAD/index
-```
-
-The Diff viewer watches for relevant filesystem/SCM state changes and recomputes its projection.
-
-If the user manually runs:
-
-```text
-git add resolver.dart
-```
-
-the Diff viewer simply refreshes and reflects that state.
-
-This avoids fragile synchronization between ADELE and Git.
-
-The watcher should be cross-platform in abstraction even if implementations use inotify, FSEvents, Windows filesystem APIs, etc.
+The watcher should be cross-platform in abstraction.
 
 ---
 
 # 28. Approve / Unapprove
 
-The core review grammar is intentionally small.
+The stock review grammar is intentionally small.
 
-## Unapproved change
-
-```text
-Comment
-Approve
-```
-
-## Approved, uncommitted change
-
-```text
-Comment
-Unapprove
-```
-
-## Committed Task change
-
-```text
-Comment
-```
+Unapproved changes allow Comment + Approve. Approved uncommitted changes allow Comment + Unapprove. Committed Task changes allow Comment.
 
 There is **no normal Reject button**.
 
-Approval changes acceptance state.
+Approval changes acceptance state; comments/manual edits/Agent work change code. This reduces destructive operations and fits an agent-review workflow.
 
-Comments/manual edits/Agent work change code.
-
-This separation reduces destructive operations and better matches an agent-review workflow.
-
-If the user dislikes a change:
-
-```text
-comment: "We don't need this."
-    ↓
-Submit Review
-    ↓
-Agent removes/reworks it
-```
-
-or the user opens Source and manually edits it.
-
-Explicit discard/reset SCM operations may eventually exist as deliberate commands/plugins but are not part of normal hunk review.
+Explicit discard/reset operations may exist as deliberate Commands/plugins rather than normal hunk review.
 
 ---
 
 # 29. Diff organization
 
-The Diff is a continuous review document:
+Diff is a continuous review document with File → hunks, potentially sticky headers, and a lightweight Files jump menu. A Changed Files navigation view may be opened for large reviews.
 
-```text
-File A
-    hunk
-    hunk
+Hunk/file/change-set actions include Approve/Unapprove where applicable, Comment, Display/Open in Source, context expansion, and Submit Review.
 
-File B
-    hunk
-
-File C
-    hunk
-```
-
-File headers may remain sticky.
-
-There is no file-tab UI.
-
-A lightweight `Files` jump menu can provide:
-
-```text
-resolver.dart                 2 to review
-resolver_policy.dart          approved
-resolver_test.dart            3 to review
-```
-
-For large reviews a Changed Files left auxiliary view may optionally be opened.
-
-## 29.1 Review actions
-
-At hunk level:
-
-- Approve;
-- Unapprove where appropriate;
-- Comment;
-- Open in Source;
-- expand surrounding context.
-
-At file level:
-
-- Approve File;
-- Unapprove File where appropriate;
-- File Comment.
-
-At change-set level:
-
-- Approve All;
-- Unapprove All where appropriate;
-- Submit Review.
-
-These controls belong **inside the Diff surface**, not in the right inspector.
+These controls belong inside the Diff surface rather than in generic Inspection.
 
 ---
 
 # 30. Review comments
 
-ADELE follows a code-review model similar to GitHub.
+The stock Diff workflow follows a code-review model similar to GitHub.
 
-Users may comment on:
-
-- a specific line;
-- a line range;
-- a hunk;
-- a file generally.
-
-Comments are collected as pending review feedback rather than immediately invoking the Agent.
-
-Example:
-
-```text
-Don't log here. Return the cycle information in the
-error so callers can decide how to log it.
-```
-
-The user may accumulate several comments and then submit:
-
-```text
-Submit Review (4)
-```
-
-The Agent receives the comments as one coherent structured request.
-
-This allows it to reason across multiple requested modifications.
+Users may comment on a line/range/hunk/file. Comments collect as pending review feedback and can be submitted as one coherent structured request to the active feedback target (Chat strategy in the stock composition).
 
 A submitted review appears compactly in Chat rather than dumping every line comment into the transcript.
 
@@ -1716,182 +1050,71 @@ A submitted review appears compactly in Chat rather than dumping every line comm
 
 # 31. Diff comment anchors
 
-Review comments must be structurally anchored to change identity/revision information, not merely raw line numbers.
+Review comments should be structurally anchored to file/revision/change-set/hunk/side/range identity rather than raw line numbers alone.
 
-Conceptually they need information such as:
+If code changes invalidate an anchor, ADELE may mark it outdated rather than attach it to unrelated code.
 
-```text
-file
-revision/change-set identity
-hunk identity
-old/new side
-line/range
-comment
-```
-
-If the underlying change invalidates an anchor, ADELE may mark the comment outdated rather than silently attaching it to unrelated code.
-
-Pending review comments are ADELE session state even though the underlying code/approval state comes from SCM.
+Pending review comments are Diff/Session plugin state even though code/approval state comes from SCM.
 
 ---
 
-# 32. Open in Source
+# 32. Display in Source
 
-Every relevant diff location should make it easy to open the full source file.
+Every relevant Diff location should make it easy to display the full source file through the general `DisplaySourceFile` capability.
 
-Example:
+The stock default provider is Internal Source Editor. It may focus an existing editor or create a Source view and navigate to the relevant location. An External Editor provider may be available as an alternate.
 
-```text
-Chat | Diff | resolver.dart
-```
+Manual edits naturally appear back in Diff because Environment filesystem + SCM remain authoritative.
 
-Opening Source:
-
-- focuses an existing editor for that file if one exists;
-- otherwise opens it in the active Source slot;
-- navigates to the corresponding location.
-
-Manual edits appear naturally back in `Changes to approve` because the filesystem/SCM remains the source of truth.
+Diff does not depend on the Internal Source Editor implementation; if no source-display provider is active, the file remains reviewable but the navigation affordance is unavailable.
 
 ---
 
 # 33. Commit workflow
 
-The Diff reviewer does not have a built-in `Save Changes` or Commit button.
+Diff does not have a hard-coded Save Changes/Commit implementation.
 
-Committing is preferably a configurable command:
+Committing is preferably a configurable application/Agent Command such as `/commit`. A visible Commit button, if added, should invoke the same underlying domain/Command path rather than a second implementation.
 
-```text
-/commit
-```
-
-The default `/commit` command can instruct the selected Agent to:
-
-- inspect changes;
-- run appropriate validation;
-- write commit messages according to configured/project conventions;
-- create one or multiple commits as appropriate.
-
-This is intentionally configuration-driven rather than hard-coded ADELE behavior.
-
-A future visible Commit button, if desired, should invoke the same configurable command rather than introduce a second commit implementation path.
-
-After committing:
-
-- changes disappear from `Current changes`;
-- they remain visible in `Task changes`.
+After commit, changes disappear from Current Changes but remain visible in Task Changes according to the SCM provider's semantics.
 
 ---
 
 # 34. Source editor group
 
-Source editing is a supporting interaction rather than ADELE's central product identity.
+Source editing is a supporting interaction rather than ADELE's central product identity, but **manual editing is an intended capability**.
 
-The Source Group contains multiple visible editor views:
+The stock Internal Source Editor plugin provides Source Group views with multiple visible editors:
 
 ```text
 [ resolver.dart ][ graph.dart ][ resolver_test.dart ]
 ```
 
-There are no hidden source tabs.
-
-A source file is either:
-
-- currently visible;
-- or not open in the Source Group.
+There are no hidden source tabs in this direction. A source file is visible or not open in the Source Group.
 
 ## 34.1 Vertical-only source layout
 
-All source views are side-by-side.
-
-Horizontal splits are deliberately postponed.
-
-The simple linear ordering enables keyboard operations such as:
-
-```text
-Focus Source 1
-Focus Source 2
-Focus Source 3
-
-Move current Source to position 1
-Move current Source to position 2
-```
-
-Editors may also be reordered by drag/drop within the Source Group.
+Source views are side-by-side initially. Horizontal splits are postponed. Simple ordering enables strong keyboard focus/move operations and drag/drop reordering.
 
 ---
 
-# 35. Opening files
+# 35. Opening/displaying files
 
 Quick Open is the default file-navigation mechanism.
 
-Normal open:
+Normal display/open can replace the active Source editor; open-to-side can append another view. The same semantic distinction should apply to links from Chat, Diff, Search, Inspection, and references.
 
-```text
-Enter
-    → replace active Source editor
-```
-
-Open to side:
-
-```text
-Shift+Enter
-    → append another Source editor
-```
-
-The same semantic distinction should apply to links from:
-
-- Chat;
-- Diff;
-- search;
-- right inspectors;
-- references/symbols.
-
-If there is no Source editor yet, normal open creates Source 1.
-
-If focus is currently outside Source, the Source Group remembers its most recently active editor for replacement behavior.
+The underlying cross-plugin capability is better thought of as `DisplaySourceFile`: a provider may focus an existing editor rather than always opening a new one.
 
 ---
 
 # 36. Same file in multiple editors
 
-Normally, opening a file that is already visible focuses the existing view.
+Normally displaying an already-visible file focuses the existing view.
 
-However, viewing different parts of the same file simultaneously is useful.
+An explicit `Split Current Editor` operation can create two independent Editor Views over the same underlying Document with independent cursor/selection/scroll/folds and shared edits.
 
-ADELE therefore provides an explicit:
-
-```text
-Split Current Editor
-```
-
-operation.
-
-This creates two independent editor views over the same underlying document:
-
-```text
-resolver.dart @ line 80
-resolver.dart @ line 640
-```
-
-Each has independent:
-
-- cursor;
-- selection;
-- scroll position;
-- folded regions.
-
-Edits are shared immediately because both represent the same document.
-
-This distinguishes:
-
-```text
-Open file
-    → navigate to document
-
-Split editor
-    → create another view of same document
-```
+This distinguishes navigation to a document from creating another view of that document.
 
 ---
 
@@ -1899,36 +1122,21 @@ Split editor
 
 `code_forge` is currently a promising Flutter editor component.
 
-ADELE does not require the world's most sophisticated editor because manual source editing is expected to be secondary to agent-driven implementation/review.
+ADELE does not require the world's most sophisticated editor because manual source editing is secondary to agent-driven implementation/review, but hand-editing must still be reliable and practical.
 
-The editor should nevertheless support the core review/inspection use cases reliably.
-
-ADELE should wrap CodeForge behind an internal editor/document abstraction rather than letting its APIs define ADELE's architecture.
-
-This allows replacement or adaptation later.
+ADELE should wrap CodeForge behind an internal editor/document abstraction rather than let a component API define the product architecture.
 
 ---
 
 # 38. Editor save/external-change semantics
 
-The Source editor should behave approximately as an autosaving view of the real environment filesystem.
+The stock Source Editor should behave approximately as an autosaving view of the real Environment filesystem.
 
-Manual edits should become visible to:
+Manual edits should become visible to Agents, terminals, SCM, and Diff without requiring an IDE-style save ritual.
 
-- agents;
-- terminals;
-- SCM;
-- Diff
+Edits may flush after a short debounce, with Save forcing immediate flush if retained.
 
-without requiring users to remember an IDE-style save workflow.
-
-Edits may be written after a short debounce, with Save forcing an immediate flush if such a command remains available.
-
-External modification is expected because Agents and shells can change open files.
-
-If disk changes while there are no conflicting local pending edits, reload while preserving view state as well as possible.
-
-If local and external edits conflict, do not silently overwrite either side.
+External modification is expected because Agents and shells can change open files. Reload clean external changes while preserving view state; never silently overwrite conflicting local/external edits.
 
 ---
 
@@ -1938,8 +1146,8 @@ Internally distinguish:
 
 ```text
 Document
-    environment
-    path
+    Environment
+    path/resource identity
     current content/revision
 
 Editor View
@@ -1949,102 +1157,45 @@ Editor View
     folds
 ```
 
-Multiple Source views can therefore share one Document.
-
-This is important for same-file splits.
+Multiple Source views can share one Document.
 
 ---
 
 # 40. Editor navigation history
 
-Each Source pane may maintain browser-like navigation history.
-
-Go-to-definition or similar navigation can replace the pane while remembering:
-
-- previous file;
-- previous location.
-
-Back/Forward navigates those locations.
-
-This provides useful hidden history without introducing hidden file tabs.
-
-A restrained Source header might resemble:
-
-```text
-‹  ›   resolver.dart · lib/core/resolvers             Split   ×
-```
+Each Source pane may maintain browser-like Back/Forward navigation history over files/locations without introducing hidden file tabs.
 
 ---
 
 # 41. Source intelligence
 
-Useful inline features include:
-
-- syntax highlighting;
-- line numbers;
-- folding;
-- local find;
-- hover documentation;
-- go-to-definition;
-- inline diagnostics;
-- basic code actions;
-- semantic highlighting.
+Useful inline features include syntax highlighting, line numbers, folding, local find, hover documentation, go-to-definition, inline diagnostics, basic code actions, and semantic highlighting.
 
 Diagnostics should appear inline rather than requiring a permanent Problems panel.
 
-ADELE should avoid creating a second editor-specific AI system such as independent AI autocomplete unless there is a clear later need. Agent/model/cost configuration should remain coherent across the product.
+ADELE should avoid a second independent editor-AI configuration system unless real need emerges; Agent/model/cost configuration should remain coherent across the product.
 
 ---
 
 # 42. SCM decorations in Source
 
-Subtle gutter indicators may show modified/unapproved lines.
+Subtle gutter indicators may show modified/unapproved lines. Clicking can focus Diff on the corresponding hunk.
 
-These are informational.
-
-Clicking a marker may focus the Diff viewer on the corresponding hunk.
-
-Approval remains a Diff interaction rather than being duplicated inside Source.
+Approval remains a Diff interaction rather than duplicated inside Source.
 
 ---
 
 # 43. Source references into Draft Request
 
-Selecting code should support a command such as:
-
-```text
-Reference in Draft
-```
-
-which inserts a structured reference equivalent to:
-
-```text
-@lib/core/resolver.dart:72-91
-```
-
-This is more important to ADELE than recreating deep traditional refactoring menus.
+Selecting code should support a Command such as `Reference in Draft`, inserting a structured reference equivalent to `@lib/core/resolver.dart:72-91`.
 
 ---
 
 # 44. Singleton Artifact viewer
 
-The final center region is a singleton Artifact surface.
+The stock Main Content layout includes a singleton Artifact surface for Plan, rich MCP result, Markdown/report, structured search result, test report, generated artifact, etc.
 
-Potential contents include:
-
-- Plan;
-- rich MCP result;
-- rendered Markdown;
-- report;
-- structured search result;
-- test report;
-- generated artifact.
-
-Opening another Artifact replaces the current visual representation.
-
-The underlying artifact persists and can be reopened.
-
-This intentionally prevents unbounded horizontal growth.
+Opening another Artifact replaces the current visual representation; the underlying artifact persists and can be reopened.
 
 ---
 
@@ -2052,43 +1203,19 @@ This intentionally prevents unbounded horizontal growth.
 
 A Plan is distinct from Session Progress.
 
-## Plan
+Plan is substantial implementation content/artifact containing phases, strategy, design decisions, dependencies, and technical approach. Session Progress is lightweight operational work-item state.
 
-A substantial implementation artifact containing:
-
-- phases;
-- strategy;
-- design decisions;
-- dependencies;
-- technical approach.
-
-It is displayed in the Artifact viewer and is editable by the user/agents.
-
-## Session Progress
-
-Lightweight operational status:
-
-```text
-✓ Investigate
-◔ Implement
-○ Test
-```
-
-It lives in the right panel.
-
-The Plan and Draft Request can share the same underlying agent-assisted rich document component.
+The stock Plan plugin may provide model tools and Artifact/Main Content presentation. Plan is not intrinsic to every Session.
 
 ---
 
 # 46. Project and Task Browser
 
-Project selection uses the operating-system directory picker or recent-project command.
+After a Project is selected, the stock **Task Browser plugin** provides the Project/Task/Session selection and management experience shown by the mockups.
 
-After opening a project, ADELE displays the **Task Browser**.
+The Task Browser is not assumed to be a `MainContentView` inside an already-active Session workbench. Before a Task/Session is selected there may be no normal active-session shell at all; the Task Browser may own a dedicated Project-level screen/window/shell. A future UI could embed it into the normal workbench without changing its semantic extension points.
 
-This browser also serves as the Session selector.
-
-There is no separate dedicated Session-selection page.
+The Task Browser also serves as the top-level/user Session selector; there is no separate dedicated Session-selection page in the stock design.
 
 Conceptually:
 
@@ -2103,42 +1230,21 @@ Conceptually:
 │ In Review   2 │ task rows...                      │ Sessions         │
 │ Waiting     3 │                                   │ Usage            │
 │ ...           │                                   │ Activity         │
-│               │                                   │                  │
 │ Archive    47 │                                   │                  │
 └───────────────┴───────────────────────────────────┴──────────────────┘
 ```
 
-There is no environment indicator because no active Session/environment is necessarily selected.
+There is no Environment indicator merely because the Project Task Browser is open; no active Session/Environment is necessarily selected.
+
+The browser defines semantic Task/Session summary extension points so Accounting, TODO/Progress, Git/Environment status, and future plugins can contribute compact fragments. The browser composes those contributions instead of querying each plugin-specific domain itself.
 
 ---
 
 # 47. Task categories and Archive
 
-Task categories are configuration-managed workflow states such as:
+Task categories are configuration-managed/user-controlled workflow states such as Active, In Review, Waiting for QA, Blocked, and On Hold.
 
-- Active;
-- In Review;
-- Waiting for QA;
-- Blocked;
-- On Hold.
-
-The left Task Browser sidebar contains:
-
-```text
-All
-configured categories...
-Archive
-```
-
-with task counts.
-
-`All` means all **non-archived** Tasks.
-
-Archive is a special state/view separate from workflow category.
-
-This prevents old completed work from filling the everyday `All` list.
-
-A user could still configure a `Done` category before tasks are eventually archived.
+`All` means all non-archived Tasks. Archive is special state/view separate from category. A user could still configure `Done` before archiving.
 
 Saved Filters and task pinning are deliberately omitted for now.
 
@@ -2146,176 +1252,63 @@ Saved Filters and task pinning are deliberately omitted for now.
 
 # 48. Task list
 
-Each Task row remains lightweight.
+Each Task row remains lightweight, with title, brief description, Session count, last activity, and category when useful.
 
-Example:
+Additional data such as cost, Environment/SCM status, and warnings are expected to arrive through `TaskSummaryContribution`-style extensions rather than hard-coded Task Browser dependencies.
 
-```text
-Refactor resolver API
-Improve async resolution and cycle handling
-
-4 sessions · 18m ago                           In Review
-```
-
-High-value metadata:
-
-- title;
-- brief description;
-- Session count;
-- last activity;
-- category when not already implied by current filter.
-
-When viewing a single category, category labels can be visually omitted because they are redundant.
-
-Search is important because Tasks accumulate over time.
-
-Default sorting by last activity is likely sufficient initially; additional sorting can be added based on real need.
+Search is important because Tasks accumulate. Last-activity sorting is likely sufficient initially.
 
 ---
 
 # 49. Task activity indicators
 
-Workflow category and live activity are different dimensions.
+Workflow category and live execution activity are different dimensions.
 
-Example:
+Task rows may show small working/waiting indicators derived from core Session/Run status or contributed summaries. A Task can show both if different Sessions are working/waiting.
 
-```text
-Category:
-    In Review
-
-Live activity:
-    Agent working
-    Waiting for user
-    Idle
-```
-
-Task rows may show small indicators:
-
-```text
-◌ agent currently working
-! waiting for user input/approval
-```
-
-If multiple Sessions create both states:
-
-```text
-Refactor resolver API                          ◌  !
-```
-
-the Task can show both.
-
-Tooltip/details may say:
-
-```text
-2 Sessions working
-1 Session waiting for approval
-```
-
-This becomes important when multiple Tasks/Sessions execute concurrently.
+These indicators do not automatically change the user-controlled Task category.
 
 ---
 
 # 50. Task details / Session selection
 
-Selecting a Task does not immediately resume it.
+Selecting a Task populates Task Details rather than immediately entering a Session.
 
-It populates the right-side Task Details pane.
+The stock pane lists top-level/user Sessions and `+ New Session`, plus Task summary contributions such as usage/cost or status.
 
-Example:
+Clicking a Session enters/resumes it. There is no separate ambiguous Resume button.
 
-```text
-TASK DETAILS
-
-Refactor resolver API
-In Review
-
-Description...
-
-SESSIONS
-
-◌ Validate error propagation
-  Working · 18m ago
-
-! Review async resolution path
-  Waiting for approval · 32m ago
-
-  Investigate circular dependency
-  Idle · yesterday
-
-+ New Session
-
-USAGE
-...
-
-ACTIVITY
-...
-```
-
-Clicking a Session enters/resumes it.
-
-There is no separate ambiguous `Resume Session` button.
+Agent-created child Sessions are not normal peers in this list. They are primarily inspected from the parent Session/orchestration surface that created them.
 
 ---
 
 # 51. Task usage
 
-Task details may aggregate usage across Sessions:
+Accounting may contribute Task-level aggregates across Sessions such as input/output/cache tokens, billed cost, API-equivalent cost, or other usage summary.
 
-- input tokens;
-- output tokens;
-- cache tokens/hit ratio;
-- actual billed cost;
-- API-equivalent cost.
+Detailed provider/model breakdown can remain behind hover/popover rather than dominate Task Browser.
 
-Detailed provider/model breakdown can remain behind hover/popover rather than dominating the pane.
+This information belongs to the Accounting extension, not Task Browser's core domain model.
 
 ---
 
 # 52. New Session
 
-`+ New Session` is available:
+`+ New Session` is available from Task Browser and may also be a shortcut from an active Session surface.
 
-- in Task Details;
-- as a shortcut from the active Chat pane.
+Use **Session**, not `Chat`, consistently at the product level. Chat is one orchestration strategy/surface.
 
-Use the term **Session**, not `Chat`, consistently.
+A normal stock path can create a Session bound to the configured/default Chat strategy, associate it with the Task's primary Environment, initialize Chat state, select configured Agent defaults, and focus Draft Request.
 
-A Session is the product object; Chat is one view inside it.
-
-Creating a new Session requires no dialog.
-
-Behavior:
-
-```text
-create Session
-    ↓
-attach to Task primary environment
-    ↓
-open default active-session workspace
-    ↓
-configured Initial Agent selected
-    ↓
-focus empty Draft Request
-```
-
-The Session begins with a provisional name and is renamed from its initial request when enough information exists.
-
-The new Session has:
-
-- no conversation history;
-- no extra center panels open;
-- no progress list until one is created;
-- the environment-owned console dock appropriate to the Task environment.
+If multiple orchestration strategies are installed/applicable, Agent Interaction may expose strategy choice. A Session is permanently bound to the selected strategy; changing strategy means creating another Session.
 
 ---
 
 # 53. New Task
 
-`+ New Task` is prominent in the Task Browser.
+`+ New Task` is prominent in Task Browser.
 
-Unlike New Session, it requires a small creation dialog because the Task needs an identity used to seed its execution environment.
-
-Minimal initial dialog:
+A small dialog may gather **Task-owned** data such as name/title and category:
 
 ```text
 NEW TASK
@@ -2331,115 +1324,69 @@ Category
                          Cancel   Create Task
 ```
 
-Description is optional and does not need to be required initially because the Draft Request will contain the actual work request.
+Task Browser then submits this intent to **core Task creation**. It does not directly create a Git worktree, Docker container, or other Environment.
 
-ADELE derives a safe environment identifier from the Task name/title as needed.
-
-Creating a Task:
+The stock lifecycle is directionally:
 
 ```text
-create Task
-    ↓
-create primary Execution Environment
-    ↓
-SCM plugin creates appropriate worktree/branch/etc.
-    ↓
-create initial Session
-    ↓
-open active-session UI
-    ↓
-configured Initial Agent selected
+Task Browser
+    -> CreateTask(title/category/...)
+
+Core Task lifecycle
+    -> create durable Task identity
+    -> resolve applicable/default EnvironmentProvider
+    -> stock default: Git Worktree provider
+    -> provider establishes primary Environment
+    -> core associates Environment with Task
+    -> optional default Session creation / UI transition
 ```
 
-Low-level worktree/branch naming is not exposed in the normal dialog.
+If multiple Environment providers are enabled and user choice is useful, core can expose a reusable provider-selection control in the creation flow. The Task Browser should not own Git/Docker-specific logic.
+
+A Task can retain history even if expensive Environment resources are later released, subject to the selected provider's lifecycle semantics.
 
 ---
 
-# 54. Workspace/state ownership
+# 54. State ownership
 
-The current conceptual ownership model is:
+The current stock conceptual ownership model is:
 
 | Surface/state | Owner |
 |---|---|
-| Project identity/config | Project |
-| Task category/title/metadata | Task |
-| Primary execution environment | Task |
-| Conversation | Session |
-| Draft Request | Session |
-| Center layout | Session |
-| Right inspections | Session |
-| Session Progress | Session |
-| Conversation forks | Session |
-| Active Agent/model override | Session |
-| Shell/process resources | Environment |
-| Bottom console dock | Environment |
-| Filesystem | Environment |
-| SCM state | Environment/SCM plugin |
-| Diff projection | Derived from SCM state |
+| Project identity | Core Project domain |
+| Concrete Project association/selection | Project selector/provider plugin |
+| Task category/title/metadata | Core Task domain |
+| Primary Environment association | Core Task domain + Environment provider lifecycle |
+| Chat conversation/Draft/forks | Chat strategy state for Session |
+| Session progress/work items | TODO/Progress plugin, Session scoped |
+| Agent/model overrides | Agent/Model plugins, Session scoped |
+| Main Content/right inspection live layout | window/workbench state, possibly seeded from remembered state |
+| Shell/process resources | Environment/runtime-resource provider |
+| Console presentation | Console plugin + window/Environment context |
+| Filesystem/process implementation | Environment provider APIs |
+| SCM state | SCM plugin/external SCM |
+| Diff projection | Diff plugin derived from change/SCM provider |
+| Usage/cost/quota | Accounting plugin |
 
-This distinction is important during Session switching.
-
-Two Sessions sharing an environment:
-
-```text
-Session A → Session B
-
-Center workspace:
-    changes
-
-Right panel:
-    changes
-
-Bottom console:
-    remains
-```
-
-Switching Tasks/environments:
-
-```text
-Center workspace:
-    changes
-
-Right panel:
-    changes
-
-Bottom console:
-    changes to that environment's dock
-```
+Two Sessions sharing an Environment can have different Chat/workbench state while seeing the same Environment-owned shell resources. Switching Tasks/Environments changes Environment resources while strategy/window state changes with the selected Session.
 
 ---
 
-# 55. Workspace restoration
+# 55. Workbench restoration
 
-Session workspace state should eventually preserve:
+Stock Chat/workbench state may eventually preserve Chat scroll/view state, Draft Request, Main Content pane visibility/widths, horizontal scroll, Source views/cursors/folds/history, Diff review position, current Artifact, inspection cards, and Agent/model overrides.
 
-- Chat scroll/view state;
-- Draft Request;
-- center pane visibility;
-- pane widths;
-- horizontal center scroll;
-- open Source views;
-- Source cursor/scroll/folds/history;
-- Diff review position;
-- currently displayed Artifact;
-- right-side inspection cards;
-- collapsed/expanded right cards;
-- active Agent/model overrides.
+Environment/runtime state may preserve/reconnect interactive shells, running processes where possible, retained command-output resources, and console-resource state.
 
-Environment workspace state should preserve:
+These persistence mechanisms need not all be Session fields. The profile/configuration architecture distinguishes underlying shared domain state, plugin-owned state, live per-window presentation state, and remembered defaults for future windows.
 
-- interactive shells;
-- running processes where possible;
-- open console-tool representations;
-- bottom-dock tab state.
-
-Not every part of this needs to exist in the first self-hosting implementation, but the ownership model should avoid making future persistence unnecessarily difficult.
+Not every part needs to exist before self-hosting; the ownership boundaries should merely avoid blocking later persistence.
 
 ---
 
 # 56. Deliberately postponed or excluded IDE conventions
 
-The following are **not currently considered standard ADELE UI requirements**:
+The following are not currently standard stock ADELE requirements:
 
 - permanent VS Code-style activity rail;
 - stock filesystem Explorer;
@@ -2450,186 +1397,131 @@ The following are **not currently considered standard ADELE UI requirements**:
 - arbitrary two-dimensional editor splitting;
 - side-by-side Diff;
 - destructive Reject controls in Diff;
-- built-in Commit workflow;
-- session artifact dashboard pinned permanently to the right;
+- hard-coded Commit workflow;
+- Session artifact dashboard permanently pinned right;
 - multiple simultaneous generic Artifact viewers;
-- separate AI autocomplete/model system inside Source editor.
+- separate AI autocomplete/model system inside Source Editor.
 
-These may later be implemented through:
-
-- commands;
-- contextual auxiliary views;
-- plugins;
-- future evidence from real usage.
-
-Their absence is intentional rather than an oversight.
+These can later arrive through Commands, contextual Navigation views, plugins, or evidence from real usage.
 
 ---
 
 # 57. Plugin/extensibility implications
 
-ADELE should prefer **semantic UI contributions** over plugins claiming fixed physical coordinates.
+The mockups should be implemented through **semantic extension roles**, not plugins claiming fixed physical coordinates.
 
-Possible conceptual contribution types include:
+Likely broad core-facing semantics include concepts such as:
 
 ```text
-PrimaryView
-AuxiliaryView
-InspectionView
-ConsoleView
-Overlay/Command
+MainContentView
+NavigationView
+SessionStatusContribution
+InspectionPresentation
+StreamView / ConsolePresentation
+ContextStatusContribution
+Commands / keybindings
 ```
 
 Examples:
 
 ```text
 filesystem browser plugin
-    → AuxiliaryView
+    → NavigationView
 
 graphical Git client plugin
-    → Auxiliary/Primary views
+    → Navigation/Main Content as appropriate
 
 database schema browser
-    → AuxiliaryView
+    → NavigationView
 
 profiler output
-    → Primary or Console view
+    → Main Content or Stream presentation
 
-custom tool details
-    → InspectionView
+custom tool detail
+    → InspectionPresentation
 ```
 
-Plugins should participate in the shell's established semantics rather than creating arbitrary disconnected panel systems.
+A plugin may define further extension points inside its own surface. Chat can define prompt accessories and turn actions; Task Browser can define Task/Session summary contributions; Diff can define review/change-provider interfaces.
+
+The Task Browser itself may be a dedicated Project-level selection experience rather than a Main Content provider.
+
+Plugins should participate in established semantic composition rather than create arbitrary disconnected panel systems.
 
 ---
 
 # 58. General design principles
 
-Several broader principles have emerged from these decisions.
+## 58.1 User attention controls arrangement
 
-## 58.1 User attention controls workspace arrangement
-
-Agent activity should not gratuitously open, close, or rearrange panels.
-
-Tools normally remain compact in Chat until explicitly inspected.
+Agent activity should not gratuitously open, close, or rearrange panels. Tools normally remain compact until explicitly inspected.
 
 ## 58.2 Views are disposable; underlying objects are not
 
-Closing:
+Closing Diff, Plan, an inspection card, console output, or Source view removes presentation, not the underlying change/artifact/invocation/file.
 
-- Diff;
-- Plan;
-- inspector card;
-- console output;
-- Source view
+## 58.3 Direct navigation beats permanent chrome
 
-removes a visual representation.
-
-It does not delete the underlying change/artifact/tool invocation/file.
-
-## 58.3 Direct navigation beats permanent navigation chrome
-
-Prefer:
-
-- breadcrumb;
-- Quick Open;
-- command palette;
-- links from Agent output;
-- context-specific auxiliary views.
-
-Avoid permanent navigation structures merely because IDEs traditionally have them.
+Prefer breadcrumb, Quick Open, Command Palette, links from Agent output, and contextual Navigation views over permanent navigation merely because IDEs traditionally have it.
 
 ## 58.4 SCM is authoritative
 
-For SCM-backed behavior, derive ADELE state from the SCM whenever practical instead of maintaining parallel synchronized state.
+For SCM-backed behavior, derive state from SCM whenever practical instead of maintaining parallel synchronized acceptance state.
 
-## 58.5 Configuration defines workflow
+## 58.5 Configuration/plugins define workflow
 
-Requirements → Plan → Code should be easy out of the box but should arise from configurable Agent instructions, tools such as `set_agent`, and commands rather than hard-coded workflow logic. Agent instructions may also choose different next Agents based on the work being performed.
+Requirements → Plan → Code should be easy out of the box but arise from configurable Agent instructions, model-callable Agent/Model tools, Commands, and plugins rather than hard-coded Chat strategy workflow logic.
 
 ## 58.6 Progressive disclosure
 
-Show compact summaries first.
-
-Allow the user to drill from:
-
-```text
-Chat summary
-    ↓
-Right structured inspection
-    ↓
-full specialized representation
-```
-
-rather than showing maximum detail everywhere.
+Show compact summaries first; allow drill-down from Chat summary to structured Inspection to full specialized representation.
 
 ## 58.7 Optimize for review
 
-ADELE should assume agents increasingly produce implementation while humans increasingly inspect, direct, and review that implementation.
-
-The Diff reviewer, Session progress, tool transparency, and ability to rapidly inspect full source are therefore more central than sophisticated manual code-authoring UX.
+The stock development composition assumes agents increasingly produce implementation while humans inspect, direct, review, and hand-edit when useful. Diff, Session progress, tool transparency, and rapid full-source inspection/editing are therefore central.
 
 ---
 
 # 59. Near-term implementation versus direction
 
-This document describes the **desired direction**, not the minimum feature set required before ADELE can self-host.
+This document describes desired stock UX, not the minimum feature set required before ADELE can self-host.
 
-Near-term implementation should prioritize whatever subset enables ADELE to become useful enough to improve itself.
-
-A plausible minimal progression may only need portions of:
+Near-term implementation should prioritize whatever subset enables ADELE to improve itself, plausibly including portions of:
 
 - Project/Task/Session lifecycle;
+- a stock Project Selector and Task Browser;
 - Chat with persistent Draft Request;
-- Agent/model selection;
-- basic Agent tool activity;
-- basic execution environment;
-- Source editor;
+- Agent/model policy/controls;
+- basic tool activity;
+- one Environment provider;
+- mutable source tools/editor;
 - Diff review;
-- one shell;
+- command/console functionality;
 - enough persistence to resume work.
 
-More advanced behaviors such as:
+Advanced accounting, quota meters, rich forks, multi-shell restoration, precise progress weighting, document-specific AI editing, plugin-provided view ecosystems, and extensive Task analytics can arrive incrementally.
 
-- sophisticated cost accounting;
-- subscription quota meters;
-- rich conversation forks;
-- multi-shell restoration;
-- precise progress weighting;
-- document-specific AI editing;
-- plugin-provided view ecosystems;
-- extensive task analytics
-
-can arrive incrementally.
-
-Implementations should therefore avoid unnecessary complexity merely to satisfy this document in one phase, while also avoiding architectural shortcuts that fundamentally contradict the model described here.
+Implementations should avoid unnecessary complexity merely to satisfy this document in one phase while also avoiding shortcuts that fundamentally contradict the accepted architecture.
 
 ---
 
 # 60. Expected evolution
 
-This UX should be treated as a hypothesis that will be tested by using ADELE for real development.
+This UX should be treated as a hypothesis tested by using ADELE for real development.
 
-Some ideas will work better than expected.
+Some ideas will work better than expected; some will prove unnecessary; other workflows will emerge only after substantial self-hosting use.
 
-Some will prove unnecessary.
+Future changes should preserve the reasoning behind these decisions while remaining willing to modify details.
 
-Other workflows will emerge only after ADELE becomes capable of doing substantial work on itself.
-
-Future changes should therefore preserve the reasoning behind these decisions while remaining willing to modify the details.
-
-The primary goal is not to create a perfect static IDE design.
-
-It is to establish a coherent **agent-development workbench** that can evolve based on real usage while retaining a clear conceptual model:
+The primary goal is not a perfect static IDE design. It is a coherent **agent-development workbench** produced by a replaceable plugin/configuration composition:
 
 ```text
-Project
+select Project
     ↓
-Task + execution environment
+select/create Task + Environment
     ↓
-one or more independent Sessions
+one or more top-level Sessions
     ↓
-direct Agent through Draft Request
+direct stock Chat Agent through Draft Request
     ↓
 observe progress and tool activity
     ↓
@@ -2637,7 +1529,9 @@ review changes
     ↓
 inspect/edit source where useful
     ↓
+optionally delegate to child Sessions
+    ↓
 iterate
 ```
 
-That is the current development-workflow direction for ADELE.
+That is the current stock development-workflow direction for ADELE, not an assertion that every ADELE profile/plugin set must look or behave exactly this way.
