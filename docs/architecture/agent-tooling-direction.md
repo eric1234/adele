@@ -2,20 +2,26 @@
 
 ## Status and purpose
 
-**Guiding product/architecture direction; not a frozen tool catalog or public API**
+**Guiding product/architecture direction; not a frozen tool catalog or public API.**
 
-This document captures the current direction for ADELE's built-in agent tools and the execution/presentation model around those tools.
+This document captures the current direction for ADELE's stock development agent tools and the execution/presentation model around those tools.
 
 It is intentionally directional rather than contractual. The exact tool set, names, schemas, persistence model, permission system, scheduling model, and implementation layering may change as ADELE becomes capable of self-hosting and real usage exposes better designs. The near-term implementation may provide only a small subset of this document.
+
+The maintained Phase IV vertical currently proves bounded read-only source search/read tools projected from DevelopmentSource plus provider-neutral model/tool/model execution. It does **not** yet implement the stock Command Tool, mutable Environment filesystem tools, TODO/Progress, Plan, Console/Terminal, background scheduling, or the broader presentation model described here.
 
 The purpose is to preserve the reasoning behind the current direction so later implementation work does not independently rediscover a conventional coding-agent tool surface or accidentally conflict with ADELE's product model.
 
 This document should be read alongside:
 
-- [`../mockups/README.md`](../mockups/README.md), which describes the medium-term development-workflow UX direction;
-- [`agent-kernel-semantic-model.md`](agent-kernel-semantic-model.md), which describes lower-level Run, ToolInvocation, progress, outcome, interruption, runtime-resource, and execution-event semantics.
+- [`../mockups/README.md`](../mockups/README.md), which describes the stock development-workflow UX direction;
+- [`agent-kernel-semantic-model.md`](agent-kernel-semantic-model.md), which describes lower-level Run, ToolInvocation, progress, outcome, interruption, runtime-resource, and execution-observation semantics;
+- [`plugin-extension-model.md`](plugin-extension-model.md), which defines the broader recursive extension model;
+- [`stock-plugin-direction.md`](stock-plugin-direction.md), which places expected tools into the speculative default plugin topology.
 
-This document sits between those two levels. It focuses on which model-callable operations are worth making first-class, why they are preferable to shell commands for common operations, how command execution should project into ADELE's live UX, and how concurrent/asynchronous work should interact with model inference.
+The mockups currently place compact activity in Chat, structured inspection on the right, and stream/terminal presentation at the bottom. Those are stock layout choices; plugin-facing extension APIs should use semantic roles rather than encode those physical coordinates.
+
+This document sits between the kernel and product UX levels. It focuses on which model-callable operations are worth making first-class, why they are preferable to shell commands for common operations, how command execution should project into ADELE's live UX, and how concurrent/asynchronous work should interact with model inference.
 
 ---
 
@@ -23,7 +29,7 @@ This document sits between those two levels. It focuses on which model-callable 
 
 The most fundamental coding-agent tool is command execution.
 
-Given access to a suitable command environment, an agent can bootstrap nearly every ordinary development operation:
+Given access to a suitable Environment process-execution facility, an agent can bootstrap nearly every ordinary development operation:
 
 ```text
 read files          cat / sed / head / tail
@@ -91,21 +97,21 @@ A shell invocation fundamentally starts with command input and produces process 
 
 A structured tool makes both intent and result explicit. ADELE can present a search as a search, a source read as a source read, and an edit as a source mutation rather than forcing every operation through a terminal-shaped presentation.
 
-This supports the progressive tool representation described by the UX direction:
+This supports progressive representation:
 
 ```text
 Chat summary
     ↓ inspect
-Right-side structured detail
+structured InspectionPresentation
     ↓ when useful
-Specialized full presentation
+specialized full presentation
 ```
 
 ## 2.4 Better portability and host control
 
-Dedicated tools can abstract over platform differences and execution location. A future workspace or execution environment may be local, containerized, remote, plugin-provided, or otherwise not reducible to the host process's local filesystem.
+Dedicated tools can abstract over platform differences and execution location. An Environment may be local, Git-worktree-backed, containerized, remote, or otherwise not reducible to the host process's local filesystem.
 
-A semantic `read_file` or `search` operation can remain stable while its executor changes.
+A semantic `read_file` or `search` operation can remain stable while its Environment-backed executor changes.
 
 ---
 
@@ -133,9 +139,9 @@ Tool granularity should also remain coarse enough to avoid unnecessary variants.
 
 ---
 
-# 4. Directional core tool layers
+# 4. Directional stock tool layers
 
-These layers describe conceptual priority/dependency, not implementation milestones.
+These layers describe conceptual priority/dependency, not implementation milestones or core ownership. The expected long-term home of these tools is stock plugins, not `agent_kernel`.
 
 ## 4.1 Layer 0 — universal execution
 
@@ -146,7 +152,7 @@ Execution
 
 `run_command` is the minimum useful coding-agent tool because it enables the agent to bootstrap nearly all other operations.
 
-The exact model-visible schema remains to be designed. The underlying execution facility should preserve the distinction between direct process execution and shell interpretation even if ADELE ultimately exposes one convenient tool abstraction.
+The exact model-visible schema remains to be designed. The underlying Environment process facility should preserve the distinction between direct process execution and shell interpretation even if ADELE ultimately exposes one convenient tool abstraction.
 
 For example, direct argument-vector execution avoids quoting ambiguity:
 
@@ -164,7 +170,7 @@ ADELE should not prematurely freeze whether those become separate model-visible 
 A strong initial structured surface is:
 
 ```text
-Workspace
+Source / filesystem
     list_directory
     glob
     read_file
@@ -187,6 +193,8 @@ These operations are frequent enough in coding work and benefit enough from prec
 
 Long-tail filesystem actions such as move, copy, directory creation, permissions, or unusual metadata manipulation do not automatically need dedicated model tools. They can initially remain command operations unless experience shows clear value in promotion.
 
+The structured filesystem tools should consume the active Run/Session Environment filesystem API rather than assume host-local paths or one concrete Environment provider.
+
 ## 4.3 Later specialized layers
 
 Potential future areas include:
@@ -198,7 +206,7 @@ web/documentation access
 browser automation
 rich diagnostics/test results
 external/MCP tools
-subagents and orchestration
+child Sessions and orchestration
 specialized artifact operations
 ```
 
@@ -248,7 +256,7 @@ The exact type/schema is deferred, but the conceptual information resembles:
 CommandInvocation
     identity
     originating ToolInvocation / Run / Session
-    execution environment
+    Environment
 
     executable/command representation
     arguments / shell text
@@ -285,14 +293,14 @@ The same command invocation should project differently depending on the consumer
              ┌──────────────────┼──────────────────┐
              │                  │                  │
              ▼                  ▼                  ▼
-          Chat              Inspector          Model result
+          Chat              Inspection          Model result
        short summary       live details       bounded content
                                 │
                                 ▼
-                         Open full output
+                         Show full output
                                 │
                                 ▼
-                         Bottom console
+                         Console/Stream view
 ```
 
 The projections are views of one operation, not separate executions or duplicated semantic objects.
@@ -311,9 +319,9 @@ or as an operation within a grouped activity summary.
 
 When the underlying state changes, the visible summary should update without requiring a new message.
 
-## 7.2 Inspector projection
+## 7.2 Inspection projection
 
-Inspecting the command should show a live card with information such as:
+Inspecting the command should show live structured detail with information such as:
 
 ```text
 SHELL · Downloading dependency
@@ -325,25 +333,25 @@ Command
 curl -L ...
 
 Working directory
-/path/to/workspace
+/path/to/environment
 
 Output
 <recent rendered output>
 
-[Open full output]
+[Show full output]
 ```
 
 While the process runs, status and output update in place. After settlement, exit status and final timing become available.
 
-The inspector should normally display only a bounded recent portion of output. For simple commands that portion may contain everything.
+The inspection presentation should normally display only a bounded recent portion of output. For simple commands that portion may contain everything.
 
 ## 7.3 Full console projection
 
-When output is larger or the user wants the complete stream, `Open full output` should open a view in the bottom console dock.
+When output is larger or the user wants the complete stream, `Show full output` should ask the active Console/Stream provider to display the retained/live command output.
 
-The bottom dock is appropriate because it provides a wide area suitable for streaming and terminal-oriented data.
+The stock mockups currently place that presentation in a bottom dock because a wide area suits streaming and terminal-oriented data. That physical placement is not the semantic API.
 
-Opening full output should not re-run the command. It opens a richer presentation of the retained/live invocation output.
+Showing full output must not re-run the command. It opens a richer presentation of the same retained/live invocation output.
 
 ## 7.4 Model projection
 
@@ -352,8 +360,8 @@ The model should receive a bounded, tool-appropriate result rather than automati
 A command may emit tens of megabytes while ADELE:
 
 - retains the full output according to policy;
-- shows only a recent terminal tail in the inspector;
-- exposes the full stream in the bottom dock;
+- shows only a recent terminal tail in the inspection view;
+- exposes the full stream through Console/Stream presentation;
 - returns only bounded/relevant content plus truncation metadata to the model.
 
 This is an important architectural separation:
@@ -405,19 +413,19 @@ This is a presentation choice, not a claim that command-tool execution and inter
 
 Terminal output is stateful. Carriage returns, cursor movement, color state, line clearing, and other control sequences mean that the visible terminal tail is not necessarily equivalent to the last N newline-delimited strings from the raw stream.
 
-ADELE should therefore avoid designing the inspector around naive text-tail assumptions. The eventual implementation may keep bounded live terminal state, replay retained output, maintain larger terminal buffers, or use another strategy. That optimization remains open.
+ADELE should therefore avoid designing the inspection view around naive text-tail assumptions. The eventual implementation may keep bounded live terminal state, replay retained output, maintain larger terminal buffers, or use another strategy. That optimization remains open.
 
 ---
 
 # 10. Interactive shells are separate from agent tool calls
 
-The bottom console dock may show both agent command output and user-created interactive shells because the same wide stream-oriented surface suits both.
+The stock Console/Terminal plugin may show both agent command output and user-created interactive shells because the same wide stream-oriented surface suits both.
 
 Their ownership and semantics are different.
 
 ## 10.1 Agent command invocation
 
-An agent command is part of a Run/Session's tool activity and executes against an execution environment.
+An agent command is part of a Run/Session's tool activity and executes against an Environment.
 
 Conceptually:
 
@@ -425,28 +433,28 @@ Conceptually:
 Session A
     ToolInvocation
         CommandInvocation
-            execution environment: foo
+            Environment: foo
 ```
 
-Its output may be inspected in Chat, the right inspector, or the bottom console.
+Its output may be inspected in Chat, structured Inspection, or Console/Stream presentation.
 
 ## 10.2 Interactive user shell
 
-An interactive shell is explicitly launched by the user as a resource of the current execution environment.
+An interactive shell is explicitly launched by the user as a runtime resource of the current Environment.
 
 Conceptually:
 
 ```text
-Execution Environment foo
+Environment foo
     interactive shell: main
     interactive shell: server
 ```
 
 It is not inherently owned by one Session and does not need to be a model-callable tool merely because the user can interact with it.
 
-When several Sessions share an environment, they should see the environment-owned console resources appropriate to that environment. Switching to a Task with another environment naturally exposes that other environment's consoles.
+When several Sessions share an Environment, they should see the Environment-owned console resources appropriate to that Environment. Switching to a Task with another Environment naturally exposes that other Environment's consoles.
 
-The common bottom-dock presentation should therefore not drive the underlying semantic model.
+The common presentation should therefore not drive the underlying semantic model.
 
 ---
 
@@ -523,7 +531,7 @@ Some work is useful to start without blocking every subsequent model turn. Examp
 - long-running test suites or builds;
 - downloads;
 - external jobs;
-- child Runs/sub-agents;
+- child Runs/Sessions;
 - other future runtime resources.
 
 For this kind of work, ADELE should allow an operation to start longer-lived asynchronous work and return control to the model while that work continues.
@@ -612,7 +620,7 @@ background command
         if the parent Run is otherwise waiting, completion makes it runnable
 ```
 
-This same mechanism can apply to child Runs/sub-agents and future external jobs.
+This same mechanism can apply to child Runs/Sessions and future external jobs.
 
 ## 12.5 Asynchronous events never interrupt an active inference
 
@@ -670,6 +678,7 @@ Possible producers include:
 ```text
 CommandCompleted
 ChildRunCompleted
+ChildSessionCompleted
 ExternalJobCompleted
 UserInputSupplied
 InterSessionMessage          // optional future feature
@@ -677,13 +686,13 @@ InterSessionMessage          // optional future feature
 
 Each observation should retain its real type, provenance, target scope, and payload. What can be generalized is the machinery that records unseen asynchronous information, makes it available to context assembly, and optionally satisfies a continuation dependency.
 
-This is useful even if ADELE never implements explicit inter-agent messaging. A future session-search capability may often be preferable to waking another model just to answer information that already exists in Session history.
+This is useful even if ADELE never implements explicit inter-agent messaging. A future Session-search capability may often be preferable to waking another model just to answer information that already exists in strategy-owned Session state/history.
 
 Inter-session messaging therefore remains an optional specialized feature rather than a foundational requirement. The more fundamental direction is typed asynchronous observation plus event-driven continuation.
 
 ---
 
-# 13. Session Progress/work items are not implementation plans
+# 13. Session progress/work items are not implementation plans
 
 The UX direction distinguishes durable/reviewable work artifacts from live Session progress.
 
@@ -726,6 +735,8 @@ These work items belong to the Session. They are not the same as ADELE Tasks, wh
 
 The eventual model-facing mutation API might resemble `set_work_items`, `update_work_item`, or another structured operation, but exact tool shape is deferred.
 
+The expected stock topology places this behavior in a replaceable TODO/Progress plugin. Task-level TODOs are not part of the current expected stock design.
+
 The important semantic distinction is:
 
 ```text
@@ -759,31 +770,31 @@ Potential interaction forms include:
 
 The provider/model-facing interface may still look tool-like, but the ADELE domain should understand that the Run has entered a waiting state and that the Session UI now contains a resolvable input request.
 
-Exact schemas, lifecycle, multiple simultaneous requests, cancellation, and relationship to ordinary user messages remain deferred.
+Exact schemas, lifecycle, multiple simultaneous requests, cancellation, and relationship to ordinary strategy-owned user input/messages remain deferred.
 
 ---
 
 # 15. Tool results should be specialized, not terminal-shaped by default
 
-The existence of `run_command` should not cause every built-in tool to inherit shell presentation semantics.
+The existence of `run_command` should not cause every stock tool to inherit shell presentation semantics.
 
 Examples from the UX direction include:
 
 ```text
 Shell
-    Chat → inspector → bottom console
+    Chat → Inspection → Console/Stream
 
 File read
-    Chat → inspector → source view
+    Chat → Inspection → source editor/display
 
 File edit
-    Chat → inspector when useful → Diff
+    Chat → Inspection when useful → Diff
 
 Search
-    Chat → inspector → optional rich search results
+    Chat → Inspection → optional navigation/search results
 
 MCP/external tool
-    Chat → inspector → optional plugin-provided presentation
+    Chat → Inspection → optional plugin-provided presentation
 ```
 
 This is a core reason to prefer semantic tools for common operations: ADELE can give each operation an appropriate progressive representation while retaining a generic fallback for unknown tools.
@@ -796,7 +807,7 @@ The same principle applies to result contracts. A rich host result may contain s
 
 Model-callable tools are one projection over deeper ADELE capabilities and services.
 
-A semantic operation such as `read_file` may be implemented over a Workspace capability. `run_command` may project an Execution Environment/process service. MCP functions may be dynamically contributed without becoming first-class ADELE capabilities.
+A semantic operation such as `read_file` may be implemented over the current Environment's filesystem/source Service. `run_command` may project the Environment process-execution Service. MCP functions may be dynamically contributed without becoming first-class ADELE capabilities.
 
 This follows the existing distinction in `agent-kernel-semantic-model.md`:
 
@@ -820,7 +831,7 @@ Similarly, interactive shells, command invocation resources, terminal presentati
 
 The structured tool surface should improve authorization without pretending to solve command-execution security.
 
-ADELE can make strong statements about narrow operations such as reading a known workspace path or applying a validated patch within a bounded root.
+ADELE can make strong statements about narrow operations such as reading a known Environment-relative source path or applying a validated patch within a bounded Environment root.
 
 An arbitrary command has inherently broader and less certain effects:
 
@@ -833,9 +844,9 @@ external service mutation
 indirect execution through scripts/build systems
 ```
 
-The command tool's effect description should therefore be conservative. Parsing or classifying the command may help UX and policy, but it cannot generally prove the command's complete effects.
+The Command Tool's effect description should therefore be conservative. Parsing or classifying the command may help UX and policy, but it cannot generally prove the command's complete effects.
 
-This is compatible with the kernel semantic model's distinction between static effect metadata, invocation-specific effect description, policy/approval, and actual environmental isolation.
+This is compatible with the kernel semantic model's distinction between static effect metadata, invocation-specific effect description, policy/approval, and actual Environment isolation.
 
 Parallel execution also means policy/approval is evaluated per ToolInvocation rather than once for an opaque batch. Scheduling permission is not authorization to perform effects that would otherwise be denied.
 
@@ -852,7 +863,7 @@ A plausible progression is:
 ```text
 1. run_command with live execution observations
 
-2. core structured workspace reads/search
+2. core/stock structured Environment-backed source reads/search
 
 3. structured source mutation
 
@@ -875,6 +886,8 @@ The actual development sequence may differ according to the current Phase roadma
 
 In particular, ADELE should resist implementing speculative tools simply because other agent harnesses expose them. The universal command escape hatch allows the built-in catalog to grow from demonstrated needs.
 
+The current stock-plugin direction treats Filesystem Tools, Search, Command Tool, TODO/Progress, and Plan as replaceable plugin responsibilities rather than mandatory hard-coded kernel features.
+
 ---
 
 # 19. Summary principles
@@ -883,19 +896,20 @@ The current direction can be summarized as:
 
 1. **Command execution is foundational.** It is the universal escape hatch that makes the agent useful before a large tool catalog exists.
 2. **Structured tools exist for quality, not mere capability.** Promote common operations when precision, policy, inspectability, portability, or UX materially improves.
-3. **Keep the built-in surface small and orthogonal.** Avoid a dedicated tool for every possible operation.
-4. **Execution is live even when the model-facing foreground call is synchronous.** Users must be able to observe and inspect running work immediately.
-5. **One operation can have several projections.** Chat summary, inspector detail, full console output, and model result have different purposes and budgets.
-6. **Retain streaming semantics.** Output/progress should not exist only as one final accumulated string.
-7. **Terminal rendering is presentation, not resource identity.** Agent output and user interactive shells may share the bottom console surface without becoming the same concept.
-8. **Support PTY and pipe execution.** The choice changes program behavior and should remain an execution semantic rather than a rendering assumption.
-9. **Parallelism belongs to execution scheduling, not batch tools.** Multiple independent ToolInvocations may run concurrently and join before the next foreground inference.
-10. **Support asynchronous/background work.** Long-running commands, child Runs, and future jobs may continue while the parent performs other useful work.
-11. **Do not make models poll state ADELE already knows.** Relevant asynchronous changes should be supplied as typed observations in later context.
-12. **Continuation is event-driven and explicit.** Background work may be passive or may make a waiting Run runnable when relevant events occur.
-13. **Never interrupt active inference with asynchronous events.** Queue observations for the next inference boundary instead.
-14. **Preserve provenance and semantics of asynchronous information.** Generalize delivery/scheduling machinery, not every event into an untyped note.
-15. **Plans and Session progress are distinct.** Plans are substantive artifacts/content; work items are structured mutable Session state; neither is the same as an ADELE Task.
-16. **User elicitation is an interruption.** The Run waits for external input; the product should model that state explicitly.
-17. **Tools project deeper services.** The model-tool catalog should not become ADELE's internal application architecture.
-18. **This direction is intentionally revisable.** Real self-hosting use should be allowed to invalidate assumptions and refine the tool set.
+3. **Keep the built-in/stock surface small and orthogonal.** Avoid a dedicated tool for every possible operation.
+4. **Tools operate through the current Environment.** Filesystem/source and process tools should not depend on Git worktrees, Docker, VMs, or host-local paths directly.
+5. **Execution is live even when the model-facing foreground call is synchronous.** Users must be able to observe and inspect running work immediately.
+6. **One operation can have several projections.** Chat summary, Inspection detail, Console/Stream output, and model result have different purposes and budgets.
+7. **Retain streaming semantics.** Output/progress should not exist only as one final accumulated string.
+8. **Terminal rendering is presentation, not resource identity.** Agent output and user interactive shells may share a Console surface without becoming the same concept.
+9. **Support PTY and pipe execution.** The choice changes program behavior and should remain an execution semantic rather than a rendering assumption.
+10. **Parallelism belongs to execution scheduling, not batch tools.** Multiple independent ToolInvocations may run concurrently and join before the next foreground inference.
+11. **Support asynchronous/background work.** Long-running commands, child Runs/Sessions, and future jobs may continue while the parent performs other useful work.
+12. **Do not make models poll state ADELE already knows.** Relevant asynchronous changes should be supplied as typed observations in later context.
+13. **Continuation is event-driven and explicit.** Background work may be passive or may make a waiting Run runnable when relevant events occur.
+14. **Never interrupt active inference with asynchronous events.** Queue observations for the next inference boundary instead.
+15. **Preserve provenance and semantics of asynchronous information.** Generalize delivery/scheduling machinery, not every event into an untyped note.
+16. **Plans and Session progress are distinct.** Plans are substantive artifacts/content; work items are structured mutable Session state; neither is the same as an ADELE Task.
+17. **User elicitation is an interruption.** The Run waits for external input; the product should model that state explicitly.
+18. **Tools project deeper services.** The model-tool catalog should not become ADELE's internal application architecture.
+19. **Presentation APIs should be semantic.** The current right/bottom placement in mockups should not become hard-coded extension-point identity.
