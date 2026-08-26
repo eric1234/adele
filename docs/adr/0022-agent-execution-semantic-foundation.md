@@ -4,6 +4,8 @@
 
 Accepted for Phase IV-A
 
+**Partially superseded by ADR 0031 for long-term Session semantics.** ADR 0022 remains authoritative for the Phase IV-A execution semantics it implemented. Its chat-shaped decision that a Session owns canonical user/assistant entries describes that proof slice but is no longer the long-term definition of every Session.
+
 ## Context
 
 Phase III established deterministic one-to-many capability resolution and

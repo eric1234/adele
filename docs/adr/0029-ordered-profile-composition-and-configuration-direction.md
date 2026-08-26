@@ -6,6 +6,8 @@ Accepted as architectural direction; implementation deferred
 
 Supersedes ADR 0018 for full-profile direction.
 
+**ADR 0031 subsequently resolves the Project/Workspace identity question this ADR intentionally left deferred.** The profile/configuration decisions here remain accepted.
+
 ## Context
 
 ADR 0018 intentionally deferred complete profile behavior while the maintained
@@ -117,7 +119,10 @@ in `docs/architecture/profiles-and-configuration.md`.
   intentionally excluded from the normal model.
 - Multiple windows can share underlying project/task/session/runtime data while
   retaining independent live presentation and active-profile context.
-- The exact profile persistence format, final Project/Workspace identity,
-  directory/session scope semantics, security-policy composition, credential
-  storage, schema migration APIs, provider suitability policy, workbench-state
-  persistence key, and implementation staging remain deferred.
+- The exact profile persistence format, directory/session scope semantics,
+  security-policy composition, credential storage, schema migration APIs,
+  provider suitability policy, workbench-state persistence key, and
+  implementation staging remain deferred.
+- ADR 0031 now defines Project as an abstract core identity and uses Environment,
+  rather than a required separate Workspace concept, as the practical
+  filesystem/source + process context for Task work.

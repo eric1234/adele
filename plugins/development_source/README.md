@@ -13,9 +13,16 @@ truncation when a result or traversal bound is reached. It skips links,
 unreadable, non-UTF-8, and oversized files, plus `.git`, `.dart_tool`, `build`,
 and `node_modules` directories.
 
-This is not ADELE's final Workspace service. It does not define workspace
-identity, persistence, project association, mutation, process execution,
-indexing, watching, SCM behavior, or security sandboxing.
+This is **not** ADELE's final Environment filesystem/source service. It does not
+define Project/Task/Environment identity or lifecycle, mutation, process
+execution, Environment-provider behavior, indexing/watching, SCM behavior, or
+security sandboxing.
+
+ADR 0031 now defines Environment as the practical filesystem/source + process
+context used for Task work and intentionally does not require a separate
+first-class Workspace concept. DevelopmentSource remains a bounded Phase IV
+self-inspection capability used to prove generation-bound source tools; future
+Environment-backed source tools may replace or absorb its responsibility.
 
 Root confinement rejects traversal and validates ordinary symbolic-link
 resolution before and after reads. It is not descriptor-level protection
