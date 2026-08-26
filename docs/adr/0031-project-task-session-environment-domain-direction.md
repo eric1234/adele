@@ -18,6 +18,8 @@ Likewise, ADELE currently has concrete need for one practical execution/source c
 
 Project also needs to remain more general than the stock local-directory UX, and Task needs a stable identity that plugins can enrich without owning.
 
+Because Session-to-strategy binding is a core lifecycle invariant, core must also be able to create and restore Sessions without depending on an optional UI plugin being active. Strategy implementations may remain plugins, but the minimal strategy registration/discovery/binding contract cannot itself belong only to a presentation plugin.
+
 ## Decision
 
 ADELE adopts the following long-term product-domain direction.
@@ -60,6 +62,10 @@ Core must not define Session as inherently chat history. The bound strategy owns
 
 Changing orchestration strategy means creating another Session rather than converting an existing Session into another semantic type.
 
+Core owns the minimal public orchestration-strategy registration/discovery/binding contract required to create, restore, and validate Sessions. Strategy implementations are plugins, but Session validity must not depend on an optional Agent Interaction or other presentation plugin being active.
+
+A strategy plugin consumes a narrow public provider-neutral orchestration/execution API backed internally by ADELE's execution substrate. Strategy implementations must not import the internal `agent_kernel` package directly. The exact public package/type surface remains deferred until a concrete implementation requires it.
+
 A Session may create child Sessions for delegated work. A child Session:
 
 - remains associated with the same Task;
@@ -82,7 +88,7 @@ The maintained repository does **not** yet implement this complete product-domai
 - `agent_kernel` has Session/Run identifiers and a chat-shaped development Session history used by the Phase IV proof.
 - The provisional application strategy remains a bounded chat/tool loop.
 - Core Project/Task/Environment persistence/lifecycle services do not yet exist.
-- Environment providers, Task Browser, orchestration-strategy registration, child Session lifecycle, and parent Session presentation are not implemented.
+- Environment providers, Task Browser, the core/public orchestration-strategy registry, the public strategy execution facade, child Session lifecycle, and parent Session presentation are not implemented.
 - The DevelopmentSource plugin currently provides a bounded read-only root for the self-inspection vertical; it does not establish final Environment semantics.
 
 The current implementation remains valid evidence for the narrower vertical. Future APIs should migrate toward this accepted direction as concrete features are built.
@@ -93,6 +99,8 @@ The current implementation remains valid evidence for the narrower vertical. Fut
 - Plugins can contribute Task summaries, Environment implementations, accounting, TODO progress, SCM state, and other behavior without owning Task identity.
 - Chat history becomes strategy-owned state rather than the universal Session model.
 - Orchestration strategies can define substantially different Session semantics while sharing core Session/Run lifecycle.
+- Core can validate/restore a Session's bound strategy independently of optional strategy-selection/presentation UI.
+- Strategy plugins use public provider-neutral execution APIs rather than depending on the internal `agent_kernel` implementation package.
 - Child agent work uses parent/child Sessions rather than introducing a speculative Subtask domain object.
 - One Environment abstraction can initially cover filesystem/source and process context without claiming stronger isolation guarantees than the provider supplies.
 - A separate Workspace concept can be reintroduced later if concrete requirements demonstrate an independent semantic identity that Environment cannot represent cleanly.
