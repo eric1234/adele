@@ -30,6 +30,8 @@ Core ADELE
 ├── workbench shell + settings
 ├── Command registry + Command Palette + keybinding system
 ├── plugin/extension runtime + default-provider selection
+├── core orchestration-strategy registry/binding
+├── public provider-neutral orchestration/execution facade
 ├── agent kernel + inference composition + policy authority
 ├── core Task/Session lifecycle
 └── broad core extension points/capabilities/events
@@ -133,6 +135,8 @@ ConsoleService / console-resource operations
 ModelProvider
 core Task creation
 core Session creation
+core OrchestrationStrategy registration/discovery/binding
+public orchestration/execution service
 ```
 
 `ProjectSelector` may use an OS picker, recent-project list, database, or cloud catalog.
@@ -142,6 +146,10 @@ core Session creation
 `DisplaySourceFile` means make a source file visible/focused through a provider. It may focus an existing in-app editor, create a view, or launch an external editor.
 
 `ConsoleService` is broader than an `OpenTerminal` action. Depending on the resource it may create, display/focus, attach output, send input, or expose other console operations.
+
+The minimal `OrchestrationStrategy` registry/binding contract belongs to core/public APIs because core Session creation/restoration must authoritatively validate and retain the bound strategy identity. Strategy implementations remain plugins. Optional strategy-selection or presentation UI consumes this registry; it does not own it.
+
+A strategy plugin must not import the internal `agent_kernel`. Core exposes a narrow provider-neutral orchestration/execution API backed by the kernel so strategy plugins can create/drive Runs, request model/tool execution, observe execution state, and otherwise use the concrete execution semantics they need without depending on internal implementation packages. Exact methods/types remain deferred until implementation makes them concrete.
 
 ## 2.4 Agent/tool composition
 
@@ -273,32 +281,32 @@ Filesystem Tools, Search, Command Tool, and Internal Source Editor should contin
 
 ## 5.1 Agent Interaction
 
-**Role:** primary agent-interaction host and owner of an orchestration-strategy extension point.
+**Role:** primary agent-interaction selection/hosting/presentation experience over core-owned Session and orchestration facilities.
 
 Likely provides/defines:
 
-- an agent-interaction `MainContentView`;
-- orchestration strategy catalog/extension point;
-- strategy selection when creating a Session;
-- strategy-hosting lifecycle/common framing.
+- an agent-interaction `MainContentView` or equivalent hosting surface;
+- strategy-selection UX when a user creates a Session;
+- common strategy-hosting/presentation framing;
+- navigation/commands for entering or switching among user-facing Sessions where useful.
 
-A strategy registration likely needs identity/version/display metadata plus ways to initialize strategy-owned Session state, render the strategy surface, and run/continue strategy behavior.
+Agent Interaction consumes core Session lifecycle, the **core-owned orchestration-strategy registry**, core create-Session functionality, and Main Content hosting.
 
-Agent Interaction consumes core Session lifecycle, registered strategies, core create-Session functionality, and Main Content hosting.
+It does **not** own the `OrchestrationStrategy` registration/binding extension point. Core must be able to create/restore/validate a Session's bound strategy without Agent Interaction being active, including programmatically created child Sessions.
 
-It does not need to understand Chat prompt widgets, Agent policy, Model routing, TODOs, Git, or Goal-specific data.
+Agent Interaction does not need to understand Chat prompt widgets, Agent policy, Model routing, TODOs, Git, or Goal-specific data.
 
-A strategy may register even if no Agent Interaction consumer is active.
+A strategy may register and execute through core facilities even if no Agent Interaction consumer is active.
 
 ## 5.2 Chat Strategy
 
 **Role:** expected initial orchestration strategy: conversational model/tool/model work with a rich Chat Session surface.
 
-It is the likely long-term home of the sequencing behavior currently represented by the provisional application `DevelopmentToolLoopStrategy`. The strategy uses `agent_kernel` primitives; it does not redefine Run semantics.
+It is the likely long-term home of the sequencing behavior currently represented by the provisional application `DevelopmentToolLoopStrategy`. The strategy registers against the core/public `OrchestrationStrategy` contract and uses a public provider-neutral orchestration/execution API backed by `agent_kernel`; it **does not import `agent_kernel`** and does not redefine Run semantics.
 
 Likely provides:
 
-- orchestration strategy registration;
+- orchestration strategy registration into the core registry;
 - Chat-specific durable Session state;
 - timeline and Draft Request/composer UI;
 - user/agent message and operation-group presentation;
@@ -315,7 +323,7 @@ ChatTurnAction
 ChatTimelineDecoration / ChatOperationPresentation
 ```
 
-Likely consumes kernel Run/model/tool execution, structured inference composition, tool catalogs, Session persistence, child-Session query/creation, common timeline/composer components, and optional tool/review presentation interfaces.
+Likely consumes the core/public Run/model/tool execution facade, structured inference composition, tool catalogs, Session persistence, child-Session query/creation, common timeline/composer components, and optional tool/review presentation interfaces.
 
 Expected stock integrations:
 
@@ -627,18 +635,20 @@ There may be no active Environment while merely browsing.
 ## 12.4 Create a Chat Session
 
 ```text
-user creates Session
-    -> available orchestration strategies include Chat
-    -> core creates Session permanently bound to Chat
+user chooses Chat strategy through Agent Interaction or another caller
+    -> core resolves/validates Chat in the core orchestration registry
+    -> core creates Session permanently bound to Chat strategy identity
     -> Session references Task primary Environment by default
-    -> Chat initializes strategy-owned state
-    -> Agent Interaction hosts Chat surface
+    -> Chat initializes strategy-owned state through public strategy APIs
+    -> Agent Interaction hosts Chat surface when that UI is active
 ```
+
+Programmatic child Session creation can use the same registry/binding path without Agent Interaction participating.
 
 ## 12.5 Submit a Chat turn
 
 ```text
-Chat requests next inference
+Chat strategy calls public orchestration/execution service
     -> core structured composition gathers
         Chat strategy/history material
         Agent instructions/tool constraints
@@ -649,6 +659,8 @@ Chat requests next inference
     -> host resolves stable inference snapshot
     -> selected ModelProvider generation executes
 ```
+
+The public service is backed by `agent_kernel` internally; Chat does not import the kernel package.
 
 Prompt widgets are merely one way to modify plugin-owned state that contributes to the **next** resolution.
 
@@ -712,10 +724,11 @@ No consumer imports Git, Internal Source Editor, External Editor, or Chat implem
 
 ```text
 parent Session delegates work
-    -> core CreateSession(parent=current, strategy=..., environment=share/new)
-    -> core creates child relationship
+    -> requests core CreateSession(parent=current, strategy=..., environment=share/new)
+    -> core resolves/validates requested strategy in orchestration registry
+    -> core creates child relationship + permanent strategy binding
     -> optional EnvironmentProvider establishes additional Task Environment
-    -> child runs independently
+    -> child strategy executes through public orchestration/execution service
     -> parent Session surface exposes activity/results
 ```
 
@@ -738,15 +751,16 @@ The child remains a Session, not a Task, and is not normally a peer in Task Brow
 | ConsoleService | Probably core/public | Commands, user shells, inspectors, future integrations may consume it |
 | Task creation | Core | Task identity/lifecycle is core-owned |
 | Session creation | Core | Session identity/lifecycle is core-owned |
+| OrchestrationStrategy registration/binding | Core/public | Session creation/restoration must validate permanent strategy binding independent of optional UI |
+| Public orchestration/execution API | Core/public, backed internally by `agent_kernel` | Strategy plugins need Run/model/tool execution without depending on internal implementation packages |
 | Inference composition buckets | Core | Core owns stable provider-neutral invocation boundary |
-| Tool registration/execution semantics | Core/kernel-facing | Cross-strategy execution invariant |
-| OrchestrationStrategy | Agent Interaction plugin API | Core need not understand strategy-hosting product semantics |
+| Tool registration/execution semantics | Core/public facade backed by kernel | Cross-strategy execution invariant while `agent_kernel` remains internal |
 | Chat prompt/header/turn regions | Chat plugin API | Chat-specific concepts |
 | Task/Session summaries/actions | Task Browser plugin API | Browser-specific presentation ecosystem |
 | Diff source/review interfaces | Likely Diff/Review plugin API initially | Review-specific semantics |
 | Goal iteration extensions | Future Goal plugin API | Goal-specific concept |
 
-A plugin-defined interface can later move into core/public APIs when independent uses prove it is genuinely general. While APIs remain experimental, speculative core abstractions can also move back into a plugin ecosystem.
+A plugin-defined interface can later move into core/public APIs when independent uses prove it is genuinely general. While APIs remain experimental, speculative core abstractions can also move back into a plugin ecosystem—except where a core lifecycle invariant requires the minimal contract to remain core-owned, as with Session strategy binding.
 
 ---
 
@@ -755,7 +769,7 @@ A plugin-defined interface can later move into core/public APIs when independent
 The stock installation should be coherent and useful, but ADELE should tolerate technically valid weak compositions:
 
 - Chat with no tools;
-- strategy registered with no consumer;
+- strategy registered with no Agent Interaction UI consumer;
 - Diff with no source-display provider;
 - multiple Environment providers with one contextual default;
 - no Accounting plugin;
@@ -773,6 +787,8 @@ This document should be used to answer practical ownership questions while imple
 - Which plugin is the likely long-term owner of this behavior?
 - Should this direct implementation dependency instead become a typed interface?
 - Is the interface broad enough for core, or specific to a plugin ecosystem?
+- Does a core lifecycle invariant require the minimal registration/binding contract to be core-owned even if an optional plugin owns the UI?
+- Is a plugin accidentally depending on `agent_kernel` or another internal host package instead of a narrow public facade?
 - What should happen when a complementary provider is absent?
 - Does state belong to Project, Task, Session, Environment, strategy-owned state, or an external authoritative system?
 - Is a UI extension named for its semantic role or accidentally coupled to today's layout?
