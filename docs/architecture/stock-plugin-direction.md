@@ -214,6 +214,8 @@ Summary contributions are plugin-supplied fragments. Accounting can contribute u
 
 Task Browser consumes core Task/Session query and mutation services, core Task creation, core Session creation, and registered summary/action extensions.
 
+Selecting a Project, Task, or Session in Task Browser triggers core window navigation/selection. Core owns which Project/Task/Session a window is currently presenting and the surrounding workbench state; replacing Task Browser must not redefine those semantics.
+
 It does **not** orchestrate Environment creation. `New Task` sends Task intent to core; core Task lifecycle independently resolves the applicable/default Environment provider.
 
 Agent-created child Sessions are not normal peers in the Task Browser Session list. They are primarily surfaced inside the parent Session/orchestration experience.
@@ -357,14 +359,14 @@ Likely provides:
 - persistent Agent definitions/configuration;
 - settings UI;
 - optional Chat prompt/header control;
-- model-callable tools for changing active Agent state;
+- model-callable tools for changing selected Agent state;
 - structured inference context containing Agent instructions/persona/stock context;
 - Agent-associated tool/policy constraints;
 - display metadata and Commands.
 
 Chat does not call an `AgentSelector`; the Agent plugin independently participates wherever its state matters.
 
-An LLM tool call can change Agent state for **subsequent** inference. It does not mutate the current resolved invocation.
+In the expected stock workflow, a model-callable `set_agent`/selection tool routes the user to the Agent used for the **next user invocation**. It does not implicitly change the Agent for a model continuation that still belongs to the current user turn. A future orchestration strategy may deliberately define an explicit intra-Run Agent handoff, but that is separate orchestration behavior rather than an accidental consequence of changing the selected Agent.
 
 ## 6.2 Model Routing / Control
 
@@ -384,7 +386,7 @@ It consumes active ModelProviders/configured instances and provider metadata/cat
 
 Without this plugin, a strategy can still invoke a configured provider using that provider's own default model/options.
 
-LLMs can choose semantic model/agent state through tools. Strategies can provide guidance in stock context rather than hard-code every workflow-to-model transition.
+Model/reasoning changes can affect a subsequent inference after the current resolved invocation settles. This timing is intentionally distinct from the stock Agent-selection workflow above.
 
 ---
 
@@ -487,9 +489,9 @@ Separate Sessions in one Task maintain independent lists. TODO completion does n
 
 ## 8.5 Plan
 
-Likely provides a durable model-editable Session artifact rather than making Plan intrinsic to every Session.
+Plan is a plugin-owned concept rather than a core ADELE identity. The stock Plan plugin is expected to own durable model-editable plan state associated with a Session and expose the tooling/presentation needed to work with it.
 
-Expected functionality includes plan read/write/update tools, Session-scoped plan identity/persistence, Main Content/artifact presentation, Commands, and optional inspection summaries.
+Expected functionality includes plan read/write/update tools, Session-associated plan persistence, Main Content presentation, Commands, and optional inspection summaries.
 
 ---
 
@@ -499,7 +501,7 @@ Expected functionality includes plan read/write/update tools, Session-scoped pla
 
 **Role:** rich review experience without embedding Git or editor assumptions.
 
-Likely provides a Diff/Review `MainContentView`, review scope controls, hunk rendering, comments, and plugin-defined interfaces for reviewable changes and review operations.
+Likely provides a Diff/Review `MainContentView`, review scope controls, hunk rendering, comments, and plugin-defined interfaces for reviewable changes and review operations. The word "Review" here names the Diff plugin's workflow; it is not a separate core Review domain identity.
 
 Possible provisional contracts:
 
@@ -662,16 +664,22 @@ Chat strategy calls public orchestration/execution service
 
 The public service is backed by `agent_kernel` internally; Chat does not import the kernel package.
 
-Prompt widgets are merely one way to modify plugin-owned state that contributes to the **next** resolution.
+Prompt widgets and model-callable controls modify plugin-owned state according to that plugin's lifecycle semantics. Model/reasoning changes may affect a later inference once the current invocation settles; stock Agent selection normally routes the next user invocation rather than changing a continuation inside the current turn.
 
 ## 12.6 Model changes model/Agent
 
 ```text
-model invokes agent/model control tool
-    -> plugin-owned Session state changes
-    -> current inference remains settled
-    -> next inference uses new state
+model invokes model/reasoning control tool
+    -> plugin-owned state changes
+    -> current resolved inference remains unchanged
+    -> a subsequent inference may use the new model/reasoning state
+
+model invokes set_agent / Agent-selection tool
+    -> selected Agent for the next user invocation changes
+    -> continuations belonging to the current user turn keep the current Agent
 ```
+
+An orchestration strategy could later define an explicit intra-Run Agent handoff, but that is separate from the stock selection tool.
 
 ## 12.7 Source operation
 
@@ -790,7 +798,7 @@ This document should be used to answer practical ownership questions while imple
 - Does a core lifecycle invariant require the minimal registration/binding contract to be core-owned even if an optional plugin owns the UI?
 - Is a plugin accidentally depending on `agent_kernel` or another internal host package instead of a narrow public facade?
 - What should happen when a complementary provider is absent?
-- Does state belong to Project, Task, Session, Environment, strategy-owned state, or an external authoritative system?
+- Does state belong to Project, Task, Session, Environment, strategy-owned state, plugin-owned Session/Task state, or an external authoritative system?
 - Is a UI extension named for its semantic role or accidentally coupled to today's layout?
 - Is presentation improperly coordinating domain lifecycle that core or another provider should own?
 

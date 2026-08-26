@@ -27,22 +27,20 @@ This document covers:
 - generation safety;
 - foundational versus reserved versus deferred concepts.
 
-It does not define final UI layouts, stable plugin APIs, persistence formats, a complete policy language, a complete provider protocol, full artifact/resource APIs, SCM implementation details, remote execution, multi-agent scheduling, durable task graphs, or strong sandboxing.
+It does not define final UI layouts, stable plugin APIs, persistence formats, a complete policy language, a complete provider protocol, plugin-defined document/content APIs, SCM implementation details, remote execution, multi-agent scheduling, durable task graphs, or strong sandboxing.
 
 # Core product concepts
 
-ADELE's product model is broader than the agent kernel:
+ADELE's product model is broader than the agent kernel. The shared core identities relevant here are:
 
 ```text
 Profile
 Project
 └── Task
     ├── Environment(s)
-    ├── Session(s)
-    │   ├── Run(s)
-    │   └── child Session(s)
-    ├── Artifact(s)
-    └── Review(s)
+    └── Session(s)
+        ├── Run(s)
+        └── child Session(s)
 ```
 
 The key meanings are:
@@ -52,11 +50,11 @@ The key meanings are:
 > A Session is the durable orchestration container, permanently bound to one strategy.  
 > A Run is the unit of execution.
 
-These are product/domain concepts. The agent kernel operates within them; it does not own the entire domain model.
+These are product/domain concepts. The agent kernel operates within them; it does not own the entire domain model. Plugins may associate their own durable concepts with these identities—for example a Plan plugin may own plan state and a Diff plugin may own pending review comments—without those concepts becoming additional core domain identities.
 
 ## Task
 
-A Task is a durable goal-oriented product object. It may own goal/background/acceptance criteria, user-defined status, Sessions, one primary Environment plus additional Environments, artifacts, reviews, and plugin-associated state.
+A Task is a durable goal-oriented product object. It may own goal/background/acceptance criteria, user-defined status, Sessions, one primary Environment plus additional Environments, and plugin-associated state.
 
 The user or an external system owns Task workflow state. The agent kernel must not equate a successful Run with a completed Task.
 
@@ -113,7 +111,7 @@ A user message submitted while a Run is active may steer that Run, satisfy an in
 | Human approval interruption | `agent_kernel` + host interaction |
 | Runtime resource implementation | Environment/resource capability |
 | UI presentation | Host shell + presentation extensions |
-| Artifact/review/task state | Product/domain layer |
+| Plan, Diff review feedback, and other plugin-defined domain state | Owning plugin/extension |
 
 `agent_kernel` remains an internal pure-Dart package. Plugins do not import it.
 
@@ -378,7 +376,7 @@ malformed result + effect may have occurred
 
 ADELE must not generically retry a side-effecting invocation merely because its result is absent. Domain capabilities may provide explicit idempotency or reconciliation guarantees.
 
-# Structured content, resources, and artifacts
+# Structured content and resources
 
 A tool outcome may need several projections:
 
@@ -388,7 +386,6 @@ ToolOutcome
 ├── structured host data
 ├── truncation metadata
 ├── runtime-resource references
-├── artifact references
 └── detailed host-only diagnostics/provenance
 ```
 
@@ -396,7 +393,7 @@ Display prose is not the canonical representation of all data.
 
 The semantic model should support structured content blocks rather than one required string. Initial implementation may support only a small subset, while leaving room for text, structured data, resource references/content, images, audio, and other media.
 
-An Artifact is a durable/significant non-conversational output with independent identity that can be referenced, reviewed, pinned, or exported. A rich inline result is not automatically an Artifact. Artifact lifecycle belongs to the broader product/domain model.
+Plugins may define durable/significant non-conversational content with their own identity and lifecycle—for example a Plan plugin can own a plan document. The kernel does not require a universal core `Artifact` identity merely to carry structured tool results or plugin-owned references.
 
 A runtime resource is an addressable live entity whose lifetime is independent of one tool invocation. Examples include processes, terminal sessions, browser sessions, debugger sessions, remote jobs, and temporary connections.
 
@@ -510,7 +507,7 @@ Processes, terminals, browser sessions, open documents, live connections, and ac
 
 ADELE always needs generic rendering for core semantic items.
 
-Plugins may contribute specialized presentation for semantic surfaces such as ToolInvocation summary/details, approval body, progress, result, resource/artifact viewer, diff/change-set rendering, context activation, and provider configuration.
+Plugins may contribute specialized presentation for semantic surfaces such as ToolInvocation summary/details, approval body, progress, result, resource or plugin-defined rich-content viewing, diff/change-set rendering, context activation, and provider configuration.
 
 Execution returns semantic data. Presentation consumes semantic data. Executors do not return Flutter widgets.
 
@@ -606,7 +603,7 @@ Do not fully implement yet without concrete need:
 - child Run graph;
 - child Session lifecycle;
 - EnvironmentProvider integrations;
-- Artifact subsystem;
+- plugin-defined durable document/content facilities;
 - persistent memory;
 - durable Run serialization/recovery;
 - provider-native continuation persistence;
@@ -764,7 +761,7 @@ Do not let architectural expansion delay the first meaningful product workflow:
 5. apply changes;
 6. display the diff;
 7. display/edit changed files;
-8. review/approve/reject;
+8. review/comment and approve/unapprove changes where the active SCM supports those semantics;
 9. run validation;
 10. show results in the Session.
 
