@@ -117,7 +117,7 @@ Environment
 
 Owning the concept does not imply core supplies most of its useful behavior.
 
-For example, Task is core-owned, while a Git plugin may provide the Task's primary Environment implementation, Accounting may associate usage aggregates with the Task and its Sessions, TODO/Progress may associate progress state with individual Sessions, and a Task Browser plugin may present some of that information.
+For example, Task is core-owned, while a Git plugin may provide the Task's primary Environment implementation, Accounting may associate usage aggregates with the Task and its Sessions, TODO/Progress may associate progress state with individual Sessions, and a Task Browser plugin may provide semantic summary extension points through which those plugins enrich Task/Session presentation.
 
 ## 2.3 Agent execution invariants
 
@@ -607,7 +607,18 @@ Task
 └── other plugin-owned state
 ```
 
-The Task/Session management UI itself is expected to be a plugin. That UI may gather information from other active interfaces and present cost, per-Session progress, Environment state, or other decorations without core understanding those visual concepts.
+The Task/Session management UI itself is expected to be a plugin. It should not need to know how to query every plugin-specific domain merely to make its summaries richer. Instead, the Task Browser can define semantic extension points such as:
+
+```text
+TaskSummaryContribution
+SessionSummaryContribution
+TaskAction
+SessionAction
+```
+
+Accounting, TODO/Progress, Git, Environment integrations, or future plugins can contribute applicable summary fragments or actions into those extension points. The browser composes the registered contributions into richer Task/Session presentation without understanding what each contribution means internally.
+
+For example, Accounting may contribute cost/usage text, TODO/Progress may contribute a Session progress indicator, and another plugin may contribute status or warning information. Those are contributions **to** the browser's semantic summary model rather than data the browser actively gathers from each plugin.
 
 Task-level TODO/progress is not part of the expected stock design. It may become useful later, but the near-term direction is that TODO/progress belongs to the Session whose agent is executing the work.
 
@@ -1065,6 +1076,8 @@ Settings declaration/editor contribution
 
 These semantic names should survive layout changes. For example, moving `SessionStatusContribution` from the right side to a left region does not require renaming or redefining the extension point.
 
+Not every plugin-owned user experience must be expressed as one of these workbench surfaces. A plugin may own a higher-level selection or setup experience that temporarily replaces the normal workbench, launches a dedicated window/dialog, or otherwise presents bespoke UI before an active Task/Session exists. `ProjectSelector` and the probable Task Browser experience are examples of this distinction.
+
 ### Application commands and keybindings
 
 Core should expose first-class infrastructure conceptually resembling:
@@ -1170,35 +1183,39 @@ Other `ProjectSelector` implementations could present Recent Projects, query a c
 
 **Role**
 
-Provides the Project/Task/Session management UI represented by the mockups.
+Provides the Project/Task/Session selection and management experience represented by the mockups.
 
-This is presentation over core Project/Task/Session identities rather than the implementation of those domain objects.
+This is presentation over core Project/Task/Session identities rather than the implementation of those domain objects. It is also **not assumed to be a `MainContentView`**. Before a Task/Session is selected there may be no normal active-session workbench at all, so the Task Browser may own a dedicated Project-level screen/window/shell in much the same way that the Local Directory Project Selector can present an OS-native picker.
+
+A future UI may instead embed the same Task Browser experience inside the normal workbench or make the transition configurable. The plugin API should not encode either presentation choice prematurely.
 
 **Likely provides/defines**
 
-- Project-level Task Browser `MainContentView`;
+- Project-level Task/Session selection experience, using whatever presentation model proves appropriate;
 - Task selection UI;
 - `New Task` affordance and Task-owned input such as title/description;
 - top-level/user Session listing, selection, and creation UI;
-- optional plugin-defined extension points for Task decorations, Session decorations, Task actions, and Session actions if concrete needs justify them.
+- plugin-defined extension points for Task summaries, Session summaries, Task actions, and Session actions where concrete needs justify them.
 
 Possible plugin-defined interfaces might conceptually resemble:
 
 ```text
-TaskDecoration
-SessionDecoration
+TaskSummaryContribution
+SessionSummaryContribution
 TaskAction
 SessionAction
 ```
 
-Numeric priority can order decorations/actions where necessary without one plugin naming another.
+A summary contribution is a plugin-supplied fragment of the Task/Session summary presentation—text, icon/status, compact structured value, or richer UI as that extension point allows. The Task Browser composes all applicable contributions; it does not query each contributing plugin for domain-specific state through bespoke integrations.
+
+Numeric priority can order summary fragments/actions where necessary without one plugin naming another.
 
 **Likely consumes**
 
 - core Project/Task/Session query and mutation services;
 - core Task-creation operation;
 - core Session-creation operation;
-- optional Task/Session decoration providers.
+- registered Task/Session summary and action contributions.
 
 **Does not orchestrate Environment creation**
 
@@ -1208,20 +1225,20 @@ If the stock Task-creation experience exposes an Environment-provider choice, th
 
 **Environment visibility while browsing**
 
-While the user is merely browsing Tasks/Sessions there may be no active Environment at all. Task Browser can show Environment metadata/status associated with a Task if such information is useful, but it should not be described as consuming "the active Environment" as a prerequisite for browsing.
+While the user is merely browsing Tasks/Sessions there may be no active Environment at all. An Environment-related plugin can contribute Environment status to a Task summary if that is useful; Task Browser itself need not consume an active Environment or understand Environment-specific state.
 
 **Expected stock integrations**
 
-- Accounting can add Task/Session cost or usage summaries;
-- TODO/Progress can add progress for individual Sessions;
-- core Run/Session state can provide active/waiting indicators;
-- optional Git or Environment status can appear through decorations if useful.
+- Accounting contributes Task/Session cost or usage summary fragments;
+- TODO/Progress contributes progress to applicable Session summaries;
+- core or a general status adapter can provide active/waiting information;
+- Git/Environment plugins may contribute compact Task status when useful.
 
 Agent-created child Sessions are **not** expected to be normal peers in the Task Browser Session list. Their inspection belongs primarily within the parent Session that spawned them.
 
 **Without complementary plugins**
 
-The browser still shows core Tasks and top-level Sessions. Missing cost, progress, SCM, or other decorations simply disappear.
+The browser still shows core Tasks and top-level Sessions. Missing cost, progress, SCM, Environment, or other summary contributions simply disappear.
 
 ## 28.5 Git plugin
 
@@ -1273,7 +1290,7 @@ The plugin may additionally provide:
 - status information;
 - SCM-oriented model tools;
 - commit operations;
-- Task Browser or context-status decorations;
+- Task-summary or context-status contributions;
 - application Commands and suggested keybindings;
 - inspectors.
 
@@ -1285,6 +1302,7 @@ Those are independent registrations rather than reasons to move Git into core.
 - core Environment lifecycle contracts;
 - Diff/Review plugin-defined interfaces if Diff owns those contracts;
 - semantic workbench/status/Command extension points;
+- Task Browser summary/action extension points when contributing Project/Task status;
 - core policy for any model-callable side-effecting operations.
 
 **Without complementary plugins**
@@ -1547,7 +1565,7 @@ quota / allowance
 - provider/account quota-status aggregation/query where available;
 - Session-level usage/cost display;
 - optional per-turn usage/cost presentation;
-- Task Browser decorations showing aggregate Task cost/usage;
+- `TaskSummaryContribution` and/or `SessionSummaryContribution` for aggregate usage/cost where useful;
 - `SessionStatusContribution` or `ContextStatusContribution` for quota/allowance status where appropriate;
 - settings for cost/quota display and accounting policy if needed.
 
@@ -1558,7 +1576,7 @@ quota / allowance
 - provider/account quota/rate-limit/status interfaces where available;
 - core Session/Task identity;
 - Chat header/turn presentation extension points, optionally;
-- Task Browser decoration extension points, optionally;
+- Task Browser summary extension points, optionally;
 - semantic status surfaces;
 - ADELE persistence when maintaining derived aggregates.
 
@@ -1699,7 +1717,7 @@ A Session's orchestration may use TODOs as its visible execution checklist while
 - model tools for creating/updating/completing/reordering TODO items;
 - Session-scoped TODO/progress storage/query service;
 - `SessionStatusContribution` showing current Session progress;
-- Task Browser **Session** decoration, such as progress for an active Session;
+- `SessionSummaryContribution`, such as compact progress for an active Session in Task Browser;
 - perhaps Chat/header progress UI if later useful.
 
 **Likely consumes**
@@ -1708,7 +1726,7 @@ A Session's orchestration may use TODOs as its visible execution checklist while
 - model-tool registration;
 - Session-scoped ADELE persistence;
 - semantic Session-status surface;
-- optional Task Browser Session-decoration extension point.
+- optional Task Browser `SessionSummaryContribution` extension point.
 
 **Not currently expected**
 
@@ -1951,7 +1969,7 @@ User chooses Select/Open Project
     -> Local Directory selector shows OS directory picker
     -> selected directory resolves/creates core Project identity
     -> plugin associates local source root with Project
-    -> Project-level UI becomes available
+    -> Project-level selection experience becomes available
 ```
 
 Another selector could instead show Recent Projects or a remote catalog. Git may independently recognize that the resulting Project is Git-backed and register applicable behavior. Project identity does not depend on that discovery.
@@ -1980,14 +1998,15 @@ Destroying or releasing a Task Environment later is likewise an Environment life
 ## 29.3 Browse Tasks and Sessions
 
 ```text
-User opens Project-level Task Browser
+User enters Project-level Task Browser experience
     -> browser queries core Tasks and top-level/user Sessions
-    -> optional decorations provide cost/progress/status
+    -> registered TaskSummaryContribution / SessionSummaryContribution
+       providers enrich each summary
     -> no Task/Session selection is required merely to browse
     -> therefore there may be no active Environment
 ```
 
-Selecting a Task or Session can then establish the current application context and expose that Task/Session's Environment status elsewhere.
+The Task Browser may be a dedicated Project-level screen/window/shell that replaces or precedes the active-session workbench. Selecting a Task or Session can transition into the normal workbench and establish the corresponding application context. A future UI could instead embed the browser inside that workbench without changing the summary/action extension model.
 
 Agent-created child Sessions are not normally flattened into this top-level list. The parent Session surface is the primary place to inspect them.
 
@@ -2078,7 +2097,8 @@ An interactive console may separately accept user/plugin input through `ConsoleS
 Chat agent calls TODO tools
     -> TODO/Progress updates Session-scoped list
     -> SessionStatusContribution updates
-    -> Task Browser may update that Session's progress decoration
+    -> TODO/Progress's SessionSummaryContribution updates wherever
+       the Task Browser currently presents that Session summary
 ```
 
 Another Session in the same Task has an independent TODO list. Task workflow category remains user-controlled.
@@ -2159,7 +2179,7 @@ Likely examples:
 | Tool registration/execution semantics | Core/kernel-facing | Cross-strategy execution invariant |
 | OrchestrationStrategy | Agent Interaction plugin API | Core need not understand strategy-hosting UI/product semantics |
 | Chat prompt/header/turn regions | Chat plugin API | Only Chat defines those concepts |
-| Task/Session decorations | Task Browser plugin API | Browser-specific presentation concern |
+| Task/Session summary and action contributions | Task Browser plugin API | Browser defines how Task/Session summaries are enriched without knowing contributing domains |
 | Diff source/review approval/comment target | Likely Diff/Review plugin API initially | Review semantics are more specific than core and may evolve together |
 | Goal iteration extensions | Future Goal plugin API | Goal-specific concept |
 
@@ -2175,7 +2195,7 @@ The following matrix is a compact view of the same speculative topology.
 
 `P` means the plugin primarily **provides/implements** the interface. `C` means it primarily **consumes** it. `D` means the plugin likely **defines/owns** the extension point for others. Blank cells are intentionally not dependencies.
 
-| Plugin | Project select | Env provider | Env FS/process | Orchestration | Chat regions | Inference composition | Model tools | Display source | Diff/review | Task/Session decorations | Events/usage/quota | Console |
+| Plugin | Project select | Env provider | Env FS/process | Orchestration | Chat regions | Inference composition | Model tools | Display source | Diff/review | Task/Session summaries/actions | Events/usage/quota | Console |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Local Directory Project Selector | P |  |  |  |  |  |  |  |  |  |  |  |
 | Task Browser |  |  |  |  |  |  |  |  |  | D/C |  |  |
@@ -2216,7 +2236,7 @@ Examples:
 - Diff active with no source-display provider;
 - multiple Environment providers with one configured default;
 - no optional Accounting plugin;
-- TODO active but no Task Browser decoration consumer;
+- TODO active but no Task Browser summary consumer;
 - no internal editor but an external editor provider.
 
 This is intentional. The platform should not silently activate arbitrary plugins to manufacture usefulness.
@@ -2255,13 +2275,19 @@ Core Session identity/lifecycle remains; strategy-specific durable state defines
 
 Earlier directional text sometimes left TODO/progress ambiguous between Task and Session scope.
 
-The expected stock design now treats TODO/progress as Session-scoped. Task Browser may summarize a Session's progress, but one canonical Task TODO list is not part of the current direction.
+The expected stock design now treats TODO/progress as Session-scoped. Task Browser may summarize a Session's progress through `SessionSummaryContribution`, but one canonical Task TODO list is not part of the current direction.
 
 ## 33.5 Physical workbench names
 
 Existing mockups and earlier draft wording sometimes describe extension surfaces by current placement such as center, left, right, or bottom.
 
 The current direction is to keep plugin-facing surfaces semantic (`MainContentView`, Session status, inspection, navigation, stream/console, and similar concepts) while documenting current stock placement separately. This keeps UI layout evolvable without turning every placement change into a plugin API change.
+
+## 33.6 Task Browser presentation
+
+Earlier draft wording treated Task Browser as a `MainContentView` simply because the current mockups show it in the application window.
+
+The current direction does not require that relationship. Task Browser is a Project/Task/Session selection experience and may own a dedicated pre-session screen/window/shell before the active-session workbench is shown. It can later be embedded into Main Content if that UX proves preferable without changing the browser's semantic responsibilities or summary/action extension points.
 
 ---
 
@@ -2286,28 +2312,30 @@ The following principles summarize the current intended boundaries:
 15. Project, Task, Session, Run, and Environment are core domain concepts, but their concrete useful behavior is heavily plugin-driven.
 16. Project is not intrinsically a local directory; Project selection is replaceable.
 17. Task is an ADELE-owned durable user-intent object.
-18. Environment is initially the practical filesystem/source + process execution context; stronger isolation remains evidence-driven.
-19. `EnvironmentProvider` is a lifecycle/provider concept, not merely a creation/provisioning action.
-20. Core Task lifecycle, not Task Browser, coordinates establishment of the Task's primary Environment through the selected/default provider.
-21. A Task normally has one primary Environment and may have additional Task-associated Environments for child agent work.
-22. Session is permanently bound to one orchestration strategy.
-23. The strategy defines the semantic structure of strategy-specific Session state.
-24. Child agent work uses parent/child Sessions rather than introducing speculative Subtask semantics.
-25. Child Sessions are primarily surfaced from their parent Session, not flattened into normal Task Browser navigation.
-26. Core provides authoritative Session creation/parenting; orchestration plugins may expose it as a tool.
-27. Agent/model controls may participate independently in settings, UI, model tools, and structured inference composition.
-28. LLMs may choose agent/model state through tools rather than requiring hard-coded workflow-to-model mappings.
-29. Inference resolves into a stable snapshot; state changes affect subsequent inference.
-30. Tool plugins and the Internal Source Editor operate through Environment APIs rather than knowing concrete Environment implementations.
-31. Plugins may supply semantic policy information; final authorization remains host-owned.
-32. ADELE provides persistence facilities by default, while domain-native external systems may remain authoritative where appropriate.
-33. TODO/progress in the expected stock system is Session-scoped; Task-level TODOs remain a future possibility only if concrete need appears.
-34. Accounting may cover usage, cost, and provider/account quota/allowance state where data is available.
-35. `DisplaySourceFile` describes making source visible/focused; the stock Internal Source Editor is intended to support manual editing rather than being a read-only viewer.
-36. Console integration should support resource operations broader than a single "open terminal" action when the resource permits them.
-37. The stock installation provides useful composition; architectural validity does not require every useful complementary plugin to be active.
-38. Do not implement speculative extension APIs merely because this long-term direction names a possible future extension point.
-39. The concrete stock plugin topology is a design hypothesis, not a dependency graph or commitment to preserve every proposed plugin boundary.
+18. Task Browser defines Task/Session summary/action extension points; domain plugins contribute summary fragments instead of Task Browser querying each plugin-specific subsystem.
+19. Task Browser is a selection/management experience and is not inherently a `MainContentView`; it may precede or replace the active-session workbench until a Task/Session is selected.
+20. Environment is initially the practical filesystem/source + process execution context; stronger isolation remains evidence-driven.
+21. `EnvironmentProvider` is a lifecycle/provider concept, not merely a creation/provisioning action.
+22. Core Task lifecycle, not Task Browser, coordinates establishment of the Task's primary Environment through the selected/default provider.
+23. A Task normally has one primary Environment and may have additional Task-associated Environments for child agent work.
+24. Session is permanently bound to one orchestration strategy.
+25. The strategy defines the semantic structure of strategy-specific Session state.
+26. Child agent work uses parent/child Sessions rather than introducing speculative Subtask semantics.
+27. Child Sessions are primarily surfaced from their parent Session, not flattened into normal Task Browser navigation.
+28. Core provides authoritative Session creation/parenting; orchestration plugins may expose it as a tool.
+29. Agent/model controls may participate independently in settings, UI, model tools, and structured inference composition.
+30. LLMs may choose agent/model state through tools rather than requiring hard-coded workflow-to-model mappings.
+31. Inference resolves into a stable snapshot; state changes affect subsequent inference.
+32. Tool plugins and the Internal Source Editor operate through Environment APIs rather than knowing concrete Environment implementations.
+33. Plugins may supply semantic policy information; final authorization remains host-owned.
+34. ADELE provides persistence facilities by default, while domain-native external systems may remain authoritative where appropriate.
+35. TODO/progress in the expected stock system is Session-scoped; Task-level TODOs remain a future possibility only if concrete need appears.
+36. Accounting may cover usage, cost, and provider/account quota/allowance state where data is available.
+37. `DisplaySourceFile` describes making source visible/focused; the stock Internal Source Editor is intended to support manual editing rather than being a read-only viewer.
+38. Console integration should support resource operations broader than a single "open terminal" action when the resource permits them.
+39. The stock installation provides useful composition; architectural validity does not require every useful complementary plugin to be active.
+40. Do not implement speculative extension APIs merely because this long-term direction names a possible future extension point.
+41. The concrete stock plugin topology is a design hypothesis, not a dependency graph or commitment to preserve every proposed plugin boundary.
 
 ---
 
@@ -2327,6 +2355,8 @@ This document intentionally does not yet settle:
 - final Environment API and `EnvironmentProvider` lifecycle/recovery/release semantics;
 - Task-associated additional Environment cleanup and persistence;
 - exact core Task-creation failure/recovery semantics when Environment establishment fails;
+- exact Task Browser presentation mode and whether it shares a window/shell with the active-session workbench;
+- exact Task/Session summary contribution schema and composition rules;
 - exact child-Session interaction/presentation metadata;
 - strategy-specific conversation forking semantics;
 - generic history/query retention for model invocations, usage, and other events;
