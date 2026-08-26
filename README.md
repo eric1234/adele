@@ -18,31 +18,88 @@ shared child Dart runtime with generated typed clients, codecs, backend
 dispatch, and deterministic provider selection. `workspace_demo` remains the
 Phase I/II regression fixture, `resource_inspector` remains the Phase III
 multi-provider capability fixture, and `scripted_model` remains deterministic
-model-provider and transport regression infrastructure. These are internal
-reference fixtures, not product UI. Plugin installation, packaging,
-permissions, sandboxing, and general third-party APIs are not implemented.
+model-provider/transport regression infrastructure. These are internal
+reference fixtures, not product UI or product-domain definitions.
 
-Phase IV establishes provider-neutral Session/Run, context, model, tool,
-policy/approval, outcome, effect-certainty, and execution-observation semantics.
-The experimental common ModelProvider capability uses generated streaming and
-cancellation, ordered semantic and provider-native items, explicit settlement,
-and exact generation-bound routing. The real OpenAI plugin provides the public
-API-key Responses route and two separately routed configured contexts: API key
-and an explicitly experimental ChatGPT subscription-backed route. The latter
-is positive interoperability evidence, not a documented or stable OpenAI
-third-party integration contract.
+Plugin installation/discovery, production product plugin activation, packaging,
+permissions, sandboxing, and general third-party extension APIs are not yet
+implemented.
+
+Phase IV establishes provider-neutral Run/context/model/tool/policy/approval,
+outcome/effect-certainty, and execution-observation semantics. The maintained
+proof uses a bounded Chat-shaped Session representation; ADR 0031 now defines
+the long-term Session as a core container permanently bound to one orchestration
+strategy, with strategy-specific state defining its semantic contents.
+
+The common `ModelProvider` capability uses generated streaming/cancellation,
+ordered semantic/provider-native items, explicit settlement, and exact
+generation-bound routing. The real OpenAI plugin provides the public API-key
+Responses route and two separately routed configured contexts: API key and an
+explicitly experimental ChatGPT subscription-backed route. The latter is
+positive interoperability evidence, not a documented/stable third-party OpenAI
+integration contract.
 
 The provisional backend-only DevelopmentSource capability binds one read-only
 source root to a plugin generation. Application composition projects it into
-source-search and source-read model tools used by a bounded development
-strategy. Deterministic AOT integration proves a real OpenAI provider can search
-and read the checked-out ADELE source through ADELE's capability path and
-continue to a final answer; only the remote HTTP responses are scripted. The
-explicitly opt-in live ChatGPT source-coding smoke has also run successfully.
-ADELE can therefore use a real model-provider integration to inspect ADELE's
-own source through ADELE-owned, generation-bound tools and continue reasoning
-from the results. It cannot yet modify or validate its own source through this
-workflow.
+source-search/source-read model tools used by a bounded development strategy.
+Deterministic AOT integration proves a real OpenAI provider can search/read the
+checked-out ADELE source through ADELE's capability path and continue to a final
+answer; only remote HTTP responses are scripted. The explicitly opt-in live
+ChatGPT source-coding smoke has also run successfully.
+
+ADELE can therefore use a real model-provider integration to inspect its own
+source through ADELE-owned, generation-bound tools and continue reasoning from
+the results. It cannot yet modify/validate its own source through this workflow,
+and DevelopmentSource does not implement the final Environment abstraction.
+
+## Accepted long-term architecture beyond the current implementation
+
+The maintained runtime is deliberately narrower than ADELE's accepted product
+and extension direction.
+
+ADR 0030 accepts a **recursive typed extension model**:
+
+```text
+ADELE core
+    -> typed extension points
+        -> plugins
+            -> plugin-defined typed extension points
+                -> other plugins
+```
+
+Plugins should normally cooperate through public typed interfaces and live
+runtime discovery rather than dependencies on specific implementation plugins.
+Capabilities remain the callable Action/Service provider mechanism; Events are
+read-only fact notifications; UI/composition extension points may use different
+zero/one/many and merge/failure semantics. General extension-point runtime/UI
+APIs are not yet implemented.
+
+ADR 0031 accepts these shared product-domain identities:
+
+```text
+Project
+└── Task
+    ├── Environment(s)
+    └── Session(s)
+        ├── Run(s)
+        └── child Session(s)
+```
+
+- Project is an abstract core identity, not intrinsically a local directory.
+- Task is the durable core unit of user intent.
+- Environment is initially the practical filesystem/source + process context;
+  providers such as Git Worktree or Docker may implement it differently.
+- A separate first-class Workspace concept is not required unless future
+  concrete needs demonstrate an independent identity.
+- Session is permanently bound to one orchestration strategy; Chat history is
+  one strategy's state, not the universal Session model.
+- Child Sessions represent delegated work and may share or use another
+  Task-associated Environment.
+
+The expected default development experience is itself a plugin/configuration
+composition rather than hard-coded core behavior. See
+`docs/architecture/stock-plugin-direction.md` and `docs/mockups/README.md`.
+Most of that stock plugin set does not exist yet.
 
 ## Toolchain
 
@@ -94,6 +151,10 @@ reports every failed package after all targets settle. `check` verifies
 formatting, analysis, and all implemented tests, including committed
 generated-output freshness.
 
+The repository development command above is unrelated to ADELE's future
+application-level Command Palette/keybinding subsystem described by the
+extension architecture.
+
 ## Repository
 
 ```text
@@ -112,9 +173,28 @@ plugins/resource_inspector/  Phase III two-provider capability fixture
 plugins/scripted_model/      deterministic ModelProvider/transport fixture
 plugins/openai/              real OpenAI ModelProvider; ChatGPT route experimental
 plugins/development_source/  bounded read-only configured source capability
-docs/architecture/           architecture boundaries and terminology
+docs/architecture/           architecture boundaries/directional models
 docs/adr/                    architectural decision records
 tools/                       root development command driver
+```
+
+Key current direction documents include:
+
+```text
+docs/architecture/plugin-extension-model.md
+    accepted recursive extension architecture
+
+docs/architecture/stock-plugin-direction.md
+    speculative expected default plugin topology
+
+docs/architecture/agent-kernel-semantic-model.md
+    provider-neutral execution semantics
+
+docs/architecture/agent-tooling-direction.md
+    stock tool/execution/presentation direction
+
+docs/mockups/README.md
+    stock development UX produced by the expected plugin/configuration set
 ```
 
 Packages intended to become part of the public plugin-development surface use
@@ -123,54 +203,65 @@ names. Every package is unpublished (`publish_to: none`). Public packages never
 depend on internal host packages; pure-Dart packages never depend on Flutter.
 The application is the composition root.
 
+Plugins may eventually depend on deliberately public extension API packages
+defined by core or another plugin/component. They must not import another
+plugin's frontend/backend/private implementation merely because it is present in
+the repository.
+
 `workspace_demo` exercises separate pure-Dart contract, Dart backend, and
-Flutter frontend packages. Frontend and backend depend on the contract, never
-on one another. It is maintained reference infrastructure, not product UI.
+Flutter frontend packages. Frontend/backend depend on the shared contract,
+never on one another. It is maintained reference infrastructure; the word
+`workspace` in this historical fixture name is not a product-domain decision.
 
 `resource_inspector` contains a lightweight shared capability/contract package,
-independent basic and alternate backend packages, and an evaluated consumer.
-The consumer lists provider IDs and names, invokes the deterministic default,
-explicitly invokes each provider, and renders a structured unavailable state.
-Those discovery and resolution steps run in interpreted consumer code through a
-narrow capability bridge; host code only adapts semantic operations and invokes
-the selected binding with the generated typed client.
-The Linux development smoke command above verifies that both providers are
-active while running and absent after each shutdown.
+independent basic/alternate backend packages, and an evaluated consumer. The
+consumer lists providers, invokes deterministic default/explicit providers, and
+renders structured unavailable state through the capability bridge. The Linux
+smoke verifies provider lifecycle around startup/shutdown.
 
-## Profiles
+## Profiles and configuration
 
-ADELE profiles are planned sparse named composition layers for plugin
+ADELE profiles are accepted as sparse named composition layers for plugin
 activation, configuration overrides, provider availability, and provider
 preferences. A future window/context may use an ordered stack such as
-`Developer + Work` or `Developer + Personal`; the normal case may use only one
-or two profiles, but the architecture does not impose an arbitrary small stack
-limit. Profiles are not implemented, and the development runtime still uses one
+`Developer + Work` or `Developer + Personal`; the architecture imposes no
+arbitrary small stack limit.
+
+Profiles are not implemented, and the development runtime still uses one
 implicit default development profile.
 
-Activation, configuration, provider selection, configured capability instances,
-runtime instances/resources, and workbench state remain distinct concepts. An
-effectively disabled plugin is intended to disappear from that context's normal
-product and settings surface without deleting dormant persisted configuration.
-Open windows may keep independent live workbench state while remembered local
-state seeds future windows. See
-`docs/architecture/profiles-and-configuration.md` for the detailed directional
-model and deferred decisions.
+Activation, ordinary configuration, provider selection, configured capability
+instances, product/runtime state, security/policy, and workbench state remain
+distinct concepts. An effectively disabled plugin is intended to disappear from
+that context's normal product/settings surface without deleting dormant
+persisted configuration.
 
-The shell text "No workspace is open" does not establish workspace semantics.
-Workspace, Project, and Environment are intentionally not foundational ADELE
-types. A configured DevelopmentSource root does not establish final Workspace
-identity or lifecycle.
+Open windows may keep independent live workbench state while remembered local
+state seeds future windows. Plugin-facing workbench extension points should be
+semantic rather than tied to current center/right/bottom placement.
+
+Core is also expected to own application Command registration, Command Palette,
+keybinding resolution, plugin-suggested defaults, and user rebinding. Those
+systems are accepted direction but not yet implemented.
+
+See `docs/architecture/profiles-and-configuration.md`.
 
 ## Next Work
 
 **Phase IV is complete.**
 
-Phase V begins the minimum self-hosting capability set and workflow needed for
-ADELE to make, inspect, validate, and review controlled changes to its own
-source. Source mutation/editing, command/validation execution, and SCM/review
-integration are upcoming implementation areas, not settled APIs or final
-architecture.
+Phase V begins the minimum self-hosting plugin set/workflow needed for ADELE to
+make, inspect, validate, and review controlled changes to its own source.
+Source mutation/editing, Environment-backed command/validation execution,
+Task/Session product lifecycle, and SCM/review integration are upcoming
+implementation areas, not claims that every directional interface is already
+settled or implemented.
+
+Implementation should introduce the smallest concrete extension boundaries
+needed by those verticals rather than build a speculative universal framework
+up front.
 
 Windows, macOS, release packaging, plugin packaging/discovery, sandboxing,
 current Flutter compatibility, and eval-stack modernization also remain open.
-See `docs/architecture/overview.md` and ADRs 0019 through 0029.
+See `docs/architecture/overview.md`, ADRs 0030/0031, and the earlier ADRs they
+refine rather than replace wholesale.
