@@ -6,7 +6,7 @@
 
 This document defines ADELE's long-term composition model for plugins and plugin-defined extension ecosystems. It records architectural boundaries rather than a frozen Dart API. Names such as `ExtensionPoint`, `Extension`, and the example interfaces below remain provisional until concrete implementation requires them.
 
-The maintained repository already proves source plugins, interpreted frontend execution, AOT backend execution, generated typed transport, active capability registration/resolution, configured provider contexts, and provider-neutral agent execution. It does **not** yet implement the general extension-point system described here, production plugin-facing UI composition, generic commands/keybindings, Project/Task/Session product persistence, Environment providers, or the expected stock plugin topology.
+The maintained repository already proves source plugins, interpreted frontend execution, AOT backend execution, generated typed transport, active capability registration/resolution, configured provider contexts, and provider-neutral agent execution. It does **not** yet implement the general extension-point system described here, production plugin-facing UI composition, generic commands/keybindings, Project/Task/Session product persistence, Environment providers, the core orchestration-strategy registry/public execution facade described below, or the expected stock plugin topology.
 
 See also:
 
@@ -35,12 +35,15 @@ Core owns durable host and domain invariants. Plugins provide much of the concre
 For example:
 
 ```text
+ADELE core Session lifecycle
+    -> orchestration-strategy extension point
+        -> Chat strategy
+        -> Goal strategy
+        -> other strategies
+
 ADELE Main Content
     -> Agent Interaction plugin
-        -> orchestration-strategy extension point
-            -> Chat strategy
-            -> Goal strategy
-            -> other strategies
+        -> selects/hosts registered strategy presentation
 
 Chat strategy
     -> prompt-accessory extension point
@@ -48,6 +51,8 @@ Chat strategy
         -> Model control UI
         -> other Chat-specific extensions
 ```
+
+The orchestration-strategy extension point belongs to core because Session creation/restoration must authoritatively validate and retain the bound strategy even when no optional Agent Interaction presentation is active. The Agent Interaction plugin can present strategy selection and common hosting UI without owning the strategy registry itself.
 
 ADELE core does not need to understand a Chat prompt accessory merely because a plugin defines that concept.
 
@@ -71,12 +76,15 @@ Core directionally owns:
 - profiles and general configuration infrastructure;
 - host persistence facilities;
 - Project, Task, Session, Run, and Environment identities/lifecycle;
-- provider-neutral agent execution mechanics;
+- the minimal orchestration-strategy registration/discovery/binding contract required by Session lifecycle;
+- provider-neutral agent execution mechanics in the internal `agent_kernel` plus a narrow public plugin-facing execution boundary for orchestration plugins;
 - final security/policy/approval arbitration;
 - the host workbench shell;
 - application Command registration, Command Palette, and keybinding resolution.
 
-Plugins normally own provider-specific, workflow-specific, tool-specific, integration-specific, and specialized presentation behavior. Expected examples include model providers, Environment implementations, Git integration, editors, Diff/Review, terminals, agent orchestration strategies, model tools, model/agent policy, accounting, TODO/progress, and context monitoring.
+Plugins normally own provider-specific, workflow-specific, tool-specific, integration-specific, and specialized presentation behavior. Expected examples include model providers, Environment implementations, Git integration, editors, Diff/Review, terminals, agent orchestration strategy implementations, model tools, model/agent policy, accounting, TODO/progress, and context monitoring.
+
+A strategy plugin must not import the internal `agent_kernel`. It consumes a public provider-neutral orchestration/execution API backed by core/kernel implementation. The exact public package/type surface remains deferred until a concrete strategy implementation requires it.
 
 One plugin may register several independent extensions into different systems. Splitting those registrations into separate plugins should not fundamentally change the extension mechanisms involved.
 
@@ -155,7 +163,7 @@ Internal Source Editor + External Editor
     alternate action may expose both
 ```
 
-Likewise, Chat remains a technically valid strategy even if the user disables every model tool. A strategy plugin may be active even when nothing consumes its orchestration interface.
+Likewise, Chat remains a technically valid strategy even if the user disables every model tool. A strategy plugin may be active even when no presentation plugin currently exposes it to the user.
 
 The stock installation should provide a useful default composition. ADELE should not silently activate arbitrary plugins to manufacture usefulness.
 
@@ -172,7 +180,26 @@ Depending on that API definition is acceptable. Depending on a particular implem
 
 For example, a Chat strategy may publish `ChatPromptAccessory`. An Agent-control plugin can compile against that API and register an implementation. If Chat is inactive, the registration is simply unconsumed.
 
+Likewise, a Chat strategy implementation can compile against ADELE's future public orchestration/execution API without depending on the internal `agent_kernel` package that implements core execution semantics.
+
 This distinction enables recursive plugin-defined extension ecosystems without requiring a complex runtime activation dependency graph.
+
+## 5.2 Core lifecycle invariants imply core-owned minimal extension contracts
+
+A plugin may define an extension point for concepts that exist only within that plugin's ecosystem. Chat prompt accessories are a good example.
+
+The ownership rule changes when core must authoritatively persist, restore, validate, or route a core-domain identity using that extension.
+
+Session strategy binding is such a case:
+
+```text
+Session
+    stores bound strategy identity
+        -> core-owned orchestration-strategy registry validates/resolves it
+            -> strategy implementation plugin
+```
+
+An optional Agent Interaction UI may consume that registry to offer strategy selection or host a strategy surface, but Session validity cannot depend on that UI plugin being active. Core therefore owns the minimal public registration/binding contract; strategy implementations remain plugins.
 
 ---
 
@@ -441,7 +468,9 @@ Near-term work should **not** implement a universal extension framework merely b
 When deciding where a new interface belongs:
 
 - put broadly reusable concepts in core/public APIs when unrelated consumers reasonably need them;
+- if core must persist/restore/validate a core-domain binding through an extension, keep the minimal registration/binding contract core/public even when an optional plugin owns its UI;
 - let a plugin define interfaces for concepts specific to the ecosystem it introduces;
+- expose internal host/kernel behavior to plugins only through narrow public plugin-facing APIs rather than implementation-package dependencies;
 - prefer interface discovery over implementation identity;
 - allow zero/one/many implementations where the semantics permit it;
 - keep operations stable once resolved;
