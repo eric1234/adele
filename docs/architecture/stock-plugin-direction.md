@@ -368,6 +368,8 @@ Chat does not call an `AgentSelector`; the Agent plugin independently participat
 
 In the expected stock workflow, a model-callable `set_agent`/selection tool routes the user to the Agent used for the **next user invocation**. It does not implicitly change the Agent for a model continuation that still belongs to the current user turn. A future orchestration strategy may deliberately define an explicit intra-Run Agent handoff, but that is separate orchestration behavior rather than an accidental consequence of changing the selected Agent.
 
+For stock Chat, the selected Agent and the effective Agent for an already-started user turn are distinct pieces of state. When a user-submitted Chat turn starts, Chat snapshots/binds the effective Agent for that turn and uses that binding for the turn's model/tool continuations. The Agent plugin continues to own the selected-Agent state; `set_agent` changes that selection for a later user-submitted turn rather than replacing the current turn binding. The exact storage/API for the turn binding is deferred. User input that merely resolves an interruption or otherwise continues the same turn does not retroactively replace that binding; treatment of queued/new-turn input remains strategy-specific.
+
 ## 6.2 Model Routing / Control
 
 The name is provisional; "Model Selection" is too narrow.
@@ -650,10 +652,12 @@ Programmatic child Session creation can use the same registry/binding path witho
 ## 12.5 Submit a Chat turn
 
 ```text
-Chat strategy calls public orchestration/execution service
+user submits Chat turn
+    -> Chat snapshots the currently selected Agent as this turn's effective Agent
+    -> Chat strategy calls public orchestration/execution service
     -> core structured composition gathers
         Chat strategy/history material
-        Agent instructions/tool constraints
+        Agent instructions/tool constraints from the turn binding
         Model routing/reasoning preferences
         context/compaction material
         materialized tools
@@ -664,7 +668,7 @@ Chat strategy calls public orchestration/execution service
 
 The public service is backed by `agent_kernel` internally; Chat does not import the kernel package.
 
-Prompt widgets and model-callable controls modify plugin-owned state according to that plugin's lifecycle semantics. Model/reasoning changes may affect a later inference once the current invocation settles; stock Agent selection normally routes the next user invocation rather than changing a continuation inside the current turn.
+Each model continuation may still receive a newly resolved inference snapshot, but stock Chat uses the same turn-scoped effective Agent until that user-submitted turn ends. Prompt widgets and model-callable controls modify plugin-owned state according to that plugin's lifecycle semantics. Model/reasoning changes may affect a later inference once the current invocation settles; stock Agent selection normally routes a later user invocation rather than changing the bound Agent inside the current turn.
 
 ## 12.6 Model changes model/Agent
 
@@ -675,11 +679,11 @@ model invokes model/reasoning control tool
     -> a subsequent inference may use the new model/reasoning state
 
 model invokes set_agent / Agent-selection tool
-    -> selected Agent for the next user invocation changes
-    -> continuations belonging to the current user turn keep the current Agent
+    -> selected Agent for a later user invocation changes
+    -> current Chat turn retains its snapshotted effective Agent
 ```
 
-An orchestration strategy could later define an explicit intra-Run Agent handoff, but that is separate from the stock selection tool.
+An orchestration strategy could later define an explicit intra-Run Agent handoff, but that is separate from the stock selection tool. Exact handling of queued or steering input at turn boundaries remains strategy-specific rather than being fixed here.
 
 ## 12.7 Source operation
 
