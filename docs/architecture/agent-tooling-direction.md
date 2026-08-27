@@ -189,7 +189,13 @@ The names are descriptive rather than normative.
 
 These operations are frequent enough in coding work and benefit enough from precise contracts, bounded results, clear policy semantics, and specialized presentation to justify first-class treatment.
 
-`apply_patch` is expected to be the primary mutation primitive for existing source because it naturally describes an intentional localized change. `write_file` remains useful for new files, generated content, or complete replacement. Exact stale-read/precondition semantics should be designed separately.
+`apply_patch` is expected to be the primary mutation primitive for existing source because it naturally describes an intentional localized change. `write_file` remains useful for new files, generated content, or complete replacement.
+
+Mutable Environment filesystem operations should expose conditional-mutation semantics rather than silently accepting a stale caller observation. Directionally, a read of a mutable resource exposes an opaque revision/fingerprint and a subsequent patch/write/delete supplies that expected revision, analogous to HTTP `ETag`/`If-Match`. An Environment provider that can coordinate observation and mutation should reject a mismatched revision before applying the ADELE-requested write.
+
+The strength of that guarantee is provider-specific. In particular, an ordinary stock local filesystem cannot portably provide an atomic compare-and-replace guarantee against every arbitrary out-of-band writer. Such a provider should use the strongest practical coordination/conflict detection available, must not claim atomic protection it cannot provide, and should at least prevent stale writes among ADELE-coordinated callers. When an external conflict is detected, the mutation should fail rather than silently overwrite newer content.
+
+The exact revision representation, hashing/versioning mechanism, provider coordination strategy, tool schemas, and any future multi-file atomicity remain deferred. The architectural point is the precondition and honest effect guarantee: source mutation should not knowingly apply against stale observed content by default. Creation can analogously require that the target be absent.
 
 Long-tail filesystem actions such as move, copy, directory creation, permissions, or unusual metadata manipulation do not automatically need dedicated model tools. They can initially remain command operations unless experience shows clear value in promotion.
 
@@ -207,7 +213,7 @@ browser automation
 rich diagnostics/test results
 external/MCP tools
 child Sessions and orchestration
-specialized artifact operations
+specialized plugin-owned document/content operations
 ```
 
 Those areas need separate design before becoming part of the built-in surface. This document intentionally does not prescribe a complete next-tier catalog.
@@ -694,11 +700,11 @@ Inter-session messaging therefore remains an optional specialized feature rather
 
 # 13. Session progress/work items are not implementation plans
 
-The UX direction distinguishes durable/reviewable work artifacts from live Session progress.
+The UX direction distinguishes substantive plan content from live Session progress.
 
 ## 13.1 Implementation plan
 
-A plan is substantive content. In workflows such as:
+A plan is substantive plugin-owned content. In workflows such as:
 
 ```text
 rough request
@@ -710,11 +716,11 @@ implementation plan
 implementation
 ```
 
-an implementation plan is best thought of as a document/artifact or other rich Session content.
+an implementation plan is expected to be owned by a Plan plugin that provides the relevant state, model tools, and presentation. It is not a core `Artifact` identity and is not intrinsic to every Session.
 
 Markdown may be an entirely appropriate representation. ADELE does not currently need to force planning into a generic `update_plan` agent tool merely because other harnesses expose one.
 
-Future Plan-agent tools should be designed around ADELE's artifact/Draft Request workflow rather than imported from conventional agent-harness assumptions.
+Future Plan-agent tools should be designed around the Plan plugin's own document/content workflow and its integration with Chat/Draft Request rather than imported from conventional agent-harness assumptions.
 
 ## 13.2 Session work items
 
@@ -744,7 +750,7 @@ Task
     durable user/project work object
 
 Implementation Plan
-    substantive reviewable content/artifact
+    substantive plugin-owned plan content
 
 Session work items
     structured live execution/progress state
@@ -799,7 +805,7 @@ MCP/external tool
 
 This is a core reason to prefer semantic tools for common operations: ADELE can give each operation an appropriate progressive representation while retaining a generic fallback for unknown tools.
 
-The same principle applies to result contracts. A rich host result may contain structured data, resource references, artifacts, truncation metadata, or presentation hints while exposing a compact model-facing projection.
+The same principle applies to result contracts. A rich host result may contain structured data, resource references, plugin-defined content references, truncation metadata, or presentation hints while exposing a compact model-facing projection.
 
 ---
 
@@ -898,18 +904,19 @@ The current direction can be summarized as:
 2. **Structured tools exist for quality, not mere capability.** Promote common operations when precision, policy, inspectability, portability, or UX materially improves.
 3. **Keep the built-in/stock surface small and orthogonal.** Avoid a dedicated tool for every possible operation.
 4. **Tools operate through the current Environment.** Filesystem/source and process tools should not depend on Git worktrees, Docker, VMs, or host-local paths directly.
-5. **Execution is live even when the model-facing foreground call is synchronous.** Users must be able to observe and inspect running work immediately.
-6. **One operation can have several projections.** Chat summary, Inspection detail, Console/Stream output, and model result have different purposes and budgets.
-7. **Retain streaming semantics.** Output/progress should not exist only as one final accumulated string.
-8. **Terminal rendering is presentation, not resource identity.** Agent output and user interactive shells may share a Console surface without becoming the same concept.
-9. **Support PTY and pipe execution.** The choice changes program behavior and should remain an execution semantic rather than a rendering assumption.
-10. **Parallelism belongs to execution scheduling, not batch tools.** Multiple independent ToolInvocations may run concurrently and join before the next foreground inference.
-11. **Support asynchronous/background work.** Long-running commands, child Runs/Sessions, and future jobs may continue while the parent performs other useful work.
-12. **Do not make models poll state ADELE already knows.** Relevant asynchronous changes should be supplied as typed observations in later context.
-13. **Continuation is event-driven and explicit.** Background work may be passive or may make a waiting Run runnable when relevant events occur.
-14. **Never interrupt active inference with asynchronous events.** Queue observations for the next inference boundary instead.
-15. **Preserve provenance and semantics of asynchronous information.** Generalize delivery/scheduling machinery, not every event into an untyped note.
-16. **Plans and Session progress are distinct.** Plans are substantive artifacts/content; work items are structured mutable Session state; neither is the same as an ADELE Task.
-17. **User elicitation is an interruption.** The Run waits for external input; the product should model that state explicitly.
-18. **Tools project deeper services.** The model-tool catalog should not become ADELE's internal application architecture.
-19. **Presentation APIs should be semantic.** The current right/bottom placement in mockups should not become hard-coded extension-point identity.
+5. **Source mutation uses observed-state preconditions.** Mutable resource reads should provide an opaque revision and normal mutations should reject detected stale observations; the strength of atomic protection against uncoordinated external writers is provider-specific and must be stated honestly.
+6. **Execution is live even when the model-facing foreground call is synchronous.** Users must be able to observe and inspect running work immediately.
+7. **One operation can have several projections.** Chat summary, Inspection detail, Console/Stream output, and model result have different purposes and budgets.
+8. **Retain streaming semantics.** Output/progress should not exist only as one final accumulated string.
+9. **Terminal rendering is presentation, not resource identity.** Agent output and user interactive shells may share a Console surface without becoming the same concept.
+10. **Support PTY and pipe execution.** The choice changes program behavior and should remain an execution semantic rather than a rendering assumption.
+11. **Parallelism belongs to execution scheduling, not batch tools.** Multiple independent ToolInvocations may run concurrently and join before the next foreground inference.
+12. **Support asynchronous/background work.** Long-running commands, child Runs/Sessions, and future jobs may continue while the parent performs other useful work.
+13. **Do not make models poll state ADELE already knows.** Relevant asynchronous changes should be supplied as typed observations in later context.
+14. **Continuation is event-driven and explicit.** Background work may be passive or may make a waiting Run runnable when relevant events occur.
+15. **Never interrupt active inference with asynchronous events.** Queue observations for the next inference boundary instead.
+16. **Preserve provenance and semantics of asynchronous information.** Generalize delivery/scheduling machinery, not every event into an untyped note.
+17. **Plans and Session progress are distinct.** Plans are substantive plugin-owned content; work items are structured mutable Session state; neither is the same as an ADELE Task.
+18. **User elicitation is an interruption.** The Run waits for external input; the product should model that state explicitly.
+19. **Tools project deeper services.** The model-tool catalog should not become ADELE's internal application architecture.
+20. **Presentation APIs should be semantic.** The current right/bottom placement in mockups should not become hard-coded extension-point identity.

@@ -103,7 +103,7 @@ A Task owns or anchors core/product state such as:
 - workflow category;
 - top-level/user Sessions;
 - its primary Environment association;
-- Task-related artifacts and history.
+- Task-related history and plugin-associated state.
 
 Plugins may contribute additional Task/Session summary information such as usage/cost, Session progress, Environment status, SCM state, or warnings through Task Browser extension points. Task Browser does not need to understand each contributing plugin's domain.
 
@@ -126,17 +126,17 @@ Examples of named Sessions might be:
 
 Sessions should **not** normally be named `Session 1`, `Session 2`, etc. The stock strategy/UI can derive a meaningful name from the initial request, although the user may later rename it.
 
-For the stock Chat strategy, Session-owned/strategy-owned state may include:
+For the stock Chat strategy, strategy-owned Session state may include:
 
 - conversation;
 - Draft Request;
-- progress/work items;
-- active Chat/workbench arrangement;
-- open inspections;
-- active Agent/model overrides;
 - conversation forks;
-- Session-specific artifacts;
-- child Session activity/inspection.
+- strategy-specific context/compaction state;
+- child Session activity/inspection that Chat chooses to retain.
+
+Other Session-scoped plugins may independently own state associated with the same Session, such as TODO/progress work items, Agent/model selections, or a Plan. Those concepts do not become Chat state merely because Chat displays controls or summaries for them.
+
+The surrounding workbench arrangement is **not** Session or Chat strategy state. Core owns which Project/Task/Session a window is presenting and the general window/workbench arrangement; open inspection views, pane visibility/widths, focus, and similar presentation state are window/workbench concerns. A strategy may still own presentation semantics and view state internal to its own surface.
 
 A different strategy may define substantially different durable state.
 
@@ -172,7 +172,7 @@ The important distinction is:
 
 > The stock development UX is Task/Session-centric rather than editor-centric.
 
-Primary work artifacts may include:
+Primary work content may include:
 
 - conversation or other strategy content;
 - code review;
@@ -243,6 +243,8 @@ The application should accumulate UI only when work actually requires it.
 
 The physical center/right/bottom arrangement is stock product direction, not the names of plugin extension APIs. The extension architecture uses semantic concepts such as Main Content, Session Status, Inspection, Navigation, and Stream/Console presentation.
 
+The `Artifact` label in these mockups is a stock presentation slot for plugin-owned rich content such as a Plan or report. It does not imply a core ADELE `Artifact` domain identity.
+
 ---
 
 # 4. Title bar and breadcrumb
@@ -278,6 +280,8 @@ adele-core > Refactor resolver API > Validate error propagation
 clicking `adele-core` returns to the Project-level Task Browser with no Task selected.
 
 Clicking `Refactor resolver API` returns to the same Task Browser with that Task selected and its top-level Sessions visible.
+
+These interactions trigger core window navigation. The Task Browser or breadcrumb UI presents the navigation affordance, but core owns which Project/Task/Session the window is currently viewing.
 
 This eliminates the need for a permanent Tasks navigation icon in the stock UX.
 
@@ -434,7 +438,7 @@ Current stock layout rules:
 - Chat is singleton for the Chat strategy.
 - Diff is singleton.
 - Source Group contains zero or more visible editor views.
-- Artifact is singleton.
+- Artifact is a singleton presentation slot for plugin-owned rich content.
 - ordering is fixed;
 - only vertical pane boundaries are supported initially;
 - top-level panels are not arbitrarily reordered.
@@ -455,7 +459,7 @@ ADELE should not automatically hide panels merely because space becomes tight. T
 
 Pane boundaries are draggable. Manual resizing redistributes space while respecting practical minima.
 
-Pane widths are live Session/window workbench state rather than core Session semantics.
+Pane widths are live window/workbench state rather than Session or strategy state.
 
 ## 6.3 Focus/maximize
 
@@ -489,9 +493,9 @@ A different orchestration strategy may own a substantially different Main Conten
 
 Within a Chat Session, the conversation is the strategy's home.
 
-Chat may be hidden temporarily to reclaim width, but this is hide/show rather than destroying strategy state.
+Chat may be hidden temporarily to reclaim width, but this is hide/show of its workbench view rather than destroying strategy state.
 
-When restored it preserves transient view state such as scroll position, draft, expanded content, attachments, and other UI state.
+When restored, durable Chat state such as the Draft Request remains because it belongs to the strategy, while transient presentation state such as scroll position or expansion state may be retained as window/view state.
 
 ---
 
@@ -603,9 +607,10 @@ Session
     ├── conversation
     ├── Draft Request
     ├── progress references
-    ├── inspections/view state
-    └── artifacts
+    └── conversation forks / compaction state
 ```
+
+Inspection views and general workbench layout are intentionally absent from this tree because they belong to window/workbench presentation state. Plan or TODO state may be associated with the Session but is owned by the plugins that define those concepts, not by Chat.
 
 ## 10.1 Submission
 
@@ -727,11 +732,15 @@ Configuration can define an Initial Agent, with a likely stock default of Requir
 
 ## 14.2 Agent-selection tool
 
-The Agent plugin may provide a model-callable tool such as `set_agent`/`select_agent` that changes Agent state for the **next inference**.
+The Agent plugin may provide a model-callable tool such as `set_agent`/`select_agent` that changes the selected Agent for the **next user invocation**.
 
-Agent instructions can recommend transitions or let the model choose dynamically. The tool should target stable Agent IDs rather than display names.
+This is primarily workflow routing. A Requirements Agent can finish a user turn by selecting Plan so the composer is ready for the next phase when the user submits again. If the current turn requires another model continuation after `set_agent`, that continuation still uses the Agent that owns the current user invocation rather than silently switching roles mid-turn. Directionally, stock Chat accomplishes this by snapshotting/binding the effective Agent when the user-submitted turn begins; the exact storage/API is left to the Chat/orchestration implementation.
 
-The exact semantics are broader than a hard-coded workflow step: Chat does not invoke an Agent selector directly; Agent state participates independently in inference composition.
+Agent instructions can recommend fixed transitions or let the model choose dynamically. The tool should target stable Agent IDs rather than display names.
+
+A future orchestration strategy could deliberately define an explicit intra-Run Agent handoff, but that would be separate orchestration behavior rather than an accidental side effect of changing the selected Agent.
+
+The exact semantics remain broader than a hard-coded workflow step: Chat does not invoke an Agent selector directly; Agent state participates independently in the stock workflow composition.
 
 ---
 
@@ -767,7 +776,7 @@ Agent selection is relatively prominent. Provider/model/reasoning are visually s
 
 ## 16.1 Persistent overrides
 
-If the user changes model type or reasoning from the Agent default, the override can persist until changed/reset or Agent changes. The state affects subsequent inference resolution, never an already-resolved invocation.
+If the user changes model type or reasoning from the Agent default, the override can persist until changed/reset or Agent changes. Model/reasoning state affects subsequent inference resolution, never an already-resolved invocation. Agent selection follows the next-user-invocation workflow semantics described above rather than automatically changing a continuation within the current turn.
 
 ## 16.2 Model types per provider
 
@@ -893,6 +902,8 @@ Older inspection
 
 New inspections appear immediately beneath Session Progress. Manual drag/reordering is not initially needed.
 
+The set/order/visibility of opened inspection views is window/workbench presentation state. The inspected operations/resources retain their own domain ownership independently of whether a particular window currently shows an inspection card.
+
 ---
 
 # 23. Session Progress
@@ -926,9 +937,9 @@ These work items belong to an individual Session. They are not one canonical Tas
 
 Examples include tool-call details, grouped operation activity, file-read details, search details, MCP invocation details, change-set metadata, and plugin-provided structured inspections.
 
-Cards are independently expandable/collapsible/removable and not manually reordered initially. Closing an inspection removes its **view**, not the tool call, output, artifact, or underlying state.
+Cards are independently expandable/collapsible/removable and not manually reordered initially. Closing an inspection removes its **view**, not the tool call, output, plugin-owned content, or underlying state.
 
-Clicking an originating item again restores/reuses the existing inspection where appropriate.
+Clicking an originating item again restores/reuses an inspection view where appropriate.
 
 Agent activity should not automatically flood Inspection with cards. Most appear because the user explicitly requests them.
 
@@ -969,7 +980,7 @@ The semantic Console API should be broader than a single `OpenTerminal`: interac
 
 # 26. Diff reviewer
 
-The stock Diff/Review Viewer is a first-class review experience, not merely another source viewer.
+The stock Diff/Review Viewer is a first-class review experience, not merely another source viewer. "Review" here is the Diff plugin's workflow/state; it is not a separate core Review domain identity.
 
 The stock viewer is singleton, unified initially, continuous across files/hunks, and backed by SCM/change-provider state.
 
@@ -977,15 +988,31 @@ Side-by-side Diff is deliberately postponed.
 
 ## 26.1 Review scopes
 
-The stock UX uses concepts such as:
+The stock Git-backed UX starts with **Unstaged changes** as the default review scope and offers broader scopes such as:
 
 ```text
-Changes to approve
-Current changes
-Task changes
+Unstaged changes        default
+Uncommitted changes
+Task / branch changes
 ```
 
-The precise SCM computation belongs to the active change/SCM provider. For Git, these map approximately to working-tree/index/HEAD/Task-branch relationships.
+For Git these describe change-state sets rather than prescribing one literal `git diff` command:
+
+```text
+working tree relative to index
+    + nonignored untracked additions
+    → Unstaged changes
+
+(resolved stage-0 index vs HEAD staged changes)
+    + (the Unstaged changes set)
+    → Uncommitted changes
+
+Task branch/current committed state vs Task baseline
+    + current Uncommitted changes
+    → Task / branch changes, including committed Task work
+```
+
+This intentionally preserves the staged and unstaged layers even when their net content relative to `HEAD` happens to cancel, and it keeps newly created nonignored files visible for review/approval. Unmerged/conflicted index entries are a separate SCM conflict state, not approved stage-0 changes, and are excluded from normal approved/unapproved review semantics until resolved. The precise baseline, enumeration, and comparison computation belongs to the active SCM/change provider. Additional advanced scopes can be added later without changing the basic approval semantics.
 
 ---
 
@@ -993,20 +1020,30 @@ The precise SCM computation belongs to the active change/SCM provider. For Git, 
 
 ADELE should not maintain a parallel database of SCM acceptance state where the SCM natively represents it.
 
-For stock Git:
+For stock Git, resolved stage-0 staging/index state **is** review approval state. Unmerged index entries are conflict state rather than approval state:
 
 ```text
-working tree vs index
-    → Changes to approve
+working-tree-relative-to-index changes
+    + nonignored untracked additions
+    → currently unapproved/unstaged changes
 
-index vs HEAD
-    → approved uncommitted state
+resolved stage-0 index vs HEAD
+    → approved but uncommitted changes
 
-Task branch/baseline relationship
-    → Task changes
+unmerged index entries
+    → conflict state; neither approved nor normal unapproved state
+
+union of the staged and unstaged sets above
+    → all current uncommitted reviewable changes
+
+Task branch/current committed state vs Task baseline
+    + current uncommitted changes
+    → whole Task/branch change set
 ```
 
 Approve/unapprove modifies the Git index through Git's review-domain implementation. Manual/Agent edits modify the Environment filesystem. Commit modifies Git state.
+
+Within the broader Uncommitted or Task/branch scopes, unstaged hunks can be approved and staged-but-uncommitted hunks can be unapproved. A conflicted path must first reach a resolved stage-0 state before normal review approval/unapproval semantics apply. Once a change is committed, its former staging state no longer exists, so normal review UI cannot "unapprove" that committed change; changing it requires a new code/SCM operation instead.
 
 Diff watches/observes relevant filesystem/SCM changes and recomputes its projection. Manual `git add` should naturally refresh the UI rather than require ADELE/Git synchronization state.
 
@@ -1018,13 +1055,15 @@ The watcher should be cross-platform in abstraction.
 
 The stock review grammar is intentionally small.
 
-Unapproved changes allow Comment + Approve. Approved uncommitted changes allow Comment + Unapprove. Committed Task changes allow Comment.
+Unstaged/unapproved changes allow Comment + Approve. Staged/approved uncommitted changes allow Comment + Unapprove. Committed Task changes allow Comment. Unresolved/conflicted changes are shown as conflict state rather than being treated as approved or normally approvable.
 
 There is **no normal Reject button**.
 
 Approval changes acceptance state; comments/manual edits/Agent work change code. This reduces destructive operations and fits an agent-review workflow.
 
-Explicit discard/reset operations may exist as deliberate Commands/plugins rather than normal hunk review.
+For stock Git specifically, Approve means stage and Unapprove means unstage. A commit consumes that staging state into history, so committed changes are no longer normally unapprovable.
+
+Explicit discard/reset, conflict-resolution, or history-changing operations may exist as deliberate Commands/plugins rather than normal hunk review.
 
 ---
 
@@ -1042,9 +1081,9 @@ These controls belong inside the Diff surface rather than in generic Inspection.
 
 The stock Diff workflow follows a code-review model similar to GitHub.
 
-Users may comment on a line/range/hunk/file. Comments collect as pending review feedback and can be submitted as one coherent structured request to the active feedback target (Chat strategy in the stock composition).
+Users may comment on a line/range/hunk/file. Comments collect as pending review feedback owned by the Diff plugin and can be submitted as one coherent structured request to the active feedback target (Chat strategy in the stock composition).
 
-A submitted review appears compactly in Chat rather than dumping every line comment into the transcript.
+A submitted review appears compactly in Chat rather than dumping every line comment into the transcript. This submission does not imply a core Review object; it is an integration between Diff-owned feedback state and a compatible interaction target.
 
 ---
 
@@ -1054,7 +1093,7 @@ Review comments should be structurally anchored to file/revision/change-set/hunk
 
 If code changes invalidate an anchor, ADELE may mark it outdated rather than attach it to unrelated code.
 
-Pending review comments are Diff/Session plugin state even though code/approval state comes from SCM.
+Pending review comments are Diff plugin state associated with the relevant Session/change context even though code/approval state comes from SCM.
 
 ---
 
@@ -1076,7 +1115,7 @@ Diff does not have a hard-coded Save Changes/Commit implementation.
 
 Committing is preferably a configurable application/Agent Command such as `/commit`. A visible Commit button, if added, should invoke the same underlying domain/Command path rather than a second implementation.
 
-After commit, changes disappear from Current Changes but remain visible in Task Changes according to the SCM provider's semantics.
+After commit, changes disappear from Uncommitted Changes but remain visible in Task/branch Changes according to the SCM provider's semantics.
 
 ---
 
@@ -1138,6 +1177,8 @@ Edits may flush after a short debounce, with Save forcing immediate flush if ret
 
 External modification is expected because Agents and shells can change open files. Reload clean external changes while preserving view state; never silently overwrite conflicting local/external edits.
 
+Environment filesystem reads/mutations should expose/use the same opaque resource revision or equivalent observed-state precondition described in `agent-tooling-direction.md`, so editors and agent tools share one consistency boundary rather than invent separate stale-write rules. The strength of atomic protection against arbitrary out-of-band filesystem writers is provider-specific; the stock local filesystem integration should detect and surface conflicts as strongly as practical without claiming a portable compare-and-replace guarantee it cannot provide.
+
 ---
 
 # 39. Document versus editor view
@@ -1191,21 +1232,21 @@ Selecting code should support a Command such as `Reference in Draft`, inserting 
 
 ---
 
-# 44. Singleton Artifact viewer
+# 44. Singleton rich-content / Artifact presentation
 
-The stock Main Content layout includes a singleton Artifact surface for Plan, rich MCP result, Markdown/report, structured search result, test report, generated artifact, etc.
+The stock Main Content layout includes a singleton presentation slot, currently labeled Artifact in the mockups, for plugin-owned rich content such as Plan, rich MCP result, Markdown/report, structured search result, test report, or generated content.
 
-Opening another Artifact replaces the current visual representation; the underlying artifact persists and can be reopened.
+`Artifact` here is a UX label, not a core ADELE domain identity or persistence subsystem. The plugin that defines a Plan/report/result owns its semantic state and lifecycle. Opening another item replaces the current visual representation; whether the underlying content persists and can be reopened is determined by its owning plugin/domain.
 
 ---
 
 # 45. Plan
 
-A Plan is distinct from Session Progress.
+A Plan is distinct from Session Progress and is not a core ADELE concept.
 
-Plan is substantial implementation content/artifact containing phases, strategy, design decisions, dependencies, and technical approach. Session Progress is lightweight operational work-item state.
+Plan is substantial implementation content containing phases, strategy, design decisions, dependencies, and technical approach. Session Progress is lightweight operational work-item state.
 
-The stock Plan plugin may provide model tools and Artifact/Main Content presentation. Plan is not intrinsic to every Session.
+The stock Plan plugin owns Plan semantics/state and may provide model tools plus Main Content presentation. An Agent Configuration plugin may define a Plan Agent whose instructions use those tools, but neither Chat nor core needs to define Plan as intrinsic Session structure.
 
 ---
 
@@ -1215,7 +1256,7 @@ After a Project is selected, the stock **Task Browser plugin** provides the Proj
 
 The Task Browser is not assumed to be a `MainContentView` inside an already-active Session workbench. Before a Task/Session is selected there may be no normal active-session shell at all; the Task Browser may own a dedicated Project-level screen/window/shell. A future UI could embed it into the normal workbench without changing its semantic extension points.
 
-The Task Browser also serves as the top-level/user Session selector; there is no separate dedicated Session-selection page in the stock design.
+The Task Browser also serves as the top-level/user Session selector; there is no separate dedicated Session-selection page in the stock design. It **triggers** core navigation/selection operations; it does not own the window's current Project/Task/Session identity or the general workbench layout.
 
 Conceptually:
 
@@ -1276,7 +1317,7 @@ Selecting a Task populates Task Details rather than immediately entering a Sessi
 
 The stock pane lists top-level/user Sessions and `+ New Session`, plus Task summary contributions such as usage/cost or status.
 
-Clicking a Session enters/resumes it. There is no separate ambiguous Resume button.
+Clicking a Session asks core to navigate the current window into/resume presentation of that Session. There is no separate ambiguous Resume button.
 
 Agent-created child Sessions are not normal peers in this list. They are primarily inspected from the parent Session/orchestration surface that created them.
 
@@ -1355,30 +1396,60 @@ The current stock conceptual ownership model is:
 |---|---|
 | Project identity | Core Project domain |
 | Concrete Project association/selection | Project selector/provider plugin |
+| Current Project/Task/Session shown by a window | Core window/navigation state; plugins may trigger navigation |
 | Task category/title/metadata | Core Task domain |
 | Primary Environment association | Core Task domain + Environment provider lifecycle |
 | Chat conversation/Draft/forks | Chat strategy state for Session |
 | Session progress/work items | TODO/Progress plugin, Session scoped |
-| Agent/model overrides | Agent/Model plugins, Session scoped |
-| Main Content/right inspection live layout | window/workbench state, possibly seeded from remembered state |
+| Agent selection / model overrides | Agent/Model plugins, Session/workflow scoped as defined by each plugin |
+| Plan state/content | Plan plugin, associated with Session as appropriate |
+| Main Content/inspection live layout | core window/workbench state, possibly seeded from remembered state |
 | Shell/process resources | Environment/runtime-resource provider |
 | Console presentation | Console plugin + window/Environment context |
 | Filesystem/process implementation | Environment provider APIs |
 | SCM state | SCM plugin/external SCM |
 | Diff projection | Diff plugin derived from change/SCM provider |
+| Diff comments/pending review feedback | Diff plugin |
 | Usage/cost/quota | Accounting plugin |
 
-Two Sessions sharing an Environment can have different Chat/workbench state while seeing the same Environment-owned shell resources. Switching Tasks/Environments changes Environment resources while strategy/window state changes with the selected Session.
+Two Sessions sharing an Environment can have different strategy/plugin state while seeing the same Environment-owned shell resources. Separately, two windows presenting the same underlying Session may have different live workbench arrangements. Switching the current Task/Session changes what core asks the window to present; the Task Browser is only one UI that can trigger that navigation.
 
 ---
 
 # 55. Workbench restoration
 
-Stock Chat/workbench state may eventually preserve Chat scroll/view state, Draft Request, Main Content pane visibility/widths, horizontal scroll, Source views/cursors/folds/history, Diff review position, current Artifact, inspection cards, and Agent/model overrides.
+Persistence should preserve ownership rather than collapse all visible state into the Session.
 
-Environment/runtime state may preserve/reconnect interactive shells, running processes where possible, retained command-output resources, and console-resource state.
+Examples include:
 
-These persistence mechanisms need not all be Session fields. The profile/configuration architecture distinguishes underlying shared domain state, plugin-owned state, live per-window presentation state, and remembered defaults for future windows.
+```text
+Chat strategy/plugin state
+    conversation
+    Draft Request
+    forks/compaction state
+
+other Session-associated plugin state
+    TODO/progress
+    Agent/model selections
+    Plan content
+    pending Diff feedback where that plugin chooses to scope it
+
+window/workbench presentation state
+    Main Content pane visibility/widths
+    horizontal scroll
+    current inspection views
+    Source views/cursors/folds/history
+    Diff review position
+    current rich-content/Artifact presentation
+
+Environment/runtime state
+    interactive shells
+    running processes where possible
+    retained command-output resources
+    console-resource state
+```
+
+Different windows over the same Project/Task/Session may have independent live workbench state even though they present shared underlying strategy/plugin/domain state. Remembered workbench state can seed future windows without becoming Chat strategy state or forcing already-open windows to rearrange.
 
 Not every part needs to exist before self-hosting; the ownership boundaries should merely avoid blocking later persistence.
 
@@ -1457,7 +1528,7 @@ Agent activity should not gratuitously open, close, or rearrange panels. Tools n
 
 ## 58.2 Views are disposable; underlying objects are not
 
-Closing Diff, Plan, an inspection card, console output, or Source view removes presentation, not the underlying change/artifact/invocation/file.
+Closing Diff, Plan, an inspection card, console output, or Source view removes presentation, not the underlying change, plugin-owned content, invocation, or file.
 
 ## 58.3 Direct navigation beats permanent chrome
 
@@ -1469,7 +1540,7 @@ For SCM-backed behavior, derive state from SCM whenever practical instead of mai
 
 ## 58.5 Configuration/plugins define workflow
 
-Requirements → Plan → Code should be easy out of the box but arise from configurable Agent instructions, model-callable Agent/Model tools, Commands, and plugins rather than hard-coded Chat strategy workflow logic.
+Requirements → Plan → Code should be easy out of the box but arise from configurable Agent instructions, model-callable Agent/Model tools, Commands, and plugins rather than hard-coded Chat strategy workflow logic. Stock `set_agent` routing selects the Agent for the next user invocation; it does not silently change the role of a continuation still serving the current turn.
 
 ## 58.6 Progressive disclosure
 
