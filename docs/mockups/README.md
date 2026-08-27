@@ -996,20 +996,23 @@ Uncommitted changes
 Task / branch changes
 ```
 
-For Git these map directionally to:
+For Git these describe change-state sets rather than prescribing one literal `git diff` command:
 
 ```text
-working tree vs index
+working tree relative to index
+    + nonignored untracked additions
     → Unstaged changes
 
-working tree vs HEAD
-    → Uncommitted changes (staged + unstaged)
+(index vs HEAD staged changes)
+    + (the Unstaged changes set)
+    → Uncommitted changes
 
-Task branch/current state vs Task baseline
+Task branch/current committed state vs Task baseline
+    + current Uncommitted changes
     → Task / branch changes, including committed Task work
 ```
 
-The precise baseline and comparison computation belongs to the active SCM/change provider. Additional advanced scopes can be added later without changing the basic approval semantics.
+This intentionally preserves the staged and unstaged layers even when their net content relative to `HEAD` happens to cancel, and it keeps newly created nonignored files visible for review/approval. The precise baseline, enumeration, and comparison computation belongs to the active SCM/change provider. Additional advanced scopes can be added later without changing the basic approval semantics.
 
 ---
 
@@ -1020,16 +1023,18 @@ ADELE should not maintain a parallel database of SCM acceptance state where the 
 For stock Git, staging/index state **is** review approval state:
 
 ```text
-working tree vs index
+working-tree-relative-to-index changes
+    + nonignored untracked additions
     → currently unapproved/unstaged changes
 
 index vs HEAD
     → approved but uncommitted changes
 
-working tree vs HEAD
+union of the staged and unstaged sets above
     → all current uncommitted changes
 
-Task branch/current state vs Task baseline
+Task branch/current committed state vs Task baseline
+    + current uncommitted changes
     → whole Task/branch change set
 ```
 
