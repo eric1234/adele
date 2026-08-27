@@ -734,7 +734,7 @@ Configuration can define an Initial Agent, with a likely stock default of Requir
 
 The Agent plugin may provide a model-callable tool such as `set_agent`/`select_agent` that changes the selected Agent for the **next user invocation**.
 
-This is primarily workflow routing. A Requirements Agent can finish a user turn by selecting Plan so the composer is ready for the next phase when the user submits again. If the current turn requires another model continuation after `set_agent`, that continuation still uses the Agent that owns the current user invocation rather than silently switching roles mid-turn.
+This is primarily workflow routing. A Requirements Agent can finish a user turn by selecting Plan so the composer is ready for the next phase when the user submits again. If the current turn requires another model continuation after `set_agent`, that continuation still uses the Agent that owns the current user invocation rather than silently switching roles mid-turn. Directionally, stock Chat accomplishes this by snapshotting/binding the effective Agent when the user-submitted turn begins; the exact storage/API is left to the Chat/orchestration implementation.
 
 Agent instructions can recommend fixed transitions or let the model choose dynamically. The tool should target stable Agent IDs rather than display names.
 
@@ -1003,7 +1003,7 @@ working tree relative to index
     + nonignored untracked additions
     → Unstaged changes
 
-(index vs HEAD staged changes)
+(resolved stage-0 index vs HEAD staged changes)
     + (the Unstaged changes set)
     → Uncommitted changes
 
@@ -1012,7 +1012,7 @@ Task branch/current committed state vs Task baseline
     → Task / branch changes, including committed Task work
 ```
 
-This intentionally preserves the staged and unstaged layers even when their net content relative to `HEAD` happens to cancel, and it keeps newly created nonignored files visible for review/approval. The precise baseline, enumeration, and comparison computation belongs to the active SCM/change provider. Additional advanced scopes can be added later without changing the basic approval semantics.
+This intentionally preserves the staged and unstaged layers even when their net content relative to `HEAD` happens to cancel, and it keeps newly created nonignored files visible for review/approval. Unmerged/conflicted index entries are a separate SCM conflict state, not approved stage-0 changes, and are excluded from normal approved/unapproved review semantics until resolved. The precise baseline, enumeration, and comparison computation belongs to the active SCM/change provider. Additional advanced scopes can be added later without changing the basic approval semantics.
 
 ---
 
@@ -1020,18 +1020,21 @@ This intentionally preserves the staged and unstaged layers even when their net 
 
 ADELE should not maintain a parallel database of SCM acceptance state where the SCM natively represents it.
 
-For stock Git, staging/index state **is** review approval state:
+For stock Git, resolved stage-0 staging/index state **is** review approval state. Unmerged index entries are conflict state rather than approval state:
 
 ```text
 working-tree-relative-to-index changes
     + nonignored untracked additions
     → currently unapproved/unstaged changes
 
-index vs HEAD
+resolved stage-0 index vs HEAD
     → approved but uncommitted changes
 
+unmerged index entries
+    → conflict state; neither approved nor normal unapproved state
+
 union of the staged and unstaged sets above
-    → all current uncommitted changes
+    → all current uncommitted reviewable changes
 
 Task branch/current committed state vs Task baseline
     + current uncommitted changes
@@ -1040,7 +1043,7 @@ Task branch/current committed state vs Task baseline
 
 Approve/unapprove modifies the Git index through Git's review-domain implementation. Manual/Agent edits modify the Environment filesystem. Commit modifies Git state.
 
-Within the broader Uncommitted or Task/branch scopes, unstaged hunks can be approved and staged-but-uncommitted hunks can be unapproved. Once a change is committed, its former staging state no longer exists, so normal review UI cannot "unapprove" that committed change; changing it requires a new code/SCM operation instead.
+Within the broader Uncommitted or Task/branch scopes, unstaged hunks can be approved and staged-but-uncommitted hunks can be unapproved. A conflicted path must first reach a resolved stage-0 state before normal review approval/unapproval semantics apply. Once a change is committed, its former staging state no longer exists, so normal review UI cannot "unapprove" that committed change; changing it requires a new code/SCM operation instead.
 
 Diff watches/observes relevant filesystem/SCM changes and recomputes its projection. Manual `git add` should naturally refresh the UI rather than require ADELE/Git synchronization state.
 
@@ -1052,7 +1055,7 @@ The watcher should be cross-platform in abstraction.
 
 The stock review grammar is intentionally small.
 
-Unstaged/unapproved changes allow Comment + Approve. Staged/approved uncommitted changes allow Comment + Unapprove. Committed Task changes allow Comment.
+Unstaged/unapproved changes allow Comment + Approve. Staged/approved uncommitted changes allow Comment + Unapprove. Committed Task changes allow Comment. Unresolved/conflicted changes are shown as conflict state rather than being treated as approved or normally approvable.
 
 There is **no normal Reject button**.
 
@@ -1060,7 +1063,7 @@ Approval changes acceptance state; comments/manual edits/Agent work change code.
 
 For stock Git specifically, Approve means stage and Unapprove means unstage. A commit consumes that staging state into history, so committed changes are no longer normally unapprovable.
 
-Explicit discard/reset or history-changing operations may exist as deliberate Commands/plugins rather than normal hunk review.
+Explicit discard/reset, conflict-resolution, or history-changing operations may exist as deliberate Commands/plugins rather than normal hunk review.
 
 ---
 
@@ -1174,7 +1177,7 @@ Edits may flush after a short debounce, with Save forcing immediate flush if ret
 
 External modification is expected because Agents and shells can change open files. Reload clean external changes while preserving view state; never silently overwrite conflicting local/external edits.
 
-Environment filesystem reads/mutations should expose/use an opaque resource revision or equivalent precondition so a stale editor save or agent patch fails instead of overwriting a newer version. The exact revision mechanism is defined directionally in `agent-tooling-direction.md`; editors and agent tools should share the same underlying consistency boundary rather than invent separate stale-write rules.
+Environment filesystem reads/mutations should expose/use the same opaque resource revision or equivalent observed-state precondition described in `agent-tooling-direction.md`, so editors and agent tools share one consistency boundary rather than invent separate stale-write rules. The strength of atomic protection against arbitrary out-of-band filesystem writers is provider-specific; the stock local filesystem integration should detect and surface conflicts as strongly as practical without claiming a portable compare-and-replace guarantee it cannot provide.
 
 ---
 
