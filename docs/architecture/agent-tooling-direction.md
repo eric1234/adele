@@ -191,9 +191,11 @@ These operations are frequent enough in coding work and benefit enough from prec
 
 `apply_patch` is expected to be the primary mutation primitive for existing source because it naturally describes an intentional localized change. `write_file` remains useful for new files, generated content, or complete replacement.
 
-Mutable Environment filesystem operations should be conditional on the state the caller observed rather than silently overwriting a newer file. Directionally, a read of a mutable resource exposes an opaque revision/fingerprint and a subsequent patch/write/delete supplies that expected revision, analogous to HTTP `ETag`/`If-Match`. The Environment filesystem implementation revalidates the revision immediately before mutation. If it no longer matches, the operation fails without mutating the resource so the agent or editor must reread current state before trying again.
+Mutable Environment filesystem operations should expose conditional-mutation semantics rather than silently accepting a stale caller observation. Directionally, a read of a mutable resource exposes an opaque revision/fingerprint and a subsequent patch/write/delete supplies that expected revision, analogous to HTTP `ETag`/`If-Match`. An Environment provider that can coordinate observation and mutation should reject a mismatched revision before applying the ADELE-requested write.
 
-The exact revision representation, hashing/versioning mechanism, tool schemas, and any future multi-file atomicity remain deferred. The architectural point is the precondition: source mutation should not apply against stale observed content by default. Creation can analogously require that the target be absent.
+The strength of that guarantee is provider-specific. In particular, an ordinary stock local filesystem cannot portably provide an atomic compare-and-replace guarantee against every arbitrary out-of-band writer. Such a provider should use the strongest practical coordination/conflict detection available, must not claim atomic protection it cannot provide, and should at least prevent stale writes among ADELE-coordinated callers. When an external conflict is detected, the mutation should fail rather than silently overwrite newer content.
+
+The exact revision representation, hashing/versioning mechanism, provider coordination strategy, tool schemas, and any future multi-file atomicity remain deferred. The architectural point is the precondition and honest effect guarantee: source mutation should not knowingly apply against stale observed content by default. Creation can analogously require that the target be absent.
 
 Long-tail filesystem actions such as move, copy, directory creation, permissions, or unusual metadata manipulation do not automatically need dedicated model tools. They can initially remain command operations unless experience shows clear value in promotion.
 
@@ -902,7 +904,7 @@ The current direction can be summarized as:
 2. **Structured tools exist for quality, not mere capability.** Promote common operations when precision, policy, inspectability, portability, or UX materially improves.
 3. **Keep the built-in/stock surface small and orthogonal.** Avoid a dedicated tool for every possible operation.
 4. **Tools operate through the current Environment.** Filesystem/source and process tools should not depend on Git worktrees, Docker, VMs, or host-local paths directly.
-5. **Source mutation is conditional on observed state.** Mutable resource reads should provide an opaque revision and normal mutations should fail before applying if that expected revision is stale.
+5. **Source mutation uses observed-state preconditions.** Mutable resource reads should provide an opaque revision and normal mutations should reject detected stale observations; the strength of atomic protection against uncoordinated external writers is provider-specific and must be stated honestly.
 6. **Execution is live even when the model-facing foreground call is synchronous.** Users must be able to observe and inspect running work immediately.
 7. **One operation can have several projections.** Chat summary, Inspection detail, Console/Stream output, and model result have different purposes and budgets.
 8. **Retain streaming semantics.** Output/progress should not exist only as one final accumulated string.
