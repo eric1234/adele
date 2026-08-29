@@ -170,6 +170,72 @@ void main() {
     );
   });
 
+  test('restores when a tag has the provider branch name', () async {
+    final ({Directory container, Directory source}) fixture =
+        await _createRepository();
+    addTearDown(() => fixture.container.delete(recursive: true));
+    final GitWorktreeEnvironmentProvider generationA =
+        GitWorktreeEnvironmentProvider();
+    final LocalEnvironment environment = _environment(
+      fixture.source.uri,
+      taskId: 'task-branch-tag',
+      environmentId: 'environment-branch-tag',
+      title: 'Branch Tag Ambiguity',
+    );
+
+    final EnvironmentProviderResult established = await generationA.establish(
+      environment,
+    );
+    final WorktreeEnvironment firstLive = generationA.liveObjects.resolve(
+      environment.id,
+    );
+    final String branch = await _gitOutput(firstLive.root, <String>[
+      'branch',
+      '--show-current',
+    ]);
+    await _gitOutput(fixture.source, <String>['tag', branch, 'HEAD']);
+    expect(
+      await _gitOutput(firstLive.root, <String>[
+        'symbolic-ref',
+        '--quiet',
+        '--short',
+        'HEAD',
+      ]),
+      'heads/$branch',
+    );
+    generationA.close();
+    final Environment durable = Environment(
+      id: environment.id,
+      taskId: environment.task.id,
+      role: environment.role,
+      providerId: environment.providerId,
+      providerState: established.providerState,
+    );
+    final GitWorktreeEnvironmentProvider generationB =
+        GitWorktreeEnvironmentProvider();
+    addTearDown(generationB.close);
+
+    await generationB.restore(
+      LocalEnvironment(
+        project: environment.task.project,
+        task: environment.task.value,
+        value: durable,
+      ),
+    );
+
+    final WorktreeEnvironment restored = generationB.liveObjects.resolve(
+      environment.id,
+    );
+    expect(
+      await _gitOutput(restored.root, <String>['branch', '--show-current']),
+      branch,
+    );
+    expect(
+      (await generationB.readFile(environment.id, 'README.md')).text,
+      contains('fixture source'),
+    );
+  });
+
   test('preserves a Project source subdirectory across restore', () async {
     final ({Directory container, Directory source}) fixture =
         await _createRepository();
@@ -361,6 +427,17 @@ void main() {
         GitWorktreeEnvironmentProvider();
     addTearDown(provider.close);
 
+    await expectLater(
+      provider.establish(
+        _environment(
+          const _RelativeFileUri(),
+          taskId: 'task-relative-file',
+          environmentId: 'environment-relative-file',
+          title: 'Relative file source',
+        ),
+      ),
+      throwsA(_failureWithCode('invalid_source_uri')),
+    );
     await expectLater(
       provider.establish(
         _environment(
@@ -566,3 +643,28 @@ Future<List<String>> _branchNames(Directory repository) async =>
       '--format=%(refname:short)',
       'refs/heads',
     ])).split('\n').where((String branch) => branch.isNotEmpty).toList();
+
+// `Uri.parse('file:relative/repository')` canonicalizes to a root URI before
+// the provider receives it. This fixture exercises a genuinely relative
+// decoded file path without adding a production test seam.
+final class _RelativeFileUri implements Uri {
+  const _RelativeFileUri();
+
+  @override
+  bool get hasScheme => true;
+
+  @override
+  String get path => 'relative/repository';
+
+  @override
+  String get scheme => 'file';
+
+  @override
+  String toFilePath({bool? windows}) => 'relative/repository';
+
+  @override
+  String toString() => 'file:relative/repository';
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}

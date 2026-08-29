@@ -203,20 +203,21 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
       worktreeRoot,
       repository.commonDirectory,
     );
-    final String branch = await _gitOutput(
+    final String branchRef = await _gitOutput(
       worktreeRoot,
-      const <String>['symbolic-ref', '--quiet', '--short', 'HEAD'],
+      const <String>['symbolic-ref', '--quiet', 'HEAD'],
       code: 'restore_branch_invalid',
       message: 'The retained Git worktree is not on its expected branch.',
     );
-    if (branch != state.branch) {
+    final String expectedBranchRef = 'refs/heads/${state.branch}';
+    if (branchRef != expectedBranchRef) {
       throw _environmentFailure(
         'restore_branch_mismatch',
         'The retained Git worktree branch changed unexpectedly.',
         environmentId: environment.id,
         details: <String, Object?>{
-          'expectedBranch': state.branch,
-          'actualBranch': branch,
+          'expectedBranchRef': expectedBranchRef,
+          'actualBranchRef': branchRef,
         },
       );
     }
@@ -247,7 +248,7 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
         environmentId: environment.id,
         source: source,
         worktreePath: worktreeRoot.path,
-        branch: branch,
+        branch: state.branch,
         baselineCommit: state.baselineCommit,
       ),
     );
@@ -397,6 +398,14 @@ Future<_GitSource> _sourceFor(Uri sourceLocation) async {
       code: 'invalid_source_uri',
       message: 'The file source URI cannot be resolved on this host.',
       details: <String, Object?>{'reason': error.message},
+    );
+  }
+  if (!_isAbsolutePath(sourcePath)) {
+    throw EnvironmentFailure(
+      code: 'invalid_source_uri',
+      message:
+          'Git worktree Environments require an absolute local file source.',
+      details: <String, Object?>{'sourceLocation': sourceLocation.toString()},
     );
   }
   final Directory source;
