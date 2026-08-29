@@ -10,6 +10,25 @@ import 'worktree_environment.dart';
 
 const int gitEnvironmentProviderStateSchemaVersion = 1;
 
+// Git documents these through `git rev-parse --local-env-vars`.
+const Set<String> _repositoryLocalGitEnvironmentVariables = <String>{
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_COMMON_DIR',
+  'GIT_CONFIG',
+  'GIT_CONFIG_COUNT',
+  'GIT_CONFIG_PARAMETERS',
+  'GIT_DIR',
+  'GIT_GRAFT_FILE',
+  'GIT_IMPLICIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  'GIT_NO_REPLACE_OBJECTS',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_PREFIX',
+  'GIT_REPLACE_REF_BASE',
+  'GIT_SHALLOW_FILE',
+  'GIT_WORK_TREE',
+};
+
 final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
   GitWorktreeEnvironmentProvider({
     LiveObjectRegistry<EnvironmentId, WorktreeEnvironment>? liveObjects,
@@ -33,9 +52,10 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
       );
     }
     _requireAvailableId(environment.id);
-    final _GitRepository repository = await _repositoryFor(
+    final _GitSource source = await _sourceFor(
       environment.task.project.sourceLocation,
     );
+    final _GitRepository repository = source.repository;
     final String baselineCommit = await _gitOutput(
       repository.root,
       const <String>['rev-parse', 'HEAD'],
@@ -61,25 +81,43 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
         details: <String, Object?>{'worktreePath': worktreePath},
       );
     }
-    bool worktreeCreated = false;
+    bool branchCreated = false;
+    bool worktreeAddAttempted = false;
+    bool worktreeAddSucceeded = false;
     try {
       await Directory(worktreePath).parent.create(recursive: true);
       await _gitOutput(
         repository.root,
-        <String>['worktree', 'add', '-b', branch, worktreePath, baselineCommit],
+        <String>['branch', branch, baselineCommit],
+        code: 'worktree_establishment_failed',
+        message: 'Git could not create the Task branch.',
+      );
+      branchCreated = true;
+      worktreeAddAttempted = true;
+      await _gitOutput(
+        repository.root,
+        <String>['worktree', 'add', worktreePath, branch],
         code: 'worktree_establishment_failed',
         message: 'Git could not create the Task worktree.',
       );
-      worktreeCreated = true;
-      final WorktreeEnvironment live = WorktreeEnvironment(
-        Directory(worktreePath),
+      worktreeAddSucceeded = true;
+      final Directory worktreeRoot = Directory(
+        await Directory(worktreePath).resolveSymbolicLinks(),
+      );
+      final WorktreeEnvironment live = _scopedWorktreeEnvironment(
+        environmentId: environment.id,
+        worktreeRoot: worktreeRoot,
+        relativePath: source.relativePath,
+        failureCode: 'worktree_establishment_failed',
+        failureMessage:
+            'The Task worktree does not contain the Project source scope.',
       );
       liveObjects.bind(environment.id, live);
       return EnvironmentProviderResult(
         providerState: _providerState(
           environmentId: environment.id,
-          repository: repository,
-          worktreePath: live.root.path,
+          source: source,
+          worktreePath: worktreeRoot.path,
           branch: branch,
           baselineCommit: baselineCommit,
         ),
@@ -89,7 +127,10 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
         repository.root,
         worktreePath,
         branch,
-        deleteBranch: worktreeCreated,
+        baselineCommit: baselineCommit,
+        branchCreated: branchCreated,
+        worktreeAddAttempted: worktreeAddAttempted,
+        worktreeAddSucceeded: worktreeAddSucceeded,
       );
       if (error is EnvironmentFailure) rethrow;
       throw _environmentFailure(
@@ -110,34 +151,46 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
       environment.id,
       environment.providerState,
     );
-    final _GitRepository repository = await _repositoryFor(
+    final _GitSource source = await _sourceFor(
       environment.task.project.sourceLocation,
     );
-    if (repository.root.path != state.sourcePath ||
+    final _GitRepository repository = source.repository;
+    if (source.scope.path != state.sourcePath ||
+        repository.root.path != state.repositoryPath ||
+        source.relativePath != state.sourceRelativePath ||
         repository.commonDirectory.path != state.commonGitDirectory) {
       throw _environmentFailure(
         'restore_source_mismatch',
-        'The retained worktree belongs to another Git source.',
+        'The retained worktree belongs to another Project source.',
         environmentId: environment.id,
       );
     }
-    final WorktreeEnvironment live;
+    final Directory worktreeRoot;
     try {
-      live = WorktreeEnvironment(Directory(state.worktreePath));
-    } on ArgumentError catch (error) {
+      worktreeRoot = Directory(
+        await Directory(state.worktreePath).resolveSymbolicLinks(),
+      );
+      if (await FileSystemEntity.type(worktreeRoot.path, followLinks: true) !=
+          FileSystemEntityType.directory) {
+        throw FileSystemException(
+          'Retained worktree is not a directory.',
+          state.worktreePath,
+        );
+      }
+    } on FileSystemException catch (error) {
       throw _environmentFailure(
         'restore_worktree_missing',
         'The retained Git worktree is unavailable.',
         environmentId: environment.id,
-        details: <String, Object?>{'reason': error.message.toString()},
+        details: <String, Object?>{'reason': error.message},
       );
     }
     final _GitRepository worktree = await _inspectRepository(
-      live.root,
+      worktreeRoot,
       failureCode: 'restore_worktree_invalid',
       failureMessage: 'The retained path is not a usable Git worktree.',
     );
-    if (worktree.root.path != live.root.path ||
+    if (worktree.root.path != worktreeRoot.path ||
         worktree.commonDirectory.path != repository.commonDirectory.path) {
       throw _environmentFailure(
         'restore_worktree_mismatch',
@@ -147,11 +200,11 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
     }
     await _requireLinkedWorktree(
       environment.id,
-      live.root,
+      worktreeRoot,
       repository.commonDirectory,
     );
     final String branch = await _gitOutput(
-      live.root,
+      worktreeRoot,
       const <String>['symbolic-ref', '--quiet', '--short', 'HEAD'],
       code: 'restore_branch_invalid',
       message: 'The retained Git worktree is not on its expected branch.',
@@ -168,7 +221,7 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
       );
     }
     final String resolvedBaseline = await _gitOutput(
-      live.root,
+      worktreeRoot,
       <String>['rev-parse', '--verify', '${state.baselineCommit}^{commit}'],
       code: 'restore_baseline_missing',
       message: 'The retained baseline commit is unavailable.',
@@ -180,12 +233,20 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
         environmentId: environment.id,
       );
     }
+    final WorktreeEnvironment live = _scopedWorktreeEnvironment(
+      environmentId: environment.id,
+      worktreeRoot: worktreeRoot,
+      relativePath: source.relativePath,
+      failureCode: 'restore_source_scope_missing',
+      failureMessage:
+          'The retained worktree does not contain the Project source scope.',
+    );
     liveObjects.bind(environment.id, live);
     return EnvironmentProviderResult(
       providerState: _providerState(
         environmentId: environment.id,
-        repository: repository,
-        worktreePath: live.root.path,
+        source: source,
+        worktreePath: worktreeRoot.path,
         branch: branch,
         baselineCommit: state.baselineCommit,
       ),
@@ -236,9 +297,23 @@ final class _GitRepository {
   final Directory commonDirectory;
 }
 
+final class _GitSource {
+  const _GitSource({
+    required this.scope,
+    required this.repository,
+    required this.relativePath,
+  });
+
+  final Directory scope;
+  final _GitRepository repository;
+  final String relativePath;
+}
+
 final class _GitProviderState {
   const _GitProviderState({
     required this.sourcePath,
+    required this.repositoryPath,
+    required this.sourceRelativePath,
     required this.commonGitDirectory,
     required this.worktreePath,
     required this.branch,
@@ -281,6 +356,15 @@ final class _GitProviderState {
 
     return _GitProviderState(
       sourcePath: requireString('sourcePath'),
+      repositoryPath: requireString('repositoryPath'),
+      sourceRelativePath: state['sourceRelativePath'] is String
+          ? state['sourceRelativePath']! as String
+          : throw _environmentFailure(
+              'invalid_provider_state',
+              'The Git Environment provider state is malformed.',
+              environmentId: environmentId,
+              details: const <String, Object?>{'field': 'sourceRelativePath'},
+            ),
       commonGitDirectory: requireString('commonGitDirectory'),
       worktreePath: requireString('worktreePath'),
       branch: requireString('branch'),
@@ -289,13 +373,15 @@ final class _GitProviderState {
   }
 
   final String sourcePath;
+  final String repositoryPath;
+  final String sourceRelativePath;
   final String commonGitDirectory;
   final String worktreePath;
   final String branch;
   final String baselineCommit;
 }
 
-Future<_GitRepository> _repositoryFor(Uri sourceLocation) async {
+Future<_GitSource> _sourceFor(Uri sourceLocation) async {
   if (sourceLocation.scheme != 'file') {
     throw EnvironmentFailure(
       code: 'unsupported_source_scheme',
@@ -325,10 +411,21 @@ Future<_GitRepository> _repositoryFor(Uri sourceLocation) async {
       details: <String, Object?>{},
     );
   }
-  return _inspectRepository(
+  final _GitRepository repository = await _inspectRepository(
     source,
     failureCode: 'invalid_git_source',
     failureMessage: 'The local Project source is not a usable Git worktree.',
+  );
+  final String relativePath = _relativePathWithin(
+    repository.root,
+    source,
+    failureCode: 'invalid_git_source',
+    failureMessage: 'The local Project source is outside its Git worktree.',
+  );
+  return _GitSource(
+    scope: source,
+    repository: repository,
+    relativePath: relativePath,
   );
 }
 
@@ -377,6 +474,77 @@ Future<_GitRepository> _inspectRepository(
   return _GitRepository(root: root, commonDirectory: common);
 }
 
+String _relativePathWithin(
+  Directory root,
+  Directory source, {
+  required String failureCode,
+  required String failureMessage,
+}) {
+  if (source.path == root.path) return '';
+  final String rootPrefix = root.path.endsWith(Platform.pathSeparator)
+      ? root.path
+      : '${root.path}${Platform.pathSeparator}';
+  if (!source.path.startsWith(rootPrefix)) {
+    throw EnvironmentFailure(
+      code: failureCode,
+      message: failureMessage,
+      details: const <String, Object?>{},
+    );
+  }
+  return source.path
+      .substring(rootPrefix.length)
+      .split(Platform.pathSeparator)
+      .join('/');
+}
+
+Directory _scopeWithinWorktree(Directory worktree, String relativePath) =>
+    relativePath.isEmpty
+    ? worktree
+    : Directory(
+        <String>[
+          worktree.path,
+          ...relativePath.split('/'),
+        ].join(Platform.pathSeparator),
+      );
+
+WorktreeEnvironment _scopedWorktreeEnvironment({
+  required EnvironmentId environmentId,
+  required Directory worktreeRoot,
+  required String relativePath,
+  required String failureCode,
+  required String failureMessage,
+}) {
+  final WorktreeEnvironment live;
+  try {
+    live = WorktreeEnvironment(
+      _scopeWithinWorktree(worktreeRoot, relativePath),
+    );
+  } on ArgumentError catch (error) {
+    throw _environmentFailure(
+      failureCode,
+      failureMessage,
+      environmentId: environmentId,
+      details: <String, Object?>{'reason': error.message.toString()},
+    );
+  }
+  final String worktreePrefix =
+      worktreeRoot.path.endsWith(Platform.pathSeparator)
+      ? worktreeRoot.path
+      : '${worktreeRoot.path}${Platform.pathSeparator}';
+  if (live.root.path != worktreeRoot.path &&
+      !live.root.path.startsWith(worktreePrefix)) {
+    throw _environmentFailure(
+      failureCode,
+      failureMessage,
+      environmentId: environmentId,
+      details: <String, Object?>{
+        'reason': 'source scope resolves outside worktree',
+      },
+    );
+  }
+  return live;
+}
+
 Future<void> _requireLinkedWorktree(
   EnvironmentId environmentId,
   Directory worktree,
@@ -415,15 +583,17 @@ Future<void> _requireLinkedWorktree(
 
 Map<String, Object?> _providerState({
   required EnvironmentId environmentId,
-  required _GitRepository repository,
+  required _GitSource source,
   required String worktreePath,
   required String branch,
   required String baselineCommit,
 }) => <String, Object?>{
   'schemaVersion': gitEnvironmentProviderStateSchemaVersion,
   'environmentId': environmentId.value,
-  'sourcePath': repository.root.path,
-  'commonGitDirectory': repository.commonDirectory.path,
+  'sourcePath': source.scope.path,
+  'repositoryPath': source.repository.root.path,
+  'sourceRelativePath': source.relativePath,
+  'commonGitDirectory': source.repository.commonDirectory.path,
   'worktreePath': worktreePath,
   'branch': branch,
   'baselineCommit': baselineCommit,
@@ -432,7 +602,7 @@ Map<String, Object?> _providerState({
 String _branchName(LocalEnvironment environment) {
   final String title = _slug(environment.task.title, fallback: 'task');
   final String id = _slug(environment.id.value, fallback: 'environment');
-  return 'adele/${_truncate(title, 32)}-${_truncate(id, 16)}-'
+  return 'adele-${_truncate(title, 32)}-${_truncate(id, 16)}-'
       '${_stableHash(environment.id.value)}';
 }
 
@@ -488,11 +658,7 @@ Future<String> _gitOutput(
 }) async {
   final ProcessResult result;
   try {
-    result = await Process.run('git', <String>[
-      '-C',
-      workingDirectory.path,
-      ...arguments,
-    ]);
+    result = await _runGit(workingDirectory, arguments);
   } on ProcessException catch (error) {
     throw EnvironmentFailure(
       code: 'git_unavailable',
@@ -517,9 +683,7 @@ Future<String> _gitOutput(
 Future<bool> _branchExists(Directory repository, String branch) async {
   final ProcessResult result;
   try {
-    result = await Process.run('git', <String>[
-      '-C',
-      repository.path,
+    result = await _runGit(repository, <String>[
       'show-ref',
       '--verify',
       '--quiet',
@@ -548,38 +712,96 @@ Future<void> _cleanupFailedEstablishment(
   Directory repository,
   String worktreePath,
   String branch, {
-  required bool deleteBranch,
+  required String baselineCommit,
+  required bool branchCreated,
+  required bool worktreeAddAttempted,
+  required bool worktreeAddSucceeded,
 }) async {
-  if (!deleteBranch) return;
+  if (!branchCreated) return;
+  if (worktreeAddAttempted &&
+      await _worktreeRegisteredForBranch(repository, worktreePath, branch)) {
+    try {
+      await _runGit(repository, <String>[
+        'worktree',
+        'remove',
+        '--force',
+        worktreePath,
+      ]);
+    } on ProcessException {
+      // Best-effort cleanup after provider-owned establishment failed.
+    }
+  }
+  if (worktreeAddSucceeded) {
+    final Directory worktree = Directory(worktreePath);
+    try {
+      if (await worktree.exists()) await worktree.delete(recursive: true);
+    } on FileSystemException {
+      // The path is known to have been created by the successful Git add.
+    }
+  }
   try {
-    await Process.run('git', <String>[
-      '-C',
-      repository.path,
+    final ProcessResult branchHead = await _runGit(repository, <String>[
+      'show-ref',
+      '--hash',
+      '--verify',
+      'refs/heads/$branch',
+    ]);
+    if (branchHead.exitCode == 0 &&
+        branchHead.stdout.toString().trim() == baselineCommit) {
+      await _runGit(repository, <String>['branch', '-D', branch]);
+    }
+  } on ProcessException {
+    // Best-effort cleanup after provider-owned establishment failed.
+  }
+}
+
+Future<bool> _worktreeRegisteredForBranch(
+  Directory repository,
+  String worktreePath,
+  String branch,
+) async {
+  final ProcessResult result;
+  try {
+    result = await _runGit(repository, const <String>[
       'worktree',
-      'remove',
-      '--force',
-      worktreePath,
+      'list',
+      '--porcelain',
+      '-z',
     ]);
   } on ProcessException {
-    // Best-effort cleanup after provider-owned establishment failed.
+    return false;
   }
-  try {
-    await Process.run('git', <String>[
-      '-C',
-      repository.path,
-      'branch',
-      '-D',
-      branch,
-    ]);
-  } on ProcessException {
-    // Best-effort cleanup after provider-owned establishment failed.
+  if (result.exitCode != 0) return false;
+  String? listedPath;
+  for (final String field in result.stdout.toString().split('\u0000')) {
+    if (field.isEmpty) {
+      listedPath = null;
+    } else if (field.startsWith('worktree ')) {
+      listedPath = field.substring('worktree '.length);
+    } else if (listedPath == worktreePath &&
+        field == 'branch refs/heads/$branch') {
+      return true;
+    }
   }
-  final Directory worktree = Directory(worktreePath);
-  try {
-    if (await worktree.exists()) await worktree.delete(recursive: true);
-  } on FileSystemException {
-    // Git resources remain durable; failed-establishment cleanup is local only.
+  return false;
+}
+
+Future<ProcessResult> _runGit(
+  Directory workingDirectory,
+  List<String> arguments,
+) {
+  final Map<String, String> environment = Map<String, String>.of(
+    Platform.environment,
+  );
+  for (final String name in _repositoryLocalGitEnvironmentVariables) {
+    environment.remove(name);
   }
+  return Process.run(
+    'git',
+    <String>['-C', workingDirectory.path, ...arguments],
+    environment: environment,
+    includeParentEnvironment: false,
+  );
 }
 
 bool _isAbsolutePath(String path) =>

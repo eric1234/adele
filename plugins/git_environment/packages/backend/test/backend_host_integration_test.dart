@@ -40,14 +40,18 @@ void main() {
   });
 
   test(
-    'durable Environment restores through a fresh exact AOT generation',
+    'AOT generations ignore inherited Git routing and restore durable state',
     () async {
-      final ({Directory container, Directory source}) fixture =
-          await _createRepository();
+      final ({Directory container, Directory sourceA, Directory sourceB})
+      fixture = await _createRepository();
       addTearDown(() => fixture.container.delete(recursive: true));
       final PluginBackendHost host = await PluginBackendHost.start(
         dartaotruntimeExecutable: dartaotruntime,
         hostArtifactPath: hostArtifact.path,
+        environment: <String, String>{
+          'GIT_DIR': '${fixture.sourceB.path}${Platform.pathSeparator}.git',
+          'GIT_WORK_TREE': fixture.sourceB.path,
+        },
       );
       addTearDown(() async {
         if (!host.isClosed) await host.close(graceful: false);
@@ -58,7 +62,7 @@ void main() {
       );
       final Project project = Project(
         id: ProjectId('project-aot'),
-        sourceLocation: fixture.source.uri,
+        sourceLocation: fixture.sourceA.uri,
       );
       final Task task = Task(
         id: TaskId('task-aot'),
@@ -101,8 +105,16 @@ void main() {
         providerState: established.providerState,
       );
       expect(
+        established.providerState['baselineCommit'],
+        await _git(fixture.sourceA, <String>['rev-parse', 'HEAD']),
+      );
+      expect(
+        established.providerState['baselineCommit'],
+        isNot(await _git(fixture.sourceB, <String>['rev-parse', 'HEAD'])),
+      );
+      expect(
         (await providerA.readFile(durable.id, 'README.md')).text,
-        contains('AOT Git fixture'),
+        'AOT Git fixture A\n',
       );
 
       await activationA.close();
@@ -158,7 +170,7 @@ void main() {
       );
       expect(
         (await providerB.readFile(refreshed.id, 'README.md')).text,
-        contains('AOT Git fixture'),
+        'AOT Git fixture A\n',
       );
       expect(refreshed.providerState, durable.providerState);
 
@@ -189,22 +201,29 @@ Future<PluginCapabilityActivation> _register(
   ],
 );
 
-Future<({Directory container, Directory source})> _createRepository() async {
+Future<({Directory container, Directory sourceA, Directory sourceB})>
+_createRepository() async {
   final Directory container = await Directory.systemTemp.createTemp(
     'adele-git-environment-aot-',
   );
-  final Directory source = Directory('${container.path}/source');
+  final Directory sourceA = Directory('${container.path}/source-a');
+  final Directory sourceB = Directory('${container.path}/source-b');
+  await _initializeRepository(sourceA, 'AOT Git fixture A\n');
+  await _initializeRepository(sourceB, 'AOT Git fixture B\n');
+  return (container: container, sourceA: sourceA, sourceB: sourceB);
+}
+
+Future<void> _initializeRepository(Directory source, String marker) async {
   await source.create();
   await _git(source, <String>['init']);
   await _git(source, <String>['config', 'user.name', 'ADELE Test']);
   await _git(source, <String>['config', 'user.email', 'adele@example.invalid']);
-  await File('${source.path}/README.md').writeAsString('AOT Git fixture\n');
+  await File('${source.path}/README.md').writeAsString(marker);
   await _git(source, <String>['add', '.']);
   await _git(source, <String>['commit', '-m', 'Initial fixture']);
-  return (container: container, source: source);
 }
 
-Future<void> _git(Directory source, List<String> arguments) async {
+Future<String> _git(Directory source, List<String> arguments) async {
   final ProcessResult result = await Process.run('git', <String>[
     '-C',
     source.path,
@@ -213,6 +232,7 @@ Future<void> _git(Directory source, List<String> arguments) async {
   if (result.exitCode != 0) {
     throw StateError('git ${arguments.join(' ')} failed: ${result.stderr}');
   }
+  return result.stdout.toString().trim();
 }
 
 Future<void> _compile(

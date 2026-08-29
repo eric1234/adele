@@ -50,7 +50,7 @@ void main() {
       'branch',
       '--show-current',
     ]);
-    expect(branch, startsWith('adele/build-parser-support-'));
+    expect(branch, startsWith('adele-build-parser-support-'));
 
     final LocalEnvironment second = _environment(
       fixture.source.uri,
@@ -169,6 +169,188 @@ void main() {
       branch,
     );
   });
+
+  test('preserves a Project source subdirectory across restore', () async {
+    final ({Directory container, Directory source}) fixture =
+        await _createRepository();
+    addTearDown(() => fixture.container.delete(recursive: true));
+    await File('${fixture.source.path}/outside.txt').writeAsString('outside');
+    final Directory projectSource = Directory(
+      '${fixture.source.path}/project-source',
+    );
+    await projectSource.create();
+    await File('${projectSource.path}/inside.txt').writeAsString('inside');
+    await _gitOutput(fixture.source, <String>['add', '.']);
+    await _gitOutput(fixture.source, <String>[
+      'commit',
+      '-m',
+      'Add scoped Project source',
+    ]);
+    final GitWorktreeEnvironmentProvider generationA =
+        GitWorktreeEnvironmentProvider();
+    final LocalEnvironment environment = _environment(
+      projectSource.uri,
+      taskId: 'task-scoped-source',
+      environmentId: 'environment-scoped-source',
+      title: 'Scoped source',
+    );
+
+    final EnvironmentProviderResult established = await generationA.establish(
+      environment,
+    );
+    final WorktreeEnvironment firstLive = generationA.liveObjects.resolve(
+      environment.id,
+    );
+    final Directory worktreeRoot = Directory(
+      established.providerState['worktreePath']! as String,
+    );
+    expect(
+      firstLive.root.path,
+      '${worktreeRoot.path}${Platform.pathSeparator}project-source',
+    );
+    expect(
+      (await generationA.readFile(environment.id, 'inside.txt')).text,
+      'inside',
+    );
+    await expectLater(
+      generationA.readFile(environment.id, 'outside.txt'),
+      throwsA(_failureWithCode('not_found')),
+    );
+    final EnvironmentDirectoryListing listing = await generationA.readDirectory(
+      environment.id,
+      '',
+    );
+    expect(
+      listing.entries.map((EnvironmentDirectoryEntry entry) => entry.name),
+      <String>['inside.txt'],
+    );
+
+    generationA.close();
+    final Environment durable = Environment(
+      id: environment.id,
+      taskId: environment.task.id,
+      role: environment.role,
+      providerId: environment.providerId,
+      providerState: established.providerState,
+    );
+    final GitWorktreeEnvironmentProvider generationB =
+        GitWorktreeEnvironmentProvider();
+    addTearDown(generationB.close);
+    final LocalEnvironment retained = LocalEnvironment(
+      project: environment.task.project,
+      task: environment.task.value,
+      value: durable,
+    );
+    final Directory outsideScope = Directory(
+      '${fixture.container.path}/outside-scope',
+    );
+    await outsideScope.create();
+    await File('${outsideScope.path}/inside.txt').writeAsString('escaped');
+    await firstLive.root.delete(recursive: true);
+    final Link escapedScope = Link(firstLive.root.path);
+    await escapedScope.create(outsideScope.path);
+    await expectLater(
+      generationB.restore(retained),
+      throwsA(_failureWithCode('restore_source_scope_missing')),
+    );
+    await escapedScope.delete();
+    await firstLive.root.create();
+    await File('${firstLive.root.path}/inside.txt').writeAsString('inside');
+
+    await generationB.restore(retained);
+
+    expect(
+      generationB.liveObjects.resolve(environment.id).root.path,
+      firstLive.root.path,
+    );
+    expect(
+      (await generationB.readFile(environment.id, 'inside.txt')).text,
+      'inside',
+    );
+    await expectLater(
+      generationB.readFile(environment.id, 'outside.txt'),
+      throwsA(_failureWithCode('not_found')),
+    );
+  });
+
+  test(
+    'uses a flat branch and removes its branch after checkout failure',
+    () async {
+      final ({Directory container, Directory source}) fixture =
+          await _createRepository();
+      addTearDown(() => fixture.container.delete(recursive: true));
+      await File(
+        '${fixture.source.path}/.gitattributes',
+      ).writeAsString('required.txt filter=adele-required\n');
+      await File(
+        '${fixture.source.path}/required.txt',
+      ).writeAsString('filtered content\n');
+      await _gitOutput(fixture.source, <String>['add', '.']);
+      await _gitOutput(fixture.source, <String>[
+        'commit',
+        '-m',
+        'Add required filter fixture',
+      ]);
+      await _gitOutput(fixture.source, <String>['branch', 'adele', 'HEAD']);
+      await _gitOutput(fixture.source, <String>[
+        'config',
+        'filter.adele-required.clean',
+        'cat',
+      ]);
+      await _gitOutput(fixture.source, <String>[
+        'config',
+        'filter.adele-required.smudge',
+        'false',
+      ]);
+      await _gitOutput(fixture.source, <String>[
+        'config',
+        'filter.adele-required.required',
+        'true',
+      ]);
+      final GitWorktreeEnvironmentProvider provider =
+          GitWorktreeEnvironmentProvider();
+      addTearDown(provider.close);
+      final LocalEnvironment environment = _environment(
+        fixture.source.uri,
+        taskId: 'task-checkout-failure',
+        environmentId: 'environment-checkout-failure',
+        title: 'Checkout Failure',
+      );
+
+      await expectLater(
+        provider.establish(environment),
+        throwsA(_failureWithCode('worktree_establishment_failed')),
+      );
+      final List<String> afterFailure = await _branchNames(fixture.source);
+      expect(afterFailure, contains('adele'));
+      expect(
+        afterFailure.where(
+          (String branch) => branch.startsWith('adele-checkout-failure-'),
+        ),
+        isEmpty,
+      );
+
+      await _gitOutput(fixture.source, <String>[
+        'config',
+        'filter.adele-required.smudge',
+        'cat',
+      ]);
+      await provider.establish(environment);
+      final WorktreeEnvironment live = provider.liveObjects.resolve(
+        environment.id,
+      );
+      final String branch = await _gitOutput(live.root, <String>[
+        'branch',
+        '--show-current',
+      ]);
+      expect(branch, startsWith('adele-checkout-failure-'));
+      expect(await _branchNames(fixture.source), contains('adele'));
+      expect(
+        (await provider.readFile(environment.id, 'required.txt')).text,
+        contains('filtered content'),
+      );
+    },
+  );
 
   test('rejects unsupported and unusable Project sources clearly', () async {
     final Directory nonGit = await Directory.systemTemp.createTemp(
@@ -377,3 +559,10 @@ Future<String> _gitOutput(Directory directory, List<String> arguments) async {
   }
   return result.stdout.toString().trim();
 }
+
+Future<List<String>> _branchNames(Directory repository) async =>
+    (await _gitOutput(repository, <String>[
+      'for-each-ref',
+      '--format=%(refname:short)',
+      'refs/heads',
+    ])).split('\n').where((String branch) => branch.isNotEmpty).toList();
