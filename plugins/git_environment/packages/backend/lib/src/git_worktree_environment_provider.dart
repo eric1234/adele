@@ -675,7 +675,7 @@ Future<String> _gitOutput(
       details: <String, Object?>{'reason': error.message},
     );
   }
-  final String stdoutText = result.stdout.toString().trim();
+  final String stdoutText = _stripTerminalLineEnding(result.stdout.toString());
   if (result.exitCode != 0) {
     throw EnvironmentFailure(
       code: code,
@@ -687,6 +687,13 @@ Future<String> _gitOutput(
     );
   }
   return stdoutText;
+}
+
+String _stripTerminalLineEnding(String value) {
+  if (!value.endsWith('\n')) return value;
+  final int lineEndingLength =
+      value.length > 1 && value.codeUnitAt(value.length - 2) == 0x0d ? 2 : 1;
+  return value.substring(0, value.length - lineEndingLength);
 }
 
 Future<bool> _branchExists(Directory repository, String branch) async {
