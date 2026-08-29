@@ -468,7 +468,7 @@ Future<_GitRepository> _inspectRepository(
   final Directory commonCandidate = Directory(
     _isAbsolutePath(commonPath)
         ? commonPath
-        : '${root.path}${Platform.pathSeparator}$commonPath',
+        : _childPath(root.path, commonPath),
   );
   final Directory common;
   try {
@@ -625,8 +625,7 @@ String _worktreePath(Directory source, LocalEnvironment environment) {
       '${_truncate(_slug(environment.task.title, fallback: 'task'), 32)}-'
       '${_truncate(_slug(environment.id.value, fallback: 'environment'), 16)}-'
       '${_stableHash(environment.id.value)}';
-  return '${source.parent.path}${Platform.pathSeparator}$parentName'
-      '${Platform.pathSeparator}$worktreeName';
+  return _childPath(_childPath(source.parent.path, parentName), worktreeName);
 }
 
 String _slug(String value, {required String fallback}) {
@@ -794,7 +793,8 @@ Future<bool> _worktreeRegisteredForBranch(
       listedPath = null;
     } else if (field.startsWith('worktree ')) {
       listedPath = field.substring('worktree '.length);
-    } else if (listedPath == worktreePath &&
+    } else if (listedPath != null &&
+        _sameLocalPath(listedPath, worktreePath) &&
         field == 'branch refs/heads/$branch') {
       return true;
     }
@@ -824,9 +824,23 @@ bool _isAbsolutePath(String path) =>
     path.startsWith(Platform.pathSeparator) ||
     RegExp(r'^[A-Za-z]:[\\/]').hasMatch(path);
 
+bool _sameLocalPath(String left, String right) {
+  if (!Platform.isWindows) return left == right;
+  return left.replaceAll('/', Platform.pathSeparator) ==
+      right.replaceAll('/', Platform.pathSeparator);
+}
+
+String _childPath(String parent, String child) =>
+    parent.endsWith(Platform.pathSeparator)
+    ? '$parent$child'
+    : '$parent${Platform.pathSeparator}$child';
+
 String _entityName(String path) {
   final List<String> parts = path.split(Platform.pathSeparator);
-  return parts.lastWhere((String part) => part.isNotEmpty);
+  return parts.lastWhere(
+    (String part) => part.isNotEmpty,
+    orElse: () => 'root',
+  );
 }
 
 EnvironmentFailure _environmentFailure(
