@@ -1,6 +1,7 @@
 /// Experimental foundational APIs for ADELE plugin authors.
 library;
 
+export 'src/live_object_registry.dart';
 export 'src/plugin_id.dart';
 export 'src/plugin_metadata.dart';
 export 'src/public_id.dart';

@@ -210,6 +210,7 @@ void main() {
             target.name: switch (target.name) {
               'contract_codegen' => 4,
               'development_source_backend' => 1,
+              'git_environment_backend' => 1,
               _ => null,
             },
         },
@@ -248,6 +249,8 @@ void main() {
         'adele_contract|dart|packages/contract|test',
         'contract_codegen|dart|packages/contract_codegen|test --concurrency 2',
         'adele_plugin_api|dart|packages/plugin_api|test',
+        'adele_product|dart|packages/product|test',
+        'adele_environment|dart|packages/environment|test',
         'adele_model_provider|dart|packages/model_provider|test',
         'adele_capabilities|dart|packages/capabilities|test',
         'agent_kernel|dart|packages/agent_kernel|test',
@@ -257,6 +260,7 @@ void main() {
         'resource_inspector_contract|dart|plugins/resource_inspector/packages/contract|test --timeout 4m',
         'development_source_contract|dart|plugins/development_source/packages/contract|test',
         'development_source_backend|dart|plugins/development_source/packages/backend|test --timeout 4m',
+        'git_environment_backend|dart|plugins/git_environment/packages/backend|test --timeout 4m',
         'scripted_model_contract|dart|plugins/scripted_model/packages/contract|test --timeout 4m',
         'scripted_model_backend|dart|plugins/scripted_model/packages/backend|test',
         'openai_model_provider_backend|dart|plugins/openai/packages/backend|test --timeout 4m',
@@ -279,6 +283,10 @@ void main() {
     ]);
     expect(
       lookupTestTarget('development_source_backend').argumentsFor(ci: true),
+      <String>['test', '--timeout', '4m', '--concurrency', '1'],
+    );
+    expect(
+      lookupTestTarget('git_environment_backend').argumentsFor(ci: true),
       <String>['test', '--timeout', '4m', '--concurrency', '1'],
     );
   });
