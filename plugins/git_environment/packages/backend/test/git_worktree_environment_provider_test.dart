@@ -170,6 +170,54 @@ void main() {
     );
   });
 
+  test('allocates distinct resources for colliding Environment IDs', () async {
+    final ({Directory container, Directory source}) fixture =
+        await _createRepository();
+    addTearDown(() => fixture.container.delete(recursive: true));
+    final GitWorktreeEnvironmentProvider provider =
+        GitWorktreeEnvironmentProvider();
+    addTearDown(provider.close);
+    final LocalEnvironment first = _environment(
+      fixture.source.uri,
+      taskId: 'task-collision-first',
+      environmentId: 'environment-aaaag2vvb02tcd5ge7aj',
+      title: 'Colliding Resources',
+    );
+    final LocalEnvironment second = _environment(
+      fixture.source.uri,
+      taskId: 'task-collision-second',
+      environmentId: 'environment-aaaa1foa721piuycf72w',
+      title: 'Colliding Resources',
+    );
+
+    final EnvironmentProviderResult firstResult = await provider.establish(
+      first,
+    );
+    final EnvironmentProviderResult secondResult = await provider.establish(
+      second,
+    );
+    final String firstBranch = firstResult.providerState['branch']! as String;
+    final String secondBranch = secondResult.providerState['branch']! as String;
+    final String firstPath =
+        firstResult.providerState['worktreePath']! as String;
+    final String secondPath =
+        secondResult.providerState['worktreePath']! as String;
+
+    expect(secondBranch, '$firstBranch-2');
+    expect(secondPath, '$firstPath-2');
+    expect(provider.liveObjects.length, 2);
+    expect(provider.liveObjects.resolve(first.id).root.path, firstPath);
+    expect(provider.liveObjects.resolve(second.id).root.path, secondPath);
+    expect(
+      (await provider.readFile(first.id, 'README.md')).text,
+      contains('fixture source'),
+    );
+    expect(
+      (await provider.readFile(second.id, 'README.md')).text,
+      contains('fixture source'),
+    );
+  });
+
   test('restores when a tag has the provider branch name', () async {
     final ({Directory container, Directory source}) fixture =
         await _createRepository();
@@ -362,12 +410,20 @@ void main() {
       task: environment.task.value,
       value: durable,
     );
+    await firstLive.root.delete(recursive: true);
+    final Link redirectedScope = Link(firstLive.root.path);
+    await redirectedScope.create(worktreeRoot.path);
+    await expectLater(
+      generationB.restore(retained),
+      throwsA(_failureWithCode('restore_source_scope_missing')),
+    );
+    await redirectedScope.delete();
+
     final Directory outsideScope = Directory(
       '${fixture.container.path}/outside-scope',
     );
     await outsideScope.create();
     await File('${outsideScope.path}/inside.txt').writeAsString('escaped');
-    await firstLive.root.delete(recursive: true);
     final Link escapedScope = Link(firstLive.root.path);
     await escapedScope.create(outsideScope.path);
     await expectLater(

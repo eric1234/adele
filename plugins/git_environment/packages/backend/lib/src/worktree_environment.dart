@@ -16,8 +16,8 @@ final class WorktreeEnvironment {
 
   Future<EnvironmentTextFile> readFile(String relativePath) async {
     final String normalized = _normalizeRelativePath(relativePath);
-    final File file = await _resolveRegularFile(normalized);
     try {
+      final File file = await _resolveRegularFile(normalized);
       final Uint8List bytes = await _readBounded(file, normalized);
       await _verifyStillConfined(file, normalized, FileSystemEntityType.file);
       final String text;
@@ -51,9 +51,9 @@ final class WorktreeEnvironment {
       relativePath,
       allowRoot: true,
     );
-    final Directory directory = await _resolveDirectory(normalized);
     final List<FileSystemEntity> entities = <FileSystemEntity>[];
     try {
+      final Directory directory = await _resolveDirectory(normalized);
       await for (final FileSystemEntity entity in directory.list(
         followLinks: false,
       )) {

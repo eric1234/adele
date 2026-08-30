@@ -62,25 +62,12 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
       code: 'invalid_git_source',
       message: 'The Git source does not have a baseline commit.',
     );
-    final String branch = _branchName(environment);
-    final String worktreePath = _worktreePath(repository.root, environment);
-    if (await _branchExists(repository.root, branch)) {
-      throw _environmentFailure(
-        'worktree_branch_exists',
-        'The Task worktree branch already exists.',
-        environmentId: environment.id,
-        details: <String, Object?>{'branch': branch},
-      );
-    }
-    if (await FileSystemEntity.type(worktreePath, followLinks: false) !=
-        FileSystemEntityType.notFound) {
-      throw _environmentFailure(
-        'worktree_exists',
-        'The Task worktree path already exists.',
-        environmentId: environment.id,
-        details: <String, Object?>{'worktreePath': worktreePath},
-      );
-    }
+    final _GitResourceNames resources = await _allocateGitResourceNames(
+      repository.root,
+      environment,
+    );
+    final String branch = resources.branch;
+    final String worktreePath = resources.worktreePath;
     bool branchCreated = false;
     bool worktreeAddAttempted = false;
     bool worktreeAddSucceeded = false;
@@ -296,6 +283,13 @@ final class _GitRepository {
 
   final Directory root;
   final Directory commonDirectory;
+}
+
+final class _GitResourceNames {
+  const _GitResourceNames({required this.branch, required this.worktreePath});
+
+  final String branch;
+  final String worktreePath;
 }
 
 final class _GitSource {
@@ -523,11 +517,13 @@ WorktreeEnvironment _scopedWorktreeEnvironment({
   required String failureCode,
   required String failureMessage,
 }) {
+  final Directory expectedScope = _scopeWithinWorktree(
+    worktreeRoot,
+    relativePath,
+  );
   final WorktreeEnvironment live;
   try {
-    live = WorktreeEnvironment(
-      _scopeWithinWorktree(worktreeRoot, relativePath),
-    );
+    live = WorktreeEnvironment(expectedScope);
   } on ArgumentError catch (error) {
     throw _environmentFailure(
       failureCode,
@@ -548,6 +544,16 @@ WorktreeEnvironment _scopedWorktreeEnvironment({
       environmentId: environmentId,
       details: <String, Object?>{
         'reason': 'source scope resolves outside worktree',
+      },
+    );
+  }
+  if (!_sameLocalPath(live.root.path, expectedScope.path)) {
+    throw _environmentFailure(
+      failureCode,
+      failureMessage,
+      environmentId: environmentId,
+      details: <String, Object?>{
+        'reason': 'source scope resolves to another worktree location',
       },
     );
   }
@@ -626,6 +632,25 @@ String _worktreePath(Directory source, LocalEnvironment environment) {
       '${_truncate(_slug(environment.id.value, fallback: 'environment'), 16)}-'
       '${_stableHash(environment.id.value)}';
   return _childPath(_childPath(source.parent.path, parentName), worktreeName);
+}
+
+Future<_GitResourceNames> _allocateGitResourceNames(
+  Directory repository,
+  LocalEnvironment environment,
+) async {
+  final String baseBranch = _branchName(environment);
+  final String baseWorktreePath = _worktreePath(repository, environment);
+  for (int candidate = 1; ; candidate++) {
+    final String suffix = candidate == 1 ? '' : '-$candidate';
+    final String branch = '$baseBranch$suffix';
+    final String worktreePath = '$baseWorktreePath$suffix';
+    if (await _branchExists(repository, branch)) continue;
+    if (await FileSystemEntity.type(worktreePath, followLinks: false) !=
+        FileSystemEntityType.notFound) {
+      continue;
+    }
+    return _GitResourceNames(branch: branch, worktreePath: worktreePath);
+  }
 }
 
 String _slug(String value, {required String fallback}) {
