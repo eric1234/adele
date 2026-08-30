@@ -716,7 +716,11 @@ Future<String> _gitOutput(
 String _stripTerminalLineEnding(String value) {
   if (!value.endsWith('\n')) return value;
   final int lineEndingLength =
-      value.length > 1 && value.codeUnitAt(value.length - 2) == 0x0d ? 2 : 1;
+      Platform.isWindows &&
+          value.length > 1 &&
+          value.codeUnitAt(value.length - 2) == 0x0d
+      ? 2
+      : 1;
   return value.substring(0, value.length - lineEndingLength);
 }
 

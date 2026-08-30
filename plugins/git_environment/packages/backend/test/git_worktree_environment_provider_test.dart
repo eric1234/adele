@@ -339,6 +339,61 @@ void main() {
         : false,
   );
 
+  test(
+    'preserves a trailing-carriage-return repository path across restore',
+    () async {
+      final ({Directory container, Directory source}) fixture =
+          await _createRepository(sourceDirectoryName: 'repo\r');
+      addTearDown(() => fixture.container.delete(recursive: true));
+      expect(fixture.source.path, endsWith('\r'));
+      final GitWorktreeEnvironmentProvider generationA =
+          GitWorktreeEnvironmentProvider();
+      final LocalEnvironment environment = _environment(
+        fixture.source.uri,
+        taskId: 'task-trailing-carriage-return',
+        environmentId: 'environment-trailing-carriage-return',
+        title: 'Trailing Carriage Return Repository',
+      );
+
+      final EnvironmentProviderResult established = await generationA.establish(
+        environment,
+      );
+      expect(established.providerState['sourcePath'], fixture.source.path);
+      expect(established.providerState['repositoryPath'], fixture.source.path);
+      expect(
+        (await generationA.readFile(environment.id, 'README.md')).text,
+        contains('fixture source'),
+      );
+      generationA.close();
+
+      final Environment durable = Environment(
+        id: environment.id,
+        taskId: environment.task.id,
+        role: environment.role,
+        providerId: environment.providerId,
+        providerState: established.providerState,
+      );
+      final GitWorktreeEnvironmentProvider generationB =
+          GitWorktreeEnvironmentProvider();
+      addTearDown(generationB.close);
+      await generationB.restore(
+        LocalEnvironment(
+          project: environment.task.project,
+          task: environment.task.value,
+          value: durable,
+        ),
+      );
+
+      expect(
+        (await generationB.readFile(environment.id, 'README.md')).text,
+        contains('fixture source'),
+      );
+    },
+    skip: Platform.isWindows
+        ? 'Windows does not support trailing-carriage-return directory names.'
+        : false,
+  );
+
   test('preserves a Project source subdirectory across restore', () async {
     final ({Directory container, Directory source}) fixture =
         await _createRepository();
