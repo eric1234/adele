@@ -40,9 +40,14 @@ void main() {
   });
 
   test(
-    'AOT generations ignore inherited Git routing and restore durable state',
+    'AOT generations ignore inherited Git routing/discovery and restore state',
     () async {
-      final ({Directory container, Directory sourceA, Directory sourceB})
+      final ({
+        Directory container,
+        Directory projectSourceA,
+        Directory sourceA,
+        Directory sourceB,
+      })
       fixture = await _createRepository();
       addTearDown(() => fixture.container.delete(recursive: true));
       final PluginBackendHost host = await PluginBackendHost.start(
@@ -51,6 +56,8 @@ void main() {
         environment: <String, String>{
           'GIT_DIR': '${fixture.sourceB.path}${Platform.pathSeparator}.git',
           'GIT_WORK_TREE': fixture.sourceB.path,
+          'GIT_CEILING_DIRECTORIES': fixture.sourceA.path,
+          'GIT_DISCOVERY_ACROSS_FILESYSTEM': 'false',
         },
       );
       addTearDown(() async {
@@ -62,7 +69,7 @@ void main() {
       );
       final Project project = Project(
         id: ProjectId('project-aot'),
-        sourceLocation: fixture.sourceA.uri,
+        sourceLocation: fixture.projectSourceA.uri,
       );
       final Task task = Task(
         id: TaskId('task-aot'),
@@ -201,7 +208,14 @@ Future<PluginCapabilityActivation> _register(
   ],
 );
 
-Future<({Directory container, Directory sourceA, Directory sourceB})>
+Future<
+  ({
+    Directory container,
+    Directory projectSourceA,
+    Directory sourceA,
+    Directory sourceB,
+  })
+>
 _createRepository() async {
   final Directory container = await Directory.systemTemp.createTemp(
     'adele-git-environment-aot-',
@@ -210,7 +224,21 @@ _createRepository() async {
   final Directory sourceB = Directory('${container.path}/source-b');
   await _initializeRepository(sourceA, 'AOT Git fixture A\n');
   await _initializeRepository(sourceB, 'AOT Git fixture B\n');
-  return (container: container, sourceA: sourceA, sourceB: sourceB);
+  final Directory projectSourceA = Directory(
+    '${sourceA.path}${Platform.pathSeparator}project-source',
+  );
+  await projectSourceA.create();
+  await File(
+    '${projectSourceA.path}${Platform.pathSeparator}README.md',
+  ).writeAsString('AOT Git fixture A\n');
+  await _git(sourceA, <String>['add', '.']);
+  await _git(sourceA, <String>['commit', '-m', 'Add nested Project source']);
+  return (
+    container: container,
+    projectSourceA: projectSourceA,
+    sourceA: sourceA,
+    sourceB: sourceB,
+  );
 }
 
 Future<void> _initializeRepository(Directory source, String marker) async {

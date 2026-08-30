@@ -10,14 +10,16 @@ import 'worktree_environment.dart';
 
 const int gitEnvironmentProviderStateSchemaVersion = 1;
 
-// Git documents these through `git rev-parse --local-env-vars`.
-const Set<String> _repositoryLocalGitEnvironmentVariables = <String>{
+// Git documents repository-local entries through `rev-parse --local-env-vars`.
+const Set<String> _gitEnvironmentVariablesToClear = <String>{
   'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_CEILING_DIRECTORIES',
   'GIT_COMMON_DIR',
   'GIT_CONFIG',
   'GIT_CONFIG_COUNT',
   'GIT_CONFIG_PARAMETERS',
   'GIT_DIR',
+  'GIT_DISCOVERY_ACROSS_FILESYSTEM',
   'GIT_GRAFT_FILE',
   'GIT_IMPLICIT_WORK_TREE',
   'GIT_INDEX_FILE',
@@ -838,7 +840,7 @@ Future<ProcessResult> _runGit(
   final Map<String, String> environment = Map<String, String>.of(
     Platform.environment,
   );
-  for (final String name in _repositoryLocalGitEnvironmentVariables) {
+  for (final String name in _gitEnvironmentVariablesToClear) {
     environment.remove(name);
   }
   return Process.run(

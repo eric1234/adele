@@ -664,6 +664,11 @@ void main() {
     await File(
       '${root.path}/large.txt',
     ).writeAsBytes(List<int>.filled(maximumEnvironmentFileBytes + 1, 0x61));
+    if (!Platform.isWindows) {
+      await File(
+        '${root.path}/literal\\name.txt',
+      ).writeAsString('literal backslash');
+    }
 
     expect(
       (await provider.readFile(environment.id, 'nested/./inside.txt')).text,
@@ -723,6 +728,21 @@ void main() {
           .kind,
       EnvironmentDirectoryEntryKind.other,
     );
+    if (!Platform.isWindows) {
+      final EnvironmentDirectoryEntry backslashEntry = listing.entries
+          .singleWhere(
+            (EnvironmentDirectoryEntry entry) =>
+                entry.name == 'literal\\name.txt',
+          );
+      expect(backslashEntry.relativePath, 'literal\\name.txt');
+      expect(
+        (await provider.readFile(
+          environment.id,
+          backslashEntry.relativePath,
+        )).text,
+        'literal backslash',
+      );
+    }
 
     final Directory many = Directory('${root.path}/many');
     await many.create();
