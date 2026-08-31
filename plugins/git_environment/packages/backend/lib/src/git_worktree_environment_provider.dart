@@ -840,8 +840,15 @@ Future<ProcessResult> _runGit(
   final Map<String, String> environment = Map<String, String>.of(
     Platform.environment,
   );
-  for (final String name in _gitEnvironmentVariablesToClear) {
-    environment.remove(name);
+  if (Platform.isWindows) {
+    environment.removeWhere(
+      (String name, String _) =>
+          _gitEnvironmentVariablesToClear.contains(name.toUpperCase()),
+    );
+  } else {
+    for (final String name in _gitEnvironmentVariablesToClear) {
+      environment.remove(name);
+    }
   }
   return Process.run(
     'git',
@@ -851,9 +858,14 @@ Future<ProcessResult> _runGit(
   );
 }
 
-bool _isAbsolutePath(String path) =>
-    path.startsWith(Platform.pathSeparator) ||
-    RegExp(r'^[A-Za-z]:[\\/]').hasMatch(path);
+bool _isAbsolutePath(String path) {
+  if (Platform.isWindows) {
+    return RegExp(r'^[A-Za-z]:[\\/]').hasMatch(path) ||
+        path.startsWith(r'\\') ||
+        path.startsWith('//');
+  }
+  return path.startsWith('/');
+}
 
 bool _sameLocalPath(String left, String right) {
   if (!Platform.isWindows) return left == right;

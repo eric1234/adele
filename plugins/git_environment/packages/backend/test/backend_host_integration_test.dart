@@ -50,13 +50,18 @@ void main() {
       })
       fixture = await _createRepository();
       addTearDown(() => fixture.container.delete(recursive: true));
+      final String gitDirVariable = Platform.isWindows ? 'git_dir' : 'GIT_DIR';
+      final String ceilingVariable = Platform.isWindows
+          ? 'Git_Ceiling_Directories'
+          : 'GIT_CEILING_DIRECTORIES';
       final PluginBackendHost host = await PluginBackendHost.start(
         dartaotruntimeExecutable: dartaotruntime,
         hostArtifactPath: hostArtifact.path,
         environment: <String, String>{
-          'GIT_DIR': '${fixture.sourceB.path}${Platform.pathSeparator}.git',
+          gitDirVariable:
+              '${fixture.sourceB.path}${Platform.pathSeparator}.git',
           'GIT_WORK_TREE': fixture.sourceB.path,
-          'GIT_CEILING_DIRECTORIES': fixture.sourceA.path,
+          ceilingVariable: fixture.sourceA.path,
           'GIT_DISCOVERY_ACROSS_FILESYSTEM': 'false',
         },
       );
