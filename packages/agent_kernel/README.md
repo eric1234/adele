@@ -11,7 +11,8 @@ user/assistant snapshots. ADR 0031 subsequently defines the long-term product
 Session as a core container permanently bound to one orchestration strategy;
 strategy-specific state determines the Session's semantic contents. The current
 chat-shaped port therefore remains implementation evidence rather than the
-universal Session definition.
+universal Session definition. The kernel consumes and re-exports the canonical
+`adele_product` `SessionId`; it does not define a competing identity.
 
 ## Dependencies
 
@@ -44,10 +45,12 @@ provider account management do not belong here.
 ## Environment
 
 The kernel may execute in the context of a Task-associated Environment but does
-not implement Environment lifecycle or filesystem/process behavior. Environment
-is the accepted practical filesystem/source + process context; a separate
-first-class Workspace concept is not required architecture unless future
-concrete needs justify it.
+not implement Environment lifecycle or filesystem/process behavior. The generic
+tool context still identifies only Run and Session; application composition now
+uses Session authority to construct an Environment-bound Read File executable.
+Environment is the accepted practical filesystem/source + process context; a
+separate first-class Workspace concept is not required architecture unless
+future concrete needs justify it.
 
 The current DevelopmentSource proof is a bounded read-only source root and does
 not implement the final Environment abstraction.
@@ -59,10 +62,11 @@ durable storage, replay, recovery, or an event-sourcing decision.
 
 ## Deferred
 
-Persistent product Session/Run storage, production orchestration extensions,
-parent/child Session lifecycle, parallel execution, complete effect/content
-taxonomies, durable approval, Environment/runtime-resource integration,
-artifacts, recovery, and multi-agent abstractions remain deferred.
+Persistent product Session/Run storage, strategy registration and binding,
+production orchestration extensions, parent/child Session lifecycle, parallel
+execution, complete effect/content taxonomies, durable approval, broader
+Environment/runtime-resource integration, artifacts, recovery, and multi-agent
+abstractions remain deferred.
 
 See `docs/architecture/agent-kernel-semantic-model.md` and ADRs 0022/0031 for
 the detailed implemented-versus-directional boundary.

@@ -1,9 +1,16 @@
+import 'package:adele_product/adele_product.dart' as product;
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:test/test.dart';
 
 import 'support/fakes.dart';
 
 void main() {
+  test('kernel re-exports the canonical product Session identity', () {
+    final product.SessionId sessionId = SessionId('canonical-session');
+
+    expect(sessionId, SessionId('canonical-session'));
+  });
+
   test('Run enforces its small top-level lifecycle', () {
     final AgentRun completed = AgentRun(
       id: RunId('run-completed'),
