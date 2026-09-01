@@ -786,16 +786,12 @@ Future<void> _cleanupFailedEstablishment(
     }
   }
   try {
-    final ProcessResult branchHead = await _runGit(repository, <String>[
-      'show-ref',
-      '--hash',
-      '--verify',
+    await _runGit(repository, <String>[
+      'update-ref',
+      '-d',
       'refs/heads/$branch',
+      baselineCommit,
     ]);
-    if (branchHead.exitCode == 0 &&
-        branchHead.stdout.toString().trim() == baselineCommit) {
-      await _runGit(repository, <String>['branch', '-D', branch]);
-    }
   } on ProcessException {
     // Best-effort cleanup after provider-owned establishment failed.
   }
