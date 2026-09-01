@@ -12,16 +12,19 @@ workspace:
   - packages/capabilities
   - packages/contract
   - packages/contract_codegen
+  - packages/environment
   - packages/model_provider
   - packages/plugin_api
   - packages/plugin_backend_host
   - packages/plugin_builder
   - packages/plugin_runtime
+  - packages/product
   - plugins/workspace_demo
   - plugins/resource_inspector
   - plugins/scripted_model
   - plugins/openai
   - plugins/development_source
+  - plugins/git_environment
 
 dev_dependencies:
   lints: ^6.0.0

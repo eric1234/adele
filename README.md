@@ -250,12 +250,16 @@ See `docs/architecture/profiles-and-configuration.md`.
 
 **Phase IV is complete.**
 
-Phase V begins the minimum self-hosting plugin set/workflow needed for ADELE to
-make, inspect, validate, and review controlled changes to its own source.
-Source mutation/editing, Environment-backed command/validation execution,
-Task/Session product lifecycle, and SCM/review integration are upcoming
-implementation areas, not claims that every directional interface is already
-settled or implemented.
+Phase V has begun with the initial Project-to-Task-to-primary-Environment spine
+and stock Git worktree Environment provider. Core now retains immutable
+provider identity/state, and fresh plugin generations can restore durable
+Environments before serving bounded `readFile`/`readDirectory` operations.
+
+The Phase IV `DevelopmentSource`, Search/Read File tools, and source-coding proof
+remain maintained. Their Session/Environment association and migration are a
+later V-A1 round. Source mutation/editing, Environment-backed command/validation
+execution, broader Task/Session lifecycle, and SCM/review integration also
+remain upcoming rather than settled interfaces.
 
 Implementation should introduce the smallest concrete extension boundaries
 needed by those verticals rather than build a speculative universal framework

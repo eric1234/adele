@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted as architectural direction; product-domain implementation largely deferred
+Accepted; initial Project/Task/Environment spine implemented, broader lifecycle deferred
 
 Partially supersedes ADR 0022 for long-term Session semantics.
 
@@ -87,9 +87,11 @@ The maintained repository does **not** yet implement this complete product-domai
 
 - `agent_kernel` has Session/Run identifiers and a chat-shaped development Session history used by the Phase IV proof.
 - The provisional application strategy remains a bounded chat/tool loop.
-- Core Project/Task/Environment persistence/lifecycle services do not yet exist.
-- Environment providers, Task Browser, the core/public orchestration-strategy registry, the public strategy execution facade, child Session lifecycle, and parent Session presentation are not implemented.
-- The DevelopmentSource plugin currently provides a bounded read-only root for the self-inspection vertical; it does not establish final Environment semantics.
+- `adele_product` now owns the initial immutable Project, Task, and Environment values, including generic provider identity and opaque provider state.
+- The application has an in-memory Task establishment coordinator that publishes a Task and finalized primary Environment only after provider success; disk persistence remains deferred.
+- `adele_environment` and the stock Git worktree backend prove establishment, restoration, bounded filesystem reads, component-local value reification, and exact-generation rebinding.
+- Task Browser, Session-to-Environment association, the core/public orchestration-strategy registry, the public strategy execution facade, child Session lifecycle, and parent Session presentation are not implemented.
+- The DevelopmentSource plugin remains the maintained Phase IV source-inspection path until a later V-A1 round migrates its agent/tool consumers.
 
 The current implementation remains valid evidence for the narrower vertical. Future APIs should migrate toward this accepted direction as concrete features are built.
 

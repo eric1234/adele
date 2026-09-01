@@ -10,9 +10,10 @@ displays only the ADELE name and static empty-state messages. The current
 `No workspace is open` text is legacy/provisional UI copy; it does not define a
 first-class Workspace product concept.
 
-ADR 0031 now accepts Project, Task, Session, Run, and Environment as the shared
-product-domain identities. Project/Task/Environment lifecycle UI and the stock
-plugin composition are not implemented in the normal application yet.
+ADR 0031 accepts Project, Task, Session, Run, and Environment as the shared
+product-domain identities. The application now contains the initial in-memory
+Project/Task establishment coordinator, but lifecycle UI and normal stock-plugin
+composition are not implemented yet.
 
 The normal application does not display the `workspace_demo` reference plugin.
 The maintained `lib/development_smoke.dart` entrypoint exercises the plugin
@@ -34,15 +35,18 @@ unimplemented.
 
 ## Deferred
 
-Normal Project selection, Task/Session lifecycle UI, Environment providers,
-profiles, product plugin discovery/activation, production Agent UI, application
-Commands/keybindings, and plugin-facing UI extension APIs remain deferred.
+Normal Project selection, Task/Session lifecycle UI, Environment-backed agent
+tools, profiles, product plugin discovery/activation, production Agent UI,
+application Commands/keybindings, and plugin-facing UI extension APIs remain
+deferred. The stock Git worktree Environment provider is currently exercised
+through focused backend and shared-host AOT tests rather than normal UI.
 
 The application composition root does contain the development-only Phase IV
 model/source capability adapters, bounded Chat-shaped tool-loop strategy, and
 AOT integration tests. These prove execution boundaries but do not establish
-the final product workflow, strategy-bound Session persistence, Environment
-lifecycle, or stock UI composition.
+the final product workflow, strategy-bound Session persistence, or stock UI
+composition. The Phase IV `DevelopmentSource` path remains maintained while a
+later V-A1 round migrates those consumers to Environment filesystem operations.
 
 See `docs/architecture/overview.md`, `docs/architecture/plugin-extension-model.md`,
 and ADR 0031.

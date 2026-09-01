@@ -2,7 +2,8 @@
 
 `adele_plugin_api` is an experimental public package for plugin authors. Its
 small maintained surface provides `PluginId`, `PluginMetadata`, public-ID
-validation, and `ResourceRef`. These APIs are not stable.
+validation, `ResourceRef`, and the component-local `LiveObjectRegistry`. These
+APIs are not stable.
 
 ## Dependencies
 
@@ -21,6 +22,9 @@ phase will likely use a semantic-version implementation such as
 `PluginMetadata` does not contain activation, global enablement, configuration,
 profile state, runtime-instance state, or configured provider instances.
 Resources use `Uri` so identity is not tied to local filesystem paths.
+`LiveObjectRegistry<Id, Value>` is deliberately only an in-memory binding for
+live component objects. It is not persistence, a global object graph, or a
+provider lifecycle abstraction.
 Installation, build, activation, and runtime state remain separate future
 concerns. They should be modeled only when implementation requirements exist.
 

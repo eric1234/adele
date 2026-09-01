@@ -1,4 +1,5 @@
 sources:
+  - packages/environment/lib/adele_environment.dart
   - packages/model_provider/lib/adele_model_provider.dart
   - plugins/development_source/packages/contract/lib/development_source_contract.dart
   - plugins/resource_inspector/packages/contract/lib/resource_inspector_contract.dart

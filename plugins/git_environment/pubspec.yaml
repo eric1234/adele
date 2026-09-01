@@ -1,0 +1,12 @@
+name: git_environment
+description: Workspace root for the stock Git worktree Environment plugin.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+
+resolution: workspace
+
+workspace:
+  - packages/backend
