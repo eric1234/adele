@@ -668,6 +668,7 @@ void main() {
       await File(
         '${root.path}/literal\\name.txt',
       ).writeAsString('literal backslash');
+      await File('${root.path}/C:notes.txt').writeAsString('drive-shaped name');
     }
 
     expect(
@@ -741,6 +742,18 @@ void main() {
           backslashEntry.relativePath,
         )).text,
         'literal backslash',
+      );
+      final EnvironmentDirectoryEntry driveShapedEntry = listing.entries
+          .singleWhere(
+            (EnvironmentDirectoryEntry entry) => entry.name == 'C:notes.txt',
+          );
+      expect(driveShapedEntry.relativePath, 'C:notes.txt');
+      expect(
+        (await provider.readFile(
+          environment.id,
+          driveShapedEntry.relativePath,
+        )).text,
+        'drive-shaped name',
       );
     }
 

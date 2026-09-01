@@ -294,6 +294,8 @@ final class _GitResourceNames {
   final String worktreePath;
 }
 
+enum _WorktreeRegistrationState { registered, notRegistered, unknown }
+
 final class _GitSource {
   const _GitSource({
     required this.scope,
@@ -764,17 +766,23 @@ Future<void> _cleanupFailedEstablishment(
   required bool worktreeAddSucceeded,
 }) async {
   if (!branchCreated) return;
-  if (worktreeAddAttempted &&
-      await _worktreeRegisteredForBranch(repository, worktreePath, branch)) {
-    try {
-      await _runGit(repository, <String>[
-        'worktree',
-        'remove',
-        '--force',
-        worktreePath,
-      ]);
-    } on ProcessException {
-      // Best-effort cleanup after provider-owned establishment failed.
+  if (worktreeAddAttempted) {
+    final _WorktreeRegistrationState registration =
+        await _worktreeRegistrationForBranch(repository, worktreePath, branch);
+    if (registration == _WorktreeRegistrationState.unknown) return;
+    if (registration == _WorktreeRegistrationState.registered) {
+      final ProcessResult removal;
+      try {
+        removal = await _runGit(repository, <String>[
+          'worktree',
+          'remove',
+          '--force',
+          worktreePath,
+        ]);
+      } on ProcessException {
+        return;
+      }
+      if (removal.exitCode != 0) return;
     }
   }
   if (worktreeAddSucceeded) {
@@ -797,7 +805,7 @@ Future<void> _cleanupFailedEstablishment(
   }
 }
 
-Future<bool> _worktreeRegisteredForBranch(
+Future<_WorktreeRegistrationState> _worktreeRegistrationForBranch(
   Directory repository,
   String worktreePath,
   String branch,
@@ -811,9 +819,9 @@ Future<bool> _worktreeRegisteredForBranch(
       '-z',
     ]);
   } on ProcessException {
-    return false;
+    return _WorktreeRegistrationState.unknown;
   }
-  if (result.exitCode != 0) return false;
+  if (result.exitCode != 0) return _WorktreeRegistrationState.unknown;
   String? listedPath;
   for (final String field in result.stdout.toString().split('\u0000')) {
     if (field.isEmpty) {
@@ -823,10 +831,10 @@ Future<bool> _worktreeRegisteredForBranch(
     } else if (listedPath != null &&
         _sameLocalPath(listedPath, worktreePath) &&
         field == 'branch refs/heads/$branch') {
-      return true;
+      return _WorktreeRegistrationState.registered;
     }
   }
-  return false;
+  return _WorktreeRegistrationState.notRegistered;
 }
 
 Future<ProcessResult> _runGit(

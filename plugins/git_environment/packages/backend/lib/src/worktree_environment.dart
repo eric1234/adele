@@ -319,7 +319,7 @@ String _normalizeRelativePath(String value, {bool allowRoot = false}) {
       (Platform.isWindows &&
           (value.startsWith('\\') || value.contains('\\'))) ||
       value.contains('\u0000') ||
-      RegExp(r'^[A-Za-z]:').hasMatch(value) ||
+      (Platform.isWindows && RegExp(r'^[A-Za-z]:').hasMatch(value)) ||
       (Platform.isWindows &&
           (value.contains(':') ||
               value.split('/').any(_isUnsupportedWindowsPathSegment)))) {
