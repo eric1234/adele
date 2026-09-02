@@ -13,6 +13,7 @@ workspace:
   - packages/contract
   - packages/contract_codegen
   - packages/environment
+  - packages/model_tool
   - packages/model_provider
   - packages/plugin_api
   - packages/plugin_backend_host
@@ -24,6 +25,7 @@ workspace:
   - plugins/scripted_model
   - plugins/openai
   - plugins/development_source
+  - plugins/filesystem_tools
   - plugins/git_environment
 
 dev_dependencies:

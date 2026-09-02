@@ -1,5 +1,5 @@
-name: agent_kernel
-description: Internal provider-neutral agent execution substrate.
+name: filesystem_tools_plugin
+description: Stock ADELE model tools for Session-authorized Environment filesystems.
 publish_to: none
 version: 0.1.0
 
@@ -9,9 +9,10 @@ environment:
 resolution: workspace
 
 dependencies:
+  adele_environment: ^0.1.0
   adele_model_tool: ^0.1.0
   adele_plugin_api: ^0.1.0
-  adele_product: ^0.1.0
 
 dev_dependencies:
+  adele_product: ^0.1.0
   test: ^1.26.3

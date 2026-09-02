@@ -99,14 +99,12 @@ ToolRegistration testRegistration(
   TestExecutable executable, {
   String id = 'dev.adele.tool.resource-inspection',
   String alias = 'inspect_resource',
+  String description = 'Inspect one resource.',
 }) => ToolRegistration(
-  definition: ToolDefinition(
-    id: ToolId(id),
-    description: 'Inspect one resource.',
-  ),
+  definition: ToolDefinition(id: ToolId(id), description: description),
   modelDefinition: ModelToolDefinition(
     alias: alias,
-    description: 'Inspect one resource.',
+    description: description,
     argumentsSchema: const <String, Object?>{
       'type': 'object',
       'required': <Object?>['uri'],

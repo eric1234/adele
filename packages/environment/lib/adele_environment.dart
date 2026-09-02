@@ -68,6 +68,33 @@ final class EnvironmentTextFile {
   final int sizeBytes;
 }
 
+/// Session-selected filesystem authority exposed to host-side tool plugins.
+abstract interface class AuthorizedEnvironmentFileSystem {
+  product.SessionId get sessionId;
+  product.EnvironmentId get environmentId;
+
+  void validateBinding();
+
+  Future<EnvironmentTextFile> readFile(String relativePath);
+}
+
+sealed class AuthorizedEnvironmentBindingException implements Exception {
+  const AuthorizedEnvironmentBindingException(this.message, {this.cause});
+
+  final String message;
+  final Object? cause;
+}
+
+final class AuthorizedEnvironmentBindingStale
+    extends AuthorizedEnvironmentBindingException {
+  const AuthorizedEnvironmentBindingStale(super.message, {super.cause});
+}
+
+final class AuthorizedEnvironmentBindingUnavailable
+    extends AuthorizedEnvironmentBindingException {
+  const AuthorizedEnvironmentBindingUnavailable(super.message, {super.cause});
+}
+
 @AdeleValue('environment.directoryEntry')
 final class EnvironmentDirectoryEntry {
   const EnvironmentDirectoryEntry({

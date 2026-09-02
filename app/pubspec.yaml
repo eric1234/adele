@@ -14,6 +14,7 @@ dependencies:
   adele_capabilities: ^0.1.0
   adele_contract: ^0.1.0
   adele_environment: ^0.1.0
+  adele_model_tool: ^0.1.0
   adele_model_provider: ^0.1.0
   adele_plugin_api: ^0.1.0
   adele_product: ^0.1.0
@@ -29,6 +30,7 @@ dependencies:
   workspace_demo_contract: ^0.1.0
 
 dev_dependencies:
+  filesystem_tools_plugin: ^0.1.0
   flutter_test:
     sdk: flutter
 

@@ -1,3 +1,5 @@
+import 'package:adele_model_tool/adele_model_tool.dart';
+
 import 'identifiers.dart';
 import 'model.dart';
 import 'tool.dart';

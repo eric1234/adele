@@ -44,12 +44,17 @@ and plugin-facing UI extension APIs remain deferred. The stock Git worktree
 Environment provider is currently exercised through focused backend and
 shared-host AOT tests rather than normal UI.
 
-The application composition root does contain the development-only Phase IV
-model/source capability adapters, bounded Chat-shaped tool-loop strategy, and
-AOT integration tests. These prove execution boundaries but do not establish
+The application composition root contains the development-only Phase IV
+model/source capability adapters, bounded Chat-shaped tool-loop strategy, a
+generic Session-scoped model-tool host context, and AOT integration tests. The
+stock Filesystem Tools plugin, not application code, defines `read_file`; the
+host context exposes only the Session-selected Environment filesystem. These
+prove execution boundaries but do not establish
 the final product workflow, strategy-bound Session persistence, or stock UI
 composition. The Phase IV `DevelopmentSource` path remains maintained pending
-V-A3 Environment-backed Search and OpenAI/ChatGPT source-coding migration.
+plugin-provided Environment-backed Search and OpenAI/ChatGPT source-coding
+migration. `EnvironmentRuntime` remains provisional/domain-specific rather than
+a general extension-runtime pattern.
 
 See `docs/architecture/overview.md`, `docs/architecture/plugin-extension-model.md`,
 and ADR 0031.
