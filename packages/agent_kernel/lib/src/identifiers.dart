@@ -1,18 +1,4 @@
-final class SessionId {
-  SessionId(String value) : value = _requireId(value, 'Session ID');
-
-  final String value;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) || other is SessionId && other.value == value;
-
-  @override
-  int get hashCode => value.hashCode;
-
-  @override
-  String toString() => value;
-}
+export 'package:adele_product/adele_product.dart' show SessionId;
 
 final class RunId {
   RunId(String value) : value = _requireId(value, 'Run ID');

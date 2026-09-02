@@ -11,6 +11,7 @@ Phase I    dynamic plugin runtime proof
 Phase II   generated unary + server-streaming/cancellation transport
 Phase III  active capability registry and exact-generation routing
 Phase IV   provider-neutral agent execution + real model/source coding vertical
+Phase V-A  Project/Task/Environment spine + Session-authorized Read File
 ```
 
 Interpreted Flutter frontends and locally compiled AOT backends run through one
@@ -39,18 +40,21 @@ explicitly experimental ChatGPT subscription-backed route. The latter is
 positive interoperability evidence, not a documented/stable third-party OpenAI
 integration contract.
 
-The provisional backend-only DevelopmentSource capability binds one read-only
-source root to a plugin generation. Application composition projects it into
-source-search/source-read model tools used by a bounded development strategy.
-Deterministic AOT integration proves a real OpenAI provider can search/read the
-checked-out ADELE source through ADELE's capability path and continue to a final
-answer; only remote HTTP responses are scripted. The explicitly opt-in live
-ChatGPT source-coding smoke has also run successfully.
+The provisional backend-only DevelopmentSource capability and its
+source-search/source-read model tools remain maintained for the Phase IV
+OpenAI/ChatGPT path. Phase V-A now also establishes durable Project, Task, and
+Environment values, binds provisional agent Sessions authoritatively to one
+Task-associated Environment, and materializes a `read_file` tool that derives
+Environment authority from Session rather than model arguments. Deterministic
+AOT integration proves a Run can read copied real ADELE source through the Git
+worktree Environment provider, retire that exact generation, restore through a
+replacement generation, and leave the old tool stale.
 
-ADELE can therefore use a real model-provider integration to inspect its own
-source through ADELE-owned, generation-bound tools and continue reasoning from
-the results. It cannot yet modify/validate its own source through this workflow,
-and DevelopmentSource does not implement the final Environment abstraction.
+ADELE can therefore inspect its own source through both the maintained Phase IV
+path and a Session-authorized Environment Read File path. It cannot yet perform
+Environment-backed Search or modify/validate its own source through this
+workflow; DevelopmentSource remains temporarily maintained until Search and the
+OpenAI/ChatGPT source-coding consumers migrate.
 
 ## Accepted long-term architecture beyond the current implementation
 
@@ -164,6 +168,8 @@ packages/contract/           adele_contract (experimental public)
 packages/contract_codegen/   contract_codegen (internal, pure Dart)
 packages/model_provider/     adele_model_provider (experimental public)
 packages/capabilities/       adele_capabilities (experimental public)
+packages/product/            adele_product canonical product identities/values
+packages/environment/        adele_environment provider/filesystem contract
 packages/plugin_runtime/     plugin_runtime (internal, pure Dart)
 packages/plugin_backend_host/ shared backend host (internal, pure Dart)
 packages/plugin_builder/     plugin_builder (internal, pure Dart)
@@ -173,6 +179,7 @@ plugins/resource_inspector/  Phase III two-provider capability fixture
 plugins/scripted_model/      deterministic ModelProvider/transport fixture
 plugins/openai/              real OpenAI ModelProvider; ChatGPT route experimental
 plugins/development_source/  bounded read-only configured source capability
+plugins/git_environment/     Git worktree Environment provider
 docs/architecture/           architecture boundaries/directional models
 docs/adr/                    architectural decision records
 tools/                       root development command driver
@@ -250,16 +257,17 @@ See `docs/architecture/profiles-and-configuration.md`.
 
 **Phase IV is complete.**
 
-Phase V has begun with the initial Project-to-Task-to-primary-Environment spine
-and stock Git worktree Environment provider. Core now retains immutable
-provider identity/state, and fresh plugin generations can restore durable
-Environments before serving bounded `readFile`/`readDirectory` operations.
+Phase V-A1 established the Project-to-Task-to-primary-Environment spine and
+stock Git worktree provider. V-A2 now connects a provisional Session authority
+relation and Environment-backed `read_file` tool to the deterministic agent
+loop while preserving exact-generation restoration and stale old bindings.
 
-The Phase IV `DevelopmentSource`, Search/Read File tools, and source-coding proof
-remain maintained. Their Session/Environment association and migration are a
-later V-A1 round. Source mutation/editing, Environment-backed command/validation
-execution, broader Task/Session lifecycle, and SCM/review integration also
-remain upcoming rather than settled interfaces.
+V-A3 remains: add Environment-backed Search outside the provider contract,
+migrate the OpenAI/ChatGPT source-coding path, retire DevelopmentSource, and
+complete the read-only self-inspection proof. Source mutation/editing,
+Environment-backed command/validation execution, complete strategy-bound
+Session lifecycle, and SCM/review integration remain later work rather than
+settled interfaces.
 
 Implementation should introduce the smallest concrete extension boundaries
 needed by those verticals rather than build a speculative universal framework

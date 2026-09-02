@@ -35,6 +35,15 @@ void main() {
     expect(environment.role, EnvironmentRole.primary);
   });
 
+  test('Session identity is canonical without defining Session lifecycle', () {
+    final SessionId first = SessionId('session-1');
+    final SessionId same = SessionId('session-1');
+
+    expect(first, same);
+    expect(first.value, 'session-1');
+    expect(() => SessionId(' session-1'), throwsFormatException);
+  });
+
   test('provisional Environment has absent provider state', () {
     final Environment provisional = Environment(
       id: EnvironmentId('environment-1'),
