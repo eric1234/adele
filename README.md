@@ -44,19 +44,21 @@ The provisional backend-only DevelopmentSource capability and its
 source-search/source-read model tools remain maintained for the Phase IV
 OpenAI/ChatGPT path. Phase V-A now also establishes durable Project, Task, and
 Environment values and binds provisional agent Sessions authoritatively to one
-Task-associated Environment. The first generic extension-registration slice
-now lets active plugin generations contribute contextual model tools. The stock
-Filesystem Tools plugin owns `read_file`, while a Session-scoped host facade
-supplies only the authorized Environment filesystem. Deterministic AOT
-integration proves a Run can read copied real ADELE source, retire either the
-tool plugin or Environment provider generation, restore fresh generations, and
+Task-associated Environment. Active plugin generations can contribute
+contextual model tools through the generic extension registry. The independent
+stock Filesystem Tools and Search Tools plugins own `read_file` and `search`,
+while a Session-scoped host facade supplies only the authorized Environment
+filesystem. Search recursively composes `readDirectory` and `readFile` in Dart;
+it is not an Environment provider method. Deterministic AOT integration proves
+a Run can discover and read copied real ADELE source, retire either the Search
+plugin or Environment provider generation, restore fresh generations, and
 leave old materializations stale.
 
 ADELE can therefore inspect its own source through both the maintained Phase IV
-path and a Session-authorized Environment Read File path. It cannot yet perform
-Environment-backed Search or modify/validate its own source through this
-workflow; DevelopmentSource remains temporarily maintained until Search and the
-OpenAI/ChatGPT source-coding consumers migrate.
+path and a Session-authorized Environment Search-to-Read path. It cannot yet
+modify or validate its own source through this workflow. DevelopmentSource
+remains temporarily maintained until the OpenAI/ChatGPT source-coding consumers
+migrate in V-A5.
 
 ## Accepted long-term architecture beyond the current implementation
 
@@ -182,7 +184,8 @@ plugins/resource_inspector/  Phase III two-provider capability fixture
 plugins/scripted_model/      deterministic ModelProvider/transport fixture
 plugins/openai/              real OpenAI ModelProvider; ChatGPT route experimental
 plugins/development_source/  bounded read-only configured source capability
-plugins/filesystem_tools/    stock Session-authorized model tools
+plugins/filesystem_tools/    stock Session-authorized Read File tool
+plugins/search_tools/        stock Session-authorized literal Search tool
 plugins/git_environment/     Git worktree Environment provider
 docs/architecture/           architecture boundaries/directional models
 docs/adr/                    architectural decision records
@@ -268,12 +271,18 @@ a public model-tool contribution path, and stock plugin-owned `read_file` with
 independent tool-plugin and Environment-provider generation safety. The former
 application-owned Read File executable was transitional and is removed.
 
-The next V-A slices remain: add plugin-provided Environment-backed Search,
-migrate the OpenAI/ChatGPT source-coding path, retire DevelopmentSource, and
-complete the plugin-composed read-only self-inspection proof. Source mutation/editing,
-Environment-backed command/validation execution, complete strategy-bound
-Session lifecycle, and SCM/review integration remain later work rather than
-settled interfaces.
+V-A4 adds Session-authorized directory access and independent stock
+plugin-owned `search`. Its bounded deterministic literal search is native Dart
+traversal over the provider-neutral Environment filesystem, and deterministic
+integration proves Search-to-Read discovery against copied maintained source.
+The implementation may later use `rg` or `grep` through future Environment
+process execution without moving Search semantics into `EnvironmentProvider`.
+
+The final V-A slice remains: migrate the OpenAI/ChatGPT source-coding path,
+retire DevelopmentSource, and complete the real-model plugin-composed read-only
+self-inspection proof. Source mutation/editing, Environment-backed
+command/validation execution, complete strategy-bound Session lifecycle, and
+SCM/review integration remain later work rather than settled interfaces.
 
 Implementation should introduce the smallest concrete extension boundaries
 needed by those verticals rather than build a speculative universal framework

@@ -120,6 +120,12 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
+    name: 'search_tools_plugin',
+    path: 'plugins/search_tools',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
     name: 'scripted_model_contract',
     path: 'plugins/scripted_model/packages/contract',
     executable: 'dart',
@@ -204,6 +210,7 @@ _packages = <({String name, String path, bool flutter})>[
     path: 'plugins/filesystem_tools',
     flutter: false,
   ),
+  (name: 'search_tools_plugin', path: 'plugins/search_tools', flutter: false),
   (
     name: 'git_environment_backend',
     path: 'plugins/git_environment/packages/backend',

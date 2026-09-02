@@ -76,6 +76,8 @@ abstract interface class AuthorizedEnvironmentFileSystem {
   void validateBinding();
 
   Future<EnvironmentTextFile> readFile(String relativePath);
+
+  Future<EnvironmentDirectoryListing> readDirectory(String relativePath);
 }
 
 sealed class AuthorizedEnvironmentBindingException implements Exception {

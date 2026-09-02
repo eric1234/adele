@@ -263,6 +263,7 @@ void main() {
         'development_source_backend|dart|plugins/development_source/packages/backend|test --timeout 4m',
         'git_environment_backend|dart|plugins/git_environment/packages/backend|test --timeout 4m',
         'filesystem_tools_plugin|dart|plugins/filesystem_tools|test',
+        'search_tools_plugin|dart|plugins/search_tools|test',
         'scripted_model_contract|dart|plugins/scripted_model/packages/contract|test --timeout 4m',
         'scripted_model_backend|dart|plugins/scripted_model/packages/backend|test',
         'openai_model_provider_backend|dart|plugins/openai/packages/backend|test --timeout 4m',

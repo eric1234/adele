@@ -7,6 +7,7 @@ import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:search_tools_plugin/search_tools_plugin.dart';
 
 void main() {
   test(
@@ -75,12 +76,89 @@ void main() {
       );
     },
   );
+
+  test('Filesystem and Search plugins activate independently', () async {
+    final _Fixture fixture = await _fixture();
+    final ExtensionRegistry extensions = ExtensionRegistry();
+
+    Future<Set<String>> aliases() async =>
+        (await buildModelToolCatalogForSession(
+              sessionId: fixture.sessionId,
+              environmentRuntime: fixture.runtime,
+              extensions: extensions,
+            ))
+            .materialize()
+            .tools
+            .map((tool) => tool.modelDefinition.alias)
+            .toSet();
+
+    expect(await aliases(), isEmpty);
+    final ExtensionRegistration filesystem = const FilesystemToolsPlugin()
+        .activate(extensions);
+    expect(await aliases(), <String>{'read_file'});
+    await filesystem.close();
+
+    final ExtensionRegistration search = const SearchToolsPlugin().activate(
+      extensions,
+    );
+    expect(await aliases(), <String>{'search'});
+    final ExtensionRegistration bothFilesystem = const FilesystemToolsPlugin()
+        .activate(extensions);
+    expect(await aliases(), <String>{'search', 'read_file'});
+    await search.close();
+    await bothFilesystem.close();
+  });
+
+  test(
+    'authorized directory reads retain Session Environment generation',
+    () async {
+      final _Fixture staleFixture = await _fixture();
+      final AuthorizedEnvironmentFileSystem staleFileSystem =
+          await SessionModelToolHostContext(
+            sessionId: staleFixture.sessionId,
+            environmentRuntime: staleFixture.runtime,
+          ).requireHostService<AuthorizedEnvironmentFileSystem>();
+
+      final EnvironmentDirectoryListing listing = await staleFileSystem
+          .readDirectory('nested');
+      expect(listing.relativePath, 'nested');
+      expect(staleFixture.provider.directoryEnvironmentIds, <EnvironmentId>[
+        staleFixture.environmentId,
+      ]);
+      await staleFixture.registration.close();
+      await expectLater(
+        staleFileSystem.readDirectory('nested'),
+        throwsA(isA<AuthorizedEnvironmentBindingStale>()),
+      );
+      await expectLater(
+        staleFileSystem.readFile('source.dart'),
+        throwsA(isA<AuthorizedEnvironmentBindingStale>()),
+      );
+
+      final _Fixture unavailableFixture = await _fixture();
+      final AuthorizedEnvironmentFileSystem unavailableFileSystem =
+          await SessionModelToolHostContext(
+            sessionId: unavailableFixture.sessionId,
+            environmentRuntime: unavailableFixture.runtime,
+          ).requireHostService<AuthorizedEnvironmentFileSystem>();
+      unavailableFixture.endpoint.available = false;
+      await expectLater(
+        unavailableFileSystem.readDirectory('nested'),
+        throwsA(isA<AuthorizedEnvironmentBindingUnavailable>()),
+      );
+      await expectLater(
+        unavailableFileSystem.readFile('source.dart'),
+        throwsA(isA<AuthorizedEnvironmentBindingUnavailable>()),
+      );
+    },
+  );
 }
 
 Future<_Fixture> _fixture() async {
   final ProviderId providerId = ProviderId('dev.adele.environment.host-test');
   final _Provider provider = _Provider(providerId);
   final CapabilityRegistry registry = CapabilityRegistry();
+  final _Endpoint endpoint = _Endpoint(provider);
   final CapabilityRegistration registration = registry.register(
     provider: ProviderDescriptor(
       id: providerId,
@@ -89,7 +167,7 @@ Future<_Fixture> _fixture() async {
       displayName: 'Host Test',
       serviceId: environmentProviderServiceId,
     ),
-    endpoint: _Endpoint(provider),
+    endpoint: endpoint,
   );
   addTearDown(registration.close);
   final InMemoryProductStore store = InMemoryProductStore();
@@ -112,6 +190,8 @@ Future<_Fixture> _fixture() async {
     created.environment.id,
     lifecycle.environmentRuntime,
     provider,
+    endpoint,
+    registration,
   );
 }
 
@@ -121,21 +201,26 @@ final class _Fixture {
     this.environmentId,
     this.runtime,
     this.provider,
+    this.endpoint,
+    this.registration,
   );
 
   final SessionId sessionId;
   final EnvironmentId environmentId;
   final EnvironmentRuntime runtime;
   final _Provider provider;
+  final _Endpoint endpoint;
+  final CapabilityRegistration registration;
 }
 
 final class _Endpoint implements CapabilityEndpoint {
-  const _Endpoint(this.provider);
+  _Endpoint(this.provider);
 
   final _Provider provider;
+  bool available = true;
 
   @override
-  bool get isAvailable => true;
+  bool get isAvailable => available;
 
   @override
   String get serviceId => environmentProviderServiceId;
@@ -146,7 +231,10 @@ final class _Provider implements EnvironmentProvider {
 
   @override
   final ProviderId providerId;
-  final List<EnvironmentId> environmentIds = <EnvironmentId>[];
+  final List<EnvironmentId> fileEnvironmentIds = <EnvironmentId>[];
+  final List<EnvironmentId> directoryEnvironmentIds = <EnvironmentId>[];
+
+  List<EnvironmentId> get environmentIds => fileEnvironmentIds;
 
   @override
   Future<EnvironmentProviderResult> establish(
@@ -166,7 +254,7 @@ final class _Provider implements EnvironmentProvider {
     EnvironmentId environmentId,
     String relativePath,
   ) async {
-    environmentIds.add(environmentId);
+    fileEnvironmentIds.add(environmentId);
     return EnvironmentTextFile(
       relativePath: relativePath,
       text: 'authorized source',
@@ -178,7 +266,13 @@ final class _Provider implements EnvironmentProvider {
   Future<EnvironmentDirectoryListing> readDirectory(
     EnvironmentId environmentId,
     String relativePath,
-  ) => throw UnimplementedError();
+  ) async {
+    directoryEnvironmentIds.add(environmentId);
+    return EnvironmentDirectoryListing(
+      relativePath: relativePath,
+      entries: const <EnvironmentDirectoryEntry>[],
+    );
+  }
 }
 
 final class _Ids implements ProductIdSource {

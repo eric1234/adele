@@ -26,6 +26,7 @@ workspace:
   - plugins/openai
   - plugins/development_source
   - plugins/filesystem_tools
+  - plugins/search_tools
   - plugins/git_environment
 
 dev_dependencies:

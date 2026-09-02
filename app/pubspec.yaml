@@ -33,6 +33,7 @@ dev_dependencies:
   filesystem_tools_plugin: ^0.1.0
   flutter_test:
     sdk: flutter
+  search_tools_plugin: ^0.1.0
 
 flutter:
   uses-material-design: true
