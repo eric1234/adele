@@ -47,10 +47,83 @@ void main() {
     expect(registry.discover(point).single.value.text, 'B');
     expect(() => bindingA.validate(), throwsA(isA<StaleExtensionBinding>()));
   });
+
+  test('ExtensionPoint equality uses exact invariant contribution type', () {
+    final ExtensionPoint<_BaseGreeting> base = ExtensionPoint<_BaseGreeting>(
+      'dev.adele.test.typed-point',
+    );
+    final ExtensionPoint<_DerivedGreeting> derived =
+        ExtensionPoint<_DerivedGreeting>('dev.adele.test.typed-point');
+    final ExtensionPoint<_BaseGreeting> sameBase =
+        ExtensionPoint<_BaseGreeting>('dev.adele.test.typed-point');
+    final ExtensionPoint<_BaseGreeting> otherId = ExtensionPoint<_BaseGreeting>(
+      'dev.adele.test.other-typed-point',
+    );
+
+    expect(base == derived, isFalse);
+    expect(derived == base, isFalse);
+    expect(base, sameBase);
+    expect(base.hashCode, sameBase.hashCode);
+    expect(base == otherId, isFalse);
+  });
+
+  test('one stable point ID retains one exact type contract', () {
+    final ExtensionRegistry registry = ExtensionRegistry();
+    final ExtensionPoint<_BaseGreeting> base = ExtensionPoint<_BaseGreeting>(
+      'dev.adele.test.registry-typed-point',
+    );
+    final ExtensionPoint<_DerivedGreeting> derived =
+        ExtensionPoint<_DerivedGreeting>('dev.adele.test.registry-typed-point');
+    registry.register(
+      point: base,
+      id: ExtensionId('dev.adele.test.base-greeting'),
+      value: const _BaseGreeting(),
+    );
+
+    expect(
+      () => registry.discover(derived),
+      throwsA(isA<ExtensionContractException>()),
+    );
+    expect(
+      () => registry.register(
+        point: derived,
+        id: ExtensionId('dev.adele.test.derived-greeting'),
+        value: const _DerivedGreeting(),
+      ),
+      throwsA(isA<ExtensionContractException>()),
+    );
+    expect(registry.discover(base).single.value, isA<_BaseGreeting>());
+  });
+
+  test('covariant calls cannot insert a value outside the point contract', () {
+    final ExtensionRegistry registry = ExtensionRegistry();
+    final ExtensionPoint<_DerivedGreeting> derived =
+        ExtensionPoint<_DerivedGreeting>(
+          'dev.adele.test.covariant-typed-point',
+        );
+
+    expect(
+      () => registry.register<_BaseGreeting>(
+        point: derived,
+        id: ExtensionId('dev.adele.test.invalid-base-greeting'),
+        value: const _BaseGreeting(),
+      ),
+      throwsA(isA<ExtensionContractException>()),
+    );
+    expect(registry.discover(derived), isEmpty);
+  });
 }
 
 final class _Greeting {
   const _Greeting(this.text);
 
   final String text;
+}
+
+class _BaseGreeting {
+  const _BaseGreeting();
+}
+
+final class _DerivedGreeting extends _BaseGreeting {
+  const _DerivedGreeting();
 }

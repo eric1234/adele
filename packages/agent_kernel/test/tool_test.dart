@@ -207,6 +207,48 @@ void main() {
         expect(failure.cause, same(fixture.error));
       });
     }
+
+    test('binding lifecycle failures reject without ToolInvocation', () {
+      for (final ({ToolBindingException error, ToolProposalFailureKind kind})
+          fixture
+          in <({ToolBindingException error, ToolProposalFailureKind kind})>[
+            (
+              error: const StaleToolBindingException('stale generation'),
+              kind: ToolProposalFailureKind.staleBinding,
+            ),
+            (
+              error: const ToolBindingUnavailableException(
+                'endpoint unavailable',
+              ),
+              kind: ToolProposalFailureKind.bindingUnavailable,
+            ),
+          ]) {
+        final ToolProposalResolution resolution = const ToolInvocationResolver()
+            .resolve(
+              invocationId: ToolInvocationId('tool-lifecycle'),
+              proposal: ProviderToolProposal(
+                providerCallId: 'provider-lifecycle',
+                alias: 'inspect_resource',
+                arguments: const <String, Object?>{
+                  'uri': 'file:///tmp/example.dart',
+                },
+              ),
+              tools:
+                  (ToolCatalog()
+                        ..register(_throwingRegistration(fixture.error)))
+                      .materialize(),
+              context: testExecutionContext(),
+            );
+
+        expect(resolution, isA<RejectedToolProposal>());
+        final ToolProposalFailure failure =
+            (resolution as RejectedToolProposal).failure;
+        expect(failure.kind, fixture.kind);
+        expect(failure.providerCallId, 'provider-lifecycle');
+        expect(failure.alias, 'inspect_resource');
+        expect(failure.cause, same(fixture.error));
+      }
+    });
   });
 
   group('policy and approval', () {
@@ -538,12 +580,15 @@ final class _Contribution implements ModelToolContribution {
 final class _ThrowingValidator implements ToolExecutable {
   _ThrowingValidator(this.error);
 
-  final FormatException error;
+  final Object error;
 
   @override
   CanonicalToolArguments validateAndNormalize(
     Map<String, Object?> proposedArguments,
-  ) => throw error;
+  ) {
+    if (error case final FormatException formatError) throw formatError;
+    throw StateError('Binding validation should reject before normalization.');
+  }
 
   @override
   Future<EffectDescription> describe(
@@ -558,19 +603,20 @@ final class _ThrowingValidator implements ToolExecutable {
   ) => throw StateError('Unused.');
 
   @override
-  void validateBinding() {}
+  void validateBinding() {
+    if (error case final ToolBindingException bindingError) throw bindingError;
+  }
 }
 
-ToolRegistration _throwingRegistration(FormatException error) =>
-    ToolRegistration(
-      definition: ToolDefinition(
-        id: ToolId('dev.adele.tool.resource-inspection'),
-        description: 'Inspect one resource.',
-      ),
-      modelDefinition: ModelToolDefinition(
-        alias: 'inspect_resource',
-        description: 'Inspect one resource.',
-        argumentsSchema: const <String, Object?>{'type': 'object'},
-      ),
-      executable: _ThrowingValidator(error),
-    );
+ToolRegistration _throwingRegistration(Object error) => ToolRegistration(
+  definition: ToolDefinition(
+    id: ToolId('dev.adele.tool.resource-inspection'),
+    description: 'Inspect one resource.',
+  ),
+  modelDefinition: ModelToolDefinition(
+    alias: 'inspect_resource',
+    description: 'Inspect one resource.',
+    argumentsSchema: const <String, Object?>{'type': 'object'},
+  ),
+  executable: _ThrowingValidator(error),
+);

@@ -1,5 +1,6 @@
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
 import 'package:adele_desktop/development/agent/simple_tool_loop_strategy.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -137,6 +138,54 @@ void main() {
             .whereType<ToolInvocationPrepared>(),
         isEmpty,
       );
+    },
+  );
+
+  test(
+    'contributor retirement during inference becomes proposal failure',
+    () async {
+      final ExtensionRegistry extensions = ExtensionRegistry();
+      final _Executable executable = _Executable();
+      final ExtensionRegistration generationA = extensions.register(
+        point: modelToolContributions,
+        id: ExtensionId('dev.adele.test.in-flight-tools'),
+        value: _RetiringContribution(executable),
+      );
+      final SessionId sessionId = SessionId('session-in-flight-retirement');
+      final DevelopmentSessionHistory session = DevelopmentSessionHistory(
+        sessionId,
+      )..append(UserSessionMessage('Inspect.'));
+      final AgentRun run = AgentRun(
+        id: RunId('run-in-flight-retirement'),
+        sessionId: sessionId,
+      );
+      final _RetiringProposalModel model = _RetiringProposalModel(
+        generationA.close,
+      );
+      final ToolCatalog catalog = await ModelToolComposer(
+        extensions,
+      ).materialize(_NoHostServices(sessionId));
+      final DevelopmentToolLoopStrategy strategy = DevelopmentToolLoopStrategy(
+        run: run,
+        session: session,
+        contextAssembler: const DevelopmentContextAssembler(),
+        model: model,
+        toolCatalog: catalog,
+        policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
+      );
+
+      await strategy.start();
+
+      expect(run.state, RunState.completed);
+      expect(model.invocations, 2);
+      expect(model.sawCorrelatedStaleFailure, isTrue);
+      expect(strategy.lastToolInvocation, isNull);
+      expect(executable.executions, 0);
+      final Iterable<ExecutionEvent> events = run.journal.records.map(
+        (ExecutionEventRecord record) => record.event,
+      );
+      expect(events.whereType<ToolInvocationPrepared>(), isEmpty);
+      expect(events.whereType<ToolExecutionStarted>(), isEmpty);
     },
   );
 
@@ -375,6 +424,91 @@ final class _Executable implements ToolExecutable {
 
   @override
   void validateBinding() {}
+}
+
+final class _NoHostServices implements ModelToolHostContext {
+  const _NoHostServices(this.sessionId);
+
+  @override
+  final SessionId sessionId;
+
+  @override
+  Future<T> requireHostService<T extends Object>() =>
+      throw StateError('No host service is required by this test.');
+}
+
+final class _RetiringContribution implements ModelToolContribution {
+  const _RetiringContribution(this.executable);
+
+  final ToolExecutable executable;
+
+  @override
+  Future<Iterable<ToolRegistration>> materialize(
+    ModelToolHostContext context,
+  ) async => <ToolRegistration>[
+    ToolRegistration(
+      definition: ToolDefinition(
+        id: ToolId('dev.adele.test.in-flight-tool'),
+        description: 'Inspect during a lifecycle race.',
+      ),
+      modelDefinition: ModelToolDefinition(
+        alias: 'inspect_in_flight',
+        description: 'Inspect during a lifecycle race.',
+        argumentsSchema: const <String, Object?>{},
+      ),
+      executable: executable,
+    ),
+  ];
+}
+
+final class _RetiringProposalModel implements ModelPort {
+  _RetiringProposalModel(this.retire);
+
+  final Future<void> Function() retire;
+  int invocations = 0;
+  bool sawCorrelatedStaleFailure = false;
+
+  @override
+  Stream<ModelEvent> invoke(SemanticModelRequest request) async* {
+    invocations++;
+    final List<SemanticToolProposalFailureInput> failures = request.input
+        .whereType<SemanticToolProposalFailureInput>()
+        .toList(growable: false);
+    if (failures.isEmpty) {
+      expect(request.tools.byAlias('inspect_in_flight'), isNotNull);
+      await retire();
+      yield ModelOutputItemCompleted(
+        invocationId: request.invocationId,
+        item: ModelToolProposalOutput(
+          ProviderToolProposal(
+            providerCallId: 'provider-in-flight',
+            alias: 'inspect_in_flight',
+            arguments: const <String, Object?>{
+              'uri': 'file:///tmp/example.dart',
+            },
+          ),
+        ),
+      );
+    } else {
+      final ToolProposalFailure failure = failures.single.failure;
+      sawCorrelatedStaleFailure =
+          failure.kind == ToolProposalFailureKind.staleBinding &&
+          failure.providerCallId == 'provider-in-flight' &&
+          request.input.whereType<SemanticToolProposalInput>().any(
+            (SemanticToolProposalInput item) =>
+                item.proposal.providerCallId == failure.providerCallId,
+          );
+      yield ModelOutputItemCompleted(
+        invocationId: request.invocationId,
+        item: ModelTextOutput('Continued after stale proposal.'),
+      );
+    }
+    yield ModelInvocationSettledEvent(
+      invocationId: request.invocationId,
+      settlement: ModelSettlement.completed,
+      metadata: ModelTerminalMetadata(effectiveModel: 'retirement-fixture-v1'),
+    );
+  }
 }
 
 final class _ReplacingContextAssembler implements ContextAssembler {

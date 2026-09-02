@@ -198,7 +198,12 @@ final class ToolInvocation {
   ToolId get toolId => tool.definition.id;
 }
 
-enum ToolProposalFailureKind { unknownAlias, invalidArguments }
+enum ToolProposalFailureKind {
+  unknownAlias,
+  invalidArguments,
+  staleBinding,
+  bindingUnavailable,
+}
 
 final class ToolProposalFailure {
   ToolProposalFailure({
@@ -255,6 +260,7 @@ final class ToolInvocationResolver {
       );
     }
     try {
+      tool.executable.validateBinding();
       return ResolvedToolProposal(
         ToolInvocation._(
           id: invocationId,
@@ -262,6 +268,26 @@ final class ToolInvocationResolver {
           tool: tool,
           arguments: tool.executable.validateAndNormalize(proposal.arguments),
           context: context,
+        ),
+      );
+    } on StaleToolBindingException catch (error) {
+      return RejectedToolProposal(
+        ToolProposalFailure(
+          kind: ToolProposalFailureKind.staleBinding,
+          providerCallId: proposal.providerCallId,
+          alias: proposal.alias,
+          message: 'The proposed tool binding is stale.',
+          cause: error,
+        ),
+      );
+    } on ToolBindingUnavailableException catch (error) {
+      return RejectedToolProposal(
+        ToolProposalFailure(
+          kind: ToolProposalFailureKind.bindingUnavailable,
+          providerCallId: proposal.providerCallId,
+          alias: proposal.alias,
+          message: 'The proposed tool binding is unavailable.',
+          cause: error,
         ),
       );
     } on FormatException catch (error) {

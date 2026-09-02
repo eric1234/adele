@@ -10,14 +10,19 @@ final class ExtensionPoint<T extends Object> {
   const ExtensionPoint._(this.value);
 
   final String value;
+  Type get _contributionType => T;
+
+  bool _accepts(Object value) => value is T;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is ExtensionPoint<T> && other.value == value;
+      other is ExtensionPoint<Object> &&
+          other.runtimeType == runtimeType &&
+          other.value == value;
 
   @override
-  int get hashCode => Object.hash(T, value);
+  int get hashCode => Object.hash(runtimeType, value);
 
   @override
   String toString() => value;
@@ -46,28 +51,30 @@ final class ExtensionId {
 }
 
 final class ExtensionRegistry {
-  final Map<ExtensionPoint<Object>, Map<ExtensionId, _ActiveExtension<Object>>>
-  _extensions =
-      <ExtensionPoint<Object>, Map<ExtensionId, _ActiveExtension<Object>>>{};
+  final Map<String, _ExtensionBucket> _extensions =
+      <String, _ExtensionBucket>{};
 
   ExtensionRegistration register<T extends Object>({
     required ExtensionPoint<T> point,
     required ExtensionId id,
     required T value,
   }) {
-    final ExtensionPoint<Object> erasedPoint = _erasePoint(point);
-    final Map<ExtensionId, _ActiveExtension<Object>> registrations = _extensions
-        .putIfAbsent(
-          erasedPoint,
-          () => <ExtensionId, _ActiveExtension<Object>>{},
-        );
+    final _ExtensionBucket bucket = _requireBucket(point);
+    if (!point._accepts(value)) {
+      throw ExtensionContractException(
+        'Extension $id does not satisfy the ${point._contributionType} '
+        'contract declared by $point.',
+      );
+    }
+    final Map<ExtensionId, _ActiveExtension<Object>> registrations =
+        bucket.registrations;
     if (registrations.containsKey(id)) {
       throw ExtensionRegistrationException(
         'Extension $id is already active at $point.',
       );
     }
     final _ActiveExtension<Object> active = _ActiveExtension<Object>(
-      point: erasedPoint,
+      pointId: point.value,
       id: id,
       value: value,
     );
@@ -78,9 +85,8 @@ final class ExtensionRegistry {
   List<ExtensionBinding<T>> discover<T extends Object>(
     ExtensionPoint<T> point,
   ) {
-    final Map<ExtensionId, _ActiveExtension<Object>>? registrations =
-        _extensions[_erasePoint(point)];
-    if (registrations == null) return <ExtensionBinding<T>>[];
+    final Map<ExtensionId, _ActiveExtension<Object>> registrations =
+        _requireBucket(point).registrations;
     return List<ExtensionBinding<T>>.unmodifiable(
       registrations.values.map(
         (_ActiveExtension<Object> active) => ExtensionBinding<T>._(active),
@@ -92,11 +98,26 @@ final class ExtensionRegistry {
     if (!active.active) return;
     active.active = false;
     final Map<ExtensionId, _ActiveExtension<Object>>? registrations =
-        _extensions[active.point];
+        _extensions[active.pointId]?.registrations;
     if (identical(registrations?[active.id], active)) {
       registrations!.remove(active.id);
-      if (registrations.isEmpty) _extensions.remove(active.point);
     }
+  }
+
+  _ExtensionBucket _requireBucket<T extends Object>(ExtensionPoint<T> point) {
+    final _ExtensionBucket? existing = _extensions[point.value];
+    if (existing != null) {
+      if (existing.contributionType != point._contributionType) {
+        throw ExtensionContractException(
+          'Extension point ${point.value} is already declared with '
+          '${existing.contributionType}, not ${point._contributionType}.',
+        );
+      }
+      return existing;
+    }
+    final _ExtensionBucket created = _ExtensionBucket(point._contributionType);
+    _extensions[point.value] = created;
+    return created;
   }
 }
 
@@ -174,18 +195,32 @@ final class ExtensionRegistrationException implements Exception {
   String toString() => 'ExtensionRegistrationException: $message';
 }
 
+final class ExtensionContractException implements Exception {
+  const ExtensionContractException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => 'ExtensionContractException: $message';
+}
+
+final class _ExtensionBucket {
+  _ExtensionBucket(this.contributionType);
+
+  final Type contributionType;
+  final Map<ExtensionId, _ActiveExtension<Object>> registrations =
+      <ExtensionId, _ActiveExtension<Object>>{};
+}
+
 final class _ActiveExtension<T extends Object> {
   _ActiveExtension({
-    required this.point,
+    required this.pointId,
     required this.id,
     required this.value,
   });
 
-  final ExtensionPoint<Object> point;
+  final String pointId;
   final ExtensionId id;
   final T value;
   bool active = true;
 }
-
-ExtensionPoint<Object> _erasePoint<T extends Object>(ExtensionPoint<T> point) =>
-    ExtensionPoint<Object>._(point.value);
