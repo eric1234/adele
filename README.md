@@ -43,12 +43,14 @@ integration contract.
 The provisional backend-only DevelopmentSource capability and its
 source-search/source-read model tools remain maintained for the Phase IV
 OpenAI/ChatGPT path. Phase V-A now also establishes durable Project, Task, and
-Environment values, binds provisional agent Sessions authoritatively to one
-Task-associated Environment, and materializes a `read_file` tool that derives
-Environment authority from Session rather than model arguments. Deterministic
-AOT integration proves a Run can read copied real ADELE source through the Git
-worktree Environment provider, retire that exact generation, restore through a
-replacement generation, and leave the old tool stale.
+Environment values and binds provisional agent Sessions authoritatively to one
+Task-associated Environment. The first generic extension-registration slice
+now lets active plugin generations contribute contextual model tools. The stock
+Filesystem Tools plugin owns `read_file`, while a Session-scoped host facade
+supplies only the authorized Environment filesystem. Deterministic AOT
+integration proves a Run can read copied real ADELE source, retire either the
+tool plugin or Environment provider generation, restore fresh generations, and
+leave old materializations stale.
 
 ADELE can therefore inspect its own source through both the maintained Phase IV
 path and a Session-authorized Environment Read File path. It cannot yet perform
@@ -167,6 +169,7 @@ packages/plugin_api/         adele_plugin_api (experimental public)
 packages/contract/           adele_contract (experimental public)
 packages/contract_codegen/   contract_codegen (internal, pure Dart)
 packages/model_provider/     adele_model_provider (experimental public)
+packages/model_tool/         adele_model_tool public contribution/execution API
 packages/capabilities/       adele_capabilities (experimental public)
 packages/product/            adele_product canonical product identities/values
 packages/environment/        adele_environment provider/filesystem contract
@@ -179,6 +182,7 @@ plugins/resource_inspector/  Phase III two-provider capability fixture
 plugins/scripted_model/      deterministic ModelProvider/transport fixture
 plugins/openai/              real OpenAI ModelProvider; ChatGPT route experimental
 plugins/development_source/  bounded read-only configured source capability
+plugins/filesystem_tools/    stock Session-authorized model tools
 plugins/git_environment/     Git worktree Environment provider
 docs/architecture/           architecture boundaries/directional models
 docs/adr/                    architectural decision records
@@ -258,13 +262,15 @@ See `docs/architecture/profiles-and-configuration.md`.
 **Phase IV is complete.**
 
 Phase V-A1 established the Project-to-Task-to-primary-Environment spine and
-stock Git worktree provider. V-A2 now connects a provisional Session authority
-relation and Environment-backed `read_file` tool to the deterministic agent
-loop while preserving exact-generation restoration and stale old bindings.
+stock Git worktree provider. V-A2 connected provisional Session authority to
+Environment-backed reads. V-A3 adds generic extension registration/liveness,
+a public model-tool contribution path, and stock plugin-owned `read_file` with
+independent tool-plugin and Environment-provider generation safety. The former
+application-owned Read File executable was transitional and is removed.
 
-V-A3 remains: add Environment-backed Search outside the provider contract,
+The next V-A slices remain: add plugin-provided Environment-backed Search,
 migrate the OpenAI/ChatGPT source-coding path, retire DevelopmentSource, and
-complete the read-only self-inspection proof. Source mutation/editing,
+complete the plugin-composed read-only self-inspection proof. Source mutation/editing,
 Environment-backed command/validation execution, complete strategy-bound
 Session lifecycle, and SCM/review integration remain later work rather than
 settled interfaces.
@@ -272,6 +278,10 @@ settled interfaces.
 Implementation should introduce the smallest concrete extension boundaries
 needed by those verticals rather than build a speculative universal framework
 up front.
+
+`EnvironmentRuntime` remains provisional and domain-specific. V-A3 did not
+create a second durable Environment restoration/cache use case, so no common
+materialization runtime was justified.
 
 Windows, macOS, release packaging, plugin packaging/discovery, sandboxing,
 current Flutter compatibility, and eval-stack modernization also remain open.

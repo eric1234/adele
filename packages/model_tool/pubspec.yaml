@@ -1,5 +1,5 @@
-name: agent_kernel
-description: Internal provider-neutral agent execution substrate.
+name: adele_model_tool
+description: Public ADELE model-tool contribution and execution API.
 publish_to: none
 version: 0.1.0
 
@@ -9,7 +9,6 @@ environment:
 resolution: workspace
 
 dependencies:
-  adele_model_tool: ^0.1.0
   adele_plugin_api: ^0.1.0
   adele_product: ^0.1.0
 

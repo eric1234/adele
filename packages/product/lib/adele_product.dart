@@ -69,6 +69,22 @@ final class SessionId {
   String toString() => value;
 }
 
+final class RunId {
+  RunId(String value) : value = _requireId(value, 'Run ID');
+
+  final String value;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) || other is RunId && other.value == value;
+
+  @override
+  int get hashCode => value.hashCode;
+
+  @override
+  String toString() => value;
+}
+
 final class Project {
   Project({required this.id, required this.sourceLocation}) {
     if (!sourceLocation.hasScheme) {

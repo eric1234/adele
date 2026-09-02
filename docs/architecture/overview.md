@@ -2,16 +2,16 @@
 
 ## Status
 
-ADELE's maintained Linux x64 foundation proves source compilation, generated unary and server-streaming/cancellation transport, interpreted frontend execution, active capability routing, configured provider contexts, and the Phase IV source-inspection agent vertical. It includes the real OpenAI `ModelProvider`, generation-bound configured provider contexts, an explicitly experimental ChatGPT configured instance, and a bounded read-only DevelopmentSource capability.
+ADELE's maintained Linux x64 foundation proves source compilation, generated unary and server-streaming/cancellation transport, interpreted frontend execution, active capability routing, configured provider contexts, and the Phase IV source-inspection agent vertical. It includes the real OpenAI `ModelProvider`, generation-bound configured provider contexts, an explicitly experimental ChatGPT configured instance, a bounded read-only DevelopmentSource capability, provisional Project/Task/Environment and Session authority, and the first generic extension-registration/model-tool contribution slice. Stock Filesystem Tools now owns Session-authorized `read_file`.
 
-These proofs establish transport, provider selection, exact-generation execution, model/tool/model continuation, and a provider-neutral agent kernel. They do **not** yet implement ADELE's complete product/domain model or the general recursive extension system described by the current architecture.
+These proofs establish transport, provider selection, exact-generation execution, model/tool/model continuation, and a provider-neutral agent kernel. They do **not** yet implement ADELE's complete product/domain model or the general recursive extension system described by the current architecture. Search remains pending and DevelopmentSource remains temporarily maintained.
 
 The following remain largely or entirely unimplemented:
 
 - Project/Task/Session/Environment product persistence and lifecycle;
 - production orchestration-strategy registration;
 - parent/child Session lifecycle;
-- general plugin-defined extension points;
+- plugin-defined extension points beyond the initial registration/model-tool slice;
 - production plugin-facing UI composition;
 - application Command/Command Palette/keybinding infrastructure;
 - profile-aware provider preference and general configuration services;

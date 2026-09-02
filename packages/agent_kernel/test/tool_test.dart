@@ -1,3 +1,4 @@
+import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:test/test.dart';
 
@@ -400,6 +401,138 @@ void main() {
       );
     });
   });
+
+  group('model-tool contributions', () {
+    test(
+      'multiple contributors compose for supplied Session context',
+      () async {
+        final ExtensionRegistry extensions = ExtensionRegistry();
+        extensions.register(
+          point: modelToolContributions,
+          id: ExtensionId('dev.adele.test.tools.one'),
+          value: const _Contribution('one', 'tool_one'),
+        );
+        extensions.register(
+          point: modelToolContributions,
+          id: ExtensionId('dev.adele.test.tools.two'),
+          value: const _Contribution('two', 'tool_two'),
+        );
+
+        final MaterializedToolSet tools =
+            (await ModelToolComposer(extensions).materialize(
+              _HostContext(SessionId('session-context')),
+            )).materialize();
+
+        expect(tools.tools.map((tool) => tool.modelDefinition.alias), <String>[
+          'tool_one',
+          'tool_two',
+        ]);
+        expect(
+          tools.tools.map((tool) => tool.definition.description),
+          everyElement(contains('session-context')),
+        );
+      },
+    );
+
+    test('alias collisions fail deterministically', () async {
+      final ExtensionRegistry extensions = ExtensionRegistry();
+      extensions.register(
+        point: modelToolContributions,
+        id: ExtensionId('dev.adele.test.tools.alias-one'),
+        value: const _Contribution('one', 'collision'),
+      );
+      extensions.register(
+        point: modelToolContributions,
+        id: ExtensionId('dev.adele.test.tools.alias-two'),
+        value: const _Contribution('two', 'collision'),
+      );
+
+      await expectLater(
+        ModelToolComposer(
+          extensions,
+        ).materialize(_HostContext(SessionId('session-context'))),
+        throwsA(isA<ToolMaterializationException>()),
+      );
+    });
+
+    test('retired contributor stales old tools and never retargets', () async {
+      final ExtensionRegistry extensions = ExtensionRegistry();
+      final ExtensionId id = ExtensionId('dev.adele.test.tools.replaceable');
+      final ExtensionRegistration generationA = extensions.register(
+        point: modelToolContributions,
+        id: id,
+        value: const _Contribution('generation-a', 'replaceable'),
+      );
+      final ToolExecutable oldTool =
+          (await ModelToolComposer(extensions).materialize(
+            _HostContext(SessionId('session-context')),
+          )).materialize().tools.single.executable;
+      final Stream<ToolExecutionEvent> deferredExecution = oldTool.execute(
+        CanonicalToolArguments(const <String, Object?>{
+          'uri': 'file:///source.dart',
+        }),
+        ToolExecutionContext(
+          runId: RunId('run-context'),
+          sessionId: SessionId('session-context'),
+        ),
+      );
+
+      await generationA.close();
+      extensions.register(
+        point: modelToolContributions,
+        id: id,
+        value: const _Contribution('generation-b', 'replaceable'),
+      );
+      final MaterializedTool freshTool =
+          (await ModelToolComposer(extensions).materialize(
+            _HostContext(SessionId('session-context')),
+          )).materialize().tools.single;
+
+      expect(
+        oldTool.validateBinding,
+        throwsA(isA<StaleToolBindingException>()),
+      );
+      await expectLater(
+        deferredExecution.toList(),
+        throwsA(isA<StaleToolBindingException>()),
+      );
+      expect(freshTool.definition.id.value, contains('generation-b'));
+      expect(
+        oldTool.validateBinding,
+        throwsA(isA<StaleToolBindingException>()),
+      );
+    });
+  });
+}
+
+final class _HostContext implements ModelToolHostContext {
+  const _HostContext(this.sessionId);
+
+  @override
+  final SessionId sessionId;
+
+  @override
+  Future<T> requireHostService<T extends Object>() =>
+      throw StateError('No host service needed.');
+}
+
+final class _Contribution implements ModelToolContribution {
+  const _Contribution(this.generation, this.alias);
+
+  final String generation;
+  final String alias;
+
+  @override
+  Future<Iterable<ToolRegistration>> materialize(
+    ModelToolHostContext context,
+  ) async => <ToolRegistration>[
+    testRegistration(
+      TestExecutable(provider: generation),
+      id: 'dev.adele.test.tool.$generation',
+      alias: alias,
+      description: 'Tool for ${context.sessionId}.',
+    ),
+  ];
 }
 
 final class _ThrowingValidator implements ToolExecutable {

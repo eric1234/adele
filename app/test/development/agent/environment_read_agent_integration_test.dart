@@ -1,13 +1,15 @@
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
-import 'package:adele_desktop/development/agent/environment_tools.dart';
 import 'package:adele_desktop/development/agent/simple_tool_loop_strategy.dart';
 import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
+import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
@@ -72,12 +74,13 @@ void main() {
       });
       final CapabilityRegistry registry = CapabilityRegistry();
       final ProviderId providerId = ProviderId(_gitEnvironmentProviderId);
-      final PluginCapabilityActivation generationA = await _startGeneration(
-        host: host,
-        registry: registry,
-        artifact: gitEnvironmentArtifact,
-        providerId: providerId,
-      );
+      final PluginCapabilityActivation environmentGenerationA =
+          await _startGeneration(
+            host: host,
+            registry: registry,
+            artifact: gitEnvironmentArtifact,
+            providerId: providerId,
+          );
       final InMemoryProductStore store = InMemoryProductStore();
       final ProductLifecycleCoordinator lifecycle =
           ProductLifecycleCoordinator.generated(
@@ -99,13 +102,17 @@ void main() {
         sessionId: sessionId,
         taskId: created.task.id,
       );
-      final ToolCatalog catalogA = await buildEnvironmentToolCatalogForSession(
+      final ExtensionRegistry extensions = ExtensionRegistry();
+      final ExtensionRegistration filesystemGenerationA =
+          const FilesystemToolsPlugin().activate(extensions);
+      final ToolCatalog catalogA = await buildModelToolCatalogForSession(
         sessionId: sessionId,
         environmentRuntime: lifecycle.environmentRuntime,
+        extensions: extensions,
       );
-      final EnvironmentReadFileToolExecutable readFileA =
-          catalogA.materialize().byAlias('read_file')!.executable
-              as EnvironmentReadFileToolExecutable;
+      final MaterializedTool readFileA = catalogA.materialize().byAlias(
+        'read_file',
+      )!;
       final DevelopmentSessionHistory history =
           DevelopmentSessionHistory(sessionId)..append(
             UserSessionMessage('Inspect the maintained ADELE strategy source.'),
@@ -132,45 +139,77 @@ void main() {
       expect(authority.environmentId, created.environment.id);
       expect(model.invocations, 2);
       expect(model.receivedRealSource, isTrue);
-      expect(readFileA.invocationCount, 1);
       expect(strategy.lastToolOutcome?.hostData['text'], expectedSource);
       expect(
         (history.snapshot().entries.last as AssistantSessionMessage).content,
         contains('DevelopmentToolLoopStrategy'),
       );
 
-      await generationA.close();
+      await filesystemGenerationA.close();
       expect(
-        readFileA.validateBinding,
+        readFileA.executable.validateBinding,
         throwsA(isA<StaleToolBindingException>()),
       );
-      final PluginCapabilityActivation generationB = await _startGeneration(
-        host: host,
-        registry: registry,
-        artifact: gitEnvironmentArtifact,
-        providerId: providerId,
+      final ToolCatalog inactiveCatalog = await buildModelToolCatalogForSession(
+        sessionId: sessionId,
+        environmentRuntime: lifecycle.environmentRuntime,
+        extensions: extensions,
       );
-      addTearDown(generationB.close);
+      expect(inactiveCatalog.materialize().tools, isEmpty);
+
+      final ExtensionRegistration filesystemGenerationB =
+          const FilesystemToolsPlugin().activate(extensions);
+      addTearDown(filesystemGenerationB.close);
+      final ToolCatalog pluginGenerationBCatalog =
+          await buildModelToolCatalogForSession(
+            sessionId: sessionId,
+            environmentRuntime: lifecycle.environmentRuntime,
+            extensions: extensions,
+          );
+      final MaterializedTool pluginGenerationBTool = pluginGenerationBCatalog
+          .materialize()
+          .byAlias('read_file')!;
+      expect(pluginGenerationBTool.executable.validateBinding, returnsNormally);
       expect(
-        readFileA.validateBinding,
+        readFileA.executable.validateBinding,
         throwsA(isA<StaleToolBindingException>()),
       );
 
-      final ToolCatalog catalogB = await buildEnvironmentToolCatalogForSession(
+      await environmentGenerationA.close();
+      expect(
+        pluginGenerationBTool.executable.validateBinding,
+        throwsA(isA<StaleToolBindingException>()),
+      );
+      final PluginCapabilityActivation environmentGenerationB =
+          await _startGeneration(
+            host: host,
+            registry: registry,
+            artifact: gitEnvironmentArtifact,
+            providerId: providerId,
+          );
+      addTearDown(environmentGenerationB.close);
+      expect(
+        readFileA.executable.validateBinding,
+        throwsA(isA<StaleToolBindingException>()),
+      );
+
+      final ToolCatalog catalogB = await buildModelToolCatalogForSession(
         sessionId: sessionId,
         environmentRuntime: lifecycle.environmentRuntime,
+        extensions: extensions,
       );
       final EnvironmentMaterialization materializationB = lifecycle
           .environmentRuntime
           .currentMaterialization(created.environment.id)!;
-      final EnvironmentReadFileToolExecutable readFileB =
-          catalogB.materialize().byAlias('read_file')!.executable
-              as EnvironmentReadFileToolExecutable;
-      final CanonicalToolArguments arguments = readFileB.validateAndNormalize(
-        const <String, Object?>{'relativePath': _sourceRelativePath},
-      );
+      final MaterializedTool readFileB = catalogB.materialize().byAlias(
+        'read_file',
+      )!;
+      final CanonicalToolArguments arguments = readFileB.executable
+          .validateAndNormalize(const <String, Object?>{
+            'relativePath': _sourceRelativePath,
+          });
       final ToolOutcome restoredOutcome =
-          (await readFileB
+          (await readFileB.executable
                       .execute(
                         arguments,
                         ToolExecutionContext(
@@ -186,13 +225,12 @@ void main() {
       expect(materializationB.environment.id, materializationA.environment.id);
       expect(restoredOutcome.disposition, ToolOutcomeDisposition.success);
       expect(restoredOutcome.hostData['text'], expectedSource);
-      expect(readFileB.invocationCount, 1);
       expect(
-        readFileA.validateBinding,
+        readFileA.executable.validateBinding,
         throwsA(isA<StaleToolBindingException>()),
       );
 
-      await generationB.close();
+      await environmentGenerationB.close();
       await host.close();
     },
     timeout: const Timeout(Duration(minutes: 4)),

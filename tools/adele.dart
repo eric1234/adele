@@ -46,6 +46,12 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
+    name: 'adele_model_tool',
+    path: 'packages/model_tool',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
     name: 'adele_model_provider',
     path: 'packages/model_provider',
     executable: 'dart',
@@ -108,6 +114,12 @@ const List<TestTarget> testTargets = <TestTarget>[
     ciTestConcurrency: 1,
   ),
   TestTarget(
+    name: 'filesystem_tools_plugin',
+    path: 'plugins/filesystem_tools',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
     name: 'scripted_model_contract',
     path: 'plugins/scripted_model/packages/contract',
     executable: 'dart',
@@ -152,6 +164,7 @@ _packages = <({String name, String path, bool flutter})>[
   (name: 'adele_plugin_api', path: 'packages/plugin_api', flutter: false),
   (name: 'adele_product', path: 'packages/product', flutter: false),
   (name: 'adele_environment', path: 'packages/environment', flutter: false),
+  (name: 'adele_model_tool', path: 'packages/model_tool', flutter: false),
   (name: 'adele_contract', path: 'packages/contract', flutter: false),
   (
     name: 'adele_model_provider',
@@ -186,6 +199,11 @@ _packages = <({String name, String path, bool flutter})>[
     flutter: false,
   ),
   (name: 'git_environment', path: 'plugins/git_environment', flutter: false),
+  (
+    name: 'filesystem_tools_plugin',
+    path: 'plugins/filesystem_tools',
+    flutter: false,
+  ),
   (
     name: 'git_environment_backend',
     path: 'plugins/git_environment/packages/backend',
