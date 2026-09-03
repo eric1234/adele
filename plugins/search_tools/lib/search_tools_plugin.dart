@@ -263,6 +263,7 @@ final class _SearchExecutable implements ToolExecutable {
       file = await _fileSystem.readFile(relativePath);
       state.readOccurred = true;
     } on EnvironmentFailure {
+      state.incomplete = true;
       return;
     }
     if (file.sizeBytes > _maxSearchedBytes - state.searchedBytes) {
@@ -274,6 +275,10 @@ final class _SearchExecutable implements ToolExecutable {
     for (final String line in const LineSplitter().convert(file.text)) {
       lineNumber++;
       if (!line.contains(state.query)) continue;
+      if (state.matches.length == _maxMatches) {
+        state.truncated = true;
+        return;
+      }
       state.matches.add(
         _SearchMatch(
           relativePath: file.relativePath,
@@ -285,10 +290,6 @@ final class _SearchExecutable implements ToolExecutable {
           ),
         ),
       );
-      if (state.matches.length == _maxMatches) {
-        state.truncated = true;
-        return;
-      }
     }
   }
 
@@ -301,9 +302,10 @@ final class _SearchExecutable implements ToolExecutable {
         for (final _SearchMatch match in state.matches)
           '${match.relativePath}:${match.lineNumber}: ${match.snippet}',
       ],
-      if (state.truncated) 'Result set truncated.',
+      if (state.truncated)
+        'Search truncated: a configured search limit was reached.',
       if (state.incomplete)
-        'Search incomplete: one or more directories could not be inspected.',
+        'Search incomplete: one or more files or directories could not be inspected.',
     ].join('\n');
     return ToolOutcome(
       disposition: ToolOutcomeDisposition.success,
@@ -346,7 +348,7 @@ final class _SearchState {
   bool incomplete = false;
   bool readOccurred = false;
 
-  bool get stopped => truncated || matches.length == 100;
+  bool get stopped => truncated;
 }
 
 final class _SearchMatch {

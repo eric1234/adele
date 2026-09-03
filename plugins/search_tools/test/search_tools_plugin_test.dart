@@ -149,6 +149,7 @@ void main() {
       final ToolOutcome outcome = await _run(fileSystem, 'needle');
       expect(_matchLocations(outcome), <String>['visible.txt:1']);
       expect(fileSystem.directoryReads, <String>['']);
+      expect(outcome.hostData['incomplete'], isFalse);
     });
 
     test(
@@ -158,24 +159,62 @@ void main() {
           directories: <String, List<EnvironmentDirectoryEntry>>{
             '': <EnvironmentDirectoryEntry>[
               _directory('broken', 'broken'),
-              _file('broken.txt'),
               _file('good.txt'),
             ],
           },
           files: <String, String>{'good.txt': 'needle'},
           directoryErrors: <String, Object>{'broken': _environmentFailure},
-          fileErrors: <String, Object>{'broken.txt': _environmentFailure},
         );
 
         final ToolOutcome outcome = await _run(fileSystem, 'needle');
         expect(outcome.disposition, ToolOutcomeDisposition.success);
         expect(_matchLocations(outcome), <String>['good.txt:1']);
-        expect(fileSystem.fileReads, <String>['broken.txt', 'good.txt']);
+        expect(fileSystem.fileReads, <String>['good.txt']);
         expect(outcome.hostData['incomplete'], isTrue);
         expect(outcome.hostData['truncated'], isFalse);
-        expect(outcome.modelContent, contains('Search incomplete:'));
+        expect(outcome.modelContent, contains('files or directories'));
       },
     );
+
+    test('marks a failed-only file search incomplete', () async {
+      final _FileSystem fileSystem = _FileSystem(
+        directories: <String, List<EnvironmentDirectoryEntry>>{
+          '': <EnvironmentDirectoryEntry>[_file('hidden.txt')],
+        },
+        fileErrors: <String, Object>{'hidden.txt': _environmentFailure},
+      );
+
+      final ToolOutcome outcome = await _run(fileSystem, 'needle');
+      expect(outcome.disposition, ToolOutcomeDisposition.success);
+      expect(fileSystem.fileReads, <String>['hidden.txt']);
+      expect(outcome.hostData['matches'], isEmpty);
+      expect(outcome.hostData['incomplete'], isTrue);
+      expect(outcome.hostData['truncated'], isFalse);
+      expect(outcome.modelContent, contains('No matches.'));
+      expect(outcome.modelContent, contains('files or directories'));
+      expect(outcome.modelContent, isNot('Search results:\nNo matches.'));
+    });
+
+    test('failed file does not stop unaffected sibling files', () async {
+      final _FileSystem fileSystem = _FileSystem(
+        directories: <String, List<EnvironmentDirectoryEntry>>{
+          '': <EnvironmentDirectoryEntry>[
+            _file('broken.txt'),
+            _file('good.txt'),
+          ],
+        },
+        files: <String, String>{'good.txt': 'needle'},
+        fileErrors: <String, Object>{'broken.txt': _environmentFailure},
+      );
+
+      final ToolOutcome outcome = await _run(fileSystem, 'needle');
+      expect(outcome.disposition, ToolOutcomeDisposition.success);
+      expect(fileSystem.fileReads, <String>['broken.txt', 'good.txt']);
+      expect(_matchLocations(outcome), <String>['good.txt:1']);
+      expect(outcome.hostData['incomplete'], isTrue);
+      expect(outcome.hostData['truncated'], isFalse);
+      expect(outcome.modelContent, contains('files or directories'));
+    });
 
     test(
       'does not report a skipped-only search as exhaustively empty',
@@ -261,7 +300,32 @@ void main() {
       },
     );
 
-    test('limits matches to 100 and marks the result truncated', () async {
+    test(
+      'exactly 100 matches remain complete and later files are read',
+      () async {
+        final _FileSystem fileSystem = _FileSystem(
+          directories: <String, List<EnvironmentDirectoryEntry>>{
+            '': <EnvironmentDirectoryEntry>[
+              _file('a-many.txt'),
+              _file('z-later.txt'),
+            ],
+          },
+          files: <String, String>{
+            'a-many.txt': List.filled(100, 'hit').join('\n'),
+            'z-later.txt': 'no additional match',
+          },
+        );
+        final ToolOutcome outcome = await _run(fileSystem, 'hit');
+
+        expect((outcome.hostData['matches']! as List<Object?>), hasLength(100));
+        expect(fileSystem.fileReads, <String>['a-many.txt', 'z-later.txt']);
+        expect(outcome.hostData['truncated'], isFalse);
+        expect(outcome.hostData['incomplete'], isFalse);
+        expect(outcome.modelContent, isNot(contains('Search truncated:')));
+      },
+    );
+
+    test('the 101st match proves the result is truncated', () async {
       final _FileSystem fileSystem = _FileSystem(
         directories: <String, List<EnvironmentDirectoryEntry>>{
           '': <EnvironmentDirectoryEntry>[_file('many.txt')],
@@ -271,8 +335,11 @@ void main() {
       final ToolOutcome outcome = await _run(fileSystem, 'hit');
 
       expect((outcome.hostData['matches']! as List<Object?>), hasLength(100));
+      expect(_matchLocations(outcome).first, 'many.txt:1');
+      expect(_matchLocations(outcome).last, 'many.txt:100');
       expect(outcome.hostData['truncated'], isTrue);
       expect(outcome.hostData['incomplete'], isFalse);
+      expect(outcome.modelContent, contains('Search truncated:'));
     });
 
     test('limits traversed entries to 10000', () async {
