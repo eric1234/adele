@@ -9,51 +9,35 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import 'source_coding_live_test_support.dart';
 
 const String _openAiPluginId = 'dev.adele.openai';
-const String _chatGptProviderId = 'dev.adele.openai.chatgpt-experimental';
+const String _openAiApiKeyProviderId = 'dev.adele.openai.api-key';
 
 void main() {
   final bool enabled =
-      Platform.environment['ADELE_OPENAI_CHATGPT_LIVE_TEST'] == '1';
+      Platform.environment['ADELE_OPENAI_SOURCE_CODING_LIVE_TEST'] == '1';
   late SourceCodingLiveArtifacts artifacts;
 
   setUpAll(() async {
     if (!enabled) return;
     artifacts = await SourceCodingLiveArtifacts.compile(
-      'phase-v-a5-chatgpt-source-live',
+      'phase-v-a5-openai-source-live',
     );
   });
 
   test(
-    'experimental ChatGPT searches and reads the real ADELE strategy source',
+    'OpenAI API key searches and reads the real ADELE strategy source',
     () async {
-      final Map<String, String> environment = <String, String>{
-        'OPENAI_API_KEY': 'unused-live-source-coding-key',
-        'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE': _requiredEnvironment(
-          'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE',
-        ),
-      };
-      for (final String name in <String>[
-        'ADELE_OPENAI_CHATGPT_CLIENT_ID',
-        'ADELE_OPENAI_CHATGPT_INSTANCE_ID',
-        'ADELE_OPENAI_CHATGPT_OAUTH_ISSUER',
-        'ADELE_OPENAI_CHATGPT_REDIRECT_URI',
-        'ADELE_OPENAI_CHATGPT_ENDPOINT',
-      ]) {
-        final String? value = Platform.environment[name];
-        if (value != null && value.trim().isNotEmpty) environment[name] = value;
-      }
-      if (!environment.containsKey('ADELE_OPENAI_CHATGPT_CLIENT_ID')) {
-        environment['ADELE_OPENAI_CHATGPT_EXPERIMENTAL_CODEX_CLIENT'] = '1';
-      }
       final SourceCodingLiveHarness harness =
           await SourceCodingLiveHarness.start(
             artifacts: artifacts,
-            hostEnvironment: environment,
-            identity: 'chatgpt',
-            taskTitle: 'Inspect ADELE source with ChatGPT',
+            hostEnvironment: <String, String>{
+              'OPENAI_API_KEY': _requiredEnvironment('OPENAI_API_KEY'),
+              'ADELE_OPENAI_ENDPOINT': 'https://api.openai.com/v1/responses',
+            },
+            identity: 'openai-api-key',
+            taskTitle: 'Inspect ADELE source with OpenAI API key',
           );
       addTearDown(harness.close);
-      final _Activation model = await _startChatGptProvider(
+      final _Activation model = await _startApiKeyProvider(
         host: harness.host,
         registry: harness.registry,
         artifact: artifacts.openAiArtifact,
@@ -63,15 +47,13 @@ void main() {
           ModelProviderCapabilityAdapter(
             harness.registry.resolve(
               modelProviderCapability,
-              providerId: ProviderId(_chatGptProviderId),
+              providerId: ProviderId(_openAiApiKeyProviderId),
             ),
-            selectedModel:
-                Platform.environment['ADELE_OPENAI_CHATGPT_TEST_MODEL'] ??
-                'gpt-5.4',
+            selectedModel: _requiredEnvironment('ADELE_OPENAI_TEST_MODEL'),
           );
 
       final SourceCodingLiveResult result = await harness.run(
-        identity: 'chatgpt',
+        identity: 'openai-api-key',
         model: modelAdapter,
       );
 
@@ -84,23 +66,23 @@ void main() {
     },
     skip: enabled
         ? false
-        : 'Set ADELE_OPENAI_CHATGPT_LIVE_TEST=1 and provide the existing '
-              'local credential file to enable the experimental full-stack '
-              'source-coding smoke.',
+        : 'Set ADELE_OPENAI_SOURCE_CODING_LIVE_TEST=1 and provide '
+              'OPENAI_API_KEY plus ADELE_OPENAI_TEST_MODEL to enable the '
+              'paid full-stack source-coding smoke.',
     timeout: const Timeout(Duration(minutes: 6)),
   );
 }
 
-Future<_Activation> _startChatGptProvider({
+Future<_Activation> _startApiKeyProvider({
   required PluginBackendHost host,
   required CapabilityRegistry registry,
   required File artifact,
 }) async {
   final ProviderDescriptor descriptor = ProviderDescriptor(
-    id: ProviderId(_chatGptProviderId),
+    id: ProviderId(_openAiApiKeyProviderId),
     capability: modelProviderCapability,
     pluginId: _openAiPluginId,
-    displayName: 'Experimental ChatGPT',
+    displayName: 'OpenAI API Key',
     serviceId: modelProviderServiceId,
   );
   final PluginBackendConnection connection = await host.startPlugin(
@@ -111,7 +93,7 @@ Future<_Activation> _startChatGptProvider({
     provider: descriptor,
     endpoint: AdeleRequestChannelEndpoint(
       channel: connection.channelFor(
-        connection.configurationContext('chatgpt-experimental'),
+        connection.defaultConfigurationContext,
         descriptor.serviceId,
       ),
       serviceId: descriptor.serviceId,
@@ -124,7 +106,7 @@ Future<_Activation> _startChatGptProvider({
 String _requiredEnvironment(String name) {
   final String? value = Platform.environment[name];
   if (value == null || value.trim().isEmpty) {
-    throw StateError('$name is required for the ChatGPT live test.');
+    throw StateError('$name is required for the OpenAI API-key live test.');
   }
   return value;
 }

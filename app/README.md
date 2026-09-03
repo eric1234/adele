@@ -59,5 +59,21 @@ command execution. `DevelopmentToolLoopStrategy` and `EnvironmentRuntime`
 remain provisional application/domain-specific implementation rather than
 production orchestration or a general extension-runtime pattern.
 
+## Live Tests
+
+The OpenAI backend's provider-only API-key and ChatGPT live smokes validate
+network, authentication, and Responses behavior in isolation. Separate app-level
+source-coding live smokes validate the complete current read-only stack through
+Project/Task/Environment establishment, Session authority, plugin-contributed
+Search and Read File tools, provisional orchestration, and real model
+continuation.
+
+`ADELE_OPENAI_SOURCE_CODING_LIVE_TEST=1` enables the paid API-key full-stack
+smoke when `OPENAI_API_KEY` and `ADELE_OPENAI_TEST_MODEL` are also configured.
+`ADELE_OPENAI_CHATGPT_LIVE_TEST=1` enables the experimental ChatGPT
+subscription-route full-stack smoke with
+`ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE`. Both remain opt-in and are excluded
+from normal CI.
+
 See `docs/architecture/overview.md`, `docs/architecture/plugin-extension-model.md`,
 and ADR 0031.

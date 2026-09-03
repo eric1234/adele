@@ -185,7 +185,7 @@ See [`profiles-and-configuration.md`](profiles-and-configuration.md) and [`plugi
 
 The stock Search Tools plugin contributes literal `search` and composes only the Session-authorized Environment filesystem's `readDirectory` and `readFile`; Filesystem Tools independently contributes `read_file`. The OpenAI API-key and experimental ChatGPT source-coding consumers use these plugin-contributed tools rather than the retired Phase IV DevelopmentSource capability.
 
-Deterministic integration uses the real shared AOT host, OpenAI plugin, Git Environment provider, Project/Task/Environment lifecycle, Session authority, generic extension/model-tool composition, stock tools, and development strategy. Only remote model responses come from a local fake Responses endpoint. It proves recursive source discovery, model-visible Search-to-Read path flow, reading, and model continuation. Separate deterministic coverage proves Search-tool and Environment-provider replacement generations produce fresh tools while old tools remain stale. The migrated opt-in live ChatGPT source-coding smoke has also completed successfully through the same Environment tool topology.
+Deterministic integration uses the real shared AOT host, OpenAI plugin, Git Environment provider, Project/Task/Environment lifecycle, Session authority, generic extension/model-tool composition, stock tools, and development strategy. Only remote model responses come from a local fake Responses endpoint. It proves recursive source discovery, model-visible Search-to-Read path flow, reading, and model continuation. Separate deterministic coverage proves Search-tool and Environment-provider replacement generations produce fresh tools while old tools remain stale. Opt-in live API-key and experimental ChatGPT source-coding smokes have also completed successfully through the same Environment tool topology.
 
 This proves self-inspection, not the final Environment/source mutation model and not full self-hosting.
 
@@ -201,7 +201,7 @@ This proves self-inspection, not the final Environment/source mutation model and
 | Active capability/configuration routing | Proven for deterministic discovery, explicit selection, exact generations, and separate OpenAI configuration contexts. |
 | Real OpenAI provider | Deterministic HTTP/SSE/shared-AOT integration proven; live network tests remain opt-in. |
 | Experimental ChatGPT configured instance | Auth/routing tests and a successful migrated opt-in source-coding smoke provide interoperability evidence only. |
-| Model-to-source continuation | Proven through Session-authorized Git Environment `search`/`read_file` composition for deterministic OpenAI integration; migrated live ChatGPT evidence remains explicitly experimental. |
+| Model-to-source continuation | Proven through Session-authorized Git Environment `search`/`read_file` composition for deterministic OpenAI integration and opt-in live API-key/experimental ChatGPT evidence. |
 | Rebuild/reload | Proven for three cycles without orphan host processes. |
 | General recursive extension system | Accepted architecture; not implemented. |
 | Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, and Session-authorized reads proven; persistence and complete lifecycle unimplemented. |
