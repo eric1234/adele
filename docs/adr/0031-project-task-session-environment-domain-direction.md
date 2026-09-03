@@ -90,10 +90,10 @@ The maintained repository does **not** yet implement this complete product-domai
 - `adele_product` now owns the initial immutable Project, Task, and Environment values, including generic provider identity and opaque provider state.
 - The application has an in-memory Task establishment coordinator that publishes a Task and finalized primary Environment and records the exact establishment-time materialization only after provider success; disk persistence remains deferred.
 - `adele_environment` and the stock Git worktree backend prove establishment, restoration, bounded filesystem reads, component-local value reification, and exact-generation rebinding.
-- The application owns one provisional authoritative `SessionId -> TaskId + EnvironmentId` relation and uses it to materialize an Environment-backed `read_file` tool for the current agent path; Run and generic tool context do not independently select Environment.
-- A deterministic agent Run reads real copied ADELE source through a real Git Environment, and integration coverage proves old Read File bindings remain stale while fresh access restores the durable Environment through a replacement provider generation.
+- The application owns one provisional authoritative `SessionId -> TaskId + EnvironmentId` relation and uses it to materialize an Environment filesystem facade for independently contributed `search` and `read_file` tools; Run and generic tool context do not independently select Environment.
+- A deterministic agent Run recursively searches then reads real copied ADELE source through a real Git Environment. Search semantics remain in Search Tools rather than `EnvironmentProvider`, and integration coverage proves old tool bindings remain stale while fresh access restores the durable Environment through a replacement provider generation.
 - Task Browser, the complete strategy-bound Session aggregate/lifecycle, the core/public orchestration-strategy registry, the public strategy execution facade, child Session lifecycle, and parent Session presentation are not implemented.
-- The DevelopmentSource plugin remains maintained pending V-A3 Environment-backed Search, OpenAI/ChatGPT source-coding migration, and DevelopmentSource retirement.
+- The DevelopmentSource plugin remains maintained pending V-A5 OpenAI/ChatGPT source-coding migration and DevelopmentSource retirement.
 
 The current implementation remains valid evidence for the narrower vertical. Future APIs should migrate toward this accepted direction as concrete features are built.
 

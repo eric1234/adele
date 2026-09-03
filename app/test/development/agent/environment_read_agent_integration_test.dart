@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
@@ -12,6 +13,7 @@ import 'package:agent_kernel/agent_kernel.dart';
 import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
+import 'package:search_tools_plugin/search_tools_plugin.dart';
 
 const String _gitEnvironmentPluginId = 'dev.adele.plugin.git-environment';
 const String _gitEnvironmentProviderId = 'dev.adele.environment.git-worktree';
@@ -27,7 +29,7 @@ void main() {
   setUpAll(() async {
     repository = Directory.current.parent.path;
     final Directory artifacts = Directory(
-      '$repository/.dart_tool/adele/integration/phase-v-a2-environment-read',
+      '$repository/.dart_tool/adele/integration/phase-v-a4-search-read',
     )..createSync(recursive: true);
     final String dart = _dartExecutable();
     dartaotruntime =
@@ -52,7 +54,7 @@ void main() {
   });
 
   test(
-    'agent reads real ADELE source through Session Environment generations',
+    'agent searches then reads real source through Environment generations',
     () async {
       final Directory container = await Directory.systemTemp.createTemp(
         'adele-session-environment-read-',
@@ -103,8 +105,11 @@ void main() {
         taskId: created.task.id,
       );
       final ExtensionRegistry extensions = ExtensionRegistry();
-      final ExtensionRegistration filesystemGenerationA =
+      final ExtensionRegistration filesystemActivation =
           const FilesystemToolsPlugin().activate(extensions);
+      addTearDown(filesystemActivation.close);
+      final ExtensionRegistration searchGenerationA = const SearchToolsPlugin()
+          .activate(extensions);
       final ToolCatalog catalogA = await buildModelToolCatalogForSession(
         sessionId: sessionId,
         environmentRuntime: lifecycle.environmentRuntime,
@@ -112,6 +117,9 @@ void main() {
       );
       final MaterializedTool readFileA = catalogA.materialize().byAlias(
         'read_file',
+      )!;
+      final MaterializedTool searchA = catalogA.materialize().byAlias(
+        'search',
       )!;
       final DevelopmentSessionHistory history =
           DevelopmentSessionHistory(sessionId)..append(
@@ -121,12 +129,13 @@ void main() {
         id: RunId('run-environment-read'),
         sessionId: sessionId,
       );
-      final _ReadFileModel model = _ReadFileModel(_sourceRelativePath);
+      final _SearchReadModel model = _SearchReadModel();
       final DevelopmentToolLoopStrategy strategy = DevelopmentToolLoopStrategy(
         run: run,
         session: history,
         contextAssembler: const DevelopmentContextAssembler(
-          instructions: 'Read the requested source before answering.',
+          instructions:
+              'Search for and read the requested source before answering.',
         ),
         model: model,
         toolCatalog: catalogA,
@@ -137,47 +146,62 @@ void main() {
 
       expect(run.state, RunState.completed);
       expect(authority.environmentId, created.environment.id);
-      expect(model.invocations, 2);
+      expect(model.invocations, 3);
       expect(model.receivedRealSource, isTrue);
+      expect(model.discoveredPath, _sourceRelativePath);
       expect(strategy.lastToolOutcome?.hostData['text'], expectedSource);
       expect(
         (history.snapshot().entries.last as AssistantSessionMessage).content,
-        contains('DevelopmentToolLoopStrategy'),
+        allOf(contains(_sourceRelativePath), contains('8')),
       );
 
-      await filesystemGenerationA.close();
+      await searchGenerationA.close();
       expect(
-        readFileA.executable.validateBinding,
+        searchA.executable.validateBinding,
         throwsA(isA<StaleToolBindingException>()),
       );
+      expect(readFileA.executable.validateBinding, returnsNormally);
       final ToolCatalog inactiveCatalog = await buildModelToolCatalogForSession(
         sessionId: sessionId,
         environmentRuntime: lifecycle.environmentRuntime,
         extensions: extensions,
       );
-      expect(inactiveCatalog.materialize().tools, isEmpty);
+      expect(
+        inactiveCatalog.materialize().tools.map(
+          (tool) => tool.modelDefinition.alias,
+        ),
+        <String>['read_file'],
+      );
 
-      final ExtensionRegistration filesystemGenerationB =
-          const FilesystemToolsPlugin().activate(extensions);
-      addTearDown(filesystemGenerationB.close);
+      final ExtensionRegistration searchGenerationB = const SearchToolsPlugin()
+          .activate(extensions);
+      addTearDown(searchGenerationB.close);
       final ToolCatalog pluginGenerationBCatalog =
           await buildModelToolCatalogForSession(
             sessionId: sessionId,
             environmentRuntime: lifecycle.environmentRuntime,
             extensions: extensions,
           );
-      final MaterializedTool pluginGenerationBTool = pluginGenerationBCatalog
+      final MaterializedTool searchB = pluginGenerationBCatalog
           .materialize()
-          .byAlias('read_file')!;
-      expect(pluginGenerationBTool.executable.validateBinding, returnsNormally);
+          .byAlias('search')!;
+      expect(searchB.executable.validateBinding, returnsNormally);
       expect(
-        readFileA.executable.validateBinding,
+        searchA.executable.validateBinding,
         throwsA(isA<StaleToolBindingException>()),
+      );
+      expect(
+        (await _executeSearch(searchB, sessionId)).hostData['matches'],
+        isNotEmpty,
       );
 
       await environmentGenerationA.close();
       expect(
-        pluginGenerationBTool.executable.validateBinding,
+        searchB.executable.validateBinding,
+        throwsA(isA<StaleToolBindingException>()),
+      );
+      expect(
+        readFileA.executable.validateBinding,
         throwsA(isA<StaleToolBindingException>()),
       );
       final PluginCapabilityActivation environmentGenerationB =
@@ -204,29 +228,34 @@ void main() {
       final MaterializedTool readFileB = catalogB.materialize().byAlias(
         'read_file',
       )!;
-      final CanonicalToolArguments arguments = readFileB.executable
-          .validateAndNormalize(const <String, Object?>{
-            'relativePath': _sourceRelativePath,
-          });
-      final ToolOutcome restoredOutcome =
-          (await readFileB.executable
-                      .execute(
-                        arguments,
-                        ToolExecutionContext(
-                          runId: RunId('run-restored-read'),
-                          sessionId: sessionId,
-                        ),
-                      )
-                      .single
-                  as ToolExecutionTerminal)
-              .outcome;
+      final MaterializedTool searchC = catalogB.materialize().byAlias(
+        'search',
+      )!;
+      final ToolOutcome restoredSearch = await _executeSearch(
+        searchC,
+        sessionId,
+      );
 
       expect(materializationB, isNot(same(materializationA)));
       expect(materializationB.environment.id, materializationA.environment.id);
-      expect(restoredOutcome.disposition, ToolOutcomeDisposition.success);
-      expect(restoredOutcome.hostData['text'], expectedSource);
+      expect(restoredSearch.disposition, ToolOutcomeDisposition.success);
       expect(
-        readFileA.executable.validateBinding,
+        restoredSearch.hostData['matches'],
+        contains(
+          isA<Map<String, Object?>>().having(
+            (match) => match['relativePath'],
+            'relativePath',
+            _sourceRelativePath,
+          ),
+        ),
+      );
+      expect(readFileB.executable.validateBinding, returnsNormally);
+      expect(
+        searchA.executable.validateBinding,
+        throwsA(isA<StaleToolBindingException>()),
+      );
+      expect(
+        searchB.executable.validateBinding,
         throwsA(isA<StaleToolBindingException>()),
       );
 
@@ -237,12 +266,10 @@ void main() {
   );
 }
 
-final class _ReadFileModel implements ModelPort {
-  _ReadFileModel(this.relativePath);
-
-  final String relativePath;
+final class _SearchReadModel implements ModelPort {
   int invocations = 0;
   bool receivedRealSource = false;
+  String? discoveredPath;
 
   @override
   Stream<ModelEvent> invoke(SemanticModelRequest request) async* {
@@ -251,31 +278,69 @@ final class _ReadFileModel implements ModelPort {
         .whereType<SemanticToolOutcomeInput>()
         .toList(growable: false);
     if (outcomes.isEmpty) {
-      final MaterializedTool tool = request.tools.byAlias('read_file')!;
-      final Object? properties =
-          tool.modelDefinition.argumentsSchema['properties'];
-      if (properties is! Map<String, Object?> ||
-          properties.length != 1 ||
-          !properties.containsKey('relativePath')) {
+      final MaterializedTool search = request.tools.byAlias('search')!;
+      final MaterializedTool readFile = request.tools.byAlias('read_file')!;
+      final Object? searchProperties =
+          search.modelDefinition.argumentsSchema['properties'];
+      final Object? readProperties =
+          readFile.modelDefinition.argumentsSchema['properties'];
+      if (searchProperties is! Map<String, Object?> ||
+          searchProperties.keys.toSet().difference(<String>{
+            'query',
+          }).isNotEmpty ||
+          searchProperties.length != 1 ||
+          readProperties is! Map<String, Object?> ||
+          readProperties.keys.toSet().difference(<String>{
+            'relativePath',
+          }).isNotEmpty ||
+          readProperties.length != 1) {
         throw StateError(
-          'read_file exposed Environment selection to the model.',
+          'Stock tools exposed Environment selection to the model.',
         );
       }
       yield ModelOutputItemCompleted(
         invocationId: request.invocationId,
         item: ModelToolProposalOutput(
           ProviderToolProposal(
+            providerCallId: 'search-call-1',
+            alias: 'search',
+            arguments: const <String, Object?>{
+              'query': 'final class DevelopmentToolLoopStrategy',
+            },
+          ),
+        ),
+      );
+    } else if (outcomes.length == 1) {
+      final List<String> encodedMatches = outcomes.single.outcome.modelContent
+          .split('\n')
+          .where((String line) => line.startsWith('{'))
+          .toList(growable: false);
+      if (encodedMatches.length != 1) {
+        throw StateError(
+          'Search did not identify exactly one maintained file.',
+        );
+      }
+      final Object? decodedMatch = jsonDecode(encodedMatches.single);
+      if (decodedMatch is! Map<String, Object?> ||
+          decodedMatch['relativePath'] is! String) {
+        throw StateError('Search returned an invalid model-visible match.');
+      }
+      discoveredPath = decodedMatch['relativePath']! as String;
+      yield ModelOutputItemCompleted(
+        invocationId: request.invocationId,
+        item: ModelToolProposalOutput(
+          ProviderToolProposal(
             providerCallId: 'read-call-1',
             alias: 'read_file',
-            arguments: <String, Object?>{'relativePath': relativePath},
+            arguments: <String, Object?>{'relativePath': discoveredPath},
           ),
         ),
       );
     } else {
-      final String content = outcomes.single.outcome.modelContent;
-      receivedRealSource = content.contains(
-        'final class DevelopmentToolLoopStrategy',
-      );
+      final String content = outcomes.last.outcome.modelContent;
+      receivedRealSource =
+          content.contains('final class DevelopmentToolLoopStrategy') &&
+          content.contains('this.maxModelInvocations = 8');
       if (!receivedRealSource) {
         throw StateError(
           'The model did not receive real ADELE source content.',
@@ -284,16 +349,38 @@ final class _ReadFileModel implements ModelPort {
       yield ModelOutputItemCompleted(
         invocationId: request.invocationId,
         item: ModelTextOutput(
-          'The Environment contains DevelopmentToolLoopStrategy.',
+          '$discoveredPath declares DevelopmentToolLoopStrategy and defaults maxModelInvocations to 8.',
         ),
       );
     }
     yield ModelInvocationSettledEvent(
       invocationId: request.invocationId,
       settlement: ModelSettlement.completed,
-      metadata: ModelTerminalMetadata(effectiveModel: 'deterministic-read-v1'),
+      metadata: ModelTerminalMetadata(
+        effectiveModel: 'deterministic-search-read-v1',
+      ),
     );
   }
+}
+
+Future<ToolOutcome> _executeSearch(
+  MaterializedTool tool,
+  SessionId sessionId,
+) async {
+  final CanonicalToolArguments arguments = tool.executable.validateAndNormalize(
+    const <String, Object?>{'query': 'final class DevelopmentToolLoopStrategy'},
+  );
+  return (await tool.executable
+              .execute(
+                arguments,
+                ToolExecutionContext(
+                  runId: RunId('run-generation-search'),
+                  sessionId: sessionId,
+                ),
+              )
+              .single
+          as ToolExecutionTerminal)
+      .outcome;
 }
 
 Future<PluginCapabilityActivation> _startGeneration({
@@ -334,6 +421,16 @@ Future<String> _createSourceRepository({
   final File copiedSource = File('${source.path}/$_sourceRelativePath');
   await copiedSource.parent.create(recursive: true);
   await copiedSource.writeAsString(content);
+  final List<String> supportingPaths = <String>[
+    'README.md',
+    'app/lib/development/agent/development_agent_support.dart',
+  ];
+  for (final String relativePath in supportingPaths) {
+    final File maintained = File('$repository/$relativePath');
+    final File copied = File('${source.path}/$relativePath');
+    await copied.parent.create(recursive: true);
+    await copied.writeAsString(await maintained.readAsString());
+  }
   await _git(source, const <String>['init']);
   await _git(source, const <String>['config', 'user.name', 'ADELE Test']);
   await _git(source, const <String>[

@@ -219,6 +219,15 @@ final class _FileSystem implements AuthorizedEnvironmentFileSystem {
   final EnvironmentId environmentId = EnvironmentId('environment-1');
 
   @override
+  Future<EnvironmentDirectoryListing> readDirectory(String relativePath) async {
+    validateBinding();
+    return EnvironmentDirectoryListing(
+      relativePath: relativePath,
+      entries: const <EnvironmentDirectoryEntry>[],
+    );
+  }
+
+  @override
   Future<EnvironmentTextFile> readFile(String relativePath) async {
     validateBinding();
     paths.add(relativePath);

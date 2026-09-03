@@ -16,8 +16,10 @@ registry; shutting down a generation clears those objects but does not remove
 durable Git worktrees.
 
 The current filesystem surface is strict UTF-8 bounded `readFile` plus a
-bounded deterministic direct-child `readDirectory`. Mutation, search, command
-execution, release/destruction, and remote cloning are intentionally absent.
+bounded deterministic direct-child `readDirectory`. Search is intentionally
+not a provider method: Search Tools currently composes these operations and may
+later use generic Environment process execution. Mutation, command execution,
+release/destruction, and remote cloning are absent.
 
 Path canonicalization, symlink checks, and post-read validation provide
 application-level confinement equivalent to the maintained DevelopmentSource

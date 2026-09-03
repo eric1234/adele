@@ -120,4 +120,31 @@ final class _SessionEnvironmentFileSystem
       );
     }
   }
+
+  @override
+  Future<EnvironmentDirectoryListing> readDirectory(String relativePath) async {
+    validateBinding();
+    try {
+      return await _materialization.provider.readDirectory(
+        _authority.environmentId,
+        relativePath,
+      );
+    } on ProviderUnavailable catch (error) {
+      if (error.stale) {
+        throw AuthorizedEnvironmentBindingStale(
+          'The authorized Environment provider generation is stale.',
+          cause: error,
+        );
+      }
+      throw AuthorizedEnvironmentBindingUnavailable(
+        'The authorized Environment provider is unavailable.',
+        cause: error,
+      );
+    } on ProviderEndpointUnavailable catch (error) {
+      throw AuthorizedEnvironmentBindingUnavailable(
+        'The authorized Environment provider endpoint is unavailable.',
+        cause: error,
+      );
+    }
+  }
 }
