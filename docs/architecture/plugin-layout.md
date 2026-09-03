@@ -117,12 +117,13 @@ unproven.
 
 Maintained backend-only plugins additionally prove generated server streaming,
 multiple generation-bound configuration contexts, real HTTP/SSE model-provider
-integration, and bounded read-only source access.
+integration, Git Environment establishment/restoration, and bounded
+Session-authorized Environment reads composed by stock Filesystem and Search
+tool plugins.
 
 These proofs do **not** implement the accepted general recursive extension
-system, Project/Task/Session/Environment product lifecycle, production UI
+system, complete Project/Task/Session/Environment product lifecycle, production UI
 composition, plugin-defined extension API packaging/versioning, or sandboxing.
-The DevelopmentSource root is not the final Environment abstraction.
 
 Plugin-specific typed vertical tests belong to the plugin backend package that
 owns the implementation and contract. The shared backend host package tests

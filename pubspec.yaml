@@ -24,7 +24,6 @@ workspace:
   - plugins/resource_inspector
   - plugins/scripted_model
   - plugins/openai
-  - plugins/development_source
   - plugins/filesystem_tools
   - plugins/search_tools
   - plugins/git_environment

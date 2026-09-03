@@ -1,15 +1,23 @@
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_desktop/core/model_tool_host.dart';
+import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/development/agent/agent_capability_adapters.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
-import 'package:adele_desktop/development/agent/development_source_tools.dart';
 import 'package:adele_desktop/development/agent/simple_tool_loop_strategy.dart';
+import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
-import 'package:development_source_contract/development_source_contract.dart';
+import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
+import 'package:search_tools_plugin/search_tools_plugin.dart';
+
+const String _gitEnvironmentPluginId = 'dev.adele.plugin.git-environment';
+const String _gitEnvironmentProviderId = 'dev.adele.environment.git-worktree';
 
 void main() {
   final bool enabled =
@@ -18,7 +26,7 @@ void main() {
   late String dartaotruntime;
   late File hostArtifact;
   late File openAiArtifact;
-  late File developmentSourceArtifact;
+  late File gitEnvironmentArtifact;
 
   setUpAll(() async {
     if (!enabled) return;
@@ -31,9 +39,7 @@ void main() {
         '${File(dart).parent.path}/${Platform.isWindows ? 'dartaotruntime.exe' : 'dartaotruntime'}';
     hostArtifact = File('${artifacts.path}/host.aot');
     openAiArtifact = File('${artifacts.path}/openai.aot');
-    developmentSourceArtifact = File(
-      '${artifacts.path}/development-source.aot',
-    );
+    gitEnvironmentArtifact = File('${artifacts.path}/git-environment.aot');
     await Future.wait(<Future<void>>[
       _compile(
         dart,
@@ -49,8 +55,9 @@ void main() {
       ),
       _compile(
         dart,
-        '$repository/plugins/development_source/packages/backend/bin/development_source_backend.dart',
-        developmentSourceArtifact.path,
+        '$repository/plugins/git_environment/packages/backend/bin/'
+        'git_environment_backend.dart',
+        gitEnvironmentArtifact.path,
         repository,
       ),
     ]);
@@ -61,6 +68,17 @@ void main() {
     () async {
       const String strategyPath =
           'app/lib/development/agent/simple_tool_loop_strategy.dart';
+      final Directory container = await Directory.systemTemp.createTemp(
+        'adele-chatgpt-environment-source-',
+      );
+      addTearDown(() async {
+        if (await container.exists()) await container.delete(recursive: true);
+      });
+      final Directory sourceRepository = Directory('${container.path}/source');
+      await _createSourceRepository(
+        repository: repository,
+        source: sourceRepository,
+      );
       final String credentialPath = _requiredEnvironment(
         'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE',
       );
@@ -105,21 +123,17 @@ void main() {
         configurationContext: 'chatgpt-experimental',
       );
       addTearDown(model.close);
-      final _Activation source = await _startProvider(
-        host: host,
-        registry: registry,
-        pluginId: 'dev.adele.plugin.development-source',
-        artifact: developmentSourceArtifact,
-        descriptor: ProviderDescriptor(
-          id: ProviderId('dev.adele.development-source.local'),
-          capability: developmentSourceCapability,
-          pluginId: 'dev.adele.plugin.development-source',
-          displayName: 'ADELE Development Source',
-          serviceId: developmentSourceServiceId,
-        ),
-        arguments: <String>[repository],
+      final ProviderId environmentProviderId = ProviderId(
+        _gitEnvironmentProviderId,
       );
-      addTearDown(source.close);
+      final PluginCapabilityActivation environmentActivation =
+          await _startEnvironmentProvider(
+            host: host,
+            registry: registry,
+            artifact: gitEnvironmentArtifact,
+            providerId: environmentProviderId,
+          );
+      addTearDown(environmentActivation.close);
       final ModelProviderCapabilityAdapter modelAdapter =
           ModelProviderCapabilityAdapter(
             registry.resolve(
@@ -130,21 +144,60 @@ void main() {
                 Platform.environment['ADELE_OPENAI_CHATGPT_TEST_MODEL'] ??
                 'gpt-5.4',
           );
-      final ProviderBinding sourceBinding = registry.resolve(
-        developmentSourceCapability,
+      final ProviderBinding environmentBinding = registry.resolve(
+        environmentProviderCapability,
+        providerId: environmentProviderId,
       );
-      final DevelopmentSourceSearchToolExecutable searchTool =
-          DevelopmentSourceSearchToolExecutable(sourceBinding);
-      final DevelopmentSourceReadToolExecutable readTool =
-          DevelopmentSourceReadToolExecutable(sourceBinding);
-      final DevelopmentSessionHistory session =
-          DevelopmentSessionHistory(
-            SessionId('session-chatgpt-source-live'),
-          )..append(
-            UserSessionMessage(
-              'Use the provided source tools. Locate the file that declares DevelopmentToolLoopStrategy, read that file, and report the exact root-relative path plus the default maximum model invocation count. You must inspect the source rather than answer from memory.',
-            ),
+      final InMemoryProductStore store = InMemoryProductStore();
+      final ProductLifecycleCoordinator lifecycle =
+          ProductLifecycleCoordinator.generated(
+            store: store,
+            registry: registry,
+            ids: const _IntegrationIds(),
           );
+      final Project project = lifecycle.createProject(sourceRepository.uri);
+      final TaskCreationResult created = await lifecycle.createTask(
+        projectId: project.id,
+        title: 'Inspect ADELE source with ChatGPT',
+        providerId: environmentProviderId,
+      );
+      final SessionId sessionId = SessionId('session-chatgpt-source-live');
+      final SessionEnvironmentAuthority authority = store.associateSession(
+        sessionId: sessionId,
+        taskId: created.task.id,
+      );
+      expect(authority.environmentId, created.environment.id);
+      final ProviderBinding materializedEnvironmentBinding = lifecycle
+          .environmentRuntime
+          .currentMaterialization(created.environment.id)!
+          .binding;
+      expect(
+        materializedEnvironmentBinding.provider,
+        same(environmentBinding.provider),
+      );
+      expect(
+        materializedEnvironmentBinding.requestChannel,
+        same(environmentBinding.requestChannel),
+      );
+      final ExtensionRegistry extensions = ExtensionRegistry();
+      final ExtensionRegistration filesystemActivation =
+          const FilesystemToolsPlugin().activate(extensions);
+      addTearDown(filesystemActivation.close);
+      final ExtensionRegistration searchActivation = const SearchToolsPlugin()
+          .activate(extensions);
+      addTearDown(searchActivation.close);
+      final ToolCatalog catalog = await buildModelToolCatalogForSession(
+        sessionId: sessionId,
+        environmentRuntime: lifecycle.environmentRuntime,
+        extensions: extensions,
+      );
+      final DevelopmentSessionHistory
+      session = DevelopmentSessionHistory(sessionId)
+        ..append(
+          UserSessionMessage(
+            'Locate the maintained ADELE file that declares DevelopmentToolLoopStrategy. Use search to locate it, then use read_file on the returned relative path. Report the exact relative path and the default maxModelInvocations value. You must inspect the source rather than answer from memory.',
+          ),
+        );
       final AgentRun run = AgentRun(
         id: RunId('run-chatgpt-source-live'),
         sessionId: session.id,
@@ -154,20 +207,61 @@ void main() {
         session: session,
         contextAssembler: const DevelopmentContextAssembler(
           instructions:
-              'You must call search_source_text for "final class DevelopmentToolLoopStrategy", then call read_source_file with the returned path before answering. Report the path and the default maxModelInvocations value from the file.',
+              'You must call search for "final class DevelopmentToolLoopStrategy", then call read_file with the relative path returned by search before answering.',
         ),
         model: modelAdapter,
-        toolCatalog: ToolCatalog()
-          ..register(searchTool.registration)
-          ..register(readTool.registration),
+        toolCatalog: catalog,
         policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
       );
 
       await strategy.start();
 
       expect(run.state, RunState.completed);
-      expect(searchTool.invocationCount, greaterThanOrEqualTo(1));
-      expect(readTool.invocationCount, greaterThanOrEqualTo(1));
+      final List<ToolInvocationPrepared> prepared = run.journal.records
+          .map((ExecutionEventRecord record) => record.event)
+          .whereType<ToolInvocationPrepared>()
+          .toList(growable: false);
+      final Iterable<String> aliases = prepared.map(
+        (event) => event.invocation.tool.modelDefinition.alias,
+      );
+      expect(aliases, containsAllInOrder(<String>['search', 'read_file']));
+      expect(aliases.toSet(), <String>{'search', 'read_file'});
+      expect(
+        prepared.map((event) => event.invocation.tool.definition.id.value),
+        contains('dev.adele.plugin.search-tools.search'),
+      );
+      expect(
+        prepared.map((event) => event.invocation.tool.definition.id.value),
+        contains('dev.adele.plugin.filesystem-tools.read-file'),
+      );
+      final List<ToolExecutionCompleted> completed = run.journal.records
+          .map((ExecutionEventRecord record) => record.event)
+          .whereType<ToolExecutionCompleted>()
+          .toList(growable: false);
+      expect(
+        completed.map((event) => event.outcome.disposition),
+        everyElement(ToolOutcomeDisposition.success),
+      );
+      expect(
+        completed.map((event) => event.outcome.hostData['environmentId']),
+        everyElement(authority.environmentId.value),
+      );
+      expect(
+        completed.map((event) => event.outcome.hostData['matches']),
+        contains(
+          contains(
+            isA<Map<String, Object?>>().having(
+              (match) => match['relativePath'],
+              'relativePath',
+              strategyPath,
+            ),
+          ),
+        ),
+      );
+      expect(
+        completed.map((event) => event.outcome.hostData['relativePath']),
+        contains(strategyPath),
+      );
       final String answer =
           (session.snapshot().entries.last as AssistantSessionMessage).content;
       expect(answer.trim(), isNotEmpty);
@@ -175,7 +269,9 @@ void main() {
       expect(answer.toLowerCase(), anyOf(contains('8'), contains('eight')));
 
       await model.close();
-      await source.close();
+      await searchActivation.close();
+      await filesystemActivation.close();
+      await environmentActivation.close();
       await host.close();
     },
     skip: enabled
@@ -183,6 +279,75 @@ void main() {
         : 'Set ADELE_OPENAI_CHATGPT_LIVE_TEST=1 and provide the existing local credential file to enable the experimental source-coding smoke.',
     timeout: const Timeout(Duration(minutes: 6)),
   );
+}
+
+Future<PluginCapabilityActivation> _startEnvironmentProvider({
+  required PluginBackendHost host,
+  required CapabilityRegistry registry,
+  required File artifact,
+  required ProviderId providerId,
+}) async {
+  final PluginBackendConnection connection = await host.startPlugin(
+    pluginId: _gitEnvironmentPluginId,
+    artifactUri: artifact.uri,
+  );
+  return PluginCapabilityActivation.register(
+    connection: connection,
+    registry: registry,
+    exposures: <PluginCapabilityExposure>[
+      PluginCapabilityExposure(
+        provider: ProviderDescriptor(
+          id: providerId,
+          capability: environmentProviderCapability,
+          pluginId: connection.pluginId,
+          displayName: 'Git Worktree Environment',
+          serviceId: environmentProviderServiceId,
+        ),
+        configurationContext: connection.defaultConfigurationContext,
+      ),
+    ],
+  );
+}
+
+Future<void> _createSourceRepository({
+  required String repository,
+  required Directory source,
+}) async {
+  const List<String> sourcePaths = <String>[
+    'README.md',
+    'app/lib/development/agent/development_agent_support.dart',
+    'app/lib/development/agent/simple_tool_loop_strategy.dart',
+  ];
+  await source.create(recursive: true);
+  for (final String relativePath in sourcePaths) {
+    final File copied = File('${source.path}/$relativePath');
+    await copied.parent.create(recursive: true);
+    await File('$repository/$relativePath').copy(copied.path);
+  }
+  await _git(source, const <String>['init']);
+  await _git(source, const <String>['config', 'user.name', 'ADELE Test']);
+  await _git(source, const <String>[
+    'config',
+    'user.email',
+    'adele@example.invalid',
+  ]);
+  await _git(source, const <String>['add', '.']);
+  await _git(source, const <String>[
+    'commit',
+    '-m',
+    'Add ADELE source fixture',
+  ]);
+}
+
+Future<void> _git(Directory source, List<String> arguments) async {
+  final ProcessResult result = await Process.run('git', <String>[
+    '-C',
+    source.path,
+    ...arguments,
+  ]);
+  if (result.exitCode != 0) {
+    throw StateError('git ${arguments.join(' ')} failed: ${result.stderr}');
+  }
 }
 
 Future<_Activation> _startProvider({
@@ -263,4 +428,18 @@ final class _Activation {
     await registration.close();
     if (!connection.isClosed) await connection.close();
   }
+}
+
+final class _IntegrationIds implements ProductIdSource {
+  const _IntegrationIds();
+
+  @override
+  EnvironmentId nextEnvironmentId() =>
+      EnvironmentId('environment-chatgpt-source-live');
+
+  @override
+  ProjectId nextProjectId() => ProjectId('project-chatgpt-source-live');
+
+  @override
+  TaskId nextTaskId() => TaskId('task-chatgpt-source-live');
 }

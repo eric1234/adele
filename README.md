@@ -11,7 +11,7 @@ Phase I    dynamic plugin runtime proof
 Phase II   generated unary + server-streaming/cancellation transport
 Phase III  active capability registry and exact-generation routing
 Phase IV   provider-neutral agent execution + real model/source coding vertical
-Phase V-A  Project/Task/Environment spine + Session-authorized Read File
+Phase V-A  Session-authorized plugin-composed Environment read/search
 ```
 
 Interpreted Flutter frontends and locally compiled AOT backends run through one
@@ -40,25 +40,21 @@ explicitly experimental ChatGPT subscription-backed route. The latter is
 positive interoperability evidence, not a documented/stable third-party OpenAI
 integration contract.
 
-The provisional backend-only DevelopmentSource capability and its
-source-search/source-read model tools remain maintained for the Phase IV
-OpenAI/ChatGPT path. Phase V-A now also establishes durable Project, Task, and
-Environment values and binds provisional agent Sessions authoritatively to one
-Task-associated Environment. Active plugin generations can contribute
-contextual model tools through the generic extension registry. The independent
-stock Filesystem Tools and Search Tools plugins own `read_file` and `search`,
-while a Session-scoped host facade supplies only the authorized Environment
-filesystem. Search recursively composes `readDirectory` and `readFile` in Dart;
-it is not an Environment provider method. Deterministic AOT integration proves
-a Run can discover and read copied real ADELE source, retire either the Search
-plugin or Environment provider generation, restore fresh generations, and
-leave old materializations stale.
+Phase V-A establishes durable Project, Task, and Environment values and binds
+provisional agent Sessions authoritatively to one Task-associated Environment.
+Active plugin generations contribute contextual model tools through the generic
+extension registry. The independent stock Filesystem Tools and Search Tools
+plugins own `read_file` and `search`, while a Session-scoped host facade supplies
+only the authorized Environment filesystem. Search recursively composes
+`readDirectory` and `readFile` in Dart; it is not an Environment provider
+method.
 
-ADELE can therefore inspect its own source through both the maintained Phase IV
-path and a Session-authorized Environment Search-to-Read path. It cannot yet
-modify or validate its own source through this workflow. DevelopmentSource
-remains temporarily maintained until the OpenAI/ChatGPT source-coding consumers
-migrate in V-A5.
+The OpenAI API-key and experimental ChatGPT source-coding paths now use this
+plugin-composed, Session-authorized Environment tool path. Deterministic AOT
+integration proves recursive discovery and reading of copied maintained ADELE
+source, real-model continuation, and generation-safe replacement of tool and
+Environment-provider generations. ADELE cannot yet modify or validate its own
+source through this workflow.
 
 ## Accepted long-term architecture beyond the current implementation
 
@@ -183,7 +179,6 @@ plugins/workspace_demo/      internal source-plugin reference fixture
 plugins/resource_inspector/  Phase III two-provider capability fixture
 plugins/scripted_model/      deterministic ModelProvider/transport fixture
 plugins/openai/              real OpenAI ModelProvider; ChatGPT route experimental
-plugins/development_source/  bounded read-only configured source capability
 plugins/filesystem_tools/    stock Session-authorized Read File tool
 plugins/search_tools/        stock Session-authorized literal Search tool
 plugins/git_environment/     Git worktree Environment provider
@@ -262,27 +257,31 @@ See `docs/architecture/profiles-and-configuration.md`.
 
 ## Next Work
 
-**Phase IV is complete.**
+**Phases IV and V-A are complete.**
 
 Phase V-A1 established the Project-to-Task-to-primary-Environment spine and
 stock Git worktree provider. V-A2 connected provisional Session authority to
-Environment-backed reads. V-A3 adds generic extension registration/liveness,
+Environment-backed reads. V-A3 added generic extension registration/liveness,
 a public model-tool contribution path, and stock plugin-owned `read_file` with
 independent tool-plugin and Environment-provider generation safety. The former
 application-owned Read File executable was transitional and is removed.
 
-V-A4 adds Session-authorized directory access and independent stock
+V-A4 added Session-authorized directory access and independent stock
 plugin-owned `search`. Its bounded deterministic literal search is native Dart
 traversal over the provider-neutral Environment filesystem, and deterministic
 integration proves Search-to-Read discovery against copied maintained source.
 The implementation may later use `rg` or `grep` through future Environment
 process execution without moving Search semantics into `EnvironmentProvider`.
 
-The final V-A slice remains: migrate the OpenAI/ChatGPT source-coding path,
-retire DevelopmentSource, and complete the real-model plugin-composed read-only
-self-inspection proof. Source mutation/editing, Environment-backed
-command/validation execution, complete strategy-bound Session lifecycle, and
-SCM/review integration remain later work rather than settled interfaces.
+V-A5 migrated the OpenAI API-key and experimental ChatGPT source-coding paths to
+the Session-authorized Environment tool composition, retired the provisional
+Phase IV DevelopmentSource capability, and completed the real-model
+plugin-composed read-only self-inspection proof. `DevelopmentToolLoopStrategy`
+remains application-owned provisional orchestration. Production
+orchestration-strategy registration/binding and a plugin-owned Chat strategy,
+source mutation/editing, Environment-backed command/validation execution,
+complete strategy-bound Session lifecycle, and SCM/review integration remain
+later work rather than settled interfaces.
 
 Implementation should introduce the smallest concrete extension boundaries
 needed by those verticals rather than build a speculative universal framework

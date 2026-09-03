@@ -93,7 +93,7 @@ The maintained repository does **not** yet implement this complete product-domai
 - The application owns one provisional authoritative `SessionId -> TaskId + EnvironmentId` relation and uses it to materialize an Environment filesystem facade for independently contributed `search` and `read_file` tools; Run and generic tool context do not independently select Environment.
 - A deterministic agent Run recursively searches then reads real copied ADELE source through a real Git Environment. Search semantics remain in Search Tools rather than `EnvironmentProvider`, and integration coverage proves old tool bindings remain stale while fresh access restores the durable Environment through a replacement provider generation.
 - Task Browser, the complete strategy-bound Session aggregate/lifecycle, the core/public orchestration-strategy registry, the public strategy execution facade, child Session lifecycle, and parent Session presentation are not implemented.
-- The DevelopmentSource plugin remains maintained pending V-A5 OpenAI/ChatGPT source-coding migration and DevelopmentSource retirement.
+- Phase V-A5 migrated the OpenAI API-key and experimental ChatGPT source-coding consumers to the Session-authorized Environment tool composition and retired the provisional DevelopmentSource plugin.
 
 The current implementation remains valid evidence for the narrower vertical. Future APIs should migrate toward this accepted direction as concrete features are built.
 

@@ -131,7 +131,7 @@ Active capability endpoints are bound to one opaque, generation-specific configu
 
 ADELE does not yet have a generic host-wide configured-instance persistence, account, or secrets framework. The OpenAI plugin has a private experimental credential implementation for its ChatGPT proof; that implementation does not define a generic capability contract. Generic configured-instance discovery, selection, persistence, and profile-aware lifecycle remain deferred.
 
-The provisional DevelopmentSource plugin also illustrates the distinction between a sustained capability and model tools. Application composition projects its generation-bound read/search service into source-search and source-read tools; those tools are not separate ADELE capabilities and do not establish final Environment semantics.
+The retired DevelopmentSource plugin historically illustrated the distinction between a sustained capability and model tools: application composition projected its generation-bound read/search Service into source-search and source-read tools. Phase V-A replaced that provisional path with stock plugin-contributed tools over Session-authorized Environment access; neither design makes each model tool a separate ADELE capability.
 
 ## Runtime resources
 

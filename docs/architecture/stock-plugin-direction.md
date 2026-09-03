@@ -15,7 +15,7 @@ The expected stock composition should be read alongside:
 - [`agent-tooling-direction.md`](agent-tooling-direction.md), which describes model tools and execution presentation;
 - [`../mockups/README.md`](../mockups/README.md), which shows the default development UX produced by a stock plugin/configuration set.
 
-The maintained codebase currently implements only a small subset of this topology: source-plugin runtime/build infrastructure, generated contracts, active capability routing, the common ModelProvider, OpenAI provider work, a bounded DevelopmentSource capability, and a provisional application orchestration strategy. Most stock plugins below do not yet exist.
+The maintained codebase currently implements only a small subset of this topology: source-plugin runtime/build infrastructure, generated contracts, active capability routing, the common ModelProvider and OpenAI provider, initial Project/Task/Environment and Session-authority infrastructure, a Git Worktree Environment provider, generic model-tool registration, stock Filesystem Tools and Search Tools plugins, and a provisional application orchestration strategy. Most stock plugins below do not yet exist.
 
 ---
 
