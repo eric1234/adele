@@ -248,6 +248,7 @@ final class _SearchExecutable implements ToolExecutable {
             state.readOccurred = true;
             await _searchListing(nested, state);
           } on EnvironmentFailure {
+            state.incomplete = true;
             continue;
           }
         case EnvironmentDirectoryEntryKind.other:
@@ -301,6 +302,8 @@ final class _SearchExecutable implements ToolExecutable {
           '${match.relativePath}:${match.lineNumber}: ${match.snippet}',
       ],
       if (state.truncated) 'Result set truncated.',
+      if (state.incomplete)
+        'Search incomplete: one or more directories could not be inspected.',
     ].join('\n');
     return ToolOutcome(
       disposition: ToolOutcomeDisposition.success,
@@ -321,6 +324,7 @@ final class _SearchExecutable implements ToolExecutable {
         },
     ],
     'truncated': state.truncated,
+    'incomplete': state.incomplete,
     'environmentId': _fileSystem.environmentId.value,
   };
 
@@ -339,6 +343,7 @@ final class _SearchState {
   int entries = 0;
   int searchedBytes = 0;
   bool truncated = false;
+  bool incomplete = false;
   bool readOccurred = false;
 
   bool get stopped => truncated || matches.length == 100;
@@ -408,6 +413,7 @@ ToolOutcome _failure(
         },
     ],
     'truncated': state.truncated,
+    'incomplete': state.incomplete,
     'environmentId': environmentId,
   },
   hostDiagnostic: cause.toString(),

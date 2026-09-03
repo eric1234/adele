@@ -121,6 +121,7 @@ void main() {
         expect(outcome.hostData['query'], r'a.*[x]');
         expect(outcome.hostData['environmentId'], 'environment-1');
         expect(outcome.hostData['truncated'], isFalse);
+        expect(outcome.hostData['incomplete'], isFalse);
       },
     );
 
@@ -150,24 +151,54 @@ void main() {
       expect(fileSystem.directoryReads, <String>['']);
     });
 
-    test('skips per-file and nested-directory domain failures', () async {
-      final _FileSystem fileSystem = _FileSystem(
-        directories: <String, List<EnvironmentDirectoryEntry>>{
-          '': <EnvironmentDirectoryEntry>[
-            _directory('broken', 'broken'),
-            _file('broken.txt'),
-            _file('good.txt'),
-          ],
-        },
-        files: <String, String>{'good.txt': 'needle'},
-        directoryErrors: <String, Object>{'broken': _environmentFailure},
-        fileErrors: <String, Object>{'broken.txt': _environmentFailure},
-      );
+    test(
+      'marks nested failure incomplete and searches unaffected siblings',
+      () async {
+        final _FileSystem fileSystem = _FileSystem(
+          directories: <String, List<EnvironmentDirectoryEntry>>{
+            '': <EnvironmentDirectoryEntry>[
+              _directory('broken', 'broken'),
+              _file('broken.txt'),
+              _file('good.txt'),
+            ],
+          },
+          files: <String, String>{'good.txt': 'needle'},
+          directoryErrors: <String, Object>{'broken': _environmentFailure},
+          fileErrors: <String, Object>{'broken.txt': _environmentFailure},
+        );
 
-      final ToolOutcome outcome = await _run(fileSystem, 'needle');
-      expect(outcome.disposition, ToolOutcomeDisposition.success);
-      expect(_matchLocations(outcome), <String>['good.txt:1']);
-    });
+        final ToolOutcome outcome = await _run(fileSystem, 'needle');
+        expect(outcome.disposition, ToolOutcomeDisposition.success);
+        expect(_matchLocations(outcome), <String>['good.txt:1']);
+        expect(fileSystem.fileReads, <String>['broken.txt', 'good.txt']);
+        expect(outcome.hostData['incomplete'], isTrue);
+        expect(outcome.hostData['truncated'], isFalse);
+        expect(outcome.modelContent, contains('Search incomplete:'));
+      },
+    );
+
+    test(
+      'does not report a skipped-only search as exhaustively empty',
+      () async {
+        final _FileSystem fileSystem = _FileSystem(
+          directories: <String, List<EnvironmentDirectoryEntry>>{
+            '': <EnvironmentDirectoryEntry>[
+              _directory('unavailable', 'unavailable'),
+            ],
+          },
+          directoryErrors: <String, Object>{'unavailable': _environmentFailure},
+        );
+
+        final ToolOutcome outcome = await _run(fileSystem, 'needle');
+        expect(outcome.disposition, ToolOutcomeDisposition.success);
+        expect(outcome.hostData['matches'], isEmpty);
+        expect(outcome.hostData['incomplete'], isTrue);
+        expect(outcome.hostData['truncated'], isFalse);
+        expect(outcome.modelContent, contains('No matches.'));
+        expect(outcome.modelContent, contains('Search incomplete:'));
+        expect(outcome.modelContent, isNot('Search results:\nNo matches.'));
+      },
+    );
 
     test('reports no matches predictably', () async {
       final _FileSystem fileSystem = _FileSystem(
@@ -181,6 +212,7 @@ void main() {
       expect(outcome.modelContent, 'Search results:\nNo matches.');
       expect(outcome.hostData['matches'], isEmpty);
       expect(outcome.hostData['truncated'], isFalse);
+      expect(outcome.hostData['incomplete'], isFalse);
     });
 
     test('root directory domain failure fails the search', () async {
@@ -240,6 +272,7 @@ void main() {
 
       expect((outcome.hostData['matches']! as List<Object?>), hasLength(100));
       expect(outcome.hostData['truncated'], isTrue);
+      expect(outcome.hostData['incomplete'], isFalse);
     });
 
     test('limits traversed entries to 10000', () async {
