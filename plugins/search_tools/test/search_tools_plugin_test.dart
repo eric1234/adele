@@ -22,6 +22,12 @@ void main() {
 
       expect(tool.definition.id.value, 'dev.adele.plugin.search-tools.search');
       expect(tool.modelDefinition.alias, 'search');
+      expect(
+        tool.modelDefinition.description,
+        contains('stock search defaults'),
+      );
+      expect(tool.modelDefinition.description, contains('.git'));
+      expect(tool.modelDefinition.description, contains('node_modules'));
       expect(tool.modelDefinition.argumentsSchema['required'], const <Object?>[
         'query',
       ]);
@@ -125,32 +131,93 @@ void main() {
       },
     );
 
-    test('excludes named directories and ignores other entry kinds', () async {
-      final List<EnvironmentDirectoryEntry> root = <EnvironmentDirectoryEntry>[
-        for (final String name in <String>[
-          '.git',
-          '.dart_tool',
-          'build',
-          'node_modules',
-        ])
-          _directory(name, name),
-        const EnvironmentDirectoryEntry(
-          name: 'link',
-          relativePath: 'link',
-          kind: EnvironmentDirectoryEntryKind.other,
-        ),
-        _file('visible.txt'),
-      ];
+    test('encodes unusual model-visible paths as one JSON record', () async {
+      const String relativePath =
+          'odd\ncarriage\rseparator\u2028paragraph\u2029"\\source.dart';
       final _FileSystem fileSystem = _FileSystem(
-        directories: <String, List<EnvironmentDirectoryEntry>>{'': root},
-        files: <String, String>{'visible.txt': 'needle'},
+        directories: <String, List<EnvironmentDirectoryEntry>>{
+          '': <EnvironmentDirectoryEntry>[_file(relativePath)],
+        },
+        files: <String, String>{
+          relativePath: r'needle with "quotes" and a \ backslash',
+        },
       );
 
       final ToolOutcome outcome = await _run(fileSystem, 'needle');
-      expect(_matchLocations(outcome), <String>['visible.txt:1']);
-      expect(fileSystem.directoryReads, <String>['']);
-      expect(outcome.hostData['incomplete'], isFalse);
+      final Map<String, Object?> hostMatch =
+          (outcome.hostData['matches']! as List<Object?>).single!
+              as Map<String, Object?>;
+      final List<String> modelLines = outcome.modelContent.split('\n');
+      final String encodedMatch = modelLines.singleWhere(
+        (String line) => line.startsWith('{'),
+      );
+      final Map<String, Object?> decodedMatch =
+          jsonDecode(encodedMatch) as Map<String, Object?>;
+
+      expect(hostMatch['relativePath'], relativePath);
+      expect(modelLines, hasLength(2));
+      expect(encodedMatch, isNot(contains('\r')));
+      expect(encodedMatch, isNot(contains('\u2028')));
+      expect(encodedMatch, isNot(contains('\u2029')));
+      expect(decodedMatch['relativePath'], relativePath);
+      expect(
+        decodedMatch['snippet'],
+        r'needle with "quotes" and a \ backslash',
+      );
     });
+
+    test(
+      'discloses intentional exclusions without marking incomplete',
+      () async {
+        final List<EnvironmentDirectoryEntry> root =
+            <EnvironmentDirectoryEntry>[
+              for (final String name in <String>[
+                '.git',
+                '.dart_tool',
+                'build',
+                'node_modules',
+              ])
+                _directory(name, name),
+              const EnvironmentDirectoryEntry(
+                name: 'link',
+                relativePath: 'link',
+                kind: EnvironmentDirectoryEntryKind.other,
+              ),
+              _file('visible.txt'),
+            ];
+        final _FileSystem fileSystem = _FileSystem(
+          directories: <String, List<EnvironmentDirectoryEntry>>{
+            '': root,
+            for (final String name in <String>[
+              '.git',
+              '.dart_tool',
+              'build',
+              'node_modules',
+            ])
+              name: <EnvironmentDirectoryEntry>[_file('$name/hidden.txt')],
+          },
+          files: <String, String>{
+            'visible.txt': 'haystack',
+            for (final String name in <String>[
+              '.git',
+              '.dart_tool',
+              'build',
+              'node_modules',
+            ])
+              '$name/hidden.txt': 'needle',
+          },
+        );
+
+        final ToolOutcome outcome = await _run(fileSystem, 'needle');
+        expect(outcome.hostData['matches'], isEmpty);
+        expect(fileSystem.directoryReads, <String>['']);
+        expect(fileSystem.fileReads, <String>['visible.txt']);
+        expect(outcome.hostData['incomplete'], isFalse);
+        expect(outcome.hostData['truncated'], isFalse);
+        expect(outcome.modelContent, contains('Scope note:'));
+        expect(outcome.modelContent, contains('stock search defaults'));
+      },
+    );
 
     test(
       'marks nested failure incomplete and searches unaffected siblings',
@@ -216,6 +283,54 @@ void main() {
       expect(outcome.modelContent, contains('files or directories'));
     });
 
+    test('exactly 32 failed file reads do not imply truncation', () async {
+      final List<String> paths = <String>[
+        for (int index = 0; index < 32; index++)
+          'failed-${index.toString().padLeft(2, '0')}.txt',
+      ];
+      final _FileSystem fileSystem = _FileSystem(
+        directories: <String, List<EnvironmentDirectoryEntry>>{
+          '': <EnvironmentDirectoryEntry>[
+            for (final String path in paths) _file(path),
+          ],
+        },
+        fileErrors: <String, Object>{
+          for (final String path in paths) path: _environmentFailure,
+        },
+      );
+
+      final ToolOutcome outcome = await _run(fileSystem, 'needle');
+      expect(fileSystem.fileReads, paths);
+      expect(outcome.hostData['incomplete'], isTrue);
+      expect(outcome.hostData['truncated'], isFalse);
+    });
+
+    test('failed file read limit prevents a 33rd attempt', () async {
+      final List<String> failedPaths = <String>[
+        for (int index = 0; index < 32; index++)
+          'failed-${index.toString().padLeft(2, '0')}.txt',
+      ];
+      final _FileSystem fileSystem = _FileSystem(
+        directories: <String, List<EnvironmentDirectoryEntry>>{
+          '': <EnvironmentDirectoryEntry>[
+            for (final String path in failedPaths) _file(path),
+            _file('z-next.txt'),
+          ],
+        },
+        files: <String, String>{'z-next.txt': 'needle'},
+        fileErrors: <String, Object>{
+          for (final String path in failedPaths) path: _environmentFailure,
+        },
+      );
+
+      final ToolOutcome outcome = await _run(fileSystem, 'needle');
+      expect(fileSystem.fileReads, failedPaths);
+      expect(outcome.hostData['matches'], isEmpty);
+      expect(outcome.hostData['incomplete'], isTrue);
+      expect(outcome.hostData['truncated'], isTrue);
+      expect(outcome.modelContent, contains('Search truncated:'));
+    });
+
     test(
       'does not report a skipped-only search as exhaustively empty',
       () async {
@@ -248,7 +363,8 @@ void main() {
       );
 
       final ToolOutcome outcome = await _run(fileSystem, 'needle');
-      expect(outcome.modelContent, 'Search results:\nNo matches.');
+      expect(outcome.modelContent, startsWith('Search results:\nNo matches.'));
+      expect(outcome.modelContent, contains('Scope note:'));
       expect(outcome.hostData['matches'], isEmpty);
       expect(outcome.hostData['truncated'], isFalse);
       expect(outcome.hostData['incomplete'], isFalse);

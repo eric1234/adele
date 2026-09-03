@@ -42,6 +42,7 @@ final class _SearchExecutable implements ToolExecutable {
   static const int _maxMatches = 100;
   static const int _maxEntries = 10000;
   static const int _maxSearchedBytes = 16 * 1024 * 1024;
+  static const int _maxFailedFileReads = 32;
   static const int _maxSnippetCodeUnits = 500;
   static const Set<String> _excludedDirectories = <String>{
     '.git',
@@ -60,7 +61,9 @@ final class _SearchExecutable implements ToolExecutable {
     modelDefinition: ModelToolDefinition(
       alias: 'search',
       description:
-          'Recursively search Environment text files for one literal query.',
+          'Recursively search Environment text files for one literal query. '
+          'Current stock search defaults exclude common generated, dependency, '
+          'and metadata directories: .git, .dart_tool, build, and node_modules.',
       argumentsSchema: const <String, Object?>{
         'type': 'object',
         'required': <Object?>['query'],
@@ -258,11 +261,16 @@ final class _SearchExecutable implements ToolExecutable {
   }
 
   Future<void> _searchFile(String relativePath, _SearchState state) async {
+    if (state.failedFileReads >= _maxFailedFileReads) {
+      state.truncated = true;
+      return;
+    }
     EnvironmentTextFile file;
     try {
       file = await _fileSystem.readFile(relativePath);
       state.readOccurred = true;
     } on EnvironmentFailure {
+      state.failedFileReads++;
       state.incomplete = true;
       return;
     }
@@ -300,8 +308,10 @@ final class _SearchExecutable implements ToolExecutable {
         'No matches.'
       else ...<String>[
         for (final _SearchMatch match in state.matches)
-          '${match.relativePath}:${match.lineNumber}: ${match.snippet}',
+          _encodeModelMatch(match),
       ],
+      if (state.matches.isEmpty)
+        'Scope note: current stock search defaults exclude common generated, dependency, and metadata directories.',
       if (state.truncated)
         'Search truncated: a configured search limit was reached.',
       if (state.incomplete)
@@ -344,6 +354,7 @@ final class _SearchState {
   final List<_SearchMatch> matches = <_SearchMatch>[];
   int entries = 0;
   int searchedBytes = 0;
+  int failedFileReads = 0;
   bool truncated = false;
   bool incomplete = false;
   bool readOccurred = false;
@@ -362,6 +373,12 @@ final class _SearchMatch {
   final int lineNumber;
   final String snippet;
 }
+
+String _encodeModelMatch(_SearchMatch match) => jsonEncode(<String, Object?>{
+  'relativePath': match.relativePath,
+  'lineNumber': match.lineNumber,
+  'snippet': match.snippet,
+}).replaceAll('\u2028', r'\u2028').replaceAll('\u2029', r'\u2029');
 
 final class _SessionAuthorityViolation implements Exception {
   const _SessionAuthorityViolation(this.message);

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
@@ -310,15 +311,21 @@ final class _SearchReadModel implements ModelPort {
         ),
       );
     } else if (outcomes.length == 1) {
-      final List<Object?> matches =
-          outcomes.single.outcome.hostData['matches']! as List<Object?>;
-      if (matches.length != 1) {
+      final List<String> encodedMatches = outcomes.single.outcome.modelContent
+          .split('\n')
+          .where((String line) => line.startsWith('{'))
+          .toList(growable: false);
+      if (encodedMatches.length != 1) {
         throw StateError(
           'Search did not identify exactly one maintained file.',
         );
       }
-      discoveredPath =
-          (matches.single! as Map<String, Object?>)['relativePath']! as String;
+      final Object? decodedMatch = jsonDecode(encodedMatches.single);
+      if (decodedMatch is! Map<String, Object?> ||
+          decodedMatch['relativePath'] is! String) {
+        throw StateError('Search returned an invalid model-visible match.');
+      }
+      discoveredPath = decodedMatch['relativePath']! as String;
       yield ModelOutputItemCompleted(
         invocationId: request.invocationId,
         item: ModelToolProposalOutput(
