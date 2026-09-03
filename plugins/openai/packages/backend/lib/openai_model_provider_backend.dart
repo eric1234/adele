@@ -937,13 +937,18 @@ final class _ResponsesNormalizer {
   }
 
   void _settleError(Map<String, Object?> event) {
+    final Map<String, Object?> error = event['error'] is Map<String, Object?>
+        ? event['error']! as Map<String, Object?>
+        : event;
     settled = true;
     emit(
       _terminalEvent(
         _failedTerminal(
           ModelProviderFailureKind.providerFailure,
-          _optionalString(event['code']) ?? 'provider_error',
-          _optionalString(event['message']) ?? 'OpenAI reported an error.',
+          _optionalString(error['code']) ??
+              _optionalString(error['type']) ??
+              'provider_error',
+          _optionalString(error['message']) ?? 'OpenAI reported an error.',
           requestId: requestId,
         ),
       ),
