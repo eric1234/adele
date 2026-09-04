@@ -767,6 +767,225 @@ void main() {
       throwsA(_failureWithCode('directory_too_large')),
     );
   });
+
+  test('conditionally replaces existing text files by revision', () async {
+    final ({Directory container, Directory source}) fixture =
+        await _createRepository();
+    addTearDown(() => fixture.container.delete(recursive: true));
+    final GitWorktreeEnvironmentProvider provider =
+        GitWorktreeEnvironmentProvider();
+    addTearDown(provider.close);
+    final LocalEnvironment environment = _environment(
+      fixture.source.uri,
+      taskId: 'task-conditional-replacement',
+      environmentId: 'environment-conditional-replacement',
+      title: 'Conditional replacement',
+    );
+    await provider.establish(environment);
+    final Directory root = provider.liveObjects.resolve(environment.id).root;
+
+    final EnvironmentTextFile first = await provider.readFile(
+      environment.id,
+      'README.md',
+    );
+    final EnvironmentTextFileReplacement replaced = await provider
+        .replaceExistingTextFile(
+          environment.id,
+          'README.md',
+          'replacement\n',
+          first.revision,
+        );
+    final EnvironmentTextFile second = await provider.readFile(
+      environment.id,
+      'README.md',
+    );
+    expect(second.text, 'replacement\n');
+    expect(replaced.revision, second.revision);
+    expect(second.revision, isNot(first.revision));
+
+    await File('${root.path}/README.md').writeAsString('external change\n');
+    await expectLater(
+      provider.replaceExistingTextFile(
+        environment.id,
+        'README.md',
+        'stale replacement\n',
+        second.revision,
+      ),
+      throwsA(_failureWithCode('revision_conflict')),
+    );
+    expect(
+      await File('${root.path}/README.md').readAsString(),
+      'external change\n',
+    );
+  });
+
+  test('serializes concurrent conditional replacements', () async {
+    final Directory root = await Directory.systemTemp.createTemp(
+      'adele-worktree-environment-concurrency-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final File file = File('${root.path}/target.txt');
+    await file.writeAsString('initial');
+    final WorktreeEnvironment environment = WorktreeEnvironment(root);
+    final String revision = (await environment.readFile('target.txt')).revision;
+
+    final List<Object> outcomes = await Future.wait<Object>(<Future<Object>>[
+      environment
+          .replaceExistingTextFile('target.txt', 'replacement A', revision)
+          .then<Object>((EnvironmentTextFileReplacement value) => value)
+          .catchError((Object error) => error),
+      environment
+          .replaceExistingTextFile('target.txt', 'replacement B', revision)
+          .then<Object>((EnvironmentTextFileReplacement value) => value)
+          .catchError((Object error) => error),
+    ]);
+
+    expect(outcomes.whereType<EnvironmentTextFileReplacement>(), hasLength(1));
+    expect(
+      outcomes.whereType<EnvironmentFailure>().single.code,
+      'revision_conflict',
+    );
+    final String finalText = await file.readAsString();
+    expect(finalText, anyOf('replacement A', 'replacement B'));
+    final EnvironmentTextFileReplacement winner = outcomes
+        .whereType<EnvironmentTextFileReplacement>()
+        .single;
+    expect(
+      (await environment.readFile('target.txt')).revision,
+      winner.revision,
+    );
+  });
+
+  test('serializes replacements through aliases of the same file', () async {
+    final Directory root = await Directory.systemTemp.createTemp(
+      'adele-worktree-environment-alias-concurrency-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final File file = File('${root.path}/target.txt');
+    await file.writeAsString('initial');
+    await Link('${root.path}/target-alias.txt').create(file.path);
+    final WorktreeEnvironment environment = WorktreeEnvironment(root);
+    final String revision = (await environment.readFile('target.txt')).revision;
+
+    final List<Object> outcomes = await Future.wait<Object>(<Future<Object>>[
+      environment
+          .replaceExistingTextFile('target.txt', 'replacement A', revision)
+          .then<Object>((EnvironmentTextFileReplacement value) => value)
+          .catchError((Object error) => error),
+      environment
+          .replaceExistingTextFile(
+            'target-alias.txt',
+            'replacement B',
+            revision,
+          )
+          .then<Object>((EnvironmentTextFileReplacement value) => value)
+          .catchError((Object error) => error),
+    ]);
+
+    expect(outcomes.whereType<EnvironmentTextFileReplacement>(), hasLength(1));
+    expect(
+      outcomes.whereType<EnvironmentFailure>().single.code,
+      'revision_conflict',
+    );
+    expect(await file.readAsString(), anyOf('replacement A', 'replacement B'));
+    expect(
+      (await environment.readFile('target-alias.txt')).text,
+      await file.readAsString(),
+    );
+  });
+
+  test(
+    'staged replacement preserves POSIX file permissions',
+    () async {
+      final Directory root = await Directory.systemTemp.createTemp(
+        'adele-worktree-environment-permissions-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final File file = File('${root.path}/executable.sh');
+      await file.writeAsString('#!/bin/sh\nexit 0\n');
+      final int permissions = int.parse('751', radix: 8);
+      final ProcessResult chmod = await Process.run('chmod', <String>[
+        permissions.toRadixString(8),
+        file.path,
+      ]);
+      expect(chmod.exitCode, 0, reason: chmod.stderr.toString());
+      final WorktreeEnvironment environment = WorktreeEnvironment(root);
+      final String revision = (await environment.readFile(
+        'executable.sh',
+      )).revision;
+
+      await environment.replaceExistingTextFile(
+        'executable.sh',
+        '#!/bin/sh\nexit 1\n',
+        revision,
+      );
+
+      expect((await file.stat()).mode & 0x1ff, permissions);
+      expect(await file.readAsString(), '#!/bin/sh\nexit 1\n');
+      expect(
+        await root
+            .list()
+            .where(
+              (FileSystemEntity entity) =>
+                  _entityName(entity.path).startsWith('.adele-replacement-'),
+            )
+            .toList(),
+        isEmpty,
+      );
+    },
+    skip: Platform.isWindows
+        ? 'Windows does not expose POSIX permission bits.'
+        : false,
+  );
+
+  test('confines and bounds conditional replacement', () async {
+    final Directory container = await Directory.systemTemp.createTemp(
+      'adele-worktree-environment-mutation-',
+    );
+    addTearDown(() => container.delete(recursive: true));
+    final Directory root = Directory('${container.path}/root');
+    await root.create();
+    final File target = File('${root.path}/target.txt');
+    await target.writeAsString('inside');
+    final File outside = File('${container.path}/outside.txt');
+    await outside.writeAsString('outside');
+    await Link('${root.path}/outside-link.txt').create(outside.path);
+    final WorktreeEnvironment environment = WorktreeEnvironment(root);
+    final String revision = (await environment.readFile('target.txt')).revision;
+
+    await expectLater(
+      environment.replaceExistingTextFile(
+        '../outside.txt',
+        'escaped',
+        revision,
+      ),
+      throwsA(_failureWithCode('invalid_path')),
+    );
+    await expectLater(
+      environment.replaceExistingTextFile(
+        'outside-link.txt',
+        'escaped',
+        'opaque',
+      ),
+      throwsA(_failureWithCode('outside_root')),
+    );
+    await expectLater(
+      environment.replaceExistingTextFile('missing.txt', 'created', 'opaque'),
+      throwsA(_failureWithCode('not_found')),
+    );
+    await expectLater(
+      environment.replaceExistingTextFile(
+        'target.txt',
+        'a' * (maximumEnvironmentFileBytes + 1),
+        revision,
+      ),
+      throwsA(_failureWithCode('file_too_large')),
+    );
+
+    expect(await outside.readAsString(), 'outside');
+    expect(await target.readAsString(), 'inside');
+    expect(await File('${root.path}/missing.txt').exists(), isFalse);
+  });
 }
 
 Matcher _failureWithCode(String code) => isA<EnvironmentFailure>().having(
@@ -846,6 +1065,8 @@ Future<List<String>> _branchNames(Directory repository) async =>
       '--format=%(refname:short)',
       'refs/heads',
     ])).split('\n').where((String branch) => branch.isNotEmpty).toList();
+
+String _entityName(String path) => path.split(Platform.pathSeparator).last;
 
 // `Uri.parse('file:relative/repository')` canonicalizes to a root URI before
 // the provider receives it. This fixture exercises a genuinely relative

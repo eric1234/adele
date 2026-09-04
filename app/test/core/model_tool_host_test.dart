@@ -259,8 +259,17 @@ final class _Provider implements EnvironmentProvider {
       relativePath: relativePath,
       text: 'authorized source',
       sizeBytes: 17,
+      revision: 'fixture-revision',
     );
   }
+
+  @override
+  Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
+    EnvironmentId environmentId,
+    String relativePath,
+    String replacementText,
+    String expectedRevision,
+  ) => throw UnimplementedError();
 
   @override
   Future<EnvironmentDirectoryListing> readDirectory(

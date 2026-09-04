@@ -61,11 +61,23 @@ final class EnvironmentTextFile {
     required this.relativePath,
     required this.text,
     required this.sizeBytes,
+    required this.revision,
   });
 
   final String relativePath;
   final String text;
   final int sizeBytes;
+
+  /// Provider-produced opaque identity for this observed file state.
+  final String revision;
+}
+
+@AdeleValue('environment.textFileReplacement')
+final class EnvironmentTextFileReplacement {
+  const EnvironmentTextFileReplacement({required this.revision});
+
+  /// Provider-produced opaque identity for the replacement file state.
+  final String revision;
 }
 
 /// Session-selected filesystem authority exposed to host-side tool plugins.
@@ -139,6 +151,15 @@ abstract interface class EnvironmentProviderService {
     String relativePath,
   );
 
+  /// Replaces an existing text file only when its opaque revision matches.
+  @AdeleMethod('replaceExistingTextFile')
+  Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
+    String environmentId,
+    String relativePath,
+    String replacementText,
+    String expectedRevision,
+  );
+
   @AdeleMethod('readDirectory')
   Future<EnvironmentDirectoryListing> readDirectory(
     String environmentId,
@@ -209,6 +230,14 @@ abstract interface class EnvironmentProvider {
     String relativePath,
   );
 
+  /// Replaces an existing text file only when its opaque revision matches.
+  Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
+    product.EnvironmentId environmentId,
+    String relativePath,
+    String replacementText,
+    String expectedRevision,
+  );
+
   Future<EnvironmentDirectoryListing> readDirectory(
     product.EnvironmentId environmentId,
     String relativePath,
@@ -252,6 +281,19 @@ final class GeneratedEnvironmentProvider implements EnvironmentProvider {
   ) => _service.readFile(environmentId.value, relativePath);
 
   @override
+  Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
+    product.EnvironmentId environmentId,
+    String relativePath,
+    String replacementText,
+    String expectedRevision,
+  ) => _service.replaceExistingTextFile(
+    environmentId.value,
+    relativePath,
+    replacementText,
+    expectedRevision,
+  );
+
+  @override
   Future<EnvironmentDirectoryListing> readDirectory(
     product.EnvironmentId environmentId,
     String relativePath,
@@ -289,6 +331,19 @@ final class EnvironmentProviderServiceAdapter
     String environmentId,
     String relativePath,
   ) => _provider.readFile(_environmentId(environmentId), relativePath);
+
+  @override
+  Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
+    String environmentId,
+    String relativePath,
+    String replacementText,
+    String expectedRevision,
+  ) => _provider.replaceExistingTextFile(
+    _environmentId(environmentId),
+    relativePath,
+    replacementText,
+    expectedRevision,
+  );
 
   @override
   Future<EnvironmentDirectoryListing> readDirectory(

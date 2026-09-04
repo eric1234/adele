@@ -549,6 +549,14 @@ final class _BlockingProvider implements EnvironmentProvider {
   ) => throw UnimplementedError();
 
   @override
+  Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
+    EnvironmentId environmentId,
+    String relativePath,
+    String replacementText,
+    String expectedRevision,
+  ) => throw UnimplementedError();
+
+  @override
   Future<EnvironmentProviderResult> restore(LocalEnvironment environment) =>
       throw UnimplementedError();
 }
@@ -582,6 +590,14 @@ final class _FailingProvider implements EnvironmentProvider {
   Future<EnvironmentTextFile> readFile(
     EnvironmentId environmentId,
     String relativePath,
+  ) => throw UnimplementedError();
+
+  @override
+  Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
+    EnvironmentId environmentId,
+    String relativePath,
+    String replacementText,
+    String expectedRevision,
   ) => throw UnimplementedError();
 
   @override
@@ -626,7 +642,16 @@ final class _RecordingProvider implements EnvironmentProvider {
     relativePath: relativePath,
     text: text,
     sizeBytes: text.length,
+    revision: 'fixture-revision',
   );
+
+  @override
+  Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
+    EnvironmentId environmentId,
+    String relativePath,
+    String replacementText,
+    String expectedRevision,
+  ) => throw UnimplementedError();
 
   @override
   Future<EnvironmentDirectoryListing> readDirectory(
@@ -662,6 +687,14 @@ final class _BlockingRestoreProvider implements EnvironmentProvider {
   Future<EnvironmentTextFile> readFile(
     EnvironmentId environmentId,
     String relativePath,
+  ) => throw UnimplementedError();
+
+  @override
+  Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
+    EnvironmentId environmentId,
+    String relativePath,
+    String replacementText,
+    String expectedRevision,
   ) => throw UnimplementedError();
 
   @override

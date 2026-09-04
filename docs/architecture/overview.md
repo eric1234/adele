@@ -2,9 +2,11 @@
 
 ## Status
 
-ADELE's maintained Linux x64 foundation proves source compilation, generated unary and server-streaming/cancellation transport, interpreted frontend execution, active capability routing, configured provider contexts, and the Phase IV/V-A source-inspection agent vertical. It includes the real OpenAI `ModelProvider`, generation-bound configured provider contexts, an explicitly experimental ChatGPT configured instance, provisional Project/Task/Environment and Session authority, generic extension/model-tool composition, a Git Environment provider, and independent stock Filesystem Tools and Search Tools plugins that own Session-authorized `read_file` and `search`.
+ADELE's maintained Linux x64 foundation proves source compilation, generated unary and server-streaming/cancellation transport, interpreted frontend execution, active capability routing, configured provider contexts, the Phase IV/V-A source-inspection agent vertical, and the Phase V-B1 conditional Environment mutation foundation. It includes the real OpenAI `ModelProvider`, generation-bound configured provider contexts, an explicitly experimental ChatGPT configured instance, provisional Project/Task/Environment and Session authority, generic extension/model-tool composition, a Git Environment provider, and independent stock Filesystem Tools and Search Tools plugins that own Session-authorized `read_file` and `search`.
 
 Phase V-A is complete: deterministic real-model integration now crosses provisional app orchestration, generic model-tool extension composition, plugin-owned Search, Session-authorized Environment access, plugin-owned Read File, maintained ADELE source, and model continuation. Search is bounded native Dart traversal over authorized Environment directory/file reads, not an Environment provider method. These proofs do **not** yet implement ADELE's complete product/domain model, production orchestration-strategy registration/binding, a plugin-owned Chat strategy, or the general recursive extension system described by the current architecture.
+
+Phase V-B1 adds provider-neutral opaque file revisions and conditional replacement of existing bounded UTF-8 text files. The Git Worktree provider serializes ADELE replacements within each live Environment and detects practical out-of-band changes immediately before promotion, but cannot provide portable atomic compare-and-replace against arbitrary external processes. No model-facing mutation tool or Session-authorized mutation facade exists yet, so this is not agent source-editing capability.
 
 The following remain largely or entirely unimplemented:
 
@@ -15,7 +17,7 @@ The following remain largely or entirely unimplemented:
 - production plugin-facing UI composition;
 - application Command/Command Palette/keybinding infrastructure;
 - profile-aware provider preference and general configuration services;
-- additional Environment providers, Environment process execution, and mutable source tooling;
+- additional Environment providers, Environment process execution, and model-facing mutable source tooling;
 - the expected stock plugin topology;
 - cross-platform release, packaging, and sandboxing.
 
@@ -187,7 +189,7 @@ The stock Search Tools plugin contributes literal `search` and composes only the
 
 Deterministic integration uses the real shared AOT host, OpenAI plugin, Git Environment provider, Project/Task/Environment lifecycle, Session authority, generic extension/model-tool composition, stock tools, and development strategy. Only remote model responses come from a local fake Responses endpoint. It proves recursive source discovery, model-visible Search-to-Read path flow, reading, and model continuation. Separate deterministic coverage proves Search-tool and Environment-provider replacement generations produce fresh tools while old tools remain stale. Opt-in live API-key and experimental ChatGPT source-coding smokes have also completed successfully through the same Environment tool topology.
 
-This proves self-inspection, not the final Environment/source mutation model and not full self-hosting.
+This proves self-inspection plus the lower-level conditional Environment replacement mechanic, not model-facing source mutation and not full self-hosting.
 
 ## Remaining runtime validation
 
@@ -204,7 +206,7 @@ This proves self-inspection, not the final Environment/source mutation model and
 | Model-to-source continuation | Proven through Session-authorized Git Environment `search`/`read_file` composition for deterministic OpenAI integration and opt-in live API-key/experimental ChatGPT evidence. |
 | Rebuild/reload | Proven for three cycles without orphan host processes. |
 | General recursive extension system | Accepted architecture; not implemented. |
-| Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, and Session-authorized reads proven; persistence and complete lifecycle unimplemented. |
+| Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, Session-authorized reads, and generated conditional existing-file replacement proven; persistence, Session-authorized mutation, and complete lifecycle unimplemented. |
 | Production orchestration/UI/Commands | Directional; not implemented. |
 | Cross-platform/release | Unproven on Windows, macOS, and release mode. |
 | Packaging/sandboxing | Unproven; process isolation is not a sandbox. |

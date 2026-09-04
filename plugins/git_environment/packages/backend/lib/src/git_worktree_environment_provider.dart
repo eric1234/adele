@@ -250,6 +250,16 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
   ) => _resolve(environmentId).readFile(relativePath);
 
   @override
+  Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
+    EnvironmentId environmentId,
+    String relativePath,
+    String replacementText,
+    String expectedRevision,
+  ) => _resolve(
+    environmentId,
+  ).replaceExistingTextFile(relativePath, replacementText, expectedRevision);
+
+  @override
   Future<EnvironmentDirectoryListing> readDirectory(
     EnvironmentId environmentId,
     String relativePath,

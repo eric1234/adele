@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:adele_environment/adele_environment.dart';
+import 'package:crypto/crypto.dart';
 
 const int maximumEnvironmentFileBytes = 1024 * 1024;
 const int maximumEnvironmentDirectoryEntries = 2048;
@@ -13,6 +14,7 @@ final class WorktreeEnvironment {
   WorktreeEnvironment(Directory root) : root = _canonicalRoot(root);
 
   final Directory root;
+  Future<void> _pendingReplacement = Future<void>.value();
 
   Future<EnvironmentTextFile> readFile(String relativePath) async {
     final String normalized = _normalizeRelativePath(relativePath);
@@ -34,6 +36,7 @@ final class WorktreeEnvironment {
         relativePath: normalized,
         text: text,
         sizeBytes: bytes.length,
+        revision: _revision(bytes),
       );
     } on EnvironmentFailure {
       rethrow;
@@ -44,6 +47,123 @@ final class WorktreeEnvironment {
         relativePath: normalized,
       );
     }
+  }
+
+  Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
+    String relativePath,
+    String replacementText,
+    String expectedRevision,
+  ) async {
+    final String normalized = _normalizeRelativePath(relativePath);
+    final List<int> replacementBytes = utf8.encode(replacementText);
+    if (replacementBytes.length > maximumEnvironmentFileBytes) {
+      throw _failure(
+        'file_too_large',
+        'The replacement text exceeds the supported size.',
+        relativePath: normalized,
+        limit: maximumEnvironmentFileBytes,
+      );
+    }
+    return await _coordinateReplacement(
+      () => _replaceExistingTextFile(
+        normalized,
+        Uint8List.fromList(replacementBytes),
+        expectedRevision,
+      ),
+    );
+  }
+
+  Future<EnvironmentTextFileReplacement> _replaceExistingTextFile(
+    String relativePath,
+    Uint8List replacementBytes,
+    String expectedRevision,
+  ) async {
+    Directory? stagingDirectory;
+    try {
+      final File file = await _resolveRegularFile(relativePath);
+      final Uint8List observed = await _readBounded(file, relativePath);
+      await _verifyStillConfined(file, relativePath, FileSystemEntityType.file);
+      if (_revision(observed) != expectedRevision) {
+        throw _failure(
+          'revision_conflict',
+          'The file changed since the expected revision was observed.',
+          relativePath: relativePath,
+        );
+      }
+      final FileStat originalStat = await file.stat();
+      stagingDirectory = await file.parent.createTemp(
+        '.adele-replacement-$pid-',
+      );
+      final File staged = File(
+        '${stagingDirectory.path}${Platform.pathSeparator}replacement',
+      );
+      await staged.writeAsBytes(replacementBytes, flush: true);
+      await _applyPosixPermissions(staged, originalStat.mode & 0x1ff);
+
+      // Re-resolve and re-read immediately before promotion to catch practical
+      // out-of-band path, content, or permission changes without overstating
+      // filesystem CAS.
+      final File currentFile = await _resolveRegularFile(relativePath);
+      if (currentFile.path != file.path) {
+        throw _failure(
+          'revision_conflict',
+          'The file changed since the expected revision was observed.',
+          relativePath: relativePath,
+        );
+      }
+      final Uint8List current = await _readBounded(currentFile, relativePath);
+      await _verifyStillConfined(
+        currentFile,
+        relativePath,
+        FileSystemEntityType.file,
+      );
+      if (_revision(current) != expectedRevision) {
+        throw _failure(
+          'revision_conflict',
+          'The file changed since the expected revision was observed.',
+          relativePath: relativePath,
+        );
+      }
+      final FileStat currentStat = await currentFile.stat();
+      if (!Platform.isWindows &&
+          (currentStat.mode & 0x1ff) != (originalStat.mode & 0x1ff)) {
+        throw _failure(
+          'revision_conflict',
+          'The file changed since the expected revision was observed.',
+          relativePath: relativePath,
+        );
+      }
+      final File promoted = await staged.rename(currentFile.path);
+      final Uint8List written = await _readBounded(promoted, relativePath);
+      await _verifyStillConfined(
+        promoted,
+        relativePath,
+        FileSystemEntityType.file,
+      );
+      return EnvironmentTextFileReplacement(revision: _revision(written));
+    } on EnvironmentFailure {
+      rethrow;
+    } on FileSystemException {
+      throw _failure(
+        'unwritable',
+        'The requested file could not be replaced.',
+        relativePath: relativePath,
+      );
+    } finally {
+      if (stagingDirectory case final Directory directory) {
+        await _deleteBestEffort(directory);
+      }
+    }
+  }
+
+  Future<EnvironmentTextFileReplacement> _coordinateReplacement(
+    Future<EnvironmentTextFileReplacement> Function() operation,
+  ) {
+    final Future<EnvironmentTextFileReplacement> result = _pendingReplacement
+        .catchError((Object _) {})
+        .then((_) => operation());
+    _pendingReplacement = result.then<void>((_) {}).catchError((Object _) {});
+    return result;
   }
 
   Future<EnvironmentDirectoryListing> readDirectory(String relativePath) async {
@@ -297,6 +417,38 @@ final class WorktreeEnvironment {
         ? root.path
         : '${root.path}${Platform.pathSeparator}';
     return path == root.path || path.startsWith(rootPrefix);
+  }
+}
+
+String _revision(List<int> bytes) => sha256.convert(bytes).toString();
+
+Future<void> _applyPosixPermissions(File file, int permissions) async {
+  if (Platform.isWindows) return;
+  final ProcessResult result;
+  try {
+    result = await Process.run('chmod', <String>[
+      permissions.toRadixString(8),
+      file.path,
+    ]);
+  } on ProcessException catch (error) {
+    throw FileSystemException(
+      'Could not preserve replacement file permissions: ${error.message}',
+      file.path,
+    );
+  }
+  if (result.exitCode != 0) {
+    throw FileSystemException(
+      'Could not preserve replacement file permissions.',
+      file.path,
+    );
+  }
+}
+
+Future<void> _deleteBestEffort(Directory directory) async {
+  try {
+    if (await directory.exists()) await directory.delete(recursive: true);
+  } on FileSystemException {
+    // Staging cleanup must not replace the mutation's result or failure.
   }
 }
 
