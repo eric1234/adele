@@ -10,7 +10,7 @@ import 'package:test/test.dart';
 
 void main() {
   test(
-    'AOT generation routes API-key and ChatGPT contexts independently',
+    'AOT generation isolates API key and routes configured contexts',
     () async {
       final String repository =
           Directory.current.parent.parent.parent.parent.path;
@@ -114,6 +114,59 @@ void main() {
       );
       final String origin =
           'http://${responses.address.address}:${responses.port}';
+      final PluginBackendHost apiOnlyHost = await PluginBackendHost.start(
+        dartaotruntimeExecutable: runtime,
+        hostArtifactPath: hostArtifact.path,
+        environment: <String, String>{
+          'OPENAI_API_KEY': 'api-key-aot-only',
+          'ADELE_OPENAI_ENDPOINT': '$origin/public/responses',
+          'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE': credentials.path,
+        },
+      );
+      addTearDown(() async {
+        if (!apiOnlyHost.isClosed) {
+          await apiOnlyHost.close(graceful: false);
+        }
+      });
+      final PluginBackendConnection apiOnlyConnection = await apiOnlyHost
+          .startPlugin(
+            pluginId: openAiPluginId,
+            artifactUri: pluginArtifact.uri,
+          );
+      final CapabilityRegistry apiOnlyRegistry = CapabilityRegistry();
+      final ProviderId unavailableChatGptProvider = ProviderId(
+        openAiChatGptProviderId,
+      );
+      final PluginCapabilityActivation unavailableChatGptActivation =
+          await PluginCapabilityActivation.register(
+            connection: apiOnlyConnection,
+            registry: apiOnlyRegistry,
+            exposures: <PluginCapabilityExposure>[
+              PluginCapabilityExposure(
+                provider: _descriptor(unavailableChatGptProvider),
+                configurationContext: apiOnlyConnection.configurationContext(
+                  openAiChatGptConfigurationContext,
+                ),
+              ),
+            ],
+          );
+      await expectLater(
+        _client(
+          apiOnlyRegistry,
+          unavailableChatGptProvider,
+        ).invoke(_request('unavailable-chatgpt')).toList(),
+        throwsA(
+          isA<PluginRemoteFailure>().having(
+            (error) => error.code,
+            'code',
+            'configuration_context_unavailable',
+          ),
+        ),
+      );
+      await unavailableChatGptActivation.close();
+      await apiOnlyConnection.close();
+      await apiOnlyHost.close();
+
       final PluginBackendHost host = await PluginBackendHost.start(
         dartaotruntimeExecutable: runtime,
         hostArtifactPath: hostArtifact.path,

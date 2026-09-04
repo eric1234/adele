@@ -46,12 +46,17 @@ void main() {
             ),
           )
           .toList();
-      expect(events.where((event) => event.observation != null), isNotEmpty);
-      expect(events.where((event) => event.output?.text != null), isNotEmpty);
+      final ModelProviderTerminal? terminal = events.last.terminal;
       expect(
-        events.last.terminal?.settlement,
+        terminal?.settlement,
         ModelProviderSettlement.completed,
+        reason:
+            '${terminal?.failure?.kind.name}: '
+            '${terminal?.failure?.providerCode}: '
+            '${terminal?.failure?.providerMessage}: '
+            '${terminal?.failure?.providerDetails}',
       );
+      expect(events.where((event) => event.output?.text != null), isNotEmpty);
     },
     skip: enabled
         ? false

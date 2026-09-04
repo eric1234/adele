@@ -44,9 +44,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       Platform.environment['ADELE_OPENAI_CHATGPT_REDIRECT_URI'];
   OpenAiOAuthClient? oauth;
   OpenAiModelProvider? chatGptProvider;
-  if (credentialFile != null ||
-      oauthClientId != null ||
-      experimentalCodexClientOptIn) {
+  if (oauthClientId != null || experimentalCodexClientOptIn) {
     if (credentialFile == null || credentialFile.isEmpty) {
       throw StateError(
         'The experimental ChatGPT configuration requires a credential file.',

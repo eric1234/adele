@@ -4,16 +4,24 @@ import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_desktop/core/model_tool_host.dart';
+import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/development/agent/agent_capability_adapters.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
-import 'package:adele_desktop/development/agent/development_source_tools.dart';
 import 'package:adele_desktop/development/agent/simple_tool_loop_strategy.dart';
+import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
-import 'package:development_source_contract/development_source_contract.dart';
+import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:resource_inspector_contract/resource_inspector_contract.dart';
+import 'package:search_tools_plugin/search_tools_plugin.dart';
+
+const String _gitEnvironmentPluginId = 'dev.adele.plugin.git-environment';
+const String _gitEnvironmentProviderId = 'dev.adele.environment.git-worktree';
 
 void main() {
   late String repository;
@@ -21,7 +29,7 @@ void main() {
   late File hostArtifact;
   late File openAiArtifact;
   late File inspectorArtifact;
-  late File developmentSourceArtifact;
+  late File gitEnvironmentArtifact;
 
   setUpAll(() async {
     repository = Directory.current.parent.path;
@@ -34,9 +42,7 @@ void main() {
     hostArtifact = File('${artifacts.path}/host.aot');
     openAiArtifact = File('${artifacts.path}/openai.aot');
     inspectorArtifact = File('${artifacts.path}/inspector.aot');
-    developmentSourceArtifact = File(
-      '${artifacts.path}/development-source.aot',
-    );
+    gitEnvironmentArtifact = File('${artifacts.path}/git-environment.aot');
     await Future.wait(<Future<void>>[
       _compile(
         dart,
@@ -46,8 +52,9 @@ void main() {
       ),
       _compile(
         dart,
-        '$repository/plugins/development_source/packages/backend/bin/development_source_backend.dart',
-        developmentSourceArtifact.path,
+        '$repository/plugins/git_environment/packages/backend/bin/'
+        'git_environment_backend.dart',
+        gitEnvironmentArtifact.path,
         repository,
       ),
       _compile(
@@ -285,11 +292,23 @@ void main() {
   );
 
   test(
-    'searches and reads real ADELE source through two AOT provider generations',
+    'searches and reads real ADELE source through two AOT providers',
     () async {
       const String strategyPath =
           'app/lib/development/agent/simple_tool_loop_strategy.dart';
+      final Directory container = await Directory.systemTemp.createTemp(
+        'adele-openai-environment-source-',
+      );
+      addTearDown(() async {
+        if (await container.exists()) await container.delete(recursive: true);
+      });
+      final Directory sourceRepository = Directory('${container.path}/source');
+      await _createSourceRepository(
+        repository: repository,
+        source: sourceRepository,
+      );
       final List<Map<String, Object?>> outbound = <Map<String, Object?>>[];
+      String? discoveredPath;
       final HttpServer responses = await HttpServer.bind(
         InternetAddress.loopbackIPv4,
         0,
@@ -311,11 +330,23 @@ void main() {
             case 1:
               final List<Object?> tools = body['tools']! as List<Object?>;
               expect(
-                tools.map(
-                  (Object? tool) => (tool! as Map<String, Object?>)['name'],
+                tools.map<String>(
+                  (Object? tool) =>
+                      (tool! as Map<String, Object?>)['name']! as String,
                 ),
-                <String>['search_source_text', 'read_source_file'],
+                containsAll(<String>['search', 'read_file']),
               );
+              expect(tools, hasLength(2));
+              final String encodedTools = jsonEncode(tools);
+              for (final String forbidden in <String>[
+                'EnvironmentId',
+                'environmentId',
+                'TaskId',
+                'providerId',
+                'provider selection',
+              ]) {
+                expect(encodedTools, isNot(contains(forbidden)));
+              }
               _sse(
                 request.response,
                 _outputDone(_reasoning('rs_search', 'encrypted-search')),
@@ -326,9 +357,9 @@ void main() {
                   'type': 'function_call',
                   'id': 'fc_search',
                   'call_id': 'call_search',
-                  'name': 'search_source_text',
+                  'name': 'search',
                   'arguments':
-                      '{"literalText":"final class DevelopmentToolLoopStrategy"}',
+                      '{"query":"final class DevelopmentToolLoopStrategy"}',
                   'status': 'completed',
                 }),
               );
@@ -351,10 +382,10 @@ void main() {
                 (input[3]! as Map<String, Object?>)['call_id'],
                 'call_search',
               );
-              expect(
-                (input[3]! as Map<String, Object?>)['output'],
-                allOf(contains(strategyPath), contains(':4:')),
-              );
+              final String searchOutput =
+                  (input[3]! as Map<String, Object?>)['output']! as String;
+              discoveredPath = _relativePathFromSearchOutput(searchOutput);
+              expect(discoveredPath, strategyPath);
               _sse(
                 request.response,
                 _outputDone(_reasoning('rs_read', 'encrypted-read')),
@@ -365,9 +396,9 @@ void main() {
                   'type': 'function_call',
                   'id': 'fc_read',
                   'call_id': 'call_read',
-                  'name': 'read_source_file',
+                  'name': 'read_file',
                   'arguments': jsonEncode(<String, Object?>{
-                    'relativePath': strategyPath,
+                    'relativePath': discoveredPath,
                   }),
                   'status': 'completed',
                 }),
@@ -390,6 +421,12 @@ void main() {
                 ],
               );
               expect(input[4], _reasoning('rs_read', 'encrypted-read'));
+              expect(
+                jsonDecode(
+                  (input[5]! as Map<String, Object?>)['arguments']! as String,
+                ),
+                <String, Object?>{'relativePath': discoveredPath},
+              );
               expect(
                 (input[6]! as Map<String, Object?>)['call_id'],
                 'call_read',
@@ -450,39 +487,75 @@ void main() {
         ),
       );
       addTearDown(model.close);
-      final _Activation source = await _startProvider(
-        host: host,
-        registry: registry,
-        pluginId: 'dev.adele.plugin.development-source',
-        artifact: developmentSourceArtifact,
-        arguments: <String>[repository],
-        descriptor: ProviderDescriptor(
-          id: ProviderId('dev.adele.development-source.local'),
-          capability: developmentSourceCapability,
-          pluginId: 'dev.adele.plugin.development-source',
-          displayName: 'ADELE Development Source',
-          serviceId: developmentSourceServiceId,
-        ),
+      final ProviderId environmentProviderId = ProviderId(
+        _gitEnvironmentProviderId,
       );
-      addTearDown(source.close);
+      final PluginCapabilityActivation environmentActivation =
+          await _startEnvironmentProvider(
+            host: host,
+            registry: registry,
+            artifact: gitEnvironmentArtifact,
+            providerId: environmentProviderId,
+          );
+      addTearDown(environmentActivation.close);
       expect(host.processId, sharedBackendHostProcess);
+      final ProviderBinding environmentBinding = registry.resolve(
+        environmentProviderCapability,
+        providerId: environmentProviderId,
+      );
       final ProviderBinding modelBinding = registry.resolve(
         modelProviderCapability,
       );
-      final ProviderBinding sourceBinding = registry.resolve(
-        developmentSourceCapability,
+      final InMemoryProductStore store = InMemoryProductStore();
+      final ProductLifecycleCoordinator lifecycle =
+          ProductLifecycleCoordinator.generated(
+            store: store,
+            registry: registry,
+            ids: const _IntegrationIds('openai'),
+          );
+      final Project project = lifecycle.createProject(sourceRepository.uri);
+      final TaskCreationResult created = await lifecycle.createTask(
+        projectId: project.id,
+        title: 'Inspect ADELE source with OpenAI',
+        providerId: environmentProviderId,
+      );
+      final SessionId sessionId = SessionId('session-source-coding');
+      final SessionEnvironmentAuthority authority = store.associateSession(
+        sessionId: sessionId,
+        taskId: created.task.id,
+      );
+      expect(authority.environmentId, created.environment.id);
+      final ProviderBinding materializedEnvironmentBinding = lifecycle
+          .environmentRuntime
+          .currentMaterialization(created.environment.id)!
+          .binding;
+      expect(
+        materializedEnvironmentBinding.provider,
+        same(environmentBinding.provider),
+      );
+      expect(
+        materializedEnvironmentBinding.requestChannel,
+        same(environmentBinding.requestChannel),
+      );
+      final ExtensionRegistry extensions = ExtensionRegistry();
+      final ExtensionRegistration filesystemActivation =
+          const FilesystemToolsPlugin().activate(extensions);
+      addTearDown(filesystemActivation.close);
+      final ExtensionRegistration searchActivation = const SearchToolsPlugin()
+          .activate(extensions);
+      addTearDown(searchActivation.close);
+      final ToolCatalog catalog = await buildModelToolCatalogForSession(
+        sessionId: sessionId,
+        environmentRuntime: lifecycle.environmentRuntime,
+        extensions: extensions,
       );
       final ModelProviderCapabilityAdapter modelAdapter =
           ModelProviderCapabilityAdapter(
             modelBinding,
             selectedModel: 'test-openai-model',
           );
-      final DevelopmentSourceSearchToolExecutable searchTool =
-          DevelopmentSourceSearchToolExecutable(sourceBinding);
-      final DevelopmentSourceReadToolExecutable readTool =
-          DevelopmentSourceReadToolExecutable(sourceBinding);
       final DevelopmentSessionHistory
-      session = DevelopmentSessionHistory(SessionId('session-source-coding'))
+      session = DevelopmentSessionHistory(sessionId)
         ..append(
           UserSessionMessage(
             'Find where DevelopmentToolLoopStrategy is declared, inspect the source, and report its path and model invocation limit.',
@@ -492,15 +565,12 @@ void main() {
         id: RunId('run-source-coding'),
         sessionId: session.id,
       );
-      final ToolCatalog catalog = ToolCatalog()
-        ..register(searchTool.registration)
-        ..register(readTool.registration);
       final DevelopmentToolLoopStrategy strategy = DevelopmentToolLoopStrategy(
         run: run,
         session: session,
         contextAssembler: const DevelopmentContextAssembler(
           instructions:
-              'Use search_source_text and read_source_file to inspect configured source before answering.',
+              'Use search to locate the requested declaration, then use read_file with the returned relative path before answering.',
         ),
         model: modelAdapter,
         toolCatalog: catalog,
@@ -511,15 +581,9 @@ void main() {
 
       expect(run.state, RunState.completed);
       expect(modelAdapter.provider, same(modelBinding.provider));
-      expect(searchTool.provider, same(sourceBinding.provider));
-      expect(readTool.provider, same(sourceBinding.provider));
       expect(modelAdapter.invocationCount, 3);
       expect(model.streamCount, 3);
       expect(model.requestCount, 0);
-      expect(searchTool.invocationCount, 1);
-      expect(readTool.invocationCount, 1);
-      expect(source.requestCount, 2);
-      expect(source.streamCount, 0);
       expect(outbound, hasLength(3));
       expect(
         (session.snapshot().entries.last as AssistantSessionMessage).content,
@@ -530,25 +594,122 @@ void main() {
           .whereType<ToolInvocationPrepared>()
           .toList(growable: false);
       expect(prepared, hasLength(2));
-      expect(prepared[0].invocation.tool.definition.id, sourceTextSearchToolId);
       expect(
-        prepared[0].invocation.tool.modelDefinition.alias,
-        'search_source_text',
+        prepared[0].invocation.tool.definition.id.value,
+        'dev.adele.plugin.search-tools.search',
       );
-      expect(prepared[0].invocation.tool.executable, same(searchTool));
-      expect(prepared[1].invocation.tool.definition.id, sourceFileReadToolId);
+      expect(prepared[0].invocation.tool.modelDefinition.alias, 'search');
       expect(
-        prepared[1].invocation.tool.modelDefinition.alias,
-        'read_source_file',
+        prepared[1].invocation.tool.definition.id.value,
+        'dev.adele.plugin.filesystem-tools.read-file',
       );
-      expect(prepared[1].invocation.tool.executable, same(readTool));
+      expect(prepared[1].invocation.tool.modelDefinition.alias, 'read_file');
+      final List<ToolExecutionCompleted> completed = run.journal.records
+          .map((ExecutionEventRecord record) => record.event)
+          .whereType<ToolExecutionCompleted>()
+          .toList(growable: false);
+      expect(completed, hasLength(2));
+      expect(
+        completed[0].outcome.hostData['environmentId'],
+        authority.environmentId.value,
+      );
+      expect(
+        completed[1].outcome.hostData['environmentId'],
+        authority.environmentId.value,
+      );
+      expect(completed[1].outcome.hostData['relativePath'], strategyPath);
 
       await model.close();
-      await source.close();
+      await searchActivation.close();
+      await filesystemActivation.close();
+      await environmentActivation.close();
       await host.close();
     },
     timeout: const Timeout(Duration(minutes: 4)),
   );
+}
+
+String _relativePathFromSearchOutput(String modelContent) {
+  final List<String> records = modelContent
+      .split('\n')
+      .where((String line) => line.startsWith('{'))
+      .toList(growable: false);
+  expect(records, hasLength(1));
+  final Object? decoded = jsonDecode(records.single);
+  expect(decoded, isA<Map<String, Object?>>());
+  final Object? relativePath =
+      (decoded! as Map<String, Object?>)['relativePath'];
+  expect(relativePath, isA<String>());
+  return relativePath! as String;
+}
+
+Future<PluginCapabilityActivation> _startEnvironmentProvider({
+  required PluginBackendHost host,
+  required CapabilityRegistry registry,
+  required File artifact,
+  required ProviderId providerId,
+}) async {
+  final PluginBackendConnection connection = await host.startPlugin(
+    pluginId: _gitEnvironmentPluginId,
+    artifactUri: artifact.uri,
+  );
+  return PluginCapabilityActivation.register(
+    connection: connection,
+    registry: registry,
+    exposures: <PluginCapabilityExposure>[
+      PluginCapabilityExposure(
+        provider: ProviderDescriptor(
+          id: providerId,
+          capability: environmentProviderCapability,
+          pluginId: connection.pluginId,
+          displayName: 'Git Worktree Environment',
+          serviceId: environmentProviderServiceId,
+        ),
+        configurationContext: connection.defaultConfigurationContext,
+      ),
+    ],
+  );
+}
+
+Future<void> _createSourceRepository({
+  required String repository,
+  required Directory source,
+}) async {
+  const List<String> sourcePaths = <String>[
+    'README.md',
+    'app/lib/development/agent/development_agent_support.dart',
+    'app/lib/development/agent/simple_tool_loop_strategy.dart',
+  ];
+  await source.create(recursive: true);
+  for (final String relativePath in sourcePaths) {
+    final File copied = File('${source.path}/$relativePath');
+    await copied.parent.create(recursive: true);
+    await File('$repository/$relativePath').copy(copied.path);
+  }
+  await _git(source, const <String>['init']);
+  await _git(source, const <String>['config', 'user.name', 'ADELE Test']);
+  await _git(source, const <String>[
+    'config',
+    'user.email',
+    'adele@example.invalid',
+  ]);
+  await _git(source, const <String>['add', '.']);
+  await _git(source, const <String>[
+    'commit',
+    '-m',
+    'Add ADELE source fixture',
+  ]);
+}
+
+Future<void> _git(Directory source, List<String> arguments) async {
+  final ProcessResult result = await Process.run('git', <String>[
+    '-C',
+    source.path,
+    ...arguments,
+  ]);
+  if (result.exitCode != 0) {
+    throw StateError('git ${arguments.join(' ')} failed: ${result.stderr}');
+  }
 }
 
 Future<_Activation> _startProvider({
@@ -689,4 +850,19 @@ final class _CountingChannel implements AdeleStreamChannel {
     streamCount++;
     return delegate.stream(method, payload);
   }
+}
+
+final class _IntegrationIds implements ProductIdSource {
+  const _IntegrationIds(this.suffix);
+
+  final String suffix;
+
+  @override
+  EnvironmentId nextEnvironmentId() => EnvironmentId('environment-$suffix');
+
+  @override
+  ProjectId nextProjectId() => ProjectId('project-$suffix');
+
+  @override
+  TaskId nextTaskId() => TaskId('task-$suffix');
 }

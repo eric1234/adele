@@ -1629,8 +1629,10 @@ void main() {
           });
           _sse(request.response, <String, Object?>{
             'type': 'error',
-            'code': 'unauthorized',
-            'message': 'Authentication expired.',
+            'error': <String, Object?>{
+              'code': 'unauthorized',
+              'message': 'Authentication expired.',
+            },
           });
         }
         await request.response.close();
@@ -1666,6 +1668,11 @@ void main() {
           .toList();
       expect(events.first.observation?.textDelta, 'visible');
       expect(events.last.terminal?.settlement, ModelProviderSettlement.failed);
+      expect(events.last.terminal?.failure?.providerCode, 'unauthorized');
+      expect(
+        events.last.terminal?.failure?.providerMessage,
+        'Authentication expired.',
+      );
       expect(responseRequests, 1);
       expect(refreshRequests, 0);
     });

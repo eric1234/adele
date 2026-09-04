@@ -8,7 +8,7 @@ This document captures the current direction for ADELE's stock development agent
 
 It is intentionally directional rather than contractual. The exact tool set, names, schemas, persistence model, permission system, scheduling model, and implementation layering may change as ADELE becomes capable of self-hosting and real usage exposes better designs. The near-term implementation may provide only a small subset of this document.
 
-The maintained Phase IV vertical currently proves bounded read-only source search/read tools projected from DevelopmentSource plus provider-neutral model/tool/model execution. It does **not** yet implement the stock Command Tool, mutable Environment filesystem tools, TODO/Progress, Plan, Console/Terminal, background scheduling, or the broader presentation model described here.
+The maintained execution vertical now proves provider-neutral model/tool/model execution and plugin-contributed, Session-authorized Environment `search` and `read_file`, including deterministic OpenAI source continuation and the explicitly experimental ChatGPT route. It does **not** yet implement the stock Command Tool, mutable Environment filesystem tools, TODO/Progress, Plan, Console/Terminal, background scheduling, or the broader presentation model described here.
 
 The purpose is to preserve the reasoning behind the current direction so later implementation work does not independently rediscover a conventional coding-agent tool surface or accidentally conflict with ADELE's product model.
 

@@ -22,6 +22,6 @@ later use generic Environment process execution. Mutation, command execution,
 release/destruction, and remote cloning are absent.
 
 Path canonicalization, symlink checks, and post-read validation provide
-application-level confinement equivalent to the maintained DevelopmentSource
+application-level confinement equivalent to the historical DevelopmentSource
 proof. They are not an operating-system sandbox and cannot eliminate every
 pathname replacement race against another local process.

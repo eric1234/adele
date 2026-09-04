@@ -14,8 +14,10 @@ ADR 0031 accepts Project, Task, Session, Run, and Environment as the shared
 product-domain identities. The application now contains the in-memory
 Project/Task establishment coordinator, a provisional authoritative
 Session-to-Task/Environment relation, exact-generation Environment runtime
-materialization, and a Session-authorized Environment Read File tool. Lifecycle
-UI and normal stock-plugin composition are not implemented yet.
+materialization, and a generic Session-scoped model-tool host context.
+Independent stock Filesystem Tools and Search Tools plugins use that context to
+provide Environment-authorized `read_file` and `search`. Lifecycle UI and normal
+stock-plugin composition are not implemented yet.
 
 The normal application does not display the `workspace_demo` reference plugin.
 The maintained `lib/development_smoke.dart` entrypoint exercises the plugin
@@ -44,18 +46,34 @@ and plugin-facing UI extension APIs remain deferred. The stock Git worktree
 Environment provider is currently exercised through focused backend and
 shared-host AOT tests rather than normal UI.
 
-The application composition root contains the development-only Phase IV
-model/source capability adapters, bounded Chat-shaped tool-loop strategy, a
-generic Session-scoped model-tool host context, and AOT integration tests. The
-independent stock Filesystem Tools and Search Tools plugins, not application
-code, define `read_file` and `search`; the host context exposes only the
-Session-selected Environment filesystem. Search currently performs bounded
-native Dart traversal over `readDirectory` and `readFile`. These prove execution
-boundaries but do not establish the final product workflow, strategy-bound
-Session persistence, or stock UI composition. The Phase IV `DevelopmentSource`
-path remains maintained pending V-A5 OpenAI/ChatGPT source-coding migration and
-retirement. `EnvironmentRuntime` remains provisional/domain-specific rather
-than a general extension-runtime pattern.
+The application composition root contains the development-only Phase IV model
+adapters, bounded Chat-shaped tool-loop strategy, generic Session-scoped
+model-tool host context, and AOT integration tests. The independent stock
+Filesystem Tools and Search Tools plugins, not application code, define
+`read_file` and `search`; the host context exposes only the Session-selected
+Environment filesystem. The OpenAI API-key and experimental ChatGPT
+source-coding paths use this composition. These prove execution boundaries and
+read-only self-inspection, but do not establish the final product workflow,
+strategy-bound Session persistence, stock UI composition, source mutation, or
+command execution. `DevelopmentToolLoopStrategy` and `EnvironmentRuntime`
+remain provisional application/domain-specific implementation rather than
+production orchestration or a general extension-runtime pattern.
+
+## Live Tests
+
+The OpenAI backend's provider-only API-key and ChatGPT live smokes validate
+network, authentication, and Responses behavior in isolation. Separate app-level
+source-coding live smokes validate the complete current read-only stack through
+Project/Task/Environment establishment, Session authority, plugin-contributed
+Search and Read File tools, provisional orchestration, and real model
+continuation.
+
+`ADELE_OPENAI_SOURCE_CODING_LIVE_TEST=1` enables the paid API-key full-stack
+smoke when `OPENAI_API_KEY` and `ADELE_OPENAI_TEST_MODEL` are also configured.
+`ADELE_OPENAI_CHATGPT_LIVE_TEST=1` enables the experimental ChatGPT
+subscription-route full-stack smoke with
+`ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE`. Both remain opt-in and are excluded
+from normal CI.
 
 See `docs/architecture/overview.md`, `docs/architecture/plugin-extension-model.md`,
 and ADR 0031.

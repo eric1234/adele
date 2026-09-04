@@ -94,19 +94,6 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test', '--timeout', '4m'],
   ),
   TestTarget(
-    name: 'development_source_contract',
-    path: 'plugins/development_source/packages/contract',
-    executable: 'dart',
-    arguments: <String>['test'],
-  ),
-  TestTarget(
-    name: 'development_source_backend',
-    path: 'plugins/development_source/packages/backend',
-    executable: 'dart',
-    arguments: <String>['test', '--timeout', '4m'],
-    ciTestConcurrency: 1,
-  ),
-  TestTarget(
     name: 'git_environment_backend',
     path: 'plugins/git_environment/packages/backend',
     executable: 'dart',
@@ -189,21 +176,6 @@ _packages = <({String name, String path, bool flutter})>[
   (name: 'agent_kernel', path: 'packages/agent_kernel', flutter: false),
   (name: 'scripted_model', path: 'plugins/scripted_model', flutter: false),
   (name: 'openai_plugin', path: 'plugins/openai', flutter: false),
-  (
-    name: 'development_source',
-    path: 'plugins/development_source',
-    flutter: false,
-  ),
-  (
-    name: 'development_source_contract',
-    path: 'plugins/development_source/packages/contract',
-    flutter: false,
-  ),
-  (
-    name: 'development_source_backend',
-    path: 'plugins/development_source/packages/backend',
-    flutter: false,
-  ),
   (name: 'git_environment', path: 'plugins/git_environment', flutter: false),
   (
     name: 'filesystem_tools_plugin',

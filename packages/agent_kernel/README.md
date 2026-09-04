@@ -47,13 +47,15 @@ provider account management do not belong here.
 The kernel may execute in the context of a Task-associated Environment but does
 not implement Environment lifecycle or filesystem/process behavior. The generic
 tool context still identifies only Run and Session; application composition now
-uses Session authority to construct an Environment-bound Read File executable.
+uses authoritative Session association to construct an Environment-bound host
+context for plugin-contributed `read_file` and `search`.
 Environment is the accepted practical filesystem/source + process context; a
 separate first-class Workspace concept is not required architecture unless
 future concrete needs justify it.
 
-The current DevelopmentSource proof is a bounded read-only source root and does
-not implement the final Environment abstraction.
+The retired DevelopmentSource capability was the bounded Phase IV source-root
+proof; Phase V-A replaced its current consumers with Session-authorized
+Environment tooling.
 
 ## Journal
 

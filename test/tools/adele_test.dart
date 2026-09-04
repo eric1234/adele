@@ -209,7 +209,6 @@ void main() {
           for (final TestTarget target in testTargets)
             target.name: switch (target.name) {
               'contract_codegen' => 4,
-              'development_source_backend' => 1,
               'git_environment_backend' => 1,
               _ => null,
             },
@@ -259,8 +258,6 @@ void main() {
         'plugin_runtime|dart|packages/plugin_runtime|test --timeout 10s',
         'plugin_backend_host|dart|packages/plugin_backend_host|test',
         'resource_inspector_contract|dart|plugins/resource_inspector/packages/contract|test --timeout 4m',
-        'development_source_contract|dart|plugins/development_source/packages/contract|test',
-        'development_source_backend|dart|plugins/development_source/packages/backend|test --timeout 4m',
         'git_environment_backend|dart|plugins/git_environment/packages/backend|test --timeout 4m',
         'filesystem_tools_plugin|dart|plugins/filesystem_tools|test',
         'search_tools_plugin|dart|plugins/search_tools|test',
@@ -284,10 +281,6 @@ void main() {
       '--timeout',
       '10s',
     ]);
-    expect(
-      lookupTestTarget('development_source_backend').argumentsFor(ci: true),
-      <String>['test', '--timeout', '4m', '--concurrency', '1'],
-    );
     expect(
       lookupTestTarget('git_environment_backend').argumentsFor(ci: true),
       <String>['test', '--timeout', '4m', '--concurrency', '1'],
