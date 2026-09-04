@@ -15,11 +15,23 @@ reconstructs `WorktreeEnvironment` objects in its own generic live-object
 registry; shutting down a generation clears those objects but does not remove
 durable Git worktrees.
 
-The current filesystem surface is strict UTF-8 bounded `readFile` plus a
-bounded deterministic direct-child `readDirectory`. Search is intentionally
-not a provider method: Search Tools currently composes these operations and may
-later use generic Environment process execution. Mutation, command execution,
-release/destruction, and remote cloning are absent.
+The current filesystem surface is bounded UTF-8 `readFile` with opaque
+provider-produced revisions, conditional replacement of an existing text file
+using its expected revision, and bounded deterministic direct-child
+`readDirectory`. Search and patch semantics are intentionally not provider
+methods: stock tool plugins compose lower-level Environment operations.
+
+Conditional replacements are serialized within each live Environment, staged
+beside the resolved confined target, and rechecked immediately before
+promotion. POSIX rwx permission bits are preserved during promotion. Other
+metadata such as ownership, ACLs, extended attributes, and Windows-specific
+attributes is not guaranteed to survive replacement. This mechanism prevents
+stale writes among ADELE-coordinated callers and detects practical external
+changes, but it does not promise portable atomic compare-and-replace against an
+arbitrary external writer or crash/power-loss transactional durability.
+
+New-file creation, deletion, model-facing mutation tools, command execution,
+release/destruction, and remote cloning remain absent.
 
 Path canonicalization, symlink checks, and post-read validation provide
 application-level confinement equivalent to the historical DevelopmentSource

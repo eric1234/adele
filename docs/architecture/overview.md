@@ -6,7 +6,7 @@ ADELE's maintained Linux x64 foundation proves source compilation, generated una
 
 Phase V-A is complete: deterministic real-model integration now crosses provisional app orchestration, generic model-tool extension composition, plugin-owned Search, Session-authorized Environment access, plugin-owned Read File, maintained ADELE source, and model continuation. Search is bounded native Dart traversal over authorized Environment directory/file reads, not an Environment provider method. These proofs do **not** yet implement ADELE's complete product/domain model, production orchestration-strategy registration/binding, a plugin-owned Chat strategy, or the general recursive extension system described by the current architecture.
 
-Phase V-B1 adds provider-neutral opaque file revisions and conditional replacement of existing bounded UTF-8 text files. The Git Worktree provider serializes ADELE replacements per file and detects practical out-of-band changes immediately before writing, but cannot provide portable atomic compare-and-replace against arbitrary external processes. No model-facing mutation tool or Session-authorized mutation facade exists yet, so this is not agent source-editing capability.
+Phase V-B1 adds provider-neutral opaque file revisions and conditional replacement of existing bounded UTF-8 text files. The Git Worktree provider serializes ADELE replacements within each live Environment and detects practical out-of-band changes immediately before promotion, but cannot provide portable atomic compare-and-replace against arbitrary external processes. No model-facing mutation tool or Session-authorized mutation facade exists yet, so this is not agent source-editing capability.
 
 The following remain largely or entirely unimplemented:
 

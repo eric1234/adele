@@ -14,8 +14,7 @@ final class WorktreeEnvironment {
   WorktreeEnvironment(Directory root) : root = _canonicalRoot(root);
 
   final Directory root;
-  final Map<String, Future<void>> _pendingReplacements =
-      <String, Future<void>>{};
+  Future<void> _pendingReplacement = Future<void>.value();
 
   Future<EnvironmentTextFile> readFile(String relativePath) async {
     final String normalized = _normalizeRelativePath(relativePath);
@@ -66,7 +65,6 @@ final class WorktreeEnvironment {
       );
     }
     return await _coordinateReplacement(
-      normalized,
       () => _replaceExistingTextFile(
         normalized,
         Uint8List.fromList(replacementBytes),
@@ -80,6 +78,7 @@ final class WorktreeEnvironment {
     Uint8List replacementBytes,
     String expectedRevision,
   ) async {
+    Directory? stagingDirectory;
     try {
       final File file = await _resolveRegularFile(relativePath);
       final Uint8List observed = await _readBounded(file, relativePath);
@@ -91,9 +90,19 @@ final class WorktreeEnvironment {
           relativePath: relativePath,
         );
       }
+      final FileStat originalStat = await file.stat();
+      stagingDirectory = await file.parent.createTemp(
+        '.adele-replacement-$pid-',
+      );
+      final File staged = File(
+        '${stagingDirectory.path}${Platform.pathSeparator}replacement',
+      );
+      await staged.writeAsBytes(replacementBytes, flush: true);
+      await _applyPosixPermissions(staged, originalStat.mode & 0x1ff);
 
-      // Re-resolve and re-read immediately before mutation to catch practical
-      // out-of-band path or content changes without overstating filesystem CAS.
+      // Re-resolve and re-read immediately before promotion to catch practical
+      // out-of-band path, content, or permission changes without overstating
+      // filesystem CAS.
       final File currentFile = await _resolveRegularFile(relativePath);
       if (currentFile.path != file.path) {
         throw _failure(
@@ -115,10 +124,19 @@ final class WorktreeEnvironment {
           relativePath: relativePath,
         );
       }
-      await currentFile.writeAsBytes(replacementBytes, flush: true);
-      final Uint8List written = await _readBounded(currentFile, relativePath);
+      final FileStat currentStat = await currentFile.stat();
+      if (!Platform.isWindows &&
+          (currentStat.mode & 0x1ff) != (originalStat.mode & 0x1ff)) {
+        throw _failure(
+          'revision_conflict',
+          'The file changed since the expected revision was observed.',
+          relativePath: relativePath,
+        );
+      }
+      final File promoted = await staged.rename(currentFile.path);
+      final Uint8List written = await _readBounded(promoted, relativePath);
       await _verifyStillConfined(
-        currentFile,
+        promoted,
         relativePath,
         FileSystemEntityType.file,
       );
@@ -131,28 +149,20 @@ final class WorktreeEnvironment {
         'The requested file could not be replaced.',
         relativePath: relativePath,
       );
+    } finally {
+      if (stagingDirectory case final Directory directory) {
+        await _deleteBestEffort(directory);
+      }
     }
   }
 
   Future<EnvironmentTextFileReplacement> _coordinateReplacement(
-    String relativePath,
     Future<EnvironmentTextFileReplacement> Function() operation,
   ) {
-    final Future<void> previous =
-        _pendingReplacements[relativePath] ?? Future<void>.value();
-    final Future<EnvironmentTextFileReplacement> result = previous
+    final Future<EnvironmentTextFileReplacement> result = _pendingReplacement
         .catchError((Object _) {})
         .then((_) => operation());
-    late final Future<void> completion;
-    completion = result
-        .then<void>((_) {})
-        .catchError((Object _) {})
-        .whenComplete(() {
-          if (identical(_pendingReplacements[relativePath], completion)) {
-            _pendingReplacements.remove(relativePath);
-          }
-        });
-    _pendingReplacements[relativePath] = completion;
+    _pendingReplacement = result.then<void>((_) {}).catchError((Object _) {});
     return result;
   }
 
@@ -411,6 +421,36 @@ final class WorktreeEnvironment {
 }
 
 String _revision(List<int> bytes) => sha256.convert(bytes).toString();
+
+Future<void> _applyPosixPermissions(File file, int permissions) async {
+  if (Platform.isWindows) return;
+  final ProcessResult result;
+  try {
+    result = await Process.run('chmod', <String>[
+      permissions.toRadixString(8),
+      file.path,
+    ]);
+  } on ProcessException catch (error) {
+    throw FileSystemException(
+      'Could not preserve replacement file permissions: ${error.message}',
+      file.path,
+    );
+  }
+  if (result.exitCode != 0) {
+    throw FileSystemException(
+      'Could not preserve replacement file permissions.',
+      file.path,
+    );
+  }
+}
+
+Future<void> _deleteBestEffort(Directory directory) async {
+  try {
+    if (await directory.exists()) await directory.delete(recursive: true);
+  } on FileSystemException {
+    // Staging cleanup must not replace the mutation's result or failure.
+  }
+}
 
 Directory _canonicalRoot(Directory sourceRoot) {
   final String path;

@@ -819,7 +819,7 @@ void main() {
     );
   });
 
-  test('serializes concurrent conditional replacements per file', () async {
+  test('serializes concurrent conditional replacements', () async {
     final Directory root = await Directory.systemTemp.createTemp(
       'adele-worktree-environment-concurrency-',
     );
@@ -855,6 +855,88 @@ void main() {
       winner.revision,
     );
   });
+
+  test('serializes replacements through aliases of the same file', () async {
+    final Directory root = await Directory.systemTemp.createTemp(
+      'adele-worktree-environment-alias-concurrency-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final File file = File('${root.path}/target.txt');
+    await file.writeAsString('initial');
+    await Link('${root.path}/target-alias.txt').create(file.path);
+    final WorktreeEnvironment environment = WorktreeEnvironment(root);
+    final String revision = (await environment.readFile('target.txt')).revision;
+
+    final List<Object> outcomes = await Future.wait<Object>(<Future<Object>>[
+      environment
+          .replaceExistingTextFile('target.txt', 'replacement A', revision)
+          .then<Object>((EnvironmentTextFileReplacement value) => value)
+          .catchError((Object error) => error),
+      environment
+          .replaceExistingTextFile(
+            'target-alias.txt',
+            'replacement B',
+            revision,
+          )
+          .then<Object>((EnvironmentTextFileReplacement value) => value)
+          .catchError((Object error) => error),
+    ]);
+
+    expect(outcomes.whereType<EnvironmentTextFileReplacement>(), hasLength(1));
+    expect(
+      outcomes.whereType<EnvironmentFailure>().single.code,
+      'revision_conflict',
+    );
+    expect(await file.readAsString(), anyOf('replacement A', 'replacement B'));
+    expect(
+      (await environment.readFile('target-alias.txt')).text,
+      await file.readAsString(),
+    );
+  });
+
+  test(
+    'staged replacement preserves POSIX file permissions',
+    () async {
+      final Directory root = await Directory.systemTemp.createTemp(
+        'adele-worktree-environment-permissions-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final File file = File('${root.path}/executable.sh');
+      await file.writeAsString('#!/bin/sh\nexit 0\n');
+      final int permissions = int.parse('751', radix: 8);
+      final ProcessResult chmod = await Process.run('chmod', <String>[
+        permissions.toRadixString(8),
+        file.path,
+      ]);
+      expect(chmod.exitCode, 0, reason: chmod.stderr.toString());
+      final WorktreeEnvironment environment = WorktreeEnvironment(root);
+      final String revision = (await environment.readFile(
+        'executable.sh',
+      )).revision;
+
+      await environment.replaceExistingTextFile(
+        'executable.sh',
+        '#!/bin/sh\nexit 1\n',
+        revision,
+      );
+
+      expect((await file.stat()).mode & 0x1ff, permissions);
+      expect(await file.readAsString(), '#!/bin/sh\nexit 1\n');
+      expect(
+        await root
+            .list()
+            .where(
+              (FileSystemEntity entity) =>
+                  _entityName(entity.path).startsWith('.adele-replacement-'),
+            )
+            .toList(),
+        isEmpty,
+      );
+    },
+    skip: Platform.isWindows
+        ? 'Windows does not expose POSIX permission bits.'
+        : false,
+  );
 
   test('confines and bounds conditional replacement', () async {
     final Directory container = await Directory.systemTemp.createTemp(
@@ -983,6 +1065,8 @@ Future<List<String>> _branchNames(Directory repository) async =>
       '--format=%(refname:short)',
       'refs/heads',
     ])).split('\n').where((String branch) => branch.isNotEmpty).toList();
+
+String _entityName(String path) => path.split(Platform.pathSeparator).last;
 
 // `Uri.parse('file:relative/repository')` canonicalizes to a root URI before
 // the provider receives it. This fixture exercises a genuinely relative
