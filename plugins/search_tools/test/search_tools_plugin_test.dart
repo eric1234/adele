@@ -663,6 +663,7 @@ final class _FileSystem implements AuthorizedEnvironmentFileSystem {
       relativePath: relativePath,
       text: text,
       sizeBytes: sizes[relativePath] ?? utf8.encode(text).length,
+      revision: 'fixture-revision',
     );
   }
 

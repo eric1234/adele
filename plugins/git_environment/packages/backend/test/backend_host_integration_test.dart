@@ -124,9 +124,33 @@ void main() {
         established.providerState['baselineCommit'],
         isNot(await _git(fixture.sourceB, <String>['rev-parse', 'HEAD'])),
       );
-      expect(
-        (await providerA.readFile(durable.id, 'README.md')).text,
-        'AOT Git fixture A\n',
+      final EnvironmentTextFile firstRead = await providerA.readFile(
+        durable.id,
+        'README.md',
+      );
+      expect(firstRead.text, 'AOT Git fixture A\n');
+      final EnvironmentTextFileReplacement replacement = await providerA
+          .replaceExistingTextFile(
+            durable.id,
+            'README.md',
+            'AOT conditional replacement\n',
+            firstRead.revision,
+          );
+      final EnvironmentTextFile replacedRead = await providerA.readFile(
+        durable.id,
+        'README.md',
+      );
+      expect(replacedRead.text, 'AOT conditional replacement\n');
+      expect(replacedRead.revision, replacement.revision);
+      expect(replacedRead.revision, isNot(firstRead.revision));
+      await expectLater(
+        providerA.replaceExistingTextFile(
+          durable.id,
+          'README.md',
+          'stale replacement\n',
+          firstRead.revision,
+        ),
+        throwsA(_failureWithCode('revision_conflict')),
       );
 
       await activationA.close();
@@ -182,7 +206,7 @@ void main() {
       );
       expect(
         (await providerB.readFile(refreshed.id, 'README.md')).text,
-        'AOT Git fixture A\n',
+        'AOT conditional replacement\n',
       );
       expect(refreshed.providerState, durable.providerState);
 
@@ -192,6 +216,12 @@ void main() {
     timeout: const Timeout(Duration(minutes: 4)),
   );
 }
+
+Matcher _failureWithCode(String code) => isA<EnvironmentFailure>().having(
+  (EnvironmentFailure failure) => failure.code,
+  'code',
+  code,
+);
 
 Future<PluginCapabilityActivation> _register(
   PluginBackendConnection connection,

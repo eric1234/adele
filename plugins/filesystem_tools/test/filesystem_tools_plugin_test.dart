@@ -236,6 +236,7 @@ final class _FileSystem implements AuthorizedEnvironmentFileSystem {
       relativePath: relativePath,
       text: text,
       sizeBytes: text.length,
+      revision: 'fixture-revision',
     );
   }
 

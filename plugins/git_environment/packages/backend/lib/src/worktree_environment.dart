@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:adele_environment/adele_environment.dart';
+import 'package:crypto/crypto.dart';
 
 const int maximumEnvironmentFileBytes = 1024 * 1024;
 const int maximumEnvironmentDirectoryEntries = 2048;
@@ -13,6 +14,8 @@ final class WorktreeEnvironment {
   WorktreeEnvironment(Directory root) : root = _canonicalRoot(root);
 
   final Directory root;
+  final Map<String, Future<void>> _pendingReplacements =
+      <String, Future<void>>{};
 
   Future<EnvironmentTextFile> readFile(String relativePath) async {
     final String normalized = _normalizeRelativePath(relativePath);
@@ -34,6 +37,7 @@ final class WorktreeEnvironment {
         relativePath: normalized,
         text: text,
         sizeBytes: bytes.length,
+        revision: _revision(bytes),
       );
     } on EnvironmentFailure {
       rethrow;
@@ -44,6 +48,112 @@ final class WorktreeEnvironment {
         relativePath: normalized,
       );
     }
+  }
+
+  Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
+    String relativePath,
+    String replacementText,
+    String expectedRevision,
+  ) async {
+    final String normalized = _normalizeRelativePath(relativePath);
+    final List<int> replacementBytes = utf8.encode(replacementText);
+    if (replacementBytes.length > maximumEnvironmentFileBytes) {
+      throw _failure(
+        'file_too_large',
+        'The replacement text exceeds the supported size.',
+        relativePath: normalized,
+        limit: maximumEnvironmentFileBytes,
+      );
+    }
+    return await _coordinateReplacement(
+      normalized,
+      () => _replaceExistingTextFile(
+        normalized,
+        Uint8List.fromList(replacementBytes),
+        expectedRevision,
+      ),
+    );
+  }
+
+  Future<EnvironmentTextFileReplacement> _replaceExistingTextFile(
+    String relativePath,
+    Uint8List replacementBytes,
+    String expectedRevision,
+  ) async {
+    try {
+      final File file = await _resolveRegularFile(relativePath);
+      final Uint8List observed = await _readBounded(file, relativePath);
+      await _verifyStillConfined(file, relativePath, FileSystemEntityType.file);
+      if (_revision(observed) != expectedRevision) {
+        throw _failure(
+          'revision_conflict',
+          'The file changed since the expected revision was observed.',
+          relativePath: relativePath,
+        );
+      }
+
+      // Re-resolve and re-read immediately before mutation to catch practical
+      // out-of-band path or content changes without overstating filesystem CAS.
+      final File currentFile = await _resolveRegularFile(relativePath);
+      if (currentFile.path != file.path) {
+        throw _failure(
+          'revision_conflict',
+          'The file changed since the expected revision was observed.',
+          relativePath: relativePath,
+        );
+      }
+      final Uint8List current = await _readBounded(currentFile, relativePath);
+      await _verifyStillConfined(
+        currentFile,
+        relativePath,
+        FileSystemEntityType.file,
+      );
+      if (_revision(current) != expectedRevision) {
+        throw _failure(
+          'revision_conflict',
+          'The file changed since the expected revision was observed.',
+          relativePath: relativePath,
+        );
+      }
+      await currentFile.writeAsBytes(replacementBytes, flush: true);
+      final Uint8List written = await _readBounded(currentFile, relativePath);
+      await _verifyStillConfined(
+        currentFile,
+        relativePath,
+        FileSystemEntityType.file,
+      );
+      return EnvironmentTextFileReplacement(revision: _revision(written));
+    } on EnvironmentFailure {
+      rethrow;
+    } on FileSystemException {
+      throw _failure(
+        'unwritable',
+        'The requested file could not be replaced.',
+        relativePath: relativePath,
+      );
+    }
+  }
+
+  Future<EnvironmentTextFileReplacement> _coordinateReplacement(
+    String relativePath,
+    Future<EnvironmentTextFileReplacement> Function() operation,
+  ) {
+    final Future<void> previous =
+        _pendingReplacements[relativePath] ?? Future<void>.value();
+    final Future<EnvironmentTextFileReplacement> result = previous
+        .catchError((Object _) {})
+        .then((_) => operation());
+    late final Future<void> completion;
+    completion = result
+        .then<void>((_) {})
+        .catchError((Object _) {})
+        .whenComplete(() {
+          if (identical(_pendingReplacements[relativePath], completion)) {
+            _pendingReplacements.remove(relativePath);
+          }
+        });
+    _pendingReplacements[relativePath] = completion;
+    return result;
   }
 
   Future<EnvironmentDirectoryListing> readDirectory(String relativePath) async {
@@ -299,6 +409,8 @@ final class WorktreeEnvironment {
     return path == root.path || path.startsWith(rootPrefix);
   }
 }
+
+String _revision(List<int> bytes) => sha256.convert(bytes).toString();
 
 Directory _canonicalRoot(Directory sourceRoot) {
   final String path;

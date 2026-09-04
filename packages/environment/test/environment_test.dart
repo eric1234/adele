@@ -132,6 +132,7 @@ void main() {
       'relativePath': 'lib/main.dart',
       'text': 'void main() {}',
       'sizeBytes': 14,
+      'revision': 'opaque-read-revision',
     });
 
     final EnvironmentTextFile file = await EnvironmentProviderServiceClient(
@@ -144,6 +145,66 @@ void main() {
       'relativePath': 'lib/main.dart',
     });
     expect(file.text, 'void main() {}');
+    expect(file.revision, 'opaque-read-revision');
+  });
+
+  test('generated client carries conditional replacement revisions', () async {
+    final _Channel channel = _Channel(<String, Object?>{
+      'revision': 'opaque-replacement-revision',
+    });
+
+    final EnvironmentTextFileReplacement replacement =
+        await EnvironmentProviderServiceClient(channel).replaceExistingTextFile(
+          'environment-host',
+          'lib/main.dart',
+          'void main() { print("updated"); }',
+          'opaque-expected-revision',
+        );
+
+    expect(channel.method, environmentProviderServiceReplaceExistingTextFileId);
+    expect(channel.payload, <String, Object?>{
+      'environmentId': 'environment-host',
+      'relativePath': 'lib/main.dart',
+      'replacementText': 'void main() { print("updated"); }',
+      'expectedRevision': 'opaque-expected-revision',
+    });
+    expect(replacement.revision, 'opaque-replacement-revision');
+  });
+
+  test('generated client reconstructs declared replacement failures', () async {
+    final EnvironmentProviderServiceClient client =
+        EnvironmentProviderServiceClient(
+          _FailureChannel(
+            _RemoteFailure(
+              declaredFailureType: environmentFailureTypeId,
+              code: 'revision_conflict',
+              message: 'The expected revision no longer matches.',
+              details: <String, Object?>{'relativePath': 'lib/main.dart'},
+            ),
+          ),
+        );
+
+    await expectLater(
+      client.replaceExistingTextFile(
+        'environment-host',
+        'lib/main.dart',
+        'replacement',
+        'stale-revision',
+      ),
+      throwsA(
+        isA<EnvironmentFailure>()
+            .having(
+              (EnvironmentFailure failure) => failure.code,
+              'code',
+              'revision_conflict',
+            )
+            .having(
+              (EnvironmentFailure failure) => failure.details['relativePath'],
+              'relativePath',
+              'lib/main.dart',
+            ),
+      ),
+    );
   });
 
   test('backend adapter rejects a context for another provider', () async {
@@ -213,6 +274,14 @@ final class _CapturingProvider implements EnvironmentProvider {
     EnvironmentId environmentId,
     String relativePath,
   ) => throw UnimplementedError();
+
+  @override
+  Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
+    EnvironmentId environmentId,
+    String relativePath,
+    String replacementText,
+    String expectedRevision,
+  ) => throw UnimplementedError();
 }
 
 final class _Channel implements AdeleRequestChannel {
@@ -228,4 +297,35 @@ final class _Channel implements AdeleRequestChannel {
     this.payload = payload;
     return response;
   }
+}
+
+final class _FailureChannel implements AdeleRequestChannel {
+  const _FailureChannel(this.failure);
+
+  final AdeleRemoteFailure failure;
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) =>
+      Future<Object?>.error(failure);
+}
+
+final class _RemoteFailure implements AdeleRemoteFailure {
+  const _RemoteFailure({
+    required this.declaredFailureType,
+    required this.code,
+    required this.message,
+    required this.details,
+  });
+
+  @override
+  final String? declaredFailureType;
+
+  @override
+  final String code;
+
+  @override
+  final String message;
+
+  @override
+  final Map<String, Object?> details;
 }
