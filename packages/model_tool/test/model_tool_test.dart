@@ -32,4 +32,22 @@ void main() {
     expect(outcome.modelContent, isNot(contains('host-only')));
     expect(outcome.hostData['privateDiagnostic'], 'host-only');
   });
+
+  test('effect descriptions represent source mutation explicitly', () {
+    final EffectDescription description = EffectDescription(
+      effects: const <ToolEffect>[ToolEffect.sourceMutation],
+      targets: <EffectTarget>[
+        EffectTarget(
+          uri: Uri.parse('adele-environment:/environment-1/source.dart'),
+        ),
+      ],
+      summary: 'Patch Environment file source.dart.',
+    );
+
+    expect(description.effects, <ToolEffect>{ToolEffect.sourceMutation});
+    expect(
+      description.targets.single.uri.toString(),
+      'adele-environment:/environment-1/source.dart',
+    );
+  });
 }

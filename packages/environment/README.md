@@ -17,6 +17,14 @@ must reject a detected mismatch without performing the requested write. The
 contract does not define the revision representation or promise atomicity
 against writers outside a provider's coordination mechanism.
 
-New-file creation, deletion, patch semantics, model-facing mutation tools,
-recursive search, command execution, release/destruction, Session mutation
-authority, and persistence remain outside this package in this round.
+The package also defines one Session/Environment filesystem authority identity
+with coherent read and mutation facets. Facets are operation views over the same
+authorized provider materialization, not separately selected filesystem
+identities. The mutation facet exposes conditional existing-file replacement;
+Filesystem Tools remains responsible for patch interpretation and the
+model-facing `apply_patch` contract, while Search Tools consumes only the read
+facet.
+
+New-file creation, deletion, general write semantics, recursive search, command
+execution, release/destruction, complete Session lifecycle, and persistence
+remain outside this package in this round.

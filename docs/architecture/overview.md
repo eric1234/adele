@@ -2,11 +2,11 @@
 
 ## Status
 
-ADELE's maintained Linux x64 foundation proves source compilation, generated unary and server-streaming/cancellation transport, interpreted frontend execution, active capability routing, configured provider contexts, the Phase IV/V-A source-inspection agent vertical, and the Phase V-B1 conditional Environment mutation foundation. It includes the real OpenAI `ModelProvider`, generation-bound configured provider contexts, an explicitly experimental ChatGPT configured instance, provisional Project/Task/Environment and Session authority, generic extension/model-tool composition, a Git Environment provider, and independent stock Filesystem Tools and Search Tools plugins that own Session-authorized `read_file` and `search`.
+ADELE's maintained Linux x64 foundation proves source compilation, generated unary and server-streaming/cancellation transport, interpreted frontend execution, active capability routing, configured provider contexts, the Phase IV/V-A source-inspection agent vertical, and the Phase V-B conditional Environment mutation vertical. It includes the real OpenAI `ModelProvider`, generation-bound configured provider contexts, an explicitly experimental ChatGPT configured instance, provisional Project/Task/Environment and Session authority, generic extension/model-tool composition, a Git Environment provider, and independent stock Filesystem Tools and Search Tools plugins that own Session-authorized `read_file`, `apply_patch`, and `search`.
 
 Phase V-A is complete: deterministic real-model integration now crosses provisional app orchestration, generic model-tool extension composition, plugin-owned Search, Session-authorized Environment access, plugin-owned Read File, maintained ADELE source, and model continuation. Search is bounded native Dart traversal over authorized Environment directory/file reads, not an Environment provider method. These proofs do **not** yet implement ADELE's complete product/domain model, production orchestration-strategy registration/binding, a plugin-owned Chat strategy, or the general recursive extension system described by the current architecture.
 
-Phase V-B1 adds provider-neutral opaque file revisions and conditional replacement of existing bounded UTF-8 text files. The Git Worktree provider serializes ADELE replacements within each live Environment and detects practical out-of-band changes immediately before promotion, but cannot provide portable atomic compare-and-replace against arbitrary external processes. No model-facing mutation tool or Session-authorized mutation facade exists yet, so this is not agent source-editing capability.
+Phase V-B1 adds provider-neutral opaque file revisions and conditional replacement of existing bounded UTF-8 text files. The Git Worktree provider serializes ADELE replacements within each live Environment and detects practical out-of-band changes immediately before promotion, but cannot provide portable atomic compare-and-replace against arbitrary external processes. Phase V-B2 exposes coherent read and mutation facets over one Session-authorized filesystem authority and adds Filesystem Tools' exact-unique `apply_patch`, which lowers a localized model request to B1 complete-file conditional replacement. Deterministic real-Git integration proves Read-to-Revision-to-Patch model continuation; real OpenAI or ChatGPT mutation is not yet proven.
 
 The following remain largely or entirely unimplemented:
 
@@ -17,7 +17,7 @@ The following remain largely or entirely unimplemented:
 - production plugin-facing UI composition;
 - application Command/Command Palette/keybinding infrastructure;
 - profile-aware provider preference and general configuration services;
-- additional Environment providers, Environment process execution, and model-facing mutable source tooling;
+- additional Environment providers, Environment process execution, and broader model-facing mutable source tooling such as creation/deletion/general writes;
 - the expected stock plugin topology;
 - cross-platform release, packaging, and sandboxing.
 
@@ -185,11 +185,11 @@ See [`profiles-and-configuration.md`](profiles-and-configuration.md) and [`plugi
 
 `dev.adele.openai` implements the public OpenAI API-key Responses HTTP/SSE route with `store:false` canonical ordered replay. The same plugin generation exposes API-key and ChatGPT configured instances through separate generation-bound contexts. The ChatGPT subscription-backed route remains explicitly experimental interoperability evidence.
 
-The stock Search Tools plugin contributes literal `search` and composes only the Session-authorized Environment filesystem's `readDirectory` and `readFile`; Filesystem Tools independently contributes `read_file`. The OpenAI API-key and experimental ChatGPT source-coding consumers use these plugin-contributed tools rather than the retired Phase IV DevelopmentSource capability.
+The stock Search Tools plugin contributes literal `search` and composes only the Session-authorized Environment filesystem's read facet; Filesystem Tools independently contributes revision-bearing `read_file` and exact-unique `apply_patch` over coherent read and mutation facets. The OpenAI API-key and experimental ChatGPT source-coding consumers use the read/search tools rather than the retired Phase IV DevelopmentSource capability.
 
-Deterministic integration uses the real shared AOT host, OpenAI plugin, Git Environment provider, Project/Task/Environment lifecycle, Session authority, generic extension/model-tool composition, stock tools, and development strategy. Only remote model responses come from a local fake Responses endpoint. It proves recursive source discovery, model-visible Search-to-Read path flow, reading, and model continuation. Separate deterministic coverage proves Search-tool and Environment-provider replacement generations produce fresh tools while old tools remain stale. Opt-in live API-key and experimental ChatGPT source-coding smokes have also completed successfully through the same Environment tool topology.
+Deterministic inspection integration uses the real shared AOT host, OpenAI plugin, Git Environment provider, Project/Task/Environment lifecycle, Session authority, generic extension/model-tool composition, stock tools, and development strategy. Only remote model responses come from a local fake Responses endpoint. It proves recursive source discovery, model-visible Search-to-Read path flow, reading, and model continuation. Separate deterministic integration uses the real shared AOT host and Git Environment provider to prove model-visible Read File revision and source flow into `apply_patch`, Task-worktree-only mutation, post-write revision flow, and model continuation. Generation coverage proves fresh tools replace retired Search-tool and Environment-provider bindings while old tools remain stale. Opt-in live API-key and experimental ChatGPT source-coding smokes have completed successfully only through the read/search topology.
 
-This proves self-inspection plus the lower-level conditional Environment replacement mechanic, not model-facing source mutation and not full self-hosting.
+This proves self-inspection and deterministic model-facing conditional mutation of an existing Session Environment file, not real-model mutation, command-backed validation, general filesystem mutation, or full self-hosting.
 
 ## Remaining runtime validation
 
@@ -203,10 +203,10 @@ This proves self-inspection plus the lower-level conditional Environment replace
 | Active capability/configuration routing | Proven for deterministic discovery, explicit selection, exact generations, and separate OpenAI configuration contexts. |
 | Real OpenAI provider | Deterministic HTTP/SSE/shared-AOT integration proven; live network tests remain opt-in. |
 | Experimental ChatGPT configured instance | Auth/routing tests and a successful migrated opt-in source-coding smoke provide interoperability evidence only. |
-| Model-to-source continuation | Proven through Session-authorized Git Environment `search`/`read_file` composition for deterministic OpenAI integration and opt-in live API-key/experimental ChatGPT evidence. |
+| Model-to-source continuation | Read/search is proven through deterministic OpenAI integration and opt-in live API-key/experimental ChatGPT evidence; deterministic `read_file`/`apply_patch` mutation continuation is also proven, but no real-model mutation smoke exists yet. |
 | Rebuild/reload | Proven for three cycles without orphan host processes. |
 | General recursive extension system | Accepted architecture; not implemented. |
-| Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, Session-authorized reads, and generated conditional existing-file replacement proven; persistence, Session-authorized mutation, and complete lifecycle unimplemented. |
+| Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, Session-authorized read/mutation facets, and conditional existing-file patching proven; persistence and complete lifecycle remain unimplemented. |
 | Production orchestration/UI/Commands | Directional; not implemented. |
 | Cross-platform/release | Unproven on Windows, macOS, and release mode. |
 | Packaging/sandboxing | Unproven; process isolation is not a sandbox. |

@@ -8,7 +8,7 @@ This document captures the current direction for ADELE's stock development agent
 
 It is intentionally directional rather than contractual. The exact tool set, names, schemas, persistence model, permission system, scheduling model, and implementation layering may change as ADELE becomes capable of self-hosting and real usage exposes better designs. The near-term implementation may provide only a small subset of this document.
 
-The maintained execution vertical now proves provider-neutral model/tool/model execution and plugin-contributed, Session-authorized Environment `search` and `read_file`, including deterministic OpenAI source continuation and the explicitly experimental ChatGPT route. The lower-level Environment contract also proves opaque file revisions and conditional replacement of existing text files, but no model-facing mutation tool or Session-authorized mutation facade exists yet. The maintained workflow therefore still does **not** implement source editing, the stock Command Tool, TODO/Progress, Plan, Console/Terminal, background scheduling, or the broader presentation model described here.
+The maintained execution vertical now proves provider-neutral model/tool/model execution and plugin-contributed, Session-authorized Environment `search`, revision-bearing `read_file`, and exact-unique `apply_patch`. Read/search includes deterministic OpenAI source continuation and the explicitly experimental ChatGPT route; mutation currently has deterministic real-Git model/tool/model coverage only. The maintained workflow therefore still does **not** prove real-model editing or implement general filesystem mutation, the stock Command Tool, TODO/Progress, Plan, Console/Terminal, background scheduling, or the broader presentation model described here.
 
 The purpose is to preserve the reasoning behind the current direction so later implementation work does not independently rediscover a conventional coding-agent tool surface or accidentally conflict with ADELE's product model.
 
@@ -196,6 +196,16 @@ Mutable Environment filesystem operations should expose conditional-mutation sem
 The strength of that guarantee is provider-specific. In particular, an ordinary stock local filesystem cannot portably provide an atomic compare-and-replace guarantee against every arbitrary out-of-band writer. Such a provider should use the strongest practical coordination/conflict detection available, must not claim atomic protection it cannot provide, and should at least prevent stale writes among ADELE-coordinated callers. When an external conflict is detected, the mutation should fail rather than silently overwrite newer content.
 
 The exact revision representation, hashing/versioning mechanism, provider coordination strategy, tool schemas, and any future multi-file atomicity remain deferred. The architectural point is the precondition and honest effect guarantee: source mutation should not knowingly apply against stale observed content by default. Creation can analogously require that the target be absent.
+
+The current initial `apply_patch(relativePath, expectedRevision, search,
+replace)` language performs exact, case-sensitive, literal matching and mutates
+only when `search` occurs once. Zero or multiple matches fail without mutation,
+including overlapping candidate starts. The tool re-reads and compares the
+opaque expected revision before matching, then still supplies the original
+revision to conditional complete-file replacement as the final stale-write
+guard. This deliberately narrow exact-unique language is current implementation,
+not a permanent model patch grammar; future model-facing formats may evolve
+without moving patch semantics into `EnvironmentProvider`.
 
 Long-tail filesystem actions such as move, copy, directory creation, permissions, or unusual metadata manipulation do not automatically need dedicated model tools. They can initially remain command operations unless experience shows clear value in promotion.
 
