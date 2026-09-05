@@ -170,7 +170,7 @@ void main() {
         inactiveCatalog.materialize().tools.map(
           (tool) => tool.modelDefinition.alias,
         ),
-        <String>['read_file'],
+        <String>['read_file', 'apply_patch'],
       );
 
       final ExtensionRegistration searchGenerationB = const SearchToolsPlugin()
@@ -260,6 +260,197 @@ void main() {
       );
 
       await environmentGenerationB.close();
+      await host.close();
+    },
+    timeout: const Timeout(Duration(minutes: 4)),
+  );
+
+  test(
+    'agent reads then patches real source in its Session Environment',
+    () async {
+      final Directory container = await Directory.systemTemp.createTemp(
+        'adele-session-environment-patch-',
+      );
+      addTearDown(() async {
+        if (await container.exists()) await container.delete(recursive: true);
+      });
+      final Directory source = Directory('${container.path}/source');
+      final String originalSource = await _createSourceRepository(
+        repository: repository,
+        source: source,
+      );
+      final PluginBackendHost host = await PluginBackendHost.start(
+        dartaotruntimeExecutable: dartaotruntime,
+        hostArtifactPath: hostArtifact.path,
+      );
+      addTearDown(() async {
+        if (!host.isClosed) await host.close(graceful: false);
+      });
+      final CapabilityRegistry registry = CapabilityRegistry();
+      final ProviderId providerId = ProviderId(_gitEnvironmentProviderId);
+      final PluginCapabilityActivation environmentActivation =
+          await _startGeneration(
+            host: host,
+            registry: registry,
+            artifact: gitEnvironmentArtifact,
+            providerId: providerId,
+          );
+      addTearDown(environmentActivation.close);
+      final InMemoryProductStore store = InMemoryProductStore();
+      final ProductLifecycleCoordinator lifecycle =
+          ProductLifecycleCoordinator.generated(
+            store: store,
+            registry: registry,
+            ids: const _IntegrationIds(),
+          );
+      final Project project = lifecycle.createProject(source.uri);
+      final TaskCreationResult created = await lifecycle.createTask(
+        projectId: project.id,
+        title: 'Patch real ADELE source',
+        providerId: providerId,
+      );
+      final SessionId sessionId = SessionId('session-environment-patch');
+      final SessionEnvironmentAuthority authority = store.associateSession(
+        sessionId: sessionId,
+        taskId: created.task.id,
+      );
+      final ExtensionRegistry extensions = ExtensionRegistry();
+      final ExtensionRegistration filesystemActivation =
+          const FilesystemToolsPlugin().activate(extensions);
+      addTearDown(filesystemActivation.close);
+      final ToolCatalog catalog = await buildModelToolCatalogForSession(
+        sessionId: sessionId,
+        environmentRuntime: lifecycle.environmentRuntime,
+        extensions: extensions,
+      );
+      final MaterializedToolSet tools = catalog.materialize();
+      final _ReadPatchModel model = _ReadPatchModel();
+      final DevelopmentSessionHistory history = DevelopmentSessionHistory(
+        sessionId,
+      )..append(UserSessionMessage('Update the strategy default safely.'));
+      final AgentRun run = AgentRun(
+        id: RunId('run-environment-patch'),
+        sessionId: sessionId,
+      );
+      final DevelopmentToolLoopStrategy strategy = DevelopmentToolLoopStrategy(
+        run: run,
+        session: history,
+        contextAssembler: const DevelopmentContextAssembler(
+          instructions:
+              'Read the requested source, use its visible revision to patch '
+              'one exact location, then report the result.',
+        ),
+        model: model,
+        toolCatalog: catalog,
+        policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
+      );
+
+      expect(tools.tools.map((tool) => tool.modelDefinition.alias), <String>[
+        'read_file',
+        'apply_patch',
+      ]);
+      for (final MaterializedTool tool in tools.tools) {
+        final Object? properties =
+            tool.modelDefinition.argumentsSchema['properties'];
+        expect(properties, isA<Map<String, Object?>>());
+        expect(
+          (properties! as Map<String, Object?>).keys,
+          isNot(contains('environmentId')),
+        );
+      }
+
+      await strategy.start();
+
+      expect(run.state, RunState.completed);
+      expect(model.invocations, 3);
+      expect(model.observedPath, _sourceRelativePath);
+      expect(model.observedSource, originalSource);
+      expect(model.expectedRevision, isNotEmpty);
+      expect(model.postWriteRevision, isNot(model.expectedRevision));
+      expect(authority.environmentId, created.environment.id);
+      expect(
+        (history.snapshot().entries.last as AssistantSessionMessage).content,
+        contains('maxModelInvocations to 9'),
+      );
+
+      final List<ToolInvocationPrepared> prepared = run.journal.records
+          .map((record) => record.event)
+          .whereType<ToolInvocationPrepared>()
+          .toList(growable: false);
+      expect(
+        prepared.map((event) => event.invocation.tool.modelDefinition.alias),
+        <String>['read_file', 'apply_patch'],
+      );
+      expect(
+        prepared.last.invocation.canonicalArguments['expectedRevision'],
+        model.expectedRevision,
+      );
+      expect(
+        prepared.last.invocation.canonicalArguments['search'],
+        model.search,
+      );
+      final List<ToolExecutionCompleted> completed = run.journal.records
+          .map((record) => record.event)
+          .whereType<ToolExecutionCompleted>()
+          .toList(growable: false);
+      expect(completed, hasLength(2));
+      expect(
+        completed.map((event) => event.outcome.disposition),
+        everyElement(ToolOutcomeDisposition.success),
+      );
+      expect(
+        completed.map((event) => event.outcome.hostData['environmentId']),
+        everyElement(authority.environmentId.value),
+      );
+      expect(
+        completed.last.outcome.hostData['newRevision'],
+        model.postWriteRevision,
+      );
+      final List<ToolPolicyEvaluated> policyEvaluations = run.journal.records
+          .map((record) => record.event)
+          .whereType<ToolPolicyEvaluated>()
+          .toList(growable: false);
+      expect(policyEvaluations, hasLength(2));
+      expect(policyEvaluations.last.decision, ToolPolicyDecision.allow);
+      expect(policyEvaluations.last.effects.effects, <ToolEffect>{
+        ToolEffect.sourceMutation,
+      });
+      expect(
+        policyEvaluations.last.effects.targets.single.uri.toString(),
+        'adele-environment:/${authority.environmentId.value}/'
+        '$_sourceRelativePath',
+      );
+
+      final EnvironmentMaterialization materialization = lifecycle
+          .environmentRuntime
+          .currentMaterialization(created.environment.id)!;
+      final EnvironmentTextFile resultingFile = await materialization.provider
+          .readFile(created.environment.id, _sourceRelativePath);
+      expect(resultingFile.text, contains('this.maxModelInvocations = 9'));
+      expect(
+        resultingFile.text,
+        isNot(contains('this.maxModelInvocations = 8')),
+      );
+      expect(resultingFile.revision, model.postWriteRevision);
+      final String worktreePath =
+          created.environment.providerState!['worktreePath']! as String;
+      final File worktreeSource = File('$worktreePath/$_sourceRelativePath');
+      expect(await worktreeSource.readAsString(), resultingFile.text);
+      expect(
+        worktreeSource.path,
+        isNot(File('${source.path}/$_sourceRelativePath').path),
+      );
+      final String unchangedProjectSource = await File(
+        '${source.path}/$_sourceRelativePath',
+      ).readAsString();
+      expect(unchangedProjectSource, originalSource);
+      expect(unchangedProjectSource, contains('this.maxModelInvocations = 8'));
+      expect(
+        unchangedProjectSource,
+        isNot(contains('this.maxModelInvocations = 9')),
+      );
+
+      await environmentActivation.close();
       await host.close();
     },
     timeout: const Timeout(Duration(minutes: 4)),
@@ -361,6 +552,204 @@ final class _SearchReadModel implements ModelPort {
       ),
     );
   }
+}
+
+final class _ReadPatchModel implements ModelPort {
+  int invocations = 0;
+  String? observedPath;
+  String? observedSource;
+  String? expectedRevision;
+  String? postWriteRevision;
+  String? search;
+
+  @override
+  Stream<ModelEvent> invoke(SemanticModelRequest request) async* {
+    invocations++;
+    final List<String> modelVisibleOutcomes = request.input
+        .whereType<SemanticToolOutcomeInput>()
+        .map((input) => input.outcome.modelContent)
+        .toList(growable: false);
+    if (modelVisibleOutcomes.isEmpty) {
+      final MaterializedTool readFile = request.tools.byAlias('read_file')!;
+      final MaterializedTool applyPatch = request.tools.byAlias('apply_patch')!;
+      _requireModelSchema(
+        readFile,
+        expectedProperties: const <String>{'relativePath'},
+      );
+      _requireModelSchema(
+        applyPatch,
+        expectedProperties: const <String>{
+          'relativePath',
+          'expectedRevision',
+          'search',
+          'replace',
+        },
+      );
+      yield ModelOutputItemCompleted(
+        invocationId: request.invocationId,
+        item: ModelToolProposalOutput(
+          ProviderToolProposal(
+            providerCallId: 'read-call-mutation',
+            alias: 'read_file',
+            arguments: const <String, Object?>{
+              'relativePath': _sourceRelativePath,
+            },
+          ),
+        ),
+      );
+    } else if (modelVisibleOutcomes.length == 1) {
+      final _VisibleFile file = _parseVisibleFile(modelVisibleOutcomes.single);
+      observedPath = file.relativePath;
+      observedSource = file.text;
+      expectedRevision = file.revision;
+      final List<String> candidateLines = file.text
+          .split('\n')
+          .where((line) => line.contains('this.maxModelInvocations = 8'))
+          .toList(growable: false);
+      if (candidateLines.length != 1) {
+        throw StateError(
+          'The model-visible source did not contain one patch target line.',
+        );
+      }
+      search = candidateLines.single;
+      final String replace = search!.replaceFirst(
+        'this.maxModelInvocations = 8',
+        'this.maxModelInvocations = 9',
+      );
+      yield ModelOutputItemCompleted(
+        invocationId: request.invocationId,
+        item: ModelToolProposalOutput(
+          ProviderToolProposal(
+            providerCallId: 'patch-call-mutation',
+            alias: 'apply_patch',
+            arguments: <String, Object?>{
+              'relativePath': file.relativePath,
+              'expectedRevision': file.revision,
+              'search': search,
+              'replace': replace,
+            },
+          ),
+        ),
+      );
+    } else if (modelVisibleOutcomes.length == 2) {
+      final _VisiblePatch result = _parseVisiblePatch(
+        modelVisibleOutcomes.last,
+      );
+      if (result.relativePath != observedPath) {
+        throw StateError('The patch result named another file.');
+      }
+      postWriteRevision = result.revision;
+      yield ModelOutputItemCompleted(
+        invocationId: request.invocationId,
+        item: ModelTextOutput(
+          'Patched $observedPath and changed maxModelInvocations to 9.',
+        ),
+      );
+    } else {
+      throw StateError('Unexpected deterministic model continuation.');
+    }
+    yield ModelInvocationSettledEvent(
+      invocationId: request.invocationId,
+      settlement: ModelSettlement.completed,
+      metadata: ModelTerminalMetadata(
+        effectiveModel: 'deterministic-read-patch-v1',
+      ),
+    );
+  }
+}
+
+void _requireModelSchema(
+  MaterializedTool tool, {
+  required Set<String> expectedProperties,
+}) {
+  final Object? properties = tool.modelDefinition.argumentsSchema['properties'];
+  if (properties is! Map<String, Object?> ||
+      properties.keys.toSet().difference(expectedProperties).isNotEmpty ||
+      properties.length != expectedProperties.length) {
+    throw StateError(
+      '${tool.modelDefinition.alias} exposed unexpected model arguments.',
+    );
+  }
+}
+
+final class _VisibleFile {
+  const _VisibleFile({
+    required this.relativePath,
+    required this.revision,
+    required this.text,
+  });
+
+  final String relativePath;
+  final String revision;
+  final String text;
+}
+
+_VisibleFile _parseVisibleFile(String modelContent) {
+  final int firstNewline = modelContent.indexOf('\n');
+  final int secondNewline = modelContent.indexOf('\n', firstNewline + 1);
+  if (firstNewline < 0 ||
+      secondNewline < 0 ||
+      secondNewline + 1 >= modelContent.length ||
+      modelContent.codeUnitAt(secondNewline + 1) != 0x0a) {
+    throw StateError('Read File returned malformed model-visible content.');
+  }
+  final String fileLine = modelContent.substring(0, firstNewline);
+  final String revisionLine = modelContent.substring(
+    firstNewline + 1,
+    secondNewline,
+  );
+  const String filePrefix = 'File: ';
+  const String revisionPrefix = 'Revision: ';
+  if (!fileLine.startsWith(filePrefix) ||
+      !revisionLine.startsWith(revisionPrefix)) {
+    throw StateError('Read File omitted model-visible file metadata.');
+  }
+  final Object? relativePath = jsonDecode(
+    fileLine.substring(filePrefix.length),
+  );
+  final Object? revision = jsonDecode(
+    revisionLine.substring(revisionPrefix.length),
+  );
+  if (relativePath is! String || revision is! String) {
+    throw StateError('Read File metadata was not encoded as strings.');
+  }
+  return _VisibleFile(
+    relativePath: relativePath,
+    revision: revision,
+    text: modelContent.substring(secondNewline + 2),
+  );
+}
+
+final class _VisiblePatch {
+  const _VisiblePatch({required this.relativePath, required this.revision});
+
+  final String relativePath;
+  final String revision;
+}
+
+_VisiblePatch _parseVisiblePatch(String modelContent) {
+  final int newline = modelContent.indexOf('\n');
+  if (newline < 0) {
+    throw StateError('Apply Patch returned malformed model-visible content.');
+  }
+  final String pathLine = modelContent.substring(0, newline);
+  final String revisionLine = modelContent.substring(newline + 1);
+  const String pathPrefix = 'Patched: ';
+  const String revisionPrefix = 'Revision: ';
+  if (!pathLine.startsWith(pathPrefix) ||
+      !revisionLine.startsWith(revisionPrefix)) {
+    throw StateError('Apply Patch omitted model-visible file metadata.');
+  }
+  final Object? relativePath = jsonDecode(
+    pathLine.substring(pathPrefix.length),
+  );
+  final Object? revision = jsonDecode(
+    revisionLine.substring(revisionPrefix.length),
+  );
+  if (relativePath is! String || revision is! String) {
+    throw StateError('Apply Patch metadata was not encoded as strings.');
+  }
+  return _VisiblePatch(relativePath: relativePath, revision: revision);
 }
 
 Future<ToolOutcome> _executeSearch(

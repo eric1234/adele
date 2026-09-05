@@ -85,7 +85,7 @@ final class WorktreeEnvironment {
       await _verifyStillConfined(file, relativePath, FileSystemEntityType.file);
       if (_revision(observed) != expectedRevision) {
         throw _failure(
-          'revision_conflict',
+          environmentRevisionConflictCode,
           'The file changed since the expected revision was observed.',
           relativePath: relativePath,
         );
@@ -106,7 +106,7 @@ final class WorktreeEnvironment {
       final File currentFile = await _resolveRegularFile(relativePath);
       if (currentFile.path != file.path) {
         throw _failure(
-          'revision_conflict',
+          environmentRevisionConflictCode,
           'The file changed since the expected revision was observed.',
           relativePath: relativePath,
         );
@@ -119,7 +119,7 @@ final class WorktreeEnvironment {
       );
       if (_revision(current) != expectedRevision) {
         throw _failure(
-          'revision_conflict',
+          environmentRevisionConflictCode,
           'The file changed since the expected revision was observed.',
           relativePath: relativePath,
         );
@@ -128,7 +128,7 @@ final class WorktreeEnvironment {
       if (!Platform.isWindows &&
           (currentStat.mode & 0x1ff) != (originalStat.mode & 0x1ff)) {
         throw _failure(
-          'revision_conflict',
+          environmentRevisionConflictCode,
           'The file changed since the expected revision was observed.',
           relativePath: relativePath,
         );

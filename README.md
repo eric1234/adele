@@ -12,6 +12,7 @@ Phase II   generated unary + server-streaming/cancellation transport
 Phase III  active capability registry and exact-generation routing
 Phase IV   provider-neutral agent execution + real model/source coding vertical
 Phase V-A  Session-authorized plugin-composed Environment read/search
+Phase V-B  conditional Environment replacement + deterministic apply_patch
 ```
 
 Interpreted Flutter frontends and locally compiled AOT backends run through one
@@ -44,17 +45,21 @@ Phase V-A establishes durable Project, Task, and Environment values and binds
 provisional agent Sessions authoritatively to one Task-associated Environment.
 Active plugin generations contribute contextual model tools through the generic
 extension registry. The independent stock Filesystem Tools and Search Tools
-plugins own `read_file` and `search`, while a Session-scoped host facade supplies
-only the authorized Environment filesystem. Search recursively composes
-`readDirectory` and `readFile` in Dart; it is not an Environment provider
-method.
+plugins own `read_file`, `apply_patch`, and `search`, while a Session-scoped host
+facade supplies coherent read and mutation facets over the one authorized
+Environment filesystem. Search requests only the read facet and recursively
+composes `readDirectory` and `readFile` in Dart; it is not an Environment
+provider method.
 
 The OpenAI API-key and experimental ChatGPT source-coding paths now use this
 plugin-composed, Session-authorized Environment tool path. Deterministic AOT
 integration proves recursive discovery and reading of copied maintained ADELE
 source, real-model continuation, and generation-safe replacement of tool and
-Environment-provider generations. ADELE cannot yet modify or validate its own
-source through this workflow.
+Environment-provider generations. Deterministic integration now also proves
+model-visible Read File revision flow into plugin-owned exact-unique
+`apply_patch`, conditional mutation of the Session-authorized Git worktree, and
+model continuation. Real-model source mutation and command-backed validation are
+not yet proven.
 
 ## Accepted long-term architecture beyond the current implementation
 
@@ -179,7 +184,7 @@ plugins/workspace_demo/      internal source-plugin reference fixture
 plugins/resource_inspector/  Phase III two-provider capability fixture
 plugins/scripted_model/      deterministic ModelProvider/transport fixture
 plugins/openai/              real OpenAI ModelProvider; ChatGPT route experimental
-plugins/filesystem_tools/    stock Session-authorized Read File tool
+plugins/filesystem_tools/    stock Session-authorized Read File/Apply Patch tools
 plugins/search_tools/        stock Session-authorized literal Search tool
 plugins/git_environment/     Git worktree Environment provider
 docs/architecture/           architecture boundaries/directional models
@@ -257,7 +262,7 @@ See `docs/architecture/profiles-and-configuration.md`.
 
 ## Next Work
 
-**Phases IV and V-A are complete.**
+**Phases IV, V-A, and the initial V-B1/B2 mutation slices are complete.**
 
 Phase V-A1 established the Project-to-Task-to-primary-Environment spine and
 stock Git worktree provider. V-A2 connected provisional Session authority to
@@ -277,11 +282,17 @@ V-A5 migrated the OpenAI API-key and experimental ChatGPT source-coding paths to
 the Session-authorized Environment tool composition, retired the provisional
 Phase IV DevelopmentSource capability, and completed the real-model
 plugin-composed read-only self-inspection proof. `DevelopmentToolLoopStrategy`
-remains application-owned provisional orchestration. Production
-orchestration-strategy registration/binding and a plugin-owned Chat strategy,
-source mutation/editing, Environment-backed command/validation execution,
-complete strategy-bound Session lifecycle, and SCM/review integration remain
-later work rather than settled interfaces.
+remains application-owned provisional orchestration.
+
+V-B1 added opaque observed-file revisions and conditional complete-file
+replacement. V-B2 projects one Session/Environment filesystem authority through
+read and mutation facets and adds Filesystem Tools' initial exact-unique
+`apply_patch`, with deterministic real-Git Read-to-Patch continuation coverage.
+Production orchestration-strategy registration/binding, a plugin-owned Chat
+strategy, real-model mutation, file creation/deletion/general writes,
+Environment-backed command/validation execution, complete strategy-bound Session
+lifecycle, and SCM/review integration remain later work rather than settled
+interfaces.
 
 Implementation should introduce the smallest concrete extension boundaries
 needed by those verticals rather than build a speculative universal framework

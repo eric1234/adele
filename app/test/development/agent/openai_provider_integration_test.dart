@@ -334,9 +334,9 @@ void main() {
                   (Object? tool) =>
                       (tool! as Map<String, Object?>)['name']! as String,
                 ),
-                containsAll(<String>['search', 'read_file']),
+                containsAll(<String>['search', 'read_file', 'apply_patch']),
               );
-              expect(tools, hasLength(2));
+              expect(tools, hasLength(3));
               final String encodedTools = jsonEncode(tools);
               for (final String forbidden in <String>[
                 'EnvironmentId',
@@ -434,7 +434,7 @@ void main() {
               expect(
                 (input[6]! as Map<String, Object?>)['output'],
                 allOf(
-                  startsWith('File: $strategyPath'),
+                  startsWith('File: ${jsonEncode(strategyPath)}'),
                   contains('final class DevelopmentToolLoopStrategy'),
                   contains('this.maxModelInvocations = 8'),
                 ),

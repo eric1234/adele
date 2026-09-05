@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted; initial Environment-authorized Session execution implemented, broader lifecycle deferred
+Accepted; initial Environment-authorized Session read/mutation implemented, broader lifecycle deferred
 
 Partially supersedes ADR 0022 for long-term Session semantics.
 
@@ -89,9 +89,9 @@ The maintained repository does **not** yet implement this complete product-domai
 - The provisional application strategy remains a bounded chat/tool loop.
 - `adele_product` now owns the initial immutable Project, Task, and Environment values, including generic provider identity and opaque provider state.
 - The application has an in-memory Task establishment coordinator that publishes a Task and finalized primary Environment and records the exact establishment-time materialization only after provider success; disk persistence remains deferred.
-- `adele_environment` and the stock Git worktree backend prove establishment, restoration, bounded filesystem reads, opaque observed-file revisions, conditional existing-text-file replacement, component-local value reification, and exact-generation rebinding. The replacement foundation is not yet exposed through Session-authorized model tools.
-- The application owns one provisional authoritative `SessionId -> TaskId + EnvironmentId` relation and uses it to materialize an Environment filesystem facade for independently contributed `search` and `read_file` tools; Run and generic tool context do not independently select Environment.
-- A deterministic agent Run recursively searches then reads real copied ADELE source through a real Git Environment. Search semantics remain in Search Tools rather than `EnvironmentProvider`, and integration coverage proves old tool bindings remain stale while fresh access restores the durable Environment through a replacement provider generation.
+- `adele_environment` and the stock Git worktree backend prove establishment, restoration, bounded filesystem reads, opaque observed-file revisions, conditional existing-text-file replacement, component-local value reification, and exact-generation rebinding. Filesystem Tools owns the model-facing exact-unique patch semantics and lowers them to that replacement primitive.
+- The application owns one provisional authoritative `SessionId -> TaskId + EnvironmentId` relation and uses it to materialize one Environment filesystem authority with coherent read and mutation facets for independently contributed `search`, `read_file`, and `apply_patch` tools; Run and generic tool context do not independently select Environment, and Search requests only the read facet.
+- Deterministic agent Runs prove Search-to-Read and Read-to-Patch continuation against real copied ADELE source through a real Git Environment. The mutation proof obtains the expected opaque revision and patch context from model-visible Read File content and changes only the Task worktree. Integration coverage also proves old tool bindings remain stale while fresh access restores the durable Environment through a replacement provider generation.
 - Task Browser, the complete strategy-bound Session aggregate/lifecycle, the core/public orchestration-strategy registry, the public strategy execution facade, child Session lifecycle, and parent Session presentation are not implemented.
 - Phase V-A5 migrated the OpenAI API-key and experimental ChatGPT source-coding consumers to the Session-authorized Environment tool composition and retired the provisional DevelopmentSource plugin.
 

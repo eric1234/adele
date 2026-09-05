@@ -26,8 +26,8 @@ final class _SearchModelTools implements ModelToolContribution {
   Future<Iterable<ToolRegistration>> materialize(
     ModelToolHostContext context,
   ) async {
-    final AuthorizedEnvironmentFileSystem fileSystem = await context
-        .requireHostService<AuthorizedEnvironmentFileSystem>();
+    final AuthorizedEnvironmentFileReadFacet fileSystem = await context
+        .requireHostService<AuthorizedEnvironmentFileReadFacet>();
     if (fileSystem.sessionId != context.sessionId) {
       throw StateError('The filesystem authority belongs to another Session.');
     }
@@ -51,7 +51,7 @@ final class _SearchExecutable implements ToolExecutable {
     'node_modules',
   };
 
-  final AuthorizedEnvironmentFileSystem _fileSystem;
+  final AuthorizedEnvironmentFileReadFacet _fileSystem;
 
   ToolRegistration get registration => ToolRegistration(
     definition: ToolDefinition(

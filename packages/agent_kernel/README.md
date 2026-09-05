@@ -48,7 +48,9 @@ The kernel may execute in the context of a Task-associated Environment but does
 not implement Environment lifecycle or filesystem/process behavior. The generic
 tool context still identifies only Run and Session; application composition now
 uses authoritative Session association to construct an Environment-bound host
-context for plugin-contributed `read_file` and `search`.
+context for plugin-contributed `read_file`, `apply_patch`, and `search`. Tool
+policy remains kernel-owned; Filesystem Tools owns patch interpretation and the
+host supplies only the authorized Environment facets.
 Environment is the accepted practical filesystem/source + process context; a
 separate first-class Workspace concept is not required architecture unless
 future concrete needs justify it.
