@@ -32,7 +32,9 @@ void main() {
         environmentRuntime: fixture.runtime,
         extensions: extensions,
       );
-      final MaterializedTool tool = catalog.materialize().byAlias('read_file')!;
+      final MaterializedToolSet tools = catalog.materialize();
+      final MaterializedTool tool = tools.byAlias('read_file')!;
+      final MaterializedTool applyPatch = tools.byAlias('apply_patch')!;
       final Object? properties =
           tool.modelDefinition.argumentsSchema['properties'];
       expect(properties, isA<Map<String, Object?>>());
@@ -67,6 +69,10 @@ void main() {
         throwsA(isA<StaleToolBindingException>()),
       );
       expect(
+        applyPatch.executable.validateBinding,
+        throwsA(isA<StaleToolBindingException>()),
+      );
+      expect(
         (await buildModelToolCatalogForSession(
           sessionId: fixture.sessionId,
           environmentRuntime: fixture.runtime,
@@ -95,7 +101,7 @@ void main() {
     expect(await aliases(), isEmpty);
     final ExtensionRegistration filesystem = const FilesystemToolsPlugin()
         .activate(extensions);
-    expect(await aliases(), <String>{'read_file'});
+    expect(await aliases(), <String>{'read_file', 'apply_patch'});
     await filesystem.close();
 
     final ExtensionRegistration search = const SearchToolsPlugin().activate(
@@ -104,54 +110,158 @@ void main() {
     expect(await aliases(), <String>{'search'});
     final ExtensionRegistration bothFilesystem = const FilesystemToolsPlugin()
         .activate(extensions);
-    expect(await aliases(), <String>{'search', 'read_file'});
+    expect(await aliases(), <String>{'search', 'read_file', 'apply_patch'});
     await search.close();
     await bothFilesystem.close();
   });
 
-  test(
-    'authorized directory reads retain Session Environment generation',
-    () async {
-      final _Fixture staleFixture = await _fixture();
-      final AuthorizedEnvironmentFileSystem staleFileSystem =
-          await SessionModelToolHostContext(
-            sessionId: staleFixture.sessionId,
-            environmentRuntime: staleFixture.runtime,
-          ).requireHostService<AuthorizedEnvironmentFileSystem>();
+  test('authorized facets share Session Environment and generation', () async {
+    final _Fixture fixture = await _fixture();
+    final SessionModelToolHostContext context = SessionModelToolHostContext(
+      sessionId: fixture.sessionId,
+      environmentRuntime: fixture.runtime,
+    );
+    final AuthorizedEnvironmentFileSystem authority = await context
+        .requireHostService<AuthorizedEnvironmentFileSystem>();
+    final AuthorizedEnvironmentFileReadFacet read = await context
+        .requireHostService<AuthorizedEnvironmentFileReadFacet>();
+    final AuthorizedEnvironmentFileMutationFacet mutation = await context
+        .requireHostService<AuthorizedEnvironmentFileMutationFacet>();
 
-      final EnvironmentDirectoryListing listing = await staleFileSystem
-          .readDirectory('nested');
-      expect(listing.relativePath, 'nested');
-      expect(staleFixture.provider.directoryEnvironmentIds, <EnvironmentId>[
-        staleFixture.environmentId,
-      ]);
-      await staleFixture.registration.close();
-      await expectLater(
-        staleFileSystem.readDirectory('nested'),
-        throwsA(isA<AuthorizedEnvironmentBindingStale>()),
-      );
-      await expectLater(
-        staleFileSystem.readFile('source.dart'),
-        throwsA(isA<AuthorizedEnvironmentBindingStale>()),
-      );
+    expect(
+      await context.requireHostService<AuthorizedEnvironmentFileSystem>(),
+      same(authority),
+    );
+    expect(
+      await context.requireHostService<AuthorizedEnvironmentFileReadFacet>(),
+      same(read),
+    );
+    expect(
+      await context
+          .requireHostService<AuthorizedEnvironmentFileMutationFacet>(),
+      same(mutation),
+    );
+    expect(
+      <SessionId>{authority.sessionId, read.sessionId, mutation.sessionId},
+      <SessionId>{fixture.sessionId},
+    );
+    expect(
+      <EnvironmentId>{
+        authority.environmentId,
+        read.environmentId,
+        mutation.environmentId,
+      },
+      <EnvironmentId>{fixture.environmentId},
+    );
 
-      final _Fixture unavailableFixture = await _fixture();
-      final AuthorizedEnvironmentFileSystem unavailableFileSystem =
-          await SessionModelToolHostContext(
-            sessionId: unavailableFixture.sessionId,
-            environmentRuntime: unavailableFixture.runtime,
-          ).requireHostService<AuthorizedEnvironmentFileSystem>();
-      unavailableFixture.endpoint.available = false;
-      await expectLater(
-        unavailableFileSystem.readDirectory('nested'),
-        throwsA(isA<AuthorizedEnvironmentBindingUnavailable>()),
-      );
-      await expectLater(
-        unavailableFileSystem.readFile('source.dart'),
-        throwsA(isA<AuthorizedEnvironmentBindingUnavailable>()),
-      );
-    },
-  );
+    final EnvironmentDirectoryListing listing = await read.readDirectory(
+      'nested',
+    );
+    final EnvironmentTextFileReplacement replacement = await mutation
+        .replaceExistingTextFile('source.dart', 'replacement', 'R1');
+    expect(listing.relativePath, 'nested');
+    expect(replacement.revision, 'replacement-revision');
+    expect(fixture.provider.directoryEnvironmentIds, <EnvironmentId>[
+      fixture.environmentId,
+    ]);
+    expect(fixture.provider.replacements.single, (
+      environmentId: fixture.environmentId,
+      relativePath: 'source.dart',
+      replacementText: 'replacement',
+      expectedRevision: 'R1',
+    ));
+
+    await fixture.registration.close();
+    await expectLater(
+      read.readFile('source.dart'),
+      throwsA(isA<AuthorizedEnvironmentBindingStale>()),
+    );
+    await expectLater(
+      mutation.replaceExistingTextFile('source.dart', 'other', 'R2'),
+      throwsA(isA<AuthorizedEnvironmentBindingStale>()),
+    );
+  });
+
+  test('provider unavailability affects both facets consistently', () async {
+    final _Fixture fixture = await _fixture();
+    final SessionModelToolHostContext context = SessionModelToolHostContext(
+      sessionId: fixture.sessionId,
+      environmentRuntime: fixture.runtime,
+    );
+    final AuthorizedEnvironmentFileReadFacet read = await context
+        .requireHostService<AuthorizedEnvironmentFileReadFacet>();
+    final AuthorizedEnvironmentFileMutationFacet mutation = await context
+        .requireHostService<AuthorizedEnvironmentFileMutationFacet>();
+    fixture.endpoint.available = false;
+
+    await expectLater(
+      read.readDirectory('nested'),
+      throwsA(isA<AuthorizedEnvironmentBindingUnavailable>()),
+    );
+    await expectLater(
+      mutation.replaceExistingTextFile('source.dart', 'other', 'R1'),
+      throwsA(isA<AuthorizedEnvironmentBindingUnavailable>()),
+    );
+  });
+
+  test('fresh host context receives fresh provider facet bindings', () async {
+    final _Fixture fixture = await _fixture();
+    final SessionModelToolHostContext oldContext = SessionModelToolHostContext(
+      sessionId: fixture.sessionId,
+      environmentRuntime: fixture.runtime,
+    );
+    final AuthorizedEnvironmentFileReadFacet oldRead = await oldContext
+        .requireHostService<AuthorizedEnvironmentFileReadFacet>();
+    final AuthorizedEnvironmentFileMutationFacet oldMutation = await oldContext
+        .requireHostService<AuthorizedEnvironmentFileMutationFacet>();
+    await fixture.registration.close();
+
+    final _Provider replacementProvider = _Provider(
+      fixture.providerId,
+      sourceText: 'fresh generation source',
+    );
+    final _Endpoint replacementEndpoint = _Endpoint(replacementProvider);
+    final CapabilityRegistration replacementRegistration = fixture.registry
+        .register(
+          provider: ProviderDescriptor(
+            id: fixture.providerId,
+            capability: environmentProviderCapability,
+            pluginId: 'dev.adele.plugin.host-test',
+            displayName: 'Host Test Replacement',
+            serviceId: environmentProviderServiceId,
+          ),
+          endpoint: replacementEndpoint,
+        );
+    addTearDown(replacementRegistration.close);
+    final SessionModelToolHostContext freshContext =
+        SessionModelToolHostContext(
+          sessionId: fixture.sessionId,
+          environmentRuntime: fixture.runtime,
+        );
+    final AuthorizedEnvironmentFileReadFacet freshRead = await freshContext
+        .requireHostService<AuthorizedEnvironmentFileReadFacet>();
+    final AuthorizedEnvironmentFileMutationFacet freshMutation =
+        await freshContext
+            .requireHostService<AuthorizedEnvironmentFileMutationFacet>();
+
+    expect(
+      (await freshRead.readFile('source.dart')).text,
+      'fresh generation source',
+    );
+    expect(freshRead.environmentId, freshMutation.environmentId);
+    expect(freshRead.sessionId, freshMutation.sessionId);
+    expect(replacementProvider.restoreCount, 1);
+    await freshMutation.replaceExistingTextFile('source.dart', 'fresh', 'R1');
+    expect(replacementProvider.replacements, hasLength(1));
+    await expectLater(
+      oldRead.readFile('source.dart'),
+      throwsA(isA<AuthorizedEnvironmentBindingStale>()),
+    );
+    await expectLater(
+      oldMutation.replaceExistingTextFile('source.dart', 'old', 'R1'),
+      throwsA(isA<AuthorizedEnvironmentBindingStale>()),
+    );
+  });
 }
 
 Future<_Fixture> _fixture() async {
@@ -192,6 +302,8 @@ Future<_Fixture> _fixture() async {
     provider,
     endpoint,
     registration,
+    registry,
+    providerId,
   );
 }
 
@@ -203,6 +315,8 @@ final class _Fixture {
     this.provider,
     this.endpoint,
     this.registration,
+    this.registry,
+    this.providerId,
   );
 
   final SessionId sessionId;
@@ -211,6 +325,8 @@ final class _Fixture {
   final _Provider provider;
   final _Endpoint endpoint;
   final CapabilityRegistration registration;
+  final CapabilityRegistry registry;
+  final ProviderId providerId;
 }
 
 final class _Endpoint implements CapabilityEndpoint {
@@ -227,12 +343,31 @@ final class _Endpoint implements CapabilityEndpoint {
 }
 
 final class _Provider implements EnvironmentProvider {
-  _Provider(this.providerId);
+  _Provider(this.providerId, {this.sourceText = 'authorized source'});
 
   @override
   final ProviderId providerId;
+  final String sourceText;
   final List<EnvironmentId> fileEnvironmentIds = <EnvironmentId>[];
   final List<EnvironmentId> directoryEnvironmentIds = <EnvironmentId>[];
+  final List<
+    ({
+      EnvironmentId environmentId,
+      String relativePath,
+      String replacementText,
+      String expectedRevision,
+    })
+  >
+  replacements =
+      <
+        ({
+          EnvironmentId environmentId,
+          String relativePath,
+          String replacementText,
+          String expectedRevision,
+        })
+      >[];
+  int restoreCount = 0;
 
   List<EnvironmentId> get environmentIds => fileEnvironmentIds;
 
@@ -246,8 +381,10 @@ final class _Provider implements EnvironmentProvider {
   @override
   Future<EnvironmentProviderResult> restore(
     LocalEnvironment environment,
-  ) async =>
-      EnvironmentProviderResult(providerState: environment.providerState!);
+  ) async {
+    restoreCount++;
+    return EnvironmentProviderResult(providerState: environment.providerState!);
+  }
 
   @override
   Future<EnvironmentTextFile> readFile(
@@ -257,8 +394,8 @@ final class _Provider implements EnvironmentProvider {
     fileEnvironmentIds.add(environmentId);
     return EnvironmentTextFile(
       relativePath: relativePath,
-      text: 'authorized source',
-      sizeBytes: 17,
+      text: sourceText,
+      sizeBytes: sourceText.length,
       revision: 'fixture-revision',
     );
   }
@@ -269,7 +406,17 @@ final class _Provider implements EnvironmentProvider {
     String relativePath,
     String replacementText,
     String expectedRevision,
-  ) => throw UnimplementedError();
+  ) async {
+    replacements.add((
+      environmentId: environmentId,
+      relativePath: relativePath,
+      replacementText: replacementText,
+      expectedRevision: expectedRevision,
+    ));
+    return const EnvironmentTextFileReplacement(
+      revision: 'replacement-revision',
+    );
+  }
 
   @override
   Future<EnvironmentDirectoryListing> readDirectory(

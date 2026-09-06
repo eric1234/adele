@@ -7,6 +7,9 @@ import 'package:adele_product/adele_product.dart' as product;
 
 part 'adele_environment.g.dart';
 
+/// Failure code for a rejected stale conditional text-file replacement.
+const String environmentRevisionConflictCode = 'revision_conflict';
+
 final capabilities.CapabilityKey environmentProviderCapability =
     capabilities.CapabilityKey(
       id: capabilities.CapabilityId('dev.adele.environment.provider'),
@@ -80,16 +83,30 @@ final class EnvironmentTextFileReplacement {
   final String revision;
 }
 
-/// Session-selected filesystem authority exposed to host-side tool plugins.
+/// Identity and liveness shared by facets over one Session-selected filesystem.
 abstract interface class AuthorizedEnvironmentFileSystem {
   product.SessionId get sessionId;
   product.EnvironmentId get environmentId;
 
   void validateBinding();
+}
 
+/// Read operations over one authorized Environment filesystem.
+abstract interface class AuthorizedEnvironmentFileReadFacet
+    implements AuthorizedEnvironmentFileSystem {
   Future<EnvironmentTextFile> readFile(String relativePath);
 
   Future<EnvironmentDirectoryListing> readDirectory(String relativePath);
+}
+
+/// Mutation operations over the same authorized Environment filesystem.
+abstract interface class AuthorizedEnvironmentFileMutationFacet
+    implements AuthorizedEnvironmentFileSystem {
+  Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
+    String relativePath,
+    String replacementText,
+    String expectedRevision,
+  );
 }
 
 sealed class AuthorizedEnvironmentBindingException implements Exception {
@@ -152,6 +169,8 @@ abstract interface class EnvironmentProviderService {
   );
 
   /// Replaces an existing text file only when its opaque revision matches.
+  ///
+  /// A detected mismatch fails with [environmentRevisionConflictCode].
   @AdeleMethod('replaceExistingTextFile')
   Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
     String environmentId,
@@ -231,6 +250,8 @@ abstract interface class EnvironmentProvider {
   );
 
   /// Replaces an existing text file only when its opaque revision matches.
+  ///
+  /// A detected mismatch fails with [environmentRevisionConflictCode].
   Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
     product.EnvironmentId environmentId,
     String relativePath,

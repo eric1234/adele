@@ -606,10 +606,13 @@ final class _Context implements ModelToolHostContext {
   SessionId get sessionId => fileSystem.sessionId;
 
   @override
-  Future<T> requireHostService<T extends Object>() async => fileSystem as T;
+  Future<T> requireHostService<T extends Object>() async {
+    if (T == AuthorizedEnvironmentFileReadFacet) return fileSystem as T;
+    throw StateError('Unsupported Search host service $T.');
+  }
 }
 
-final class _FileSystem implements AuthorizedEnvironmentFileSystem {
+final class _FileSystem implements AuthorizedEnvironmentFileReadFacet {
   _FileSystem({
     Map<String, List<EnvironmentDirectoryEntry>>? directories,
     Map<String, String>? files,

@@ -675,9 +675,9 @@ void main() {
       (await provider.readFile(environment.id, 'nested/./inside.txt')).text,
       'inside',
     );
-    expect(
-      (await provider.readFile(environment.id, 'inside-link.txt')).text,
-      'inside',
+    await expectLater(
+      provider.readFile(environment.id, 'inside-link.txt'),
+      throwsA(_failureWithCode('path_alias_unsupported')),
     );
     await expectLater(
       provider.readFile(environment.id, '../outside.txt'),
@@ -689,7 +689,7 @@ void main() {
     );
     await expectLater(
       provider.readFile(environment.id, 'outside-link.txt'),
-      throwsA(_failureWithCode('outside_root')),
+      throwsA(_failureWithCode('path_alias_unsupported')),
     );
     await expectLater(
       provider.readDirectory(environment.id, 'outside-directory-link'),
@@ -856,41 +856,69 @@ void main() {
     );
   });
 
-  test('serializes replacements through aliases of the same file', () async {
+  test('rejects terminal symbolic-link file aliases', () async {
     final Directory root = await Directory.systemTemp.createTemp(
-      'adele-worktree-environment-alias-concurrency-',
+      'adele-worktree-environment-terminal-alias-',
     );
     addTearDown(() => root.delete(recursive: true));
     final File file = File('${root.path}/target.txt');
     await file.writeAsString('initial');
-    await Link('${root.path}/target-alias.txt').create(file.path);
+    final Link alias = Link('${root.path}/target-alias.txt');
+    await alias.create(file.path);
     final WorktreeEnvironment environment = WorktreeEnvironment(root);
     final String revision = (await environment.readFile('target.txt')).revision;
 
-    final List<Object> outcomes = await Future.wait<Object>(<Future<Object>>[
-      environment
-          .replaceExistingTextFile('target.txt', 'replacement A', revision)
-          .then<Object>((EnvironmentTextFileReplacement value) => value)
-          .catchError((Object error) => error),
-      environment
-          .replaceExistingTextFile(
-            'target-alias.txt',
-            'replacement B',
-            revision,
-          )
-          .then<Object>((EnvironmentTextFileReplacement value) => value)
-          .catchError((Object error) => error),
-    ]);
-
-    expect(outcomes.whereType<EnvironmentTextFileReplacement>(), hasLength(1));
-    expect(
-      outcomes.whereType<EnvironmentFailure>().single.code,
-      'revision_conflict',
+    await expectLater(
+      environment.readFile('target-alias.txt'),
+      throwsA(_failureWithCode('path_alias_unsupported')),
     );
-    expect(await file.readAsString(), anyOf('replacement A', 'replacement B'));
+    await expectLater(
+      environment.replaceExistingTextFile(
+        'target-alias.txt',
+        'replacement',
+        revision,
+      ),
+      throwsA(_failureWithCode('path_alias_unsupported')),
+    );
+    expect(await file.readAsString(), 'initial');
     expect(
-      (await environment.readFile('target-alias.txt')).text,
-      await file.readAsString(),
+      await FileSystemEntity.type(alias.path, followLinks: false),
+      FileSystemEntityType.link,
+    );
+  });
+
+  test('rejects symbolic-link parent aliases', () async {
+    final Directory root = await Directory.systemTemp.createTemp(
+      'adele-worktree-environment-parent-alias-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final Directory realDirectory = Directory('${root.path}/real-directory');
+    await realDirectory.create();
+    final File file = File('${realDirectory.path}/target.txt');
+    await file.writeAsString('initial');
+    final Link aliasDirectory = Link('${root.path}/alias-directory');
+    await aliasDirectory.create(realDirectory.path);
+    final WorktreeEnvironment environment = WorktreeEnvironment(root);
+    final String revision = (await environment.readFile(
+      'real-directory/target.txt',
+    )).revision;
+
+    await expectLater(
+      environment.readFile('alias-directory/target.txt'),
+      throwsA(_failureWithCode('path_alias_unsupported')),
+    );
+    await expectLater(
+      environment.replaceExistingTextFile(
+        'alias-directory/target.txt',
+        'replacement',
+        revision,
+      ),
+      throwsA(_failureWithCode('path_alias_unsupported')),
+    );
+    expect(await file.readAsString(), 'initial');
+    expect(
+      await FileSystemEntity.type(aliasDirectory.path, followLinks: false),
+      FileSystemEntityType.link,
     );
   });
 
@@ -967,7 +995,7 @@ void main() {
         'escaped',
         'opaque',
       ),
-      throwsA(_failureWithCode('outside_root')),
+      throwsA(_failureWithCode('path_alias_unsupported')),
     );
     await expectLater(
       environment.replaceExistingTextFile('missing.txt', 'created', 'opaque'),

@@ -19,10 +19,12 @@ The current filesystem surface is bounded UTF-8 `readFile` with opaque
 provider-produced revisions, conditional replacement of an existing text file
 using its expected revision, and bounded deterministic direct-child
 `readDirectory`. Search and patch semantics are intentionally not provider
-methods: stock tool plugins compose lower-level Environment operations.
+methods: stock tool plugins compose lower-level Environment operations. Current
+text-file reads and replacements require direct confined paths and reject a
+symbolic link in either the terminal file or any parent component.
 
 Conditional replacements are serialized within each live Environment, staged
-beside the resolved confined target, and rechecked immediately before
+beside the direct confined target, and rechecked immediately before
 promotion. POSIX rwx permission bits are preserved during promotion. Other
 metadata such as ownership, ACLs, extended attributes, and Windows-specific
 attributes is not guaranteed to survive replacement. This mechanism prevents
@@ -30,10 +32,10 @@ stale writes among ADELE-coordinated callers and detects practical external
 changes, but it does not promise portable atomic compare-and-replace against an
 arbitrary external writer or crash/power-loss transactional durability.
 
-New-file creation, deletion, model-facing mutation tools, command execution,
-release/destruction, and remote cloning remain absent.
+New-file creation, deletion, command execution, release/destruction, and remote
+cloning remain absent.
 
-Path canonicalization, symlink checks, and post-read validation provide
-application-level confinement equivalent to the historical DevelopmentSource
-proof. They are not an operating-system sandbox and cannot eliminate every
-pathname replacement race against another local process.
+Path canonicalization, direct-component symlink rejection, and post-read
+validation provide application-level confinement equivalent to the historical
+DevelopmentSource proof. They are not an operating-system sandbox and cannot
+eliminate every pathname replacement race against another local process.

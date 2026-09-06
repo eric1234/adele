@@ -28,16 +28,27 @@ final class SessionModelToolHostContext implements ModelToolHostContext {
   @override
   final SessionId sessionId;
   final EnvironmentRuntime _environmentRuntime;
+  Future<_SessionEnvironmentFileSystemFacets>? _fileSystemFacets;
 
   @override
   Future<T> requireHostService<T extends Object>() async {
     if (T == AuthorizedEnvironmentFileSystem) {
-      return await _environmentFileSystem() as T;
+      return (await _requireFileSystemFacets()).authority as T;
+    }
+    if (T == AuthorizedEnvironmentFileReadFacet) {
+      return (await _requireFileSystemFacets()).read as T;
+    }
+    if (T == AuthorizedEnvironmentFileMutationFacet) {
+      return (await _requireFileSystemFacets()).mutation as T;
     }
     throw StateError('No Session host service is registered for $T.');
   }
 
-  Future<AuthorizedEnvironmentFileSystem> _environmentFileSystem() async {
+  Future<_SessionEnvironmentFileSystemFacets> _requireFileSystemFacets() =>
+      _fileSystemFacets ??= _materializeFileSystemFacets();
+
+  Future<_SessionEnvironmentFileSystemFacets>
+  _materializeFileSystemFacets() async {
     final SessionEnvironmentAuthority authority = _environmentRuntime.store
         .requireSessionAuthority(sessionId);
     final EnvironmentMaterialization materialization = await _environmentRuntime
@@ -47,11 +58,23 @@ final class SessionModelToolHostContext implements ModelToolHostContext {
         'Session $sessionId has inconsistent Task and Environment authority.',
       );
     }
-    return _SessionEnvironmentFileSystem(
-      authority: authority,
-      materialization: materialization,
-    );
+    final _SessionEnvironmentFileSystem fileSystem =
+        _SessionEnvironmentFileSystem(
+          authority: authority,
+          materialization: materialization,
+        );
+    return _SessionEnvironmentFileSystemFacets(fileSystem);
   }
+}
+
+final class _SessionEnvironmentFileSystemFacets {
+  _SessionEnvironmentFileSystemFacets(this.authority)
+    : read = _SessionEnvironmentFileReadFacet(authority),
+      mutation = _SessionEnvironmentFileMutationFacet(authority);
+
+  final _SessionEnvironmentFileSystem authority;
+  final AuthorizedEnvironmentFileReadFacet read;
+  final AuthorizedEnvironmentFileMutationFacet mutation;
 }
 
 final class _SessionEnvironmentFileSystem
@@ -94,41 +117,40 @@ final class _SessionEnvironmentFileSystem
     }
   }
 
-  @override
-  Future<EnvironmentTextFile> readFile(String relativePath) async {
-    validateBinding();
-    try {
-      return await _materialization.provider.readFile(
+  Future<EnvironmentTextFile> readFile(String relativePath) => _perform(
+    () => _materialization.provider.readFile(
+      _authority.environmentId,
+      relativePath,
+    ),
+  );
+
+  Future<EnvironmentDirectoryListing> readDirectory(String relativePath) =>
+      _perform(
+        () => _materialization.provider.readDirectory(
+          _authority.environmentId,
+          relativePath,
+        ),
+      );
+
+  Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
+    String relativePath,
+    String replacementText,
+    String expectedRevision,
+  ) {
+    return _perform(
+      () => _materialization.provider.replaceExistingTextFile(
         _authority.environmentId,
         relativePath,
-      );
-    } on ProviderUnavailable catch (error) {
-      if (error.stale) {
-        throw AuthorizedEnvironmentBindingStale(
-          'The authorized Environment provider generation is stale.',
-          cause: error,
-        );
-      }
-      throw AuthorizedEnvironmentBindingUnavailable(
-        'The authorized Environment provider is unavailable.',
-        cause: error,
-      );
-    } on ProviderEndpointUnavailable catch (error) {
-      throw AuthorizedEnvironmentBindingUnavailable(
-        'The authorized Environment provider endpoint is unavailable.',
-        cause: error,
-      );
-    }
+        replacementText,
+        expectedRevision,
+      ),
+    );
   }
 
-  @override
-  Future<EnvironmentDirectoryListing> readDirectory(String relativePath) async {
+  Future<T> _perform<T>(Future<T> Function() operation) async {
     validateBinding();
     try {
-      return await _materialization.provider.readDirectory(
-        _authority.environmentId,
-        relativePath,
-      );
+      return await operation();
     } on ProviderUnavailable catch (error) {
       if (error.stale) {
         throw AuthorizedEnvironmentBindingStale(
@@ -147,4 +169,55 @@ final class _SessionEnvironmentFileSystem
       );
     }
   }
+}
+
+final class _SessionEnvironmentFileReadFacet
+    implements AuthorizedEnvironmentFileReadFacet {
+  const _SessionEnvironmentFileReadFacet(this._authority);
+
+  final _SessionEnvironmentFileSystem _authority;
+
+  @override
+  SessionId get sessionId => _authority.sessionId;
+
+  @override
+  EnvironmentId get environmentId => _authority.environmentId;
+
+  @override
+  void validateBinding() => _authority.validateBinding();
+
+  @override
+  Future<EnvironmentTextFile> readFile(String relativePath) =>
+      _authority.readFile(relativePath);
+
+  @override
+  Future<EnvironmentDirectoryListing> readDirectory(String relativePath) =>
+      _authority.readDirectory(relativePath);
+}
+
+final class _SessionEnvironmentFileMutationFacet
+    implements AuthorizedEnvironmentFileMutationFacet {
+  const _SessionEnvironmentFileMutationFacet(this._authority);
+
+  final _SessionEnvironmentFileSystem _authority;
+
+  @override
+  SessionId get sessionId => _authority.sessionId;
+
+  @override
+  EnvironmentId get environmentId => _authority.environmentId;
+
+  @override
+  void validateBinding() => _authority.validateBinding();
+
+  @override
+  Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
+    String relativePath,
+    String replacementText,
+    String expectedRevision,
+  ) => _authority.replaceExistingTextFile(
+    relativePath,
+    replacementText,
+    expectedRevision,
+  );
 }
