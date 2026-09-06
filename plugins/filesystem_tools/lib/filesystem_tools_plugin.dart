@@ -92,7 +92,9 @@ final class _ReadFileExecutable implements ToolExecutable {
       );
     }
     return CanonicalToolArguments(<String, Object?>{
-      'relativePath': proposedArguments['relativePath']! as String,
+      'relativePath': _canonicalFilePath(
+        proposedArguments['relativePath']! as String,
+      ),
     });
   }
 
@@ -148,12 +150,12 @@ final class _ReadFileExecutable implements ToolExecutable {
           disposition: ToolOutcomeDisposition.success,
           effectCertainty: EffectCertainty.knownOccurred,
           modelContent:
-              'File: ${jsonEncode(file.relativePath)}\n'
+              'File: ${jsonEncode(relativePath)}\n'
               'Revision: ${jsonEncode(file.revision)}\n\n'
               '${file.text}',
           hostData: <String, Object?>{
             'environmentId': _fileSystem.environmentId.value,
-            'relativePath': file.relativePath,
+            'relativePath': relativePath,
             'sizeBytes': file.sizeBytes,
             'revision': file.revision,
             'text': file.text,
@@ -287,7 +289,7 @@ final class _ApplyPatchExecutable implements ToolExecutable {
       );
     }
     return CanonicalToolArguments(<String, Object?>{
-      'relativePath': relativePath,
+      'relativePath': _canonicalFilePath(relativePath),
       'expectedRevision': proposedArguments['expectedRevision']! as String,
       'search': search,
       'replace': proposedArguments['replace']! as String,
@@ -339,19 +341,6 @@ final class _ApplyPatchExecutable implements ToolExecutable {
         yield ToolExecutionTerminal(_revisionConflict(relativePath));
         return;
       }
-      if (search == replace) {
-        yield ToolExecutionTerminal(
-          _patchFailure(
-            relativePath: relativePath,
-            code: 'no_change',
-            modelContent:
-                'The search and replacement text are identical. No changes '
-                'were made.',
-          ),
-        );
-        return;
-      }
-
       int matchCount = 0;
       int matchIndex = -1;
       int searchStart = 0;
@@ -384,6 +373,18 @@ final class _ApplyPatchExecutable implements ToolExecutable {
                 'The search text matched $matchCount locations. No changes '
                 'were made.\nInclude more surrounding function, class, or test '
                 'context so the search is unique.',
+          ),
+        );
+        return;
+      }
+      if (search == replace) {
+        yield ToolExecutionTerminal(
+          _patchFailure(
+            relativePath: relativePath,
+            code: 'no_change',
+            modelContent:
+                'The search and replacement text are identical. No changes '
+                'were made.',
           ),
         );
         return;
@@ -544,6 +545,30 @@ ToolOutcome _failure(
   hostDiagnostic: cause.toString(),
   cause: cause,
 );
+
+String _canonicalFilePath(String relativePath) {
+  if (relativePath.startsWith('/')) {
+    throw const ToolArgumentValidationException(
+      'relativePath must be an Environment-relative file path.',
+    );
+  }
+  final List<String> segments = <String>[];
+  for (final String segment in relativePath.split('/')) {
+    if (segment.isEmpty || segment == '.') continue;
+    if (segment == '..') {
+      throw const ToolArgumentValidationException(
+        'relativePath must not contain parent traversal.',
+      );
+    }
+    segments.add(segment);
+  }
+  if (segments.isEmpty) {
+    throw const ToolArgumentValidationException(
+      'relativePath must identify a file beneath the Environment root.',
+    );
+  }
+  return segments.join('/');
+}
 
 void _validateToolBinding(AuthorizedEnvironmentFileSystem fileSystem) {
   try {

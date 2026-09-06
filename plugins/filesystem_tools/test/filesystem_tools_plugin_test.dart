@@ -78,6 +78,38 @@ void main() {
     expect(outcome.hostData, containsPair('text', 'plugin-owned source'));
   });
 
+  test('Read File canonicalizes its policy and execution path', () async {
+    final _FileSystem fileSystem = _FileSystem(
+      text: 'canonical source',
+      revision: 'R1',
+      reportedRelativePath: 'provider/alternate.dart',
+    );
+    final ToolExecutable executable = await _tool(fileSystem, 'read_file');
+    final CanonicalToolArguments arguments = executable.validateAndNormalize(
+      const <String, Object?>{'relativePath': 'dir//./source.dart'},
+    );
+
+    expect(arguments.snapshot['relativePath'], 'dir/source.dart');
+    final EffectDescription effects = await executable.describe(
+      arguments,
+      _execution(fileSystem.sessionId),
+    );
+    expect(
+      effects.targets.single.uri.toString(),
+      'adele-environment:/environment-1/dir/source.dart',
+    );
+    expect(effects.summary, 'Read Environment file dir/source.dart.');
+    final ToolOutcome outcome = await _execute(
+      executable,
+      arguments,
+      fileSystem.sessionId,
+    );
+
+    expect(fileSystem.readPaths, <String>['dir/source.dart']);
+    expect(outcome.modelContent, startsWith('File: "dir/source.dart"\n'));
+    expect(outcome.hostData['relativePath'], 'dir/source.dart');
+  });
+
   test('Read File describes effects and preserves failure classes', () async {
     final _FileSystem fileSystem = _FileSystem();
     final ToolExecutable executable = await _tool(fileSystem, 'read_file');
@@ -226,6 +258,69 @@ void main() {
     expect(effects.summary, 'Patch Environment file source.dart.');
   });
 
+  test('Apply Patch canonicalizes its policy and execution path', () async {
+    final _FileSystem fileSystem = _FileSystem(
+      text: 'old',
+      revision: 'R1',
+      postWriteRevision: 'R2',
+    );
+    final ToolExecutable executable = await _tool(fileSystem, 'apply_patch');
+    final CanonicalToolArguments arguments = _patchArguments(
+      executable,
+      relativePath: 'dir//./source.dart',
+    );
+
+    expect(arguments.snapshot['relativePath'], 'dir/source.dart');
+    final EffectDescription effects = await executable.describe(
+      arguments,
+      _execution(fileSystem.sessionId),
+    );
+    expect(
+      effects.targets.single.uri.toString(),
+      'adele-environment:/environment-1/dir/source.dart',
+    );
+    expect(effects.summary, 'Patch Environment file dir/source.dart.');
+    final ToolOutcome outcome = await _execute(
+      executable,
+      arguments,
+      fileSystem.sessionId,
+    );
+
+    expect(fileSystem.readPaths, <String>['dir/source.dart']);
+    expect(fileSystem.replacements.single.relativePath, 'dir/source.dart');
+    expect(outcome.modelContent, startsWith('Patched: "dir/source.dart"\n'));
+    expect(outcome.hostData['relativePath'], 'dir/source.dart');
+  });
+
+  test('invalid logical paths are rejected before filesystem access', () async {
+    for (final String alias in <String>['read_file', 'apply_patch']) {
+      for (final String path in <String>[
+        '../source.dart',
+        'dir/../source.dart',
+        '/source.dart',
+        './',
+      ]) {
+        final _FileSystem fileSystem = _FileSystem();
+        final ToolExecutable executable = await _tool(fileSystem, alias);
+        final Map<String, Object?> proposed = alias == 'read_file'
+            ? <String, Object?>{'relativePath': path}
+            : <String, Object?>{
+                'relativePath': path,
+                'expectedRevision': 'R1',
+                'search': 'old',
+                'replace': 'new',
+              };
+
+        expect(
+          () => executable.validateAndNormalize(proposed),
+          throwsA(isA<ToolArgumentValidationException>()),
+        );
+        expect(fileSystem.readPaths, isEmpty);
+        expect(fileSystem.replacements, isEmpty);
+      }
+    }
+  });
+
   test('Apply Patch replaces one exact occurrence with full text', () async {
     final _FileSystem fileSystem = _FileSystem(
       text: 'bool first() => false;\nbool second() => true;\n',
@@ -370,6 +465,29 @@ void main() {
     );
   });
 
+  test('Apply Patch requires an exact unique target before no-op', () async {
+    for (final ({String text, String code}) fixture
+        in <({String text, String code})>[
+          (text: 'other', code: 'patch_target_not_found'),
+          (text: 'same same', code: 'patch_target_ambiguous'),
+        ]) {
+      final _FileSystem fileSystem = _FileSystem(
+        text: fixture.text,
+        revision: 'R1',
+      );
+      final ToolExecutable executable = await _tool(fileSystem, 'apply_patch');
+      final ToolOutcome outcome = await _execute(
+        executable,
+        _patchArguments(executable, search: 'same', replace: 'same'),
+        fileSystem.sessionId,
+      );
+
+      expect(outcome.hostData['code'], fixture.code);
+      expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
+      expect(fileSystem.replacements, isEmpty);
+    }
+  });
+
   test('revision conflict wins before absent or ambiguous matching', () async {
     for (final ({String text, String search}) fixture
         in <({String text, String search})>[
@@ -383,7 +501,11 @@ void main() {
       final ToolExecutable executable = await _tool(fileSystem, 'apply_patch');
       final ToolOutcome outcome = await _execute(
         executable,
-        _patchArguments(executable, search: fixture.search),
+        _patchArguments(
+          executable,
+          search: fixture.search,
+          replace: fixture.search,
+        ),
         fileSystem.sessionId,
       );
 
@@ -542,10 +664,11 @@ Future<List<ToolRegistration>> _registrations(_FileSystem fileSystem) async {
 
 CanonicalToolArguments _patchArguments(
   ToolExecutable executable, {
+  String relativePath = 'source.dart',
   String search = 'old',
   String replace = 'new',
 }) => executable.validateAndNormalize(<String, Object?>{
-  'relativePath': 'source.dart',
+  'relativePath': relativePath,
   'expectedRevision': 'R1',
   'search': search,
   'replace': replace,
@@ -601,6 +724,7 @@ final class _FileSystem
     this.text = 'source',
     this.revision = 'fixture-revision',
     this.postWriteRevision = 'post-write-revision',
+    this.reportedRelativePath,
     this.readError,
     this.replacementError,
     EnvironmentId? environmentId,
@@ -609,6 +733,7 @@ final class _FileSystem
   String text;
   String revision;
   final String postWriteRevision;
+  final String? reportedRelativePath;
   final Object? readError;
   final Object? replacementError;
   final List<String> readPaths = <String>[];
@@ -637,7 +762,7 @@ final class _FileSystem
     readPaths.add(relativePath);
     if (readError case final Object error) throw error;
     return EnvironmentTextFile(
-      relativePath: relativePath,
+      relativePath: reportedRelativePath ?? relativePath,
       text: text,
       sizeBytes: utf8.encode(text).length,
       revision: revision,
