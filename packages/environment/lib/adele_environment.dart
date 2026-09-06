@@ -18,6 +18,12 @@ final capabilities.CapabilityKey environmentProviderCapability =
 
 enum EnvironmentDirectoryEntryKind { file, directory, other }
 
+enum EnvironmentProcessEventKind { output, completed }
+
+enum EnvironmentProcessOutputStream { stdout, stderr }
+
+enum EnvironmentProcessTermination { exited, timedOut }
+
 /// Closed transport snapshot used to reify one local product relationship graph.
 @AdeleValue('environment.context')
 final class EnvironmentTransportContext {
@@ -83,13 +89,111 @@ final class EnvironmentTextFileReplacement {
   final String revision;
 }
 
-/// Identity and liveness shared by facets over one Session-selected filesystem.
-abstract interface class AuthorizedEnvironmentFileSystem {
+@AdeleValue('environment.foregroundProcessRequest')
+final class EnvironmentForegroundProcessRequest {
+  EnvironmentForegroundProcessRequest({
+    required this.program,
+    required List<String> arguments,
+    required this.relativeWorkingDirectory,
+    required this.timeoutSeconds,
+  }) : arguments = List<String>.unmodifiable(arguments) {
+    if (program.isEmpty) {
+      throw const FormatException('Process program must not be empty.');
+    }
+    _requireProcessText('Process program', program);
+    for (final String argument in this.arguments) {
+      _requireProcessText('Process argument', argument);
+    }
+    _requireProcessText(
+      'Process relative working directory',
+      relativeWorkingDirectory,
+    );
+    if (timeoutSeconds < 1 || timeoutSeconds > 600) {
+      throw const FormatException(
+        'Process timeout must be between 1 and 600 seconds.',
+      );
+    }
+  }
+
+  /// Executable name or path passed directly to the provider process API.
+  final String program;
+
+  /// Ordered arguments passed verbatim without implicit shell interpretation.
+  final List<String> arguments;
+
+  /// Environment-relative directory, or empty for the Environment root.
+  final String relativeWorkingDirectory;
+
+  final int timeoutSeconds;
+}
+
+@AdeleValue('environment.processOutput')
+final class EnvironmentProcessOutput {
+  EnvironmentProcessOutput({required this.stream, required this.text}) {
+    if (text.isEmpty) {
+      throw const FormatException('Process output must not be empty.');
+    }
+    _requireWellFormedUnicode('Process output', text);
+  }
+
+  final EnvironmentProcessOutputStream stream;
+  final String text;
+}
+
+@AdeleValue('environment.processCompleted')
+final class EnvironmentProcessCompleted {
+  EnvironmentProcessCompleted({
+    required this.termination,
+    required this.exitCode,
+    required this.stdoutTruncated,
+    required this.stderrTruncated,
+  }) {
+    if ((termination == EnvironmentProcessTermination.exited) !=
+        (exitCode != null)) {
+      throw const FormatException(
+        'Exited processes require an exit code and timed-out processes do not.',
+      );
+    }
+  }
+
+  final EnvironmentProcessTermination termination;
+  final int? exitCode;
+  final bool stdoutTruncated;
+  final bool stderrTruncated;
+}
+
+@AdeleValue('environment.processEvent')
+final class EnvironmentProcessEvent {
+  EnvironmentProcessEvent({
+    required this.kind,
+    required this.output,
+    required this.completed,
+  }) {
+    if ((kind == EnvironmentProcessEventKind.output) != (output != null) ||
+        (kind == EnvironmentProcessEventKind.completed) !=
+            (completed != null)) {
+      throw const FormatException(
+        'Process event kind must match exactly one event payload.',
+      );
+    }
+  }
+
+  final EnvironmentProcessEventKind kind;
+  final EnvironmentProcessOutput? output;
+  final EnvironmentProcessCompleted? completed;
+}
+
+/// Identity and liveness shared by views over one Session-selected Environment.
+abstract interface class AuthorizedEnvironmentAuthority {
   product.SessionId get sessionId;
   product.EnvironmentId get environmentId;
 
   void validateBinding();
 }
+
+/// Compatibility base for filesystem views over one authorized Environment.
+abstract interface class AuthorizedEnvironmentFileSystem
+    implements AuthorizedEnvironmentAuthority {}
 
 /// Read operations over one authorized Environment filesystem.
 abstract interface class AuthorizedEnvironmentFileReadFacet
@@ -106,6 +210,14 @@ abstract interface class AuthorizedEnvironmentFileMutationFacet
     String relativePath,
     String replacementText,
     String expectedRevision,
+  );
+}
+
+/// Foreground process operations over the same authorized Environment.
+abstract interface class AuthorizedEnvironmentProcessFacet
+    implements AuthorizedEnvironmentAuthority {
+  Stream<EnvironmentProcessEvent> runForegroundProcess(
+    EnvironmentForegroundProcessRequest request,
   );
 }
 
@@ -184,6 +296,12 @@ abstract interface class EnvironmentProviderService {
     String environmentId,
     String relativePath,
   );
+
+  @AdeleMethod('runForegroundProcess')
+  Stream<EnvironmentProcessEvent> runForegroundProcess(
+    String environmentId,
+    EnvironmentForegroundProcessRequest request,
+  );
 }
 
 @AdeleFailure('environment.failure')
@@ -236,7 +354,7 @@ final class LocalTask {
   String get title => value.title;
 }
 
-/// One coherent Environment lifecycle and filesystem provider surface.
+/// One coherent Environment lifecycle, filesystem, and process provider surface.
 abstract interface class EnvironmentProvider {
   capabilities.ProviderId get providerId;
 
@@ -262,6 +380,11 @@ abstract interface class EnvironmentProvider {
   Future<EnvironmentDirectoryListing> readDirectory(
     product.EnvironmentId environmentId,
     String relativePath,
+  );
+
+  Stream<EnvironmentProcessEvent> runForegroundProcess(
+    product.EnvironmentId environmentId,
+    EnvironmentForegroundProcessRequest request,
   );
 }
 
@@ -320,6 +443,12 @@ final class GeneratedEnvironmentProvider implements EnvironmentProvider {
     String relativePath,
   ) => _service.readDirectory(environmentId.value, relativePath);
 
+  @override
+  Stream<EnvironmentProcessEvent> runForegroundProcess(
+    product.EnvironmentId environmentId,
+    EnvironmentForegroundProcessRequest request,
+  ) => _service.runForegroundProcess(environmentId.value, request);
+
   void _requireSelectedProvider(LocalEnvironment environment) {
     if (environment.providerId != providerId) {
       throw ArgumentError(
@@ -371,6 +500,12 @@ final class EnvironmentProviderServiceAdapter
     String environmentId,
     String relativePath,
   ) => _provider.readDirectory(_environmentId(environmentId), relativePath);
+
+  @override
+  Stream<EnvironmentProcessEvent> runForegroundProcess(
+    String environmentId,
+    EnvironmentForegroundProcessRequest request,
+  ) => _provider.runForegroundProcess(_environmentId(environmentId), request);
 
   LocalEnvironment _localEnvironment(EnvironmentTransportContext context) {
     final LocalEnvironment environment = _reify(context);
@@ -461,5 +596,28 @@ product.EnvironmentId _environmentId(String value) {
       message: 'The Environment ID is invalid.',
       details: <String, Object?>{'reason': error.message},
     );
+  }
+}
+
+void _requireProcessText(String label, String value) {
+  if (value.contains('\u0000')) {
+    throw FormatException('$label must not contain NUL.');
+  }
+  _requireWellFormedUnicode(label, value);
+}
+
+void _requireWellFormedUnicode(String label, String value) {
+  for (int index = 0; index < value.length; index++) {
+    final int codeUnit = value.codeUnitAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      if (++index < value.length) {
+        final int next = value.codeUnitAt(index);
+        if (next >= 0xdc00 && next <= 0xdfff) continue;
+      }
+      throw FormatException('$label must contain well-formed Unicode text.');
+    }
+    if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      throw FormatException('$label must contain well-formed Unicode text.');
+    }
   }
 }

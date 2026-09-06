@@ -45,7 +45,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
     if (request is! Map) continue;
     if (request['method'] == 'shutdown' && request['requestId'] is int) {
       await router.close();
-      provider.close();
+      await provider.close();
       responsePort.send(<String, Object?>{
         'kind': 'response',
         'requestId': request['requestId'],

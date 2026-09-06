@@ -5,6 +5,7 @@ import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 
+import 'foreground_process.dart';
 import 'ids.dart';
 import 'worktree_environment.dart';
 
@@ -41,6 +42,9 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
   @override
   final ProviderId providerId = ProviderId(gitWorktreeEnvironmentProviderId);
   final LiveObjectRegistry<EnvironmentId, WorktreeEnvironment> liveObjects;
+  final GitForegroundProcessSupervisor _processes =
+      GitForegroundProcessSupervisor();
+  Future<void>? _closeFuture;
 
   @override
   Future<EnvironmentProviderResult> establish(
@@ -265,7 +269,22 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
     String relativePath,
   ) => _resolve(environmentId).readDirectory(relativePath);
 
-  void close() => liveObjects.clear();
+  @override
+  Stream<EnvironmentProcessEvent> runForegroundProcess(
+    EnvironmentId environmentId,
+    EnvironmentForegroundProcessRequest request,
+  ) => _processes.run(
+    environmentId: environmentId,
+    environment: _resolve(environmentId),
+    request: request,
+  );
+
+  Future<void> close() => _closeFuture ??= _close();
+
+  Future<void> _close() async {
+    await _processes.close();
+    liveObjects.clear();
+  }
 
   WorktreeEnvironment _resolve(EnvironmentId id) {
     try {

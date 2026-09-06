@@ -230,6 +230,31 @@ final class WorktreeEnvironment {
     );
   }
 
+  /// Resolves a process cwd through aliases while keeping it inside [root].
+  Future<Directory> resolveProcessWorkingDirectory(String relativePath) async {
+    final String normalized = _normalizeRelativePath(
+      relativePath,
+      allowRoot: true,
+    );
+    try {
+      final Directory directory = await _resolveDirectory(normalized);
+      await _verifyStillConfined(
+        directory,
+        normalized,
+        FileSystemEntityType.directory,
+      );
+      return directory;
+    } on EnvironmentFailure {
+      rethrow;
+    } on FileSystemException {
+      throw _failure(
+        'unreadable',
+        'The process working directory could not be resolved.',
+        relativePath: normalized,
+      );
+    }
+  }
+
   Future<File> _resolveRegularFile(String relativePath) async {
     final String candidate = _candidate(relativePath);
     await _rejectSymbolicLinkComponents(relativePath);
