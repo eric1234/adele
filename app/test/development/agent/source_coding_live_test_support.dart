@@ -7,6 +7,7 @@ import 'package:adele_desktop/development/agent/agent_capability_adapters.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
 import 'package:adele_desktop/development/agent/simple_tool_loop_strategy.dart';
 import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
@@ -27,7 +28,9 @@ const String sourceCodingInstructions =
     'You must call search for "final class DevelopmentToolLoopStrategy", '
     'then call read_file with the relative path returned by search before '
     'answering.';
+const String openAiApiKeyProviderId = 'dev.adele.openai.api-key';
 
+const String _openAiPluginId = 'dev.adele.openai';
 const String _gitEnvironmentPluginId = 'dev.adele.plugin.git-environment';
 const String _gitEnvironmentProviderId = 'dev.adele.environment.git-worktree';
 
@@ -95,11 +98,17 @@ final class SourceCodingLiveHarness {
     required this.sessionId,
     required this.authority,
     required this.catalog,
+    required Directory projectSource,
+    required Environment taskEnvironment,
+    required EnvironmentMaterialization environmentMaterialization,
     required Directory container,
     required PluginCapabilityActivation environmentActivation,
     required ExtensionRegistration filesystemActivation,
     required ExtensionRegistration searchActivation,
-  }) : _container = container,
+  }) : _projectSource = projectSource,
+       _taskEnvironment = taskEnvironment,
+       _environmentMaterialization = environmentMaterialization,
+       _container = container,
        _environmentActivation = environmentActivation,
        _filesystemActivation = filesystemActivation,
        _searchActivation = searchActivation;
@@ -109,6 +118,9 @@ final class SourceCodingLiveHarness {
   final SessionId sessionId;
   final SessionEnvironmentAuthority authority;
   final ToolCatalog catalog;
+  final Directory _projectSource;
+  final Environment _taskEnvironment;
+  final EnvironmentMaterialization _environmentMaterialization;
   final Directory _container;
   final PluginCapabilityActivation _environmentActivation;
   final ExtensionRegistration _filesystemActivation;
@@ -178,10 +190,11 @@ final class SourceCodingLiveHarness {
           taskId: created.task.id,
         );
         expect(authority.environmentId, created.environment.id);
-        final ProviderBinding materializedEnvironmentBinding = lifecycle
+        final EnvironmentMaterialization environmentMaterialization = lifecycle
             .environmentRuntime
-            .currentMaterialization(created.environment.id)!
-            .binding;
+            .currentMaterialization(created.environment.id)!;
+        final ProviderBinding materializedEnvironmentBinding =
+            environmentMaterialization.binding;
         expect(
           materializedEnvironmentBinding.provider,
           same(environmentBinding.provider),
@@ -201,6 +214,9 @@ final class SourceCodingLiveHarness {
           sessionId: sessionId,
           authority: authority,
           catalog: catalog,
+          projectSource: sourceRepository,
+          taskEnvironment: created.environment,
+          environmentMaterialization: environmentMaterialization,
           container: container,
           environmentActivation: environmentActivation,
           filesystemActivation: filesystemActivation,
@@ -228,10 +244,12 @@ final class SourceCodingLiveHarness {
   Future<SourceCodingLiveResult> run({
     required String identity,
     required ModelProviderCapabilityAdapter model,
+    String userPrompt = sourceCodingPrompt,
+    String developmentInstructions = sourceCodingInstructions,
   }) async {
     final DevelopmentSessionHistory session = DevelopmentSessionHistory(
       sessionId,
-    )..append(UserSessionMessage(sourceCodingPrompt));
+    )..append(UserSessionMessage(userPrompt));
     final AgentRun run = AgentRun(
       id: RunId('run-$identity-source-live'),
       sessionId: session.id,
@@ -239,8 +257,8 @@ final class SourceCodingLiveHarness {
     final DevelopmentToolLoopStrategy strategy = DevelopmentToolLoopStrategy(
       run: run,
       session: session,
-      contextAssembler: const DevelopmentContextAssembler(
-        instructions: sourceCodingInstructions,
+      contextAssembler: DevelopmentContextAssembler(
+        instructions: developmentInstructions,
       ),
       model: model,
       toolCatalog: catalog,
@@ -250,6 +268,28 @@ final class SourceCodingLiveHarness {
     await strategy.start();
     return SourceCodingLiveResult(run: run, session: session);
   }
+
+  String get projectSourcePath => _projectSource.path;
+
+  String get taskWorktreePath {
+    final Object? path = _taskEnvironment.providerState?['worktreePath'];
+    if (path is! String || path.isEmpty) {
+      throw StateError('The Git Environment has no Task worktree path.');
+    }
+    return path;
+  }
+
+  Future<String> readProjectSourceFile(String relativePath) =>
+      File('${_projectSource.path}/$relativePath').readAsString();
+
+  Future<String> readTaskWorktreeFile(String relativePath) =>
+      File('$taskWorktreePath/$relativePath').readAsString();
+
+  Future<EnvironmentTextFile> readEnvironmentFile(String relativePath) =>
+      _environmentMaterialization.provider.readFile(
+        authority.environmentId,
+        relativePath,
+      );
 
   Future<void> close() async {
     if (_closed) return;
@@ -261,6 +301,48 @@ final class SourceCodingLiveHarness {
       if (!host.isClosed) host.close,
       if (await _container.exists()) () => _container.delete(recursive: true),
     ]);
+  }
+}
+
+Future<SourceCodingLiveProviderActivation> startOpenAiApiKeyProvider({
+  required PluginBackendHost host,
+  required CapabilityRegistry registry,
+  required File artifact,
+}) async {
+  final ProviderDescriptor descriptor = ProviderDescriptor(
+    id: ProviderId(openAiApiKeyProviderId),
+    capability: modelProviderCapability,
+    pluginId: _openAiPluginId,
+    displayName: 'OpenAI API Key',
+    serviceId: modelProviderServiceId,
+  );
+  final PluginBackendConnection connection = await host.startPlugin(
+    pluginId: _openAiPluginId,
+    artifactUri: artifact.uri,
+  );
+  final CapabilityRegistration registration = registry.register(
+    provider: descriptor,
+    endpoint: AdeleRequestChannelEndpoint(
+      channel: connection.channelFor(
+        connection.defaultConfigurationContext,
+        descriptor.serviceId,
+      ),
+      serviceId: descriptor.serviceId,
+      isAvailable: () => !connection.isClosed,
+    ),
+  );
+  return SourceCodingLiveProviderActivation(connection, registration);
+}
+
+final class SourceCodingLiveProviderActivation {
+  const SourceCodingLiveProviderActivation(this.connection, this.registration);
+
+  final PluginBackendConnection connection;
+  final CapabilityRegistration registration;
+
+  Future<void> close() async {
+    await registration.close();
+    if (!connection.isClosed) await connection.close();
   }
 }
 

@@ -58,7 +58,10 @@ source, real-model continuation, and generation-safe replacement of tool and
 Environment-provider generations. Deterministic integration now also proves
 model-visible Read File revision flow into plugin-owned exact-unique
 `apply_patch`, conditional mutation of the Session-authorized Git worktree, and
-model continuation. Real-model source mutation and command-backed validation are
+model continuation. An opt-in paid OpenAI API-key full-stack smoke now also
+proves real-model `read_file` opaque-revision flow into `apply_patch`, mutation
+confined to the Task Git worktree, post-write observation, and model
+continuation. Experimental ChatGPT mutation and command-backed validation are
 not yet proven.
 
 ## Accepted long-term architecture beyond the current implementation
@@ -288,11 +291,14 @@ V-B1 added opaque observed-file revisions and conditional complete-file
 replacement. V-B2 projects one Session/Environment filesystem authority through
 read and mutation facets and adds Filesystem Tools' initial exact-unique
 `apply_patch`, with deterministic real-Git Read-to-Patch continuation coverage.
-Production orchestration-strategy registration/binding, a plugin-owned Chat
-strategy, real-model mutation, file creation/deletion/general writes,
-Environment-backed command/validation execution, complete strategy-bound Session
-lifecycle, and SCM/review integration remain later work rather than settled
-interfaces.
+V-B3 adds an opt-in paid OpenAI API-key proof that a real model carries the
+model-visible opaque revision from `read_file` into `apply_patch`, mutates only
+the Task worktree, observes the result, and continues. Production
+orchestration-strategy registration/binding, a plugin-owned Chat strategy,
+experimental ChatGPT mutation, file creation/deletion/general writes,
+Environment-backed command/validation execution, complete strategy-bound
+Session lifecycle, and SCM/review integration remain later work rather than
+settled interfaces.
 
 Implementation should introduce the smallest concrete extension boundaries
 needed by those verticals rather than build a speculative universal framework

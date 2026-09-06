@@ -56,12 +56,16 @@ Filesystem Tools and Search Tools plugins, not application code, define
 the Session-selected Environment filesystem. The OpenAI API-key and experimental
 ChatGPT source-coding paths use the read/search composition. Deterministic
 real-Git integration additionally proves model-visible revision flow through
-`apply_patch` and continuation after conditional existing-file mutation. These
-do not establish real-model mutation, the final product workflow, strategy-bound
-Session persistence, stock UI composition, file creation/deletion, or command
-execution. `DevelopmentToolLoopStrategy` and `EnvironmentRuntime`
-remain provisional application/domain-specific implementation rather than
-production orchestration or a general extension-runtime pattern.
+`apply_patch` and continuation after conditional existing-file mutation. An
+opt-in paid OpenAI API-key smoke now also proves real-model `read_file`
+opaque-revision flow through `apply_patch`, mutation confined to the Task Git
+worktree, post-write observation, and continuation. These proofs do not
+establish experimental ChatGPT mutation, the final product workflow,
+strategy-bound Session persistence, stock UI composition, file
+creation/deletion, general filesystem mutation, or command execution.
+`DevelopmentToolLoopStrategy` and `EnvironmentRuntime` remain provisional
+application/domain-specific implementation rather than production orchestration
+or a general extension-runtime pattern.
 
 ## Live Tests
 
@@ -70,13 +74,17 @@ network, authentication, and Responses behavior in isolation. Separate app-level
 source-coding live smokes validate the current read/search stack through
 Project/Task/Environment establishment, Session authority, plugin-contributed
 Search and Read File tools, provisional orchestration, and real model
-continuation.
+continuation. A separate paid API-key smoke validates real-model `read_file`
+opaque-revision flow through `apply_patch`, Task-worktree-only mutation, and
+continuation; experimental ChatGPT live evidence remains read/search-only.
 
 `ADELE_OPENAI_SOURCE_CODING_LIVE_TEST=1` enables the paid API-key full-stack
 smoke when `OPENAI_API_KEY` and `ADELE_OPENAI_TEST_MODEL` are also configured.
+`ADELE_OPENAI_SOURCE_MUTATION_LIVE_TEST=1` independently enables the paid
+API-key full-stack source-mutation smoke with the same credentials and model.
 `ADELE_OPENAI_CHATGPT_LIVE_TEST=1` enables the experimental ChatGPT
 subscription-route full-stack smoke with
-`ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE`. Both remain opt-in and are excluded
+`ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE`. All three remain opt-in and are excluded
 from normal CI.
 
 See `docs/architecture/overview.md`, `docs/architecture/plugin-extension-model.md`,
