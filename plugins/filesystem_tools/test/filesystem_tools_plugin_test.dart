@@ -242,6 +242,96 @@ void main() {
     );
   });
 
+  test(
+    'Apply Patch rejects malformed search and replace before access',
+    () async {
+      for (final ({String field, String value}) fixture
+          in <({String field, String value})>[
+            (field: 'search', value: String.fromCharCode(0xdc00)),
+            (field: 'replace', value: String.fromCharCode(0xd800)),
+          ]) {
+        final _FileSystem fileSystem = _FileSystem();
+        final ToolExecutable executable = await _tool(
+          fileSystem,
+          'apply_patch',
+        );
+        final Map<String, Object?> proposed = <String, Object?>{
+          'relativePath': 'source.dart',
+          'expectedRevision': 'R1',
+          'search': 'old',
+          'replace': 'new',
+          fixture.field: fixture.value,
+        };
+
+        expect(
+          () => executable.validateAndNormalize(proposed),
+          throwsA(isA<ToolArgumentValidationException>()),
+        );
+        expect(fileSystem.readPaths, isEmpty);
+        expect(fileSystem.replacements, isEmpty);
+      }
+    },
+  );
+
+  test(
+    'filesystem tools reject malformed relative paths before access',
+    () async {
+      final String malformedPath = 'bad${String.fromCharCode(0xd800)}name.dart';
+      for (final String alias in <String>['read_file', 'apply_patch']) {
+        final _FileSystem fileSystem = _FileSystem();
+        final ToolExecutable executable = await _tool(fileSystem, alias);
+        final Map<String, Object?> proposed = alias == 'read_file'
+            ? <String, Object?>{'relativePath': malformedPath}
+            : <String, Object?>{
+                'relativePath': malformedPath,
+                'expectedRevision': 'R1',
+                'search': 'old',
+                'replace': 'new',
+              };
+
+        expect(
+          () => executable.validateAndNormalize(proposed),
+          throwsA(isA<ToolArgumentValidationException>()),
+        );
+        expect(fileSystem.readPaths, isEmpty);
+        expect(fileSystem.replacements, isEmpty);
+      }
+    },
+  );
+
+  test(
+    'Apply Patch accepts paired surrogates and opaque revision text',
+    () async {
+      final String search = String.fromCharCodes(<int>[0xd83d, 0xde00]);
+      final String replace = String.fromCharCodes(<int>[0xd83d, 0xde42]);
+      final String opaqueRevision = String.fromCharCode(0xd800);
+      final _FileSystem fileSystem = _FileSystem(
+        text: 'before $search after',
+        revision: opaqueRevision,
+      );
+      final ToolExecutable executable = await _tool(fileSystem, 'apply_patch');
+      final CanonicalToolArguments arguments = _patchArguments(
+        executable,
+        expectedRevision: opaqueRevision,
+        search: search,
+        replace: replace,
+      );
+
+      expect(arguments.snapshot['expectedRevision'], opaqueRevision);
+      final ToolOutcome outcome = await _execute(
+        executable,
+        arguments,
+        fileSystem.sessionId,
+      );
+
+      expect(outcome.disposition, ToolOutcomeDisposition.success);
+      expect(
+        fileSystem.replacements.single.replacementText,
+        'before $replace after',
+      );
+    },
+  );
+
   test('Apply Patch describes the authorized source mutation target', () async {
     final _FileSystem fileSystem = _FileSystem();
     final ToolExecutable executable = await _tool(fileSystem, 'apply_patch');
@@ -690,11 +780,12 @@ Future<List<ToolRegistration>> _registrations(_FileSystem fileSystem) async {
 CanonicalToolArguments _patchArguments(
   ToolExecutable executable, {
   String relativePath = 'source.dart',
+  String expectedRevision = 'R1',
   String search = 'old',
   String replace = 'new',
 }) => executable.validateAndNormalize(<String, Object?>{
   'relativePath': relativePath,
-  'expectedRevision': 'R1',
+  'expectedRevision': expectedRevision,
   'search': search,
   'replace': replace,
 });

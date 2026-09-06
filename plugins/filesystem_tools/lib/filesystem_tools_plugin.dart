@@ -91,10 +91,10 @@ final class _ReadFileExecutable implements ToolExecutable {
         'read_file requires exactly one non-empty string argument named relativePath.',
       );
     }
+    final String relativePath = proposedArguments['relativePath']! as String;
+    _requireWellFormedUnicode('relativePath', relativePath);
     return CanonicalToolArguments(<String, Object?>{
-      'relativePath': _canonicalFilePath(
-        proposedArguments['relativePath']! as String,
-      ),
+      'relativePath': _canonicalFilePath(relativePath),
     });
   }
 
@@ -283,16 +283,20 @@ final class _ApplyPatchExecutable implements ToolExecutable {
     }
     final String relativePath = proposedArguments['relativePath']! as String;
     final String search = proposedArguments['search']! as String;
+    final String replace = proposedArguments['replace']! as String;
     if (relativePath.isEmpty || search.isEmpty) {
       throw const ToolArgumentValidationException(
         'relativePath and search must not be empty.',
       );
     }
+    _requireWellFormedUnicode('relativePath', relativePath);
+    _requireWellFormedUnicode('search', search);
+    _requireWellFormedUnicode('replace', replace);
     return CanonicalToolArguments(<String, Object?>{
       'relativePath': _canonicalFilePath(relativePath),
       'expectedRevision': proposedArguments['expectedRevision']! as String,
       'search': search,
-      'replace': proposedArguments['replace']! as String,
+      'replace': replace,
     });
   }
 
@@ -569,6 +573,26 @@ String _canonicalFilePath(String relativePath) {
     );
   }
   return segments.join('/');
+}
+
+void _requireWellFormedUnicode(String fieldName, String value) {
+  for (int index = 0; index < value.length; index++) {
+    final int codeUnit = value.codeUnitAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      if (++index < value.length) {
+        final int next = value.codeUnitAt(index);
+        if (next >= 0xdc00 && next <= 0xdfff) continue;
+      }
+      throw ToolArgumentValidationException(
+        '$fieldName must contain well-formed Unicode text.',
+      );
+    }
+    if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      throw ToolArgumentValidationException(
+        '$fieldName must contain well-formed Unicode text.',
+      );
+    }
+  }
 }
 
 void _validateToolBinding(AuthorizedEnvironmentFileSystem fileSystem) {
