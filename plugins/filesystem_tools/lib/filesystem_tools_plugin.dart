@@ -349,6 +349,7 @@ final class _ApplyPatchExecutable implements ToolExecutable {
         if (candidate < 0) break;
         matchCount++;
         if (matchCount == 1) matchIndex = candidate;
+        if (matchCount == 2) break;
         searchStart = candidate + 1;
       }
       if (matchCount == 0) {
@@ -370,7 +371,7 @@ final class _ApplyPatchExecutable implements ToolExecutable {
             relativePath: relativePath,
             code: 'patch_target_ambiguous',
             modelContent:
-                'The search text matched $matchCount locations. No changes '
+                'The search text matched multiple locations. No changes '
                 'were made.\nInclude more surrounding function, class, or test '
                 'context so the search is unique.',
           ),

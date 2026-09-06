@@ -21,7 +21,7 @@ final class WorktreeEnvironment {
     try {
       final File file = await _resolveRegularFile(normalized);
       final Uint8List bytes = await _readBounded(file, normalized);
-      await _verifyStillConfined(file, normalized, FileSystemEntityType.file);
+      await _verifyStillDirectRegularFile(file, normalized);
       final String text;
       try {
         text = utf8.decode(bytes, allowMalformed: false);
@@ -82,7 +82,7 @@ final class WorktreeEnvironment {
     try {
       final File file = await _resolveRegularFile(relativePath);
       final Uint8List observed = await _readBounded(file, relativePath);
-      await _verifyStillConfined(file, relativePath, FileSystemEntityType.file);
+      await _verifyStillDirectRegularFile(file, relativePath);
       if (_revision(observed) != expectedRevision) {
         throw _failure(
           environmentRevisionConflictCode,
@@ -112,11 +112,7 @@ final class WorktreeEnvironment {
         );
       }
       final Uint8List current = await _readBounded(currentFile, relativePath);
-      await _verifyStillConfined(
-        currentFile,
-        relativePath,
-        FileSystemEntityType.file,
-      );
+      await _verifyStillDirectRegularFile(currentFile, relativePath);
       if (_revision(current) != expectedRevision) {
         throw _failure(
           environmentRevisionConflictCode,
@@ -135,11 +131,7 @@ final class WorktreeEnvironment {
       }
       final File promoted = await staged.rename(currentFile.path);
       final Uint8List written = await _readBounded(promoted, relativePath);
-      await _verifyStillConfined(
-        promoted,
-        relativePath,
-        FileSystemEntityType.file,
-      );
+      await _verifyStillDirectRegularFile(promoted, relativePath);
       return EnvironmentTextFileReplacement(revision: _revision(written));
     } on EnvironmentFailure {
       rethrow;
@@ -240,8 +232,12 @@ final class WorktreeEnvironment {
 
   Future<File> _resolveRegularFile(String relativePath) async {
     final String candidate = _candidate(relativePath);
+    await _rejectSymbolicLinkComponents(relativePath);
     await _requireExisting(candidate, relativePath, 'file');
     final String resolved = await _resolve(candidate, relativePath, 'file');
+    if (resolved != candidate) {
+      throw _pathAliasUnsupported(relativePath);
+    }
     if (await FileSystemEntity.type(resolved, followLinks: true) !=
         FileSystemEntityType.file) {
       throw _failure(
@@ -251,6 +247,46 @@ final class WorktreeEnvironment {
       );
     }
     return File(resolved);
+  }
+
+  Future<void> _rejectSymbolicLinkComponents(String relativePath) async {
+    String candidate = root.path;
+    for (final String segment in relativePath.split('/')) {
+      candidate = '$candidate${Platform.pathSeparator}$segment';
+      final FileSystemEntityType type;
+      try {
+        type = await FileSystemEntity.type(candidate, followLinks: false);
+      } on FileSystemException {
+        throw _failure(
+          'unreadable',
+          'The requested file path could not be inspected.',
+          relativePath: relativePath,
+        );
+      }
+      if (type == FileSystemEntityType.link) {
+        throw _pathAliasUnsupported(relativePath);
+      }
+      if (type == FileSystemEntityType.notFound) return;
+    }
+  }
+
+  Future<void> _verifyStillDirectRegularFile(
+    File file,
+    String relativePath,
+  ) async {
+    await _rejectSymbolicLinkComponents(relativePath);
+    final String resolved = await _resolve(file.path, relativePath, 'file');
+    if (resolved != file.path) {
+      throw _pathAliasUnsupported(relativePath);
+    }
+    if (await FileSystemEntity.type(resolved, followLinks: true) !=
+        FileSystemEntityType.file) {
+      throw _failure(
+        'not_regular_file',
+        'The requested path changed kind while it was being read.',
+        relativePath: relativePath,
+      );
+    }
   }
 
   Future<Directory> _resolveDirectory(String relativePath) async {
@@ -419,6 +455,12 @@ final class WorktreeEnvironment {
     return path == root.path || path.startsWith(rootPrefix);
   }
 }
+
+EnvironmentFailure _pathAliasUnsupported(String relativePath) => _failure(
+  'path_alias_unsupported',
+  'Symbolic-link aliases are not supported for direct file access.',
+  relativePath: relativePath,
+);
 
 String _revision(List<int> bytes) => sha256.convert(bytes).toString();
 

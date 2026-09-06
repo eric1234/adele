@@ -377,7 +377,7 @@ void main() {
               code: 'patch_target_not_found',
             ),
             (
-              text: 'return false;\nreturn false;\n',
+              text: 'return false;\nreturn false;\nreturn false;\n',
               search: 'return false;',
               code: 'patch_target_ambiguous',
             ),
@@ -400,6 +400,10 @@ void main() {
         expect(outcome.failureKind, ToolFailureKind.domain);
         expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
         expect(outcome.hostData['code'], fixture.code);
+        if (fixture.code == 'patch_target_ambiguous') {
+          expect(outcome.modelContent, contains('matched multiple locations'));
+          expect(outcome.modelContent, isNot(contains('3 locations')));
+        }
         expect(fileSystem.replacements, isEmpty);
       }
     },
@@ -514,6 +518,27 @@ void main() {
       expect(outcome.modelContent, contains('Re-read the file'));
       expect(fileSystem.replacements, isEmpty);
     }
+  });
+
+  test('read-side path alias failure is known not occurred', () async {
+    final _FileSystem fileSystem = _FileSystem(
+      readError: const EnvironmentFailure(
+        code: 'path_alias_unsupported',
+        message: 'Symbolic-link aliases are unsupported.',
+        details: <String, Object?>{'relativePath': 'alias.dart'},
+      ),
+    );
+    final ToolExecutable executable = await _tool(fileSystem, 'apply_patch');
+    final ToolOutcome outcome = await _execute(
+      executable,
+      _patchArguments(executable, relativePath: 'alias.dart'),
+      fileSystem.sessionId,
+    );
+
+    expect(outcome.failureKind, ToolFailureKind.domain);
+    expect(outcome.hostData['code'], 'path_alias_unsupported');
+    expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
+    expect(fileSystem.replacements, isEmpty);
   });
 
   test('conditional replacement conflict is known not occurred', () async {
