@@ -1117,6 +1117,48 @@ void main() {
   );
 
   test(
+    'uses effective executable access instead of aggregate mode bits',
+    () async {
+      final _ProcessFixture fixture = await _createProcessFixture();
+      final File ownerDenied = File(
+        '${fixture.container.path}/owner-denied-executable',
+      );
+      await ownerDenied.writeAsString('#!/bin/sh\nprintf unexpected\n');
+      final ProcessResult chmod = await Process.run('chmod', <String>[
+        '001',
+        ownerDenied.path,
+      ]);
+      expect(chmod.exitCode, 0, reason: chmod.stderr.toString());
+
+      await expectLater(
+        fixture.provider.runForegroundProcess(
+          fixture.environment.id,
+          EnvironmentForegroundProcessRequest(
+            program: ownerDenied.path,
+            arguments: const <String>[],
+            relativeWorkingDirectory: '',
+            timeoutSeconds: 5,
+          ),
+        ),
+        emitsError(_failureWithCode('process_start_failed')),
+      );
+
+      final List<EnvironmentProcessEvent> executable = await fixture.provider
+          .runForegroundProcess(
+            fixture.environment.id,
+            fixture.request(<String>['stdout']),
+          )
+          .toList();
+      expect(_completion(executable).exitCode, 0);
+    },
+    skip: !Platform.isLinux
+        ? 'Foreground execution is Linux-only.'
+        : _runningAsRoot
+        ? 'Root effective-execute semantics differ.'
+        : false,
+  );
+
+  test(
     'confines root nested and symbolic-link process working directories',
     () async {
       final _ProcessFixture fixture = await _createProcessFixture();
@@ -1490,6 +1532,10 @@ Matcher _failureWithCode(String code) => isA<EnvironmentFailure>().having(
   'code',
   code,
 );
+
+final bool _runningAsRoot =
+    Platform.isLinux &&
+    Process.runSync('id', const <String>['-u']).stdout.toString().trim() == '0';
 
 LocalEnvironment _environment(
   Uri sourceLocation, {

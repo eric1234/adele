@@ -189,7 +189,9 @@ final class _SessionEnvironmentAuthority
   Stream<T> _performStream<T>(Stream<T> Function() operation) async* {
     validateBinding();
     try {
-      yield* operation();
+      await for (final T event in operation()) {
+        yield event;
+      }
     } on ProviderUnavailable catch (error) {
       if (error.stale) {
         throw AuthorizedEnvironmentBindingStale(
@@ -206,6 +208,33 @@ final class _SessionEnvironmentAuthority
         'The authorized Environment provider endpoint is unavailable.',
         cause: error,
       );
+    } on EnvironmentFailure {
+      rethrow;
+    } on Object catch (error, stackTrace) {
+      try {
+        validateBinding();
+      } on AuthorizedEnvironmentBindingStale {
+        Error.throwWithStackTrace(
+          AuthorizedEnvironmentBindingStale(
+            'The authorized Environment provider generation became stale '
+            'during the process stream.',
+            cause: error,
+          ),
+          stackTrace,
+        );
+      } on AuthorizedEnvironmentBindingUnavailable {
+        Error.throwWithStackTrace(
+          AuthorizedEnvironmentBindingUnavailable(
+            'The authorized Environment provider became unavailable during '
+            'the process stream.',
+            cause: error,
+          ),
+          stackTrace,
+        );
+      } on Object {
+        // Revalidation is only used to recognize binding lifecycle changes.
+      }
+      Error.throwWithStackTrace(error, stackTrace);
     }
   }
 }

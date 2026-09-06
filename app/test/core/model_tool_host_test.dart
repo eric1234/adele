@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
@@ -7,6 +9,7 @@ import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:search_tools_plugin/search_tools_plugin.dart';
 
 void main() {
@@ -239,6 +242,57 @@ void main() {
     );
   });
 
+  test('active process stream translates retired generation closure', () async {
+    final _Fixture fixture = await _fixture();
+    final SessionModelToolHostContext context = SessionModelToolHostContext(
+      sessionId: fixture.sessionId,
+      environmentRuntime: fixture.runtime,
+    );
+    final AuthorizedEnvironmentProcessFacet process = await context
+        .requireHostService<AuthorizedEnvironmentProcessFacet>();
+    final StreamController<EnvironmentProcessEvent> providerStream =
+        StreamController<EnvironmentProcessEvent>();
+    fixture.provider.processStream = providerStream.stream;
+    final StreamIterator<EnvironmentProcessEvent> events =
+        StreamIterator<EnvironmentProcessEvent>(
+          process.runForegroundProcess(_processRequest()),
+        );
+
+    final Future<bool> progress = events.moveNext();
+    providerStream.add(
+      EnvironmentProcessEvent(
+        kind: EnvironmentProcessEventKind.output,
+        output: EnvironmentProcessOutput(
+          stream: EnvironmentProcessOutputStream.stdout,
+          text: 'started',
+        ),
+        completed: null,
+      ),
+    );
+    expect(await progress, isTrue);
+    expect(events.current.output!.text, 'started');
+
+    await fixture.registration.close();
+    final Future<bool> afterRetirement = events.moveNext();
+    const PluginConnectionClosed transportFailure = PluginConnectionClosed(
+      'Generation A closed during the process stream.',
+    );
+    providerStream.addError(transportFailure);
+
+    await expectLater(
+      afterRetirement,
+      throwsA(
+        isA<AuthorizedEnvironmentBindingStale>().having(
+          (AuthorizedEnvironmentBindingStale error) => error.cause,
+          'cause',
+          same(transportFailure),
+        ),
+      ),
+    );
+    await events.cancel();
+    await providerStream.close();
+  });
+
   test('fresh host context receives fresh provider facet bindings', () async {
     final _Fixture fixture = await _fixture();
     final SessionModelToolHostContext oldContext = SessionModelToolHostContext(
@@ -410,6 +464,7 @@ final class _Provider implements EnvironmentProvider {
   final List<EnvironmentId> fileEnvironmentIds = <EnvironmentId>[];
   final List<EnvironmentId> directoryEnvironmentIds = <EnvironmentId>[];
   final List<EnvironmentId> processEnvironmentIds = <EnvironmentId>[];
+  Stream<EnvironmentProcessEvent>? processStream;
   final List<
     ({
       EnvironmentId environmentId,
@@ -494,18 +549,21 @@ final class _Provider implements EnvironmentProvider {
   Stream<EnvironmentProcessEvent> runForegroundProcess(
     EnvironmentId environmentId,
     EnvironmentForegroundProcessRequest request,
-  ) async* {
+  ) {
     processEnvironmentIds.add(environmentId);
-    yield EnvironmentProcessEvent(
-      kind: EnvironmentProcessEventKind.completed,
-      output: null,
-      completed: EnvironmentProcessCompleted(
-        termination: EnvironmentProcessTermination.exited,
-        exitCode: 0,
-        stdoutTruncated: false,
-        stderrTruncated: false,
-      ),
-    );
+    return processStream ??
+        Stream<EnvironmentProcessEvent>.value(
+          EnvironmentProcessEvent(
+            kind: EnvironmentProcessEventKind.completed,
+            output: null,
+            completed: EnvironmentProcessCompleted(
+              termination: EnvironmentProcessTermination.exited,
+              exitCode: 0,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+            ),
+          ),
+        );
   }
 }
 

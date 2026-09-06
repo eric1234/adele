@@ -65,6 +65,8 @@ void main() {
           'GIT_DISCOVERY_ACROSS_FILESYSTEM': 'false',
           'ADELE_PROCESS_SECRET_SHOULD_NOT_LEAK': 'sentinel',
           'OPENAI_API_KEY': 'sentinel',
+          'PATH':
+              'relative-bin:${Platform.environment['PATH'] ?? '/usr/bin:/bin'}',
         },
       );
       addTearDown(() async {
@@ -187,6 +189,13 @@ void main() {
       expect(
         childEnvironment,
         contains(
+          'PATH=relative-bin:'
+          '${Platform.environment['PATH'] ?? '/usr/bin:/bin'}',
+        ),
+      );
+      expect(
+        childEnvironment,
+        contains(
           'PWD=${established.providerState['worktreePath']}'
           '${Platform.pathSeparator}project-source',
         ),
@@ -204,6 +213,23 @@ void main() {
           .toList();
       expect(_stdoutText(cleanStatus), isEmpty);
       expect(cleanStatus.last.completed!.exitCode, 0);
+      final List<EnvironmentProcessEvent> relativePathProcess = await providerA
+          .runForegroundProcess(
+            durable.id,
+            EnvironmentForegroundProcessRequest(
+              program: 'adele-relative-path-probe',
+              arguments: const <String>[],
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 10,
+            ),
+          )
+          .toList();
+      expect(
+        _stdoutText(relativePathProcess),
+        'relative-path:${established.providerState['worktreePath']}'
+        '${Platform.pathSeparator}project-source',
+      );
+      expect(relativePathProcess.last.completed!.exitCode, 0);
       final Stream<EnvironmentProcessEvent> deferredGenerationA = providerA
           .runForegroundProcess(
             durable.id,
@@ -376,6 +402,21 @@ _createRepository() async {
   await File(
     '${projectSourceA.path}${Platform.pathSeparator}README.md',
   ).writeAsString('AOT Git fixture A\n');
+  final Directory relativeBin = Directory(
+    '${projectSourceA.path}${Platform.pathSeparator}relative-bin',
+  );
+  await relativeBin.create();
+  final File relativePathProbe = File(
+    '${relativeBin.path}${Platform.pathSeparator}adele-relative-path-probe',
+  );
+  await relativePathProbe.writeAsString(
+    '#!/bin/sh\nprintf "relative-path:%s" "\$PWD"\n',
+  );
+  final ProcessResult chmod = await Process.run('chmod', <String>[
+    '755',
+    relativePathProbe.path,
+  ]);
+  if (chmod.exitCode != 0) throw StateError(chmod.stderr.toString());
   await _git(sourceA, <String>['add', '.']);
   await _git(sourceA, <String>['commit', '-m', 'Add nested Project source']);
   return (

@@ -16,6 +16,16 @@ const int _processOutputTailCharacters =
 const int _maximumProcessEventCharacters = 16 * 1024;
 const Duration _processTerminationGrace = Duration(milliseconds: 250);
 const Duration _processPipeCloseGrace = Duration(seconds: 1);
+const int _atCurrentWorkingDirectory = -100;
+const int _executeAccess = 1;
+const int _atEffectiveAccess = 0x200;
+
+typedef _FaccessatNative = Int32 Function(Int32, Pointer<Uint8>, Int32, Int32);
+typedef _FaccessatDart = int Function(int, Pointer<Uint8>, int, int);
+typedef _MallocNative = Pointer<Void> Function(IntPtr);
+typedef _MallocDart = Pointer<Void> Function(int);
+typedef _FreeNative = Void Function(Pointer<Void>);
+typedef _FreeDart = void Function(Pointer<Void>);
 
 const Set<String> _retainedEnvironmentVariables = <String>{
   'HOME',
@@ -73,6 +83,45 @@ final class GitForegroundProcessSupervisor {
     );
   }
 }
+
+final class _LinuxEffectiveAccess {
+  _LinuxEffectiveAccess() {
+    final DynamicLibrary libc = DynamicLibrary.open('libc.so.6');
+    _faccessat = libc.lookupFunction<_FaccessatNative, _FaccessatDart>(
+      'faccessat',
+    );
+    _malloc = libc.lookupFunction<_MallocNative, _MallocDart>('malloc');
+    _free = libc.lookupFunction<_FreeNative, _FreeDart>('free');
+  }
+
+  late final _FaccessatDart _faccessat;
+  late final _MallocDart _malloc;
+  late final _FreeDart _free;
+
+  bool canExecute(String path) {
+    final List<int> encoded = utf8.encode(path);
+    final Pointer<Uint8> nativePath = _malloc(encoded.length + 1).cast();
+    if (nativePath.address == 0) {
+      throw StateError('Could not allocate executable access path.');
+    }
+    try {
+      nativePath.asTypedList(encoded.length + 1)
+        ..setAll(0, encoded)
+        ..[encoded.length] = 0;
+      return _faccessat(
+            _atCurrentWorkingDirectory,
+            nativePath,
+            _executeAccess,
+            _atEffectiveAccess,
+          ) ==
+          0;
+    } finally {
+      _free(nativePath.cast());
+    }
+  }
+}
+
+final _LinuxEffectiveAccess _linuxEffectiveAccess = _LinuxEffectiveAccess();
 
 final class _ForegroundProcessExecution {
   _ForegroundProcessExecution({
@@ -520,11 +569,15 @@ Future<String> _resolveExecutable(
   }
   bool foundNonExecutable = false;
   for (final String entry in path.split(':')) {
-    final String directory = entry.isEmpty ? workingDirectory.path : entry;
+    final String directory = entry.isEmpty
+        ? workingDirectory.path
+        : entry.startsWith('/')
+        ? entry
+        : '${workingDirectory.path}/$entry';
     final String candidate = '$directory/$program';
     final FileStat stat = await FileStat.stat(candidate);
     if (stat.type != FileSystemEntityType.file) continue;
-    if (_hasExecuteBit(stat.mode)) {
+    if (_linuxEffectiveAccess.canExecute(candidate)) {
       return _requireExecutable(candidate, program);
     }
     foundNonExecutable = true;
@@ -549,7 +602,7 @@ Future<String> _requireExecutable(String candidate, String program) async {
       details: <String, Object?>{'program': program},
     );
   }
-  if (!_hasExecuteBit(stat.mode)) {
+  if (!_linuxEffectiveAccess.canExecute(candidate)) {
     throw EnvironmentFailure(
       code: 'process_start_failed',
       message: 'The foreground process executable is not executable.',
@@ -561,10 +614,9 @@ Future<String> _requireExecutable(String candidate, String program) async {
 
 Future<bool> _isExecutableFile(String path) async {
   final FileStat stat = await FileStat.stat(path);
-  return stat.type == FileSystemEntityType.file && _hasExecuteBit(stat.mode);
+  return stat.type == FileSystemEntityType.file &&
+      _linuxEffectiveAccess.canExecute(path);
 }
-
-bool _hasExecuteBit(int mode) => mode & 0x49 != 0;
 
 bool _killProcessGroup(int processId, ProcessSignal signal) {
   try {
