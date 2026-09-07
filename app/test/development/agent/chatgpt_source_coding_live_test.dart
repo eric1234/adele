@@ -67,7 +67,7 @@ void main() {
             ),
             selectedModel:
                 Platform.environment['ADELE_OPENAI_CHATGPT_TEST_MODEL'] ??
-                'gpt-5.4',
+                'gpt-5.5',
           );
 
       final SourceCodingLiveResult result = await harness.run(

@@ -168,6 +168,16 @@ it does not convert the source-visible route or client identity into a supported
 third-party contract. The equivalent automated test remains explicitly opt-in
 and requires a local credential file.
 
+On 2026-09-07, that account's authenticated Codex model catalog no longer
+advertised `gpt-5.4`; the backend rejected it with HTTP 400 after its retirement.
+The catalog advertised `gpt-5.5` as a classic Responses model, and both the
+provider-only stream and full Session search/read continuation completed with
+that model. Development/live defaults therefore moved to `gpt-5.5`. Newer
+advertised models used the distinct Responses Lite profile, which this
+experimental provider does not yet implement. Account-aware model discovery and
+classic/Lite profile selection remain required before treating ChatGPT auth as a
+shipping primary-provider path.
+
 ## Consequences
 
 - B5a is proven with two independently authenticated OpenAI contexts in one AOT

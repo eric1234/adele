@@ -369,7 +369,15 @@ void expectSuccessfulSourceCodingRun({
   required SourceCodingLiveResult result,
   required SessionEnvironmentAuthority authority,
 }) {
-  expect(result.run.state, RunState.completed);
+  final Object? failure = result.run.failure;
+  expect(
+    result.run.state,
+    RunState.completed,
+    reason: failure is ModelFailure
+        ? '${failure.kind.name}: ${failure.providerCode}: '
+              '${failure.providerMessage}: ${failure.providerDetails}'
+        : failure?.toString(),
+  );
   final List<ToolInvocationPrepared> prepared = result.run.journal.records
       .map((ExecutionEventRecord record) => record.event)
       .whereType<ToolInvocationPrepared>()

@@ -97,7 +97,7 @@ Future<void> _testInference(OpenAiChatGptAuth auth) async {
   );
   try {
     final String model =
-        Platform.environment['ADELE_OPENAI_CHATGPT_TEST_MODEL'] ?? 'gpt-5.4';
+        Platform.environment['ADELE_OPENAI_CHATGPT_TEST_MODEL'] ?? 'gpt-5.5';
     final List<ModelProviderEvent> events = await provider
         .invoke(
           ModelProviderRequest(
