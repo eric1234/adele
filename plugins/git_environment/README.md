@@ -63,18 +63,19 @@ network access remain outside this hygiene boundary.
 Create, replace, and delete operations share one mutation serialization tail
 within each live Environment. Replacement is staged beside the direct confined
 target and rechecked immediately before promotion; POSIX rwx permission bits are
-preserved. Creation stages complete bytes, revalidates the direct parent and
-target absence, and uses an exclusive empty-file reservation before promotion,
-so ADELE never intentionally overwrites an existing target and coordinated
-duplicate creates cannot both succeed. Deletion performs bounded direct-file
-reads and revision checks twice before unlinking. Dart exposes neither portable
-no-replace promotion nor atomic compare-and-delete, so an arbitrary external
-process can still race the final promotion/unlink windows. These are practical
-local guarantees, not filesystem transactions or crash/power-loss durability.
-A rare failure after the exclusive reservation but before promotion can leave
-an empty target: the provider cleans its private staging directory but does not
-delete that pathname because Dart cannot prove an external process has not
-replaced it.
+preserved. Creation stages complete bytes and revalidates the direct parent and
+target absence. Windows uses its no-replace rename behavior directly; platforms
+whose rename replaces a destination first use an exclusive empty-file
+reservation. ADELE therefore never intentionally overwrites an existing target,
+and coordinated duplicate creates cannot both succeed. Deletion performs
+bounded direct-file reads and revision checks twice before unlinking. Dart
+exposes neither a portable no-replace promotion nor atomic compare-and-delete,
+so an arbitrary external process can still race the final promotion/unlink
+windows. These are practical local guarantees, not filesystem transactions or
+crash/power-loss durability. A rare failure after a POSIX reservation but before
+promotion can leave an empty target: the provider cleans its private staging
+directory but does not delete that pathname because Dart cannot prove an
+external process has not replaced it.
 
 Directory/move/copy/binary mutation, general create-or-overwrite semantics,
 command-specific policy/classification, background or persistent processes,

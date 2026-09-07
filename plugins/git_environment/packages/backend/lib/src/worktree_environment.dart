@@ -84,12 +84,18 @@ final class WorktreeEnvironment {
       await staged.writeAsBytes(bytes, flush: true);
 
       // Revalidate direct parent identity and absence immediately before the
-      // exclusive reservation used to prevent intentional clobbering.
+      // platform's strongest available no-clobber publication sequence.
       final File currentTarget = await _resolveAbsentCreationTarget(
         relativePath,
       );
-      await currentTarget.create(exclusive: true);
-      await _verifyEmptyReservation(currentTarget, relativePath);
+      if (!Platform.isWindows) {
+        // POSIX rename replaces a destination, so reserve absence atomically
+        // before promoting over that provider-owned empty file.
+        await currentTarget.create(exclusive: true);
+        await _verifyEmptyReservation(currentTarget, relativePath);
+      }
+      // Windows rename already fails when the destination exists, so creating
+      // a reservation there would make every promotion fail.
       final File promoted = await staged.rename(currentTarget.path);
       final Uint8List written = await _readBounded(promoted, relativePath);
       await _verifyStillDirectRegularFile(promoted, relativePath);
@@ -109,8 +115,8 @@ final class WorktreeEnvironment {
         relativePath: relativePath,
       );
     } finally {
-      // Do not delete a failed empty reservation by pathname: Dart cannot
-      // prove that an external process has not replaced it in the meantime.
+      // Do not delete a failed POSIX reservation by pathname: Dart cannot prove
+      // that an external process has not replaced it in the meantime.
       if (stagingDirectory case final Directory directory) {
         await _deleteBestEffort(directory);
       }
