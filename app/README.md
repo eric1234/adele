@@ -80,14 +80,21 @@ Search and Read File tools, provisional orchestration, and real model
 continuation. A separate paid API-key smoke validates real-model `read_file`
 opaque-revision flow through `apply_patch`, Task-worktree-only mutation, and
 continuation; experimental ChatGPT live evidence remains read/search-only.
+A separate paid API-key source-validation smoke is available to pressure-test
+the combined real-model `read_file` -> `apply_patch` -> direct-argv
+`run_command` -> continuation path. Its presence does not count as completed
+real-model command evidence until the opt-in run succeeds.
 
 `ADELE_OPENAI_SOURCE_CODING_LIVE_TEST=1` enables the paid API-key full-stack
 smoke when `OPENAI_API_KEY` and `ADELE_OPENAI_TEST_MODEL` are also configured.
 `ADELE_OPENAI_SOURCE_MUTATION_LIVE_TEST=1` independently enables the paid
 API-key full-stack source-mutation smoke with the same credentials and model.
+`ADELE_OPENAI_SOURCE_VALIDATION_LIVE_TEST=1` independently enables the paid
+API-key source-edit and command-validation smoke with the same credentials and
+model.
 `ADELE_OPENAI_CHATGPT_LIVE_TEST=1` enables the experimental ChatGPT
 subscription-route full-stack smoke with
-`ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE`. All three remain opt-in and are excluded
+`ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE`. All four remain opt-in and are excluded
 from normal CI.
 
 See `docs/architecture/overview.md`, `docs/architecture/plugin-extension-model.md`,

@@ -11,6 +11,7 @@ import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
+import 'package:command_tools_plugin/command_tools_plugin.dart';
 import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
@@ -105,13 +106,15 @@ final class SourceCodingLiveHarness {
     required PluginCapabilityActivation environmentActivation,
     required ExtensionRegistration filesystemActivation,
     required ExtensionRegistration searchActivation,
+    required ExtensionRegistration? commandActivation,
   }) : _projectSource = projectSource,
        _taskEnvironment = taskEnvironment,
        _environmentMaterialization = environmentMaterialization,
        _container = container,
        _environmentActivation = environmentActivation,
        _filesystemActivation = filesystemActivation,
-       _searchActivation = searchActivation;
+       _searchActivation = searchActivation,
+       _commandActivation = commandActivation;
 
   final PluginBackendHost host;
   final CapabilityRegistry registry;
@@ -125,6 +128,7 @@ final class SourceCodingLiveHarness {
   final PluginCapabilityActivation _environmentActivation;
   final ExtensionRegistration _filesystemActivation;
   final ExtensionRegistration _searchActivation;
+  final ExtensionRegistration? _commandActivation;
 
   bool _closed = false;
 
@@ -133,6 +137,7 @@ final class SourceCodingLiveHarness {
     required Map<String, String> hostEnvironment,
     required String identity,
     required String taskTitle,
+    bool enableCommandTools = false,
   }) async {
     final Directory container = await Directory.systemTemp.createTemp(
       'adele-$identity-environment-source-',
@@ -152,6 +157,7 @@ final class SourceCodingLiveHarness {
       PluginCapabilityActivation? environmentActivation;
       ExtensionRegistration? filesystemActivation;
       ExtensionRegistration? searchActivation;
+      ExtensionRegistration? commandActivation;
       try {
         final ProviderId environmentProviderId = ProviderId(
           _gitEnvironmentProviderId,
@@ -167,6 +173,9 @@ final class SourceCodingLiveHarness {
           extensions,
         );
         searchActivation = const SearchToolsPlugin().activate(extensions);
+        if (enableCommandTools) {
+          commandActivation = const CommandToolsPlugin().activate(extensions);
+        }
         final ProviderBinding environmentBinding = registry.resolve(
           environmentProviderCapability,
           providerId: environmentProviderId,
@@ -221,10 +230,12 @@ final class SourceCodingLiveHarness {
           environmentActivation: environmentActivation,
           filesystemActivation: filesystemActivation,
           searchActivation: searchActivation,
+          commandActivation: commandActivation,
         );
       } catch (error, stackTrace) {
         try {
           await _closeResources(<Future<void> Function()>[
+            if (commandActivation != null) commandActivation.close,
             if (searchActivation != null) searchActivation.close,
             if (filesystemActivation != null) filesystemActivation.close,
             if (environmentActivation != null) environmentActivation.close,
@@ -295,6 +306,7 @@ final class SourceCodingLiveHarness {
     if (_closed) return;
     _closed = true;
     await _closeResources(<Future<void> Function()>[
+      if (_commandActivation != null) _commandActivation.close,
       _searchActivation.close,
       _filesystemActivation.close,
       _environmentActivation.close,

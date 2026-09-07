@@ -82,6 +82,13 @@ real-Git integration proves `read_file` -> `apply_patch` -> `git diff --check`
 syntax, command safety classification, environment overrides, background
 process resources, sandboxing, or real-model command evidence.
 
+V-C3 now has a separate paid opt-in OpenAI API-key smoke for the same
+`read_file` -> `apply_patch` -> direct-argv `run_command` -> continuation path.
+It records exact revision provenance, command policy/outcome evidence, final
+Task source, and Project/checkout isolation. A completed paid run is still
+required before treating that smoke as real-model command evidence or declaring
+Phase V-C complete.
+
 ## Accepted long-term architecture beyond the current implementation
 
 The maintained runtime is deliberately narrower than ADELE's accepted product
@@ -324,8 +331,10 @@ Git Worktree provider implementation/proof. V-C2 projects that substrate through
 stock plugin-owned `run_command`, structured stdout/stderr progress, bounded
 terminal results, and the existing policy/outcome path. Its deterministic
 real-Git vertical validates the exact Task-worktree edit with direct
-`git diff --check` arguments before model continuation. V-C3 remains responsible
-for real-model command use; neither V-C1 nor V-C2 makes a sandbox claim.
+`git diff --check` arguments before model continuation. V-C3's separate opt-in
+API-key smoke now exercises the combined real-model edit/validation path, but a
+completed paid run remains required for that evidence; neither V-C1 nor V-C2
+makes a sandbox claim.
 
 Implementation should introduce the smallest concrete extension boundaries
 needed by those verticals rather than build a speculative universal framework
