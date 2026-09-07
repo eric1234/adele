@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
@@ -7,6 +9,7 @@ import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:search_tools_plugin/search_tools_plugin.dart';
 
 void main() {
@@ -121,13 +124,18 @@ void main() {
       sessionId: fixture.sessionId,
       environmentRuntime: fixture.runtime,
     );
+    final AuthorizedEnvironmentAuthority environmentAuthority = await context
+        .requireHostService<AuthorizedEnvironmentAuthority>();
     final AuthorizedEnvironmentFileSystem authority = await context
         .requireHostService<AuthorizedEnvironmentFileSystem>();
     final AuthorizedEnvironmentFileReadFacet read = await context
         .requireHostService<AuthorizedEnvironmentFileReadFacet>();
     final AuthorizedEnvironmentFileMutationFacet mutation = await context
         .requireHostService<AuthorizedEnvironmentFileMutationFacet>();
+    final AuthorizedEnvironmentProcessFacet process = await context
+        .requireHostService<AuthorizedEnvironmentProcessFacet>();
 
+    expect(environmentAuthority, same(authority));
     expect(
       await context.requireHostService<AuthorizedEnvironmentFileSystem>(),
       same(authority),
@@ -142,7 +150,16 @@ void main() {
       same(mutation),
     );
     expect(
-      <SessionId>{authority.sessionId, read.sessionId, mutation.sessionId},
+      await context.requireHostService<AuthorizedEnvironmentProcessFacet>(),
+      same(process),
+    );
+    expect(
+      <SessionId>{
+        authority.sessionId,
+        read.sessionId,
+        mutation.sessionId,
+        process.sessionId,
+      },
       <SessionId>{fixture.sessionId},
     );
     expect(
@@ -150,6 +167,7 @@ void main() {
         authority.environmentId,
         read.environmentId,
         mutation.environmentId,
+        process.environmentId,
       },
       <EnvironmentId>{fixture.environmentId},
     );
@@ -159,6 +177,9 @@ void main() {
     );
     final EnvironmentTextFileReplacement replacement = await mutation
         .replaceExistingTextFile('source.dart', 'replacement', 'R1');
+    final List<EnvironmentProcessEvent> processEvents = await process
+        .runForegroundProcess(_processRequest())
+        .toList();
     expect(listing.relativePath, 'nested');
     expect(replacement.revision, 'replacement-revision');
     expect(fixture.provider.directoryEnvironmentIds, <EnvironmentId>[
@@ -170,7 +191,13 @@ void main() {
       replacementText: 'replacement',
       expectedRevision: 'R1',
     ));
+    expect(fixture.provider.processEnvironmentIds, <EnvironmentId>[
+      fixture.environmentId,
+    ]);
+    expect(processEvents.single.completed!.exitCode, 0);
 
+    final Stream<EnvironmentProcessEvent> deferredProcess = process
+        .runForegroundProcess(_processRequest());
     await fixture.registration.close();
     await expectLater(
       read.readFile('source.dart'),
@@ -180,9 +207,14 @@ void main() {
       mutation.replaceExistingTextFile('source.dart', 'other', 'R2'),
       throwsA(isA<AuthorizedEnvironmentBindingStale>()),
     );
+    await expectLater(
+      deferredProcess,
+      emitsError(isA<AuthorizedEnvironmentBindingStale>()),
+    );
+    expect(fixture.provider.processEnvironmentIds, hasLength(1));
   });
 
-  test('provider unavailability affects both facets consistently', () async {
+  test('provider unavailability affects every facet consistently', () async {
     final _Fixture fixture = await _fixture();
     final SessionModelToolHostContext context = SessionModelToolHostContext(
       sessionId: fixture.sessionId,
@@ -192,6 +224,8 @@ void main() {
         .requireHostService<AuthorizedEnvironmentFileReadFacet>();
     final AuthorizedEnvironmentFileMutationFacet mutation = await context
         .requireHostService<AuthorizedEnvironmentFileMutationFacet>();
+    final AuthorizedEnvironmentProcessFacet process = await context
+        .requireHostService<AuthorizedEnvironmentProcessFacet>();
     fixture.endpoint.available = false;
 
     await expectLater(
@@ -202,6 +236,61 @@ void main() {
       mutation.replaceExistingTextFile('source.dart', 'other', 'R1'),
       throwsA(isA<AuthorizedEnvironmentBindingUnavailable>()),
     );
+    await expectLater(
+      process.runForegroundProcess(_processRequest()),
+      emitsError(isA<AuthorizedEnvironmentBindingUnavailable>()),
+    );
+  });
+
+  test('active process stream translates retired generation closure', () async {
+    final _Fixture fixture = await _fixture();
+    final SessionModelToolHostContext context = SessionModelToolHostContext(
+      sessionId: fixture.sessionId,
+      environmentRuntime: fixture.runtime,
+    );
+    final AuthorizedEnvironmentProcessFacet process = await context
+        .requireHostService<AuthorizedEnvironmentProcessFacet>();
+    final StreamController<EnvironmentProcessEvent> providerStream =
+        StreamController<EnvironmentProcessEvent>();
+    fixture.provider.processStream = providerStream.stream;
+    final StreamIterator<EnvironmentProcessEvent> events =
+        StreamIterator<EnvironmentProcessEvent>(
+          process.runForegroundProcess(_processRequest()),
+        );
+
+    final Future<bool> progress = events.moveNext();
+    providerStream.add(
+      EnvironmentProcessEvent(
+        kind: EnvironmentProcessEventKind.output,
+        output: EnvironmentProcessOutput(
+          stream: EnvironmentProcessOutputStream.stdout,
+          text: 'started',
+        ),
+        completed: null,
+      ),
+    );
+    expect(await progress, isTrue);
+    expect(events.current.output!.text, 'started');
+
+    await fixture.registration.close();
+    final Future<bool> afterRetirement = events.moveNext();
+    const PluginConnectionClosed transportFailure = PluginConnectionClosed(
+      'Generation A closed during the process stream.',
+    );
+    providerStream.addError(transportFailure);
+
+    await expectLater(
+      afterRetirement,
+      throwsA(
+        isA<AuthorizedEnvironmentBindingStale>().having(
+          (AuthorizedEnvironmentBindingStale error) => error.cause,
+          'cause',
+          same(transportFailure),
+        ),
+      ),
+    );
+    await events.cancel();
+    await providerStream.close();
   });
 
   test('fresh host context receives fresh provider facet bindings', () async {
@@ -214,6 +303,8 @@ void main() {
         .requireHostService<AuthorizedEnvironmentFileReadFacet>();
     final AuthorizedEnvironmentFileMutationFacet oldMutation = await oldContext
         .requireHostService<AuthorizedEnvironmentFileMutationFacet>();
+    final AuthorizedEnvironmentProcessFacet oldProcess = await oldContext
+        .requireHostService<AuthorizedEnvironmentProcessFacet>();
     await fixture.registration.close();
 
     final _Provider replacementProvider = _Provider(
@@ -243,16 +334,26 @@ void main() {
     final AuthorizedEnvironmentFileMutationFacet freshMutation =
         await freshContext
             .requireHostService<AuthorizedEnvironmentFileMutationFacet>();
+    final AuthorizedEnvironmentProcessFacet freshProcess = await freshContext
+        .requireHostService<AuthorizedEnvironmentProcessFacet>();
 
     expect(
       (await freshRead.readFile('source.dart')).text,
       'fresh generation source',
     );
     expect(freshRead.environmentId, freshMutation.environmentId);
+    expect(freshRead.environmentId, freshProcess.environmentId);
     expect(freshRead.sessionId, freshMutation.sessionId);
+    expect(freshRead.sessionId, freshProcess.sessionId);
     expect(replacementProvider.restoreCount, 1);
     await freshMutation.replaceExistingTextFile('source.dart', 'fresh', 'R1');
     expect(replacementProvider.replacements, hasLength(1));
+    expect(
+      (await freshProcess.runForegroundProcess(_processRequest()).single)
+          .completed!
+          .exitCode,
+      0,
+    );
     await expectLater(
       oldRead.readFile('source.dart'),
       throwsA(isA<AuthorizedEnvironmentBindingStale>()),
@@ -261,8 +362,20 @@ void main() {
       oldMutation.replaceExistingTextFile('source.dart', 'old', 'R1'),
       throwsA(isA<AuthorizedEnvironmentBindingStale>()),
     );
+    await expectLater(
+      oldProcess.runForegroundProcess(_processRequest()),
+      emitsError(isA<AuthorizedEnvironmentBindingStale>()),
+    );
   });
 }
+
+EnvironmentForegroundProcessRequest _processRequest() =>
+    EnvironmentForegroundProcessRequest(
+      program: 'fixture',
+      arguments: const <String>[],
+      relativeWorkingDirectory: '',
+      timeoutSeconds: 5,
+    );
 
 Future<_Fixture> _fixture() async {
   final ProviderId providerId = ProviderId('dev.adele.environment.host-test');
@@ -350,6 +463,8 @@ final class _Provider implements EnvironmentProvider {
   final String sourceText;
   final List<EnvironmentId> fileEnvironmentIds = <EnvironmentId>[];
   final List<EnvironmentId> directoryEnvironmentIds = <EnvironmentId>[];
+  final List<EnvironmentId> processEnvironmentIds = <EnvironmentId>[];
+  Stream<EnvironmentProcessEvent>? processStream;
   final List<
     ({
       EnvironmentId environmentId,
@@ -428,6 +543,27 @@ final class _Provider implements EnvironmentProvider {
       relativePath: relativePath,
       entries: const <EnvironmentDirectoryEntry>[],
     );
+  }
+
+  @override
+  Stream<EnvironmentProcessEvent> runForegroundProcess(
+    EnvironmentId environmentId,
+    EnvironmentForegroundProcessRequest request,
+  ) {
+    processEnvironmentIds.add(environmentId);
+    return processStream ??
+        Stream<EnvironmentProcessEvent>.value(
+          EnvironmentProcessEvent(
+            kind: EnvironmentProcessEventKind.completed,
+            output: null,
+            completed: EnvironmentProcessCompleted(
+              termination: EnvironmentProcessTermination.exited,
+              exitCode: 0,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+            ),
+          ),
+        );
   }
 }
 

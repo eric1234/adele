@@ -63,6 +63,10 @@ void main() {
           'GIT_WORK_TREE': fixture.sourceB.path,
           ceilingVariable: fixture.sourceA.path,
           'GIT_DISCOVERY_ACROSS_FILESYSTEM': 'false',
+          'ADELE_PROCESS_SECRET_SHOULD_NOT_LEAK': 'sentinel',
+          'OPENAI_API_KEY': 'sentinel',
+          'PATH':
+              'relative-bin:${Platform.environment['PATH'] ?? '/usr/bin:/bin'}',
         },
       );
       addTearDown(() async {
@@ -129,6 +133,113 @@ void main() {
         'README.md',
       );
       expect(firstRead.text, 'AOT Git fixture A\n');
+      final List<EnvironmentProcessEvent> processEvents = await providerA
+          .runForegroundProcess(
+            durable.id,
+            EnvironmentForegroundProcessRequest(
+              program: 'git',
+              arguments: const <String>[
+                'rev-parse',
+                '--show-toplevel',
+                '--show-prefix',
+              ],
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 10,
+            ),
+          )
+          .toList();
+      final List<String> processLines = _stdoutText(
+        processEvents,
+      ).trim().split('\n');
+      expect(processLines, hasLength(2));
+      expect(processLines.first, established.providerState['worktreePath']);
+      expect(processLines.last, 'project-source/');
+      expect(processEvents.last.kind, EnvironmentProcessEventKind.completed);
+      expect(processEvents.last.completed!.exitCode, 0);
+      expect(
+        (await providerA.readFile(durable.id, 'README.md')).text,
+        firstRead.text,
+      );
+      final List<EnvironmentProcessEvent> environmentEvents = await providerA
+          .runForegroundProcess(
+            durable.id,
+            EnvironmentForegroundProcessRequest(
+              program: 'env',
+              arguments: const <String>[],
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 10,
+            ),
+          )
+          .toList();
+      final List<String> childEnvironment = _stdoutText(
+        environmentEvents,
+      ).split('\n');
+      expect(
+        childEnvironment,
+        isNot(contains('ADELE_PROCESS_SECRET_SHOULD_NOT_LEAK=sentinel')),
+      );
+      expect(childEnvironment, isNot(contains('OPENAI_API_KEY=sentinel')));
+      expect(
+        childEnvironment.any(
+          (String variable) =>
+              variable.startsWith('PATH=') && variable.length > 'PATH='.length,
+        ),
+        isTrue,
+      );
+      expect(
+        childEnvironment,
+        contains(
+          'PATH=relative-bin:'
+          '${Platform.environment['PATH'] ?? '/usr/bin:/bin'}',
+        ),
+      );
+      expect(
+        childEnvironment,
+        contains(
+          'PWD=${established.providerState['worktreePath']}'
+          '${Platform.pathSeparator}project-source',
+        ),
+      );
+      final List<EnvironmentProcessEvent> cleanStatus = await providerA
+          .runForegroundProcess(
+            durable.id,
+            EnvironmentForegroundProcessRequest(
+              program: 'git',
+              arguments: const <String>['status', '--short'],
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 10,
+            ),
+          )
+          .toList();
+      expect(_stdoutText(cleanStatus), isEmpty);
+      expect(cleanStatus.last.completed!.exitCode, 0);
+      final List<EnvironmentProcessEvent> relativePathProcess = await providerA
+          .runForegroundProcess(
+            durable.id,
+            EnvironmentForegroundProcessRequest(
+              program: 'adele-relative-path-probe',
+              arguments: const <String>[],
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 10,
+            ),
+          )
+          .toList();
+      expect(
+        _stdoutText(relativePathProcess),
+        'relative-path:${established.providerState['worktreePath']}'
+        '${Platform.pathSeparator}project-source',
+      );
+      expect(relativePathProcess.last.completed!.exitCode, 0);
+      final Stream<EnvironmentProcessEvent> deferredGenerationA = providerA
+          .runForegroundProcess(
+            durable.id,
+            EnvironmentForegroundProcessRequest(
+              program: 'git',
+              arguments: const <String>['status', '--short'],
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 10,
+            ),
+          );
       final EnvironmentTextFileReplacement replacement = await providerA
           .replaceExistingTextFile(
             durable.id,
@@ -182,6 +293,10 @@ void main() {
         providerA.readFile(durable.id, 'README.md'),
         throwsA(isA<PluginConnectionClosed>()),
       );
+      await expectLater(
+        deferredGenerationA,
+        emitsError(isA<PluginConnectionClosed>()),
+      );
 
       expect(durable.providerId, providerId);
       expect(durable.providerState, established.providerState);
@@ -209,6 +324,19 @@ void main() {
         'AOT conditional replacement\n',
       );
       expect(refreshed.providerState, durable.providerState);
+      final List<EnvironmentProcessEvent> freshProcess = await providerB
+          .runForegroundProcess(
+            refreshed.id,
+            EnvironmentForegroundProcessRequest(
+              program: 'git',
+              arguments: const <String>['status', '--short'],
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 10,
+            ),
+          )
+          .toList();
+      expect(freshProcess.last.completed!.exitCode, 0);
+      expect(_stdoutText(freshProcess), contains('M README.md'));
 
       await activationB.close();
       await host.close();
@@ -216,6 +344,14 @@ void main() {
     timeout: const Timeout(Duration(minutes: 4)),
   );
 }
+
+String _stdoutText(List<EnvironmentProcessEvent> events) => events
+    .where(
+      (EnvironmentProcessEvent event) =>
+          event.output?.stream == EnvironmentProcessOutputStream.stdout,
+    )
+    .map((EnvironmentProcessEvent event) => event.output!.text)
+    .join();
 
 Matcher _failureWithCode(String code) => isA<EnvironmentFailure>().having(
   (EnvironmentFailure failure) => failure.code,
@@ -266,6 +402,21 @@ _createRepository() async {
   await File(
     '${projectSourceA.path}${Platform.pathSeparator}README.md',
   ).writeAsString('AOT Git fixture A\n');
+  final Directory relativeBin = Directory(
+    '${projectSourceA.path}${Platform.pathSeparator}relative-bin',
+  );
+  await relativeBin.create();
+  final File relativePathProbe = File(
+    '${relativeBin.path}${Platform.pathSeparator}adele-relative-path-probe',
+  );
+  await relativePathProbe.writeAsString(
+    '#!/bin/sh\nprintf "relative-path:%s" "\$PWD"\n',
+  );
+  final ProcessResult chmod = await Process.run('chmod', <String>[
+    '755',
+    relativePathProbe.path,
+  ]);
+  if (chmod.exitCode != 0) throw StateError(chmod.stderr.toString());
   await _git(sourceA, <String>['add', '.']);
   await _git(sourceA, <String>['commit', '-m', 'Add nested Project source']);
   return (

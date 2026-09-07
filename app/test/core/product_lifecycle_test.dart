@@ -557,6 +557,12 @@ final class _BlockingProvider implements EnvironmentProvider {
   ) => throw UnimplementedError();
 
   @override
+  Stream<EnvironmentProcessEvent> runForegroundProcess(
+    EnvironmentId environmentId,
+    EnvironmentForegroundProcessRequest request,
+  ) => throw UnimplementedError();
+
+  @override
   Future<EnvironmentProviderResult> restore(LocalEnvironment environment) =>
       throw UnimplementedError();
 }
@@ -598,6 +604,12 @@ final class _FailingProvider implements EnvironmentProvider {
     String relativePath,
     String replacementText,
     String expectedRevision,
+  ) => throw UnimplementedError();
+
+  @override
+  Stream<EnvironmentProcessEvent> runForegroundProcess(
+    EnvironmentId environmentId,
+    EnvironmentForegroundProcessRequest request,
   ) => throw UnimplementedError();
 
   @override
@@ -658,6 +670,12 @@ final class _RecordingProvider implements EnvironmentProvider {
     EnvironmentId environmentId,
     String relativePath,
   ) => throw UnimplementedError();
+
+  @override
+  Stream<EnvironmentProcessEvent> runForegroundProcess(
+    EnvironmentId environmentId,
+    EnvironmentForegroundProcessRequest request,
+  ) => throw UnimplementedError();
 }
 
 final class _BlockingRestoreProvider implements EnvironmentProvider {
@@ -701,5 +719,11 @@ final class _BlockingRestoreProvider implements EnvironmentProvider {
   Future<EnvironmentDirectoryListing> readDirectory(
     EnvironmentId environmentId,
     String relativePath,
+  ) => throw UnimplementedError();
+
+  @override
+  Stream<EnvironmentProcessEvent> runForegroundProcess(
+    EnvironmentId environmentId,
+    EnvironmentForegroundProcessRequest request,
   ) => throw UnimplementedError();
 }

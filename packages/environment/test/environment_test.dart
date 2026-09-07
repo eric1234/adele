@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_environment/adele_environment.dart';
@@ -171,6 +173,257 @@ void main() {
     expect(replacement.revision, 'opaque-replacement-revision');
   });
 
+  test('foreground process request validates and snapshots argv', () {
+    final List<String> arguments = <String>['status', '--short'];
+    final EnvironmentForegroundProcessRequest request =
+        EnvironmentForegroundProcessRequest(
+          program: 'git',
+          arguments: arguments,
+          relativeWorkingDirectory: './packages//environment',
+          timeoutSeconds: 120,
+        );
+    arguments.add('--branch');
+
+    expect(request.arguments, <String>['status', '--short']);
+    expect(() => request.arguments.add('late'), throwsUnsupportedError);
+    expect(
+      () => EnvironmentForegroundProcessRequest(
+        program: '',
+        arguments: const <String>[],
+        relativeWorkingDirectory: '',
+        timeoutSeconds: 1,
+      ),
+      throwsFormatException,
+    );
+    for (final ({String program, List<String> arguments}) malformed
+        in <({String program, List<String> arguments})>[
+          (program: 'bad\u0000program', arguments: const <String>[]),
+          (program: 'git', arguments: const <String>['bad\u0000argument']),
+          (program: String.fromCharCode(0xd800), arguments: const <String>[]),
+        ]) {
+      expect(
+        () => EnvironmentForegroundProcessRequest(
+          program: malformed.program,
+          arguments: malformed.arguments,
+          relativeWorkingDirectory: '',
+          timeoutSeconds: 1,
+        ),
+        throwsFormatException,
+      );
+    }
+    for (final int timeoutSeconds in <int>[0, 601]) {
+      expect(
+        () => EnvironmentForegroundProcessRequest(
+          program: 'git',
+          arguments: const <String>[],
+          relativeWorkingDirectory: '',
+          timeoutSeconds: timeoutSeconds,
+        ),
+        throwsFormatException,
+      );
+    }
+  });
+
+  test('process event payloads enforce output and completion invariants', () {
+    final EnvironmentProcessEvent output = EnvironmentProcessEvent(
+      kind: EnvironmentProcessEventKind.output,
+      output: EnvironmentProcessOutput(
+        stream: EnvironmentProcessOutputStream.stderr,
+        text: 'diagnostic',
+      ),
+      completed: null,
+    );
+    final EnvironmentProcessEvent exited = EnvironmentProcessEvent(
+      kind: EnvironmentProcessEventKind.completed,
+      output: null,
+      completed: EnvironmentProcessCompleted(
+        termination: EnvironmentProcessTermination.exited,
+        exitCode: 3,
+        stdoutTruncated: true,
+        stderrTruncated: false,
+      ),
+    );
+    final EnvironmentProcessEvent timedOut = EnvironmentProcessEvent(
+      kind: EnvironmentProcessEventKind.completed,
+      output: null,
+      completed: EnvironmentProcessCompleted(
+        termination: EnvironmentProcessTermination.timedOut,
+        exitCode: null,
+        stdoutTruncated: false,
+        stderrTruncated: false,
+      ),
+    );
+
+    expect(output.output!.stream, EnvironmentProcessOutputStream.stderr);
+    expect(
+      EnvironmentProcessOutput(
+        stream: EnvironmentProcessOutputStream.stdout,
+        text: '\u0000',
+      ).text,
+      '\u0000',
+    );
+    expect(exited.completed!.exitCode, 3);
+    expect(timedOut.completed!.exitCode, isNull);
+    expect(
+      () => EnvironmentProcessOutput(
+        stream: EnvironmentProcessOutputStream.stdout,
+        text: '',
+      ),
+      throwsFormatException,
+    );
+    expect(
+      () => EnvironmentProcessCompleted(
+        termination: EnvironmentProcessTermination.exited,
+        exitCode: null,
+        stdoutTruncated: false,
+        stderrTruncated: false,
+      ),
+      throwsFormatException,
+    );
+    expect(
+      () => EnvironmentProcessCompleted(
+        termination: EnvironmentProcessTermination.timedOut,
+        exitCode: -15,
+        stdoutTruncated: false,
+        stderrTruncated: false,
+      ),
+      throwsFormatException,
+    );
+    expect(
+      () => EnvironmentProcessEvent(
+        kind: EnvironmentProcessEventKind.output,
+        output: null,
+        completed: timedOut.completed,
+      ),
+      throwsFormatException,
+    );
+  });
+
+  test(
+    'generated client streams typed foreground process events lazily',
+    () async {
+      final _ProcessStreamChannel channel = _ProcessStreamChannel();
+      final EnvironmentProviderServiceClient client =
+          EnvironmentProviderServiceClient(channel);
+      final EnvironmentForegroundProcessRequest request =
+          EnvironmentForegroundProcessRequest(
+            program: 'git',
+            arguments: const <String>['status', '--short'],
+            relativeWorkingDirectory: '',
+            timeoutSeconds: 120,
+          );
+      final Stream<EnvironmentProcessEvent> stream = client
+          .runForegroundProcess('environment-host', request);
+
+      expect(channel.streamCalls, 0);
+      final List<EnvironmentProcessEvent> events = await stream.toList();
+
+      expect(channel.streamCalls, 1);
+      expect(channel.method, environmentProviderServiceRunForegroundProcessId);
+      expect(channel.payload, <String, Object?>{
+        'environmentId': 'environment-host',
+        'request': <String, Object?>{
+          'arguments': <Object?>['status', '--short'],
+          'program': 'git',
+          'relativeWorkingDirectory': '',
+          'timeoutSeconds': 120,
+        },
+      });
+      expect(
+        events.map((EnvironmentProcessEvent event) => event.kind),
+        <EnvironmentProcessEventKind>[
+          EnvironmentProcessEventKind.output,
+          EnvironmentProcessEventKind.output,
+          EnvironmentProcessEventKind.completed,
+        ],
+      );
+      expect(events[0].output!.text, 'one');
+      expect(events[1].output!.stream, EnvironmentProcessOutputStream.stderr);
+      expect(
+        events[2].completed!.termination,
+        EnvironmentProcessTermination.exited,
+      );
+      expect(events[2].completed!.exitCode, 0);
+      expect(() => stream.listen((_) {}), throwsStateError);
+    },
+  );
+
+  test('generated adapters forward the foreground process stream', () async {
+    final _CapturingProvider backend = _CapturingProvider(providerId);
+    final GeneratedEnvironmentProvider host = GeneratedEnvironmentProvider(
+      providerId: providerId,
+      service: EnvironmentProviderServiceAdapter(backend),
+    );
+    final EnvironmentForegroundProcessRequest request =
+        EnvironmentForegroundProcessRequest(
+          program: 'git',
+          arguments: const <String>['status'],
+          relativeWorkingDirectory: '',
+          timeoutSeconds: 5,
+        );
+
+    final List<EnvironmentProcessEvent> events = await host
+        .runForegroundProcess(hostEnvironment.id, request)
+        .toList();
+
+    expect(backend.processEnvironmentId, hostEnvironment.id);
+    expect(backend.processRequest, same(request));
+    expect(events.single.completed!.exitCode, 7);
+  });
+
+  test('generated process stream forwards cancellation', () async {
+    final _CancellableProcessStreamChannel channel =
+        _CancellableProcessStreamChannel();
+    final EnvironmentProcessEvent event =
+        await EnvironmentProviderServiceClient(channel)
+            .runForegroundProcess(
+              'environment-host',
+              EnvironmentForegroundProcessRequest(
+                program: 'git',
+                arguments: const <String>['status'],
+                relativeWorkingDirectory: '',
+                timeoutSeconds: 5,
+              ),
+            )
+            .first;
+
+    expect(event.output!.text, 'started');
+    expect(channel.cancellations, 1);
+  });
+
+  test('generated process stream reconstructs declared failures', () async {
+    final EnvironmentProviderServiceClient client =
+        EnvironmentProviderServiceClient(
+          _ProcessFailureChannel(
+            const _RemoteFailure(
+              declaredFailureType: environmentFailureTypeId,
+              code: 'process_start_failed',
+              message: 'The process could not be started.',
+              details: <String, Object?>{'program': 'missing'},
+            ),
+          ),
+        );
+
+    await expectLater(
+      client.runForegroundProcess(
+        'environment-host',
+        EnvironmentForegroundProcessRequest(
+          program: 'missing',
+          arguments: const <String>[],
+          relativeWorkingDirectory: '',
+          timeoutSeconds: 5,
+        ),
+      ),
+      emitsError(
+        isA<EnvironmentFailure>().having(
+          (EnvironmentFailure failure) => failure.code,
+          'code',
+          'process_start_failed',
+        ),
+      ),
+    );
+  });
+
   test('generated client reconstructs declared replacement failures', () async {
     final EnvironmentProviderServiceClient client =
         EnvironmentProviderServiceClient(
@@ -244,6 +497,8 @@ final class _CapturingProvider implements EnvironmentProvider {
   final ProviderId providerId;
   LocalEnvironment? established;
   LocalEnvironment? restored;
+  EnvironmentId? processEnvironmentId;
+  EnvironmentForegroundProcessRequest? processRequest;
 
   @override
   Future<EnvironmentProviderResult> establish(
@@ -282,6 +537,102 @@ final class _CapturingProvider implements EnvironmentProvider {
     String replacementText,
     String expectedRevision,
   ) => throw UnimplementedError();
+
+  @override
+  Stream<EnvironmentProcessEvent> runForegroundProcess(
+    EnvironmentId environmentId,
+    EnvironmentForegroundProcessRequest request,
+  ) {
+    processEnvironmentId = environmentId;
+    processRequest = request;
+    return Stream<EnvironmentProcessEvent>.value(
+      EnvironmentProcessEvent(
+        kind: EnvironmentProcessEventKind.completed,
+        output: null,
+        completed: EnvironmentProcessCompleted(
+          termination: EnvironmentProcessTermination.exited,
+          exitCode: 7,
+          stdoutTruncated: false,
+          stderrTruncated: false,
+        ),
+      ),
+    );
+  }
+}
+
+final class _ProcessStreamChannel implements AdeleStreamChannel {
+  int streamCalls = 0;
+  String? method;
+  Map<String, Object?>? payload;
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) async =>
+      throw UnimplementedError();
+
+  @override
+  Stream<Object?> stream(String method, Map<String, Object?> payload) => (() {
+    streamCalls++;
+    this.method = method;
+    this.payload = payload;
+    return Stream<Object?>.fromIterable(<Object?>[
+      <String, Object?>{
+        'kind': 'output',
+        'output': <String, Object?>{'stream': 'stdout', 'text': 'one'},
+        'completed': null,
+      },
+      <String, Object?>{
+        'kind': 'output',
+        'output': <String, Object?>{'stream': 'stderr', 'text': 'two'},
+        'completed': null,
+      },
+      <String, Object?>{
+        'kind': 'completed',
+        'output': null,
+        'completed': <String, Object?>{
+          'termination': 'exited',
+          'exitCode': 0,
+          'stdoutTruncated': false,
+          'stderrTruncated': false,
+        },
+      },
+    ]);
+  })();
+}
+
+final class _CancellableProcessStreamChannel implements AdeleStreamChannel {
+  int cancellations = 0;
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) async =>
+      throw UnimplementedError();
+
+  @override
+  Stream<Object?> stream(String method, Map<String, Object?> payload) {
+    late final StreamController<Object?> controller;
+    controller = StreamController<Object?>(
+      onListen: () => controller.add(<String, Object?>{
+        'kind': 'output',
+        'output': <String, Object?>{'stream': 'stdout', 'text': 'started'},
+        'completed': null,
+      }),
+      onCancel: () => cancellations++,
+    );
+    return controller.stream;
+  }
+}
+
+final class _ProcessFailureChannel implements AdeleStreamChannel {
+  const _ProcessFailureChannel(this.failure);
+
+  final AdeleRemoteFailure failure;
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) async =>
+      throw UnimplementedError();
+
+  @override
+  Stream<Object?> stream(String method, Map<String, Object?> payload) =>
+      Stream<Object?>.error(failure);
 }
 
 final class _Channel implements AdeleRequestChannel {

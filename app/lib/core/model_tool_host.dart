@@ -28,27 +28,32 @@ final class SessionModelToolHostContext implements ModelToolHostContext {
   @override
   final SessionId sessionId;
   final EnvironmentRuntime _environmentRuntime;
-  Future<_SessionEnvironmentFileSystemFacets>? _fileSystemFacets;
+  Future<_SessionEnvironmentFacets>? _environmentFacets;
 
   @override
   Future<T> requireHostService<T extends Object>() async {
+    if (T == AuthorizedEnvironmentAuthority) {
+      return (await _requireEnvironmentFacets()).authority as T;
+    }
     if (T == AuthorizedEnvironmentFileSystem) {
-      return (await _requireFileSystemFacets()).authority as T;
+      return (await _requireEnvironmentFacets()).authority as T;
     }
     if (T == AuthorizedEnvironmentFileReadFacet) {
-      return (await _requireFileSystemFacets()).read as T;
+      return (await _requireEnvironmentFacets()).read as T;
     }
     if (T == AuthorizedEnvironmentFileMutationFacet) {
-      return (await _requireFileSystemFacets()).mutation as T;
+      return (await _requireEnvironmentFacets()).mutation as T;
+    }
+    if (T == AuthorizedEnvironmentProcessFacet) {
+      return (await _requireEnvironmentFacets()).process as T;
     }
     throw StateError('No Session host service is registered for $T.');
   }
 
-  Future<_SessionEnvironmentFileSystemFacets> _requireFileSystemFacets() =>
-      _fileSystemFacets ??= _materializeFileSystemFacets();
+  Future<_SessionEnvironmentFacets> _requireEnvironmentFacets() =>
+      _environmentFacets ??= _materializeEnvironmentFacets();
 
-  Future<_SessionEnvironmentFileSystemFacets>
-  _materializeFileSystemFacets() async {
+  Future<_SessionEnvironmentFacets> _materializeEnvironmentFacets() async {
     final SessionEnvironmentAuthority authority = _environmentRuntime.store
         .requireSessionAuthority(sessionId);
     final EnvironmentMaterialization materialization = await _environmentRuntime
@@ -58,28 +63,30 @@ final class SessionModelToolHostContext implements ModelToolHostContext {
         'Session $sessionId has inconsistent Task and Environment authority.',
       );
     }
-    final _SessionEnvironmentFileSystem fileSystem =
-        _SessionEnvironmentFileSystem(
+    final _SessionEnvironmentAuthority environmentAuthority =
+        _SessionEnvironmentAuthority(
           authority: authority,
           materialization: materialization,
         );
-    return _SessionEnvironmentFileSystemFacets(fileSystem);
+    return _SessionEnvironmentFacets(environmentAuthority);
   }
 }
 
-final class _SessionEnvironmentFileSystemFacets {
-  _SessionEnvironmentFileSystemFacets(this.authority)
+final class _SessionEnvironmentFacets {
+  _SessionEnvironmentFacets(this.authority)
     : read = _SessionEnvironmentFileReadFacet(authority),
-      mutation = _SessionEnvironmentFileMutationFacet(authority);
+      mutation = _SessionEnvironmentFileMutationFacet(authority),
+      process = _SessionEnvironmentProcessFacet(authority);
 
-  final _SessionEnvironmentFileSystem authority;
+  final _SessionEnvironmentAuthority authority;
   final AuthorizedEnvironmentFileReadFacet read;
   final AuthorizedEnvironmentFileMutationFacet mutation;
+  final AuthorizedEnvironmentProcessFacet process;
 }
 
-final class _SessionEnvironmentFileSystem
+final class _SessionEnvironmentAuthority
     implements AuthorizedEnvironmentFileSystem {
-  const _SessionEnvironmentFileSystem({
+  const _SessionEnvironmentAuthority({
     required SessionEnvironmentAuthority authority,
     required EnvironmentMaterialization materialization,
   }) : _authority = authority,
@@ -147,6 +154,15 @@ final class _SessionEnvironmentFileSystem
     );
   }
 
+  Stream<EnvironmentProcessEvent> runForegroundProcess(
+    EnvironmentForegroundProcessRequest request,
+  ) => _performStream(
+    () => _materialization.provider.runForegroundProcess(
+      _authority.environmentId,
+      request,
+    ),
+  );
+
   Future<T> _perform<T>(Future<T> Function() operation) async {
     validateBinding();
     try {
@@ -169,13 +185,65 @@ final class _SessionEnvironmentFileSystem
       );
     }
   }
+
+  Stream<T> _performStream<T>(Stream<T> Function() operation) async* {
+    validateBinding();
+    try {
+      await for (final T event in operation()) {
+        yield event;
+      }
+    } on ProviderUnavailable catch (error) {
+      if (error.stale) {
+        throw AuthorizedEnvironmentBindingStale(
+          'The authorized Environment provider generation is stale.',
+          cause: error,
+        );
+      }
+      throw AuthorizedEnvironmentBindingUnavailable(
+        'The authorized Environment provider is unavailable.',
+        cause: error,
+      );
+    } on ProviderEndpointUnavailable catch (error) {
+      throw AuthorizedEnvironmentBindingUnavailable(
+        'The authorized Environment provider endpoint is unavailable.',
+        cause: error,
+      );
+    } on EnvironmentFailure {
+      rethrow;
+    } on Object catch (error, stackTrace) {
+      try {
+        validateBinding();
+      } on AuthorizedEnvironmentBindingStale {
+        Error.throwWithStackTrace(
+          AuthorizedEnvironmentBindingStale(
+            'The authorized Environment provider generation became stale '
+            'during the process stream.',
+            cause: error,
+          ),
+          stackTrace,
+        );
+      } on AuthorizedEnvironmentBindingUnavailable {
+        Error.throwWithStackTrace(
+          AuthorizedEnvironmentBindingUnavailable(
+            'The authorized Environment provider became unavailable during '
+            'the process stream.',
+            cause: error,
+          ),
+          stackTrace,
+        );
+      } on Object {
+        // Revalidation is only used to recognize binding lifecycle changes.
+      }
+      Error.throwWithStackTrace(error, stackTrace);
+    }
+  }
 }
 
 final class _SessionEnvironmentFileReadFacet
     implements AuthorizedEnvironmentFileReadFacet {
   const _SessionEnvironmentFileReadFacet(this._authority);
 
-  final _SessionEnvironmentFileSystem _authority;
+  final _SessionEnvironmentAuthority _authority;
 
   @override
   SessionId get sessionId => _authority.sessionId;
@@ -199,7 +267,7 @@ final class _SessionEnvironmentFileMutationFacet
     implements AuthorizedEnvironmentFileMutationFacet {
   const _SessionEnvironmentFileMutationFacet(this._authority);
 
-  final _SessionEnvironmentFileSystem _authority;
+  final _SessionEnvironmentAuthority _authority;
 
   @override
   SessionId get sessionId => _authority.sessionId;
@@ -220,4 +288,25 @@ final class _SessionEnvironmentFileMutationFacet
     replacementText,
     expectedRevision,
   );
+}
+
+final class _SessionEnvironmentProcessFacet
+    implements AuthorizedEnvironmentProcessFacet {
+  const _SessionEnvironmentProcessFacet(this._authority);
+
+  final _SessionEnvironmentAuthority _authority;
+
+  @override
+  SessionId get sessionId => _authority.sessionId;
+
+  @override
+  EnvironmentId get environmentId => _authority.environmentId;
+
+  @override
+  void validateBinding() => _authority.validateBinding();
+
+  @override
+  Stream<EnvironmentProcessEvent> runForegroundProcess(
+    EnvironmentForegroundProcessRequest request,
+  ) => _authority.runForegroundProcess(request);
 }

@@ -13,6 +13,7 @@ Phase III  active capability registry and exact-generation routing
 Phase IV   provider-neutral agent execution + real model/source coding vertical
 Phase V-A  Session-authorized plugin-composed Environment read/search
 Phase V-B  conditional Environment replacement + deterministic apply_patch
+Phase V-C1 provider-neutral Environment foreground process execution
 ```
 
 Interpreted Flutter frontends and locally compiled AOT backends run through one
@@ -63,6 +64,14 @@ proves real-model `read_file` opaque-revision flow into `apply_patch`, mutation
 confined to the Task Git worktree, post-write observation, and model
 continuation. Experimental ChatGPT mutation and command-backed validation are
 not yet proven.
+
+Phase V-C1 adds a provider-neutral, Session-authorized foreground process
+primitive to Environment. The stock Git Worktree implementation uses direct
+argv, generated stdout/stderr streaming, bounded head/tail output, confined cwd,
+required timeout, explicit child-environment filtering, and practical Linux x64
+process-group cleanup. No model-facing command tool, command policy
+classification, background process resource, or sandbox is implemented by this
+slice.
 
 ## Accepted long-term architecture beyond the current implementation
 
@@ -265,7 +274,7 @@ See `docs/architecture/profiles-and-configuration.md`.
 
 ## Next Work
 
-**Phases IV, V-A, and the initial V-B1/B2 mutation slices are complete.**
+**Phases IV, V-A, V-B, and the V-C1 Environment foreground-process slice are complete.**
 
 Phase V-A1 established the Project-to-Task-to-primary-Environment spine and
 stock Git worktree provider. V-A2 connected provisional Session authority to
@@ -278,8 +287,9 @@ V-A4 added Session-authorized directory access and independent stock
 plugin-owned `search`. Its bounded deterministic literal search is native Dart
 traversal over the provider-neutral Environment filesystem, and deterministic
 integration proves Search-to-Read discovery against copied maintained source.
-The implementation may later use `rg` or `grep` through future Environment
-process execution without moving Search semantics into `EnvironmentProvider`.
+The implementation may later use `rg` or `grep` through the Environment
+process-execution surface without moving Search semantics into
+`EnvironmentProvider`.
 
 V-A5 migrated the OpenAI API-key and experimental ChatGPT source-coding paths to
 the Session-authorized Environment tool composition, retired the provisional
@@ -296,9 +306,13 @@ model-visible opaque revision from `read_file` into `apply_patch`, mutates only
 the Task worktree, observes the result, and continues. Production
 orchestration-strategy registration/binding, a plugin-owned Chat strategy,
 experimental ChatGPT mutation, file creation/deletion/general writes,
-Environment-backed command/validation execution, complete strategy-bound
-Session lifecycle, and SCM/review integration remain later work rather than
-settled interfaces.
+complete strategy-bound Session lifecycle, and SCM/review integration remain
+later work rather than settled interfaces.
+
+V-C1 adds the provider-neutral Environment foreground-process substrate and its
+Git Worktree provider implementation/proof. V-C2 remains responsible for
+model-facing command tooling and command-backed agent validation; V-C1 makes no
+sandbox claim.
 
 Implementation should introduce the smallest concrete extension boundaries
 needed by those verticals rather than build a speculative universal framework

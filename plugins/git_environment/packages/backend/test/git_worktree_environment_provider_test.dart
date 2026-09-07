@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
@@ -62,7 +63,7 @@ void main() {
     expect(liveObjects.length, 2);
     expect(liveObjects.resolve(second.id).root.path, isNot(retainedPath));
 
-    generationA.close();
+    await generationA.close();
     expect(liveObjects.length, 0);
     expect(await Directory(retainedPath).exists(), isTrue);
 
@@ -251,7 +252,7 @@ void main() {
       ]),
       'heads/$branch',
     );
-    generationA.close();
+    await generationA.close();
     final Environment durable = Environment(
       id: environment.id,
       taskId: environment.task.id,
@@ -309,7 +310,7 @@ void main() {
         (await generationA.readFile(environment.id, 'README.md')).text,
         contains('fixture source'),
       );
-      generationA.close();
+      await generationA.close();
 
       final Environment durable = Environment(
         id: environment.id,
@@ -364,7 +365,7 @@ void main() {
         (await generationA.readFile(environment.id, 'README.md')).text,
         contains('fixture source'),
       );
-      generationA.close();
+      await generationA.close();
 
       final Environment durable = Environment(
         id: environment.id,
@@ -449,7 +450,7 @@ void main() {
       <String>['inside.txt'],
     );
 
-    generationA.close();
+    await generationA.close();
     final Environment durable = Environment(
       id: environment.id,
       taskId: environment.task.id,
@@ -1014,6 +1015,516 @@ void main() {
     expect(await target.readAsString(), 'inside');
     expect(await File('${root.path}/missing.txt').exists(), isFalse);
   });
+
+  test(
+    'streams direct argv stdout stderr ordering and nonzero exits',
+    () async {
+      final _ProcessFixture fixture = await _createProcessFixture();
+
+      final List<EnvironmentProcessEvent> stdoutEvents = await fixture.provider
+          .runForegroundProcess(
+            fixture.environment.id,
+            fixture.request(<String>['stdout']),
+          )
+          .toList();
+      final List<EnvironmentProcessOutput> stdoutOutput = _outputs(
+        stdoutEvents,
+      );
+      expect(
+        stdoutOutput
+            .where(
+              (EnvironmentProcessOutput output) =>
+                  output.stream == EnvironmentProcessOutputStream.stdout,
+            )
+            .map((EnvironmentProcessOutput output) => output.text)
+            .join(),
+        'stdout-one|stdout-two',
+      );
+      expect(stdoutOutput, hasLength(greaterThanOrEqualTo(2)));
+      expect(stdoutEvents.last.kind, EnvironmentProcessEventKind.completed);
+      expect(_completion(stdoutEvents).exitCode, 0);
+
+      final List<EnvironmentProcessEvent> interleaved = await fixture.provider
+          .runForegroundProcess(
+            fixture.environment.id,
+            fixture.request(<String>['interleaved']),
+          )
+          .toList();
+      expect(
+        _outputs(interleaved).map(
+          (EnvironmentProcessOutput output) =>
+              '${output.stream.name}:${output.text}',
+        ),
+        <String>[
+          'stdout:out-one|',
+          'stderr:err-one|',
+          'stdout:out-two|',
+          'stderr:err-two',
+        ],
+      );
+
+      const String literal = r'spaces ; $(not-run) * [literal]';
+      final List<EnvironmentProcessEvent> literalEvents = await fixture.provider
+          .runForegroundProcess(
+            fixture.environment.id,
+            fixture.request(<String>['literal', literal]),
+          )
+          .toList();
+      expect(_outputText(literalEvents).trim(), literal);
+
+      final List<EnvironmentProcessEvent> nonzero = await fixture.provider
+          .runForegroundProcess(
+            fixture.environment.id,
+            fixture.request(<String>['exit', '23']),
+          )
+          .toList();
+      expect(
+        _completion(nonzero).termination,
+        EnvironmentProcessTermination.exited,
+      );
+      expect(_completion(nonzero).exitCode, 23);
+
+      await expectLater(
+        fixture.provider.runForegroundProcess(
+          fixture.environment.id,
+          EnvironmentForegroundProcessRequest(
+            program: 'adele-executable-that-does-not-exist',
+            arguments: const <String>[],
+            relativeWorkingDirectory: '',
+            timeoutSeconds: 5,
+          ),
+        ),
+        emitsError(_failureWithCode('process_executable_not_found')),
+      );
+      final File notExecutable = File(
+        '${fixture.container.path}/not-executable',
+      );
+      await notExecutable.writeAsString('#!/bin/sh\nexit 0\n');
+      await expectLater(
+        fixture.provider.runForegroundProcess(
+          fixture.environment.id,
+          EnvironmentForegroundProcessRequest(
+            program: notExecutable.path,
+            arguments: const <String>[],
+            relativeWorkingDirectory: '',
+            timeoutSeconds: 5,
+          ),
+        ),
+        emitsError(_failureWithCode('process_start_failed')),
+      );
+    },
+    skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+  );
+
+  test(
+    'uses effective executable access instead of aggregate mode bits',
+    () async {
+      final _ProcessFixture fixture = await _createProcessFixture();
+      final File ownerDenied = File(
+        '${fixture.container.path}/owner-denied-executable',
+      );
+      await ownerDenied.writeAsString('#!/bin/sh\nprintf unexpected\n');
+      final ProcessResult chmod = await Process.run('chmod', <String>[
+        '001',
+        ownerDenied.path,
+      ]);
+      expect(chmod.exitCode, 0, reason: chmod.stderr.toString());
+
+      await expectLater(
+        fixture.provider.runForegroundProcess(
+          fixture.environment.id,
+          EnvironmentForegroundProcessRequest(
+            program: ownerDenied.path,
+            arguments: const <String>[],
+            relativeWorkingDirectory: '',
+            timeoutSeconds: 5,
+          ),
+        ),
+        emitsError(_failureWithCode('process_start_failed')),
+      );
+
+      final List<EnvironmentProcessEvent> executable = await fixture.provider
+          .runForegroundProcess(
+            fixture.environment.id,
+            fixture.request(<String>['stdout']),
+          )
+          .toList();
+      expect(_completion(executable).exitCode, 0);
+    },
+    skip: !Platform.isLinux
+        ? 'Foreground execution is Linux-only.'
+        : _runningAsRoot
+        ? 'Root effective-execute semantics differ.'
+        : false,
+  );
+
+  test(
+    'confines root nested and symbolic-link process working directories',
+    () async {
+      final _ProcessFixture fixture = await _createProcessFixture();
+      final Directory root = fixture.provider.liveObjects
+          .resolve(fixture.environment.id)
+          .root;
+      final Directory nested = Directory('${root.path}/nested-process')
+        ..createSync();
+      final Link insideAlias = Link('${root.path}/inside-directory-link')
+        ..createSync(nested.path);
+      final Directory outside = Directory(
+        '${fixture.container.path}/outside-process',
+      )..createSync();
+      final Link outsideAlias = Link('${root.path}/outside-directory-link')
+        ..createSync(outside.path);
+
+      Future<String> cwd(String relativeWorkingDirectory) async => _outputText(
+        await fixture.provider
+            .runForegroundProcess(
+              fixture.environment.id,
+              fixture.request(<String>[
+                'cwd',
+              ], relativeWorkingDirectory: relativeWorkingDirectory),
+            )
+            .toList(),
+      ).trim();
+
+      expect(await cwd(''), root.path);
+      expect(await cwd('./nested-process//'), nested.path);
+      expect(await cwd('inside-directory-link'), nested.path);
+
+      final File marker = File('${fixture.container.path}/spawned.txt');
+      for (final ({String path, String code}) invalid
+          in <({String path, String code})>[
+            (path: '..', code: 'invalid_path'),
+            (path: root.absolute.path, code: 'invalid_path'),
+            (path: 'outside-directory-link', code: 'outside_root'),
+          ]) {
+        await expectLater(
+          fixture.provider.runForegroundProcess(
+            fixture.environment.id,
+            fixture.request(<String>[
+              'spawn-marker',
+              marker.path,
+            ], relativeWorkingDirectory: invalid.path),
+          ),
+          emitsError(_failureWithCode(invalid.code)),
+        );
+      }
+      expect(await marker.exists(), isFalse);
+      expect(await insideAlias.exists(), isTrue);
+      expect(await outsideAlias.exists(), isTrue);
+    },
+    skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+  );
+
+  test(
+    'times out and terminates the owned process tree',
+    () async {
+      final _ProcessFixture fixture = await _createProcessFixture();
+      final File sentinel = File('${fixture.container.path}/timeout-sentinel');
+
+      final List<EnvironmentProcessEvent> events = await fixture.provider
+          .runForegroundProcess(
+            fixture.environment.id,
+            fixture.request(<String>[
+              'sentinel-parent',
+              sentinel.path,
+            ], timeoutSeconds: 1),
+          )
+          .toList();
+
+      expect(_outputText(events), contains('started'));
+      expect(
+        _completion(events).termination,
+        EnvironmentProcessTermination.timedOut,
+      );
+      expect(_completion(events).exitCode, isNull);
+      await Future<void>.delayed(const Duration(seconds: 2));
+      expect(await sentinel.exists(), isFalse);
+    },
+    skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+  );
+
+  test(
+    'stream cancellation terminates the owned process tree',
+    () async {
+      final _ProcessFixture fixture = await _createProcessFixture();
+      final File sentinel = File(
+        '${fixture.container.path}/cancellation-sentinel',
+      );
+      final Completer<void> started = Completer<void>();
+      late final StreamSubscription<EnvironmentProcessEvent> subscription;
+      subscription = fixture.provider
+          .runForegroundProcess(
+            fixture.environment.id,
+            fixture.request(<String>['sentinel-parent', sentinel.path]),
+          )
+          .listen((EnvironmentProcessEvent event) {
+            if (event.output?.text.contains('started') ?? false) {
+              started.complete();
+            }
+          });
+
+      await started.future;
+      await subscription.cancel();
+      await Future<void>.delayed(const Duration(seconds: 2));
+      expect(await sentinel.exists(), isFalse);
+    },
+    skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+  );
+
+  test(
+    'bounds each decoded output stream and replaces malformed UTF-8',
+    () async {
+      final _ProcessFixture fixture = await _createProcessFixture();
+      final List<EnvironmentProcessEvent> bounded = await fixture.provider
+          .runForegroundProcess(
+            fixture.environment.id,
+            fixture.request(<String>['bounded-output']),
+          )
+          .toList();
+      final String stdoutText = _outputText(
+        bounded,
+        stream: EnvironmentProcessOutputStream.stdout,
+      );
+      final String stderrText = _outputText(
+        bounded,
+        stream: EnvironmentProcessOutputStream.stderr,
+      );
+
+      expect(stdoutText.length, 1024 * 1024);
+      expect(stderrText.length, 1024 * 1024);
+      expect(stdoutText, startsWith('H'));
+      expect(stdoutText, endsWith('T'));
+      expect(stderrText, startsWith('E'));
+      expect(stderrText, endsWith('R'));
+      expect(_completion(bounded).stdoutTruncated, isTrue);
+      expect(_completion(bounded).stderrTruncated, isTrue);
+      expect(_completion(bounded).exitCode, 0);
+
+      final List<EnvironmentProcessEvent> malformed = await fixture.provider
+          .runForegroundProcess(
+            fixture.environment.id,
+            fixture.request(<String>['malformed-output']),
+          )
+          .toList();
+      expect(_outputText(malformed), '\ufffda');
+      expect(_completion(malformed).stdoutTruncated, isFalse);
+
+      final List<EnvironmentProcessEvent> nulOutput = await fixture.provider
+          .runForegroundProcess(
+            fixture.environment.id,
+            fixture.request(<String>['nul-output']),
+          )
+          .toList();
+      expect(_outputText(nulOutput), '\u0000a');
+      expect(_completion(nulOutput).exitCode, 0);
+    },
+    skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+  );
+
+  test(
+    'provider close terminates active foreground process trees',
+    () async {
+      final _ProcessFixture fixture = await _createProcessFixture();
+      final File sentinel = File('${fixture.container.path}/close-sentinel');
+      final Completer<void> started = Completer<void>();
+      final Completer<void> streamDone = Completer<void>();
+      fixture.provider
+          .runForegroundProcess(
+            fixture.environment.id,
+            fixture.request(<String>['sentinel-parent', sentinel.path]),
+          )
+          .listen((EnvironmentProcessEvent event) {
+            if (event.output?.text.contains('started') ?? false) {
+              started.complete();
+            }
+          }, onDone: streamDone.complete);
+
+      await started.future;
+      await fixture.provider.close();
+      await streamDone.future;
+      await Future<void>.delayed(const Duration(seconds: 2));
+      expect(await sentinel.exists(), isFalse);
+      expect(fixture.provider.liveObjects.length, 0);
+    },
+    skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+  );
+
+  test(
+    'provider close is independent of a paused stream consumer',
+    () async {
+      final _ProcessFixture fixture = await _createProcessFixture();
+      final Completer<void> firstOutput = Completer<void>();
+      late final StreamSubscription<EnvironmentProcessEvent> subscription;
+      subscription = fixture.provider
+          .runForegroundProcess(
+            fixture.environment.id,
+            fixture.request(<String>['stdout']),
+          )
+          .listen((EnvironmentProcessEvent event) {
+            if (!firstOutput.isCompleted && event.output != null) {
+              subscription.pause();
+              firstOutput.complete();
+            }
+          });
+
+      await firstOutput.future;
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      await fixture.provider.close().timeout(const Duration(seconds: 2));
+      await subscription.cancel();
+    },
+    skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+  );
+}
+
+List<EnvironmentProcessOutput> _outputs(List<EnvironmentProcessEvent> events) =>
+    events
+        .where(
+          (EnvironmentProcessEvent event) =>
+              event.kind == EnvironmentProcessEventKind.output,
+        )
+        .map((EnvironmentProcessEvent event) => event.output!)
+        .toList();
+
+String _outputText(
+  List<EnvironmentProcessEvent> events, {
+  EnvironmentProcessOutputStream? stream,
+}) => _outputs(events)
+    .where(
+      (EnvironmentProcessOutput output) =>
+          stream == null || output.stream == stream,
+    )
+    .map((EnvironmentProcessOutput output) => output.text)
+    .join();
+
+EnvironmentProcessCompleted _completion(List<EnvironmentProcessEvent> events) =>
+    events
+        .singleWhere(
+          (EnvironmentProcessEvent event) =>
+              event.kind == EnvironmentProcessEventKind.completed,
+        )
+        .completed!;
+
+final class _ProcessFixture {
+  const _ProcessFixture({
+    required this.container,
+    required this.provider,
+    required this.environment,
+    required this.helper,
+  });
+
+  final Directory container;
+  final GitWorktreeEnvironmentProvider provider;
+  final LocalEnvironment environment;
+  final File helper;
+
+  EnvironmentForegroundProcessRequest request(
+    List<String> arguments, {
+    String relativeWorkingDirectory = '',
+    int timeoutSeconds = 5,
+  }) => EnvironmentForegroundProcessRequest(
+    program: Platform.resolvedExecutable,
+    arguments: <String>[helper.path, ...arguments],
+    relativeWorkingDirectory: relativeWorkingDirectory,
+    timeoutSeconds: timeoutSeconds,
+  );
+}
+
+Future<_ProcessFixture> _createProcessFixture() async {
+  final ({Directory container, Directory source}) repository =
+      await _createRepository();
+  addTearDown(() => repository.container.delete(recursive: true));
+  final GitWorktreeEnvironmentProvider provider =
+      GitWorktreeEnvironmentProvider();
+  addTearDown(provider.close);
+  final LocalEnvironment environment = _environment(
+    repository.source.uri,
+    taskId: 'task-process',
+    environmentId: 'environment-process',
+    title: 'Foreground process',
+  );
+  await provider.establish(environment);
+  final File helper = File('${repository.container.path}/process_helper.dart');
+  await helper.writeAsString(r'''
+import 'dart:async';
+import 'dart:io';
+
+Future<void> main(List<String> arguments) async {
+  switch (arguments.first) {
+    case 'stdout':
+      stdout.write('stdout-one|');
+      await stdout.flush();
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      stdout.write('stdout-two');
+      await stdout.flush();
+      return;
+    case 'interleaved':
+      stdout.write('out-one|');
+      await stdout.flush();
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      stderr.write('err-one|');
+      await stderr.flush();
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      stdout.write('out-two|');
+      await stdout.flush();
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      stderr.write('err-two');
+      await stderr.flush();
+      return;
+    case 'literal':
+      stdout.writeln(arguments[1]);
+      await stdout.flush();
+      return;
+    case 'exit':
+      exit(int.parse(arguments[1]));
+    case 'cwd':
+      stdout.writeln(Directory.current.resolveSymbolicLinksSync());
+      await stdout.flush();
+      return;
+    case 'spawn-marker':
+      await File(arguments[1]).writeAsString('spawned');
+      return;
+    case 'sentinel-parent':
+      await Process.start(Platform.resolvedExecutable, <String>[
+        Platform.script.toFilePath(),
+        'sentinel-child',
+        arguments[1],
+      ]);
+      stdout.write('started');
+      await stdout.flush();
+      await Future<void>.delayed(const Duration(seconds: 20));
+      return;
+    case 'sentinel-child':
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      await File(arguments[1]).writeAsString('survived');
+      return;
+    case 'bounded-output':
+      stdout.write('H' * 600000);
+      stdout.write('M' * 600000);
+      stdout.write('T' * 600000);
+      stderr.write('E' * 600000);
+      stderr.write('D' * 600000);
+      stderr.write('R' * 600000);
+      await Future.wait<void>(<Future<void>>[stdout.flush(), stderr.flush()]);
+      return;
+    case 'malformed-output':
+      stdout.add(<int>[0xff, 0x61]);
+      await stdout.flush();
+      return;
+    case 'nul-output':
+      stdout.add(<int>[0x00, 0x61]);
+      await stdout.flush();
+      return;
+    default:
+      throw ArgumentError.value(arguments.first);
+  }
+}
+''');
+  return _ProcessFixture(
+    container: repository.container,
+    provider: provider,
+    environment: environment,
+    helper: helper,
+  );
 }
 
 Matcher _failureWithCode(String code) => isA<EnvironmentFailure>().having(
@@ -1021,6 +1532,10 @@ Matcher _failureWithCode(String code) => isA<EnvironmentFailure>().having(
   'code',
   code,
 );
+
+final bool _runningAsRoot =
+    Platform.isLinux &&
+    Process.runSync('id', const <String>['-u']).stdout.toString().trim() == '0';
 
 LocalEnvironment _environment(
   Uri sourceLocation, {
