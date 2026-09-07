@@ -390,6 +390,7 @@ final class DevelopmentToolLoopStrategy {
     try {
       final ToolExecutionObservation observation = await collectToolExecution(
         start.events(),
+        retainProgress: false,
         onProgress: (ToolProgress progress) {
           run.record(
             ToolProgressObserved(

@@ -2,7 +2,7 @@
 
 ## Status
 
-**Guiding architecture; Phase IV execution/source-inspection vertical implemented.**
+**Guiding architecture; execution, Environment source-tool, and foreground-command verticals implemented through Phase V-C2.**
 
 ADR 0031 subsequently refined the long-term product-domain model: Session is a core container permanently bound to one orchestration strategy, strategy-specific state defines the semantic contents of that Session, and Environment is the practical filesystem/source + process context. The earlier chat-shaped Session history and separate Workspace discussion remain valid descriptions of the Phase IV proof/history but are not universal long-term product semantics.
 
@@ -247,6 +247,11 @@ Dynamic external tools such as MCP definitions may be contributed without manufa
 
 Existing generated typed contracts remain the invocation mechanism wherever a tool executor calls an ADELE capability.
 
+The current stock projections apply this distinction to Session-authorized
+Environment facets: Filesystem Tools owns `read_file` and `apply_patch`, Search
+Tools owns `search`, and Command Tools owns direct-argv `run_command` over the
+foreground process facet. No separate Command or Shell capability is introduced.
+
 ## Tool definitions and catalog
 
 A provider-independent tool definition should describe semantic identity/version, description, canonical input contract/schema, conservative static effect metadata, and optional result/presentation contract metadata.
@@ -305,7 +310,7 @@ A deliberate retry after an indeterminate result should normally be a **new Tool
 
 # Effect description and policy
 
-Tool definitions may declare conservative effect classes such as Environment/source read, Environment/source mutation, process spawn, external/network interaction, credential access, and runtime-resource creation/use. Exact production classes are deferred.
+Tool definitions may declare conservative effect classes such as Environment/source read, Environment/source mutation, process execution, external/network interaction, credential access, and runtime-resource creation/use. The current minimal enum includes `processExecution`; broader production classes remain deferred.
 
 Static metadata cannot fully describe concrete operations. Before policy/approval, the selected executable may derive a non-mutating invocation-specific effect description from canonical arguments and context.
 
@@ -348,7 +353,7 @@ exactly one ToolOutcome
 
 The current internal Dart API is a stream of `ToolExecutionEvent` values with zero or more progress observations and exactly one terminal outcome. This is not a stable public API, but it preserves the invariant that one execution does not require separate effectful `execute()` and `outcome()` operations.
 
-Progress is nonterminal observation. Examples include status changes, stdout/stderr, partial search matches, byte/record counts, and resource startup state. Future transport/persistence may choose which progress is durable or lossy.
+Progress is nonterminal observation. The current minimal `ToolProgress` shape distinguishes `status`, `stdout`, and `stderr` content while stream order supplies ordering. Future transport/persistence may choose which progress is durable or lossy.
 
 # Tool outcomes and effect certainty
 

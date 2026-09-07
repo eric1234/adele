@@ -67,9 +67,11 @@ stale writes among ADELE-coordinated callers and detects practical external
 changes, but it does not promise portable atomic compare-and-replace against an
 arbitrary external writer or crash/power-loss transactional durability.
 
-New-file creation, deletion, model-facing command tooling/policy, background or
-persistent processes, stdin/PTY support, release/destruction, and remote cloning
-remain absent.
+New-file creation, deletion, command-specific policy/classification, background
+or persistent processes, stdin/PTY support, release/destruction, and remote
+cloning remain absent. The separate stock Command Tools plugin now projects this
+provider-neutral foreground surface as model-facing `run_command`; that does not
+move tool or policy semantics into this provider.
 
 Path canonicalization, direct-component symlink rejection for file access,
 resolved-directory confinement for process cwd, and post-resolution validation
