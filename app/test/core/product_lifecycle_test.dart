@@ -549,10 +549,24 @@ final class _BlockingProvider implements EnvironmentProvider {
   ) => throw UnimplementedError();
 
   @override
+  Future<EnvironmentTextFileCreation> createTextFile(
+    EnvironmentId environmentId,
+    String relativePath,
+    String text,
+  ) => throw UnimplementedError();
+
+  @override
   Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
     EnvironmentId environmentId,
     String relativePath,
     String replacementText,
+    String expectedRevision,
+  ) => throw UnimplementedError();
+
+  @override
+  Future<void> deleteExistingTextFile(
+    EnvironmentId environmentId,
+    String relativePath,
     String expectedRevision,
   ) => throw UnimplementedError();
 
@@ -599,10 +613,24 @@ final class _FailingProvider implements EnvironmentProvider {
   ) => throw UnimplementedError();
 
   @override
+  Future<EnvironmentTextFileCreation> createTextFile(
+    EnvironmentId environmentId,
+    String relativePath,
+    String text,
+  ) => throw UnimplementedError();
+
+  @override
   Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
     EnvironmentId environmentId,
     String relativePath,
     String replacementText,
+    String expectedRevision,
+  ) => throw UnimplementedError();
+
+  @override
+  Future<void> deleteExistingTextFile(
+    EnvironmentId environmentId,
+    String relativePath,
     String expectedRevision,
   ) => throw UnimplementedError();
 
@@ -658,10 +686,24 @@ final class _RecordingProvider implements EnvironmentProvider {
   );
 
   @override
+  Future<EnvironmentTextFileCreation> createTextFile(
+    EnvironmentId environmentId,
+    String relativePath,
+    String text,
+  ) => throw UnimplementedError();
+
+  @override
   Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
     EnvironmentId environmentId,
     String relativePath,
     String replacementText,
+    String expectedRevision,
+  ) => throw UnimplementedError();
+
+  @override
+  Future<void> deleteExistingTextFile(
+    EnvironmentId environmentId,
+    String relativePath,
     String expectedRevision,
   ) => throw UnimplementedError();
 
@@ -708,10 +750,24 @@ final class _BlockingRestoreProvider implements EnvironmentProvider {
   ) => throw UnimplementedError();
 
   @override
+  Future<EnvironmentTextFileCreation> createTextFile(
+    EnvironmentId environmentId,
+    String relativePath,
+    String text,
+  ) => throw UnimplementedError();
+
+  @override
   Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
     EnvironmentId environmentId,
     String relativePath,
     String replacementText,
+    String expectedRevision,
+  ) => throw UnimplementedError();
+
+  @override
+  Future<void> deleteExistingTextFile(
+    EnvironmentId environmentId,
+    String relativePath,
     String expectedRevision,
   ) => throw UnimplementedError();
 

@@ -139,6 +139,17 @@ final class _SessionEnvironmentAuthority
         ),
       );
 
+  Future<EnvironmentTextFileCreation> createTextFile(
+    String relativePath,
+    String text,
+  ) => _perform(
+    () => _materialization.provider.createTextFile(
+      _authority.environmentId,
+      relativePath,
+      text,
+    ),
+  );
+
   Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
     String relativePath,
     String replacementText,
@@ -153,6 +164,17 @@ final class _SessionEnvironmentAuthority
       ),
     );
   }
+
+  Future<void> deleteExistingTextFile(
+    String relativePath,
+    String expectedRevision,
+  ) => _perform(
+    () => _materialization.provider.deleteExistingTextFile(
+      _authority.environmentId,
+      relativePath,
+      expectedRevision,
+    ),
+  );
 
   Stream<EnvironmentProcessEvent> runForegroundProcess(
     EnvironmentForegroundProcessRequest request,
@@ -279,6 +301,12 @@ final class _SessionEnvironmentFileMutationFacet
   void validateBinding() => _authority.validateBinding();
 
   @override
+  Future<EnvironmentTextFileCreation> createTextFile(
+    String relativePath,
+    String text,
+  ) => _authority.createTextFile(relativePath, text);
+
+  @override
   Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
     String relativePath,
     String replacementText,
@@ -288,6 +316,12 @@ final class _SessionEnvironmentFileMutationFacet
     replacementText,
     expectedRevision,
   );
+
+  @override
+  Future<void> deleteExistingTextFile(
+    String relativePath,
+    String expectedRevision,
+  ) => _authority.deleteExistingTextFile(relativePath, expectedRevision);
 }
 
 final class _SessionEnvironmentProcessFacet

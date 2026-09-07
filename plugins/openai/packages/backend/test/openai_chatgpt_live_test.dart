@@ -51,7 +51,7 @@ void main() {
             ModelProviderRequest(
               model:
                   Platform.environment['ADELE_OPENAI_CHATGPT_TEST_MODEL'] ??
-                  'gpt-5.4',
+                  'gpt-5.5',
               instructions: 'Reply with exactly the single word OK.',
               input: <ModelProviderInput>[
                 ModelProviderInput(
@@ -84,6 +84,11 @@ void main() {
       expect(
         events.last.terminal?.settlement,
         ModelProviderSettlement.completed,
+        reason:
+            '${events.last.terminal?.failure?.kind.name}: '
+            '${events.last.terminal?.failure?.providerCode}: '
+            '${events.last.terminal?.failure?.providerMessage}: '
+            '${events.last.terminal?.failure?.providerDetails}',
       );
       expect(
         events

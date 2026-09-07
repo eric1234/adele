@@ -20,6 +20,9 @@ const String _gitEnvironmentPluginId = 'dev.adele.plugin.git-environment';
 const String _gitEnvironmentProviderId = 'dev.adele.environment.git-worktree';
 const String _sourceRelativePath =
     'app/lib/development/agent/simple_tool_loop_strategy.dart';
+const String _transientSourceRelativePath =
+    'app/lib/development/agent/phase_v_d1_transient_test_file.txt';
+const String _transientSourceContent = 'transient ADELE content \u{1f642}\n';
 
 void main() {
   late String repository;
@@ -171,7 +174,7 @@ void main() {
         inactiveCatalog.materialize().tools.map(
           (tool) => tool.modelDefinition.alias,
         ),
-        <String>['read_file', 'apply_patch'],
+        <String>['read_file', 'apply_patch', 'create_file', 'delete_file'],
       );
 
       final ExtensionRegistration searchGenerationB = const SearchToolsPlugin()
@@ -353,6 +356,8 @@ void main() {
       expect(tools.tools.map((tool) => tool.modelDefinition.alias), <String>[
         'read_file',
         'apply_patch',
+        'create_file',
+        'delete_file',
         'run_command',
       ]);
       for (final MaterializedTool tool in tools.tools) {
@@ -521,6 +526,231 @@ void main() {
         unchangedProjectSource,
         isNot(contains('this.maxModelInvocations = 9')),
       );
+
+      await environmentActivation.close();
+      await host.close();
+    },
+    timeout: const Timeout(Duration(minutes: 4)),
+  );
+
+  test(
+    'agent creates reads and deletes a transient Environment source file',
+    () async {
+      final Directory container = await Directory.systemTemp.createTemp(
+        'adele-session-environment-create-delete-',
+      );
+      addTearDown(() async {
+        if (await container.exists()) await container.delete(recursive: true);
+      });
+      final Directory source = Directory('${container.path}/source');
+      await _createSourceRepository(repository: repository, source: source);
+      final File projectTarget = File(
+        '${source.path}/$_transientSourceRelativePath',
+      );
+      final File checkoutTarget = File(
+        '$repository/$_transientSourceRelativePath',
+      );
+      expect(await projectTarget.exists(), isFalse);
+      expect(await checkoutTarget.exists(), isFalse);
+
+      final PluginBackendHost host = await PluginBackendHost.start(
+        dartaotruntimeExecutable: dartaotruntime,
+        hostArtifactPath: hostArtifact.path,
+      );
+      addTearDown(() async {
+        if (!host.isClosed) await host.close(graceful: false);
+      });
+      final CapabilityRegistry registry = CapabilityRegistry();
+      final ProviderId providerId = ProviderId(_gitEnvironmentProviderId);
+      final PluginCapabilityActivation environmentActivation =
+          await _startGeneration(
+            host: host,
+            registry: registry,
+            artifact: gitEnvironmentArtifact,
+            providerId: providerId,
+          );
+      addTearDown(environmentActivation.close);
+      final InMemoryProductStore store = InMemoryProductStore();
+      final ProductLifecycleCoordinator lifecycle =
+          ProductLifecycleCoordinator.generated(
+            store: store,
+            registry: registry,
+            ids: const _IntegrationIds(),
+          );
+      final Project project = lifecycle.createProject(source.uri);
+      final TaskCreationResult created = await lifecycle.createTask(
+        projectId: project.id,
+        title: 'Create and delete transient source',
+        providerId: providerId,
+      );
+      final SessionId sessionId = SessionId(
+        'session-environment-create-delete',
+      );
+      final SessionEnvironmentAuthority authority = store.associateSession(
+        sessionId: sessionId,
+        taskId: created.task.id,
+      );
+      final ExtensionRegistry extensions = ExtensionRegistry();
+      final ExtensionRegistration filesystemActivation =
+          const FilesystemToolsPlugin().activate(extensions);
+      addTearDown(filesystemActivation.close);
+      final ToolCatalog catalog = await buildModelToolCatalogForSession(
+        sessionId: sessionId,
+        environmentRuntime: lifecycle.environmentRuntime,
+        extensions: extensions,
+      );
+      final MaterializedToolSet tools = catalog.materialize();
+      expect(tools.tools.map((tool) => tool.modelDefinition.alias), <String>[
+        'read_file',
+        'apply_patch',
+        'create_file',
+        'delete_file',
+      ]);
+      final String worktreePath =
+          created.environment.providerState!['worktreePath']! as String;
+      final File taskTarget = File(
+        '$worktreePath/$_transientSourceRelativePath',
+      );
+      bool taskOnlyExistenceObserved = false;
+      final _CreateReadDeleteModel model = _CreateReadDeleteModel(
+        beforeDelete: () async {
+          expect(await taskTarget.readAsString(), _transientSourceContent);
+          expect(await projectTarget.exists(), isFalse);
+          expect(await checkoutTarget.exists(), isFalse);
+          taskOnlyExistenceObserved = true;
+        },
+      );
+      final DevelopmentSessionHistory history =
+          DevelopmentSessionHistory(sessionId)..append(
+            UserSessionMessage(
+              'Create, verify, and remove the transient file.',
+            ),
+          );
+      final AgentRun run = AgentRun(
+        id: RunId('run-environment-create-delete'),
+        sessionId: sessionId,
+      );
+      final DevelopmentToolLoopStrategy strategy = DevelopmentToolLoopStrategy(
+        run: run,
+        session: history,
+        contextAssembler: const DevelopmentContextAssembler(
+          instructions:
+              'Create the requested new file, read it, use the read result '
+              'Revision to delete it safely, then report completion.',
+        ),
+        model: model,
+        toolCatalog: catalog,
+        policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
+      );
+
+      await strategy.start();
+
+      expect(run.state, RunState.completed);
+      expect(model.invocations, 4);
+      expect(model.createdPath, _transientSourceRelativePath);
+      expect(model.readPath, _transientSourceRelativePath);
+      expect(model.observedContent, _transientSourceContent);
+      expect(model.createdRevision, isNotEmpty);
+      expect(model.readRevision, model.createdRevision);
+      expect(model.deleteExpectedRevision, model.readRevision);
+      expect(model.deleteResultConsumed, isTrue);
+      expect(taskOnlyExistenceObserved, isTrue);
+      expect(authority.environmentId, created.environment.id);
+      expect(
+        (history.snapshot().entries.last as AssistantSessionMessage).content,
+        contains('created, verified, and deleted'),
+      );
+
+      final List<ExecutionEventRecord> preparedRecords = run.journal.records
+          .where((record) => record.event is ToolInvocationPrepared)
+          .toList(growable: false);
+      final List<ToolInvocationPrepared> prepared = preparedRecords
+          .map((record) => record.event as ToolInvocationPrepared)
+          .toList(growable: false);
+      expect(
+        prepared.map((event) => event.invocation.tool.modelDefinition.alias),
+        <String>['create_file', 'read_file', 'delete_file'],
+      );
+      expect(
+        prepared.last.invocation.canonicalArguments['expectedRevision'],
+        model.readRevision,
+      );
+      expect(
+        prepared.last.invocation.proposal.arguments['expectedRevision'],
+        model.readRevision,
+      );
+
+      final List<ExecutionEventRecord> completedRecords = run.journal.records
+          .where((record) => record.event is ToolExecutionCompleted)
+          .toList(growable: false);
+      final List<ToolExecutionCompleted> completed = completedRecords
+          .map((record) => record.event as ToolExecutionCompleted)
+          .toList(growable: false);
+      expect(completed, hasLength(3));
+      expect(
+        completed.map((event) => event.outcome.disposition),
+        everyElement(ToolOutcomeDisposition.success),
+      );
+      expect(
+        completed.map((event) => event.outcome.effectCertainty),
+        everyElement(EffectCertainty.knownOccurred),
+      );
+      expect(
+        completed.map((event) => event.outcome.hostData['environmentId']),
+        everyElement(authority.environmentId.value),
+      );
+      expect(
+        completed.first.outcome.hostData['revision'],
+        model.createdRevision,
+      );
+      expect(completed[1].outcome.hostData['revision'], model.readRevision);
+      expect(completed[1].outcome.hostData['text'], _transientSourceContent);
+
+      final List<ToolPolicyEvaluated> policy = run.journal.records
+          .map((record) => record.event)
+          .whereType<ToolPolicyEvaluated>()
+          .toList(growable: false);
+      expect(policy, hasLength(3));
+      expect(
+        policy.map((event) => event.decision),
+        everyElement(ToolPolicyDecision.allow),
+      );
+      expect(policy[0].effects.effects, <ToolEffect>{
+        ToolEffect.sourceMutation,
+      });
+      expect(policy[1].effects.effects, <ToolEffect>{ToolEffect.sourceRead});
+      expect(policy[2].effects.effects, <ToolEffect>{
+        ToolEffect.sourceMutation,
+      });
+      expect(
+        policy.map((event) => event.effects.uncertainty),
+        everyElement(EffectUncertainty.none),
+      );
+      final String expectedTarget =
+          'adele-environment:/${authority.environmentId.value}/'
+          '$_transientSourceRelativePath';
+      expect(
+        policy.map((event) => event.effects.targets.single.uri.toString()),
+        everyElement(expectedTarget),
+      );
+
+      final ExecutionEventRecord createCompleted = completedRecords.first;
+      final ExecutionEventRecord readPrepared = preparedRecords[1];
+      final ExecutionEventRecord readCompleted = completedRecords[1];
+      final ExecutionEventRecord deletePrepared = preparedRecords[2];
+      final ExecutionEventRecord deleteCompleted = completedRecords[2];
+      final ExecutionEventRecord finalModelStarted = run.journal.records
+          .where((record) => record.event is ModelInvocationStarted)
+          .last;
+      expect(createCompleted.sequence, lessThan(readPrepared.sequence));
+      expect(readPrepared.sequence, lessThan(readCompleted.sequence));
+      expect(readCompleted.sequence, lessThan(deletePrepared.sequence));
+      expect(deletePrepared.sequence, lessThan(deleteCompleted.sequence));
+      expect(deleteCompleted.sequence, lessThan(finalModelStarted.sequence));
+
+      expect(await taskTarget.exists(), isFalse);
+      expect(await projectTarget.exists(), isFalse);
+      expect(await checkoutTarget.exists(), isFalse);
 
       await environmentActivation.close();
       await host.close();
@@ -765,6 +995,124 @@ final class _ReadPatchCommandModel implements ModelPort {
   }
 }
 
+final class _CreateReadDeleteModel implements ModelPort {
+  _CreateReadDeleteModel({required this.beforeDelete});
+
+  final Future<void> Function() beforeDelete;
+  int invocations = 0;
+  String? createdPath;
+  String? createdRevision;
+  String? readPath;
+  String? readRevision;
+  String? observedContent;
+  String? deleteExpectedRevision;
+  bool deleteResultConsumed = false;
+
+  @override
+  Stream<ModelEvent> invoke(SemanticModelRequest request) async* {
+    invocations++;
+    final List<String> modelVisibleOutcomes = request.input
+        .whereType<SemanticToolOutcomeInput>()
+        .map((input) => input.outcome.modelContent)
+        .toList(growable: false);
+    if (modelVisibleOutcomes.isEmpty) {
+      _requireModelSchema(
+        request.tools.byAlias('create_file')!,
+        expectedProperties: const <String>{'relativePath', 'content'},
+      );
+      _requireModelSchema(
+        request.tools.byAlias('read_file')!,
+        expectedProperties: const <String>{'relativePath'},
+      );
+      _requireModelSchema(
+        request.tools.byAlias('delete_file')!,
+        expectedProperties: const <String>{'relativePath', 'expectedRevision'},
+      );
+      yield ModelOutputItemCompleted(
+        invocationId: request.invocationId,
+        item: ModelToolProposalOutput(
+          ProviderToolProposal(
+            providerCallId: 'create-call-d1',
+            alias: 'create_file',
+            arguments: const <String, Object?>{
+              'relativePath': _transientSourceRelativePath,
+              'content': _transientSourceContent,
+            },
+          ),
+        ),
+      );
+    } else if (modelVisibleOutcomes.length == 1) {
+      final _VisibleCreation creation = _parseVisibleCreation(
+        modelVisibleOutcomes.single,
+      );
+      createdPath = creation.relativePath;
+      createdRevision = creation.revision;
+      if (createdPath != _transientSourceRelativePath) {
+        throw StateError('Create File returned another path.');
+      }
+      yield ModelOutputItemCompleted(
+        invocationId: request.invocationId,
+        item: ModelToolProposalOutput(
+          ProviderToolProposal(
+            providerCallId: 'read-call-d1',
+            alias: 'read_file',
+            arguments: <String, Object?>{'relativePath': createdPath},
+          ),
+        ),
+      );
+    } else if (modelVisibleOutcomes.length == 2) {
+      final _VisibleFile file = _parseVisibleFile(modelVisibleOutcomes.last);
+      readPath = file.relativePath;
+      readRevision = file.revision;
+      observedContent = file.text;
+      if (readPath != createdPath ||
+          readRevision != createdRevision ||
+          observedContent != _transientSourceContent) {
+        throw StateError(
+          'Read File did not observe the exact model-visible creation.',
+        );
+      }
+      await beforeDelete();
+      deleteExpectedRevision = file.revision;
+      yield ModelOutputItemCompleted(
+        invocationId: request.invocationId,
+        item: ModelToolProposalOutput(
+          ProviderToolProposal(
+            providerCallId: 'delete-call-d1',
+            alias: 'delete_file',
+            arguments: <String, Object?>{
+              'relativePath': file.relativePath,
+              'expectedRevision': file.revision,
+            },
+          ),
+        ),
+      );
+    } else if (modelVisibleOutcomes.length == 3) {
+      deleteResultConsumed =
+          modelVisibleOutcomes.last ==
+          'Deleted: ${jsonEncode(_transientSourceRelativePath)}';
+      if (!deleteResultConsumed) {
+        throw StateError('Delete File did not report the expected path.');
+      }
+      yield ModelOutputItemCompleted(
+        invocationId: request.invocationId,
+        item: ModelTextOutput(
+          'The transient file was created, verified, and deleted.',
+        ),
+      );
+    } else {
+      throw StateError('Unexpected deterministic model continuation.');
+    }
+    yield ModelInvocationSettledEvent(
+      invocationId: request.invocationId,
+      settlement: ModelSettlement.completed,
+      metadata: ModelTerminalMetadata(
+        effectiveModel: 'deterministic-create-read-delete-v1',
+      ),
+    );
+  }
+}
+
 bool _isSuccessfulVisibleGitDiffCheck(String modelContent) =>
     modelContent.contains('Program: "git"\n') &&
     modelContent.contains('Arguments: ["diff","--check"]\n') &&
@@ -841,6 +1189,38 @@ final class _VisiblePatch {
 
   final String relativePath;
   final String revision;
+}
+
+final class _VisibleCreation {
+  const _VisibleCreation({required this.relativePath, required this.revision});
+
+  final String relativePath;
+  final String revision;
+}
+
+_VisibleCreation _parseVisibleCreation(String modelContent) {
+  final int newline = modelContent.indexOf('\n');
+  if (newline < 0) {
+    throw StateError('Create File returned malformed model-visible content.');
+  }
+  final String pathLine = modelContent.substring(0, newline);
+  final String revisionLine = modelContent.substring(newline + 1);
+  const String pathPrefix = 'Created: ';
+  const String revisionPrefix = 'Revision: ';
+  if (!pathLine.startsWith(pathPrefix) ||
+      !revisionLine.startsWith(revisionPrefix)) {
+    throw StateError('Create File omitted model-visible file metadata.');
+  }
+  final Object? relativePath = jsonDecode(
+    pathLine.substring(pathPrefix.length),
+  );
+  final Object? revision = jsonDecode(
+    revisionLine.substring(revisionPrefix.length),
+  );
+  if (relativePath is! String || revision is! String) {
+    throw StateError('Create File metadata was not encoded as strings.');
+  }
+  return _VisibleCreation(relativePath: relativePath, revision: revision);
 }
 
 _VisiblePatch _parseVisiblePatch(String modelContent) {

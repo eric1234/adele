@@ -820,6 +820,307 @@ void main() {
     );
   });
 
+  test('creates new bounded UTF-8 files under existing directories', () async {
+    final ({Directory container, Directory source}) fixture =
+        await _createRepository();
+    addTearDown(() => fixture.container.delete(recursive: true));
+    final GitWorktreeEnvironmentProvider provider =
+        GitWorktreeEnvironmentProvider();
+    addTearDown(provider.close);
+    final LocalEnvironment environment = _environment(
+      fixture.source.uri,
+      taskId: 'task-create-file',
+      environmentId: 'environment-create-file',
+      title: 'Create files',
+    );
+    await provider.establish(environment);
+    final Directory root = provider.liveObjects.resolve(environment.id).root;
+
+    final EnvironmentTextFileCreation creation = await provider.createTextFile(
+      environment.id,
+      'lib/new-file.txt',
+      'created \u{1f642}\n',
+    );
+    final EnvironmentTextFile created = await provider.readFile(
+      environment.id,
+      'lib/new-file.txt',
+    );
+    final EnvironmentTextFileCreation emptyCreation = await provider
+        .createTextFile(environment.id, 'lib/empty.txt', '');
+    final EnvironmentTextFile empty = await provider.readFile(
+      environment.id,
+      'lib/empty.txt',
+    );
+
+    expect(created.text, 'created \u{1f642}\n');
+    expect(created.sizeBytes, 13);
+    expect(created.revision, creation.revision);
+    expect(empty.text, isEmpty);
+    expect(empty.sizeBytes, 0);
+    expect(empty.revision, emptyCreation.revision);
+    expect(
+      await root
+          .list(recursive: true)
+          .where(
+            (FileSystemEntity entity) =>
+                _entityName(entity.path).startsWith('.adele-creation-'),
+          )
+          .toList(),
+      isEmpty,
+    );
+  });
+
+  test('create never replaces existing or indirect paths', () async {
+    final Directory container = await Directory.systemTemp.createTemp(
+      'adele-worktree-environment-create-guards-',
+    );
+    addTearDown(() => container.delete(recursive: true));
+    final Directory root = Directory('${container.path}/root');
+    await root.create();
+    final File existing = File('${root.path}/existing.txt');
+    await existing.writeAsString('existing');
+    final Directory existingDirectory = Directory('${root.path}/directory');
+    await existingDirectory.create();
+    final File parentFile = File('${root.path}/parent-file');
+    await parentFile.writeAsString('parent');
+    final File outside = File('${container.path}/outside.txt');
+    await outside.writeAsString('outside');
+    final Link terminalAlias = Link('${root.path}/terminal-alias.txt');
+    await terminalAlias.create(outside.path);
+    final Directory realDirectory = Directory('${root.path}/real-directory');
+    await realDirectory.create();
+    final Link parentAlias = Link('${root.path}/parent-alias');
+    await parentAlias.create(realDirectory.path);
+    final WorktreeEnvironment environment = WorktreeEnvironment(root);
+
+    await expectLater(
+      environment.createTextFile('existing.txt', 'replacement'),
+      throwsA(_failureWithCode(environmentFileAlreadyExistsCode)),
+    );
+    await expectLater(
+      environment.createTextFile('directory', 'replacement'),
+      throwsA(_failureWithCode(environmentFileAlreadyExistsCode)),
+    );
+    await expectLater(
+      environment.createTextFile('terminal-alias.txt', 'replacement'),
+      throwsA(_failureWithCode('path_alias_unsupported')),
+    );
+    await expectLater(
+      environment.createTextFile('missing/new.txt', 'created'),
+      throwsA(_failureWithCode('not_found')),
+    );
+    await expectLater(
+      environment.createTextFile('parent-file/new.txt', 'created'),
+      throwsA(_failureWithCode('not_directory')),
+    );
+    await expectLater(
+      environment.createTextFile('parent-alias/new.txt', 'created'),
+      throwsA(_failureWithCode('path_alias_unsupported')),
+    );
+    await expectLater(
+      environment.createTextFile('../outside.txt', 'escaped'),
+      throwsA(_failureWithCode('invalid_path')),
+    );
+    await expectLater(
+      environment.createTextFile(
+        'oversized.txt',
+        'a' * (maximumEnvironmentFileBytes + 1),
+      ),
+      throwsA(_failureWithCode('file_too_large')),
+    );
+
+    expect(await existing.readAsString(), 'existing');
+    expect(await outside.readAsString(), 'outside');
+    expect(await Directory('${root.path}/missing').exists(), isFalse);
+    expect(await File('${root.path}/oversized.txt').exists(), isFalse);
+    expect(
+      await FileSystemEntity.type(terminalAlias.path, followLinks: false),
+      FileSystemEntityType.link,
+    );
+  });
+
+  test('serializes duplicate create without allowing overwrite', () async {
+    final Directory root = await Directory.systemTemp.createTemp(
+      'adele-worktree-environment-create-concurrency-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final WorktreeEnvironment environment = WorktreeEnvironment(root);
+
+    final List<Object> outcomes = await Future.wait<Object>(<Future<Object>>[
+      environment
+          .createTextFile('target.txt', 'creation A')
+          .then<Object>((EnvironmentTextFileCreation value) => value)
+          .catchError((Object error) => error),
+      environment
+          .createTextFile('target.txt', 'creation B')
+          .then<Object>((EnvironmentTextFileCreation value) => value)
+          .catchError((Object error) => error),
+    ]);
+
+    expect(outcomes.whereType<EnvironmentTextFileCreation>(), hasLength(1));
+    expect(
+      outcomes.whereType<EnvironmentFailure>().single.code,
+      environmentFileAlreadyExistsCode,
+    );
+    expect(
+      await File('${root.path}/target.txt').readAsString(),
+      anyOf('creation A', 'creation B'),
+    );
+  });
+
+  test('conditionally deletes only direct current UTF-8 files', () async {
+    final Directory container = await Directory.systemTemp.createTemp(
+      'adele-worktree-environment-delete-',
+    );
+    addTearDown(() => container.delete(recursive: true));
+    final Directory root = Directory('${container.path}/root');
+    await root.create();
+    final WorktreeEnvironment environment = WorktreeEnvironment(root);
+    final File deleted = File('${root.path}/deleted.txt');
+    await deleted.writeAsString('delete me');
+    final String deletedRevision = (await environment.readFile(
+      'deleted.txt',
+    )).revision;
+
+    await environment.deleteExistingTextFile('deleted.txt', deletedRevision);
+
+    expect(await deleted.exists(), isFalse);
+    await expectLater(
+      environment.readFile('deleted.txt'),
+      throwsA(_failureWithCode('not_found')),
+    );
+
+    final File stale = File('${root.path}/stale.txt');
+    await stale.writeAsString('observed');
+    final String staleRevision = (await environment.readFile(
+      'stale.txt',
+    )).revision;
+    await stale.writeAsString('external change');
+    await expectLater(
+      environment.deleteExistingTextFile('stale.txt', staleRevision),
+      throwsA(_failureWithCode(environmentRevisionConflictCode)),
+    );
+    expect(await stale.readAsString(), 'external change');
+
+    final Directory directory = Directory('${root.path}/directory');
+    await directory.create();
+    await expectLater(
+      environment.deleteExistingTextFile('directory', 'opaque'),
+      throwsA(_failureWithCode('not_regular_file')),
+    );
+    await expectLater(
+      environment.deleteExistingTextFile('missing.txt', 'opaque'),
+      throwsA(_failureWithCode('not_found')),
+    );
+
+    final File aliasTarget = File('${root.path}/alias-target.txt');
+    await aliasTarget.writeAsString('alias target');
+    final Link alias = Link('${root.path}/alias.txt');
+    await alias.create(aliasTarget.path);
+    await expectLater(
+      environment.deleteExistingTextFile('alias.txt', 'opaque'),
+      throwsA(_failureWithCode('path_alias_unsupported')),
+    );
+    expect(await aliasTarget.readAsString(), 'alias target');
+    expect(
+      await FileSystemEntity.type(alias.path, followLinks: false),
+      FileSystemEntityType.link,
+    );
+
+    final Directory realDirectory = Directory('${root.path}/real-directory');
+    await realDirectory.create();
+    final File nestedTarget = File('${realDirectory.path}/target.txt');
+    await nestedTarget.writeAsString('nested target');
+    final Link parentAlias = Link('${root.path}/parent-alias');
+    await parentAlias.create(realDirectory.path);
+    await expectLater(
+      environment.deleteExistingTextFile('parent-alias/target.txt', 'opaque'),
+      throwsA(_failureWithCode('path_alias_unsupported')),
+    );
+    expect(await nestedTarget.readAsString(), 'nested target');
+
+    final File oversized = File('${root.path}/oversized.txt');
+    await oversized.writeAsBytes(
+      List<int>.filled(maximumEnvironmentFileBytes + 1, 0x61),
+    );
+    await expectLater(
+      environment.deleteExistingTextFile('oversized.txt', 'opaque'),
+      throwsA(_failureWithCode('file_too_large')),
+    );
+    expect(await oversized.exists(), isTrue);
+    await expectLater(
+      environment.deleteExistingTextFile('../outside.txt', 'opaque'),
+      throwsA(_failureWithCode('invalid_path')),
+    );
+  });
+
+  test('serializes duplicate and cross-kind mutations', () async {
+    final Directory root = await Directory.systemTemp.createTemp(
+      'adele-worktree-environment-mutation-coordination-',
+    );
+    addTearDown(() => root.delete(recursive: true));
+    final WorktreeEnvironment environment = WorktreeEnvironment(root);
+    final File duplicateDelete = File('${root.path}/duplicate-delete.txt');
+    await duplicateDelete.writeAsString('delete once');
+    final String deleteRevision = (await environment.readFile(
+      'duplicate-delete.txt',
+    )).revision;
+
+    final List<Object?> deleteOutcomes =
+        await Future.wait<Object?>(<Future<Object?>>[
+          environment
+              .deleteExistingTextFile('duplicate-delete.txt', deleteRevision)
+              .then<Object?>((_) => null)
+              .catchError((Object error) => error),
+          environment
+              .deleteExistingTextFile('duplicate-delete.txt', deleteRevision)
+              .then<Object?>((_) => null)
+              .catchError((Object error) => error),
+        ]);
+    expect(
+      deleteOutcomes.where((Object? value) => value == null),
+      hasLength(1),
+    );
+    expect(
+      deleteOutcomes.whereType<EnvironmentFailure>().single.code,
+      'not_found',
+    );
+
+    const String emptyRevision =
+        'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+    final Future<EnvironmentTextFileCreation> create = environment
+        .createTextFile('create-delete.txt', '');
+    final Future<void> delete = environment.deleteExistingTextFile(
+      'create-delete.txt',
+      emptyRevision,
+    );
+    await create;
+    await delete;
+    expect(await File('${root.path}/create-delete.txt').exists(), isFalse);
+
+    final File replaceDelete = File('${root.path}/replace-delete.txt');
+    await replaceDelete.writeAsString('initial');
+    final String replacementRevision = (await environment.readFile(
+      'replace-delete.txt',
+    )).revision;
+    final Future<EnvironmentTextFileReplacement> replacement = environment
+        .replaceExistingTextFile(
+          'replace-delete.txt',
+          'replacement',
+          replacementRevision,
+        );
+    final Future<void> staleDelete = environment.deleteExistingTextFile(
+      'replace-delete.txt',
+      replacementRevision,
+    );
+    await replacement;
+    await expectLater(
+      staleDelete,
+      throwsA(_failureWithCode(environmentRevisionConflictCode)),
+    );
+    expect(await replaceDelete.readAsString(), 'replacement');
+  });
+
   test('serializes concurrent conditional replacements', () async {
     final Directory root = await Directory.systemTemp.createTemp(
       'adele-worktree-environment-concurrency-',

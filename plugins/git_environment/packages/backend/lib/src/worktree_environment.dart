@@ -14,7 +14,7 @@ final class WorktreeEnvironment {
   WorktreeEnvironment(Directory root) : root = _canonicalRoot(root);
 
   final Directory root;
-  Future<void> _pendingReplacement = Future<void>.value();
+  Future<void> _pendingMutation = Future<void>.value();
 
   Future<EnvironmentTextFile> readFile(String relativePath) async {
     final String normalized = _normalizeRelativePath(relativePath);
@@ -49,6 +49,80 @@ final class WorktreeEnvironment {
     }
   }
 
+  Future<EnvironmentTextFileCreation> createTextFile(
+    String relativePath,
+    String text,
+  ) async {
+    final String normalized = _normalizeRelativePath(relativePath);
+    final List<int> encoded = utf8.encode(text);
+    if (encoded.length > maximumEnvironmentFileBytes) {
+      throw _failure(
+        'file_too_large',
+        'The new file text exceeds the supported size.',
+        relativePath: normalized,
+        limit: maximumEnvironmentFileBytes,
+      );
+    }
+    return await _coordinateMutation(
+      () => _createTextFile(normalized, Uint8List.fromList(encoded)),
+    );
+  }
+
+  Future<EnvironmentTextFileCreation> _createTextFile(
+    String relativePath,
+    Uint8List bytes,
+  ) async {
+    Directory? stagingDirectory;
+    try {
+      final File target = await _resolveAbsentCreationTarget(relativePath);
+      stagingDirectory = await target.parent.createTemp(
+        '.adele-creation-$pid-',
+      );
+      final File staged = File(
+        '${stagingDirectory.path}${Platform.pathSeparator}creation',
+      );
+      await staged.writeAsBytes(bytes, flush: true);
+
+      // Revalidate direct parent identity and absence immediately before the
+      // platform's strongest available no-clobber publication sequence.
+      final File currentTarget = await _resolveAbsentCreationTarget(
+        relativePath,
+      );
+      if (!Platform.isWindows) {
+        // POSIX rename replaces a destination, so reserve absence atomically
+        // before promoting over that provider-owned empty file.
+        await currentTarget.create(exclusive: true);
+        await _verifyEmptyReservation(currentTarget, relativePath);
+      }
+      // Windows rename already fails when the destination exists, so creating
+      // a reservation there would make every promotion fail.
+      final File promoted = await staged.rename(currentTarget.path);
+      final Uint8List written = await _readBounded(promoted, relativePath);
+      await _verifyStillDirectRegularFile(promoted, relativePath);
+      return EnvironmentTextFileCreation(revision: _revision(written));
+    } on PathExistsException {
+      throw _failure(
+        environmentFileAlreadyExistsCode,
+        'The requested file already exists.',
+        relativePath: relativePath,
+      );
+    } on EnvironmentFailure {
+      rethrow;
+    } on FileSystemException {
+      throw _failure(
+        'unwritable',
+        'The requested file could not be created.',
+        relativePath: relativePath,
+      );
+    } finally {
+      // Do not delete a failed POSIX reservation by pathname: Dart cannot prove
+      // that an external process has not replaced it in the meantime.
+      if (stagingDirectory case final Directory directory) {
+        await _deleteBestEffort(directory);
+      }
+    }
+  }
+
   Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
     String relativePath,
     String replacementText,
@@ -64,7 +138,7 @@ final class WorktreeEnvironment {
         limit: maximumEnvironmentFileBytes,
       );
     }
-    return await _coordinateReplacement(
+    return await _coordinateMutation(
       () => _replaceExistingTextFile(
         normalized,
         Uint8List.fromList(replacementBytes),
@@ -148,13 +222,64 @@ final class WorktreeEnvironment {
     }
   }
 
-  Future<EnvironmentTextFileReplacement> _coordinateReplacement(
-    Future<EnvironmentTextFileReplacement> Function() operation,
-  ) {
-    final Future<EnvironmentTextFileReplacement> result = _pendingReplacement
+  Future<void> deleteExistingTextFile(
+    String relativePath,
+    String expectedRevision,
+  ) async {
+    final String normalized = _normalizeRelativePath(relativePath);
+    await _coordinateMutation(
+      () => _deleteExistingTextFile(normalized, expectedRevision),
+    );
+  }
+
+  Future<void> _deleteExistingTextFile(
+    String relativePath,
+    String expectedRevision,
+  ) async {
+    try {
+      final File file = await _resolveRegularFile(relativePath);
+      final Uint8List observed = await _readBounded(file, relativePath);
+      _decodeText(observed, relativePath);
+      await _verifyStillDirectRegularFile(file, relativePath);
+      if (_revision(observed) != expectedRevision) {
+        throw _revisionConflict(relativePath);
+      }
+      final FileStat originalStat = await file.stat();
+
+      // Re-resolve and re-read immediately before deletion. Dart does not
+      // expose a portable atomic compare-and-delete filesystem primitive.
+      final File currentFile = await _resolveRegularFile(relativePath);
+      if (currentFile.path != file.path) {
+        throw _revisionConflict(relativePath);
+      }
+      final Uint8List current = await _readBounded(currentFile, relativePath);
+      _decodeText(current, relativePath);
+      await _verifyStillDirectRegularFile(currentFile, relativePath);
+      if (_revision(current) != expectedRevision) {
+        throw _revisionConflict(relativePath);
+      }
+      final FileStat currentStat = await currentFile.stat();
+      if (!Platform.isWindows &&
+          (currentStat.mode & 0x1ff) != (originalStat.mode & 0x1ff)) {
+        throw _revisionConflict(relativePath);
+      }
+      await currentFile.delete();
+    } on EnvironmentFailure {
+      rethrow;
+    } on FileSystemException {
+      throw _failure(
+        'unwritable',
+        'The requested file could not be deleted.',
+        relativePath: relativePath,
+      );
+    }
+  }
+
+  Future<T> _coordinateMutation<T>(Future<T> Function() operation) {
+    final Future<T> result = _pendingMutation
         .catchError((Object _) {})
         .then((_) => operation());
-    _pendingReplacement = result.then<void>((_) {}).catchError((Object _) {});
+    _pendingMutation = result.then<void>((_) {}).catchError((Object _) {});
     return result;
   }
 
@@ -272,6 +397,108 @@ final class WorktreeEnvironment {
       );
     }
     return File(resolved);
+  }
+
+  Future<File> _resolveAbsentCreationTarget(String relativePath) async {
+    final List<String> segments = relativePath.split('/');
+    final String parentRelativePath = segments.length == 1
+        ? ''
+        : segments.sublist(0, segments.length - 1).join('/');
+    final Directory parent = await _resolveDirectDirectory(
+      parentRelativePath,
+      relativePath,
+    );
+    final File target = File(
+      '${parent.path}${Platform.pathSeparator}${segments.last}',
+    );
+    final FileSystemEntityType type;
+    try {
+      type = await FileSystemEntity.type(target.path, followLinks: false);
+    } on FileSystemException {
+      throw _failure(
+        'unreadable',
+        'The requested file path could not be inspected.',
+        relativePath: relativePath,
+      );
+    }
+    if (type == FileSystemEntityType.link) {
+      throw _pathAliasUnsupported(relativePath);
+    }
+    if (type != FileSystemEntityType.notFound) {
+      throw _failure(
+        environmentFileAlreadyExistsCode,
+        'The requested file already exists.',
+        relativePath: relativePath,
+      );
+    }
+    return target;
+  }
+
+  Future<Directory> _resolveDirectDirectory(
+    String directoryRelativePath,
+    String requestedRelativePath,
+  ) async {
+    String candidate = root.path;
+    for (final String segment in directoryRelativePath.split('/')) {
+      if (segment.isEmpty) continue;
+      candidate = '$candidate${Platform.pathSeparator}$segment';
+      final FileSystemEntityType type;
+      try {
+        type = await FileSystemEntity.type(candidate, followLinks: false);
+      } on FileSystemException {
+        throw _failure(
+          'unreadable',
+          'The requested parent directory could not be inspected.',
+          relativePath: requestedRelativePath,
+        );
+      }
+      if (type == FileSystemEntityType.link) {
+        throw _pathAliasUnsupported(requestedRelativePath);
+      }
+      if (type == FileSystemEntityType.notFound) {
+        throw _failure(
+          'not_found',
+          'The requested parent directory does not exist.',
+          relativePath: requestedRelativePath,
+        );
+      }
+      if (type != FileSystemEntityType.directory) {
+        throw _failure(
+          'not_directory',
+          'The requested parent path is not a directory.',
+          relativePath: requestedRelativePath,
+        );
+      }
+    }
+    final String resolved = await _resolve(
+      candidate,
+      requestedRelativePath,
+      'parent directory',
+    );
+    if (resolved != candidate) {
+      throw _pathAliasUnsupported(requestedRelativePath);
+    }
+    if (await FileSystemEntity.type(resolved, followLinks: true) !=
+        FileSystemEntityType.directory) {
+      throw _failure(
+        'not_directory',
+        'The requested parent path is not a directory.',
+        relativePath: requestedRelativePath,
+      );
+    }
+    return Directory(resolved);
+  }
+
+  Future<void> _verifyEmptyReservation(File file, String relativePath) async {
+    await _verifyStillDirectRegularFile(file, relativePath);
+    final Uint8List bytes = await _readBounded(file, relativePath);
+    if (bytes.isNotEmpty) {
+      throw _failure(
+        'unwritable',
+        'The requested file changed after its creation reservation.',
+        relativePath: relativePath,
+      );
+    }
   }
 
   Future<void> _rejectSymbolicLinkComponents(String relativePath) async {
@@ -486,6 +713,24 @@ EnvironmentFailure _pathAliasUnsupported(String relativePath) => _failure(
   'Symbolic-link aliases are not supported for direct file access.',
   relativePath: relativePath,
 );
+
+EnvironmentFailure _revisionConflict(String relativePath) => _failure(
+  environmentRevisionConflictCode,
+  'The file changed since the expected revision was observed.',
+  relativePath: relativePath,
+);
+
+String _decodeText(List<int> bytes, String relativePath) {
+  try {
+    return utf8.decode(bytes, allowMalformed: false);
+  } on FormatException {
+    throw _failure(
+      'invalid_utf8',
+      'The requested file is not valid UTF-8 text.',
+      relativePath: relativePath,
+    );
+  }
+}
 
 String _revision(List<int> bytes) => sha256.convert(bytes).toString();
 

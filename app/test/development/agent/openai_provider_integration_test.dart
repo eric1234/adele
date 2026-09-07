@@ -334,9 +334,15 @@ void main() {
                   (Object? tool) =>
                       (tool! as Map<String, Object?>)['name']! as String,
                 ),
-                containsAll(<String>['search', 'read_file', 'apply_patch']),
+                containsAll(<String>[
+                  'search',
+                  'read_file',
+                  'apply_patch',
+                  'create_file',
+                  'delete_file',
+                ]),
               );
-              expect(tools, hasLength(3));
+              expect(tools, hasLength(5));
               final String encodedTools = jsonEncode(tools);
               for (final String forbidden in <String>[
                 'EnvironmentId',

@@ -546,6 +546,120 @@ void main() {
       });
     }
 
+    test('preserves ChatGPT detail and alternate request ID', () async {
+      final _FakeServer server = await _FakeServer.start((request) async {
+        await request.drain<void>();
+        request.response.statusCode = HttpStatus.badRequest;
+        request.response.headers.set('x-request-id', '   ');
+        request.response.headers.set('x-oai-request-id', 'req_chatgpt');
+        request.response.write(
+          jsonEncode(<String, Object?>{
+            'detail': 'The requested ChatGPT model is no longer available.',
+          }),
+        );
+        await request.response.close();
+      });
+      addTearDown(server.close);
+      final OpenAiModelProvider provider = OpenAiModelProvider(
+        apiKey: 'fake-openai-key',
+        endpoint: server.responsesUri,
+      );
+      addTearDown(provider.close);
+
+      final ModelProviderTerminal terminal =
+          (await provider.invoke(_request()).toList()).single.terminal!;
+
+      expect(terminal.failure?.kind, ModelProviderFailureKind.invalidRequest);
+      expect(terminal.failure?.providerCode, 'http_400');
+      expect(
+        terminal.failure?.providerMessage,
+        'The requested ChatGPT model is no longer available.',
+      );
+      expect(terminal.failure?.providerDetails, <String, Object?>{
+        'status': HttpStatus.badRequest,
+        'requestId': 'req_chatgpt',
+      });
+      expect(terminal.requestId, 'req_chatgpt');
+    });
+
+    test('redacts request credentials from provider failure text', () async {
+      final _FakeServer server = await _FakeServer.start((request) async {
+        await request.drain<void>();
+        request.response.statusCode = HttpStatus.badRequest;
+        request.response.headers.set('x-request-id', 'req_fake-openai-key');
+        request.response.headers.set(
+          HttpHeaders.retryAfterHeader,
+          'retry_fake-openai-key',
+        );
+        request.response.write(
+          jsonEncode(<String, Object?>{
+            'code': 'rejected_fake-openai-key',
+            'detail': 'Rejected Authorization: Bearer fake-openai-key.',
+          }),
+        );
+        await request.response.close();
+      });
+      addTearDown(server.close);
+      final OpenAiModelProvider provider = OpenAiModelProvider(
+        apiKey: 'fake-openai-key',
+        endpoint: server.responsesUri,
+      );
+      addTearDown(provider.close);
+
+      final ModelProviderTerminal terminal =
+          (await provider.invoke(_request()).toList()).single.terminal!;
+      final ModelProviderFailure failure = terminal.failure!;
+
+      expect(failure.providerCode, 'rejected_[REDACTED]');
+      expect(
+        failure.providerMessage,
+        'Rejected Authorization: Bearer [REDACTED].',
+      );
+      expect(failure.providerDetails, <String, Object?>{
+        'status': HttpStatus.badRequest,
+        'requestId': 'req_[REDACTED]',
+        'retryAfter': 'retry_[REDACTED]',
+      });
+      expect(
+        <Object?>[
+          failure.providerCode,
+          failure.providerMessage,
+          failure.providerDetails,
+        ].join(' '),
+        isNot(contains('fake-openai-key')),
+      );
+      expect(terminal.requestId, 'req_[REDACTED]');
+    });
+
+    test('ignores blank top-level detail in favor of message', () async {
+      final _FakeServer server = await _FakeServer.start((request) async {
+        await request.drain<void>();
+        request.response.statusCode = HttpStatus.badRequest;
+        request.response.write(
+          jsonEncode(<String, Object?>{
+            'detail': '   ',
+            'message': 'Useful provider message.',
+          }),
+        );
+        await request.response.close();
+      });
+      addTearDown(server.close);
+      final OpenAiModelProvider provider = OpenAiModelProvider(
+        apiKey: 'fake-openai-key',
+        endpoint: server.responsesUri,
+      );
+      addTearDown(provider.close);
+
+      final ModelProviderFailure failure =
+          (await provider.invoke(_request()).toList())
+              .single
+              .terminal!
+              .failure!;
+
+      expect(failure.kind, ModelProviderFailureKind.invalidRequest);
+      expect(failure.providerMessage, 'Useful provider message.');
+    });
+
     test('settles exactly capped HTTP error without waiting for EOF', () async {
       final _OpenErrorServer fixture = await _OpenErrorServer.start(
         initialBytes: 16 * 1024,

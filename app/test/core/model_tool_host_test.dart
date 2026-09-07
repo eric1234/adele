@@ -39,6 +39,8 @@ void main() {
       final MaterializedToolSet tools = catalog.materialize();
       final MaterializedTool tool = tools.byAlias('read_file')!;
       final MaterializedTool applyPatch = tools.byAlias('apply_patch')!;
+      final MaterializedTool createFile = tools.byAlias('create_file')!;
+      final MaterializedTool deleteFile = tools.byAlias('delete_file')!;
       final Object? properties =
           tool.modelDefinition.argumentsSchema['properties'];
       expect(properties, isA<Map<String, Object?>>());
@@ -77,6 +79,14 @@ void main() {
         throwsA(isA<StaleToolBindingException>()),
       );
       expect(
+        createFile.executable.validateBinding,
+        throwsA(isA<StaleToolBindingException>()),
+      );
+      expect(
+        deleteFile.executable.validateBinding,
+        throwsA(isA<StaleToolBindingException>()),
+      );
+      expect(
         (await buildModelToolCatalogForSession(
           sessionId: fixture.sessionId,
           environmentRuntime: fixture.runtime,
@@ -105,7 +115,12 @@ void main() {
     expect(await aliases(), isEmpty);
     final ExtensionRegistration filesystem = const FilesystemToolsPlugin()
         .activate(extensions);
-    expect(await aliases(), <String>{'read_file', 'apply_patch'});
+    expect(await aliases(), <String>{
+      'read_file',
+      'apply_patch',
+      'create_file',
+      'delete_file',
+    });
     await filesystem.close();
 
     final ExtensionRegistration search = const SearchToolsPlugin().activate(
@@ -124,6 +139,8 @@ void main() {
       'run_command',
       'read_file',
       'apply_patch',
+      'create_file',
+      'delete_file',
     });
     await command.close();
     await bothFilesystem.close();
@@ -186,12 +203,18 @@ void main() {
     final EnvironmentDirectoryListing listing = await read.readDirectory(
       'nested',
     );
+    final EnvironmentTextFileCreation creation = await mutation.createTextFile(
+      'created.dart',
+      'created',
+    );
     final EnvironmentTextFileReplacement replacement = await mutation
         .replaceExistingTextFile('source.dart', 'replacement', 'R1');
+    await mutation.deleteExistingTextFile('obsolete.dart', 'R-delete');
     final List<EnvironmentProcessEvent> processEvents = await process
         .runForegroundProcess(_processRequest())
         .toList();
     expect(listing.relativePath, 'nested');
+    expect(creation.revision, 'creation-revision');
     expect(replacement.revision, 'replacement-revision');
     expect(fixture.provider.directoryEnvironmentIds, <EnvironmentId>[
       fixture.environmentId,
@@ -201,6 +224,16 @@ void main() {
       relativePath: 'source.dart',
       replacementText: 'replacement',
       expectedRevision: 'R1',
+    ));
+    expect(fixture.provider.creations.single, (
+      environmentId: fixture.environmentId,
+      relativePath: 'created.dart',
+      text: 'created',
+    ));
+    expect(fixture.provider.deletions.single, (
+      environmentId: fixture.environmentId,
+      relativePath: 'obsolete.dart',
+      expectedRevision: 'R-delete',
     ));
     expect(fixture.provider.processEnvironmentIds, <EnvironmentId>[
       fixture.environmentId,
@@ -216,6 +249,14 @@ void main() {
     );
     await expectLater(
       mutation.replaceExistingTextFile('source.dart', 'other', 'R2'),
+      throwsA(isA<AuthorizedEnvironmentBindingStale>()),
+    );
+    await expectLater(
+      mutation.createTextFile('other.dart', 'other'),
+      throwsA(isA<AuthorizedEnvironmentBindingStale>()),
+    );
+    await expectLater(
+      mutation.deleteExistingTextFile('source.dart', 'R2'),
       throwsA(isA<AuthorizedEnvironmentBindingStale>()),
     );
     await expectLater(
@@ -245,6 +286,14 @@ void main() {
     );
     await expectLater(
       mutation.replaceExistingTextFile('source.dart', 'other', 'R1'),
+      throwsA(isA<AuthorizedEnvironmentBindingUnavailable>()),
+    );
+    await expectLater(
+      mutation.createTextFile('other.dart', 'other'),
+      throwsA(isA<AuthorizedEnvironmentBindingUnavailable>()),
+    );
+    await expectLater(
+      mutation.deleteExistingTextFile('source.dart', 'R1'),
       throwsA(isA<AuthorizedEnvironmentBindingUnavailable>()),
     );
     await expectLater(
@@ -357,8 +406,12 @@ void main() {
     expect(freshRead.sessionId, freshMutation.sessionId);
     expect(freshRead.sessionId, freshProcess.sessionId);
     expect(replacementProvider.restoreCount, 1);
+    await freshMutation.createTextFile('fresh.dart', 'fresh creation');
     await freshMutation.replaceExistingTextFile('source.dart', 'fresh', 'R1');
+    await freshMutation.deleteExistingTextFile('fresh.dart', 'R-created');
+    expect(replacementProvider.creations, hasLength(1));
     expect(replacementProvider.replacements, hasLength(1));
+    expect(replacementProvider.deletions, hasLength(1));
     expect(
       (await freshProcess.runForegroundProcess(_processRequest()).single)
           .completed!
@@ -371,6 +424,14 @@ void main() {
     );
     await expectLater(
       oldMutation.replaceExistingTextFile('source.dart', 'old', 'R1'),
+      throwsA(isA<AuthorizedEnvironmentBindingStale>()),
+    );
+    await expectLater(
+      oldMutation.createTextFile('old.dart', 'old'),
+      throwsA(isA<AuthorizedEnvironmentBindingStale>()),
+    );
+    await expectLater(
+      oldMutation.deleteExistingTextFile('source.dart', 'R1'),
       throwsA(isA<AuthorizedEnvironmentBindingStale>()),
     );
     await expectLater(
@@ -476,6 +537,9 @@ final class _Provider implements EnvironmentProvider {
   final List<EnvironmentId> directoryEnvironmentIds = <EnvironmentId>[];
   final List<EnvironmentId> processEnvironmentIds = <EnvironmentId>[];
   Stream<EnvironmentProcessEvent>? processStream;
+  final List<({EnvironmentId environmentId, String relativePath, String text})>
+  creations =
+      <({EnvironmentId environmentId, String relativePath, String text})>[];
   final List<
     ({
       EnvironmentId environmentId,
@@ -490,6 +554,21 @@ final class _Provider implements EnvironmentProvider {
           EnvironmentId environmentId,
           String relativePath,
           String replacementText,
+          String expectedRevision,
+        })
+      >[];
+  final List<
+    ({
+      EnvironmentId environmentId,
+      String relativePath,
+      String expectedRevision,
+    })
+  >
+  deletions =
+      <
+        ({
+          EnvironmentId environmentId,
+          String relativePath,
           String expectedRevision,
         })
       >[];
@@ -527,6 +606,20 @@ final class _Provider implements EnvironmentProvider {
   }
 
   @override
+  Future<EnvironmentTextFileCreation> createTextFile(
+    EnvironmentId environmentId,
+    String relativePath,
+    String text,
+  ) async {
+    creations.add((
+      environmentId: environmentId,
+      relativePath: relativePath,
+      text: text,
+    ));
+    return EnvironmentTextFileCreation(revision: 'creation-revision');
+  }
+
+  @override
   Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
     EnvironmentId environmentId,
     String relativePath,
@@ -542,6 +635,19 @@ final class _Provider implements EnvironmentProvider {
     return const EnvironmentTextFileReplacement(
       revision: 'replacement-revision',
     );
+  }
+
+  @override
+  Future<void> deleteExistingTextFile(
+    EnvironmentId environmentId,
+    String relativePath,
+    String expectedRevision,
+  ) async {
+    deletions.add((
+      environmentId: environmentId,
+      relativePath: relativePath,
+      expectedRevision: expectedRevision,
+    ));
   }
 
   @override

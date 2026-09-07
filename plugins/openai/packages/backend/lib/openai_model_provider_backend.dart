@@ -178,7 +178,20 @@ final class OpenAiModelProvider implements ModelProviderService {
             );
             return;
           }
-          final String? requestId = response.headers.value('x-request-id');
+          final List<String> sensitiveValues = <String>[
+            ?_apiKey,
+            if (chatGptCredential case final OpenAiChatGptCredential value)
+              value.accessToken,
+            if (chatGptCredential case final OpenAiChatGptCredential value)
+              value.accountId,
+          ];
+          final String? requestId = _redactProviderText(
+            _optionalNonBlankString(response.headers.value('x-request-id')) ??
+                _optionalNonBlankString(
+                  response.headers.value('x-oai-request-id'),
+                ),
+            sensitiveValues,
+          );
           if (response.statusCode < 200 || response.statusCode >= 300) {
             final _BoundedBodyCapture capture = _BoundedBodyCapture(response);
             errorBodyCapture = capture;
@@ -206,8 +219,14 @@ final class OpenAiModelProvider implements ModelProviderService {
               response.statusCode,
               bodyCapture.text,
               requestId,
-              response.headers.value(HttpHeaders.retryAfterHeader),
+              _redactProviderText(
+                _optionalNonBlankString(
+                  response.headers.value(HttpHeaders.retryAfterHeader),
+                ),
+                sensitiveValues,
+              ),
               bodyCapture.truncated,
+              sensitiveValues,
             );
             fail(
               failure.kind,
@@ -1057,6 +1076,7 @@ _HttpFailure _classifyHttpFailure(
   String? requestId,
   String? retryAfter,
   bool truncated,
+  List<String> sensitiveValues,
 ) {
   String? code;
   String? message;
@@ -1066,12 +1086,21 @@ _HttpFailure _classifyHttpFailure(
         decoded['error'] is Map<String, Object?>) {
       final Map<String, Object?> error =
           decoded['error']! as Map<String, Object?>;
-      code = _optionalString(error['code']) ?? _optionalString(error['type']);
-      message = _optionalString(error['message']);
+      code =
+          _optionalNonBlankString(error['code']) ??
+          _optionalNonBlankString(error['type']);
+      message = _optionalNonBlankString(error['message']);
+    } else if (decoded is Map<String, Object?>) {
+      code = _optionalNonBlankString(decoded['code']);
+      message =
+          _optionalNonBlankString(decoded['detail']) ??
+          _optionalNonBlankString(decoded['message']);
     }
   } on FormatException {
     // The bounded raw body is deliberately not retained in diagnostics.
   }
+  code = _redactProviderText(code, sensitiveValues);
+  message = _redactProviderText(message, sensitiveValues);
   final ModelProviderFailureKind kind = switch (status) {
     400 => ModelProviderFailureKind.invalidRequest,
     401 => ModelProviderFailureKind.authentication,
@@ -1162,6 +1191,20 @@ String _requiredNonEmptyString(Map<String, Object?> map, String key) {
 
 String? _optionalString(Object? value) =>
     value is String && value.isNotEmpty ? value : null;
+
+String? _optionalNonBlankString(Object? value) =>
+    value is String && value.trim().isNotEmpty ? value : null;
+
+String? _redactProviderText(String? value, List<String> sensitiveValues) {
+  if (value == null) return null;
+  String redacted = value;
+  for (final String sensitive in sensitiveValues) {
+    if (sensitive.isNotEmpty) {
+      redacted = redacted.replaceAll(sensitive, '[REDACTED]');
+    }
+  }
+  return redacted;
+}
 
 int? _optionalInt(Object? value) => value is int && value >= 0 ? value : null;
 

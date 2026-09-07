@@ -18,9 +18,9 @@ materialization, and a generic Session-scoped model-tool host context that
 projects coherent read, mutation, and process facets over one Environment
 authority. Independent stock Filesystem Tools, Search Tools, and Command Tools
 plugins use that context to provide Environment-authorized `read_file`,
-`apply_patch`, `search`, and `run_command`. Search requests only the read facet;
-Command Tools requests only the process facet. Lifecycle UI and normal
-stock-plugin composition are not implemented yet.
+`apply_patch`, `create_file`, `delete_file`, `search`, and `run_command`. Search
+requests only the read facet; Command Tools requests only the process facet.
+Lifecycle UI and normal stock-plugin composition are not implemented yet.
 
 The normal application does not display the `workspace_demo` reference plugin.
 The maintained `lib/development_smoke.dart` entrypoint exercises the plugin
@@ -53,12 +53,14 @@ The application composition root contains the development-only Phase IV model
 adapters, bounded Chat-shaped tool-loop strategy, generic Session-scoped
 model-tool host context, and AOT integration tests. The independent stock
 Filesystem Tools, Search Tools, and Command Tools plugins, not application code,
-define `read_file`, `apply_patch`, `search`, and `run_command`; the host context
-exposes facets of only the Session-selected Environment. The OpenAI API-key and
-experimental ChatGPT source-coding paths use the read/search composition.
-Deterministic real-Git integration additionally proves model-visible revision
-flow through `apply_patch`, direct `git diff --check` through `run_command`, and
-model continuation after the successful command result. An opt-in paid OpenAI
+define `read_file`, `apply_patch`, `create_file`, `delete_file`, `search`, and
+`run_command`; the host context exposes facets of only the Session-selected
+Environment. The OpenAI API-key and experimental ChatGPT source-coding paths use
+the read/search composition. Deterministic real-Git integration additionally
+proves model-visible revision flow through `apply_patch`, direct
+`git diff --check` through `run_command`, and create -> read ->
+revision-conditional delete continuation with final filesystem isolation. An
+opt-in paid OpenAI
 API-key smoke now also proves real-model `read_file`
 opaque-revision flow through `apply_patch`, mutation confined to the Task Git
 worktree, post-write observation, and continuation. A distinct paid API-key
@@ -66,8 +68,8 @@ smoke proves real-model direct-argv `git diff --check` through `run_command`,
 model-visible command-result interpretation, and final continuation after that
 edit. These proofs do not establish experimental ChatGPT mutation or command
 parity, the final product workflow, strategy-bound Session persistence, stock UI
-composition, file creation/deletion, general filesystem mutation, fine-grained
-command classification, or background command execution.
+composition, general whole-file overwrite, directory/move/copy/binary mutation,
+fine-grained command classification, or background command execution.
 `DevelopmentToolLoopStrategy` and `EnvironmentRuntime` remain provisional
 application/domain-specific implementation rather than production orchestration
 or a general extension-runtime pattern.

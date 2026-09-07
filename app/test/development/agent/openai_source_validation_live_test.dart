@@ -67,7 +67,14 @@ void main() {
         harness.catalog.materialize().tools.map(
           (MaterializedTool tool) => tool.modelDefinition.alias,
         ),
-        <String>['read_file', 'apply_patch', 'search', 'run_command'],
+        <String>[
+          'read_file',
+          'apply_patch',
+          'create_file',
+          'delete_file',
+          'search',
+          'run_command',
+        ],
       );
       final SourceCodingLiveProviderActivation model =
           await startOpenAiApiKeyProvider(
@@ -178,6 +185,8 @@ _ValidationEvidence _expectSuccessfulValidationRun({
   final List<_ToolAttempt> reads = _toolAttempts(records, 'read_file');
   final List<_ToolAttempt> patches = _toolAttempts(records, 'apply_patch');
   final List<_ToolAttempt> commands = _toolAttempts(records, 'run_command');
+  expect(_toolAttempts(records, 'create_file'), isEmpty);
+  expect(_toolAttempts(records, 'delete_file'), isEmpty);
   expect(reads, isNotEmpty);
   expect(patches, isNotEmpty);
   expect(commands, hasLength(1));

@@ -8,7 +8,7 @@ This document captures the current direction for ADELE's stock development agent
 
 It is intentionally directional rather than contractual. The exact tool set, names, schemas, persistence model, permission system, scheduling model, and implementation layering may change as ADELE becomes capable of self-hosting and real usage exposes better designs. The near-term implementation may provide only a small subset of this document.
 
-The maintained execution vertical now proves provider-neutral model/tool/model execution and plugin-contributed, Session-authorized Environment `search`, revision-bearing `read_file`, exact-unique `apply_patch`, and direct-argv `run_command`. Read/search includes deterministic OpenAI source continuation and the explicitly experimental ChatGPT route; mutation and direct `git diff --check` validation also have opt-in paid OpenAI API-key proofs through final continuation. The maintained workflow still does **not** implement general filesystem mutation, TODO/Progress, Plan, Console/Terminal, background scheduling, command-specific policy, implicit shell syntax, or the broader presentation model described here.
+The maintained execution vertical now proves provider-neutral model/tool/model execution and plugin-contributed, Session-authorized Environment `search`, revision-bearing `read_file`, exact-unique `apply_patch`, create-new-only `create_file`, revision-conditional `delete_file`, and direct-argv `run_command`. Read/search includes deterministic OpenAI source continuation and the explicitly experimental ChatGPT route; existing-file mutation and direct `git diff --check` validation also have opt-in paid OpenAI API-key proofs through final continuation, while create/delete has deterministic real-Git continuation evidence. The maintained workflow still does **not** implement general whole-file overwrite, directory/move/copy/binary mutation, TODO/Progress, Plan, Console/Terminal, background scheduling, command-specific policy, implicit shell syntax, or the broader presentation model described here.
 
 The purpose is to preserve the reasoning behind the current direction so later implementation work does not independently rediscover a conventional coding-agent tool surface or accidentally conflict with ADELE's product model.
 
@@ -189,7 +189,7 @@ The names are descriptive rather than normative.
 
 These operations are frequent enough in coding work and benefit enough from precise contracts, bounded results, clear policy semantics, and specialized presentation to justify first-class treatment.
 
-`apply_patch` is expected to be the primary mutation primitive for existing source because it naturally describes an intentional localized change. `write_file` remains useful for new files, generated content, or complete replacement.
+`apply_patch` is expected to be the primary mutation primitive for existing source because it naturally describes an intentional localized change. The current narrower `create_file` operation handles new files only when the target is absent and its parent directory already exists. A future revision-aware whole-file replacement operation may still be useful for generated content, but `write_file` must not ambiguously mean create-or-overwrite.
 
 Mutable Environment filesystem operations should expose conditional-mutation semantics rather than silently accepting a stale caller observation. Directionally, a read of a mutable resource exposes an opaque revision/fingerprint and a subsequent patch/write/delete supplies that expected revision, analogous to HTTP `ETag`/`If-Match`. An Environment provider that can coordinate observation and mutation should reject a mismatched revision before applying the ADELE-requested write.
 
@@ -206,6 +206,17 @@ revision to conditional complete-file replacement as the final stale-write
 guard. This deliberately narrow exact-unique language is current implementation,
 not a permanent model patch grammar; future model-facing formats may evolve
 without moving patch semantics into `EnvironmentProvider`.
+
+The current `create_file(relativePath, content)` uses the same canonical logical
+file target as read/patch, accepts empty UTF-8 text, rejects an entity that
+exists at the provider's exclusive creation claim, and does not create parent
+directories. It returns the provider-produced opaque revision for immediate
+later mutation. The current
+`delete_file(relativePath, expectedRevision)` requires a preceding observed
+revision, preflights it through the read facet, and passes the original opaque
+token unchanged to the provider's final conditional delete guard. Both are
+ordinary exact-target `sourceMutation` effects over the same Session Environment
+authority.
 
 Long-tail filesystem actions such as move, copy, directory creation, permissions, or unusual metadata manipulation do not automatically need dedicated model tools. They can initially remain command operations unless experience shows clear value in promotion.
 
@@ -881,7 +892,7 @@ A plausible progression, with the first three foundations now implemented, is:
 
 2. core/stock structured Environment-backed source reads/search (implemented initial slice)
 
-3. structured source mutation (implemented conditional existing-file slice)
+3. structured source mutation (implemented bounded create/patch/delete slice)
 
 4. support multiple foreground ToolInvocations with safe concurrency
 
