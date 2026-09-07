@@ -128,6 +128,9 @@ void main() {
       // Keep successful paid-smoke evidence visible in the test transcript.
       print('V-C3 selected model: $selectedModel');
       print('V-C3 effective model: ${evidence.effectiveModel}');
+      print('V-C3 read revision R1: ${evidence.readRevision}');
+      print('V-C3 patch expectedRevision matched R1: true');
+      print('V-C3 resulting revision R2: ${evidence.newRevision}');
       print(
         'V-C3 tool proposal sequence: '
         '${evidence.proposalAliases.join(' -> ')}',
@@ -136,6 +139,19 @@ void main() {
       print(
         'V-C3 direct run_command succeeded on first proposal: '
         '${evidence.commandProposalCount == 1}',
+      );
+      print(
+        'V-C3 command canonical arguments: program="git", '
+        'arguments=["diff","--check"], workingDirectory="", '
+        'timeoutSeconds=${evidence.commandTimeoutSeconds}',
+      );
+      print(
+        'V-C3 command policy target: '
+        'adele-environment:/${harness.authority.environmentId.value}/',
+      );
+      print(
+        'V-C3 command outcome: exited, exitCode=0, '
+        'effectCertainty=knownOccurred',
       );
       print('V-C3 final assistant: ${evidence.finalAnswer}');
 
@@ -337,7 +353,8 @@ _ValidationEvidence _expectSuccessfulValidationRun({
   final Object? timeout =
       commandInvocation.canonicalArguments['timeoutSeconds'];
   expect(timeout, isA<int>());
-  expect(timeout, inInclusiveRange(1, 600));
+  final int commandTimeoutSeconds = timeout! as int;
+  expect(commandTimeoutSeconds, inInclusiveRange(1, 600));
   expect(command.outcome.disposition, ToolOutcomeDisposition.success);
   expect(command.outcome.effectCertainty, EffectCertainty.knownOccurred);
   expect(command.outcome.failureKind, isNull);
@@ -348,12 +365,12 @@ _ValidationEvidence _expectSuccessfulValidationRun({
   expect(command.outcome.hostData['program'], 'git');
   expect(command.outcome.hostData['arguments'], <String>['diff', '--check']);
   expect(command.outcome.hostData['workingDirectory'], '');
-  expect(command.outcome.hostData['timeoutSeconds'], timeout);
+  expect(command.outcome.hostData['timeoutSeconds'], commandTimeoutSeconds);
   expect(command.outcome.hostData['termination'], 'exited');
   expect(command.outcome.hostData['exitCode'], 0);
   expect(
     command.outcome.modelContent,
-    _expectedCommandModelContent(command.outcome, timeout! as int),
+    _expectedCommandModelContent(command.outcome, commandTimeoutSeconds),
   );
 
   final ExecutionEventRecord commandPolicyRecord = _policyRecord(
@@ -486,6 +503,7 @@ _ValidationEvidence _expectSuccessfulValidationRun({
     commandProposalCount: proposalAliases
         .where((String alias) => alias == 'run_command')
         .length,
+    commandTimeoutSeconds: commandTimeoutSeconds,
     finalAnswer: answer,
   );
 }
@@ -649,6 +667,7 @@ final class _ValidationEvidence {
     required this.proposalAliases,
     required this.patchProposalCount,
     required this.commandProposalCount,
+    required this.commandTimeoutSeconds,
     required this.finalAnswer,
   });
 
@@ -658,5 +677,6 @@ final class _ValidationEvidence {
   final List<String> proposalAliases;
   final int patchProposalCount;
   final int commandProposalCount;
+  final int commandTimeoutSeconds;
   final String finalAnswer;
 }

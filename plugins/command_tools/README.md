@@ -13,5 +13,9 @@ Environment stdout and stderr are projected as ordered structured tool progress.
 The terminal model result independently retains at most 32 Ki UTF-16 code units
 per stream as a deterministic 16 Ki head plus 16 Ki tail.
 
+A paid opt-in OpenAI API-key application smoke proves that a real model can use
+the direct `program` plus `arguments` interface for `git diff --check`, consume
+the terminal model result, and continue after an existing-file source mutation.
+
 Shell classification, background processes, stdin, signals, environment
-overrides, network policy, and real-model command use remain outside this plugin.
+overrides, and network policy remain outside this plugin.

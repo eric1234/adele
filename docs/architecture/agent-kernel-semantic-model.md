@@ -2,7 +2,7 @@
 
 ## Status
 
-**Guiding architecture; execution, Environment source-tool, and foreground-command verticals implemented through Phase V-C2.**
+**Guiding architecture; execution, Environment source-tool, and foreground-command verticals implemented through Phase V-C.**
 
 ADR 0031 subsequently refined the long-term product-domain model: Session is a core container permanently bound to one orchestration strategy, strategy-specific state defines the semantic contents of that Session, and Environment is the practical filesystem/source + process context. The earlier chat-shaped Session history and separate Workspace discussion remain valid descriptions of the Phase IV proof/history but are not universal long-term product semantics.
 

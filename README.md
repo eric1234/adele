@@ -15,6 +15,7 @@ Phase V-A  Session-authorized plugin-composed Environment read/search
 Phase V-B  conditional Environment replacement + deterministic apply_patch
 Phase V-C1 provider-neutral Environment foreground process execution
 Phase V-C2 stock run_command + deterministic edit/validate continuation
+Phase V-C3 paid real-model edit/command validation continuation
 ```
 
 Interpreted Flutter frontends and locally compiled AOT backends run through one
@@ -63,8 +64,9 @@ model-visible Read File revision flow into plugin-owned exact-unique
 model continuation. An opt-in paid OpenAI API-key full-stack smoke now also
 proves real-model `read_file` opaque-revision flow into `apply_patch`, mutation
 confined to the Task Git worktree, post-write observation, and model
-continuation. Experimental ChatGPT mutation and real-model command use are not
-yet proven.
+continuation. A separate paid OpenAI API-key smoke proves real-model direct-argv
+`git diff --check` validation and continuation after that mutation. Experimental
+ChatGPT mutation and command parity are not proven.
 
 Phase V-C1 adds a provider-neutral, Session-authorized foreground process
 primitive to Environment. The stock Git Worktree implementation uses direct
@@ -80,14 +82,15 @@ existing allow/deny/ask policy path with a conservative uncertain
 real-Git integration proves `read_file` -> `apply_patch` -> `git diff --check`
 -> model continuation in the Task worktree. This does not add implicit shell
 syntax, command safety classification, environment overrides, background
-process resources, sandboxing, or real-model command evidence.
+process resources, or sandboxing; V-C2's command evidence was deterministic.
 
-V-C3 now has a separate paid opt-in OpenAI API-key smoke for the same
-`read_file` -> `apply_patch` -> direct-argv `run_command` -> continuation path.
-It records exact revision provenance, command policy/outcome evidence, final
-Task source, and Project/checkout isolation. A completed paid run is still
-required before treating that smoke as real-model command evidence or declaring
-Phase V-C complete.
+V-C3's separate paid opt-in OpenAI API-key smoke completed the same `read_file`
+-> `apply_patch` -> direct-argv `run_command` -> continuation path. It proves
+exact model-visible revision provenance, command policy/outcome evidence, final
+Task source, and Project/checkout isolation. Phase V-C is complete. This does
+not claim general shell compatibility, fine-grained command permissions,
+sandboxing, background process management, general build/test success, or
+complete self-hosting.
 
 ## Accepted long-term architecture beyond the current implementation
 
@@ -291,7 +294,7 @@ See `docs/architecture/profiles-and-configuration.md`.
 
 ## Next Work
 
-**Phases IV, V-A, V-B, V-C1, and the V-C2 model-facing command slice are complete.**
+**Phases IV, V-A, V-B, and V-C are complete.**
 
 Phase V-A1 established the Project-to-Task-to-primary-Environment spine and
 stock Git worktree provider. V-A2 connected provisional Session authority to
@@ -331,10 +334,10 @@ Git Worktree provider implementation/proof. V-C2 projects that substrate through
 stock plugin-owned `run_command`, structured stdout/stderr progress, bounded
 terminal results, and the existing policy/outcome path. Its deterministic
 real-Git vertical validates the exact Task-worktree edit with direct
-`git diff --check` arguments before model continuation. V-C3's separate opt-in
-API-key smoke now exercises the combined real-model edit/validation path, but a
-completed paid run remains required for that evidence; neither V-C1 nor V-C2
-makes a sandbox claim.
+`git diff --check` arguments before model continuation. V-C3's separate paid
+opt-in API-key smoke proves that combined path with a real OpenAI model, the
+model-visible opaque revision, direct argv, normal command policy/outcome, and
+final continuation. No Phase V-C slice makes a sandbox claim.
 
 Implementation should introduce the smallest concrete extension boundaries
 needed by those verticals rather than build a speculative universal framework
