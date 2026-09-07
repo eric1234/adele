@@ -17,12 +17,14 @@ executions and then clears those objects, but does not remove durable Git
 worktrees.
 
 The current filesystem surface is bounded UTF-8 `readFile` with opaque
-provider-produced revisions, conditional replacement of an existing text file
-using its expected revision, and bounded deterministic direct-child
-`readDirectory`. Search and patch semantics are intentionally not provider
-methods: stock tool plugins compose lower-level Environment operations. Current
-text-file reads and replacements require direct confined paths and reject a
-symbolic link in either the terminal file or any parent component.
+provider-produced revisions, create-new-only `createTextFile`, conditional
+replacement and deletion of existing text files using expected revisions, and
+bounded deterministic direct-child `readDirectory`. Search and model-tool
+semantics are intentionally not provider methods: stock tool plugins compose
+lower-level Environment operations. Current text-file reads and mutations
+require direct confined paths and reject a symbolic link in either the terminal
+file or any parent component. Creation requires the parent directory to exist
+and never creates directories implicitly.
 
 On Linux x64, the provider also implements the Environment foreground-process
 stream with direct `program` plus `arguments` execution, no implicit shell,
@@ -58,20 +60,28 @@ variables, including every inherited `ADELE_*`, `OPENAI_API_KEY`, `GIT_*`, and
 Git-routing leakage, but same-user filesystem, process, credential-helper, and
 network access remain outside this hygiene boundary.
 
-Conditional replacements are serialized within each live Environment, staged
-beside the direct confined target, and rechecked immediately before
-promotion. POSIX rwx permission bits are preserved during promotion. Other
-metadata such as ownership, ACLs, extended attributes, and Windows-specific
-attributes is not guaranteed to survive replacement. This mechanism prevents
-stale writes among ADELE-coordinated callers and detects practical external
-changes, but it does not promise portable atomic compare-and-replace against an
-arbitrary external writer or crash/power-loss transactional durability.
+Create, replace, and delete operations share one mutation serialization tail
+within each live Environment. Replacement is staged beside the direct confined
+target and rechecked immediately before promotion; POSIX rwx permission bits are
+preserved. Creation stages complete bytes, revalidates the direct parent and
+target absence, and uses an exclusive empty-file reservation before promotion,
+so ADELE never intentionally overwrites an existing target and coordinated
+duplicate creates cannot both succeed. Deletion performs bounded direct-file
+reads and revision checks twice before unlinking. Dart exposes neither portable
+no-replace promotion nor atomic compare-and-delete, so an arbitrary external
+process can still race the final promotion/unlink windows. These are practical
+local guarantees, not filesystem transactions or crash/power-loss durability.
+A rare failure after the exclusive reservation but before promotion can leave
+an empty target: the provider cleans its private staging directory but does not
+delete that pathname because Dart cannot prove an external process has not
+replaced it.
 
-New-file creation, deletion, command-specific policy/classification, background
-or persistent processes, stdin/PTY support, release/destruction, and remote
-cloning remain absent. The separate stock Command Tools plugin now projects this
-provider-neutral foreground surface as model-facing `run_command`; that does not
-move tool or policy semantics into this provider.
+Directory/move/copy/binary mutation, general create-or-overwrite semantics,
+command-specific policy/classification, background or persistent processes,
+stdin/PTY support, release/destruction, and remote cloning remain absent. The
+separate stock Command Tools plugin projects this provider-neutral foreground
+surface as model-facing `run_command`; that does not move tool or policy
+semantics into this provider.
 
 Path canonicalization, direct-component symlink rejection for file access,
 resolved-directory confinement for process cwd, and post-resolution validation

@@ -66,6 +66,18 @@ void main() {
     );
   });
 
+  test('text-file creation requires a non-empty opaque revision', () {
+    final EnvironmentTextFileCreation creation = EnvironmentTextFileCreation(
+      revision: 'opaque-created-revision',
+    );
+
+    expect(creation.revision, 'opaque-created-revision');
+    expect(
+      () => EnvironmentTextFileCreation(revision: ''),
+      throwsFormatException,
+    );
+  });
+
   test('adapters reconstruct component-local canonical values', () async {
     final _CapturingProvider backend = _CapturingProvider(providerId);
     final GeneratedEnvironmentProvider host = GeneratedEnvironmentProvider(
@@ -171,6 +183,73 @@ void main() {
       'expectedRevision': 'opaque-expected-revision',
     });
     expect(replacement.revision, 'opaque-replacement-revision');
+  });
+
+  test('generated client carries create and conditional delete', () async {
+    final _Channel createChannel = _Channel(<String, Object?>{
+      'revision': 'opaque-created-revision',
+    });
+    final EnvironmentTextFileCreation creation =
+        await EnvironmentProviderServiceClient(
+          createChannel,
+        ).createTextFile('environment-host', 'lib/new.dart', 'content');
+
+    expect(createChannel.method, environmentProviderServiceCreateTextFileId);
+    expect(createChannel.payload, <String, Object?>{
+      'environmentId': 'environment-host',
+      'relativePath': 'lib/new.dart',
+      'text': 'content',
+    });
+    expect(creation.revision, 'opaque-created-revision');
+
+    final _Channel deleteChannel = _Channel(null);
+    await EnvironmentProviderServiceClient(
+      deleteChannel,
+    ).deleteExistingTextFile(
+      'environment-host',
+      'lib/new.dart',
+      'opaque-created-revision',
+    );
+    expect(
+      deleteChannel.method,
+      environmentProviderServiceDeleteExistingTextFileId,
+    );
+    expect(deleteChannel.payload, <String, Object?>{
+      'environmentId': 'environment-host',
+      'relativePath': 'lib/new.dart',
+      'expectedRevision': 'opaque-created-revision',
+    });
+  });
+
+  test('generated adapters forward create and delete operations', () async {
+    final _CapturingProvider backend = _CapturingProvider(providerId);
+    final GeneratedEnvironmentProvider host = GeneratedEnvironmentProvider(
+      providerId: providerId,
+      service: EnvironmentProviderServiceAdapter(backend),
+    );
+
+    final EnvironmentTextFileCreation creation = await host.createTextFile(
+      hostEnvironment.id,
+      'lib/new.dart',
+      'created content',
+    );
+    await host.deleteExistingTextFile(
+      hostEnvironment.id,
+      'lib/new.dart',
+      'opaque-delete-revision',
+    );
+
+    expect(creation.revision, 'backend-created-revision');
+    expect(backend.created, (
+      environmentId: hostEnvironment.id,
+      relativePath: 'lib/new.dart',
+      text: 'created content',
+    ));
+    expect(backend.deleted, (
+      environmentId: hostEnvironment.id,
+      relativePath: 'lib/new.dart',
+      expectedRevision: 'opaque-delete-revision',
+    ));
   });
 
   test('foreground process request validates and snapshots argv', () {
@@ -460,6 +539,65 @@ void main() {
     );
   });
 
+  test('generated create and delete propagate declared failures', () async {
+    for (final ({
+          String code,
+          Future<void> Function(EnvironmentProviderServiceClient) invoke,
+        })
+        fixture
+        in <
+          ({
+            String code,
+            Future<void> Function(EnvironmentProviderServiceClient) invoke,
+          })
+        >[
+          (
+            code: environmentFileAlreadyExistsCode,
+            invoke: (EnvironmentProviderServiceClient client) async {
+              await client.createTextFile(
+                'environment-host',
+                'lib/new.dart',
+                'content',
+              );
+            },
+          ),
+          (
+            code: environmentRevisionConflictCode,
+            invoke: (EnvironmentProviderServiceClient client) =>
+                client.deleteExistingTextFile(
+                  'environment-host',
+                  'lib/old.dart',
+                  'stale-revision',
+                ),
+          ),
+        ]) {
+      final EnvironmentProviderServiceClient client =
+          EnvironmentProviderServiceClient(
+            _FailureChannel(
+              _RemoteFailure(
+                declaredFailureType: environmentFailureTypeId,
+                code: fixture.code,
+                message: 'Conditional mutation rejected.',
+                details: const <String, Object?>{
+                  'relativePath': 'lib/file.dart',
+                },
+              ),
+            ),
+          );
+
+      await expectLater(
+        fixture.invoke(client),
+        throwsA(
+          isA<EnvironmentFailure>().having(
+            (EnvironmentFailure failure) => failure.code,
+            'code',
+            fixture.code,
+          ),
+        ),
+      );
+    }
+  });
+
   test('backend adapter rejects a context for another provider', () async {
     final ProviderId otherProviderId = ProviderId(
       'dev.adele.environment.other-fixture',
@@ -499,6 +637,9 @@ final class _CapturingProvider implements EnvironmentProvider {
   LocalEnvironment? restored;
   EnvironmentId? processEnvironmentId;
   EnvironmentForegroundProcessRequest? processRequest;
+  ({EnvironmentId environmentId, String relativePath, String text})? created;
+  ({EnvironmentId environmentId, String relativePath, String expectedRevision})?
+  deleted;
 
   @override
   Future<EnvironmentProviderResult> establish(
@@ -531,12 +672,39 @@ final class _CapturingProvider implements EnvironmentProvider {
   ) => throw UnimplementedError();
 
   @override
+  Future<EnvironmentTextFileCreation> createTextFile(
+    EnvironmentId environmentId,
+    String relativePath,
+    String text,
+  ) async {
+    created = (
+      environmentId: environmentId,
+      relativePath: relativePath,
+      text: text,
+    );
+    return EnvironmentTextFileCreation(revision: 'backend-created-revision');
+  }
+
+  @override
   Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
     EnvironmentId environmentId,
     String relativePath,
     String replacementText,
     String expectedRevision,
   ) => throw UnimplementedError();
+
+  @override
+  Future<void> deleteExistingTextFile(
+    EnvironmentId environmentId,
+    String relativePath,
+    String expectedRevision,
+  ) async {
+    deleted = (
+      environmentId: environmentId,
+      relativePath: relativePath,
+      expectedRevision: expectedRevision,
+    );
+  }
 
   @override
   Stream<EnvironmentProcessEvent> runForegroundProcess(

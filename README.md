@@ -16,6 +16,7 @@ Phase V-B  conditional Environment replacement + deterministic apply_patch
 Phase V-C1 provider-neutral Environment foreground process execution
 Phase V-C2 stock run_command + deterministic edit/validate continuation
 Phase V-C3 paid real-model edit/command validation continuation
+Phase V-D1 bounded create-new + revision-conditional file deletion
 ```
 
 Interpreted Flutter frontends and locally compiled AOT backends run through one
@@ -48,11 +49,12 @@ Phase V-A establishes durable Project, Task, and Environment values and binds
 provisional agent Sessions authoritatively to one Task-associated Environment.
 Active plugin generations contribute contextual model tools through the generic
 extension registry. The independent stock Filesystem Tools, Search Tools, and
-Command Tools plugins own `read_file`, `apply_patch`, `search`, and
-`run_command`, while a Session-scoped host facade supplies coherent read,
-mutation, and process facets over the one authorized Environment. Search
-requests only the read facet and recursively composes `readDirectory` and
-`readFile` in Dart; Command Tools requests only the process facet.
+Command Tools plugins own `read_file`, `apply_patch`, `create_file`,
+`delete_file`, `search`, and `run_command`, while a Session-scoped host facade
+supplies coherent read, mutation, and process facets over the one authorized
+Environment. Search requests only the read facet and recursively composes
+`readDirectory` and `readFile` in Dart; Command Tools requests only the process
+facet.
 
 The OpenAI API-key and experimental ChatGPT source-coding paths now use this
 plugin-composed, Session-authorized Environment tool path. Deterministic AOT
@@ -67,6 +69,15 @@ confined to the Task Git worktree, post-write observation, and model
 continuation. A separate paid OpenAI API-key smoke proves real-model direct-argv
 `git diff --check` validation and continuation after that mutation. Experimental
 ChatGPT mutation and command parity are not proven.
+
+Phase V-D1 completes the practical bounded UTF-8 source-file mutation set with
+create-new-only `create_file` and opaque-revision-conditional `delete_file` over
+the existing Session Environment authority. Creation never intentionally
+overwrites a target that exists at its exclusive claim point and requires an
+existing direct parent directory. Deletion requires a revision from an observed
+file state. Deterministic real-Git integration proves model-visible create ->
+read -> delete continuation and final Task/Project/checkout isolation; no paid
+create/delete smoke is claimed.
 
 Phase V-C1 adds a provider-neutral, Session-authorized foreground process
 primitive to Environment. The stock Git Worktree implementation uses direct
@@ -215,7 +226,7 @@ plugins/workspace_demo/      internal source-plugin reference fixture
 plugins/resource_inspector/  Phase III two-provider capability fixture
 plugins/scripted_model/      deterministic ModelProvider/transport fixture
 plugins/openai/              real OpenAI ModelProvider; ChatGPT route experimental
-plugins/filesystem_tools/    stock Session-authorized Read File/Apply Patch tools
+plugins/filesystem_tools/    stock Session-authorized text-file tools
 plugins/search_tools/        stock Session-authorized literal Search tool
 plugins/command_tools/       stock Session-authorized foreground Command tool
 plugins/git_environment/     Git worktree Environment provider
@@ -294,7 +305,7 @@ See `docs/architecture/profiles-and-configuration.md`.
 
 ## Next Work
 
-**Phases IV, V-A, V-B, and V-C are complete.**
+**Phases IV, V-A, V-B, V-C, and V-D1 are complete.**
 
 Phase V-A1 established the Project-to-Task-to-primary-Environment spine and
 stock Git worktree provider. V-A2 connected provisional Session authority to
@@ -325,9 +336,10 @@ V-B3 adds an opt-in paid OpenAI API-key proof that a real model carries the
 model-visible opaque revision from `read_file` into `apply_patch`, mutates only
 the Task worktree, observes the result, and continues. Production
 orchestration-strategy registration/binding, a plugin-owned Chat strategy,
-experimental ChatGPT mutation, file creation/deletion/general writes,
-complete strategy-bound Session lifecycle, and SCM/review integration remain
-later work rather than settled interfaces.
+experimental ChatGPT mutation, general whole-file overwrite,
+directory/move/copy/binary operations, complete strategy-bound Session
+lifecycle, and SCM/review integration remain later work rather than settled
+interfaces.
 
 V-C1 adds the provider-neutral Environment foreground-process substrate and its
 Git Worktree provider implementation/proof. V-C2 projects that substrate through
@@ -338,6 +350,13 @@ real-Git vertical validates the exact Task-worktree edit with direct
 opt-in API-key smoke proves that combined path with a real OpenAI model, the
 model-visible opaque revision, direct argv, normal command policy/outcome, and
 final continuation. No Phase V-C slice makes a sandbox claim.
+
+V-D1 extends the provider-neutral Environment contract and existing authorized
+mutation facet with create-new text files and revision-conditional deletion. The
+Git provider serializes create/replace/delete together, and Filesystem Tools
+projects `create_file` and `delete_file` with exact `sourceMutation` targets and
+conservative effect certainty. This is a focused completion of bounded text-file
+mutation, not a general filesystem abstraction or a full self-hosting claim.
 
 Implementation should introduce the smallest concrete extension boundaries
 needed by those verticals rather than build a speculative universal framework

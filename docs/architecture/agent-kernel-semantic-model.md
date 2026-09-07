@@ -248,9 +248,10 @@ Dynamic external tools such as MCP definitions may be contributed without manufa
 Existing generated typed contracts remain the invocation mechanism wherever a tool executor calls an ADELE capability.
 
 The current stock projections apply this distinction to Session-authorized
-Environment facets: Filesystem Tools owns `read_file` and `apply_patch`, Search
-Tools owns `search`, and Command Tools owns direct-argv `run_command` over the
-foreground process facet. No separate Command or Shell capability is introduced.
+Environment facets: Filesystem Tools owns `read_file`, `apply_patch`,
+`create_file`, and `delete_file`, Search Tools owns `search`, and Command Tools
+owns direct-argv `run_command` over the foreground process facet. No separate
+Command or Shell capability is introduced.
 
 ## Tool definitions and catalog
 

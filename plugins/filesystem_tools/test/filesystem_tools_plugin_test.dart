@@ -9,7 +9,7 @@ import 'package:test/test.dart';
 
 void main() {
   test(
-    'activation contributes exact-generation Read and Apply tools',
+    'activation contributes four exact-generation filesystem tools',
     () async {
       final ExtensionRegistry extensions = ExtensionRegistry();
       expect(extensions.discover(modelToolContributions), isEmpty);
@@ -25,6 +25,8 @@ void main() {
       expect(tools.tools.map((tool) => tool.modelDefinition.alias), <String>[
         'read_file',
         'apply_patch',
+        'create_file',
+        'delete_file',
       ]);
       expect(
         tools.tools.map((tool) => tool.definition.id.value),
@@ -183,6 +185,374 @@ void main() {
     );
   });
 
+  test('Create File schema is exact and permits empty content', () async {
+    final _FileSystem fileSystem = _FileSystem();
+    final ToolRegistration registration = await _registration(
+      fileSystem,
+      'create_file',
+    );
+    final ToolExecutable executable = registration.executable;
+    final Map<String, Object?> schema =
+        registration.modelDefinition.argumentsSchema;
+    const Map<String, Object?> valid = <String, Object?>{
+      'relativePath': 'source.dart',
+      'content': '',
+    };
+
+    expect(schema['required'], <Object?>['relativePath', 'content']);
+    expect((schema['properties']! as Map<String, Object?>).keys, <String>[
+      'relativePath',
+      'content',
+    ]);
+    expect(schema['additionalProperties'], isFalse);
+    expect(executable.validateAndNormalize(valid).snapshot, valid);
+    for (final String field in valid.keys) {
+      expect(
+        () => executable.validateAndNormalize(
+          Map<String, Object?>.of(valid)..remove(field),
+        ),
+        throwsA(isA<ToolArgumentValidationException>()),
+      );
+    }
+    expect(
+      () => executable.validateAndNormalize(<String, Object?>{
+        ...valid,
+        'environmentId': 'forbidden',
+      }),
+      throwsA(isA<ToolArgumentValidationException>()),
+    );
+    final ToolOutcome emptyOutcome = await _execute(
+      executable,
+      executable.validateAndNormalize(valid),
+      fileSystem.sessionId,
+    );
+    expect(emptyOutcome.disposition, ToolOutcomeDisposition.success);
+    expect(fileSystem.creations.single.content, isEmpty);
+  });
+
+  test(
+    'Create File preserves authored text and rejects malformed UTF-16',
+    () async {
+      final String content = '  first\nsecond \u{1f642}\n';
+      final _FileSystem fileSystem = _FileSystem();
+      final ToolExecutable executable = await _tool(fileSystem, 'create_file');
+      final ToolOutcome outcome = await _execute(
+        executable,
+        executable.validateAndNormalize(<String, Object?>{
+          'relativePath': 'created.dart',
+          'content': content,
+        }),
+        fileSystem.sessionId,
+      );
+
+      expect(outcome.disposition, ToolOutcomeDisposition.success);
+      expect(fileSystem.creations.single.content, content);
+      for (final ({String field, String value}) fixture
+          in <({String field, String value})>[
+            (field: 'relativePath', value: 'bad${String.fromCharCode(0xd800)}'),
+            (field: 'content', value: String.fromCharCode(0xdc00)),
+          ]) {
+        final _FileSystem malformedFileSystem = _FileSystem();
+        final ToolExecutable malformed = await _tool(
+          malformedFileSystem,
+          'create_file',
+        );
+        final Map<String, Object?> arguments = <String, Object?>{
+          'relativePath': 'created.dart',
+          'content': '',
+          fixture.field: fixture.value,
+        };
+        expect(
+          () => malformed.validateAndNormalize(arguments),
+          throwsA(isA<ToolArgumentValidationException>()),
+        );
+        expect(malformedFileSystem.creations, isEmpty);
+      }
+    },
+  );
+
+  test('Create File canonicalizes path for policy and execution', () async {
+    for (final ({String spelling, String canonical}) fixture
+        in <({String spelling, String canonical})>[
+          (spelling: 'foo.dart', canonical: 'foo.dart'),
+          (spelling: './foo.dart', canonical: 'foo.dart'),
+          (spelling: 'dir//foo.dart', canonical: 'dir/foo.dart'),
+          (spelling: 'dir/./foo.dart', canonical: 'dir/foo.dart'),
+        ]) {
+      final _FileSystem fileSystem = _FileSystem(postCreateRevision: 'R-new');
+      final ToolExecutable executable = await _tool(fileSystem, 'create_file');
+      final CanonicalToolArguments arguments = executable.validateAndNormalize(
+        <String, Object?>{'relativePath': fixture.spelling, 'content': ''},
+      );
+      final EffectDescription effects = await executable.describe(
+        arguments,
+        _execution(fileSystem.sessionId),
+      );
+      final ToolOutcome outcome = await _execute(
+        executable,
+        arguments,
+        fileSystem.sessionId,
+      );
+
+      expect(arguments.snapshot['relativePath'], fixture.canonical);
+      expect(effects.effects, <ToolEffect>{ToolEffect.sourceMutation});
+      expect(effects.uncertainty, EffectUncertainty.none);
+      expect(
+        effects.targets.single.uri.toString(),
+        'adele-environment:/environment-1/${fixture.canonical}',
+      );
+      expect(effects.summary, 'Create Environment file ${fixture.canonical}.');
+      expect(fileSystem.creations.single.relativePath, fixture.canonical);
+      expect(outcome.effectCertainty, EffectCertainty.knownOccurred);
+      expect(
+        outcome.modelContent,
+        'Created: ${jsonEncode(fixture.canonical)}\nRevision: "R-new"',
+      );
+      expect(outcome.hostData, <String, Object?>{
+        'environmentId': 'environment-1',
+        'relativePath': fixture.canonical,
+        'revision': 'R-new',
+      });
+    }
+  });
+
+  test(
+    'Create File maps only existing-target failure as known no-effect',
+    () async {
+      final _FileSystem existing = _FileSystem(
+        createError: const EnvironmentFailure(
+          code: environmentFileAlreadyExistsCode,
+          message: 'Already exists.',
+          details: <String, Object?>{'relativePath': 'created.dart'},
+        ),
+      );
+      final ToolExecutable existingTool = await _tool(existing, 'create_file');
+      final ToolOutcome existingOutcome = await _execute(
+        existingTool,
+        existingTool.validateAndNormalize(const <String, Object?>{
+          'relativePath': 'created.dart',
+          'content': 'new',
+        }),
+        existing.sessionId,
+      );
+      expect(existing.creations, hasLength(1));
+      expect(existingOutcome.failureKind, ToolFailureKind.domain);
+      expect(existingOutcome.effectCertainty, EffectCertainty.knownNotOccurred);
+      expect(
+        existingOutcome.hostData['code'],
+        environmentFileAlreadyExistsCode,
+      );
+      expect(existingOutcome.modelContent, contains('use apply_patch'));
+
+      final _FileSystem unexpected = _FileSystem(
+        createError: const EnvironmentFailure(
+          code: 'unwritable',
+          message: 'Ambiguous provider failure.',
+          details: <String, Object?>{},
+        ),
+      );
+      final ToolExecutable unexpectedTool = await _tool(
+        unexpected,
+        'create_file',
+      );
+      final ToolOutcome unexpectedOutcome = await _execute(
+        unexpectedTool,
+        unexpectedTool.validateAndNormalize(const <String, Object?>{
+          'relativePath': 'created.dart',
+          'content': 'new',
+        }),
+        unexpected.sessionId,
+      );
+      expect(unexpected.creations, hasLength(1));
+      expect(unexpectedOutcome.effectCertainty, EffectCertainty.uncertain);
+
+      final _FileSystem stale = _FileSystem()..stale = true;
+      final ToolExecutable staleTool = await _tool(stale, 'create_file');
+      final ToolOutcome staleOutcome = await _execute(
+        staleTool,
+        staleTool.validateAndNormalize(const <String, Object?>{
+          'relativePath': 'created.dart',
+          'content': 'new',
+        }),
+        stale.sessionId,
+      );
+      expect(stale.creations, isEmpty);
+      expect(staleOutcome.failureKind, ToolFailureKind.staleBinding);
+      expect(staleOutcome.effectCertainty, EffectCertainty.knownNotOccurred);
+    },
+  );
+
+  test('Delete File schema is exact and revision remains opaque', () async {
+    final ToolRegistration registration = await _registration(
+      _FileSystem(),
+      'delete_file',
+    );
+    final ToolExecutable executable = registration.executable;
+    final Map<String, Object?> schema =
+        registration.modelDefinition.argumentsSchema;
+    final String opaqueRevision = String.fromCharCode(0xd800);
+    final Map<String, Object?> valid = <String, Object?>{
+      'relativePath': './source.dart',
+      'expectedRevision': opaqueRevision,
+    };
+
+    expect(schema['required'], <Object?>['relativePath', 'expectedRevision']);
+    expect((schema['properties']! as Map<String, Object?>).keys, <String>[
+      'relativePath',
+      'expectedRevision',
+    ]);
+    expect(schema['additionalProperties'], isFalse);
+    expect(executable.validateAndNormalize(valid).snapshot, <String, Object?>{
+      'relativePath': 'source.dart',
+      'expectedRevision': opaqueRevision,
+    });
+    for (final String field in valid.keys) {
+      expect(
+        () => executable.validateAndNormalize(
+          Map<String, Object?>.of(valid)..remove(field),
+        ),
+        throwsA(isA<ToolArgumentValidationException>()),
+      );
+    }
+    expect(
+      () => executable.validateAndNormalize(<String, Object?>{
+        ...valid,
+        'environmentId': 'forbidden',
+      }),
+      throwsA(isA<ToolArgumentValidationException>()),
+    );
+  });
+
+  test('Delete File preflights revision without invoking mutation', () async {
+    final _FileSystem fileSystem = _FileSystem(revision: 'current');
+    final ToolExecutable executable = await _tool(fileSystem, 'delete_file');
+    final ToolOutcome outcome = await _execute(
+      executable,
+      executable.validateAndNormalize(const <String, Object?>{
+        'relativePath': 'source.dart',
+        'expectedRevision': 'stale',
+      }),
+      fileSystem.sessionId,
+    );
+
+    expect(fileSystem.readPaths, <String>['source.dart']);
+    expect(fileSystem.deletions, isEmpty);
+    expect(outcome.failureKind, ToolFailureKind.domain);
+    expect(outcome.hostData['code'], environmentRevisionConflictCode);
+    expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
+    expect(outcome.modelContent, contains('Re-read the file'));
+  });
+
+  test(
+    'Delete File passes the original revision and reports exact effect',
+    () async {
+      final _FileSystem fileSystem = _FileSystem(revision: 'opaque R1');
+      final ToolExecutable executable = await _tool(fileSystem, 'delete_file');
+      final CanonicalToolArguments arguments = executable.validateAndNormalize(
+        const <String, Object?>{
+          'relativePath': 'dir//./source.dart',
+          'expectedRevision': 'opaque R1',
+        },
+      );
+      final EffectDescription effects = await executable.describe(
+        arguments,
+        _execution(fileSystem.sessionId),
+      );
+      final ToolOutcome outcome = await _execute(
+        executable,
+        arguments,
+        fileSystem.sessionId,
+      );
+
+      expect(effects.effects, <ToolEffect>{ToolEffect.sourceMutation});
+      expect(effects.uncertainty, EffectUncertainty.none);
+      expect(
+        effects.targets.single.uri.toString(),
+        'adele-environment:/environment-1/dir/source.dart',
+      );
+      expect(effects.summary, 'Delete Environment file dir/source.dart.');
+      expect(fileSystem.readPaths, <String>['dir/source.dart']);
+      expect(fileSystem.deletions.single.relativePath, 'dir/source.dart');
+      expect(fileSystem.deletions.single.expectedRevision, 'opaque R1');
+      expect(outcome.disposition, ToolOutcomeDisposition.success);
+      expect(outcome.effectCertainty, EffectCertainty.knownOccurred);
+      expect(outcome.modelContent, 'Deleted: "dir/source.dart"');
+      expect(outcome.hostData, <String, Object?>{
+        'environmentId': 'environment-1',
+        'relativePath': 'dir/source.dart',
+      });
+    },
+  );
+
+  test(
+    'Delete File preserves provider conflict and failure certainty',
+    () async {
+      final _FileSystem conflict = _FileSystem(
+        revision: 'R1',
+        deleteError: const EnvironmentFailure(
+          code: environmentRevisionConflictCode,
+          message: 'Changed before delete.',
+          details: <String, Object?>{},
+        ),
+      );
+      final ToolExecutable conflictTool = await _tool(conflict, 'delete_file');
+      final ToolOutcome conflictOutcome = await _execute(
+        conflictTool,
+        conflictTool.validateAndNormalize(const <String, Object?>{
+          'relativePath': 'source.dart',
+          'expectedRevision': 'R1',
+        }),
+        conflict.sessionId,
+      );
+      expect(conflict.deletions, hasLength(1));
+      expect(conflictOutcome.hostData['code'], environmentRevisionConflictCode);
+      expect(conflictOutcome.effectCertainty, EffectCertainty.knownNotOccurred);
+
+      final _FileSystem missing = _FileSystem(
+        readError: const EnvironmentFailure(
+          code: 'not_found',
+          message: 'Missing.',
+          details: <String, Object?>{},
+        ),
+      );
+      final ToolExecutable missingTool = await _tool(missing, 'delete_file');
+      final ToolOutcome missingOutcome = await _execute(
+        missingTool,
+        missingTool.validateAndNormalize(const <String, Object?>{
+          'relativePath': 'missing.dart',
+          'expectedRevision': 'R1',
+        }),
+        missing.sessionId,
+      );
+      expect(missing.deletions, isEmpty);
+      expect(missingOutcome.hostData['code'], 'not_found');
+      expect(missingOutcome.effectCertainty, EffectCertainty.knownNotOccurred);
+
+      final _FileSystem unexpected = _FileSystem(
+        revision: 'R1',
+        deleteError: const EnvironmentFailure(
+          code: 'unwritable',
+          message: 'Ambiguous delete failure.',
+          details: <String, Object?>{},
+        ),
+      );
+      final ToolExecutable unexpectedTool = await _tool(
+        unexpected,
+        'delete_file',
+      );
+      final ToolOutcome unexpectedOutcome = await _execute(
+        unexpectedTool,
+        unexpectedTool.validateAndNormalize(const <String, Object?>{
+          'relativePath': 'source.dart',
+          'expectedRevision': 'R1',
+        }),
+        unexpected.sessionId,
+      );
+      expect(unexpected.deletions, hasLength(1));
+      expect(unexpectedOutcome.effectCertainty, EffectCertainty.uncertain);
+    },
+  );
+
   test('Apply Patch schema is exact and permits empty replacement', () async {
     final ToolExecutable executable = await _tool(_FileSystem(), 'apply_patch');
     final ToolRegistration registration = await _registration(
@@ -277,17 +647,18 @@ void main() {
     'filesystem tools reject malformed relative paths before access',
     () async {
       final String malformedPath = 'bad${String.fromCharCode(0xd800)}name.dart';
-      for (final String alias in <String>['read_file', 'apply_patch']) {
+      for (final String alias in <String>[
+        'read_file',
+        'apply_patch',
+        'create_file',
+        'delete_file',
+      ]) {
         final _FileSystem fileSystem = _FileSystem();
         final ToolExecutable executable = await _tool(fileSystem, alias);
-        final Map<String, Object?> proposed = alias == 'read_file'
-            ? <String, Object?>{'relativePath': malformedPath}
-            : <String, Object?>{
-                'relativePath': malformedPath,
-                'expectedRevision': 'R1',
-                'search': 'old',
-                'replace': 'new',
-              };
+        final Map<String, Object?> proposed = _argumentsFor(
+          alias,
+          malformedPath,
+        );
 
         expect(
           () => executable.validateAndNormalize(proposed),
@@ -383,7 +754,12 @@ void main() {
   });
 
   test('invalid logical paths are rejected before filesystem access', () async {
-    for (final String alias in <String>['read_file', 'apply_patch']) {
+    for (final String alias in <String>[
+      'read_file',
+      'apply_patch',
+      'create_file',
+      'delete_file',
+    ]) {
       for (final String path in <String>[
         '../source.dart',
         'dir/../source.dart',
@@ -392,14 +768,7 @@ void main() {
       ]) {
         final _FileSystem fileSystem = _FileSystem();
         final ToolExecutable executable = await _tool(fileSystem, alias);
-        final Map<String, Object?> proposed = alias == 'read_file'
-            ? <String, Object?>{'relativePath': path}
-            : <String, Object?>{
-                'relativePath': path,
-                'expectedRevision': 'R1',
-                'search': 'old',
-                'replace': 'new',
-              };
+        final Map<String, Object?> proposed = _argumentsFor(alias, path);
 
         expect(
           () => executable.validateAndNormalize(proposed),
@@ -407,6 +776,8 @@ void main() {
         );
         expect(fileSystem.readPaths, isEmpty);
         expect(fileSystem.replacements, isEmpty);
+        expect(fileSystem.creations, isEmpty);
+        expect(fileSystem.deletions, isEmpty);
       }
     }
   });
@@ -802,6 +1173,26 @@ Future<ToolOutcome> _execute(
             as ToolExecutionTerminal)
         .outcome;
 
+Map<String, Object?> _argumentsFor(String alias, String relativePath) =>
+    switch (alias) {
+      'read_file' => <String, Object?>{'relativePath': relativePath},
+      'apply_patch' => <String, Object?>{
+        'relativePath': relativePath,
+        'expectedRevision': 'R1',
+        'search': 'old',
+        'replace': 'new',
+      },
+      'create_file' => <String, Object?>{
+        'relativePath': relativePath,
+        'content': 'new',
+      },
+      'delete_file' => <String, Object?>{
+        'relativePath': relativePath,
+        'expectedRevision': 'R1',
+      },
+      _ => throw StateError('Unknown fixture alias $alias.'),
+    };
+
 final class _Context implements ModelToolHostContext {
   const _Context(this.read, {AuthorizedEnvironmentFileMutationFacet? mutation})
     : mutation = mutation ?? read;
@@ -832,6 +1223,23 @@ final class _ReplacementCall {
   final String expectedRevision;
 }
 
+final class _CreationCall {
+  const _CreationCall({required this.relativePath, required this.content});
+
+  final String relativePath;
+  final String content;
+}
+
+final class _DeletionCall {
+  const _DeletionCall({
+    required this.relativePath,
+    required this.expectedRevision,
+  });
+
+  final String relativePath;
+  final String expectedRevision;
+}
+
 final class _FileSystem
     implements
         AuthorizedEnvironmentFileReadFacet,
@@ -840,20 +1248,28 @@ final class _FileSystem
     this.text = 'source',
     this.revision = 'fixture-revision',
     this.postWriteRevision = 'post-write-revision',
+    this.postCreateRevision = 'post-create-revision',
     this.reportedRelativePath,
     this.readError,
     this.replacementError,
+    this.createError,
+    this.deleteError,
     EnvironmentId? environmentId,
   }) : environmentId = environmentId ?? EnvironmentId('environment-1');
 
   String text;
   String revision;
   final String postWriteRevision;
+  final String postCreateRevision;
   final String? reportedRelativePath;
   final Object? readError;
   final Object? replacementError;
+  final Object? createError;
+  final Object? deleteError;
   final List<String> readPaths = <String>[];
   final List<_ReplacementCall> replacements = <_ReplacementCall>[];
+  final List<_CreationCall> creations = <_CreationCall>[];
+  final List<_DeletionCall> deletions = <_DeletionCall>[];
   bool stale = false;
   bool available = true;
 
@@ -886,6 +1302,19 @@ final class _FileSystem
   }
 
   @override
+  Future<EnvironmentTextFileCreation> createTextFile(
+    String relativePath,
+    String text,
+  ) async {
+    validateBinding();
+    creations.add(_CreationCall(relativePath: relativePath, content: text));
+    if (createError case final Object error) throw error;
+    this.text = text;
+    revision = postCreateRevision;
+    return EnvironmentTextFileCreation(revision: postCreateRevision);
+  }
+
+  @override
   Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
     String relativePath,
     String replacementText,
@@ -903,6 +1332,21 @@ final class _FileSystem
     text = replacementText;
     revision = postWriteRevision;
     return EnvironmentTextFileReplacement(revision: postWriteRevision);
+  }
+
+  @override
+  Future<void> deleteExistingTextFile(
+    String relativePath,
+    String expectedRevision,
+  ) async {
+    validateBinding();
+    deletions.add(
+      _DeletionCall(
+        relativePath: relativePath,
+        expectedRevision: expectedRevision,
+      ),
+    );
+    if (deleteError case final Object error) throw error;
   }
 
   @override

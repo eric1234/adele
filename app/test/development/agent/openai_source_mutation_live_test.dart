@@ -132,6 +132,8 @@ _MutationEvidence _expectSuccessfulMutationRun({
   final List<ExecutionEventRecord> records = result.run.journal.records;
   final List<_ToolAttempt> reads = _toolAttempts(records, 'read_file');
   final List<_ToolAttempt> patches = _toolAttempts(records, 'apply_patch');
+  expect(_toolAttempts(records, 'create_file'), isEmpty);
+  expect(_toolAttempts(records, 'delete_file'), isEmpty);
   expect(reads, isNotEmpty);
   expect(patches, isNotEmpty);
 

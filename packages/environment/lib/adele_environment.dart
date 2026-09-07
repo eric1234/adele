@@ -7,7 +7,10 @@ import 'package:adele_product/adele_product.dart' as product;
 
 part 'adele_environment.g.dart';
 
-/// Failure code for a rejected stale conditional text-file replacement.
+/// Failure code for a create-new operation whose target already exists.
+const String environmentFileAlreadyExistsCode = 'file_already_exists';
+
+/// Failure code for a rejected stale conditional text-file mutation.
 const String environmentRevisionConflictCode = 'revision_conflict';
 
 final capabilities.CapabilityKey environmentProviderCapability =
@@ -86,6 +89,18 @@ final class EnvironmentTextFileReplacement {
   const EnvironmentTextFileReplacement({required this.revision});
 
   /// Provider-produced opaque identity for the replacement file state.
+  final String revision;
+}
+
+@AdeleValue('environment.textFileCreation')
+final class EnvironmentTextFileCreation {
+  EnvironmentTextFileCreation({required this.revision}) {
+    if (revision.isEmpty) {
+      throw const FormatException('Created file revision must not be empty.');
+    }
+  }
+
+  /// Provider-produced opaque identity for the newly created file state.
   final String revision;
 }
 
@@ -206,9 +221,19 @@ abstract interface class AuthorizedEnvironmentFileReadFacet
 /// Mutation operations over the same authorized Environment filesystem.
 abstract interface class AuthorizedEnvironmentFileMutationFacet
     implements AuthorizedEnvironmentFileSystem {
+  Future<EnvironmentTextFileCreation> createTextFile(
+    String relativePath,
+    String text,
+  );
+
   Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
     String relativePath,
     String replacementText,
+    String expectedRevision,
+  );
+
+  Future<void> deleteExistingTextFile(
+    String relativePath,
     String expectedRevision,
   );
 }
@@ -280,6 +305,16 @@ abstract interface class EnvironmentProviderService {
     String relativePath,
   );
 
+  /// Creates a text file only when no filesystem entity occupies its path.
+  ///
+  /// An existing target fails with [environmentFileAlreadyExistsCode].
+  @AdeleMethod('createTextFile')
+  Future<EnvironmentTextFileCreation> createTextFile(
+    String environmentId,
+    String relativePath,
+    String text,
+  );
+
   /// Replaces an existing text file only when its opaque revision matches.
   ///
   /// A detected mismatch fails with [environmentRevisionConflictCode].
@@ -288,6 +323,16 @@ abstract interface class EnvironmentProviderService {
     String environmentId,
     String relativePath,
     String replacementText,
+    String expectedRevision,
+  );
+
+  /// Deletes an existing text file only when its opaque revision matches.
+  ///
+  /// A detected mismatch fails with [environmentRevisionConflictCode].
+  @AdeleMethod('deleteExistingTextFile')
+  Future<void> deleteExistingTextFile(
+    String environmentId,
+    String relativePath,
     String expectedRevision,
   );
 
@@ -367,6 +412,15 @@ abstract interface class EnvironmentProvider {
     String relativePath,
   );
 
+  /// Creates a text file only when no filesystem entity occupies its path.
+  ///
+  /// An existing target fails with [environmentFileAlreadyExistsCode].
+  Future<EnvironmentTextFileCreation> createTextFile(
+    product.EnvironmentId environmentId,
+    String relativePath,
+    String text,
+  );
+
   /// Replaces an existing text file only when its opaque revision matches.
   ///
   /// A detected mismatch fails with [environmentRevisionConflictCode].
@@ -374,6 +428,15 @@ abstract interface class EnvironmentProvider {
     product.EnvironmentId environmentId,
     String relativePath,
     String replacementText,
+    String expectedRevision,
+  );
+
+  /// Deletes an existing text file only when its opaque revision matches.
+  ///
+  /// A detected mismatch fails with [environmentRevisionConflictCode].
+  Future<void> deleteExistingTextFile(
+    product.EnvironmentId environmentId,
+    String relativePath,
     String expectedRevision,
   );
 
@@ -425,6 +488,13 @@ final class GeneratedEnvironmentProvider implements EnvironmentProvider {
   ) => _service.readFile(environmentId.value, relativePath);
 
   @override
+  Future<EnvironmentTextFileCreation> createTextFile(
+    product.EnvironmentId environmentId,
+    String relativePath,
+    String text,
+  ) => _service.createTextFile(environmentId.value, relativePath, text);
+
+  @override
   Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
     product.EnvironmentId environmentId,
     String relativePath,
@@ -434,6 +504,17 @@ final class GeneratedEnvironmentProvider implements EnvironmentProvider {
     environmentId.value,
     relativePath,
     replacementText,
+    expectedRevision,
+  );
+
+  @override
+  Future<void> deleteExistingTextFile(
+    product.EnvironmentId environmentId,
+    String relativePath,
+    String expectedRevision,
+  ) => _service.deleteExistingTextFile(
+    environmentId.value,
+    relativePath,
     expectedRevision,
   );
 
@@ -483,6 +564,17 @@ final class EnvironmentProviderServiceAdapter
   ) => _provider.readFile(_environmentId(environmentId), relativePath);
 
   @override
+  Future<EnvironmentTextFileCreation> createTextFile(
+    String environmentId,
+    String relativePath,
+    String text,
+  ) => _provider.createTextFile(
+    _environmentId(environmentId),
+    relativePath,
+    text,
+  );
+
+  @override
   Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
     String environmentId,
     String relativePath,
@@ -492,6 +584,17 @@ final class EnvironmentProviderServiceAdapter
     _environmentId(environmentId),
     relativePath,
     replacementText,
+    expectedRevision,
+  );
+
+  @override
+  Future<void> deleteExistingTextFile(
+    String environmentId,
+    String relativePath,
+    String expectedRevision,
+  ) => _provider.deleteExistingTextFile(
+    _environmentId(environmentId),
+    relativePath,
     expectedRevision,
   );
 

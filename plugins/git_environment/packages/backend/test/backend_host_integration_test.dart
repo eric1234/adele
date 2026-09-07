@@ -133,6 +133,27 @@ void main() {
         'README.md',
       );
       expect(firstRead.text, 'AOT Git fixture A\n');
+      final EnvironmentTextFileCreation creation = await providerA
+          .createTextFile(
+            durable.id,
+            'generated-create-delete.txt',
+            'generated AOT content\n',
+          );
+      final EnvironmentTextFile createdRead = await providerA.readFile(
+        durable.id,
+        'generated-create-delete.txt',
+      );
+      expect(createdRead.text, 'generated AOT content\n');
+      expect(createdRead.revision, creation.revision);
+      await providerA.deleteExistingTextFile(
+        durable.id,
+        'generated-create-delete.txt',
+        createdRead.revision,
+      );
+      await expectLater(
+        providerA.readFile(durable.id, 'generated-create-delete.txt'),
+        throwsA(_failureWithCode('not_found')),
+      );
       final List<EnvironmentProcessEvent> processEvents = await providerA
           .runForegroundProcess(
             durable.id,

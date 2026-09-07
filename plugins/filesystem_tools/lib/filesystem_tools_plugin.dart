@@ -45,6 +45,8 @@ final class _FilesystemModelTools implements ModelToolContribution {
     return <ToolRegistration>[
       _ReadFileExecutable(read).registration,
       _ApplyPatchExecutable(read, mutation).registration,
+      _CreateFileExecutable(mutation).registration,
+      _DeleteFileExecutable(read, mutation).registration,
     ];
   }
 }
@@ -529,6 +531,414 @@ final class _ApplyPatchExecutable implements ToolExecutable {
       'code': code,
     },
   );
+}
+
+final class _CreateFileExecutable implements ToolExecutable {
+  const _CreateFileExecutable(this._mutation);
+
+  static final ToolId _toolId = ToolId(
+    'dev.adele.plugin.filesystem-tools.create-file',
+  );
+
+  final AuthorizedEnvironmentFileMutationFacet _mutation;
+
+  ToolRegistration get registration => ToolRegistration(
+    definition: ToolDefinition(
+      id: _toolId,
+      description: 'Create one new file in the current Session Environment.',
+    ),
+    modelDefinition: ModelToolDefinition(
+      alias: 'create_file',
+      description:
+          'Create one new bounded UTF-8 file in the current Session '
+          'Environment. The parent directory must already exist and the '
+          'target must not exist.',
+      argumentsSchema: const <String, Object?>{
+        'type': 'object',
+        'required': <Object?>['relativePath', 'content'],
+        'properties': <String, Object?>{
+          'relativePath': <String, Object?>{'type': 'string'},
+          'content': <String, Object?>{'type': 'string'},
+        },
+        'additionalProperties': false,
+      },
+    ),
+    executable: this,
+  );
+
+  @override
+  CanonicalToolArguments validateAndNormalize(
+    Map<String, Object?> proposedArguments,
+  ) {
+    if (proposedArguments.length != 2 ||
+        proposedArguments['relativePath'] is! String ||
+        proposedArguments['content'] is! String ||
+        (proposedArguments['relativePath']! as String).isEmpty) {
+      throw const ToolArgumentValidationException(
+        'create_file requires exactly the string arguments relativePath and '
+        'content, with a non-empty relativePath.',
+      );
+    }
+    final String relativePath = proposedArguments['relativePath']! as String;
+    final String content = proposedArguments['content']! as String;
+    _requireWellFormedUnicode('relativePath', relativePath);
+    _requireWellFormedUnicode('content', content);
+    return CanonicalToolArguments(<String, Object?>{
+      'relativePath': _canonicalFilePath(relativePath),
+      'content': content,
+    });
+  }
+
+  @override
+  Future<EffectDescription> describe(
+    CanonicalToolArguments arguments,
+    ToolExecutionContext context,
+  ) async {
+    _requireAuthorizedSession(context);
+    final String relativePath = arguments.snapshot['relativePath']! as String;
+    return EffectDescription(
+      effects: const <ToolEffect>[ToolEffect.sourceMutation],
+      targets: <EffectTarget>[
+        EffectTarget(
+          uri: Uri(
+            scheme: 'adele-environment',
+            path: '/${_mutation.environmentId.value}/$relativePath',
+          ),
+        ),
+      ],
+      summary: 'Create Environment file $relativePath.',
+    );
+  }
+
+  @override
+  void validateBinding() => _validateToolBinding(_mutation);
+
+  @override
+  Stream<ToolExecutionEvent> execute(
+    CanonicalToolArguments arguments,
+    ToolExecutionContext context,
+  ) async* {
+    final String relativePath = arguments.snapshot['relativePath']! as String;
+    final String content = arguments.snapshot['content']! as String;
+    bool mutationAttempted = false;
+    try {
+      _requireAuthorizedSession(context);
+      _mutation.validateBinding();
+      mutationAttempted = true;
+      final EnvironmentTextFileCreation creation = await _mutation
+          .createTextFile(relativePath, content);
+      yield ToolExecutionTerminal(
+        ToolOutcome(
+          disposition: ToolOutcomeDisposition.success,
+          effectCertainty: EffectCertainty.knownOccurred,
+          modelContent:
+              'Created: ${jsonEncode(relativePath)}\n'
+              'Revision: ${jsonEncode(creation.revision)}',
+          hostData: <String, Object?>{
+            'environmentId': _mutation.environmentId.value,
+            'relativePath': relativePath,
+            'revision': creation.revision,
+          },
+        ),
+      );
+    } on AuthorizedEnvironmentBindingStale catch (error) {
+      yield ToolExecutionTerminal(
+        _failure(
+          'The authorized Environment binding is stale.',
+          ToolFailureKind.staleBinding,
+          error,
+          certainty: mutationAttempted
+              ? EffectCertainty.uncertain
+              : EffectCertainty.knownNotOccurred,
+        ),
+      );
+    } on AuthorizedEnvironmentBindingUnavailable catch (error) {
+      yield ToolExecutionTerminal(
+        _failure(
+          'The authorized Environment provider is unavailable.',
+          ToolFailureKind.infrastructure,
+          error,
+          certainty: mutationAttempted
+              ? EffectCertainty.uncertain
+              : EffectCertainty.knownNotOccurred,
+        ),
+      );
+    } on EnvironmentFailure catch (error) {
+      if (error.code == environmentFileAlreadyExistsCode) {
+        yield ToolExecutionTerminal(
+          ToolOutcome(
+            disposition: ToolOutcomeDisposition.failure,
+            failureKind: ToolFailureKind.domain,
+            effectCertainty: EffectCertainty.knownNotOccurred,
+            modelContent:
+                'The target already exists. No file was created or replaced.\n'
+                'Read it and use apply_patch if you intend to modify the '
+                'existing file.',
+            hostData: <String, Object?>{
+              'environmentId': _mutation.environmentId.value,
+              'relativePath': relativePath,
+              'code': environmentFileAlreadyExistsCode,
+            },
+            hostDiagnostic: error.message,
+            cause: error,
+          ),
+        );
+        return;
+      }
+      yield ToolExecutionTerminal(
+        ToolOutcome(
+          disposition: ToolOutcomeDisposition.failure,
+          failureKind: ToolFailureKind.domain,
+          effectCertainty: mutationAttempted
+              ? EffectCertainty.uncertain
+              : EffectCertainty.knownNotOccurred,
+          modelContent: 'Environment file creation failed: ${error.message}',
+          hostData: <String, Object?>{
+            'environmentId': _mutation.environmentId.value,
+            'relativePath': relativePath,
+            'code': error.code,
+            'details': error.details,
+          },
+          hostDiagnostic: error.message,
+          cause: error,
+        ),
+      );
+    } on _SessionAuthorityViolation catch (error) {
+      yield ToolExecutionTerminal(
+        _failure(
+          'The Create File tool is not authorized for this Session.',
+          ToolFailureKind.infrastructure,
+          error,
+          certainty: EffectCertainty.knownNotOccurred,
+        ),
+      );
+    } on Object catch (error) {
+      yield ToolExecutionTerminal(
+        _failure(
+          'Environment file creation failed.',
+          ToolFailureKind.infrastructure,
+          error,
+          certainty: mutationAttempted
+              ? EffectCertainty.uncertain
+              : EffectCertainty.knownNotOccurred,
+        ),
+      );
+    }
+  }
+
+  void _requireAuthorizedSession(ToolExecutionContext context) {
+    if (context.sessionId != _mutation.sessionId) {
+      throw _SessionAuthorityViolation(context.sessionId.toString());
+    }
+  }
+}
+
+final class _DeleteFileExecutable implements ToolExecutable {
+  const _DeleteFileExecutable(this._read, this._mutation);
+
+  static final ToolId _toolId = ToolId(
+    'dev.adele.plugin.filesystem-tools.delete-file',
+  );
+
+  final AuthorizedEnvironmentFileReadFacet _read;
+  final AuthorizedEnvironmentFileMutationFacet _mutation;
+
+  ToolRegistration get registration => ToolRegistration(
+    definition: ToolDefinition(
+      id: _toolId,
+      description:
+          'Delete one current file from the current Session Environment.',
+    ),
+    modelDefinition: ModelToolDefinition(
+      alias: 'delete_file',
+      description:
+          'Delete one existing UTF-8 file from the current Session '
+          'Environment only if its opaque revision still matches '
+          'expectedRevision. Read the file first and copy its exact visible '
+          'Revision.',
+      argumentsSchema: const <String, Object?>{
+        'type': 'object',
+        'required': <Object?>['relativePath', 'expectedRevision'],
+        'properties': <String, Object?>{
+          'relativePath': <String, Object?>{'type': 'string'},
+          'expectedRevision': <String, Object?>{'type': 'string'},
+        },
+        'additionalProperties': false,
+      },
+    ),
+    executable: this,
+  );
+
+  @override
+  CanonicalToolArguments validateAndNormalize(
+    Map<String, Object?> proposedArguments,
+  ) {
+    if (proposedArguments.length != 2 ||
+        proposedArguments['relativePath'] is! String ||
+        proposedArguments['expectedRevision'] is! String ||
+        (proposedArguments['relativePath']! as String).isEmpty) {
+      throw const ToolArgumentValidationException(
+        'delete_file requires exactly the string arguments relativePath and '
+        'expectedRevision, with a non-empty relativePath.',
+      );
+    }
+    final String relativePath = proposedArguments['relativePath']! as String;
+    _requireWellFormedUnicode('relativePath', relativePath);
+    return CanonicalToolArguments(<String, Object?>{
+      'relativePath': _canonicalFilePath(relativePath),
+      'expectedRevision': proposedArguments['expectedRevision']! as String,
+    });
+  }
+
+  @override
+  Future<EffectDescription> describe(
+    CanonicalToolArguments arguments,
+    ToolExecutionContext context,
+  ) async {
+    _requireAuthorizedSession(context);
+    final String relativePath = arguments.snapshot['relativePath']! as String;
+    return EffectDescription(
+      effects: const <ToolEffect>[ToolEffect.sourceMutation],
+      targets: <EffectTarget>[
+        EffectTarget(
+          uri: Uri(
+            scheme: 'adele-environment',
+            path: '/${_read.environmentId.value}/$relativePath',
+          ),
+        ),
+      ],
+      summary: 'Delete Environment file $relativePath.',
+    );
+  }
+
+  @override
+  void validateBinding() {
+    _validateToolBinding(_read);
+    _validateToolBinding(_mutation);
+  }
+
+  @override
+  Stream<ToolExecutionEvent> execute(
+    CanonicalToolArguments arguments,
+    ToolExecutionContext context,
+  ) async* {
+    final String relativePath = arguments.snapshot['relativePath']! as String;
+    final String expectedRevision =
+        arguments.snapshot['expectedRevision']! as String;
+    bool mutationAttempted = false;
+    try {
+      _requireAuthorizedSession(context);
+      final EnvironmentTextFile current = await _read.readFile(relativePath);
+      if (current.revision != expectedRevision) {
+        yield ToolExecutionTerminal(_revisionConflict(relativePath));
+        return;
+      }
+      _mutation.validateBinding();
+      mutationAttempted = true;
+      await _mutation.deleteExistingTextFile(relativePath, expectedRevision);
+      yield ToolExecutionTerminal(
+        ToolOutcome(
+          disposition: ToolOutcomeDisposition.success,
+          effectCertainty: EffectCertainty.knownOccurred,
+          modelContent: 'Deleted: ${jsonEncode(relativePath)}',
+          hostData: <String, Object?>{
+            'environmentId': _read.environmentId.value,
+            'relativePath': relativePath,
+          },
+        ),
+      );
+    } on AuthorizedEnvironmentBindingStale catch (error) {
+      yield ToolExecutionTerminal(
+        _failure(
+          'The authorized Environment binding is stale.',
+          ToolFailureKind.staleBinding,
+          error,
+          certainty: mutationAttempted
+              ? EffectCertainty.uncertain
+              : EffectCertainty.knownNotOccurred,
+        ),
+      );
+    } on AuthorizedEnvironmentBindingUnavailable catch (error) {
+      yield ToolExecutionTerminal(
+        _failure(
+          'The authorized Environment provider is unavailable.',
+          ToolFailureKind.infrastructure,
+          error,
+          certainty: mutationAttempted
+              ? EffectCertainty.uncertain
+              : EffectCertainty.knownNotOccurred,
+        ),
+      );
+    } on EnvironmentFailure catch (error) {
+      if (error.code == environmentRevisionConflictCode) {
+        yield ToolExecutionTerminal(_revisionConflict(relativePath, error));
+        return;
+      }
+      yield ToolExecutionTerminal(
+        ToolOutcome(
+          disposition: ToolOutcomeDisposition.failure,
+          failureKind: ToolFailureKind.domain,
+          effectCertainty: mutationAttempted
+              ? EffectCertainty.uncertain
+              : EffectCertainty.knownNotOccurred,
+          modelContent: 'Environment file deletion failed: ${error.message}',
+          hostData: <String, Object?>{
+            'environmentId': _read.environmentId.value,
+            'relativePath': relativePath,
+            'code': error.code,
+            'details': error.details,
+          },
+          hostDiagnostic: error.message,
+          cause: error,
+        ),
+      );
+    } on _SessionAuthorityViolation catch (error) {
+      yield ToolExecutionTerminal(
+        _failure(
+          'The Delete File tool is not authorized for this Session.',
+          ToolFailureKind.infrastructure,
+          error,
+          certainty: EffectCertainty.knownNotOccurred,
+        ),
+      );
+    } on Object catch (error) {
+      yield ToolExecutionTerminal(
+        _failure(
+          'Environment file deletion failed.',
+          ToolFailureKind.infrastructure,
+          error,
+          certainty: mutationAttempted
+              ? EffectCertainty.uncertain
+              : EffectCertainty.knownNotOccurred,
+        ),
+      );
+    }
+  }
+
+  void _requireAuthorizedSession(ToolExecutionContext context) {
+    if (context.sessionId != _read.sessionId ||
+        context.sessionId != _mutation.sessionId) {
+      throw _SessionAuthorityViolation(context.sessionId.toString());
+    }
+  }
+
+  ToolOutcome _revisionConflict(String relativePath, [Object? cause]) =>
+      ToolOutcome(
+        disposition: ToolOutcomeDisposition.failure,
+        failureKind: ToolFailureKind.domain,
+        effectCertainty: EffectCertainty.knownNotOccurred,
+        modelContent:
+            'The file changed since the expected revision was observed.\n'
+            'No stale ADELE deletion was performed.\n'
+            'Re-read the file before retrying the deletion.',
+        hostData: <String, Object?>{
+          'environmentId': _read.environmentId.value,
+          'relativePath': relativePath,
+          'code': environmentRevisionConflictCode,
+        },
+        hostDiagnostic: cause?.toString(),
+        cause: cause,
+      );
 }
 
 final class _SessionAuthorityViolation implements Exception {
