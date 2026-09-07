@@ -29,6 +29,7 @@ dependencies:
   workspace_demo_contract: ^0.1.0
 
 dev_dependencies:
+  command_tools_plugin: ^0.1.0
   filesystem_tools_plugin: ^0.1.0
   flutter_test:
     sdk: flutter

@@ -398,12 +398,26 @@ void main() {
       );
       final ToolExecutionObservation observation = await collectToolExecution(
         Stream<ToolExecutionEvent>.fromIterable(<ToolExecutionEvent>[
-          ToolExecutionProgress(ToolProgress(message: 'working')),
+          ToolExecutionProgress(ToolProgress(content: 'working')),
           ToolExecutionTerminal(outcome),
         ]),
       );
       expect(observation.progress, hasLength(1));
       expect(observation.outcome, same(outcome));
+
+      final List<ToolProgress> observed = <ToolProgress>[];
+      final ToolExecutionObservation unretained = await collectToolExecution(
+        Stream<ToolExecutionEvent>.fromIterable(<ToolExecutionEvent>[
+          ToolExecutionProgress(ToolProgress(content: 'streamed')),
+          ToolExecutionTerminal(outcome),
+        ]),
+        retainProgress: false,
+        onProgress: observed.add,
+      );
+      expect(unretained.progress, isEmpty);
+      expect(observed.single.content, 'streamed');
+      expect(observed.single.kind, ToolProgressKind.status);
+      expect(unretained.outcome, same(outcome));
 
       await expectLater(
         collectToolExecution(const Stream<ToolExecutionEvent>.empty()),

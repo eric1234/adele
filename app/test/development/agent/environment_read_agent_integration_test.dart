@@ -10,6 +10,7 @@ import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
+import 'package:command_tools_plugin/command_tools_plugin.dart';
 import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
@@ -266,7 +267,7 @@ void main() {
   );
 
   test(
-    'agent reads then patches real source in its Session Environment',
+    'agent edits then validates real source in its Session Environment',
     () async {
       final Directory container = await Directory.systemTemp.createTemp(
         'adele-session-environment-patch-',
@@ -318,13 +319,16 @@ void main() {
       final ExtensionRegistration filesystemActivation =
           const FilesystemToolsPlugin().activate(extensions);
       addTearDown(filesystemActivation.close);
+      final ExtensionRegistration commandActivation = const CommandToolsPlugin()
+          .activate(extensions);
+      addTearDown(commandActivation.close);
       final ToolCatalog catalog = await buildModelToolCatalogForSession(
         sessionId: sessionId,
         environmentRuntime: lifecycle.environmentRuntime,
         extensions: extensions,
       );
       final MaterializedToolSet tools = catalog.materialize();
-      final _ReadPatchModel model = _ReadPatchModel();
+      final _ReadPatchCommandModel model = _ReadPatchCommandModel();
       final DevelopmentSessionHistory history = DevelopmentSessionHistory(
         sessionId,
       )..append(UserSessionMessage('Update the strategy default safely.'));
@@ -338,7 +342,8 @@ void main() {
         contextAssembler: const DevelopmentContextAssembler(
           instructions:
               'Read the requested source, use its visible revision to patch '
-              'one exact location, then report the result.',
+              'one exact location, validate it with git diff --check using '
+              'direct arguments, then report the result.',
         ),
         model: model,
         toolCatalog: catalog,
@@ -348,6 +353,7 @@ void main() {
       expect(tools.tools.map((tool) => tool.modelDefinition.alias), <String>[
         'read_file',
         'apply_patch',
+        'run_command',
       ]);
       for (final MaterializedTool tool in tools.tools) {
         final Object? properties =
@@ -362,15 +368,19 @@ void main() {
       await strategy.start();
 
       expect(run.state, RunState.completed);
-      expect(model.invocations, 3);
+      expect(model.invocations, 4);
       expect(model.observedPath, _sourceRelativePath);
       expect(model.observedSource, originalSource);
       expect(model.expectedRevision, isNotEmpty);
       expect(model.postWriteRevision, isNot(model.expectedRevision));
+      expect(model.commandResultValidated, isTrue);
       expect(authority.environmentId, created.environment.id);
       expect(
         (history.snapshot().entries.last as AssistantSessionMessage).content,
-        contains('maxModelInvocations to 9'),
+        allOf(
+          contains('maxModelInvocations to 9'),
+          contains('git diff --check exited with code 0'),
+        ),
       );
 
       final List<ToolInvocationPrepared> prepared = run.journal.records
@@ -379,21 +389,30 @@ void main() {
           .toList(growable: false);
       expect(
         prepared.map((event) => event.invocation.tool.modelDefinition.alias),
-        <String>['read_file', 'apply_patch'],
+        <String>['read_file', 'apply_patch', 'run_command'],
       );
       expect(
-        prepared.last.invocation.canonicalArguments['expectedRevision'],
+        prepared[1].invocation.canonicalArguments['expectedRevision'],
         model.expectedRevision,
       );
-      expect(
-        prepared.last.invocation.canonicalArguments['search'],
-        model.search,
-      );
+      expect(prepared[1].invocation.canonicalArguments['search'], model.search);
+      expect(prepared.last.invocation.proposal.arguments, <String, Object?>{
+        'program': 'git',
+        'arguments': <Object?>['diff', '--check'],
+        'workingDirectory': '',
+        'timeoutSeconds': 30,
+      });
+      expect(prepared.last.invocation.canonicalArguments, <String, Object?>{
+        'program': 'git',
+        'arguments': <Object?>['diff', '--check'],
+        'workingDirectory': '',
+        'timeoutSeconds': 30,
+      });
       final List<ToolExecutionCompleted> completed = run.journal.records
           .map((record) => record.event)
           .whereType<ToolExecutionCompleted>()
           .toList(growable: false);
-      expect(completed, hasLength(2));
+      expect(completed, hasLength(3));
       expect(
         completed.map((event) => event.outcome.disposition),
         everyElement(ToolOutcomeDisposition.success),
@@ -403,34 +422,87 @@ void main() {
         everyElement(authority.environmentId.value),
       );
       expect(
-        completed.last.outcome.hostData['newRevision'],
+        completed[1].outcome.hostData['newRevision'],
         model.postWriteRevision,
       );
+      expect(completed.last.outcome.hostData['termination'], 'exited');
+      expect(completed.last.outcome.hostData['exitCode'], 0);
+      expect(completed.last.outcome.hostData['program'], 'git');
+      expect(completed.last.outcome.hostData['arguments'], <Object?>[
+        'diff',
+        '--check',
+      ]);
       final List<ToolPolicyEvaluated> policyEvaluations = run.journal.records
           .map((record) => record.event)
           .whereType<ToolPolicyEvaluated>()
           .toList(growable: false);
-      expect(policyEvaluations, hasLength(2));
+      expect(policyEvaluations, hasLength(3));
       expect(policyEvaluations.last.decision, ToolPolicyDecision.allow);
-      expect(policyEvaluations.last.effects.effects, <ToolEffect>{
+      expect(policyEvaluations[1].effects.effects, <ToolEffect>{
         ToolEffect.sourceMutation,
       });
       expect(
-        policyEvaluations.last.effects.targets.single.uri.toString(),
+        policyEvaluations[1].effects.targets.single.uri.toString(),
         'adele-environment:/${authority.environmentId.value}/'
         '$_sourceRelativePath',
       );
+      expect(policyEvaluations.last.effects.effects, <ToolEffect>{
+        ToolEffect.processExecution,
+      });
+      expect(
+        policyEvaluations.last.effects.uncertainty,
+        EffectUncertainty.uncertain,
+      );
+      expect(
+        policyEvaluations.last.effects.targets.single.uri.toString(),
+        'adele-environment:/${authority.environmentId.value}/',
+      );
+      expect(
+        policyEvaluations.last.effects.summary,
+        contains('Run program "git" with arguments ["diff","--check"]'),
+      );
+
+      final ExecutionEventRecord patchCompleted = run.journal.records
+          .singleWhere(
+            (ExecutionEventRecord record) =>
+                record.event is ToolExecutionCompleted &&
+                (record.event as ToolExecutionCompleted).invocationId ==
+                    prepared[1].invocation.id,
+          );
+      final ExecutionEventRecord commandStarted = run.journal.records
+          .singleWhere(
+            (ExecutionEventRecord record) =>
+                record.event is ToolExecutionStarted &&
+                (record.event as ToolExecutionStarted).invocationId ==
+                    prepared.last.invocation.id,
+          );
+      final ExecutionEventRecord commandCompleted = run.journal.records
+          .singleWhere(
+            (ExecutionEventRecord record) =>
+                record.event is ToolExecutionCompleted &&
+                (record.event as ToolExecutionCompleted).invocationId ==
+                    prepared.last.invocation.id,
+          );
+      final ExecutionEventRecord finalModelStarted = run.journal.records
+          .where(
+            (ExecutionEventRecord record) =>
+                record.event is ModelInvocationStarted,
+          )
+          .last;
+      expect(patchCompleted.sequence, lessThan(commandStarted.sequence));
+      expect(commandStarted.sequence, lessThan(commandCompleted.sequence));
+      expect(commandCompleted.sequence, lessThan(finalModelStarted.sequence));
 
       final EnvironmentMaterialization materialization = lifecycle
           .environmentRuntime
           .currentMaterialization(created.environment.id)!;
       final EnvironmentTextFile resultingFile = await materialization.provider
           .readFile(created.environment.id, _sourceRelativePath);
-      expect(resultingFile.text, contains('this.maxModelInvocations = 9'));
-      expect(
-        resultingFile.text,
-        isNot(contains('this.maxModelInvocations = 8')),
+      final String expectedTaskSource = originalSource.replaceFirst(
+        'this.maxModelInvocations = 8',
+        'this.maxModelInvocations = 9',
       );
+      expect(resultingFile.text, expectedTaskSource);
       expect(resultingFile.revision, model.postWriteRevision);
       final String worktreePath =
           created.environment.providerState!['worktreePath']! as String;
@@ -554,13 +626,14 @@ final class _SearchReadModel implements ModelPort {
   }
 }
 
-final class _ReadPatchModel implements ModelPort {
+final class _ReadPatchCommandModel implements ModelPort {
   int invocations = 0;
   String? observedPath;
   String? observedSource;
   String? expectedRevision;
   String? postWriteRevision;
   String? search;
+  bool commandResultValidated = false;
 
   @override
   Stream<ModelEvent> invoke(SemanticModelRequest request) async* {
@@ -583,6 +656,15 @@ final class _ReadPatchModel implements ModelPort {
           'expectedRevision',
           'search',
           'replace',
+        },
+      );
+      _requireModelSchema(
+        request.tools.byAlias('run_command')!,
+        expectedProperties: const <String>{
+          'program',
+          'arguments',
+          'workingDirectory',
+          'timeoutSeconds',
         },
       );
       yield ModelOutputItemCompleted(
@@ -641,8 +723,33 @@ final class _ReadPatchModel implements ModelPort {
       postWriteRevision = result.revision;
       yield ModelOutputItemCompleted(
         invocationId: request.invocationId,
+        item: ModelToolProposalOutput(
+          ProviderToolProposal(
+            providerCallId: 'command-call-mutation',
+            alias: 'run_command',
+            arguments: const <String, Object?>{
+              'program': 'git',
+              'arguments': <Object?>['diff', '--check'],
+              'workingDirectory': '',
+              'timeoutSeconds': 30,
+            },
+          ),
+        ),
+      );
+    } else if (modelVisibleOutcomes.length == 3) {
+      commandResultValidated = _isSuccessfulVisibleGitDiffCheck(
+        modelVisibleOutcomes.last,
+      );
+      if (!commandResultValidated) {
+        throw StateError(
+          'The model-visible command result did not prove validation success.',
+        );
+      }
+      yield ModelOutputItemCompleted(
+        invocationId: request.invocationId,
         item: ModelTextOutput(
-          'Patched $observedPath and changed maxModelInvocations to 9.',
+          'Patched $observedPath, changed maxModelInvocations to 9, and '
+          'git diff --check exited with code 0.',
         ),
       );
     } else {
@@ -652,11 +759,20 @@ final class _ReadPatchModel implements ModelPort {
       invocationId: request.invocationId,
       settlement: ModelSettlement.completed,
       metadata: ModelTerminalMetadata(
-        effectiveModel: 'deterministic-read-patch-v1',
+        effectiveModel: 'deterministic-read-patch-command-v1',
       ),
     );
   }
 }
+
+bool _isSuccessfulVisibleGitDiffCheck(String modelContent) =>
+    modelContent.contains('Program: "git"\n') &&
+    modelContent.contains('Arguments: ["diff","--check"]\n') &&
+    modelContent.contains('Working directory: ""\n') &&
+    modelContent.contains('Termination: exited\n') &&
+    modelContent.contains('Exit code: 0\n') &&
+    modelContent.contains('\nSTDOUT:\n') &&
+    modelContent.contains('\nSTDERR:\n');
 
 void _requireModelSchema(
   MaterializedTool tool, {

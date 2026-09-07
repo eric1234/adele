@@ -50,4 +50,21 @@ void main() {
       'adele-environment:/environment-1/source.dart',
     );
   });
+
+  test('tool progress distinguishes status and process output', () {
+    final ToolProgress status = ToolProgress(content: 'Working');
+    final ToolProgress stdout = ToolProgress(
+      kind: ToolProgressKind.stdout,
+      content: '\n',
+    );
+    final ToolProgress stderr = ToolProgress(
+      kind: ToolProgressKind.stderr,
+      content: '\u0000',
+    );
+
+    expect(status.kind, ToolProgressKind.status);
+    expect(stdout.content, '\n');
+    expect(stderr.content, '\u0000');
+    expect(() => ToolProgress(content: ''), throwsFormatException);
+  });
 }

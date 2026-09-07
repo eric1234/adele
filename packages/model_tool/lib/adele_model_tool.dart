@@ -118,7 +118,12 @@ final class ToolArgumentValidationException implements FormatException {
   String toString() => 'ToolArgumentValidationException: $message';
 }
 
-enum ToolEffect { resourceInspection, sourceRead, sourceMutation }
+enum ToolEffect {
+  resourceInspection,
+  sourceRead,
+  sourceMutation,
+  processExecution,
+}
 
 enum EffectUncertainty { none, uncertain }
 
@@ -192,11 +197,17 @@ final class ToolOutcome {
   final Object? cause;
 }
 
-final class ToolProgress {
-  ToolProgress({required String message})
-    : message = _requireNonEmpty(message, 'Tool progress message');
+enum ToolProgressKind { status, stdout, stderr }
 
-  final String message;
+final class ToolProgress {
+  ToolProgress({this.kind = ToolProgressKind.status, required this.content}) {
+    if (content.isEmpty) {
+      throw const FormatException('Tool progress content must not be empty.');
+    }
+  }
+
+  final ToolProgressKind kind;
+  final String content;
 }
 
 sealed class ToolExecutionEvent {
@@ -228,6 +239,7 @@ final class ToolExecutionObservation {
 Future<ToolExecutionObservation> collectToolExecution(
   Stream<ToolExecutionEvent> events, {
   void Function(ToolProgress progress)? onProgress,
+  bool retainProgress = true,
 }) async {
   final List<ToolProgress> progress = <ToolProgress>[];
   ToolOutcome? outcome;
@@ -239,7 +251,7 @@ Future<ToolExecutionObservation> collectToolExecution(
             'Tool progress followed the terminal outcome.',
           );
         }
-        progress.add(progressItem);
+        if (retainProgress) progress.add(progressItem);
         onProgress?.call(progressItem);
       case ToolExecutionTerminal(outcome: final ToolOutcome outcomeItem):
         if (outcome != null) {

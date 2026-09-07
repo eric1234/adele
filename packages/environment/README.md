@@ -24,7 +24,7 @@ views over the same authorized provider materialization, not separately selected
 Environment identities. The mutation facet exposes conditional existing-file
 replacement; Filesystem Tools remains responsible for patch interpretation and
 the model-facing `apply_patch` contract, while Search Tools consumes only the
-read facet. No current model-tool plugin receives the process facet.
+read facet and Command Tools consumes only the process facet for `run_command`.
 
 `runForegroundProcess` accepts a non-empty program, an immutable ordered
 argument vector, an Environment-relative working directory, and a required
@@ -36,7 +36,7 @@ emitted output independently for each stream and report truncation in the
 completed event.
 
 New-file creation, deletion, general write semantics, recursive search,
-model-facing command tools and policy, background processes, process identity,
+model-facing command policy/classification, background processes, process identity,
 stdin/PTY support, arbitrary environment overrides, release/destruction,
 complete Session lifecycle, and persistence remain outside this package in this
 round.

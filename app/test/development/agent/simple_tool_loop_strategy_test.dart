@@ -24,6 +24,36 @@ void main() {
     },
   );
 
+  test(
+    'journals live structured progress before terminal continuation',
+    () async {
+      final _StrategyFixture fixture = _fixture(
+        ToolPolicyDecision.allow,
+        progress: <ToolProgress>[
+          ToolProgress(kind: ToolProgressKind.stdout, content: 'out'),
+          ToolProgress(kind: ToolProgressKind.stderr, content: '\n'),
+        ],
+      );
+
+      await fixture.strategy.start();
+
+      final List<ToolProgressObserved> progress = fixture.run.journal.records
+          .map((ExecutionEventRecord record) => record.event)
+          .whereType<ToolProgressObserved>()
+          .toList(growable: false);
+      expect(
+        progress.map((ToolProgressObserved event) => event.progress.kind),
+        <ToolProgressKind>[ToolProgressKind.stdout, ToolProgressKind.stderr],
+      );
+      expect(
+        progress.map((ToolProgressObserved event) => event.progress.content),
+        <String>['out', '\n'],
+      );
+      expect(fixture.run.state, RunState.completed);
+      expect(fixture.model.sawCorrelatedContinuation, isTrue);
+    },
+  );
+
   test('incomplete settlement fails without executing proposed tool', () async {
     final _StrategyFixture fixture = _fixture(
       ToolPolicyDecision.allow,
@@ -240,6 +270,7 @@ _StrategyFixture _fixture(
   ModelSettlement settlement = ModelSettlement.completed,
   bool alwaysPropose = false,
   int maxModelInvocations = 8,
+  List<ToolProgress> progress = const <ToolProgress>[],
 }) {
   final DevelopmentSessionHistory session = DevelopmentSessionHistory(
     SessionId('session-1'),
@@ -251,7 +282,7 @@ _StrategyFixture _fixture(
     settlement: settlement,
     alwaysPropose: alwaysPropose,
   );
-  final _Executable executable = _Executable();
+  final _Executable executable = _Executable(progress: progress);
   final ToolCatalog catalog = ToolCatalog()
     ..register(
       ToolRegistration(
@@ -388,6 +419,9 @@ final class _Model implements ModelPort {
 }
 
 final class _Executable implements ToolExecutable {
+  _Executable({this.progress = const <ToolProgress>[]});
+
+  final List<ToolProgress> progress;
   int executions = 0;
 
   @override
@@ -408,6 +442,9 @@ final class _Executable implements ToolExecutable {
     ToolExecutionContext context,
   ) async* {
     executions++;
+    for (final ToolProgress item in progress) {
+      yield ToolExecutionProgress(item);
+    }
     yield ToolExecutionTerminal(
       ToolOutcome(
         disposition: ToolOutcomeDisposition.success,

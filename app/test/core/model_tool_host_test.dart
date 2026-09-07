@@ -7,6 +7,7 @@ import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
+import 'package:command_tools_plugin/command_tools_plugin.dart';
 import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
@@ -86,7 +87,7 @@ void main() {
     },
   );
 
-  test('Filesystem and Search plugins activate independently', () async {
+  test('stock tool plugins activate and compose independently', () async {
     final _Fixture fixture = await _fixture();
     final ExtensionRegistry extensions = ExtensionRegistry();
 
@@ -111,10 +112,20 @@ void main() {
       extensions,
     );
     expect(await aliases(), <String>{'search'});
+    await search.close();
+
+    final ExtensionRegistration command = const CommandToolsPlugin().activate(
+      extensions,
+    );
+    expect(await aliases(), <String>{'run_command'});
     final ExtensionRegistration bothFilesystem = const FilesystemToolsPlugin()
         .activate(extensions);
-    expect(await aliases(), <String>{'search', 'read_file', 'apply_patch'});
-    await search.close();
+    expect(await aliases(), <String>{
+      'run_command',
+      'read_file',
+      'apply_patch',
+    });
+    await command.close();
     await bothFilesystem.close();
   });
 

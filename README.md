@@ -14,6 +14,7 @@ Phase IV   provider-neutral agent execution + real model/source coding vertical
 Phase V-A  Session-authorized plugin-composed Environment read/search
 Phase V-B  conditional Environment replacement + deterministic apply_patch
 Phase V-C1 provider-neutral Environment foreground process execution
+Phase V-C2 stock run_command + deterministic edit/validate continuation
 ```
 
 Interpreted Flutter frontends and locally compiled AOT backends run through one
@@ -45,12 +46,12 @@ integration contract.
 Phase V-A establishes durable Project, Task, and Environment values and binds
 provisional agent Sessions authoritatively to one Task-associated Environment.
 Active plugin generations contribute contextual model tools through the generic
-extension registry. The independent stock Filesystem Tools and Search Tools
-plugins own `read_file`, `apply_patch`, and `search`, while a Session-scoped host
-facade supplies coherent read and mutation facets over the one authorized
-Environment filesystem. Search requests only the read facet and recursively
-composes `readDirectory` and `readFile` in Dart; it is not an Environment
-provider method.
+extension registry. The independent stock Filesystem Tools, Search Tools, and
+Command Tools plugins own `read_file`, `apply_patch`, `search`, and
+`run_command`, while a Session-scoped host facade supplies coherent read,
+mutation, and process facets over the one authorized Environment. Search
+requests only the read facet and recursively composes `readDirectory` and
+`readFile` in Dart; Command Tools requests only the process facet.
 
 The OpenAI API-key and experimental ChatGPT source-coding paths now use this
 plugin-composed, Session-authorized Environment tool path. Deterministic AOT
@@ -62,16 +63,24 @@ model-visible Read File revision flow into plugin-owned exact-unique
 model continuation. An opt-in paid OpenAI API-key full-stack smoke now also
 proves real-model `read_file` opaque-revision flow into `apply_patch`, mutation
 confined to the Task Git worktree, post-write observation, and model
-continuation. Experimental ChatGPT mutation and command-backed validation are
-not yet proven.
+continuation. Experimental ChatGPT mutation and real-model command use are not
+yet proven.
 
 Phase V-C1 adds a provider-neutral, Session-authorized foreground process
 primitive to Environment. The stock Git Worktree implementation uses direct
 argv, generated stdout/stderr streaming, bounded head/tail output, confined cwd,
 required timeout, explicit child-environment filtering, and practical Linux x64
-process-group cleanup. No model-facing command tool, command policy
-classification, background process resource, or sandbox is implemented by this
-slice.
+process-group cleanup.
+
+Phase V-C2 adds independently activatable stock Command Tools and its direct
+`program` plus `arguments` `run_command` tool. It projects stdout/stderr as
+structured progress, retains bounded terminal model output, and uses the
+existing allow/deny/ask policy path with a conservative uncertain
+`processExecution` effect over the whole authorized Environment. Deterministic
+real-Git integration proves `read_file` -> `apply_patch` -> `git diff --check`
+-> model continuation in the Task worktree. This does not add implicit shell
+syntax, command safety classification, environment overrides, background
+process resources, sandboxing, or real-model command evidence.
 
 ## Accepted long-term architecture beyond the current implementation
 
@@ -198,6 +207,7 @@ plugins/scripted_model/      deterministic ModelProvider/transport fixture
 plugins/openai/              real OpenAI ModelProvider; ChatGPT route experimental
 plugins/filesystem_tools/    stock Session-authorized Read File/Apply Patch tools
 plugins/search_tools/        stock Session-authorized literal Search tool
+plugins/command_tools/       stock Session-authorized foreground Command tool
 plugins/git_environment/     Git worktree Environment provider
 docs/architecture/           architecture boundaries/directional models
 docs/adr/                    architectural decision records
@@ -274,7 +284,7 @@ See `docs/architecture/profiles-and-configuration.md`.
 
 ## Next Work
 
-**Phases IV, V-A, V-B, and the V-C1 Environment foreground-process slice are complete.**
+**Phases IV, V-A, V-B, V-C1, and the V-C2 model-facing command slice are complete.**
 
 Phase V-A1 established the Project-to-Task-to-primary-Environment spine and
 stock Git worktree provider. V-A2 connected provisional Session authority to
@@ -310,9 +320,12 @@ complete strategy-bound Session lifecycle, and SCM/review integration remain
 later work rather than settled interfaces.
 
 V-C1 adds the provider-neutral Environment foreground-process substrate and its
-Git Worktree provider implementation/proof. V-C2 remains responsible for
-model-facing command tooling and command-backed agent validation; V-C1 makes no
-sandbox claim.
+Git Worktree provider implementation/proof. V-C2 projects that substrate through
+stock plugin-owned `run_command`, structured stdout/stderr progress, bounded
+terminal results, and the existing policy/outcome path. Its deterministic
+real-Git vertical validates the exact Task-worktree edit with direct
+`git diff --check` arguments before model continuation. V-C3 remains responsible
+for real-model command use; neither V-C1 nor V-C2 makes a sandbox claim.
 
 Implementation should introduce the smallest concrete extension boundaries
 needed by those verticals rather than build a speculative universal framework

@@ -8,7 +8,7 @@ This document captures the current direction for ADELE's stock development agent
 
 It is intentionally directional rather than contractual. The exact tool set, names, schemas, persistence model, permission system, scheduling model, and implementation layering may change as ADELE becomes capable of self-hosting and real usage exposes better designs. The near-term implementation may provide only a small subset of this document.
 
-The maintained execution vertical now proves provider-neutral model/tool/model execution and plugin-contributed, Session-authorized Environment `search`, revision-bearing `read_file`, and exact-unique `apply_patch`. Read/search includes deterministic OpenAI source continuation and the explicitly experimental ChatGPT route; mutation currently has deterministic real-Git model/tool/model coverage only. The maintained workflow therefore still does **not** prove real-model editing or implement general filesystem mutation, the stock Command Tool, TODO/Progress, Plan, Console/Terminal, background scheduling, or the broader presentation model described here.
+The maintained execution vertical now proves provider-neutral model/tool/model execution and plugin-contributed, Session-authorized Environment `search`, revision-bearing `read_file`, exact-unique `apply_patch`, and direct-argv `run_command`. Read/search includes deterministic OpenAI source continuation and the explicitly experimental ChatGPT route; mutation also has an opt-in paid OpenAI API-key proof, while command use has deterministic real-Git edit/validation/continuation coverage. The maintained workflow therefore still does **not** prove real-model command use or implement general filesystem mutation, TODO/Progress, Plan, Console/Terminal, background scheduling, or the broader presentation model described here.
 
 The purpose is to preserve the reasoning behind the current direction so later implementation work does not independently rediscover a conventional coding-agent tool surface or accidentally conflict with ADELE's product model.
 
@@ -152,7 +152,7 @@ Execution
 
 `run_command` is the minimum useful coding-agent tool because it enables the agent to bootstrap nearly all other operations.
 
-The exact model-visible schema remains to be designed. The underlying Environment process facility should preserve the distinction between direct process execution and shell interpretation even if ADELE ultimately exposes one convenient tool abstraction.
+The initial model-visible schema takes one executable `program`, optional verbatim `arguments`, an optional Environment-relative `workingDirectory`, and an optional bounded timeout. It preserves the distinction between direct process execution and shell interpretation: no shell is invoked implicitly. Real-model use may pressure this provisional schema later without changing the underlying Environment process distinction.
 
 For example, direct argument-vector execution avoids quoting ambiguity:
 
@@ -874,14 +874,14 @@ Strong sandboxing remains a separate concern from model-tool authorization.
 
 The immediate self-hosting path does not need to implement the complete direction described here.
 
-A plausible progression is:
+A plausible progression, with the first three foundations now implemented, is:
 
 ```text
-1. run_command with live execution observations
+1. run_command with live execution observations (implemented for foreground execution)
 
-2. core/stock structured Environment-backed source reads/search
+2. core/stock structured Environment-backed source reads/search (implemented initial slice)
 
-3. structured source mutation
+3. structured source mutation (implemented conditional existing-file slice)
 
 4. support multiple foreground ToolInvocations with safe concurrency
 
