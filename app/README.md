@@ -61,11 +61,13 @@ flow through `apply_patch`, direct `git diff --check` through `run_command`, and
 model continuation after the successful command result. An opt-in paid OpenAI
 API-key smoke now also proves real-model `read_file`
 opaque-revision flow through `apply_patch`, mutation confined to the Task Git
-worktree, post-write observation, and continuation. These proofs do not
-establish experimental ChatGPT mutation, the final product workflow,
-strategy-bound Session persistence, stock UI composition, file
-creation/deletion, general filesystem mutation, real-model command use,
-fine-grained command classification, or background command execution.
+worktree, post-write observation, and continuation. A distinct paid API-key
+smoke proves real-model direct-argv `git diff --check` through `run_command`,
+model-visible command-result interpretation, and final continuation after that
+edit. These proofs do not establish experimental ChatGPT mutation or command
+parity, the final product workflow, strategy-bound Session persistence, stock UI
+composition, file creation/deletion, general filesystem mutation, fine-grained
+command classification, or background command execution.
 `DevelopmentToolLoopStrategy` and `EnvironmentRuntime` remain provisional
 application/domain-specific implementation rather than production orchestration
 or a general extension-runtime pattern.
@@ -80,14 +82,21 @@ Search and Read File tools, provisional orchestration, and real model
 continuation. A separate paid API-key smoke validates real-model `read_file`
 opaque-revision flow through `apply_patch`, Task-worktree-only mutation, and
 continuation; experimental ChatGPT live evidence remains read/search-only.
+A separate paid API-key source-validation smoke has completed the combined
+real-model `read_file` -> `apply_patch` -> direct-argv `run_command` ->
+continuation path successfully, including exact Task-worktree and source-copy
+isolation evidence.
 
 `ADELE_OPENAI_SOURCE_CODING_LIVE_TEST=1` enables the paid API-key full-stack
 smoke when `OPENAI_API_KEY` and `ADELE_OPENAI_TEST_MODEL` are also configured.
 `ADELE_OPENAI_SOURCE_MUTATION_LIVE_TEST=1` independently enables the paid
 API-key full-stack source-mutation smoke with the same credentials and model.
+`ADELE_OPENAI_SOURCE_VALIDATION_LIVE_TEST=1` independently enables the paid
+API-key source-edit and command-validation smoke with the same credentials and
+model.
 `ADELE_OPENAI_CHATGPT_LIVE_TEST=1` enables the experimental ChatGPT
 subscription-route full-stack smoke with
-`ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE`. All three remain opt-in and are excluded
+`ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE`. All four remain opt-in and are excluded
 from normal CI.
 
 See `docs/architecture/overview.md`, `docs/architecture/plugin-extension-model.md`,
