@@ -67,13 +67,12 @@ worktree, post-write observation, and continuation. A distinct paid API-key
 smoke proves real-model direct-argv `git diff --check` through `run_command`,
 model-visible command-result interpretation, and final continuation after that
 edit. A separately gated experimental ChatGPT subscription-backed smoke proves
-the same read -> patch -> direct-argv validation -> continuation sequence with
-selected and effective model `gpt-5.5`, while preserving Task-worktree,
-Project-source, and checkout isolation. This evidence does not make that route a
-stable OpenAI integration contract or establish the final product workflow,
-strategy-bound Session persistence, stock UI composition, general whole-file
-overwrite, directory/move/copy/binary mutation, fine-grained command
-classification, or background command execution.
+the same read -> patch -> direct-argv validation -> continuation sequence while
+preserving Task-worktree, Project-source, and checkout isolation. This evidence
+does not make that route a stable OpenAI integration contract or establish the
+final product workflow, strategy-bound Session persistence, stock UI
+composition, general whole-file overwrite, directory/move/copy/binary mutation,
+fine-grained command classification, or background command execution.
 `DevelopmentToolLoopStrategy` and `EnvironmentRuntime` remain provisional
 application/domain-specific implementation rather than production orchestration
 or a general extension-runtime pattern.
@@ -91,8 +90,8 @@ continuation. A separate paid API-key source-validation smoke and an
 independently gated experimental ChatGPT subscription-backed smoke have
 completed the combined real-model `read_file` -> `apply_patch` -> direct-argv
 `run_command` -> continuation path successfully, including exact Task-worktree
-and source-copy isolation evidence. The ChatGPT proof used selected and
-effective model `gpt-5.5` and does not change the route's experimental status.
+and source-copy isolation evidence. This does not change the ChatGPT route's
+experimental status.
 
 `ADELE_OPENAI_SOURCE_CODING_LIVE_TEST=1` enables the paid API-key full-stack
 smoke when `OPENAI_API_KEY` and `ADELE_OPENAI_TEST_MODEL` are also configured.

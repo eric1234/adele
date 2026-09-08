@@ -70,7 +70,7 @@ continuation. A separate paid OpenAI API-key smoke proves real-model direct-argv
 `git diff --check` validation and continuation after that mutation. A separately
 gated experimental ChatGPT subscription-backed smoke proves the same real-model
 `read_file` -> `apply_patch` -> direct-argv `run_command` -> continuation path
-with selected and effective model `gpt-5.5`, including Task-worktree mutation
+through the current classic Responses profile, including Task-worktree mutation
 and Project/checkout isolation. This remains experimental interoperability
 evidence rather than a stable OpenAI integration contract.
 
@@ -353,10 +353,10 @@ real-Git vertical validates the exact Task-worktree edit with direct
 `git diff --check` arguments before model continuation. V-C3's separate paid
 opt-in API-key smoke proves that combined path with a real OpenAI model, the
 model-visible opaque revision, direct argv, normal command policy/outcome, and
-final continuation. A separately gated experimental ChatGPT subscription smoke
-now proves mutation and command parity through the same path with `gpt-5.5` and
-Task/Project/checkout isolation. No Phase V-C slice makes a sandbox claim, and
-the ChatGPT route remains experimental.
+final continuation. The experimental ChatGPT subscription route also has
+mutation and command parity through the same path with Task/Project/checkout
+isolation. No Phase V-C slice makes a sandbox claim, and the ChatGPT route
+remains experimental.
 
 V-D1 extends the provider-neutral Environment contract and existing authorized
 mutation facet with create-new text files and revision-conditional deletion. The

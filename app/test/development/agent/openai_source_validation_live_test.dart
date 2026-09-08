@@ -65,6 +65,7 @@ void main() {
         },
         providerId: openAiApiKeyProviderId,
         selectedModel: selectedModel,
+        expectedEffectiveModel: null,
         evidenceLabel: 'V-C3',
         startProvider: (SourceCodingLiveHarness harness) =>
             startOpenAiApiKeyProvider(
@@ -93,6 +94,7 @@ void main() {
         hostEnvironment: sourceCodingChatGptHostEnvironment(),
         providerId: openAiChatGptProviderId,
         selectedModel: selectedModel,
+        expectedEffectiveModel: selectedModel,
         evidenceLabel: 'ChatGPT subscription validation',
         startProvider: (SourceCodingLiveHarness harness) =>
             startOpenAiChatGptProvider(
@@ -118,6 +120,7 @@ Future<void> _runSourceValidation({
   required Map<String, String> hostEnvironment,
   required String providerId,
   required String selectedModel,
+  required String? expectedEffectiveModel,
   required String evidenceLabel,
   required Future<SourceCodingLiveProviderActivation> Function(
     SourceCodingLiveHarness harness,
@@ -180,6 +183,15 @@ Future<void> _runSourceValidation({
     originalText: originalProjectText,
     expectedText: expectedTaskText,
   );
+  if (expectedEffectiveModel != null) {
+    expect(
+      evidence.effectiveModel,
+      expectedEffectiveModel,
+      reason:
+          'The experimental ChatGPT parity baseline must not silently '
+          'substitute the selected model.',
+    );
+  }
   final EnvironmentTextFile resultingFile = await harness.readEnvironmentFile(
     sourceCodingStrategyPath,
   );
