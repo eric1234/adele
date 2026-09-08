@@ -67,8 +67,12 @@ model continuation. An opt-in paid OpenAI API-key full-stack smoke now also
 proves real-model `read_file` opaque-revision flow into `apply_patch`, mutation
 confined to the Task Git worktree, post-write observation, and model
 continuation. A separate paid OpenAI API-key smoke proves real-model direct-argv
-`git diff --check` validation and continuation after that mutation. Experimental
-ChatGPT mutation and command parity are not proven.
+`git diff --check` validation and continuation after that mutation. A separately
+gated experimental ChatGPT subscription-backed smoke proves the same real-model
+`read_file` -> `apply_patch` -> direct-argv `run_command` -> continuation path
+through the current classic Responses profile, including Task-worktree mutation
+and Project/checkout isolation. This remains experimental interoperability
+evidence rather than a stable OpenAI integration contract.
 
 Phase V-D1 completes the practical bounded UTF-8 source-file mutation set with
 create-new-only `create_file` and opaque-revision-conditional `delete_file` over
@@ -336,7 +340,7 @@ V-B3 adds an opt-in paid OpenAI API-key proof that a real model carries the
 model-visible opaque revision from `read_file` into `apply_patch`, mutates only
 the Task worktree, observes the result, and continues. Production
 orchestration-strategy registration/binding, a plugin-owned Chat strategy,
-experimental ChatGPT mutation, general whole-file overwrite,
+stable ChatGPT provider support, general whole-file overwrite,
 directory/move/copy/binary operations, complete strategy-bound Session
 lifecycle, and SCM/review integration remain later work rather than settled
 interfaces.
@@ -349,7 +353,10 @@ real-Git vertical validates the exact Task-worktree edit with direct
 `git diff --check` arguments before model continuation. V-C3's separate paid
 opt-in API-key smoke proves that combined path with a real OpenAI model, the
 model-visible opaque revision, direct argv, normal command policy/outcome, and
-final continuation. No Phase V-C slice makes a sandbox claim.
+final continuation. The experimental ChatGPT subscription route also has
+mutation and command parity through the same path with Task/Project/checkout
+isolation. No Phase V-C slice makes a sandbox claim, and the ChatGPT route
+remains experimental.
 
 V-D1 extends the provider-neutral Environment contract and existing authorized
 mutation facet with create-new text files and revision-conditional deletion. The

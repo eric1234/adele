@@ -30,8 +30,11 @@ const String sourceCodingInstructions =
     'then call read_file with the relative path returned by search before '
     'answering.';
 const String openAiApiKeyProviderId = 'dev.adele.openai.api-key';
+const String openAiChatGptProviderId = 'dev.adele.openai.chatgpt-experimental';
+const String sourceCodingChatGptDefaultModel = 'gpt-5.5';
 
 const String _openAiPluginId = 'dev.adele.openai';
+const String _openAiChatGptConfigurationContext = 'chatgpt-experimental';
 const String _gitEnvironmentPluginId = 'dev.adele.plugin.git-environment';
 const String _gitEnvironmentProviderId = 'dev.adele.environment.git-worktree';
 
@@ -346,6 +349,68 @@ Future<SourceCodingLiveProviderActivation> startOpenAiApiKeyProvider({
   return SourceCodingLiveProviderActivation(connection, registration);
 }
 
+Map<String, String> sourceCodingChatGptHostEnvironment() {
+  final Map<String, String> environment = <String, String>{
+    // The backend currently also establishes its default API-key context.
+    'OPENAI_API_KEY': 'unused-live-source-coding-key',
+    'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE': _requiredEnvironment(
+      'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE',
+    ),
+  };
+  for (final String name in <String>[
+    'ADELE_OPENAI_CHATGPT_CLIENT_ID',
+    'ADELE_OPENAI_CHATGPT_INSTANCE_ID',
+    'ADELE_OPENAI_CHATGPT_OAUTH_ISSUER',
+    'ADELE_OPENAI_CHATGPT_REDIRECT_URI',
+    'ADELE_OPENAI_CHATGPT_ENDPOINT',
+  ]) {
+    final String? value = Platform.environment[name];
+    if (value != null && value.trim().isNotEmpty) environment[name] = value;
+  }
+  if (!environment.containsKey('ADELE_OPENAI_CHATGPT_CLIENT_ID')) {
+    environment['ADELE_OPENAI_CHATGPT_EXPERIMENTAL_CODEX_CLIENT'] = '1';
+  }
+  return environment;
+}
+
+String sourceCodingChatGptSelectedModel() {
+  final String? configured =
+      Platform.environment['ADELE_OPENAI_CHATGPT_TEST_MODEL'];
+  return configured == null || configured.trim().isEmpty
+      ? sourceCodingChatGptDefaultModel
+      : configured;
+}
+
+Future<SourceCodingLiveProviderActivation> startOpenAiChatGptProvider({
+  required PluginBackendHost host,
+  required CapabilityRegistry registry,
+  required File artifact,
+}) async {
+  final ProviderDescriptor descriptor = ProviderDescriptor(
+    id: ProviderId(openAiChatGptProviderId),
+    capability: modelProviderCapability,
+    pluginId: _openAiPluginId,
+    displayName: 'Experimental ChatGPT',
+    serviceId: modelProviderServiceId,
+  );
+  final PluginBackendConnection connection = await host.startPlugin(
+    pluginId: _openAiPluginId,
+    artifactUri: artifact.uri,
+  );
+  final CapabilityRegistration registration = registry.register(
+    provider: descriptor,
+    endpoint: AdeleRequestChannelEndpoint(
+      channel: connection.channelFor(
+        connection.configurationContext(_openAiChatGptConfigurationContext),
+        descriptor.serviceId,
+      ),
+      serviceId: descriptor.serviceId,
+      isAvailable: () => !connection.isClosed,
+    ),
+  );
+  return SourceCodingLiveProviderActivation(connection, registration);
+}
+
 final class SourceCodingLiveProviderActivation {
   const SourceCodingLiveProviderActivation(this.connection, this.registration);
 
@@ -537,6 +602,14 @@ Future<void> _closeResources(List<Future<void> Function()> actions) async {
   if (firstError != null) {
     Error.throwWithStackTrace(firstError, firstStackTrace!);
   }
+}
+
+String _requiredEnvironment(String name) {
+  final String? value = Platform.environment[name];
+  if (value == null || value.trim().isEmpty) {
+    throw StateError('$name is required for ChatGPT source-coding live tests.');
+  }
+  return value;
 }
 
 Future<PluginCapabilityActivation> _startEnvironmentProvider({

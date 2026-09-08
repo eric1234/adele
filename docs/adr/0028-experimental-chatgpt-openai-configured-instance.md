@@ -159,24 +159,21 @@ general or ADELE-specific third-party integration contract. Exact route,
 headers, OAuth parameters, claims, and accepted request fields must be
 revalidated before shipping or material extension.
 
-On 2026-08-16, the development command completed a real browser login, token
-exchange, account-bound credential persistence, and a live streamed
-`gpt-5.4` Responses invocation through the direct ChatGPT route. The provider
-received an authoritative `OK` output and completed semantic terminal. This is
-positive production-interoperability evidence for the current implementation;
-it does not convert the source-visible route or client identity into a supported
-third-party contract. The equivalent automated test remains explicitly opt-in
-and requires a local credential file.
+Current interoperability evidence includes a real browser OAuth login, token
+exchange, account-bound credential persistence, and subscription-backed
+streamed Responses invocation. The maintained classic Responses-compatible
+fallback is `gpt-5.5`; provider-only and full Session source-coding live smokes
+complete with it. The source-coding evidence includes real-model `read_file` ->
+`apply_patch` -> direct-argv `run_command("git", ["diff", "--check"])` -> final
+continuation, with the exact model-visible read revision and mutation confined
+to the disposable Task Git worktree while Project source and the launching
+checkout remain unchanged.
 
-On 2026-09-07, that account's authenticated Codex model catalog no longer
-advertised `gpt-5.4`; the backend rejected it with HTTP 400 after its retirement.
-The catalog advertised `gpt-5.5` as a classic Responses model, and both the
-provider-only stream and full Session search/read continuation completed with
-that model. Development/live defaults therefore moved to `gpt-5.5`. Newer
-advertised models used the distinct Responses Lite profile, which this
-experimental provider does not yet implement. Account-aware model discovery and
-classic/Lite profile selection remain required before treating ChatGPT auth as a
-shipping primary-provider path.
+Authenticated account-catalog evidence indicates that newer advertised models
+use the distinct Responses Lite profile, which this experimental provider does
+not implement. Account-aware model discovery, classic/Lite profile selection,
+production readiness, and a stable third-party OpenAI integration contract
+remain unproven or deferred.
 
 ## Consequences
 
