@@ -66,10 +66,14 @@ opaque-revision flow through `apply_patch`, mutation confined to the Task Git
 worktree, post-write observation, and continuation. A distinct paid API-key
 smoke proves real-model direct-argv `git diff --check` through `run_command`,
 model-visible command-result interpretation, and final continuation after that
-edit. These proofs do not establish experimental ChatGPT mutation or command
-parity, the final product workflow, strategy-bound Session persistence, stock UI
-composition, general whole-file overwrite, directory/move/copy/binary mutation,
-fine-grained command classification, or background command execution.
+edit. A separately gated experimental ChatGPT subscription-backed smoke proves
+the same read -> patch -> direct-argv validation -> continuation sequence with
+selected and effective model `gpt-5.5`, while preserving Task-worktree,
+Project-source, and checkout isolation. This evidence does not make that route a
+stable OpenAI integration contract or establish the final product workflow,
+strategy-bound Session persistence, stock UI composition, general whole-file
+overwrite, directory/move/copy/binary mutation, fine-grained command
+classification, or background command execution.
 `DevelopmentToolLoopStrategy` and `EnvironmentRuntime` remain provisional
 application/domain-specific implementation rather than production orchestration
 or a general extension-runtime pattern.
@@ -83,11 +87,12 @@ Project/Task/Environment establishment, Session authority, plugin-contributed
 Search and Read File tools, provisional orchestration, and real model
 continuation. A separate paid API-key smoke validates real-model `read_file`
 opaque-revision flow through `apply_patch`, Task-worktree-only mutation, and
-continuation; experimental ChatGPT live evidence remains read/search-only.
-A separate paid API-key source-validation smoke has completed the combined
-real-model `read_file` -> `apply_patch` -> direct-argv `run_command` ->
-continuation path successfully, including exact Task-worktree and source-copy
-isolation evidence.
+continuation. A separate paid API-key source-validation smoke and an
+independently gated experimental ChatGPT subscription-backed smoke have
+completed the combined real-model `read_file` -> `apply_patch` -> direct-argv
+`run_command` -> continuation path successfully, including exact Task-worktree
+and source-copy isolation evidence. The ChatGPT proof used selected and
+effective model `gpt-5.5` and does not change the route's experimental status.
 
 `ADELE_OPENAI_SOURCE_CODING_LIVE_TEST=1` enables the paid API-key full-stack
 smoke when `OPENAI_API_KEY` and `ADELE_OPENAI_TEST_MODEL` are also configured.
@@ -98,8 +103,13 @@ API-key source-edit and command-validation smoke with the same credentials and
 model.
 `ADELE_OPENAI_CHATGPT_LIVE_TEST=1` enables the experimental ChatGPT
 subscription-route full-stack smoke with
-`ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE`. All four remain opt-in and are excluded
-from normal CI.
+`ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE`.
+`ADELE_OPENAI_CHATGPT_SOURCE_VALIDATION_LIVE_TEST=1` independently enables the
+experimental ChatGPT source-edit and command-validation smoke with the same
+credential configuration. Both ChatGPT app smokes honor
+`ADELE_OPENAI_CHATGPT_TEST_MODEL` and otherwise use the maintained classic
+Responses fallback `gpt-5.5`. All five remain opt-in and are excluded from
+normal CI.
 
 See `docs/architecture/overview.md`, `docs/architecture/plugin-extension-model.md`,
 and ADR 0031.

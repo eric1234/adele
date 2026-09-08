@@ -178,6 +178,17 @@ experimental provider does not yet implement. Account-aware model discovery and
 classic/Lite profile selection remain required before treating ChatGPT auth as a
 shipping primary-provider path.
 
+On 2026-09-08, a separately gated app-level source-validation smoke used the
+subscription-backed configured context with selected and effective model
+`gpt-5.5` to complete real-model `read_file` -> `apply_patch` -> direct-argv
+`run_command("git", ["diff", "--check"])` -> final continuation. The model used
+the exact opaque revision exposed by its prior read, the command exited zero,
+and the mutation remained confined to the disposable Task Git worktree while
+the Project source and launching checkout remained unchanged. This proves
+mutation and command parity for the current classic Responses profile; it does
+not add Responses Lite, account-aware model selection, production readiness, or
+a stable third-party OpenAI contract.
+
 ## Consequences
 
 - B5a is proven with two independently authenticated OpenAI contexts in one AOT

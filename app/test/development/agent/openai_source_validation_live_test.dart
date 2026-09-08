@@ -34,12 +34,16 @@ const String _validationInstructions =
     'After a successful validation result, report completion.';
 
 void main() {
-  final bool enabled =
+  final bool apiKeyEnabled =
       Platform.environment['ADELE_OPENAI_SOURCE_VALIDATION_LIVE_TEST'] == '1';
+  final bool chatGptEnabled =
+      Platform
+          .environment['ADELE_OPENAI_CHATGPT_SOURCE_VALIDATION_LIVE_TEST'] ==
+      '1';
   late SourceCodingLiveArtifacts artifacts;
 
   setUpAll(() async {
-    if (!enabled) return;
+    if (!apiKeyEnabled && !chatGptEnabled) return;
     artifacts = await SourceCodingLiveArtifacts.compile(
       'phase-v-c3-openai-source-validation-live',
     );
@@ -51,127 +55,187 @@ void main() {
       final String selectedModel = _requiredEnvironment(
         'ADELE_OPENAI_TEST_MODEL',
       );
-      final SourceCodingLiveHarness harness =
-          await SourceCodingLiveHarness.start(
-            artifacts: artifacts,
-            hostEnvironment: <String, String>{
-              'OPENAI_API_KEY': _requiredEnvironment('OPENAI_API_KEY'),
-              'ADELE_OPENAI_ENDPOINT': 'https://api.openai.com/v1/responses',
-            },
-            identity: 'openai-api-key-validation',
-            taskTitle: 'Edit and validate ADELE source with OpenAI API key',
-            enableCommandTools: true,
-          );
-      addTearDown(harness.close);
-      expect(
-        harness.catalog.materialize().tools.map(
-          (MaterializedTool tool) => tool.modelDefinition.alias,
-        ),
-        <String>[
-          'read_file',
-          'apply_patch',
-          'create_file',
-          'delete_file',
-          'search',
-          'run_command',
-        ],
-      );
-      final SourceCodingLiveProviderActivation model =
-          await startOpenAiApiKeyProvider(
-            host: harness.host,
-            registry: harness.registry,
-            artifact: artifacts.openAiArtifact,
-          );
-      addTearDown(model.close);
-      final ModelProviderCapabilityAdapter modelAdapter =
-          ModelProviderCapabilityAdapter(
-            harness.registry.resolve(
-              modelProviderCapability,
-              providerId: ProviderId(openAiApiKeyProviderId),
-            ),
-            selectedModel: selectedModel,
-          );
-      final File checkoutSource = File(
-        '${artifacts.repository}/$sourceCodingStrategyPath',
-      );
-      final String originalCheckoutText = await checkoutSource.readAsString();
-      final String originalProjectText = await harness.readProjectSourceFile(
-        sourceCodingStrategyPath,
-      );
-      expect(originalProjectText, originalCheckoutText);
-      final String expectedTaskText = _expectedMutation(originalProjectText);
-      expect(expectedTaskText, contains(_replacementFragment));
-      expect(expectedTaskText, isNot(contains(_originalFragment)));
-
-      final SourceCodingLiveResult result = await harness.run(
+      await _runSourceValidation(
+        artifacts: artifacts,
         identity: 'openai-api-key-validation',
-        model: modelAdapter,
-        userPrompt: _validationPrompt,
-        developmentInstructions: _validationInstructions,
+        taskTitle: 'Edit and validate ADELE source with OpenAI API key',
+        hostEnvironment: <String, String>{
+          'OPENAI_API_KEY': _requiredEnvironment('OPENAI_API_KEY'),
+          'ADELE_OPENAI_ENDPOINT': 'https://api.openai.com/v1/responses',
+        },
+        providerId: openAiApiKeyProviderId,
+        selectedModel: selectedModel,
+        evidenceLabel: 'V-C3',
+        startProvider: (SourceCodingLiveHarness harness) =>
+            startOpenAiApiKeyProvider(
+              host: harness.host,
+              registry: harness.registry,
+              artifact: artifacts.openAiArtifact,
+            ),
       );
-
-      final _ValidationEvidence evidence = _expectSuccessfulValidationRun(
-        result: result,
-        authority: harness.authority,
-        originalText: originalProjectText,
-        expectedText: expectedTaskText,
-      );
-      final EnvironmentTextFile resultingFile = await harness
-          .readEnvironmentFile(sourceCodingStrategyPath);
-      expect(resultingFile.text, expectedTaskText);
-      expect(resultingFile.revision, evidence.newRevision);
-      expect(resultingFile.revision, isNot(evidence.readRevision));
-      expect(
-        await harness.readTaskWorktreeFile(sourceCodingStrategyPath),
-        expectedTaskText,
-      );
-      expect(harness.taskWorktreePath, isNot(harness.projectSourcePath));
-      expect(
-        await harness.readProjectSourceFile(sourceCodingStrategyPath),
-        originalProjectText,
-      );
-      expect(await checkoutSource.readAsString(), originalCheckoutText);
-
-      // Keep successful paid-smoke evidence visible in the test transcript.
-      print('V-C3 selected model: $selectedModel');
-      print('V-C3 effective model: ${evidence.effectiveModel}');
-      print('V-C3 read revision R1: ${evidence.readRevision}');
-      print('V-C3 patch expectedRevision matched R1: true');
-      print('V-C3 resulting revision R2: ${evidence.newRevision}');
-      print(
-        'V-C3 tool proposal sequence: '
-        '${evidence.proposalAliases.join(' -> ')}',
-      );
-      print('V-C3 patch retry occurred: ${evidence.patchProposalCount > 1}');
-      print(
-        'V-C3 direct run_command succeeded on first proposal: '
-        '${evidence.commandProposalCount == 1}',
-      );
-      print(
-        'V-C3 command canonical arguments: program="git", '
-        'arguments=["diff","--check"], workingDirectory="", '
-        'timeoutSeconds=${evidence.commandTimeoutSeconds}',
-      );
-      print(
-        'V-C3 command policy target: '
-        'adele-environment:/${harness.authority.environmentId.value}/',
-      );
-      print(
-        'V-C3 command outcome: exited, exitCode=0, '
-        'effectCertainty=knownOccurred',
-      );
-      print('V-C3 final assistant: ${evidence.finalAnswer}');
-
-      await model.close();
-      await harness.close();
     },
-    skip: enabled
+    skip: apiKeyEnabled
         ? false
         : 'Set ADELE_OPENAI_SOURCE_VALIDATION_LIVE_TEST=1 and provide '
               'OPENAI_API_KEY plus ADELE_OPENAI_TEST_MODEL to enable the paid '
               'full-stack source-validation smoke.',
     timeout: const Timeout(Duration(minutes: 6)),
   );
+
+  test(
+    'experimental ChatGPT patches and validates maintained ADELE source',
+    () async {
+      final String selectedModel = sourceCodingChatGptSelectedModel();
+      await _runSourceValidation(
+        artifacts: artifacts,
+        identity: 'openai-chatgpt-validation',
+        taskTitle: 'Edit and validate ADELE source with experimental ChatGPT',
+        hostEnvironment: sourceCodingChatGptHostEnvironment(),
+        providerId: openAiChatGptProviderId,
+        selectedModel: selectedModel,
+        evidenceLabel: 'ChatGPT subscription validation',
+        startProvider: (SourceCodingLiveHarness harness) =>
+            startOpenAiChatGptProvider(
+              host: harness.host,
+              registry: harness.registry,
+              artifact: artifacts.openAiArtifact,
+            ),
+      );
+    },
+    skip: chatGptEnabled
+        ? false
+        : 'Set ADELE_OPENAI_CHATGPT_SOURCE_VALIDATION_LIVE_TEST=1 and provide '
+              'the existing ChatGPT credential configuration to enable the '
+              'experimental subscription-backed source-validation smoke.',
+    timeout: const Timeout(Duration(minutes: 6)),
+  );
+}
+
+Future<void> _runSourceValidation({
+  required SourceCodingLiveArtifacts artifacts,
+  required String identity,
+  required String taskTitle,
+  required Map<String, String> hostEnvironment,
+  required String providerId,
+  required String selectedModel,
+  required String evidenceLabel,
+  required Future<SourceCodingLiveProviderActivation> Function(
+    SourceCodingLiveHarness harness,
+  )
+  startProvider,
+}) async {
+  final SourceCodingLiveHarness harness = await SourceCodingLiveHarness.start(
+    artifacts: artifacts,
+    hostEnvironment: hostEnvironment,
+    identity: identity,
+    taskTitle: taskTitle,
+    enableCommandTools: true,
+  );
+  addTearDown(harness.close);
+  expect(
+    harness.catalog.materialize().tools.map(
+      (MaterializedTool tool) => tool.modelDefinition.alias,
+    ),
+    <String>[
+      'read_file',
+      'apply_patch',
+      'create_file',
+      'delete_file',
+      'search',
+      'run_command',
+    ],
+  );
+  final SourceCodingLiveProviderActivation model = await startProvider(harness);
+  addTearDown(model.close);
+  final ModelProviderCapabilityAdapter modelAdapter =
+      ModelProviderCapabilityAdapter(
+        harness.registry.resolve(
+          modelProviderCapability,
+          providerId: ProviderId(providerId),
+        ),
+        selectedModel: selectedModel,
+      );
+  final File checkoutSource = File(
+    '${artifacts.repository}/$sourceCodingStrategyPath',
+  );
+  final String originalCheckoutText = await checkoutSource.readAsString();
+  final String originalProjectText = await harness.readProjectSourceFile(
+    sourceCodingStrategyPath,
+  );
+  expect(originalProjectText, originalCheckoutText);
+  final String expectedTaskText = _expectedMutation(originalProjectText);
+  expect(expectedTaskText, contains(_replacementFragment));
+  expect(expectedTaskText, isNot(contains(_originalFragment)));
+
+  final SourceCodingLiveResult result = await harness.run(
+    identity: identity,
+    model: modelAdapter,
+    userPrompt: _validationPrompt,
+    developmentInstructions: _validationInstructions,
+  );
+
+  final _ValidationEvidence evidence = _expectSuccessfulValidationRun(
+    result: result,
+    authority: harness.authority,
+    originalText: originalProjectText,
+    expectedText: expectedTaskText,
+  );
+  final EnvironmentTextFile resultingFile = await harness.readEnvironmentFile(
+    sourceCodingStrategyPath,
+  );
+  expect(resultingFile.text, expectedTaskText);
+  expect(resultingFile.revision, evidence.newRevision);
+  expect(resultingFile.revision, isNot(evidence.readRevision));
+  expect(
+    await harness.readTaskWorktreeFile(sourceCodingStrategyPath),
+    expectedTaskText,
+  );
+  expect(harness.taskWorktreePath, isNot(harness.projectSourcePath));
+  expect(
+    await harness.readProjectSourceFile(sourceCodingStrategyPath),
+    originalProjectText,
+  );
+  expect(await checkoutSource.readAsString(), originalCheckoutText);
+
+  // Keep successful paid-smoke evidence visible in the test transcript.
+  print('$evidenceLabel selected model: $selectedModel');
+  print('$evidenceLabel effective model: ${evidence.effectiveModel}');
+  print('$evidenceLabel read revision R1: ${evidence.readRevision}');
+  print('$evidenceLabel patch expectedRevision matched R1: true');
+  print('$evidenceLabel resulting revision R2: ${evidence.newRevision}');
+  print(
+    '$evidenceLabel tool proposal sequence: '
+    '${evidence.proposalAliases.join(' -> ')}',
+  );
+  print(
+    '$evidenceLabel patch retry occurred: '
+    '${evidence.patchProposalCount > 1}',
+  );
+  print(
+    '$evidenceLabel direct run_command succeeded on first proposal: '
+    '${evidence.commandProposalCount == 1}',
+  );
+  print(
+    '$evidenceLabel command canonical arguments: program="git", '
+    'arguments=["diff","--check"], workingDirectory="", '
+    'timeoutSeconds=${evidence.commandTimeoutSeconds}',
+  );
+  print(
+    '$evidenceLabel command policy target: '
+    'adele-environment:/${harness.authority.environmentId.value}/',
+  );
+  print(
+    '$evidenceLabel command outcome: exited, exitCode=0, '
+    'effectCertainty=knownOccurred',
+  );
+  print(
+    '$evidenceLabel isolation: Task worktree changed; Project source and '
+    'launching checkout unchanged',
+  );
+  print('$evidenceLabel final assistant: ${evidence.finalAnswer}');
+
+  await model.close();
+  await harness.close();
 }
 
 _ValidationEvidence _expectSuccessfulValidationRun({
