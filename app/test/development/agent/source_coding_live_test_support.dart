@@ -365,6 +365,63 @@ final class SourceCodingLiveResult {
   final DevelopmentSessionHistory session;
 }
 
+/// A prepared tool invocation and its unique terminal outcome in a Run journal.
+final class SourceCodingToolAttempt {
+  const SourceCodingToolAttempt({
+    required this.preparedRecord,
+    required this.terminalRecord,
+  });
+
+  final ExecutionEventRecord preparedRecord;
+  final ExecutionEventRecord terminalRecord;
+
+  ToolInvocationPrepared get prepared =>
+      preparedRecord.event as ToolInvocationPrepared;
+
+  ToolOutcome get outcome => switch (terminalRecord.event) {
+    ToolExecutionCompleted(:final outcome) ||
+    ToolInvocationCompleted(:final outcome) => outcome,
+    _ => throw StateError('The tool attempt has no terminal outcome.'),
+  };
+}
+
+/// Correlates each prepared invocation of [alias] with its terminal event.
+///
+/// A missing or duplicate terminal event is rejected so live tests cannot
+/// accidentally assert against incomplete or ambiguous Run evidence.
+List<SourceCodingToolAttempt> sourceCodingToolAttempts(
+  List<ExecutionEventRecord> records,
+  String alias,
+) => records
+    .where(
+      (ExecutionEventRecord record) =>
+          record.event is ToolInvocationPrepared &&
+          (record.event as ToolInvocationPrepared)
+                  .invocation
+                  .tool
+                  .modelDefinition
+                  .alias ==
+              alias,
+    )
+    .map((ExecutionEventRecord preparedRecord) {
+      final ToolInvocationPrepared prepared =
+          preparedRecord.event as ToolInvocationPrepared;
+      final ExecutionEventRecord terminalRecord = records.singleWhere(
+        (ExecutionEventRecord record) => switch (record.event) {
+          ToolExecutionCompleted(:final invocationId) ||
+          ToolInvocationCompleted(
+            :final invocationId,
+          ) => invocationId == prepared.invocation.id,
+          _ => false,
+        },
+      );
+      return SourceCodingToolAttempt(
+        preparedRecord: preparedRecord,
+        terminalRecord: terminalRecord,
+      );
+    })
+    .toList(growable: false);
+
 void expectSuccessfulSourceCodingRun({
   required SourceCodingLiveResult result,
   required SessionEnvironmentAuthority authority,
