@@ -182,23 +182,32 @@ _ValidationEvidence _expectSuccessfulValidationRun({
 }) {
   expect(result.run.state, RunState.completed);
   final List<ExecutionEventRecord> records = result.run.journal.records;
-  final List<_ToolAttempt> reads = _toolAttempts(records, 'read_file');
-  final List<_ToolAttempt> patches = _toolAttempts(records, 'apply_patch');
-  final List<_ToolAttempt> commands = _toolAttempts(records, 'run_command');
-  expect(_toolAttempts(records, 'create_file'), isEmpty);
-  expect(_toolAttempts(records, 'delete_file'), isEmpty);
+  final List<SourceCodingToolAttempt> reads = sourceCodingToolAttempts(
+    records,
+    'read_file',
+  );
+  final List<SourceCodingToolAttempt> patches = sourceCodingToolAttempts(
+    records,
+    'apply_patch',
+  );
+  final List<SourceCodingToolAttempt> commands = sourceCodingToolAttempts(
+    records,
+    'run_command',
+  );
+  expect(sourceCodingToolAttempts(records, 'create_file'), isEmpty);
+  expect(sourceCodingToolAttempts(records, 'delete_file'), isEmpty);
   expect(reads, isNotEmpty);
   expect(patches, isNotEmpty);
   expect(commands, hasLength(1));
 
-  final List<_ToolAttempt> successfulPatches = patches
+  final List<SourceCodingToolAttempt> successfulPatches = patches
       .where(
-        (_ToolAttempt attempt) =>
+        (SourceCodingToolAttempt attempt) =>
             attempt.outcome.disposition == ToolOutcomeDisposition.success,
       )
       .toList(growable: false);
   expect(successfulPatches, hasLength(1));
-  final _ToolAttempt successfulPatch = successfulPatches.single;
+  final SourceCodingToolAttempt successfulPatch = successfulPatches.single;
   final ToolInvocation patchInvocation = successfulPatch.prepared.invocation;
   expect(
     patchInvocation.canonicalArguments['relativePath'],
@@ -219,8 +228,8 @@ _ValidationEvidence _expectSuccessfulValidationRun({
     'patch_target_ambiguous',
     environmentRevisionConflictCode,
   };
-  for (final _ToolAttempt attempt in patches.where(
-    (_ToolAttempt attempt) => !identical(attempt, successfulPatch),
+  for (final SourceCodingToolAttempt attempt in patches.where(
+    (SourceCodingToolAttempt attempt) => !identical(attempt, successfulPatch),
   )) {
     expect(attempt.outcome.disposition, ToolOutcomeDisposition.failure);
     expect(attempt.outcome.effectCertainty, EffectCertainty.knownNotOccurred);
@@ -231,7 +240,7 @@ _ValidationEvidence _expectSuccessfulValidationRun({
     );
     expect(
       reads.where(
-        (_ToolAttempt read) =>
+        (SourceCodingToolAttempt read) =>
             read.terminalRecord.sequence > attempt.terminalRecord.sequence &&
             read.terminalRecord.sequence <
                 successfulPatch.preparedRecord.sequence &&
@@ -255,8 +264,8 @@ _ValidationEvidence _expectSuccessfulValidationRun({
   final Object? expectedRevision =
       patchInvocation.canonicalArguments['expectedRevision'];
   expect(expectedRevision, isA<String>());
-  final List<_ToolAttempt> relevantReads = reads
-      .where((_ToolAttempt attempt) {
+  final List<SourceCodingToolAttempt> relevantReads = reads
+      .where((SourceCodingToolAttempt attempt) {
         return attempt.terminalRecord.sequence <
                 successfulPatch.preparedRecord.sequence &&
             attempt.outcome.disposition == ToolOutcomeDisposition.success &&
@@ -266,7 +275,7 @@ _ValidationEvidence _expectSuccessfulValidationRun({
       })
       .toList(growable: false);
   expect(relevantReads, isNotEmpty);
-  final _ToolAttempt relevantRead = relevantReads.last;
+  final SourceCodingToolAttempt relevantRead = relevantReads.last;
   final String readRevision = expectedRevision! as String;
   expect(readRevision, isNotEmpty);
   expect(
@@ -343,7 +352,7 @@ _ValidationEvidence _expectSuccessfulValidationRun({
     lessThan(successfulPatch.terminalRecord.sequence),
   );
 
-  final _ToolAttempt command = commands.single;
+  final SourceCodingToolAttempt command = commands.single;
   final ToolInvocation commandInvocation = command.prepared.invocation;
   expect(
     commandInvocation.tool.definition.id.value,
@@ -517,39 +526,6 @@ _ValidationEvidence _expectSuccessfulValidationRun({
   );
 }
 
-List<_ToolAttempt> _toolAttempts(
-  List<ExecutionEventRecord> records,
-  String alias,
-) => records
-    .where(
-      (ExecutionEventRecord record) =>
-          record.event is ToolInvocationPrepared &&
-          (record.event as ToolInvocationPrepared)
-                  .invocation
-                  .tool
-                  .modelDefinition
-                  .alias ==
-              alias,
-    )
-    .map((ExecutionEventRecord preparedRecord) {
-      final ToolInvocationPrepared prepared =
-          preparedRecord.event as ToolInvocationPrepared;
-      final ExecutionEventRecord terminalRecord = records.singleWhere(
-        (ExecutionEventRecord record) => switch (record.event) {
-          ToolExecutionCompleted(:final invocationId) ||
-          ToolInvocationCompleted(
-            :final invocationId,
-          ) => invocationId == prepared.invocation.id,
-          _ => false,
-        },
-      );
-      return _ToolAttempt(
-        preparedRecord: preparedRecord,
-        terminalRecord: terminalRecord,
-      );
-    })
-    .toList(growable: false);
-
 ExecutionEventRecord _policyRecord(
   List<ExecutionEventRecord> records,
   ToolInvocationId invocationId,
@@ -647,25 +623,6 @@ String _requiredEnvironment(String name) {
     throw StateError('$name is required for the OpenAI validation live test.');
   }
   return value;
-}
-
-final class _ToolAttempt {
-  const _ToolAttempt({
-    required this.preparedRecord,
-    required this.terminalRecord,
-  });
-
-  final ExecutionEventRecord preparedRecord;
-  final ExecutionEventRecord terminalRecord;
-
-  ToolInvocationPrepared get prepared =>
-      preparedRecord.event as ToolInvocationPrepared;
-
-  ToolOutcome get outcome => switch (terminalRecord.event) {
-    ToolExecutionCompleted(:final outcome) ||
-    ToolInvocationCompleted(:final outcome) => outcome,
-    _ => throw StateError('The tool attempt has no terminal outcome.'),
-  };
 }
 
 final class _ValidationEvidence {
