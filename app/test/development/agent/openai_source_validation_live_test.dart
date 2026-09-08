@@ -183,13 +183,30 @@ Future<void> _runSourceValidation({
     originalText: originalProjectText,
     expectedText: expectedTaskText,
   );
+  final List<String?> completedEffectiveModels = result.run.journal.records
+      .map((ExecutionEventRecord record) => record.event)
+      .whereType<ModelInvocationSettled>()
+      .where(
+        (ModelInvocationSettled settlement) =>
+            settlement.settlement == ModelSettlement.completed,
+      )
+      .map(
+        (ModelInvocationSettled settlement) =>
+            settlement.metadata.effectiveModel,
+      )
+      .toList(growable: false);
   if (expectedEffectiveModel != null) {
     expect(
-      evidence.effectiveModel,
-      expectedEffectiveModel,
+      completedEffectiveModels,
+      isNotEmpty,
+      reason: 'The successful ChatGPT Run had no completed model invocation.',
+    );
+    expect(
+      completedEffectiveModels,
+      everyElement(expectedEffectiveModel),
       reason:
           'The experimental ChatGPT parity baseline must not silently '
-          'substitute the selected model.',
+          'substitute the selected model for any completed invocation.',
     );
   }
   final EnvironmentTextFile resultingFile = await harness.readEnvironmentFile(
@@ -212,6 +229,16 @@ Future<void> _runSourceValidation({
   // Keep successful paid-smoke evidence visible in the test transcript.
   print('$evidenceLabel selected model: $selectedModel');
   print('$evidenceLabel effective model: ${evidence.effectiveModel}');
+  if (expectedEffectiveModel != null) {
+    print(
+      '$evidenceLabel completed model invocation count: '
+      '${completedEffectiveModels.length}',
+    );
+    print(
+      '$evidenceLabel completed effective models: '
+      '${completedEffectiveModels.join(' -> ')}',
+    );
+  }
   print('$evidenceLabel read revision R1: ${evidence.readRevision}');
   print('$evidenceLabel patch expectedRevision matched R1: true');
   print('$evidenceLabel resulting revision R2: ${evidence.newRevision}');
