@@ -594,6 +594,7 @@ Map<String, Object?> developmentSelfHostingSummaryJson({
   final List<_ModelTerminal> modelTerminals = <_ModelTerminal>[];
   final List<ModelInvocationStarted> modelStarts = <ModelInvocationStarted>[];
   final List<_Proposal> proposals = <_Proposal>[];
+  final Map<ModelInvocationId, int> proposalCounts = <ModelInvocationId, int>{};
   final Map<ProviderToolProposal, ToolInvocationPrepared> preparedByProposal =
       HashMap<ProviderToolProposal, ToolInvocationPrepared>.identity();
   final List<({int sequence, ToolInvocationPrepared event})> prepared =
@@ -630,6 +631,11 @@ Map<String, Object?> developmentSelfHostingSummaryJson({
         :final invocationId,
         item: final ModelToolProposalOutput item,
       ):
+        proposalCounts.update(
+          invocationId,
+          (int count) => count + 1,
+          ifAbsent: () => 1,
+        );
         proposals.add(
           _Proposal(
             sequence: record.sequence,
@@ -650,6 +656,10 @@ Map<String, Object?> developmentSelfHostingSummaryJson({
     }
   }
 
+  final List<int> toolProposalCounts = <int>[
+    for (final ModelInvocationStarted start in modelStarts)
+      proposalCounts[start.invocationId] ?? 0,
+  ];
   final List<Map<String, Object?>> proposalJson = <Map<String, Object?>>[
     for (final _Proposal proposal in proposals)
       <String, Object?>{
@@ -850,6 +860,23 @@ Map<String, Object?> developmentSelfHostingSummaryJson({
       'totalBytesRead': totalBytesRead,
       'patchEditCount': patchEditCount,
       'toolProposalCount': proposalJson.length,
+      'modelInvocationsWithToolProposals': toolProposalCounts
+          .where((int count) => count > 0)
+          .length,
+      'multiProposalModelInvocations': toolProposalCounts
+          .where((int count) => count > 1)
+          .length,
+      'maxToolProposalsPerModelInvocation': toolProposalCounts.fold<int>(
+        0,
+        (int maximum, int count) => count > maximum ? count : maximum,
+      ),
+      'toolProposalCountsByModelInvocation': <Map<String, Object?>>[
+        for (var index = 0; index < modelStarts.length; index++)
+          <String, Object?>{
+            'modelInvocationId': modelStarts[index].invocationId.value,
+            'toolProposalCount': toolProposalCounts[index],
+          },
+      ],
       'preparedToolCount': prepared.length,
       'executedToolCount': executed.length,
       'failedToolCount': failedToolCount,
@@ -932,6 +959,18 @@ String developmentSelfHostingSummaryMarkdown(Map<String, Object?> summary) {
     ..writeln('| Fact | Value |')
     ..writeln('| --- | ---: |')
     ..writeln('| Tool proposals | ${aggregates['toolProposalCount']} |')
+    ..writeln(
+      '| Model invocations with tool proposals | '
+      '${aggregates['modelInvocationsWithToolProposals']} |',
+    )
+    ..writeln(
+      '| Multi-proposal model invocations | '
+      '${aggregates['multiProposalModelInvocations']} |',
+    )
+    ..writeln(
+      '| Max tool proposals per model invocation | '
+      '${aggregates['maxToolProposalsPerModelInvocation']} |',
+    )
     ..writeln('| Prepared tools | ${aggregates['preparedToolCount']} |')
     ..writeln('| Executed tools | ${aggregates['executedToolCount']} |')
     ..writeln('| Failed tools | ${aggregates['failedToolCount']} |')

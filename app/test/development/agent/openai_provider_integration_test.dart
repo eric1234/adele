@@ -73,8 +73,20 @@ void main() {
   });
 
   test(
-    'runs OpenAI Responses through AOT provider, ADELE tool, and continuation',
+    'runs multiple AOT OpenAI proposals through sequential approvals and one continuation',
     () async {
+      final List<Map<String, Object?>> calls = <Map<String, Object?>>[
+        for (var index = 1; index <= 3; index++)
+          <String, Object?>{
+            'type': 'function_call',
+            'id': 'fc_$index',
+            'call_id': 'call_$index',
+            'name': 'inspect_resource',
+            'arguments': '{"uri":"file:///tmp/adele-phase-iv-$index.txt"}',
+            'namespace': 'resources_$index',
+            'status': 'completed',
+          },
+      ];
       final List<Map<String, Object?>> outbound = <Map<String, Object?>>[];
       final HttpServer responses = await HttpServer.bind(
         InternetAddress.loopbackIPv4,
@@ -104,33 +116,27 @@ void main() {
                 );
                 _sse(
                   request.response,
-                  _outputDone(_message('msg_1', 'Inspecting the resource.')),
+                  _outputDone(_message('msg_1', 'Inspecting the resources.')),
                 );
                 _sse(
                   request.response,
                   _outputDone(_reasoning('rs_b', 'encrypted-b')),
                 );
-                _sse(
-                  request.response,
-                  _outputDone(<String, Object?>{
-                    'type': 'function_call',
-                    'id': 'fc_1',
-                    'call_id': 'call_1',
-                    'name': 'inspect_resource',
-                    'arguments': '{"uri":"file:///tmp/adele-phase-iv.txt"}',
-                    'status': 'completed',
-                  }),
-                );
+                _sse(request.response, _outputDone(calls[0]));
                 _sse(
                   request.response,
                   _outputDone(_reasoning('rs_c', 'encrypted-c')),
                 );
+                for (final Map<String, Object?> call in calls.skip(1)) {
+                  _sse(request.response, _outputDone(call));
+                }
                 _sse(request.response, _completed('resp_1'));
               } else {
+                expect(outbound, hasLength(2));
                 _sse(
                   request.response,
                   _outputDone(
-                    _message('msg_2', 'The resource inspection is complete.'),
+                    _message('msg_2', 'The resource inspections are complete.'),
                   ),
                 );
                 _sse(request.response, _completed('resp_2'));
@@ -195,7 +201,7 @@ void main() {
           );
       final DevelopmentSessionHistory session = DevelopmentSessionHistory(
         SessionId('session-openai-b4'),
-      )..append(UserSessionMessage('Inspect the Phase IV resource.'));
+      )..append(UserSessionMessage('Inspect the three Phase IV resources.'));
       final AgentRun run = AgentRun(
         id: RunId('run-openai-b4'),
         sessionId: session.id,
@@ -212,32 +218,104 @@ void main() {
 
       await strategy.start();
 
-      expect(run.state, RunState.waiting);
-      expect(outbound, hasLength(1));
-      expect(outbound.single['parallel_tool_calls'], isFalse);
-      final ToolApprovalInterruption approval =
-          run.interruptions.values.single as ToolApprovalInterruption;
-      expect(approval.toolId, resourceInspectionToolId);
-      expect(approval.canonicalArguments, <String, Object?>{
-        'uri': 'file:///tmp/adele-phase-iv.txt',
-      });
+      final List<ModelToolProposalOutput> proposals = run.journal.records
+          .map((record) => record.event)
+          .whereType<ModelOutputObserved>()
+          .map((event) => event.item)
+          .whereType<ModelToolProposalOutput>()
+          .toList(growable: false);
+      expect(proposals.map((output) => output.providerItemId), <String>[
+        'fc_1',
+        'fc_2',
+        'fc_3',
+      ]);
+      for (var index = 1; index <= 3; index++) {
+        final ModelToolProposalOutput output = proposals[index - 1];
+        expect(output.proposal.providerCallId, 'call_$index');
+        expect(output.proposal.arguments, <String, Object?>{
+          'uri': 'file:///tmp/adele-phase-iv-$index.txt',
+        });
+        expect(
+          output.providerNativeMetadata!.kind,
+          'openai.responses.semantic-item.v1',
+        );
+        expect(output.providerNativeMetadata!.compatibility, <String, Object?>{
+          'version': 1,
+          'itemType': 'function_call',
+        });
+        expect(output.providerNativeMetadata!.data, <String, Object?>{
+          'namespace': 'resources_$index',
+        });
+      }
 
-      await strategy.resolveApproval(
-        ToolApprovalResolution(
-          interruptionId: approval.id,
-          toolInvocationId: approval.toolInvocationId,
-          approved: true,
-        ),
+      final List<ToolInvocationId> approvedInvocations = <ToolInvocationId>[];
+      for (var index = 1; index <= 3; index++) {
+        expect(run.state, RunState.waiting);
+        expect(outbound, hasLength(1));
+        expect(outbound.single['parallel_tool_calls'], isTrue);
+        expect(modelAdapter.invocationCount, 1);
+        expect(model.streamCount, 1);
+        expect(tool.invocationCount, index - 1);
+        expect(inspector.requestCount, index - 1);
+        expect(
+          run.journal.records
+              .map((record) => record.event)
+              .whereType<ToolExecutionCompleted>(),
+          hasLength(index - 1),
+        );
+        final ToolApprovalInterruption approval =
+            run.interruptions.values.single as ToolApprovalInterruption;
+        expect(approval.toolId, resourceInspectionToolId);
+        expect(approval.canonicalArguments, <String, Object?>{
+          'uri': 'file:///tmp/adele-phase-iv-$index.txt',
+        });
+        approvedInvocations.add(approval.toolInvocationId);
+        await strategy.resolveApproval(
+          ToolApprovalResolution(
+            interruptionId: approval.id,
+            toolInvocationId: approval.toolInvocationId,
+            approved: true,
+          ),
+        );
+      }
+
+      expect(
+        run.journal.records
+            .map(
+              (record) => switch (record.event) {
+                ModelInvocationStarted() => 'model started',
+                ModelInvocationSettled() => 'model settled',
+                ToolExecutionStarted(:final invocationId) =>
+                  'start ${invocationId.value}',
+                ToolExecutionCompleted(:final invocationId) =>
+                  'end ${invocationId.value}',
+                _ => null,
+              },
+            )
+            .whereType<String>(),
+        <String>[
+          'model started',
+          'model settled',
+          for (final ToolInvocationId id in approvedInvocations) ...<String>[
+            'start ${id.value}',
+            'end ${id.value}',
+          ],
+          'model started',
+          'model settled',
+        ],
       );
 
       expect(run.state, RunState.completed);
-      expect(tool.invocationCount, 1);
+      expect(tool.invocationCount, 3);
+      expect(inspector.requestCount, 3);
       expect(modelAdapter.invocationCount, 2);
+      expect(model.streamCount, 2);
+      expect(model.requestCount, 0);
       expect(outbound, hasLength(2));
-      expect(outbound[1]['parallel_tool_calls'], isFalse);
+      expect(outbound[1]['parallel_tool_calls'], isTrue);
       expect(
         (session.snapshot().entries.last as AssistantSessionMessage).content,
-        'The resource inspection is complete.',
+        'The resource inspections are complete.',
       );
       final List<Object?> secondInput = outbound[1]['input']! as List<Object?>;
       expect(
@@ -251,38 +329,39 @@ void main() {
           'reasoning',
           'function_call',
           'reasoning',
+          'function_call',
+          'function_call',
+          'function_call_output',
+          'function_call_output',
           'function_call_output',
         ],
       );
       expect(secondInput[1], _reasoning('rs_a', 'encrypted-a'));
       expect(secondInput[3], _reasoning('rs_b', 'encrypted-b'));
       expect(secondInput[5], _reasoning('rs_c', 'encrypted-c'));
-      expect(secondInput[4], <String, Object?>{
-        'type': 'function_call',
-        'id': 'fc_1',
-        'call_id': 'call_1',
-        'name': 'inspect_resource',
-        'arguments': '{"uri":"file:///tmp/adele-phase-iv.txt"}',
-        'status': 'completed',
-      });
+      expect(secondInput[4], calls[0]);
+      expect(secondInput[6], calls[1]);
+      expect(secondInput[7], calls[2]);
       expect(secondInput[2], <String, Object?>{
         'type': 'message',
         'role': 'assistant',
         'content': <Object?>[
           <String, Object?>{
             'type': 'output_text',
-            'text': 'Inspecting the resource.',
+            'text': 'Inspecting the resources.',
             'annotations': <Object?>[],
           },
         ],
         'id': 'msg_1',
         'status': 'completed',
       });
-      expect((secondInput[6]! as Map<String, Object?>)['call_id'], 'call_1');
-      expect(
-        (secondInput[6]! as Map<String, Object?>)['output'],
-        contains('Basic inspection'),
-      );
+      for (var index = 1; index <= 3; index++) {
+        expect(secondInput[7 + index], <String, Object?>{
+          'type': 'function_call_output',
+          'call_id': 'call_$index',
+          'output': 'Basic inspection of file:///tmp/adele-phase-iv-$index.txt',
+        });
+      }
 
       await model.close();
       await inspector.close();

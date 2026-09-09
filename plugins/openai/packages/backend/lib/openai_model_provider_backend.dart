@@ -445,7 +445,8 @@ Map<String, Object?> _lowerRequest(
       ModelProviderToolChoice.auto => 'auto',
       ModelProviderToolChoice.none => 'none',
     },
-    'parallel_tool_calls': false,
+    // Permit multiple calls in one response, not concurrent host execution.
+    'parallel_tool_calls': true,
     if (request.maxOutputTokens != null)
       'max_output_tokens': request.maxOutputTokens,
     'include': <String>['reasoning.encrypted_content'],

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:adele_desktop/development/agent/development_agent_support.dart';
 import 'package:adele_desktop/development/agent/development_self_hosting.dart';
 import 'package:adele_desktop/development/agent/development_self_hosting_report.dart';
 import 'package:adele_desktop/development/agent/development_self_hosting_runner.dart';
@@ -305,6 +306,161 @@ void main() {
       ),
       isNull,
     );
+  });
+
+  test('reports deterministic proposal counts in model-start order', () {
+    final DevelopmentSessionHistory session = DevelopmentSessionHistory(
+      SessionId('session-proposal-counts'),
+    );
+    final AgentRun run = AgentRun(
+      id: RunId('run-proposal-counts'),
+      sessionId: session.id,
+    )..start();
+    // Reuse aliases and call IDs across turns; only model invocation IDs group
+    // proposals. No preparation or execution is needed for reporter evidence.
+    for (final (String id, int count) in <(String, int)>[
+      ('model-z', 2),
+      ('model-a', 0),
+      ('model-m', 1),
+    ]) {
+      final ModelInvocationId invocationId = ModelInvocationId(id);
+      run.record(ModelInvocationStarted(invocationId));
+      for (var index = 0; index < count; index++) {
+        run.record(
+          ModelOutputObserved(
+            invocationId: invocationId,
+            item: ModelToolProposalOutput(
+              ProviderToolProposal(
+                providerCallId: 'call-$index',
+                alias: 'apply_patch',
+                arguments: _patchArguments,
+              ),
+            ),
+          ),
+        );
+      }
+      // Keep the last invocation unterminated to test starts, not settlements.
+      if (id != 'model-m') {
+        run.record(
+          ModelInvocationSettled(
+            invocationId: invocationId,
+            settlement: ModelSettlement.completed,
+            incompleteReason: null,
+            metadata: ModelTerminalMetadata(effectiveModel: 'fake-model'),
+          ),
+        );
+      }
+    }
+    run.cancel();
+    final DevelopmentSelfHostingRunResult result =
+        DevelopmentSelfHostingRunResult(
+          run: run,
+          session: session,
+          executionFailure: null,
+          executionStackTrace: null,
+        );
+    final String journalBefore = jsonEncode(
+      developmentSelfHostingJournalJson(result),
+    );
+    final Map<String, Object?> summary = developmentSelfHostingSummaryJson(
+      result: result,
+      selectedModel: 'fake-model',
+      git: _emptyGitEvidence,
+    );
+    final Map<String, Object?> aggregates =
+        summary['aggregates']! as Map<String, Object?>;
+    expect(aggregates['toolProposalCount'], 3);
+    expect(aggregates['modelInvocationsWithToolProposals'], 2);
+    expect(aggregates['multiProposalModelInvocations'], 1);
+    expect(aggregates['maxToolProposalsPerModelInvocation'], 2);
+    expect(aggregates['toolProposalCountsByModelInvocation'], <Object?>[
+      <String, Object?>{'modelInvocationId': 'model-z', 'toolProposalCount': 2},
+      <String, Object?>{'modelInvocationId': 'model-a', 'toolProposalCount': 0},
+      <String, Object?>{'modelInvocationId': 'model-m', 'toolProposalCount': 1},
+    ]);
+    expect(aggregates['preparedToolCount'], 0);
+    expect(aggregates['executedToolCount'], 0);
+    expect(aggregates['patchEditCount'], 0);
+    final Map<String, Object?> tools =
+        summary['tools']! as Map<String, Object?>;
+    expect(tools['unpreparedProposals'], hasLength(3));
+    expect(
+      jsonEncode(tools['proposals']),
+      contains(jsonEncode(_patchArguments)),
+    );
+    final String markdown = developmentSelfHostingSummaryMarkdown(summary);
+    expect(markdown, contains('| Tool proposals | 3 |'));
+    expect(markdown, contains('| Model invocations with tool proposals | 2 |'));
+    expect(markdown, contains('| Multi-proposal model invocations | 1 |'));
+    expect(
+      markdown,
+      contains('| Max tool proposals per model invocation | 2 |'),
+    );
+    expect(markdown, isNot(contains('"edits"')));
+    expect(markdown, isNot(contains('caf\u00e9')));
+    expect(markdown, isNot(contains('\u8336')));
+    expect(markdown, isNot(contains('na\u00efve')));
+    final Map<String, Object?> repeated = developmentSelfHostingSummaryJson(
+      result: result,
+      selectedModel: 'fake-model',
+      git: _emptyGitEvidence,
+    );
+    expect(jsonEncode(repeated), jsonEncode(summary));
+    expect(developmentSelfHostingSummaryMarkdown(repeated), markdown);
+    expect(
+      jsonEncode(developmentSelfHostingJournalJson(result)),
+      journalBefore,
+    );
+  });
+
+  test('reports zero proposal metrics for empty and proposal-free Runs', () {
+    for (final bool startModel in <bool>[false, true]) {
+      final DevelopmentSessionHistory session = DevelopmentSessionHistory(
+        SessionId('session-zero-proposals'),
+      );
+      final AgentRun run = AgentRun(
+        id: RunId('run-zero-proposals'),
+        sessionId: session.id,
+      )..start();
+      if (startModel) {
+        run.record(ModelInvocationStarted(ModelInvocationId('model-zero')));
+      }
+      run.cancel();
+      final Map<String, Object?> summary = developmentSelfHostingSummaryJson(
+        result: DevelopmentSelfHostingRunResult(
+          run: run,
+          session: session,
+          executionFailure: null,
+          executionStackTrace: null,
+        ),
+        selectedModel: 'fake-model',
+        git: _emptyGitEvidence,
+      );
+      final Map<String, Object?> aggregates =
+          summary['aggregates']! as Map<String, Object?>;
+      expect(aggregates['toolProposalCount'], 0);
+      expect(aggregates['modelInvocationsWithToolProposals'], 0);
+      expect(aggregates['multiProposalModelInvocations'], 0);
+      expect(aggregates['maxToolProposalsPerModelInvocation'], 0);
+      expect(aggregates['toolProposalCountsByModelInvocation'], <Object?>[
+        if (startModel)
+          <String, Object?>{
+            'modelInvocationId': 'model-zero',
+            'toolProposalCount': 0,
+          },
+      ]);
+      final String markdown = developmentSelfHostingSummaryMarkdown(summary);
+      expect(markdown, contains('| Tool proposals | 0 |'));
+      expect(
+        markdown,
+        contains('| Model invocations with tool proposals | 0 |'),
+      );
+      expect(markdown, contains('| Multi-proposal model invocations | 0 |'));
+      expect(
+        markdown,
+        contains('| Max tool proposals per model invocation | 0 |'),
+      );
+    }
   });
 
   test(
@@ -988,6 +1144,13 @@ void main() {
     final Map<String, Object?> run = summary['run']! as Map<String, Object?>;
     expect(run['terminalState'], isNull);
     expect(summary['aggregates'], containsPair('patchEditCount', 0));
+    final Map<String, Object?> aggregates =
+        summary['aggregates']! as Map<String, Object?>;
+    expect(aggregates['toolProposalCount'], 0);
+    expect(aggregates['modelInvocationsWithToolProposals'], 0);
+    expect(aggregates['multiProposalModelInvocations'], 0);
+    expect(aggregates['maxToolProposalsPerModelInvocation'], 0);
+    expect(aggregates['toolProposalCountsByModelInvocation'], isEmpty);
     expect(
       run['failure'],
       allOf(
@@ -997,7 +1160,13 @@ void main() {
     );
     expect(
       developmentSelfHostingSummaryMarkdown(summary),
-      contains('setup failed'),
+      allOf(
+        contains('setup failed'),
+        contains('| Tool proposals | 0 |'),
+        contains('| Model invocations with tool proposals | 0 |'),
+        contains('| Multi-proposal model invocations | 0 |'),
+        contains('| Max tool proposals per model invocation | 0 |'),
+      ),
     );
   });
 }

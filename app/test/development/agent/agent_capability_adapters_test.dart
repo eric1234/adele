@@ -11,14 +11,15 @@ import 'package:resource_inspector_contract/resource_inspector_contract.dart';
 
 void main() {
   test(
-    'common adapter lowers request and maps observations and output',
+    'common adapter preserves multiple proposals and metadata through replay',
     () async {
       final _ProviderChannel channel = _ProviderChannel(
         events: Stream<ModelProviderEvent>.fromIterable(<ModelProviderEvent>[
           _delta('Inspecting '),
           _native('native-1', 'reasoning-v1'),
           _text('Inspecting.', 'text-1'),
-          _proposal('call-1', 'item-1'),
+          _proposal('call-z', 'item-z', 'file:///tmp/first.dart'),
+          _proposal('call-a', 'item-a', 'file:///tmp/second.dart'),
           _terminal(),
         ]),
       );
@@ -54,16 +55,87 @@ void main() {
           (ModelOutputItemCompleted event) =>
               (event.item as ModelToolProposalOutput).providerItemId,
           'item ID',
-          'item-1',
+          'item-z',
+        ),
+        isA<ModelOutputItemCompleted>().having(
+          (ModelOutputItemCompleted event) =>
+              (event.item as ModelToolProposalOutput).providerItemId,
+          'item ID',
+          'item-a',
         ),
         isA<ModelInvocationSettledEvent>(),
       ]);
-      final ModelToolProposalOutput proposal =
-          (events[3] as ModelOutputItemCompleted).item
-              as ModelToolProposalOutput;
-      expect(proposal.proposal.providerCallId, 'call-1');
-      expect(proposal.providerNativeMetadata!.kind, 'fixture-v1');
-      expect(proposal.providerNativeMetadata!.data['signed'], 'opaque');
+      final List<ModelToolProposalOutput> proposals = events
+          .whereType<ModelOutputItemCompleted>()
+          .map((event) => event.item)
+          .whereType<ModelToolProposalOutput>()
+          .toList(growable: false);
+      expect(proposals.map((item) => item.proposal.providerCallId), <String>[
+        'call-z',
+        'call-a',
+      ]);
+      for (var index = 0; index < proposals.length; index++) {
+        final ModelToolProposalOutput output = proposals[index];
+        expect(output.proposal.alias, 'inspect_resource');
+        expect(output.proposal.arguments, <String, Object?>{
+          'uri': index == 0
+              ? 'file:///tmp/first.dart'
+              : 'file:///tmp/second.dart',
+        });
+        expect(output.providerNativeMetadata!.kind, 'fixture-v1');
+        expect(output.providerNativeMetadata!.compatibility, <String, Object?>{
+          'route': 'fixture',
+        });
+        expect(output.providerNativeMetadata!.data, <String, Object?>{
+          'signed': '${output.proposal.providerCallId}-signature',
+        });
+      }
+
+      final _ProviderChannel replayChannel = _ProviderChannel(
+        events: Stream<ModelProviderEvent>.value(_terminal()),
+      );
+      await ModelProviderCapabilityAdapter(
+            _binding(replayChannel),
+            selectedModel: 'scripted-v1',
+          )
+          .invoke(
+            SemanticModelRequest(
+              invocationId: ModelInvocationId('replay-proposals'),
+              input: <SemanticModelInputItem>[
+                for (final ModelToolProposalOutput output in proposals)
+                  SemanticToolProposalInput(
+                    proposal: output.proposal,
+                    providerItemId: output.providerItemId,
+                    providerNativeMetadata: output.providerNativeMetadata,
+                  ),
+              ],
+              tools: MaterializedToolSet(const <MaterializedTool>[]),
+            ),
+          )
+          .toList();
+      final Map<Object?, Object?> replayRequest =
+          replayChannel.lastPayload!['request']! as Map<Object?, Object?>;
+      expect(replayRequest['input'], <Object?>[
+        for (final ModelToolProposalOutput output in proposals)
+          <String, Object?>{
+            'kind': 'toolProposal',
+            'message': null,
+            'toolProposal': <String, Object?>{
+              'callId': output.proposal.providerCallId,
+              'name': 'inspect_resource',
+              'arguments': output.proposal.arguments,
+            },
+            'toolOutcome': null,
+            'itemId': output.providerItemId,
+            'nativeMetadata': <String, Object?>{
+              'kind': 'fixture-v1',
+              'compatibility': <String, Object?>{'route': 'fixture'},
+              'data': <String, Object?>{
+                'signed': '${output.proposal.providerCallId}-signature',
+              },
+            },
+          },
+      ]);
     },
   );
 
@@ -583,7 +655,7 @@ ModelProviderEvent _native(String itemId, String kind) => ModelProviderEvent(
   terminal: null,
 );
 
-ModelProviderEvent _proposal(String callId, String itemId) =>
+ModelProviderEvent _proposal(String callId, String itemId, String uri) =>
     ModelProviderEvent(
       kind: ModelProviderEventKind.output,
       observation: null,
@@ -593,13 +665,13 @@ ModelProviderEvent _proposal(String callId, String itemId) =>
         toolProposal: ModelProviderToolProposal(
           callId: callId,
           name: 'inspect_resource',
-          arguments: const <String, Object?>{'uri': 'file:///tmp/example.dart'},
+          arguments: <String, Object?>{'uri': uri},
         ),
         itemId: itemId,
         nativeMetadata: ModelProviderNativeEnvelope(
           kind: 'fixture-v1',
-          compatibility: const <String, Object?>{},
-          data: const <String, Object?>{'signed': 'opaque'},
+          compatibility: const <String, Object?>{'route': 'fixture'},
+          data: <String, Object?>{'signed': '$callId-signature'},
         ),
       ),
       terminal: null,

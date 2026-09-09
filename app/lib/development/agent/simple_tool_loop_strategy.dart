@@ -39,6 +39,7 @@ final class DevelopmentToolLoopStrategy {
   int _nextInterruption = 1;
   bool _busy = false;
   _PendingApproval? _pendingApproval;
+  _ProposalBatch? _pendingBatch;
   ToolOutcome? _lastToolOutcome;
   ToolInvocation? _lastToolInvocation;
   MaterializedToolSet? _lastModelTools;
@@ -75,10 +76,10 @@ final class DevelopmentToolLoopStrategy {
           outcome,
           executionStarted: false,
         );
-        await _continueAfterTool(pending.invocation, outcome);
-        return;
+      } else {
+        await _execute(_policyGate.approve(resolved));
       }
-      await _execute(_policyGate.approve(resolved));
+      await _advanceProposals();
     });
   }
 
@@ -136,8 +137,7 @@ final class DevelopmentToolLoopStrategy {
         run.complete();
         return;
     }
-    final ProviderToolProposal? proposal = turn.proposal;
-    if (proposal == null) {
+    if (turn.proposals.isEmpty) {
       if (turn.text.trim().isEmpty) {
         _fail(StateError('The model completed without assistant output.'));
         return;
@@ -189,63 +189,77 @@ final class DevelopmentToolLoopStrategy {
           );
       }
     }
-    final ToolProposalResolution resolution = _invocationResolver.resolve(
-      invocationId: ToolInvocationId(
-        '${run.id.value}-tool-${_nextToolInvocation++}',
-      ),
-      proposal: proposal,
+    _pendingBatch = _ProposalBatch(
+      proposals: turn.proposals,
       tools: request.tools,
-      context: _executionContext,
     );
-    switch (resolution) {
-      case RejectedToolProposal(:final failure):
-        _runItems.add(SemanticToolProposalFailureInput(failure: failure));
-        await _advanceModel();
-      case ResolvedToolProposal(:final invocation):
-        _lastToolInvocation = invocation;
-        run.record(ToolInvocationPrepared(invocation));
-        await _applyPolicy(invocation);
+    await _advanceProposals();
+  }
+
+  Future<void> _advanceProposals() async {
+    final _ProposalBatch batch = _pendingBatch!;
+    // Drain in proposal order, retaining this exact tool generation across asks.
+    // Multiple model proposals do not imply concurrent host execution.
+    while (run.state == RunState.running &&
+        batch.nextProposal < batch.proposals.length) {
+      final ToolProposalResolution resolution = _invocationResolver.resolve(
+        invocationId: ToolInvocationId(
+          '${run.id.value}-tool-${_nextToolInvocation++}',
+        ),
+        proposal: batch.proposals[batch.nextProposal++],
+        tools: batch.tools,
+        context: _executionContext,
+      );
+      switch (resolution) {
+        case RejectedToolProposal(:final failure):
+          _runItems.add(SemanticToolProposalFailureInput(failure: failure));
+        case ResolvedToolProposal(:final invocation):
+          _lastToolInvocation = invocation;
+          run.record(ToolInvocationPrepared(invocation));
+          await _applyPolicy(invocation);
+      }
     }
+    if (run.state != RunState.running) return;
+    _pendingBatch = null;
+    await _advanceModel();
   }
 
   Future<_ModelTurn> _invokeModel(SemanticModelRequest request) async {
     run.record(ModelInvocationStarted(request.invocationId));
     final StringBuffer text = StringBuffer();
     final List<ModelOutputItem> output = <ModelOutputItem>[];
-    ProviderToolProposal? proposal;
+    final List<ProviderToolProposal> proposals = <ProviderToolProposal>[];
     try {
-      final ModelInvocationObservation
-      observation = await collectModelInvocation(
-        model.invoke(request),
-        invocationId: request.invocationId,
-        onObservation: (ModelObservation observation) {
-          run.record(
-            ModelObservationObserved(
-              invocationId: request.invocationId,
-              observation: observation,
-            ),
-          );
-        },
-        onOutput: (ModelOutputItem item) {
-          output.add(item);
-          run.record(
-            ModelOutputObserved(invocationId: request.invocationId, item: item),
-          );
-          switch (item) {
-            case ModelNativeOutput():
-              break;
-            case ModelTextOutput(:final content):
-              text.write(content);
-            case ModelToolProposalOutput(proposal: final value):
-              if (proposal != null) {
-                throw StateError(
-                  'The provisional strategy supports one proposal per model invocation.',
-                );
+      final ModelInvocationObservation observation =
+          await collectModelInvocation(
+            model.invoke(request),
+            invocationId: request.invocationId,
+            onObservation: (ModelObservation observation) {
+              run.record(
+                ModelObservationObserved(
+                  invocationId: request.invocationId,
+                  observation: observation,
+                ),
+              );
+            },
+            onOutput: (ModelOutputItem item) {
+              output.add(item);
+              run.record(
+                ModelOutputObserved(
+                  invocationId: request.invocationId,
+                  item: item,
+                ),
+              );
+              switch (item) {
+                case ModelNativeOutput():
+                  break;
+                case ModelTextOutput(:final content):
+                  text.write(content);
+                case ModelToolProposalOutput(proposal: final value):
+                  proposals.add(value);
               }
-              proposal = value;
-          }
-        },
-      );
+            },
+          );
       switch (observation.terminal) {
         case final ModelInvocationSettledEvent terminal:
           run.record(
@@ -258,7 +272,7 @@ final class DevelopmentToolLoopStrategy {
           );
           return _ModelTurn(
             text: text.toString(),
-            proposal: proposal,
+            proposals: proposals,
             failure: null,
             output: output,
             settlement: terminal,
@@ -276,7 +290,7 @@ final class DevelopmentToolLoopStrategy {
           );
           return _ModelTurn(
             text: text.toString(),
-            proposal: proposal,
+            proposals: proposals,
             failure: error,
             output: output,
             settlement: null,
@@ -288,7 +302,7 @@ final class DevelopmentToolLoopStrategy {
       );
       return _ModelTurn(
         text: text.toString(),
-        proposal: proposal,
+        proposals: proposals,
         failure: error,
         output: output,
         settlement: null,
@@ -316,7 +330,6 @@ final class DevelopmentToolLoopStrategy {
         cause: error.cause,
       );
       _recordToolTerminal(invocation, outcome, executionStarted: false);
-      await _continueAfterTool(invocation, outcome);
       return;
     } on ToolPolicyEvaluationFailed catch (error) {
       final ToolOutcome outcome = ToolOutcome(
@@ -328,7 +341,6 @@ final class DevelopmentToolLoopStrategy {
         cause: error.cause,
       );
       _recordToolTerminal(invocation, outcome, executionStarted: false);
-      await _continueAfterTool(invocation, outcome);
       return;
     }
     final ToolPolicyDecision decision = switch (result) {
@@ -348,7 +360,6 @@ final class DevelopmentToolLoopStrategy {
         await _execute(result);
       case ToolExecutionDenied(:final outcome):
         _recordToolTerminal(invocation, outcome, executionStarted: false);
-        await _continueAfterTool(invocation, outcome);
       case ToolApprovalRequired(:final interruption):
         _pendingApproval = _PendingApproval(invocation: invocation);
         run.interrupt(interruption);
@@ -370,7 +381,6 @@ final class DevelopmentToolLoopStrategy {
         cause: error.cause ?? error,
       );
       _recordToolTerminal(invocation, outcome, executionStarted: false);
-      await _continueAfterTool(invocation, outcome);
       return;
     } on ToolBindingUnavailableException catch (error) {
       final ToolOutcome outcome = ToolOutcome(
@@ -382,7 +392,6 @@ final class DevelopmentToolLoopStrategy {
         cause: error.cause ?? error,
       );
       _recordToolTerminal(invocation, outcome, executionStarted: false);
-      await _continueAfterTool(invocation, outcome);
       return;
     }
     run.record(ToolExecutionStarted(invocation.id));
@@ -412,7 +421,6 @@ final class DevelopmentToolLoopStrategy {
       );
     }
     _recordToolTerminal(invocation, outcome, executionStarted: true);
-    await _continueAfterTool(invocation, outcome);
   }
 
   void _recordToolTerminal(
@@ -432,19 +440,12 @@ final class DevelopmentToolLoopStrategy {
               outcome: outcome,
             ),
     );
-  }
-
-  Future<void> _continueAfterTool(
-    ToolInvocation invocation,
-    ToolOutcome outcome,
-  ) async {
     _runItems.add(
       SemanticToolOutcomeInput(
         providerCallId: invocation.proposal.providerCallId,
         outcome: outcome,
       ),
     );
-    await _advanceModel();
   }
 
   ToolExecutionContext get _executionContext =>
@@ -482,17 +483,25 @@ final class _PendingApproval {
   final ToolInvocation invocation;
 }
 
+final class _ProposalBatch {
+  _ProposalBatch({required this.proposals, required this.tools});
+
+  final List<ProviderToolProposal> proposals;
+  final MaterializedToolSet tools;
+  int nextProposal = 0;
+}
+
 final class _ModelTurn {
   const _ModelTurn({
     required this.text,
-    required this.proposal,
+    required this.proposals,
     required this.failure,
     required this.output,
     required this.settlement,
   });
 
   final String text;
-  final ProviderToolProposal? proposal;
+  final List<ProviderToolProposal> proposals;
   final Object? failure;
   final List<ModelOutputItem> output;
   final ModelInvocationSettledEvent? settlement;

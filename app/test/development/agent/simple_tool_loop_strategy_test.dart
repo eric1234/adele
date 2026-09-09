@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
 import 'package:adele_desktop/development/agent/simple_tool_loop_strategy.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
@@ -260,6 +262,748 @@ void main() {
 
     expect(request.instructions, 'Use source tools before answering.');
   });
+
+  test('three proposals drain sequentially from one tool generation', () async {
+    final _BatchFixture fixture = _BatchFixture();
+    fixture.executable.beforeTerminal = (int step) async {
+      // A catalog change must only affect the next model turn.
+      if (step == 1) fixture.removeTools();
+    };
+
+    await fixture.strategy.start();
+
+    expect(fixture.run.state, RunState.completed);
+    expect(fixture.model.requests, hasLength(2));
+    expect(fixture.model.completedAtInvocation, <List<int>>[
+      <int>[],
+      <int>[1, 2, 3],
+    ]);
+    expect(fixture.executable.timeline, <String>[
+      'start-1',
+      'complete-1',
+      'start-2',
+      'complete-2',
+      'start-3',
+      'complete-3',
+    ]);
+    final List<ToolInvocation> invocations = fixture.events
+        .whereType<ToolInvocationPrepared>()
+        .map((ToolInvocationPrepared event) => event.invocation)
+        .toList();
+    expect(
+      invocations.map((ToolInvocation invocation) => invocation.id.value),
+      <String>['batch-run-tool-1', 'batch-run-tool-2', 'batch-run-tool-3'],
+    );
+    for (final ToolInvocation invocation in invocations) {
+      expect(
+        invocation.tool,
+        same(
+          fixture.model.requests.first.tools.byAlias(invocation.proposal.alias),
+        ),
+      );
+    }
+    expect(fixture.model.requests.last.tools.tools, isEmpty);
+    expect(fixture.strategy.lastToolInvocation, same(invocations.last));
+    expect(
+      fixture.strategy.lastToolOutcome,
+      same(fixture.outcomes.last.outcome),
+    );
+    expect(
+      fixture.outcomes.map(
+        (SemanticToolOutcomeInput item) => item.providerCallId,
+      ),
+      <String>['call-1', 'call-2', 'call-3'],
+    );
+    expect(
+      fixture.outcomes.map(
+        (SemanticToolOutcomeInput item) => item.outcome.modelContent,
+      ),
+      <String>['Handled 1.', 'Handled 2.', 'Handled 3.'],
+    );
+
+    final List<SemanticModelInputItem> replay =
+        fixture.model.requests.last.input;
+    expect(replay, hasLength(10)); // User, six output items, three outcomes.
+    for (int index = 0; index < fixture.model.output.length; index++) {
+      final SemanticModelInputItem input = replay[index + 1];
+      switch (fixture.model.output[index]) {
+        case ModelNativeOutput(
+          :final providerItemId,
+          :final providerNativeMetadata,
+        ):
+          expect(
+            input,
+            isA<SemanticNativeInput>()
+                .having(
+                  (SemanticNativeInput item) => item.providerItemId,
+                  'item ID',
+                  providerItemId,
+                )
+                .having(
+                  (SemanticNativeInput item) => item.providerNativeMetadata,
+                  'native metadata',
+                  same(providerNativeMetadata),
+                ),
+          );
+        case ModelTextOutput(
+          :final content,
+          :final providerItemId,
+          :final providerNativeMetadata,
+        ):
+          expect(
+            input,
+            isA<SemanticMessageInput>()
+                .having(
+                  (SemanticMessageInput item) => item.content,
+                  'content',
+                  content,
+                )
+                .having(
+                  (SemanticMessageInput item) => item.providerItemId,
+                  'item ID',
+                  providerItemId,
+                )
+                .having(
+                  (SemanticMessageInput item) => item.providerNativeMetadata,
+                  'native metadata',
+                  same(providerNativeMetadata),
+                ),
+          );
+        case ModelToolProposalOutput(
+          :final proposal,
+          :final providerItemId,
+          :final providerNativeMetadata,
+        ):
+          expect(
+            input,
+            isA<SemanticToolProposalInput>()
+                .having(
+                  (SemanticToolProposalInput item) => item.proposal,
+                  'proposal',
+                  same(proposal),
+                )
+                .having(
+                  (SemanticToolProposalInput item) => item.providerItemId,
+                  'item ID',
+                  providerItemId,
+                )
+                .having(
+                  (SemanticToolProposalInput item) =>
+                      item.providerNativeMetadata,
+                  'native metadata',
+                  same(providerNativeMetadata),
+                ),
+          );
+      }
+    }
+    final List<ExecutionEvent> events = fixture.events.toList();
+    expect(events.whereType<ModelInvocationStarted>(), hasLength(2));
+    expect(
+      events
+          .whereType<ModelOutputObserved>()
+          .take(6)
+          .map((ModelOutputObserved event) => event.invocationId),
+      everyElement(fixture.model.requests.first.invocationId),
+    );
+    final int firstPrepared = events.indexWhere(
+      (ExecutionEvent event) => event is ToolInvocationPrepared,
+    );
+    expect(
+      events.take(firstPrepared).whereType<ModelOutputObserved>(),
+      hasLength(6),
+    );
+    expect(
+      events
+          .skip(firstPrepared)
+          .map((ExecutionEvent event) => event.runtimeType),
+      <Type>[
+        ToolInvocationPrepared,
+        ToolPolicyEvaluated,
+        ToolExecutionStarted,
+        ToolExecutionCompleted,
+        ToolInvocationPrepared,
+        ToolPolicyEvaluated,
+        ToolExecutionStarted,
+        ToolExecutionCompleted,
+        ToolInvocationPrepared,
+        ToolPolicyEvaluated,
+        ToolExecutionStarted,
+        ToolExecutionCompleted,
+        ModelInvocationStarted,
+        ModelOutputObserved,
+        ModelInvocationSettled,
+        RunCompleted,
+      ],
+    );
+    expect(fixture.session.snapshot().entries.last.content, 'Complete.');
+  });
+
+  test(
+    'a later proposal cannot start until prior execution completes',
+    () async {
+      final _BatchFixture fixture = _BatchFixture();
+      final Completer<void> started = Completer<void>();
+      final Completer<void> release = Completer<void>();
+      fixture.executable.beforeTerminal = (int step) async {
+        if (step == 1) {
+          started.complete();
+          await release.future;
+        } else {
+          expect(
+            fixture.executable.completed,
+            List<int>.generate(step - 1, (int index) => index + 1),
+          );
+        }
+      };
+
+      final Future<void> running = fixture.strategy.start();
+      await started.future;
+      expect(fixture.executable.timeline, <String>['start-1']);
+      expect(fixture.events.whereType<ToolInvocationPrepared>(), hasLength(1));
+      expect(fixture.model.requests, hasLength(1));
+      release.complete();
+      await running;
+
+      expect(fixture.executable.completed, <int>[1, 2, 3]);
+      expect(fixture.model.requests, hasLength(2));
+    },
+  );
+
+  for (final bool unknownAlias in <bool>[true, false]) {
+    test(
+      'batch continues after ${unknownAlias ? 'unknown alias' : 'invalid arguments'}',
+      () async {
+        final _BatchFixture fixture = _BatchFixture(
+          invalidSecondProposal: true,
+          unknownAlias: unknownAlias,
+        );
+
+        await fixture.strategy.start();
+
+        expect(fixture.run.state, RunState.completed);
+        expect(fixture.executable.completed, <int>[1, 3]);
+        expect(fixture.model.requests, hasLength(2));
+        final List<SemanticModelInputItem> results = fixture
+            .model
+            .requests
+            .last
+            .input
+            .skip(7)
+            .toList();
+        expect(
+          results.map((SemanticModelInputItem item) => item.runtimeType),
+          <Type>[
+            SemanticToolOutcomeInput,
+            SemanticToolProposalFailureInput,
+            SemanticToolOutcomeInput,
+          ],
+        );
+        final ToolProposalFailure failure =
+            (results[1] as SemanticToolProposalFailureInput).failure;
+        expect(failure.providerCallId, 'call-2');
+        expect(
+          failure.kind,
+          unknownAlias
+              ? ToolProposalFailureKind.unknownAlias
+              : ToolProposalFailureKind.invalidArguments,
+        );
+        expect(
+          fixture.outcomes.map(
+            (SemanticToolOutcomeInput item) => item.providerCallId,
+          ),
+          <String>['call-1', 'call-3'],
+        );
+        expect(
+          fixture.events.whereType<ToolInvocationPrepared>().map(
+            (ToolInvocationPrepared event) => event.invocation.id.value,
+          ),
+          <String>['batch-run-tool-1', 'batch-run-tool-3'],
+        );
+      },
+    );
+  }
+
+  test('normal tool failure does not abort later proposals', () async {
+    final _BatchFixture fixture = _BatchFixture(failedStep: 1);
+
+    await fixture.strategy.start();
+
+    expect(fixture.run.state, RunState.completed);
+    expect(fixture.executable.completed, <int>[1, 2, 3]);
+    expect(fixture.model.completedAtInvocation.last, <int>[1, 2, 3]);
+    expect(
+      fixture.outcomes.map(
+        (SemanticToolOutcomeInput item) => item.outcome.disposition,
+      ),
+      <ToolOutcomeDisposition>[
+        ToolOutcomeDisposition.failure,
+        ToolOutcomeDisposition.success,
+        ToolOutcomeDisposition.success,
+      ],
+    );
+    expect(fixture.outcomes.first.outcome.failureKind, ToolFailureKind.domain);
+    expect(fixture.events.whereType<ModelInvocationFailed>(), isEmpty);
+  });
+
+  test(
+    'policy denial records a result and continues the ordered batch',
+    () async {
+      final _BatchFixture fixture = _BatchFixture(
+        decisions: <int, ToolPolicyDecision>{2: ToolPolicyDecision.deny},
+      );
+
+      await fixture.strategy.start();
+
+      expect(fixture.run.state, RunState.completed);
+      expect(fixture.executable.completed, <int>[1, 3]);
+      expect(fixture.model.requests, hasLength(2));
+      expect(fixture.outcomes[1].providerCallId, 'call-2');
+      expect(
+        fixture.outcomes[1].outcome.disposition,
+        ToolOutcomeDisposition.policyDenied,
+      );
+      expect(fixture.events.whereType<ToolInvocationCompleted>(), hasLength(1));
+      expect(fixture.events.whereType<RunInterrupted>(), isEmpty);
+    },
+  );
+
+  for (final bool approved in <bool>[true, false]) {
+    test(
+      '${approved ? 'approval' : 'rejection'} resumes remaining proposals before continuation',
+      () async {
+        final _BatchFixture fixture = _BatchFixture(
+          decisions: <int, ToolPolicyDecision>{2: ToolPolicyDecision.ask},
+        );
+
+        await fixture.strategy.start();
+
+        expect(fixture.run.state, RunState.waiting);
+        expect(fixture.executable.completed, <int>[1]);
+        expect(
+          fixture.events.whereType<ToolInvocationPrepared>(),
+          hasLength(2),
+        );
+        expect(fixture.events.whereType<ToolPolicyEvaluated>(), hasLength(2));
+        expect(fixture.model.requests, hasLength(1));
+        fixture.removeTools();
+        await fixture.resolveApproval(approved);
+
+        expect(fixture.run.state, RunState.completed);
+        expect(
+          fixture.executable.completed,
+          approved ? <int>[1, 2, 3] : <int>[1, 3],
+        );
+        expect(fixture.model.requests, hasLength(2));
+        expect(
+          fixture.model.completedAtInvocation.last,
+          fixture.executable.completed,
+        );
+        expect(
+          fixture.outcomes.map(
+            (SemanticToolOutcomeInput item) => item.providerCallId,
+          ),
+          <String>['call-1', 'call-2', 'call-3'],
+        );
+        expect(
+          fixture.outcomes[1].outcome.disposition,
+          approved
+              ? ToolOutcomeDisposition.success
+              : ToolOutcomeDisposition.userRejected,
+        );
+        expect(
+          fixture.events
+              .whereType<ToolInvocationPrepared>()
+              .last
+              .invocation
+              .tool,
+          same(fixture.model.requests.first.tools.byAlias('step_3')),
+        );
+        expect(
+          fixture.events.whereType<RunInterruptionResolved>(),
+          hasLength(1),
+        );
+        expect(
+          fixture.strategy.lastToolInvocation?.proposal.providerCallId,
+          'call-3',
+        );
+      },
+    );
+  }
+
+  test('approval of one proposal does not approve a later proposal', () async {
+    final _BatchFixture fixture = _BatchFixture(
+      decisions: <int, ToolPolicyDecision>{
+        2: ToolPolicyDecision.ask,
+        3: ToolPolicyDecision.ask,
+      },
+    );
+
+    await fixture.strategy.start();
+    await fixture.resolveApproval(true);
+
+    expect(fixture.run.state, RunState.waiting);
+    expect(fixture.executable.completed, <int>[1, 2]);
+    expect(fixture.model.requests, hasLength(1));
+    expect(fixture.events.whereType<RunInterrupted>(), hasLength(2));
+    await fixture.resolveApproval(false);
+
+    expect(fixture.run.state, RunState.completed);
+    expect(fixture.model.requests, hasLength(2));
+    expect(
+      fixture.outcomes.last.outcome.disposition,
+      ToolOutcomeDisposition.userRejected,
+    );
+  });
+
+  test(
+    'approval revalidates bindings without dropping remaining proposals',
+    () async {
+      final _BatchFixture fixture = _BatchFixture(
+        decisions: <int, ToolPolicyDecision>{2: ToolPolicyDecision.ask},
+      );
+      await fixture.strategy.start();
+      fixture.executable.stale = true;
+
+      await fixture.resolveApproval(true);
+
+      expect(fixture.run.state, RunState.completed);
+      expect(fixture.executable.completed, <int>[1]);
+      expect(fixture.model.requests, hasLength(2));
+      expect(fixture.outcomes.last.providerCallId, 'call-2');
+      expect(
+        fixture.outcomes.last.outcome.failureKind,
+        ToolFailureKind.staleBinding,
+      );
+      final ToolProposalFailure failure = fixture.model.requests.last.input
+          .whereType<SemanticToolProposalFailureInput>()
+          .single
+          .failure;
+      expect(failure.providerCallId, 'call-3');
+      expect(failure.kind, ToolProposalFailureKind.staleBinding);
+    },
+  );
+
+  test(
+    'final permitted model invocation cannot start a proposed batch',
+    () async {
+      final _BatchFixture fixture = _BatchFixture(maxModelInvocations: 1);
+
+      await fixture.strategy.start();
+
+      expect(fixture.run.state, RunState.failed);
+      expect(
+        fixture.run.failure,
+        isA<ModelInvocationLimitExceeded>().having(
+          (ModelInvocationLimitExceeded error) => error.maximum,
+          'maximum',
+          1,
+        ),
+      );
+      expect(fixture.model.requests, hasLength(1));
+      expect(
+        fixture.events.whereType<ModelOutputObserved>().where(
+          (ModelOutputObserved event) => event.item is ModelToolProposalOutput,
+        ),
+        hasLength(3),
+      );
+      expect(fixture.events.whereType<ToolInvocationPrepared>(), isEmpty);
+      expect(fixture.events.whereType<ToolPolicyEvaluated>(), isEmpty);
+      expect(fixture.executable.timeline, isEmpty);
+    },
+  );
+
+  for (final ModelSettlement settlement in <ModelSettlement>[
+    ModelSettlement.incomplete,
+    ModelSettlement.refused,
+  ]) {
+    test(
+      '$settlement never executes an observed multi-proposal batch',
+      () async {
+        final _BatchFixture fixture = _BatchFixture(settlement: settlement);
+
+        await fixture.strategy.start();
+
+        expect(
+          fixture.run.state,
+          settlement == ModelSettlement.refused
+              ? RunState.completed
+              : RunState.failed,
+        );
+        expect(fixture.model.requests, hasLength(1));
+        expect(fixture.events.whereType<ToolInvocationPrepared>(), isEmpty);
+        expect(fixture.executable.timeline, isEmpty);
+        if (settlement == ModelSettlement.incomplete) {
+          expect(fixture.run.failure, isA<ModelInvocationIncomplete>());
+        }
+      },
+    );
+  }
+
+  test(
+    'model failure after multiple proposals remains a model failure',
+    () async {
+      final StateError failure = StateError('Provider failed.');
+      final _BatchFixture fixture = _BatchFixture(modelFailure: failure);
+
+      await fixture.strategy.start();
+
+      expect(fixture.run.state, RunState.failed);
+      expect(fixture.run.failure, same(failure));
+      expect(
+        fixture.events.whereType<ModelInvocationFailed>().single.error,
+        same(failure),
+      );
+      expect(fixture.events.whereType<ToolInvocationPrepared>(), isEmpty);
+      expect(fixture.executable.timeline, isEmpty);
+    },
+  );
+
+  test(
+    'zero proposals completes with assistant output in the only slot',
+    () async {
+      final _BatchFixture fixture = _BatchFixture(
+        proposalCount: 0,
+        maxModelInvocations: 1,
+      );
+
+      await fixture.strategy.start();
+
+      expect(fixture.run.state, RunState.completed);
+      expect(fixture.model.requests, hasLength(1));
+      expect(fixture.executable.timeline, isEmpty);
+      expect(fixture.session.snapshot().entries.last.content, 'Complete.');
+    },
+  );
+}
+
+final class _BatchFixture {
+  _BatchFixture({
+    Map<int, ToolPolicyDecision> decisions = const <int, ToolPolicyDecision>{},
+    int? failedStep,
+    bool invalidSecondProposal = false,
+    bool unknownAlias = false,
+    int proposalCount = 3,
+    int maxModelInvocations = 8,
+    ModelSettlement settlement = ModelSettlement.completed,
+    Object? modelFailure,
+  }) {
+    executable = _BatchExecutable(failedStep);
+    for (int step = 1; step <= 3; step++) {
+      catalog.register(
+        ToolRegistration(
+          definition: ToolDefinition(
+            id: ToolId('batch.tool.$step'),
+            description: 'Step $step.',
+          ),
+          modelDefinition: ModelToolDefinition(
+            alias: 'step_$step',
+            description: 'Step $step.',
+            argumentsSchema: const <String, Object?>{},
+          ),
+          executable: executable,
+        ),
+      );
+    }
+    final ModelNativeEnvelope metadata = ModelNativeEnvelope(
+      kind: 'fixture',
+      compatibility: const <String, Object?>{},
+      data: const <String, Object?>{'retained': true},
+    );
+    model = _BatchModel(
+      executable,
+      <ModelOutputItem>[
+        if (proposalCount == 0) ModelTextOutput('Complete.'),
+        for (int step = 1; step <= proposalCount; step++) ...<ModelOutputItem>[
+          if (step == 1 || step == 3)
+            ModelNativeOutput(
+              providerItemId: 'native-$step',
+              providerNativeMetadata: metadata,
+            ),
+          ModelToolProposalOutput(
+            ProviderToolProposal(
+              providerCallId: 'call-$step',
+              alias: invalidSecondProposal && unknownAlias && step == 2
+                  ? 'unknown'
+                  : 'step_$step',
+              arguments: <String, Object?>{
+                'step': step,
+                if (invalidSecondProposal && !unknownAlias && step == 2)
+                  'invalid': true,
+              },
+            ),
+            providerItemId: 'item-$step',
+            providerNativeMetadata: metadata,
+          ),
+          if (step == 1)
+            ModelTextOutput(
+              'Between proposals.',
+              providerItemId: 'text-1',
+              providerNativeMetadata: metadata,
+            ),
+        ],
+      ],
+      settlement: settlement,
+      failure: modelFailure,
+    );
+    strategy = DevelopmentToolLoopStrategy(
+      run: run,
+      session: session,
+      contextAssembler: const DevelopmentContextAssembler(),
+      model: model,
+      toolCatalog: catalog,
+      policy: _BatchPolicy(decisions),
+      maxModelInvocations: maxModelInvocations,
+    );
+  }
+
+  final DevelopmentSessionHistory session = DevelopmentSessionHistory(
+    SessionId('batch-session'),
+  )..append(UserSessionMessage('Perform steps.'));
+  final AgentRun run = AgentRun(
+    id: RunId('batch-run'),
+    sessionId: SessionId('batch-session'),
+  );
+  final ToolCatalog catalog = ToolCatalog();
+  late final _BatchExecutable executable;
+  late final _BatchModel model;
+  late final DevelopmentToolLoopStrategy strategy;
+
+  Iterable<ExecutionEvent> get events =>
+      run.journal.records.map((ExecutionEventRecord record) => record.event);
+  List<SemanticToolOutcomeInput> get outcomes =>
+      model.requests.last.input.whereType<SemanticToolOutcomeInput>().toList();
+
+  void removeTools() {
+    for (int step = 1; step <= 3; step++) {
+      catalog.remove(ToolId('batch.tool.$step'));
+    }
+  }
+
+  Future<void> resolveApproval(bool approved) {
+    final ToolApprovalInterruption interruption =
+        run.interruptions.values.single as ToolApprovalInterruption;
+    return strategy.resolveApproval(
+      ToolApprovalResolution(
+        interruptionId: interruption.id,
+        toolInvocationId: interruption.toolInvocationId,
+        approved: approved,
+      ),
+    );
+  }
+}
+
+final class _BatchModel implements ModelPort {
+  _BatchModel(
+    this.executable,
+    this.output, {
+    required this.settlement,
+    this.failure,
+  });
+
+  final _BatchExecutable executable;
+  final List<ModelOutputItem> output;
+  final ModelSettlement settlement;
+  final Object? failure;
+  final List<SemanticModelRequest> requests = <SemanticModelRequest>[];
+  final List<List<int>> completedAtInvocation = <List<int>>[];
+
+  @override
+  Stream<ModelEvent> invoke(SemanticModelRequest request) async* {
+    requests.add(request);
+    completedAtInvocation.add(List<int>.of(executable.completed));
+    for (final ModelOutputItem item
+        in requests.length == 1
+            ? output
+            : <ModelOutputItem>[ModelTextOutput('Complete.')]) {
+      yield ModelOutputItemCompleted(
+        invocationId: request.invocationId,
+        item: item,
+      );
+    }
+    if (failure != null) {
+      yield ModelInvocationFailedEvent(
+        invocationId: request.invocationId,
+        error: failure!,
+      );
+    } else {
+      yield ModelInvocationSettledEvent(
+        invocationId: request.invocationId,
+        settlement: settlement,
+        incompleteReason: settlement == ModelSettlement.incomplete
+            ? ModelIncompleteReason.outputLimit
+            : null,
+      );
+    }
+  }
+}
+
+final class _BatchPolicy implements ToolPolicy {
+  const _BatchPolicy(this.decisions);
+  final Map<int, ToolPolicyDecision> decisions;
+
+  @override
+  ToolPolicyDecision evaluate(ToolPolicyInput input) =>
+      decisions[input.invocation.canonicalArguments['step']] ??
+      ToolPolicyDecision.allow;
+}
+
+final class _BatchExecutable implements ToolExecutable {
+  _BatchExecutable(this.failedStep);
+
+  final int? failedStep;
+  final List<int> completed = <int>[];
+  final List<String> timeline = <String>[];
+  Future<void> Function(int step)? beforeTerminal;
+  bool stale = false;
+
+  @override
+  CanonicalToolArguments validateAndNormalize(
+    Map<String, Object?> proposedArguments,
+  ) {
+    if (proposedArguments['invalid'] == true) {
+      throw const FormatException('Invalid step.');
+    }
+    return CanonicalToolArguments(proposedArguments);
+  }
+
+  @override
+  void validateBinding() {
+    if (stale) {
+      throw const StaleToolBindingException('Fixture binding retired.');
+    }
+  }
+
+  @override
+  Future<EffectDescription> describe(
+    CanonicalToolArguments arguments,
+    ToolExecutionContext context,
+  ) async => EffectDescription(
+    effects: const <ToolEffect>[ToolEffect.sourceMutation],
+    targets: const <EffectTarget>[],
+    summary: 'Perform step.',
+  );
+
+  @override
+  Stream<ToolExecutionEvent> execute(
+    CanonicalToolArguments arguments,
+    ToolExecutionContext context,
+  ) async* {
+    final int step = arguments.snapshot['step']! as int;
+    timeline.add('start-$step');
+    await beforeTerminal?.call(step);
+    completed.add(step);
+    timeline.add('complete-$step');
+    yield ToolExecutionTerminal(
+      ToolOutcome(
+        disposition: step == failedStep
+            ? ToolOutcomeDisposition.failure
+            : ToolOutcomeDisposition.success,
+        failureKind: step == failedStep ? ToolFailureKind.domain : null,
+        effectCertainty: EffectCertainty.knownOccurred,
+        modelContent: 'Handled $step.',
+      ),
+    );
+  }
 }
 
 _StrategyFixture _fixture(
