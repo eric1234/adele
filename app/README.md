@@ -40,6 +40,45 @@ geometry, Command/Command Palette/keybinding infrastructure, and composition of
 semantic plugin surfaces. Concrete plugin-facing UI/Command APIs remain
 unimplemented.
 
+## Developer Self-Hosting Runner
+
+`app/bin/adele_self_host.dart` is experimental developer infrastructure for
+repeatable ADELE-authored source-development experiments. It is not ADELE's
+final CLI or product orchestration interface.
+
+The default `chatgpt` profile requires
+`ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE`, honors the maintained optional ChatGPT
+configuration variables, uses `ADELE_OPENAI_CHATGPT_TEST_MODEL` when set, and
+otherwise selects the classic Responses fallback `gpt-5.5`. The optional
+`--profile api-key` path requires `OPENAI_API_KEY` and
+`ADELE_OPENAI_TEST_MODEL` and retains the existing public Responses endpoint
+configuration.
+
+From a clean ADELE checkout, run:
+
+```console
+dart run app/bin/adele_self_host.dart \
+  --prompt-file /path/to/prompt.md \
+  --instructions-file /path/to/instructions.md \
+  --task-title "Implement the focused development task" \
+  --max-model-invocations 40 \
+  --output-dir .dart_tool/adele/self-hosting
+```
+
+Each invocation creates a new run directory below `--output-dir`. The runner
+compiles fresh AOT artifacts, clones the exact launching `HEAD` into an isolated
+Project repository, removes the clone's local origin, and lets Git Environment
+create a distinct Task worktree. ADELE receives the six maintained development
+tools. The isolated repository does not share Git refs or a writable local
+origin with the launching checkout; final Git evidence records what actually
+remained clean. This is source-layout isolation, not a command sandbox.
+
+The run directory retains Project and Task source after success and failure. It
+also contains a versioned manifest, raw Run journal, deterministic JSON and
+Markdown summaries, runner log, and Task/Project/launching-checkout Git
+evidence. A failed Task is intentionally preserved for review; there is no
+automatic cleanup, validation planning, commit, push, or PR workflow.
+
 ## Deferred
 
 Normal Project selection, complete strategy-bound Task/Session lifecycle,

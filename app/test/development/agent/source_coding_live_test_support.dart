@@ -1,21 +1,14 @@
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
-import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/development/agent/agent_capability_adapters.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
-import 'package:adele_desktop/development/agent/simple_tool_loop_strategy.dart';
+import 'package:adele_desktop/development/agent/development_self_hosting.dart';
 import 'package:adele_environment/adele_environment.dart';
-import 'package:adele_model_provider/adele_model_provider.dart';
-import 'package:adele_plugin_api/adele_plugin_api.dart';
-import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
-import 'package:command_tools_plugin/command_tools_plugin.dart';
-import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
-import 'package:search_tools_plugin/search_tools_plugin.dart';
 
 const String sourceCodingStrategyPath =
     'app/lib/development/agent/simple_tool_loop_strategy.dart';
@@ -29,111 +22,53 @@ const String sourceCodingInstructions =
     'You must call search for "final class DevelopmentToolLoopStrategy", '
     'then call read_file with the relative path returned by search before '
     'answering.';
-const String openAiApiKeyProviderId = 'dev.adele.openai.api-key';
-const String openAiChatGptProviderId = 'dev.adele.openai.chatgpt-experimental';
-const String sourceCodingChatGptDefaultModel = 'gpt-5.5';
-
-const String _openAiPluginId = 'dev.adele.openai';
-const String _openAiChatGptConfigurationContext = 'chatgpt-experimental';
-const String _gitEnvironmentPluginId = 'dev.adele.plugin.git-environment';
-const String _gitEnvironmentProviderId = 'dev.adele.environment.git-worktree';
+const String openAiApiKeyProviderId = developmentSelfHostingApiKeyProviderId;
+const String openAiChatGptProviderId = developmentSelfHostingChatGptProviderId;
+const String sourceCodingChatGptDefaultModel =
+    developmentSelfHostingChatGptDefaultModel;
 
 final class SourceCodingLiveArtifacts {
-  const SourceCodingLiveArtifacts({
-    required this.repository,
-    required this.dartAotRuntime,
-    required this.hostArtifact,
-    required this.openAiArtifact,
-    required this.gitEnvironmentArtifact,
-  });
+  const SourceCodingLiveArtifacts._(this.value);
 
-  final String repository;
-  final String dartAotRuntime;
-  final File hostArtifact;
-  final File openAiArtifact;
-  final File gitEnvironmentArtifact;
+  final DevelopmentSelfHostingArtifacts value;
+
+  String get repository => value.repository.path;
+  String get dartAotRuntime => value.dartAotRuntime;
+  File get hostArtifact => value.hostArtifact;
+  File get openAiArtifact => value.openAiArtifact;
+  File get gitEnvironmentArtifact => value.gitEnvironmentArtifact;
 
   static Future<SourceCodingLiveArtifacts> compile(String scope) async {
-    final String repository = Directory.current.parent.path;
+    final Directory repository = Directory.current.parent;
     final Directory artifacts = Directory(
-      '$repository/.dart_tool/adele/integration/$scope',
-    )..createSync(recursive: true);
-    final String dart = _dartExecutable();
-    final SourceCodingLiveArtifacts result = SourceCodingLiveArtifacts(
-      repository: repository,
-      dartAotRuntime:
-          '${File(dart).parent.path}/'
-          '${Platform.isWindows ? 'dartaotruntime.exe' : 'dartaotruntime'}',
-      hostArtifact: File('${artifacts.path}/host.aot'),
-      openAiArtifact: File('${artifacts.path}/openai.aot'),
-      gitEnvironmentArtifact: File('${artifacts.path}/git-environment.aot'),
+      '${repository.path}/.dart_tool/adele/integration/$scope',
     );
-    await Future.wait(<Future<void>>[
-      _compile(
-        dart,
-        '$repository/packages/plugin_backend_host/bin/'
-        'adele_backend_host.dart',
-        result.hostArtifact.path,
-        repository,
+    return SourceCodingLiveArtifacts._(
+      await DevelopmentSelfHostingArtifacts.compile(
+        repository: repository,
+        outputDirectory: artifacts,
       ),
-      _compile(
-        dart,
-        '$repository/plugins/openai/packages/backend/bin/'
-        'openai_model_provider_backend.dart',
-        result.openAiArtifact.path,
-        repository,
-      ),
-      _compile(
-        dart,
-        '$repository/plugins/git_environment/packages/backend/bin/'
-        'git_environment_backend.dart',
-        result.gitEnvironmentArtifact.path,
-        repository,
-      ),
-    ]);
-    return result;
+    );
   }
 }
 
 final class SourceCodingLiveHarness {
   SourceCodingLiveHarness._({
-    required this.host,
-    required this.registry,
-    required this.sessionId,
-    required this.authority,
-    required this.catalog,
-    required Directory projectSource,
-    required Environment taskEnvironment,
-    required EnvironmentMaterialization environmentMaterialization,
+    required DevelopmentSelfHostingTopology topology,
     required Directory container,
-    required PluginCapabilityActivation environmentActivation,
-    required ExtensionRegistration filesystemActivation,
-    required ExtensionRegistration searchActivation,
-    required ExtensionRegistration? commandActivation,
-  }) : _projectSource = projectSource,
-       _taskEnvironment = taskEnvironment,
-       _environmentMaterialization = environmentMaterialization,
-       _container = container,
-       _environmentActivation = environmentActivation,
-       _filesystemActivation = filesystemActivation,
-       _searchActivation = searchActivation,
-       _commandActivation = commandActivation;
+  }) : _topology = topology,
+       _container = container;
 
-  final PluginBackendHost host;
-  final CapabilityRegistry registry;
-  final SessionId sessionId;
-  final SessionEnvironmentAuthority authority;
-  final ToolCatalog catalog;
-  final Directory _projectSource;
-  final Environment _taskEnvironment;
-  final EnvironmentMaterialization _environmentMaterialization;
+  final DevelopmentSelfHostingTopology _topology;
   final Directory _container;
-  final PluginCapabilityActivation _environmentActivation;
-  final ExtensionRegistration _filesystemActivation;
-  final ExtensionRegistration _searchActivation;
-  final ExtensionRegistration? _commandActivation;
 
   bool _closed = false;
+
+  PluginBackendHost get host => _topology.host;
+  CapabilityRegistry get registry => _topology.registry;
+  SessionId get sessionId => _topology.sessionId;
+  SessionEnvironmentAuthority get authority => _topology.authority;
+  ToolCatalog get catalog => _topology.catalog;
 
   static Future<SourceCodingLiveHarness> start({
     required SourceCodingLiveArtifacts artifacts,
@@ -151,104 +86,19 @@ final class SourceCodingLiveHarness {
         repository: artifacts.repository,
         source: sourceRepository,
       );
-      final PluginBackendHost host = await PluginBackendHost.start(
-        dartaotruntimeExecutable: artifacts.dartAotRuntime,
-        hostArtifactPath: artifacts.hostArtifact.path,
-        environment: hostEnvironment,
+      final DevelopmentSelfHostingTopology topology =
+          await DevelopmentSelfHostingTopology.start(
+            artifacts: artifacts.value,
+            projectSource: sourceRepository,
+            hostEnvironment: hostEnvironment,
+            identity: '$identity-source-live',
+            taskTitle: taskTitle,
+            includeCommandTools: enableCommandTools,
+          );
+      return SourceCodingLiveHarness._(
+        topology: topology,
+        container: container,
       );
-      final CapabilityRegistry registry = CapabilityRegistry();
-      PluginCapabilityActivation? environmentActivation;
-      ExtensionRegistration? filesystemActivation;
-      ExtensionRegistration? searchActivation;
-      ExtensionRegistration? commandActivation;
-      try {
-        final ProviderId environmentProviderId = ProviderId(
-          _gitEnvironmentProviderId,
-        );
-        environmentActivation = await _startEnvironmentProvider(
-          host: host,
-          registry: registry,
-          artifact: artifacts.gitEnvironmentArtifact,
-          providerId: environmentProviderId,
-        );
-        final ExtensionRegistry extensions = ExtensionRegistry();
-        filesystemActivation = const FilesystemToolsPlugin().activate(
-          extensions,
-        );
-        searchActivation = const SearchToolsPlugin().activate(extensions);
-        if (enableCommandTools) {
-          commandActivation = const CommandToolsPlugin().activate(extensions);
-        }
-        final ProviderBinding environmentBinding = registry.resolve(
-          environmentProviderCapability,
-          providerId: environmentProviderId,
-        );
-        final InMemoryProductStore store = InMemoryProductStore();
-        final ProductLifecycleCoordinator lifecycle =
-            ProductLifecycleCoordinator.generated(
-              store: store,
-              registry: registry,
-              ids: _IntegrationIds(identity),
-            );
-        final Project project = lifecycle.createProject(sourceRepository.uri);
-        final TaskCreationResult created = await lifecycle.createTask(
-          projectId: project.id,
-          title: taskTitle,
-          providerId: environmentProviderId,
-        );
-        final SessionId sessionId = SessionId('session-$identity-source-live');
-        final SessionEnvironmentAuthority authority = store.associateSession(
-          sessionId: sessionId,
-          taskId: created.task.id,
-        );
-        expect(authority.environmentId, created.environment.id);
-        final EnvironmentMaterialization environmentMaterialization = lifecycle
-            .environmentRuntime
-            .currentMaterialization(created.environment.id)!;
-        final ProviderBinding materializedEnvironmentBinding =
-            environmentMaterialization.binding;
-        expect(
-          materializedEnvironmentBinding.provider,
-          same(environmentBinding.provider),
-        );
-        expect(
-          materializedEnvironmentBinding.requestChannel,
-          same(environmentBinding.requestChannel),
-        );
-        final ToolCatalog catalog = await buildModelToolCatalogForSession(
-          sessionId: sessionId,
-          environmentRuntime: lifecycle.environmentRuntime,
-          extensions: extensions,
-        );
-        return SourceCodingLiveHarness._(
-          host: host,
-          registry: registry,
-          sessionId: sessionId,
-          authority: authority,
-          catalog: catalog,
-          projectSource: sourceRepository,
-          taskEnvironment: created.environment,
-          environmentMaterialization: environmentMaterialization,
-          container: container,
-          environmentActivation: environmentActivation,
-          filesystemActivation: filesystemActivation,
-          searchActivation: searchActivation,
-          commandActivation: commandActivation,
-        );
-      } catch (error, stackTrace) {
-        try {
-          await _closeResources(<Future<void> Function()>[
-            if (commandActivation != null) commandActivation.close,
-            if (searchActivation != null) searchActivation.close,
-            if (filesystemActivation != null) filesystemActivation.close,
-            if (environmentActivation != null) environmentActivation.close,
-            if (!host.isClosed) () => host.close(graceful: false),
-          ]);
-        } catch (_) {
-          // Preserve the setup failure after attempting every cleanup.
-        }
-        Error.throwWithStackTrace(error, stackTrace);
-      }
     } catch (_) {
       if (await container.exists()) await container.delete(recursive: true);
       rethrow;
@@ -261,46 +111,37 @@ final class SourceCodingLiveHarness {
     String userPrompt = sourceCodingPrompt,
     String developmentInstructions = sourceCodingInstructions,
   }) async {
-    final DevelopmentSessionHistory session = DevelopmentSessionHistory(
-      sessionId,
-    )..append(UserSessionMessage(userPrompt));
-    final AgentRun run = AgentRun(
-      id: RunId('run-$identity-source-live'),
-      sessionId: session.id,
-    );
-    final DevelopmentToolLoopStrategy strategy = DevelopmentToolLoopStrategy(
-      run: run,
-      session: session,
-      contextAssembler: DevelopmentContextAssembler(
-        instructions: developmentInstructions,
-      ),
-      model: model,
-      toolCatalog: catalog,
-      policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
-    );
-
-    await strategy.start();
-    return SourceCodingLiveResult(run: run, session: session);
-  }
-
-  String get projectSourcePath => _projectSource.path;
-
-  String get taskWorktreePath {
-    final Object? path = _taskEnvironment.providerState?['worktreePath'];
-    if (path is! String || path.isEmpty) {
-      throw StateError('The Git Environment has no Task worktree path.');
+    final DevelopmentSelfHostingRunResult result =
+        await executeDevelopmentSelfHostingRun(
+          identity: '$identity-source-live',
+          sessionId: sessionId,
+          prompt: userPrompt,
+          instructions: developmentInstructions,
+          model: model,
+          catalog: catalog,
+          maxModelInvocations: 8,
+        );
+    if (result.executionFailure != null) {
+      Error.throwWithStackTrace(
+        result.executionFailure!,
+        result.executionStackTrace!,
+      );
     }
-    return path;
+    return SourceCodingLiveResult(run: result.run, session: result.session);
   }
+
+  String get projectSourcePath => _topology.projectSource.path;
+
+  String get taskWorktreePath => _topology.taskWorktreePath;
 
   Future<String> readProjectSourceFile(String relativePath) =>
-      File('${_projectSource.path}/$relativePath').readAsString();
+      File('${_topology.projectSource.path}/$relativePath').readAsString();
 
   Future<String> readTaskWorktreeFile(String relativePath) =>
       File('$taskWorktreePath/$relativePath').readAsString();
 
   Future<EnvironmentTextFile> readEnvironmentFile(String relativePath) =>
-      _environmentMaterialization.provider.readFile(
+      _topology.environmentMaterialization.provider.readFile(
         authority.environmentId,
         relativePath,
       );
@@ -308,12 +149,8 @@ final class SourceCodingLiveHarness {
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
-    await _closeResources(<Future<void> Function()>[
-      if (_commandActivation != null) _commandActivation.close,
-      _searchActivation.close,
-      _filesystemActivation.close,
-      _environmentActivation.close,
-      if (!host.isClosed) host.close,
+    await closeDevelopmentSelfHostingResources(<Future<void> Function()>[
+      _topology.close,
       if (await _container.exists()) () => _container.delete(recursive: true),
     ]);
   }
@@ -324,61 +161,26 @@ Future<SourceCodingLiveProviderActivation> startOpenAiApiKeyProvider({
   required CapabilityRegistry registry,
   required File artifact,
 }) async {
-  final ProviderDescriptor descriptor = ProviderDescriptor(
-    id: ProviderId(openAiApiKeyProviderId),
-    capability: modelProviderCapability,
-    pluginId: _openAiPluginId,
-    displayName: 'OpenAI API Key',
-    serviceId: modelProviderServiceId,
-  );
-  final PluginBackendConnection connection = await host.startPlugin(
-    pluginId: _openAiPluginId,
-    artifactUri: artifact.uri,
-  );
-  final CapabilityRegistration registration = registry.register(
-    provider: descriptor,
-    endpoint: AdeleRequestChannelEndpoint(
-      channel: connection.channelFor(
-        connection.defaultConfigurationContext,
-        descriptor.serviceId,
-      ),
-      serviceId: descriptor.serviceId,
-      isAvailable: () => !connection.isClosed,
+  return SourceCodingLiveProviderActivation(
+    await activateDevelopmentSelfHostingModelProvider(
+      host: host,
+      registry: registry,
+      artifact: artifact,
+      profile: DevelopmentSelfHostingProfile.apiKey,
     ),
   );
-  return SourceCodingLiveProviderActivation(connection, registration);
 }
 
 Map<String, String> sourceCodingChatGptHostEnvironment() {
-  final Map<String, String> environment = <String, String>{
-    // The backend currently also establishes its default API-key context.
-    'OPENAI_API_KEY': 'unused-live-source-coding-key',
-    'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE': _requiredEnvironment(
-      'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE',
-    ),
-  };
-  for (final String name in <String>[
-    'ADELE_OPENAI_CHATGPT_CLIENT_ID',
-    'ADELE_OPENAI_CHATGPT_INSTANCE_ID',
-    'ADELE_OPENAI_CHATGPT_OAUTH_ISSUER',
-    'ADELE_OPENAI_CHATGPT_REDIRECT_URI',
-    'ADELE_OPENAI_CHATGPT_ENDPOINT',
-  ]) {
-    final String? value = Platform.environment[name];
-    if (value != null && value.trim().isNotEmpty) environment[name] = value;
-  }
-  if (!environment.containsKey('ADELE_OPENAI_CHATGPT_CLIENT_ID')) {
-    environment['ADELE_OPENAI_CHATGPT_EXPERIMENTAL_CODEX_CLIENT'] = '1';
-  }
-  return environment;
+  return DevelopmentSelfHostingProviderConfiguration.fromEnvironment(
+    DevelopmentSelfHostingProfile.chatgpt,
+  ).hostEnvironment;
 }
 
 String sourceCodingChatGptSelectedModel() {
-  final String? configured =
-      Platform.environment['ADELE_OPENAI_CHATGPT_TEST_MODEL'];
-  return configured == null || configured.trim().isEmpty
-      ? sourceCodingChatGptDefaultModel
-      : configured;
+  return DevelopmentSelfHostingProviderConfiguration.fromEnvironment(
+    DevelopmentSelfHostingProfile.chatgpt,
+  ).selectedModel;
 }
 
 Future<SourceCodingLiveProviderActivation> startOpenAiChatGptProvider({
@@ -386,41 +188,22 @@ Future<SourceCodingLiveProviderActivation> startOpenAiChatGptProvider({
   required CapabilityRegistry registry,
   required File artifact,
 }) async {
-  final ProviderDescriptor descriptor = ProviderDescriptor(
-    id: ProviderId(openAiChatGptProviderId),
-    capability: modelProviderCapability,
-    pluginId: _openAiPluginId,
-    displayName: 'Experimental ChatGPT',
-    serviceId: modelProviderServiceId,
-  );
-  final PluginBackendConnection connection = await host.startPlugin(
-    pluginId: _openAiPluginId,
-    artifactUri: artifact.uri,
-  );
-  final CapabilityRegistration registration = registry.register(
-    provider: descriptor,
-    endpoint: AdeleRequestChannelEndpoint(
-      channel: connection.channelFor(
-        connection.configurationContext(_openAiChatGptConfigurationContext),
-        descriptor.serviceId,
-      ),
-      serviceId: descriptor.serviceId,
-      isAvailable: () => !connection.isClosed,
+  return SourceCodingLiveProviderActivation(
+    await activateDevelopmentSelfHostingModelProvider(
+      host: host,
+      registry: registry,
+      artifact: artifact,
+      profile: DevelopmentSelfHostingProfile.chatgpt,
     ),
   );
-  return SourceCodingLiveProviderActivation(connection, registration);
 }
 
 final class SourceCodingLiveProviderActivation {
-  const SourceCodingLiveProviderActivation(this.connection, this.registration);
+  const SourceCodingLiveProviderActivation(this._activation);
 
-  final PluginBackendConnection connection;
-  final CapabilityRegistration registration;
+  final DevelopmentSelfHostingProviderActivation _activation;
 
-  Future<void> close() async {
-    await registration.close();
-    if (!connection.isClosed) await connection.close();
-  }
+  Future<void> close() => _activation.close();
 }
 
 final class SourceCodingLiveResult {
@@ -588,58 +371,6 @@ void expectSuccessfulSourceCodingRun({
   expect(answer.toLowerCase(), anyOf(contains('8'), contains('eight')));
 }
 
-Future<void> _closeResources(List<Future<void> Function()> actions) async {
-  Object? firstError;
-  StackTrace? firstStackTrace;
-  for (final Future<void> Function() action in actions) {
-    try {
-      await action();
-    } catch (error, stackTrace) {
-      firstError ??= error;
-      firstStackTrace ??= stackTrace;
-    }
-  }
-  if (firstError != null) {
-    Error.throwWithStackTrace(firstError, firstStackTrace!);
-  }
-}
-
-String _requiredEnvironment(String name) {
-  final String? value = Platform.environment[name];
-  if (value == null || value.trim().isEmpty) {
-    throw StateError('$name is required for ChatGPT source-coding live tests.');
-  }
-  return value;
-}
-
-Future<PluginCapabilityActivation> _startEnvironmentProvider({
-  required PluginBackendHost host,
-  required CapabilityRegistry registry,
-  required File artifact,
-  required ProviderId providerId,
-}) async {
-  final PluginBackendConnection connection = await host.startPlugin(
-    pluginId: _gitEnvironmentPluginId,
-    artifactUri: artifact.uri,
-  );
-  return PluginCapabilityActivation.register(
-    connection: connection,
-    registry: registry,
-    exposures: <PluginCapabilityExposure>[
-      PluginCapabilityExposure(
-        provider: ProviderDescriptor(
-          id: providerId,
-          capability: environmentProviderCapability,
-          pluginId: connection.pluginId,
-          displayName: 'Git Worktree Environment',
-          serviceId: environmentProviderServiceId,
-        ),
-        configurationContext: connection.defaultConfigurationContext,
-      ),
-    ],
-  );
-}
-
 Future<void> _createSourceRepository({
   required String repository,
   required Directory source,
@@ -679,54 +410,4 @@ Future<void> _git(Directory source, List<String> arguments) async {
   if (result.exitCode != 0) {
     throw StateError('git ${arguments.join(' ')} failed: ${result.stderr}');
   }
-}
-
-Future<void> _compile(
-  String dart,
-  String entrypoint,
-  String output,
-  String workingDirectory,
-) async {
-  final ProcessResult result = await Process.run(dart, <String>[
-    'compile',
-    'aot-snapshot',
-    entrypoint,
-    '-o',
-    output,
-  ], workingDirectory: workingDirectory);
-  if (result.exitCode != 0) throw StateError(result.stderr.toString());
-}
-
-String _dartExecutable() {
-  final String? flutterRoot = Platform.environment['FLUTTER_ROOT'];
-  if (flutterRoot != null) {
-    final String executable =
-        '$flutterRoot${Platform.pathSeparator}bin${Platform.pathSeparator}'
-        'cache${Platform.pathSeparator}dart-sdk${Platform.pathSeparator}bin'
-        '${Platform.pathSeparator}${Platform.isWindows ? 'dart.exe' : 'dart'}';
-    if (File(executable).existsSync()) return executable;
-  }
-  final String executable = Platform.resolvedExecutable;
-  if (File(executable).parent.path.endsWith(
-    '${Platform.pathSeparator}dart-sdk${Platform.pathSeparator}bin',
-  )) {
-    return executable;
-  }
-  throw StateError('Unable to locate the Dart SDK executable for AOT tests.');
-}
-
-final class _IntegrationIds implements ProductIdSource {
-  const _IntegrationIds(this.identity);
-
-  final String identity;
-
-  @override
-  EnvironmentId nextEnvironmentId() =>
-      EnvironmentId('environment-$identity-source-live');
-
-  @override
-  ProjectId nextProjectId() => ProjectId('project-$identity-source-live');
-
-  @override
-  TaskId nextTaskId() => TaskId('task-$identity-source-live');
 }
