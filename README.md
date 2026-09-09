@@ -96,6 +96,17 @@ through the current classic Responses profile, including Task-worktree mutation
 and Project/checkout isolation. This remains experimental interoperability
 evidence rather than a stable OpenAI integration contract.
 
+ADELE has also validated `gpt-6-astra` through the existing classic ChatGPT
+Responses backend's ordinary function-tool continuation and the full-stack
+`search` -> `read_file` -> final-response smoke. Every completed invocation
+reported exactly `gpt-6-astra`; missing or mismatched service-reported model
+identity fails validation rather than falling back to the request. Select it
+with `ADELE_OPENAI_CHATGPT_TEST_MODEL=gpt-6-astra`; the maintained default remains
+`gpt-5.5`. Newer catalog `use_responses_lite:true` metadata is not a demonstrated
+requirement for Lite. [ADR 0028](docs/adr/0028-experimental-chatgpt-openai-configured-instance.md)
+separates external Astra/5.6 classic-route evidence from ADELE's Astra proof and
+defers Lite until concrete compatibility pressure requires it.
+
 Phase V-D1 completes the practical bounded UTF-8 source-file mutation set with
 create-new-only `create_file` and opaque-revision-conditional `delete_file` over
 the existing Session Environment authority. Creation never intentionally
