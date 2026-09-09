@@ -69,6 +69,112 @@ void main() {
     },
   );
 
+  test('runner-owned Git commands discard inherited Git behavior', () async {
+    final Directory container = await Directory.systemTemp.createTemp(
+      'adele-self-hosting-git-environment-test-',
+    );
+    addTearDown(() async {
+      if (await container.exists()) await container.delete(recursive: true);
+    });
+    final _GitFixture git = await _createGitFixture(container);
+    final Map<String, String> routedEnvironment = <String, String>{
+      ...Platform.environment,
+      'GIT_DIR': '${git.project.path}/.git',
+      'GIT_WORK_TREE': git.project.path,
+      'GIT_INDEX_FILE': '${git.project.path}/.git/index',
+      'Git_Config_Count': '1',
+      'PATH': Platform.environment['PATH'] ?? '/usr/bin:/bin',
+    };
+    final Map<String, String> sanitized =
+        developmentSelfHostingGitProcessEnvironment(
+          inheritedEnvironment: routedEnvironment,
+        );
+    final Directory hostileClone = Directory('${container.path}/hostile-clone');
+
+    await cloneDevelopmentSelfHostingProject(
+      repository: git.launching,
+      destination: hostileClone,
+      sourceHead: git.startingHead,
+      inheritedGitEnvironment: routedEnvironment,
+    );
+    final DevelopmentSelfHostingGitEvidence routedEvidence =
+        await collectDevelopmentSelfHostingGitEvidence(
+          launchingRepository: git.launching,
+          projectSource: git.project,
+          taskWorktree: git.task,
+          taskBaseline: git.startingHead,
+          inheritedGitEnvironment: routedEnvironment,
+        );
+    final DevelopmentSelfHostingGitEvidence diffEvidence =
+        await collectDevelopmentSelfHostingGitEvidence(
+          launchingRepository: git.launching,
+          projectSource: git.project,
+          taskWorktree: git.task,
+          taskBaseline: git.startingHead,
+          inheritedGitEnvironment: <String, String>{
+            ...Platform.environment,
+            'GIT_EXTERNAL_DIFF': '/definitely/missing/adele-external-diff',
+          },
+        );
+
+    expect(
+      sanitized.keys.where(
+        (String name) => name.toUpperCase().startsWith('GIT_'),
+      ),
+      isEmpty,
+    );
+    expect(sanitized['PATH'], routedEnvironment['PATH']);
+    expect(
+      await File('${hostileClone.path}/fixture.txt').readAsString(),
+      'base\n',
+    );
+    expect(routedEvidence.collectionSucceeded, isTrue);
+    expect(routedEvidence.taskDiff, contains('+task'));
+    expect(diffEvidence.collectionSucceeded, isTrue);
+    expect(diffEvidence.taskDiff, contains('+task'));
+  });
+
+  test(
+    'six-tool host preflight mirrors Linux x64 setsid requirement',
+    () async {
+      await validateDevelopmentSelfHostingCommandHost(
+        hostIsLinux: true,
+        hostIsLinuxX64: true,
+        isExecutable: (String path) async => path == '/bin/setsid',
+      );
+
+      for (final Future<void> Function() validation
+          in <Future<void> Function()>[
+            () => validateDevelopmentSelfHostingCommandHost(
+              hostIsLinux: false,
+              hostIsLinuxX64: false,
+              isExecutable: (String _) async => true,
+            ),
+            () => validateDevelopmentSelfHostingCommandHost(
+              hostIsLinux: true,
+              hostIsLinuxX64: false,
+              isExecutable: (String _) async => true,
+            ),
+            () => validateDevelopmentSelfHostingCommandHost(
+              hostIsLinux: true,
+              hostIsLinuxX64: true,
+              isExecutable: (String _) async => false,
+            ),
+          ]) {
+        await expectLater(
+          validation(),
+          throwsA(
+            predicate<Object>(
+              (Object error) => error.toString().contains(
+                developmentSelfHostingHostRequirementMessage,
+              ),
+            ),
+          ),
+        );
+      }
+    },
+  );
+
   test(
     'successful and invocation-limited Runs have explicit exit semantics',
     () async {
@@ -533,7 +639,9 @@ void main() {
       if (await container.exists()) await container.delete(recursive: true);
     });
     final _GitFixture git = await _createGitFixture(container);
-    const String unusualPath = 'café "quoted" \\ tab\tline\nbreak.dart';
+    const String unusualPath =
+        'café `tick` "quoted" \\ tab\tline\n'
+        '# injected heading\n- injected item.dart';
     await File(
       '${git.task.path}/$unusualPath',
     ).writeAsString('unusual path payload with trailing space \n');
@@ -551,6 +659,44 @@ void main() {
     expect(evidence.taskDiff, contains('unusual path payload'));
     expect(evidence.taskDiffCheck, contains('trailing whitespace'));
     expect(evidence.taskDiffCheckExitCode, isNot(0));
+    final DevelopmentSelfHostingRunResult run =
+        await executeDevelopmentSelfHostingRun(
+          identity: 'unusual-path-markdown',
+          sessionId: SessionId('session-unusual-path-markdown'),
+          prompt: 'Complete.',
+          instructions: 'Respond.',
+          model: _FinalModel(),
+          catalog: ToolCatalog(),
+          maxModelInvocations: 1,
+        );
+    final Map<String, Object?> summary = developmentSelfHostingSummaryJson(
+      result: run,
+      selectedModel: 'fake-model',
+      git: evidence,
+      taskBaseline: git.startingHead,
+    );
+    final Map<String, Object?> structuredTask =
+        ((summary['git']! as Map<String, Object?>)['taskWorktree']!
+            as Map<String, Object?>);
+    final String markdown = developmentSelfHostingSummaryMarkdown(summary);
+    final List<String> changedPathRecords = const LineSplitter()
+        .convert(markdown)
+        .where((String line) => line.startsWith('- `"café'))
+        .toList(growable: false);
+
+    expect(structuredTask['changedFiles'], contains(unusualPath));
+    expect(changedPathRecords, hasLength(1));
+    expect(changedPathRecords.single, contains(r'\u0060tick\u0060'));
+    expect(changedPathRecords.single, contains(r'\n# injected heading\n'));
+    expect(markdown, isNot(contains('\n# injected heading\n')));
+    expect(markdown, isNot(contains('\n- injected item.dart\n')));
+    expect(
+      RegExp(
+        r'^## Final Assistant Response$',
+        multiLine: true,
+      ).allMatches(markdown),
+      hasLength(1),
+    );
   });
 
   test('missing Task Git repository fails required evidence', () async {

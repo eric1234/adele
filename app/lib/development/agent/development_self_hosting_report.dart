@@ -188,7 +188,10 @@ collectDevelopmentSelfHostingGitEvidence({
   required Directory? projectSource,
   required Directory? taskWorktree,
   required String? taskBaseline,
+  Map<String, String>? inheritedGitEnvironment,
 }) async {
+  Future<_GitResult> runGit(Directory directory, List<String> arguments) =>
+      _git(directory, arguments, inheritedEnvironment: inheritedGitEnvironment);
   final List<DevelopmentSelfHostingGitEvidenceFailure> failures =
       <DevelopmentSelfHostingGitEvidenceFailure>[];
   void requireGitResult(
@@ -214,11 +217,11 @@ collectDevelopmentSelfHostingGitEvidence({
     '--short',
     '--untracked-files=all',
   ];
-  final _GitResult launchingHead = await _git(
+  final _GitResult launchingHead = await runGit(
     launchingRepository,
     headArguments,
   );
-  final _GitResult launchingStatus = await _git(
+  final _GitResult launchingStatus = await runGit(
     launchingRepository,
     statusArguments,
   );
@@ -230,10 +233,10 @@ collectDevelopmentSelfHostingGitEvidence({
   );
   final _GitResult? projectHead = projectSource == null
       ? null
-      : await _git(projectSource, headArguments);
+      : await runGit(projectSource, headArguments);
   final _GitResult? projectStatus = projectSource == null
       ? null
-      : await _git(projectSource, statusArguments);
+      : await runGit(projectSource, statusArguments);
   if (projectHead != null) {
     requireGitResult('Project HEAD', headArguments, projectHead);
   }
@@ -277,7 +280,7 @@ collectDevelopmentSelfHostingGitEvidence({
   ];
   final List<_GitResult> taskResults = await Future.wait(<Future<_GitResult>>[
     for (final List<String> arguments in taskArguments)
-      _git(taskWorktree, arguments),
+      runGit(taskWorktree, arguments),
   ]);
   const List<String> taskLabels = <String>[
     'Task HEAD',
@@ -342,15 +345,15 @@ collectDevelopmentSelfHostingGitEvidence({
       '/dev/null',
       path,
     ];
-    final _GitResult untrackedDiff = await _git(
+    final _GitResult untrackedDiff = await runGit(
       taskWorktree,
       untrackedDiffArguments,
     );
-    final _GitResult untrackedStat = await _git(
+    final _GitResult untrackedStat = await runGit(
       taskWorktree,
       untrackedStatArguments,
     );
-    final _GitResult untrackedCheck = await _git(
+    final _GitResult untrackedCheck = await runGit(
       taskWorktree,
       untrackedCheckArguments,
     );
@@ -990,16 +993,14 @@ String developmentSelfHostingSummaryMarkdown(Map<String, Object?> summary) {
     ..writeln()
     ..writeln('- Collection succeeded: `${collection['succeeded']}`')
     ..writeln('- Diff check exit code: `${task['diffCheckExitCode']}`')
-    ..writeln(
-      '- Changed areas: `${(task['changedAreas']! as List).join(', ')}`',
-    )
+    ..writeln('- Changed areas: ${_markdownJsonCode(task['changedAreas'])}')
     ..writeln('- Changed files:');
   final List<Object?> changedFiles = task['changedFiles']! as List<Object?>;
   if (changedFiles.isEmpty) {
     output.writeln('None.');
   } else {
     for (final Object? path in changedFiles) {
-      output.writeln('- `$path`');
+      output.writeln('- ${_markdownJsonCode(path)}');
     }
   }
   final Object? finalResponse = run['finalAssistantResponse'];
@@ -1435,7 +1436,7 @@ String _attemptMarkdown(Map<String, Object?> evidence) => evidence.entries
     .where((MapEntry<String, Object?> entry) => entry.value != null)
     .map(
       (MapEntry<String, Object?> entry) =>
-          '${entry.key}=${jsonEncode(entry.value)}',
+          '${entry.key}=${_markdownJsonText(entry.value)}',
     )
     .join(', ');
 
@@ -1456,7 +1457,7 @@ String _proposalMarkdownArguments(
     },
     _ => _boundedArguments(arguments) as Map<String, Object?>,
   };
-  return '`${jsonEncode(concise)}`';
+  return _markdownJsonCode(concise);
 }
 
 int? _utf8Size(Object? value) =>
@@ -1490,8 +1491,13 @@ String _boundedMarkdownText(String value) {
 
 String _markdownValue(Object? value) {
   if (value == null) return 'none';
-  return jsonEncode(value).replaceAll('|', r'\|').replaceAll('\n', ' ');
+  return _markdownJsonText(value).replaceAll('|', r'\|');
 }
+
+String _markdownJsonCode(Object? value) => '`${_markdownJsonText(value)}`';
+
+String _markdownJsonText(Object? value) =>
+    jsonEncode(value).replaceAll('`', r'\u0060');
 
 Future<void> _writeJson(File file, Object? value) => file.writeAsString(
   '${const JsonEncoder.withIndent('  ').convert(_sortedJson(value))}\n',
@@ -1510,13 +1516,21 @@ Object? _sortedJson(Object? value) {
   return value;
 }
 
-Future<_GitResult> _git(Directory directory, List<String> arguments) async {
+Future<_GitResult> _git(
+  Directory directory,
+  List<String> arguments, {
+  Map<String, String>? inheritedEnvironment,
+}) async {
   try {
     final ProcessResult result = await Process.run(
       'git',
       arguments,
       workingDirectory: directory.path,
       runInShell: Platform.isWindows,
+      environment: developmentSelfHostingGitProcessEnvironment(
+        inheritedEnvironment: inheritedEnvironment,
+      ),
+      includeParentEnvironment: false,
     );
     return _GitResult(
       exitCode: result.exitCode,

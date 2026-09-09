@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:ffi';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
@@ -18,6 +19,15 @@ const List<String> developmentSelfHostingPhases = <String>[
   'adeleRun',
   'evidenceReportGeneration',
   'teardown',
+];
+
+const String developmentSelfHostingHostRequirementMessage =
+    'ADELE developer self-hosting currently requires Linux x64 with setsid '
+    'because the maintained six-tool profile includes run_command.';
+
+const List<String> _developmentSelfHostingSetSidCandidates = <String>[
+  '/usr/bin/setsid',
+  '/bin/setsid',
 ];
 
 final class DevelopmentSelfHostingUsageException implements Exception {
@@ -225,12 +235,13 @@ Future<void> validateDevelopmentSelfHostingOutputRoot({
       : outputPath
             .substring(repositoryPath.length + 1)
             .replaceAll(Platform.pathSeparator, '/');
-  final ProcessResult ignored = await Process.run(
-    'git',
-    <String>['check-ignore', '--quiet', '--no-index', '--', relativePath],
-    workingDirectory: repositoryPath,
-    runInShell: Platform.isWindows,
-  );
+  final ProcessResult ignored = await _runRunnerGit(<String>[
+    'check-ignore',
+    '--quiet',
+    '--no-index',
+    '--',
+    relativePath,
+  ], workingDirectory: repositoryPath);
   if (ignored.exitCode == 0) return;
   if (ignored.exitCode == 1) {
     throw DevelopmentSelfHostingOutputRootException(
@@ -242,6 +253,25 @@ Future<void> validateDevelopmentSelfHostingOutputRoot({
     'Unable to inspect output-directory ignore status: '
     '${ignored.stderr.toString().trim()}',
   );
+}
+
+Future<void> validateDevelopmentSelfHostingCommandHost({
+  bool? hostIsLinux,
+  bool? hostIsLinuxX64,
+  Future<bool> Function(String path)? isExecutable,
+}) async {
+  final bool isLinux = hostIsLinux ?? Platform.isLinux;
+  final bool isLinuxX64 =
+      hostIsLinuxX64 ?? (isLinux && Abi.current() == Abi.linuxX64);
+  if (!isLinux || !isLinuxX64) {
+    throw StateError(developmentSelfHostingHostRequirementMessage);
+  }
+  final Future<bool> Function(String path) executableCheck =
+      isExecutable ?? _canExecute;
+  for (final String candidate in _developmentSelfHostingSetSidCandidates) {
+    if (await executableCheck(candidate)) return;
+  }
+  throw StateError(developmentSelfHostingHostRequirementMessage);
 }
 
 Future<Directory> claimDevelopmentSelfHostingRunDirectory({
@@ -298,6 +328,7 @@ final class DevelopmentSelfHostingRunner {
           launchingRepository: launchingRepository,
           outputRoot: options.outputRoot,
         );
+        await validateDevelopmentSelfHostingCommandHost();
         final String status = await _gitValue(
           launchingRepository,
           const <String>['status', '--porcelain', '--untracked-files=all'],
@@ -547,12 +578,10 @@ final class DevelopmentSelfHostingRunner {
 }
 
 Future<Directory> _discoverRepository() async {
-  final ProcessResult result = await Process.run(
-    'git',
-    const <String>['rev-parse', '--show-toplevel'],
-    workingDirectory: Directory.current.path,
-    runInShell: Platform.isWindows,
-  );
+  final ProcessResult result = await _runRunnerGit(const <String>[
+    'rev-parse',
+    '--show-toplevel',
+  ], workingDirectory: Directory.current.path);
   if (result.exitCode != 0) {
     throw StateError('The runner must be launched from an ADELE Git checkout.');
   }
@@ -560,11 +589,9 @@ Future<Directory> _discoverRepository() async {
 }
 
 Future<String> _gitValue(Directory repository, List<String> arguments) async {
-  final ProcessResult result = await Process.run(
-    'git',
+  final ProcessResult result = await _runRunnerGit(
     arguments,
     workingDirectory: repository.path,
-    runInShell: Platform.isWindows,
   );
   if (result.exitCode != 0) {
     throw StateError(
@@ -572,6 +599,32 @@ Future<String> _gitValue(Directory repository, List<String> arguments) async {
     );
   }
   return result.stdout.toString().trim();
+}
+
+Future<ProcessResult> _runRunnerGit(
+  List<String> arguments, {
+  required String workingDirectory,
+  Map<String, String>? inheritedEnvironment,
+}) => Process.run(
+  'git',
+  arguments,
+  workingDirectory: workingDirectory,
+  runInShell: Platform.isWindows,
+  environment: developmentSelfHostingGitProcessEnvironment(
+    inheritedEnvironment: inheritedEnvironment,
+  ),
+  includeParentEnvironment: false,
+);
+
+Future<bool> _canExecute(String path) async {
+  final FileStat stat = await FileStat.stat(path);
+  if (stat.type != FileSystemEntityType.file) return false;
+  try {
+    await Process.run(path, const <String>['--help']);
+    return true;
+  } on ProcessException {
+    return false;
+  }
 }
 
 Future<void> _requireSourceBaseline(

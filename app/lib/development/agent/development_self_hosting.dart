@@ -28,6 +28,18 @@ const String _gitEnvironmentProviderId = 'dev.adele.environment.git-worktree';
 
 typedef DevelopmentSelfHostingLog = void Function(String message);
 
+Map<String, String> developmentSelfHostingGitProcessEnvironment({
+  Map<String, String>? inheritedEnvironment,
+}) {
+  final Map<String, String> environment = Map<String, String>.of(
+    inheritedEnvironment ?? Platform.environment,
+  );
+  environment.removeWhere(
+    (String name, String _) => name.toUpperCase().startsWith('GIT_'),
+  );
+  return environment;
+}
+
 enum DevelopmentSelfHostingProfile { chatgpt, apiKey }
 
 extension DevelopmentSelfHostingProfileName on DevelopmentSelfHostingProfile {
@@ -168,21 +180,28 @@ Future<void> cloneDevelopmentSelfHostingProject({
   required Directory destination,
   required String sourceHead,
   DevelopmentSelfHostingLog? log,
+  Map<String, String>? inheritedGitEnvironment,
 }) async {
   log?.call('Cloning isolated Project source at ${destination.path}.');
-  await _runChecked('git', <String>[
-    'clone',
-    '--quiet',
-    '--no-local',
-    '--no-checkout',
-    repository.path,
-    destination.path,
-  ], log: log);
+  await _runChecked(
+    'git',
+    <String>[
+      'clone',
+      '--quiet',
+      '--no-local',
+      '--no-checkout',
+      repository.path,
+      destination.path,
+    ],
+    log: log,
+    inheritedGitEnvironment: inheritedGitEnvironment,
+  );
   await _runChecked(
     'git',
     <String>['checkout', '--quiet', '--detach', sourceHead],
     workingDirectory: destination.path,
     log: log,
+    inheritedGitEnvironment: inheritedGitEnvironment,
   );
   // The model-visible clone must not retain a writable local origin pointing
   // back at the launching checkout.
@@ -191,12 +210,14 @@ Future<void> cloneDevelopmentSelfHostingProject({
     const <String>['remote', 'remove', 'origin'],
     workingDirectory: destination.path,
     log: log,
+    inheritedGitEnvironment: inheritedGitEnvironment,
   );
   final String clonedHead = (await _runChecked(
     'git',
     const <String>['rev-parse', 'HEAD'],
     workingDirectory: destination.path,
     log: log,
+    inheritedGitEnvironment: inheritedGitEnvironment,
   )).stdout.toString().trim();
   if (clonedHead != sourceHead) {
     throw StateError(
@@ -651,12 +672,20 @@ Future<ProcessResult> _runChecked(
   List<String> arguments, {
   String? workingDirectory,
   DevelopmentSelfHostingLog? log,
+  Map<String, String>? inheritedGitEnvironment,
 }) async {
+  final bool isGit = executable == 'git';
   final ProcessResult result = await Process.run(
     executable,
     arguments,
     workingDirectory: workingDirectory,
     runInShell: Platform.isWindows,
+    environment: isGit
+        ? developmentSelfHostingGitProcessEnvironment(
+            inheritedEnvironment: inheritedGitEnvironment,
+          )
+        : null,
+    includeParentEnvironment: !isGit,
   );
   final String stdoutText = result.stdout.toString().trim();
   final String stderrText = result.stderr.toString().trim();

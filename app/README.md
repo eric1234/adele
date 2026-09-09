@@ -46,6 +46,11 @@ unimplemented.
 repeatable ADELE-authored source-development experiments. It is not ADELE's
 final CLI or product orchestration interface.
 
+The temporary runner currently requires Linux x64 and an executable
+`/usr/bin/setsid` or `/bin/setsid`. This mirrors the current Git Environment
+foreground-process limitation because the maintained six-tool profile always
+includes `run_command`.
+
 The default `chatgpt` profile requires
 `ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE`, honors the maintained optional ChatGPT
 configuration variables, uses `ADELE_OPENAI_CHATGPT_TEST_MODEL` when set, and
