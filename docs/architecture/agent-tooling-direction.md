@@ -197,15 +197,22 @@ The strength of that guarantee is provider-specific. In particular, an ordinary 
 
 The exact revision representation, hashing/versioning mechanism, provider coordination strategy, tool schemas, and any future multi-file atomicity remain deferred. The architectural point is the precondition and honest effect guarantee: source mutation should not knowingly apply against stale observed content by default. Creation can analogously require that the target be absent.
 
-The current initial `apply_patch(relativePath, expectedRevision, search,
-replace)` language performs exact, case-sensitive, literal matching and mutates
-only when `search` occurs once. Zero or multiple matches fail without mutation,
-including overlapping candidate starts. The tool re-reads and compares the
-opaque expected revision before matching, then still supplies the original
-revision to conditional complete-file replacement as the final stale-write
-guard. This deliberately narrow exact-unique language is current implementation,
-not a permanent model patch grammar; future model-facing formats may evolve
-without moving patch semantics into `EnvironmentProvider`.
+The current `apply_patch(relativePath, expectedRevision, edits)` language takes
+a non-empty ordered array of `{search, replace}` objects. The tool re-reads once
+and compares the original opaque expected revision before matching. Each edit
+requires its non-empty `search` to occur exactly once in the current working
+string, using exact, case-sensitive, literal matching, including overlapping
+candidate starts. Replacement text may be empty and is preserved verbatim;
+later edits see earlier replacements. Zero or multiple matches fail without any
+write and report the zero-based `failedEditIndex` and total `editCount`. An edit
+whose search and replacement are identical fails with `no_change` and the same
+index/count diagnostics. If the final text equals the original, including when
+edits cancel one another, the tool reports `no_change` without writing.
+Otherwise, after all edits pass, it supplies the original revision unchanged to
+one conditional complete-file replacement as the final stale-write guard.
+Filesystem Tools owns this model-facing grammar; `EnvironmentProvider` owns the
+conditional replacement primitive, not patch semantics. This exact-unique
+language is current implementation, not a permanent model patch grammar.
 
 The current `create_file(relativePath, content)` uses the same canonical logical
 file target as read/patch, accepts empty UTF-8 text, rejects an entity that

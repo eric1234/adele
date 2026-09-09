@@ -17,17 +17,19 @@ const String _mutationPrompt =
     'Read app/lib/development/agent/simple_tool_loop_strategy.dart using '
     'read_file. Then use apply_patch to change the default '
     'maxModelInvocations assignment from 8 to 9. Use the exact opaque '
-    'Revision returned by read_file as expectedRevision. Use enough exact '
-    'surrounding source in the apply_patch search argument that it matches '
-    'exactly once. The exact path is supplied, so do not call the search tool. '
-    'Do not modify any other source. After apply_patch succeeds, report that '
-    'the change was made.';
+    'Revision returned by read_file as expectedRevision. Supply an ordered '
+    'edits array of {search, replace} objects. Use enough exact surrounding '
+    'source in each search that it matches exactly once in the working text '
+    'after earlier edits. The exact path is supplied, so do not call the search '
+    'tool. Do not modify any other source. After apply_patch succeeds, report '
+    'that the change was made.';
 const String _mutationInstructions =
     'You must inspect the exact requested file with read_file before editing. '
     'Do not invent, infer, transform, or derive the revision. Copy the exact '
     'opaque Revision visible in the read_file result into apply_patch as '
-    'expectedRevision. Perform the edit with apply_patch rather than merely '
-    'describing it. If a safe patch attempt fails, re-read before retrying. '
+    'expectedRevision. Perform the edit with apply_patch using relativePath, '
+    'expectedRevision, and edits rather than merely describing it. If a safe '
+    'patch attempt fails, re-read before retrying. '
     'After the patch succeeds, report completion.';
 
 void main() {
@@ -94,6 +96,7 @@ void main() {
         result: result,
         authority: harness.authority,
         originalText: originalProjectText,
+        expectedText: expectedTaskText,
       );
       final EnvironmentTextFile resultingFile = await harness
           .readEnvironmentFile(sourceCodingStrategyPath);
@@ -127,6 +130,7 @@ _MutationEvidence _expectSuccessfulMutationRun({
   required SourceCodingLiveResult result,
   required SessionEnvironmentAuthority authority,
   required String originalText,
+  required String expectedText,
 }) {
   expect(result.run.state, RunState.completed);
   final List<ExecutionEventRecord> records = result.run.journal.records;
@@ -151,8 +155,13 @@ _MutationEvidence _expectSuccessfulMutationRun({
       .toList(growable: false);
   expect(successfulPatches, hasLength(1));
   final SourceCodingToolAttempt successfulPatch = successfulPatches.single;
+  final ToolInvocation patchInvocation = successfulPatch.prepared.invocation;
   expect(
-    successfulPatch.prepared.invocation.canonicalArguments['relativePath'],
+    patchInvocation.canonicalArguments.keys,
+    unorderedEquals(<String>['relativePath', 'expectedRevision', 'edits']),
+  );
+  expect(
+    patchInvocation.canonicalArguments['relativePath'],
     sourceCodingStrategyPath,
   );
   expect(
@@ -176,16 +185,61 @@ _MutationEvidence _expectSuccessfulMutationRun({
     expect(attempt.outcome.disposition, ToolOutcomeDisposition.failure);
     expect(attempt.outcome.effectCertainty, EffectCertainty.knownNotOccurred);
     expect(attempt.outcome.hostData['code'], isIn(safeFailureCodes));
+    if (attempt.outcome.hostData['code'] != environmentRevisionConflictCode) {
+      final List<Object?> edits =
+          attempt.prepared.invocation.canonicalArguments['edits']!
+              as List<Object?>;
+      expect(attempt.outcome.hostData['editCount'], edits.length);
+      expect(
+        attempt.outcome.hostData['failedEditIndex'],
+        inInclusiveRange(0, edits.length - 1),
+      );
+    }
     expect(
       attempt.terminalRecord.sequence,
       lessThan(successfulPatch.preparedRecord.sequence),
     );
+    expect(
+      reads.where(
+        (SourceCodingToolAttempt read) =>
+            read.terminalRecord.sequence > attempt.terminalRecord.sequence &&
+            read.terminalRecord.sequence <
+                successfulPatch.preparedRecord.sequence &&
+            read.outcome.disposition == ToolOutcomeDisposition.success &&
+            read.prepared.invocation.canonicalArguments['relativePath'] ==
+                sourceCodingStrategyPath,
+      ),
+      isNotEmpty,
+    );
   }
 
-  final Object? expectedRevision = successfulPatch
-      .prepared
-      .invocation
-      .canonicalArguments['expectedRevision'];
+  final Object? editsValue = patchInvocation.canonicalArguments['edits'];
+  expect(editsValue, isA<List<Object?>>());
+  final List<Object?> edits = editsValue! as List<Object?>;
+  expect(edits, isNotEmpty);
+  String replayedText = originalText;
+  for (final Object? edit in edits) {
+    expect(edit, isA<Map<String, Object?>>());
+    final Map<String, Object?> entry = edit! as Map<String, Object?>;
+    expect(entry.keys, unorderedEquals(<String>['search', 'replace']));
+    expect(entry['search'], allOf(isA<String>(), isNotEmpty));
+    expect(entry['replace'], isA<String>());
+    final String search = entry['search']! as String;
+    final String replace = entry['replace']! as String;
+    expect(replace, isNot(search));
+    final int match = replayedText.indexOf(search);
+    expect(match, greaterThanOrEqualTo(0));
+    expect(replayedText.indexOf(search, match + 1), -1);
+    replayedText = replayedText.replaceRange(
+      match,
+      match + search.length,
+      replace,
+    );
+  }
+  expect(replayedText, expectedText);
+
+  final Object? expectedRevision =
+      patchInvocation.canonicalArguments['expectedRevision'];
   expect(expectedRevision, isA<String>());
   final List<SourceCodingToolAttempt> relevantReads = reads
       .where((SourceCodingToolAttempt attempt) {
@@ -223,23 +277,22 @@ _MutationEvidence _expectSuccessfulMutationRun({
     '$originalText',
   );
 
-  expect(
-    successfulPatch.outcome.hostData['environmentId'],
-    authority.environmentId.value,
-  );
-  expect(
-    successfulPatch.outcome.hostData['relativePath'],
-    sourceCodingStrategyPath,
-  );
   final Object? newRevisionValue =
       successfulPatch.outcome.hostData['newRevision'];
   expect(newRevisionValue, isA<String>());
   final String newRevision = newRevisionValue! as String;
   expect(newRevision, isNotEmpty);
   expect(newRevision, isNot(readRevision));
+  expect(successfulPatch.outcome.hostData, <String, Object?>{
+    'environmentId': authority.environmentId.value,
+    'relativePath': sourceCodingStrategyPath,
+    'editCount': edits.length,
+    'newRevision': newRevision,
+  });
   expect(
     successfulPatch.outcome.modelContent,
     'Patched: ${jsonEncode(sourceCodingStrategyPath)}\n'
+    'Edits applied: ${edits.length}\n'
     'Revision: ${jsonEncode(newRevision)}',
   );
 
@@ -359,8 +412,7 @@ String _expectedMutation(String original) {
   if (match < 0) {
     throw StateError('The maintained mutation target is missing.');
   }
-  if (original.indexOf(_originalFragment, match + _originalFragment.length) >=
-      0) {
+  if (original.indexOf(_originalFragment, match + 1) >= 0) {
     throw StateError('The maintained mutation target is not unique.');
   }
   return original.replaceRange(

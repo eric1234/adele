@@ -245,23 +245,36 @@ final class _ApplyPatchExecutable implements ToolExecutable {
     modelDefinition: ModelToolDefinition(
       alias: 'apply_patch',
       description:
-          'Replace one exact, case-sensitive, literal search occurrence in an '
-          'existing UTF-8 file from the current Session Environment. search '
-          'must include enough surrounding function, class, or test context '
-          'that it occurs exactly once.',
+          'Patch one existing UTF-8 file in the current Session Environment '
+          'using one observed opaque expectedRevision. Apply edits in array '
+          'order: each search is an exact, case-sensitive literal that must '
+          'occur exactly once when evaluated, and later edits see the in-memory '
+          'result of earlier edits. Include enough surrounding function, class, '
+          'or test context to make each search unique. Every edit must change '
+          'its occurrence, and the final text must differ from the original. '
+          'The tool validates the entire sequence before one conditional '
+          'filesystem replacement; if any edit fails, no ADELE-requested '
+          'filesystem mutation occurs. Normally group multiple changes to the same '
+          'observed file into one apply_patch call rather than separate calls.',
       argumentsSchema: const <String, Object?>{
         'type': 'object',
-        'required': <Object?>[
-          'relativePath',
-          'expectedRevision',
-          'search',
-          'replace',
-        ],
+        'required': <Object?>['relativePath', 'expectedRevision', 'edits'],
         'properties': <String, Object?>{
           'relativePath': <String, Object?>{'type': 'string'},
           'expectedRevision': <String, Object?>{'type': 'string'},
-          'search': <String, Object?>{'type': 'string', 'minLength': 1},
-          'replace': <String, Object?>{'type': 'string'},
+          'edits': <String, Object?>{
+            'type': 'array',
+            'minItems': 1,
+            'items': <String, Object?>{
+              'type': 'object',
+              'required': <Object?>['search', 'replace'],
+              'properties': <String, Object?>{
+                'search': <String, Object?>{'type': 'string', 'minLength': 1},
+                'replace': <String, Object?>{'type': 'string'},
+              },
+              'additionalProperties': false,
+            },
+          },
         },
         'additionalProperties': false,
       },
@@ -273,32 +286,49 @@ final class _ApplyPatchExecutable implements ToolExecutable {
   CanonicalToolArguments validateAndNormalize(
     Map<String, Object?> proposedArguments,
   ) {
-    if (proposedArguments.length != 4 ||
+    if (proposedArguments.length != 3 ||
         proposedArguments['relativePath'] is! String ||
         proposedArguments['expectedRevision'] is! String ||
-        proposedArguments['search'] is! String ||
-        proposedArguments['replace'] is! String) {
+        proposedArguments['edits'] is! List) {
       throw const ToolArgumentValidationException(
-        'apply_patch requires exactly the string arguments relativePath, '
-        'expectedRevision, search, and replace.',
+        'apply_patch requires exactly relativePath and expectedRevision strings '
+        'and a non-empty edits list.',
       );
     }
     final String relativePath = proposedArguments['relativePath']! as String;
-    final String search = proposedArguments['search']! as String;
-    final String replace = proposedArguments['replace']! as String;
-    if (relativePath.isEmpty || search.isEmpty) {
+    final List<Object?> edits = proposedArguments['edits']! as List;
+    if (relativePath.isEmpty || edits.isEmpty) {
       throw const ToolArgumentValidationException(
-        'relativePath and search must not be empty.',
+        'relativePath and edits must not be empty.',
       );
     }
     _requireWellFormedUnicode('relativePath', relativePath);
-    _requireWellFormedUnicode('search', search);
-    _requireWellFormedUnicode('replace', replace);
+    final List<Map<String, Object?>> canonicalEdits = <Map<String, Object?>>[];
+    for (int index = 0; index < edits.length; index++) {
+      final Object? edit = edits[index];
+      if (edit is! Map ||
+          edit.length != 2 ||
+          edit['search'] is! String ||
+          edit['replace'] is! String ||
+          (edit['search']! as String).isEmpty) {
+        throw ToolArgumentValidationException(
+          'edits[$index] requires exactly a non-empty search string and a '
+          'replace string.',
+        );
+      }
+      final String search = edit['search']! as String;
+      final String replace = edit['replace']! as String;
+      _requireWellFormedUnicode('edits[$index].search', search);
+      _requireWellFormedUnicode('edits[$index].replace', replace);
+      canonicalEdits.add(<String, Object?>{
+        'search': search,
+        'replace': replace,
+      });
+    }
     return CanonicalToolArguments(<String, Object?>{
       'relativePath': _canonicalFilePath(relativePath),
       'expectedRevision': proposedArguments['expectedRevision']! as String,
-      'search': search,
-      'replace': replace,
+      'edits': canonicalEdits,
     });
   }
 
@@ -309,6 +339,7 @@ final class _ApplyPatchExecutable implements ToolExecutable {
   ) async {
     _requireAuthorizedSession(context);
     final String relativePath = arguments.snapshot['relativePath']! as String;
+    final int editCount = (arguments.snapshot['edits']! as List).length;
     return EffectDescription(
       effects: const <ToolEffect>[ToolEffect.sourceMutation],
       targets: <EffectTarget>[
@@ -319,7 +350,9 @@ final class _ApplyPatchExecutable implements ToolExecutable {
           ),
         ),
       ],
-      summary: 'Patch Environment file $relativePath.',
+      summary:
+          'Apply $editCount exact ${editCount == 1 ? 'edit' : 'edits'} to '
+          'Environment file $relativePath.',
     );
   }
 
@@ -337,88 +370,114 @@ final class _ApplyPatchExecutable implements ToolExecutable {
     final String relativePath = arguments.snapshot['relativePath']! as String;
     final String expectedRevision =
         arguments.snapshot['expectedRevision']! as String;
-    final String search = arguments.snapshot['search']! as String;
-    final String replace = arguments.snapshot['replace']! as String;
+    final List<Object?> edits = arguments.snapshot['edits']! as List;
+    final int editCount = edits.length;
     bool mutationAttempted = false;
     try {
       _requireAuthorizedSession(context);
       final EnvironmentTextFile current = await _read.readFile(relativePath);
       if (current.revision != expectedRevision) {
-        yield ToolExecutionTerminal(_revisionConflict(relativePath));
+        yield ToolExecutionTerminal(_revisionConflict(relativePath, editCount));
         return;
       }
-      int matchCount = 0;
-      int matchIndex = -1;
-      int searchStart = 0;
-      while (true) {
-        final int candidate = current.text.indexOf(search, searchStart);
-        if (candidate < 0) break;
-        matchCount++;
-        if (matchCount == 1) matchIndex = candidate;
-        if (matchCount == 2) break;
-        searchStart = candidate + 1;
-      }
-      if (matchCount == 0) {
-        yield ToolExecutionTerminal(
-          _patchFailure(
-            relativePath: relativePath,
-            code: 'patch_target_not_found',
-            modelContent:
-                'No exact match for the search text. No changes were made.\n'
-                'Re-read the file and copy the exact current text, including '
-                'whitespace and newlines.',
-          ),
+      String workingText = current.text;
+      for (int index = 0; index < editCount; index++) {
+        final Map<String, Object?> edit = edits[index]! as Map<String, Object?>;
+        final String search = edit['search']! as String;
+        final String replace = edit['replace']! as String;
+        int matchCount = 0;
+        int matchIndex = -1;
+        int searchStart = 0;
+        while (true) {
+          final int candidate = workingText.indexOf(search, searchStart);
+          if (candidate < 0) break;
+          matchCount++;
+          if (matchCount == 1) matchIndex = candidate;
+          if (matchCount == 2) break;
+          searchStart = candidate + 1;
+        }
+        if (matchCount == 0) {
+          yield ToolExecutionTerminal(
+            _patchFailure(
+              relativePath: relativePath,
+              editCount: editCount,
+              failedEditIndex: index,
+              code: 'patch_target_not_found',
+              modelContent:
+                  'Edit ${index + 1} of $editCount failed: no exact match for '
+                  'the search text. No changes were made.\n'
+                  'Re-read the file and copy the exact current text, including '
+                  'whitespace and newlines, accounting for earlier edits.',
+            ),
+          );
+          return;
+        }
+        if (matchCount > 1) {
+          yield ToolExecutionTerminal(
+            _patchFailure(
+              relativePath: relativePath,
+              editCount: editCount,
+              failedEditIndex: index,
+              code: 'patch_target_ambiguous',
+              modelContent:
+                  'Edit ${index + 1} of $editCount failed: the search text '
+                  'matched multiple locations. No changes were made.\n'
+                  'Include more surrounding function, class, or test context '
+                  'so the search is unique after earlier edits.',
+            ),
+          );
+          return;
+        }
+        if (search == replace) {
+          yield ToolExecutionTerminal(
+            _patchFailure(
+              relativePath: relativePath,
+              editCount: editCount,
+              failedEditIndex: index,
+              code: 'no_change',
+              modelContent:
+                  'Edit ${index + 1} of $editCount failed: the search and '
+                  'replacement text are identical. No changes were made.',
+            ),
+          );
+          return;
+        }
+
+        workingText = workingText.replaceRange(
+          matchIndex,
+          matchIndex + search.length,
+          replace,
         );
-        return;
       }
-      if (matchCount > 1) {
+      if (workingText == current.text) {
         yield ToolExecutionTerminal(
           _patchFailure(
             relativePath: relativePath,
-            code: 'patch_target_ambiguous',
-            modelContent:
-                'The search text matched multiple locations. No changes '
-                'were made.\nInclude more surrounding function, class, or test '
-                'context so the search is unique.',
-          ),
-        );
-        return;
-      }
-      if (search == replace) {
-        yield ToolExecutionTerminal(
-          _patchFailure(
-            relativePath: relativePath,
+            editCount: editCount,
             code: 'no_change',
             modelContent:
-                'The search and replacement text are identical. No changes '
-                'were made.',
+                'The $editCount edits leave the file unchanged. '
+                'No changes were made.',
           ),
         );
         return;
       }
 
-      final String replacementText = current.text.replaceRange(
-        matchIndex,
-        matchIndex + search.length,
-        replace,
-      );
       mutationAttempted = true;
       final EnvironmentTextFileReplacement replacement = await _mutation
-          .replaceExistingTextFile(
-            relativePath,
-            replacementText,
-            expectedRevision,
-          );
+          .replaceExistingTextFile(relativePath, workingText, expectedRevision);
       yield ToolExecutionTerminal(
         ToolOutcome(
           disposition: ToolOutcomeDisposition.success,
           effectCertainty: EffectCertainty.knownOccurred,
           modelContent:
               'Patched: ${jsonEncode(relativePath)}\n'
+              'Edits applied: $editCount\n'
               'Revision: ${jsonEncode(replacement.revision)}',
           hostData: <String, Object?>{
             'environmentId': _read.environmentId.value,
             'relativePath': relativePath,
+            'editCount': editCount,
             'newRevision': replacement.revision,
           },
         ),
@@ -447,7 +506,9 @@ final class _ApplyPatchExecutable implements ToolExecutable {
       );
     } on EnvironmentFailure catch (error) {
       if (error.code == environmentRevisionConflictCode) {
-        yield ToolExecutionTerminal(_revisionConflict(relativePath, error));
+        yield ToolExecutionTerminal(
+          _revisionConflict(relativePath, editCount, error),
+        );
         return;
       }
       yield ToolExecutionTerminal(
@@ -461,6 +522,7 @@ final class _ApplyPatchExecutable implements ToolExecutable {
           hostData: <String, Object?>{
             'environmentId': _read.environmentId.value,
             'relativePath': relativePath,
+            'editCount': editCount,
             'code': error.code,
             'details': error.details,
           },
@@ -498,26 +560,32 @@ final class _ApplyPatchExecutable implements ToolExecutable {
     }
   }
 
-  ToolOutcome _revisionConflict(String relativePath, [Object? cause]) =>
-      ToolOutcome(
-        disposition: ToolOutcomeDisposition.failure,
-        failureKind: ToolFailureKind.domain,
-        effectCertainty: EffectCertainty.knownNotOccurred,
-        modelContent:
-            'The file changed since the expected revision was observed.\n'
-            'No stale ADELE write was performed.\n'
-            'Re-read the file before retrying the patch.',
-        hostData: <String, Object?>{
-          'environmentId': _read.environmentId.value,
-          'relativePath': relativePath,
-          'code': environmentRevisionConflictCode,
-        },
-        hostDiagnostic: cause?.toString(),
-        cause: cause,
-      );
+  ToolOutcome _revisionConflict(
+    String relativePath,
+    int editCount, [
+    Object? cause,
+  ]) => ToolOutcome(
+    disposition: ToolOutcomeDisposition.failure,
+    failureKind: ToolFailureKind.domain,
+    effectCertainty: EffectCertainty.knownNotOccurred,
+    modelContent:
+        'The file changed since the expected revision was observed.\n'
+        'No stale ADELE write was performed.\n'
+        'Re-read the file before retrying the patch.',
+    hostData: <String, Object?>{
+      'environmentId': _read.environmentId.value,
+      'relativePath': relativePath,
+      'editCount': editCount,
+      'code': environmentRevisionConflictCode,
+    },
+    hostDiagnostic: cause?.toString(),
+    cause: cause,
+  );
 
   ToolOutcome _patchFailure({
     required String relativePath,
+    required int editCount,
+    int? failedEditIndex,
     required String code,
     required String modelContent,
   }) => ToolOutcome(
@@ -528,6 +596,8 @@ final class _ApplyPatchExecutable implements ToolExecutable {
     hostData: <String, Object?>{
       'environmentId': _read.environmentId.value,
       'relativePath': relativePath,
+      'editCount': editCount,
+      'failedEditIndex': ?failedEditIndex,
       'code': code,
     },
   );

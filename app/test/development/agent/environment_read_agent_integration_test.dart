@@ -270,7 +270,7 @@ void main() {
   );
 
   test(
-    'agent edits then validates real source in its Session Environment',
+    'agent applies ordered edits then validates source in its Session Environment',
     () async {
       final Directory container = await Directory.systemTemp.createTemp(
         'adele-session-environment-patch-',
@@ -344,9 +344,9 @@ void main() {
         session: history,
         contextAssembler: const DevelopmentContextAssembler(
           instructions:
-              'Read the requested source, use its visible revision to patch '
-              'one exact location, validate it with git diff --check using '
-              'direct arguments, then report the result.',
+              'Read the requested source, use its visible revision for one '
+              'apply_patch call with ordered exact edits, validate it with '
+              'git diff --check using direct arguments, then report the result.',
         ),
         model: model,
         toolCatalog: catalog,
@@ -396,11 +396,21 @@ void main() {
         prepared.map((event) => event.invocation.tool.modelDefinition.alias),
         <String>['read_file', 'apply_patch', 'run_command'],
       );
+      expect(model.edits, hasLength(2));
+      expect(model.edits.last['search'], model.edits.first['replace']);
       expect(
-        prepared[1].invocation.canonicalArguments['expectedRevision'],
-        model.expectedRevision,
+        originalSource,
+        isNot(contains(model.edits.last['search']! as String)),
       );
-      expect(prepared[1].invocation.canonicalArguments['search'], model.search);
+      expect(prepared[1].invocation.canonicalArguments, <String, Object?>{
+        'relativePath': _sourceRelativePath,
+        'expectedRevision': model.expectedRevision,
+        'edits': model.edits,
+      });
+      expect(
+        prepared[1].invocation.proposal.arguments,
+        prepared[1].invocation.canonicalArguments,
+      );
       expect(prepared.last.invocation.proposal.arguments, <String, Object?>{
         'program': 'git',
         'arguments': <Object?>['diff', '--check'],
@@ -427,8 +437,21 @@ void main() {
         everyElement(authority.environmentId.value),
       );
       expect(
-        completed[1].outcome.hostData['newRevision'],
-        model.postWriteRevision,
+        completed.first.outcome.hostData['revision'],
+        model.expectedRevision,
+      );
+      expect(completed.first.outcome.hostData['text'], originalSource);
+      expect(completed[1].outcome.hostData, <String, Object?>{
+        'environmentId': authority.environmentId.value,
+        'relativePath': _sourceRelativePath,
+        'editCount': model.edits.length,
+        'newRevision': model.postWriteRevision,
+      });
+      expect(
+        completed[1].outcome.modelContent,
+        'Patched: ${jsonEncode(_sourceRelativePath)}\n'
+        'Edits applied: ${model.edits.length}\n'
+        'Revision: ${jsonEncode(model.postWriteRevision)}',
       );
       expect(completed.last.outcome.hostData['termination'], 'exited');
       expect(completed.last.outcome.hostData['exitCode'], 0);
@@ -467,6 +490,20 @@ void main() {
         contains('Run program "git" with arguments ["diff","--check"]'),
       );
 
+      final ExecutionEventRecord readCompleted = run.journal.records
+          .singleWhere(
+            (ExecutionEventRecord record) =>
+                record.event is ToolExecutionCompleted &&
+                (record.event as ToolExecutionCompleted).invocationId ==
+                    prepared.first.invocation.id,
+          );
+      final ExecutionEventRecord patchPrepared = run.journal.records
+          .singleWhere(
+            (ExecutionEventRecord record) =>
+                record.event is ToolInvocationPrepared &&
+                (record.event as ToolInvocationPrepared).invocation.id ==
+                    prepared[1].invocation.id,
+          );
       final ExecutionEventRecord patchCompleted = run.journal.records
           .singleWhere(
             (ExecutionEventRecord record) =>
@@ -494,6 +531,8 @@ void main() {
                 record.event is ModelInvocationStarted,
           )
           .last;
+      expect(readCompleted.sequence, lessThan(patchPrepared.sequence));
+      expect(patchPrepared.sequence, lessThan(patchCompleted.sequence));
       expect(patchCompleted.sequence, lessThan(commandStarted.sequence));
       expect(commandStarted.sequence, lessThan(commandCompleted.sequence));
       expect(commandCompleted.sequence, lessThan(finalModelStarted.sequence));
@@ -862,7 +901,7 @@ final class _ReadPatchCommandModel implements ModelPort {
   String? observedSource;
   String? expectedRevision;
   String? postWriteRevision;
-  String? search;
+  late List<Map<String, Object?>> edits;
   bool commandResultValidated = false;
 
   @override
@@ -879,13 +918,29 @@ final class _ReadPatchCommandModel implements ModelPort {
         readFile,
         expectedProperties: const <String>{'relativePath'},
       );
-      _requireModelSchema(
-        applyPatch,
-        expectedProperties: const <String>{
-          'relativePath',
-          'expectedRevision',
-          'search',
-          'replace',
+      expect(
+        applyPatch.modelDefinition.argumentsSchema,
+        const <String, Object?>{
+          'type': 'object',
+          'required': <Object?>['relativePath', 'expectedRevision', 'edits'],
+          'properties': <String, Object?>{
+            'relativePath': <String, Object?>{'type': 'string'},
+            'expectedRevision': <String, Object?>{'type': 'string'},
+            'edits': <String, Object?>{
+              'type': 'array',
+              'minItems': 1,
+              'items': <String, Object?>{
+                'type': 'object',
+                'required': <Object?>['search', 'replace'],
+                'properties': <String, Object?>{
+                  'search': <String, Object?>{'type': 'string', 'minLength': 1},
+                  'replace': <String, Object?>{'type': 'string'},
+                },
+                'additionalProperties': false,
+              },
+            },
+          },
+          'additionalProperties': false,
         },
       );
       _requireModelSchema(
@@ -923,11 +978,19 @@ final class _ReadPatchCommandModel implements ModelPort {
           'The model-visible source did not contain one patch target line.',
         );
       }
-      search = candidateLines.single;
-      final String replace = search!.replaceFirst(
+      final String search = candidateLines.single;
+      final String intermediate = search.replaceFirst(
+        'this.maxModelInvocations = 8',
+        'this.maxModelInvocations = 10',
+      );
+      final String replace = search.replaceFirst(
         'this.maxModelInvocations = 8',
         'this.maxModelInvocations = 9',
       );
+      edits = <Map<String, Object?>>[
+        <String, Object?>{'search': search, 'replace': intermediate},
+        <String, Object?>{'search': intermediate, 'replace': replace},
+      ];
       yield ModelOutputItemCompleted(
         invocationId: request.invocationId,
         item: ModelToolProposalOutput(
@@ -937,8 +1000,7 @@ final class _ReadPatchCommandModel implements ModelPort {
             arguments: <String, Object?>{
               'relativePath': file.relativePath,
               'expectedRevision': file.revision,
-              'search': search,
-              'replace': replace,
+              'edits': edits,
             },
           ),
         ),
@@ -949,6 +1011,9 @@ final class _ReadPatchCommandModel implements ModelPort {
       );
       if (result.relativePath != observedPath) {
         throw StateError('The patch result named another file.');
+      }
+      if (result.editCount != edits.length) {
+        throw StateError('The patch result did not apply every ordered edit.');
       }
       postWriteRevision = result.revision;
       yield ModelOutputItemCompleted(
@@ -1185,9 +1250,14 @@ _VisibleFile _parseVisibleFile(String modelContent) {
 }
 
 final class _VisiblePatch {
-  const _VisiblePatch({required this.relativePath, required this.revision});
+  const _VisiblePatch({
+    required this.relativePath,
+    required this.editCount,
+    required this.revision,
+  });
 
   final String relativePath;
+  final int editCount;
   final String revision;
 }
 
@@ -1224,15 +1294,18 @@ _VisibleCreation _parseVisibleCreation(String modelContent) {
 }
 
 _VisiblePatch _parseVisiblePatch(String modelContent) {
-  final int newline = modelContent.indexOf('\n');
-  if (newline < 0) {
+  final List<String> lines = modelContent.split('\n');
+  if (lines.length != 3) {
     throw StateError('Apply Patch returned malformed model-visible content.');
   }
-  final String pathLine = modelContent.substring(0, newline);
-  final String revisionLine = modelContent.substring(newline + 1);
+  final String pathLine = lines[0];
+  final String editCountLine = lines[1];
+  final String revisionLine = lines[2];
   const String pathPrefix = 'Patched: ';
+  const String editCountPrefix = 'Edits applied: ';
   const String revisionPrefix = 'Revision: ';
   if (!pathLine.startsWith(pathPrefix) ||
+      !editCountLine.startsWith(editCountPrefix) ||
       !revisionLine.startsWith(revisionPrefix)) {
     throw StateError('Apply Patch omitted model-visible file metadata.');
   }
@@ -1242,10 +1315,22 @@ _VisiblePatch _parseVisiblePatch(String modelContent) {
   final Object? revision = jsonDecode(
     revisionLine.substring(revisionPrefix.length),
   );
+  final int? editCount = int.tryParse(
+    editCountLine.substring(editCountPrefix.length),
+  );
   if (relativePath is! String || revision is! String) {
     throw StateError('Apply Patch metadata was not encoded as strings.');
   }
-  return _VisiblePatch(relativePath: relativePath, revision: revision);
+  if (editCount == null ||
+      editCount < 1 ||
+      editCountLine != '$editCountPrefix$editCount') {
+    throw StateError('Apply Patch returned an invalid edit count.');
+  }
+  return _VisiblePatch(
+    relativePath: relativePath,
+    editCount: editCount,
+    revision: revision,
+  );
 }
 
 Future<ToolOutcome> _executeSearch(

@@ -562,30 +562,35 @@ void main() {
     final Map<String, Object?> schema =
         registration.modelDefinition.argumentsSchema;
 
-    expect(schema['required'], <Object?>[
-      'relativePath',
-      'expectedRevision',
-      'search',
-      'replace',
-    ]);
-    expect((schema['properties']! as Map<String, Object?>).keys, <String>[
-      'relativePath',
-      'expectedRevision',
-      'search',
-      'replace',
-    ]);
-    expect(schema['additionalProperties'], isFalse);
-    expect(
-      ((schema['properties']! as Map<String, Object?>)['search']!
-          as Map<String, Object?>)['minLength'],
-      1,
-    );
+    expect(schema, <String, Object?>{
+      'type': 'object',
+      'required': <Object?>['relativePath', 'expectedRevision', 'edits'],
+      'properties': <String, Object?>{
+        'relativePath': <String, Object?>{'type': 'string'},
+        'expectedRevision': <String, Object?>{'type': 'string'},
+        'edits': <String, Object?>{
+          'type': 'array',
+          'minItems': 1,
+          'items': <String, Object?>{
+            'type': 'object',
+            'required': <Object?>['search', 'replace'],
+            'properties': <String, Object?>{
+              'search': <String, Object?>{'type': 'string', 'minLength': 1},
+              'replace': <String, Object?>{'type': 'string'},
+            },
+            'additionalProperties': false,
+          },
+        },
+      },
+      'additionalProperties': false,
+    });
 
     const Map<String, Object?> valid = <String, Object?>{
       'relativePath': 'source.dart',
       'expectedRevision': 'R1',
-      'search': 'source',
-      'replace': '',
+      'edits': <Object?>[
+        <String, Object?>{'search': 'source', 'replace': ''},
+      ],
     };
     expect(executable.validateAndNormalize(valid).snapshot, valid);
     for (final String field in valid.keys) {
@@ -603,14 +608,115 @@ void main() {
       }),
       throwsA(isA<ToolArgumentValidationException>()),
     );
+    for (final Map<String, Object?> invalid in <Map<String, Object?>>[
+      <String, Object?>{
+        'relativePath': 'source.dart',
+        'expectedRevision': 'R1',
+        'search': 'old',
+        'replace': 'new',
+      },
+      <String, Object?>{...valid, 'search': 'old', 'replace': 'new'},
+      <String, Object?>{...valid, 'relativePath': ''},
+      <String, Object?>{...valid, 'relativePath': 1},
+      <String, Object?>{...valid, 'expectedRevision': 1},
+    ]) {
+      expect(
+        () => executable.validateAndNormalize(invalid),
+        throwsA(isA<ToolArgumentValidationException>()),
+      );
+    }
+    for (final Object? invalidEdits in <Object?>[
+      null,
+      'old',
+      <String, Object?>{'search': 'old', 'replace': 'new'},
+      <Object?>[],
+      <Object?>[null],
+      <Object?>['old'],
+      <Object?>[
+        <Object?>['old', 'new'],
+      ],
+      <Object?>[<String, Object?>{}],
+      <Object?>[
+        <String, Object?>{'search': 'old'},
+      ],
+      <Object?>[
+        <String, Object?>{'replace': 'new'},
+      ],
+      <Object?>[
+        <String, Object?>{'search': '', 'replace': 'new'},
+      ],
+      <Object?>[
+        <String, Object?>{'search': 1, 'replace': 'new'},
+      ],
+      <Object?>[
+        <String, Object?>{'search': 'old', 'replace': null},
+      ],
+      <Object?>[
+        <String, Object?>{'search': 'old', 'replace': 'new', 'extra': true},
+      ],
+      <Object?>[
+        <String, Object?>{'search': 'old', 'replace': 'new'},
+        <String, Object?>{'search': 'new'},
+      ],
+    ]) {
+      expect(
+        () => executable.validateAndNormalize(<String, Object?>{
+          ...valid,
+          'edits': invalidEdits,
+        }),
+        throwsA(isA<ToolArgumentValidationException>()),
+        reason: 'Invalid edits: $invalidEdits',
+      );
+    }
     expect(
-      () => executable.validateAndNormalize(<String, Object?>{
+      executable.validateAndNormalize(<String, Object?>{
         ...valid,
-        'search': '',
-      }),
-      throwsA(isA<ToolArgumentValidationException>()),
+        'expectedRevision': '',
+      }).snapshot['expectedRevision'],
+      '',
     );
   });
+
+  test(
+    'Apply Patch canonical edits retain order in a detached snapshot',
+    () async {
+      final ToolExecutable executable = await _tool(
+        _FileSystem(),
+        'apply_patch',
+      );
+      final Map<String, Object?> first = <String, Object?>{
+        'search': 'A',
+        'replace': 'B',
+      };
+      final List<Object?> edits = <Object?>[
+        first,
+        <String, Object?>{'search': 'B', 'replace': 'C'},
+      ];
+      final CanonicalToolArguments arguments = executable.validateAndNormalize(
+        <String, Object?>{
+          'relativePath': 'dir//./source.dart',
+          'expectedRevision': 'R1',
+          'edits': edits,
+        },
+      );
+      first['replace'] = 'modified';
+      edits.clear();
+      expect(arguments.snapshot, <String, Object?>{
+        'relativePath': 'dir/source.dart',
+        'expectedRevision': 'R1',
+        'edits': <Object?>[
+          <String, Object?>{'search': 'A', 'replace': 'B'},
+          <String, Object?>{'search': 'B', 'replace': 'C'},
+        ],
+      });
+      final List<Object?> snapshotEdits = arguments.snapshot['edits']! as List;
+      expect(snapshotEdits.clear, throwsUnsupportedError);
+      expect(
+        () => (snapshotEdits.first! as Map)['replace'] = 'modified',
+        throwsUnsupportedError,
+      );
+    },
+  );
 
   test(
     'Apply Patch rejects malformed search and replace before access',
@@ -628,9 +734,14 @@ void main() {
         final Map<String, Object?> proposed = <String, Object?>{
           'relativePath': 'source.dart',
           'expectedRevision': 'R1',
-          'search': 'old',
-          'replace': 'new',
-          fixture.field: fixture.value,
+          'edits': <Object?>[
+            <String, Object?>{'search': 'old', 'replace': 'new'},
+            <String, Object?>{
+              'search': 'new',
+              'replace': 'final',
+              fixture.field: fixture.value,
+            },
+          ],
         };
 
         expect(
@@ -684,8 +795,9 @@ void main() {
       final CanonicalToolArguments arguments = _patchArguments(
         executable,
         expectedRevision: opaqueRevision,
-        search: search,
-        replace: replace,
+        edits: <Map<String, Object?>>[
+          <String, Object?>{'search': search, 'replace': replace},
+        ],
       );
 
       expect(arguments.snapshot['expectedRevision'], opaqueRevision);
@@ -700,6 +812,7 @@ void main() {
         fileSystem.replacements.single.replacementText,
         'before $replace after',
       );
+      expect(fileSystem.replacements.single.expectedRevision, opaqueRevision);
     },
   );
 
@@ -716,7 +829,10 @@ void main() {
       effects.targets.single.uri.toString(),
       'adele-environment:/environment-1/source.dart',
     );
-    expect(effects.summary, 'Patch Environment file source.dart.');
+    expect(
+      effects.summary,
+      'Apply 1 exact edit to Environment file source.dart.',
+    );
   });
 
   test('Apply Patch canonicalizes its policy and execution path', () async {
@@ -740,7 +856,10 @@ void main() {
       effects.targets.single.uri.toString(),
       'adele-environment:/environment-1/dir/source.dart',
     );
-    expect(effects.summary, 'Patch Environment file dir/source.dart.');
+    expect(
+      effects.summary,
+      'Apply 1 exact edit to Environment file dir/source.dart.',
+    );
     final ToolOutcome outcome = await _execute(
       executable,
       arguments,
@@ -793,12 +912,17 @@ void main() {
       executable,
       _patchArguments(
         executable,
-        search: 'bool second() => true;',
-        replace: 'bool second() => false;',
+        edits: const <Map<String, Object?>>[
+          <String, Object?>{
+            'search': 'bool second() => true;',
+            'replace': 'bool second() => false;',
+          },
+        ],
       ),
       fileSystem.sessionId,
     );
 
+    expect(fileSystem.readPaths, <String>['source.dart']);
     expect(fileSystem.replacements, hasLength(1));
     expect(fileSystem.replacements.single.relativePath, 'source.dart');
     expect(fileSystem.replacements.single.expectedRevision, 'R1');
@@ -808,12 +932,175 @@ void main() {
     );
     expect(outcome.disposition, ToolOutcomeDisposition.success);
     expect(outcome.effectCertainty, EffectCertainty.knownOccurred);
-    expect(outcome.modelContent, 'Patched: "source.dart"\nRevision: "R2"');
+    expect(
+      outcome.modelContent,
+      'Patched: "source.dart"\nEdits applied: 1\nRevision: "R2"',
+    );
     expect(outcome.hostData, <String, Object?>{
       'environmentId': 'environment-1',
       'relativePath': 'source.dart',
+      'editCount': 1,
       'newRevision': 'R2',
     });
+  });
+
+  test(
+    'Apply Patch evaluates ordered edits on one working copy then replaces once',
+    () async {
+      final _FileSystem fileSystem = _FileSystem(
+        text: 'A\nkeep\nD\n',
+        revision: 'opaque:observed',
+        postWriteRevision: 'opaque:result',
+      );
+      final ToolExecutable executable = await _tool(fileSystem, 'apply_patch');
+      final CanonicalToolArguments arguments = _patchArguments(
+        executable,
+        expectedRevision: 'opaque:observed',
+        edits: const <Map<String, Object?>>[
+          <String, Object?>{'search': 'A', 'replace': 'B'},
+          <String, Object?>{'search': 'B', 'replace': 'C'},
+          <String, Object?>{'search': 'D', 'replace': 'E'},
+        ],
+      );
+      final EffectDescription effects = await executable.describe(
+        arguments,
+        _execution(fileSystem.sessionId),
+      );
+      expect(effects.effects, <ToolEffect>{ToolEffect.sourceMutation});
+      expect(effects.targets, hasLength(1));
+      expect(
+        effects.summary,
+        'Apply 3 exact edits to Environment file source.dart.',
+      );
+      expect(fileSystem.readPaths, isEmpty);
+      final ToolOutcome outcome = await _execute(
+        executable,
+        arguments,
+        fileSystem.sessionId,
+      );
+
+      expect(fileSystem.readPaths, <String>['source.dart']);
+      expect(fileSystem.replacements, hasLength(1));
+      expect(fileSystem.replacements.single.relativePath, 'source.dart');
+      expect(
+        fileSystem.replacements.single.expectedRevision,
+        'opaque:observed',
+      );
+      expect(fileSystem.replacements.single.replacementText, 'C\nkeep\nE\n');
+      expect(fileSystem.text, 'C\nkeep\nE\n');
+      expect(outcome.disposition, ToolOutcomeDisposition.success);
+      expect(outcome.effectCertainty, EffectCertainty.knownOccurred);
+      expect(outcome.hostData, <String, Object?>{
+        'environmentId': 'environment-1',
+        'relativePath': 'source.dart',
+        'editCount': 3,
+        'newRevision': 'opaque:result',
+      });
+      expect(
+        outcome.modelContent,
+        'Patched: "source.dart"\nEdits applied: 3\nRevision: "opaque:result"',
+      );
+    },
+  );
+
+  test('later edit failures discard all earlier in-memory edits', () async {
+    for (final ({String search, String replace, String code}) fixture
+        in <({String search, String replace, String code})>[
+          (search: 'A', replace: 'C', code: 'patch_target_not_found'),
+          (search: 'B', replace: 'C', code: 'patch_target_ambiguous'),
+          (search: 'BB', replace: 'BB', code: 'no_change'),
+          (search: 'BB', replace: 'C', code: 'patch_target_ambiguous'),
+        ]) {
+      // The overlapping BB matches only become ambiguous after the first edit.
+      final String replacement =
+          fixture.search == 'BB' && fixture.replace == 'C' ? 'BBB' : 'BB';
+      final _FileSystem fileSystem = _FileSystem(text: 'A', revision: 'R1');
+      final ToolExecutable executable = await _tool(fileSystem, 'apply_patch');
+      final ToolOutcome outcome = await _execute(
+        executable,
+        _patchArguments(
+          executable,
+          edits: <Map<String, Object?>>[
+            <String, Object?>{'search': 'A', 'replace': replacement},
+            <String, Object?>{
+              'search': fixture.search,
+              'replace': fixture.replace,
+            },
+            <String, Object?>{'search': 'never evaluated', 'replace': 'unused'},
+          ],
+        ),
+        fileSystem.sessionId,
+      );
+
+      expect(fileSystem.readPaths, <String>['source.dart']);
+      expect(fileSystem.replacements, isEmpty);
+      expect(fileSystem.text, 'A');
+      expect(fileSystem.revision, 'R1');
+      expect(outcome.disposition, ToolOutcomeDisposition.failure);
+      expect(outcome.failureKind, ToolFailureKind.domain);
+      expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
+      expect(outcome.hostData, <String, Object?>{
+        'environmentId': 'environment-1',
+        'relativePath': 'source.dart',
+        'editCount': 3,
+        'failedEditIndex': 1,
+        'code': fixture.code,
+      });
+      expect(outcome.modelContent, startsWith('Edit 2 of 3 failed:'));
+      expect(outcome.modelContent, contains('No changes were made.'));
+    }
+  });
+
+  test(
+    'cancelling edits reject a final no-op without provider mutation',
+    () async {
+      final _FileSystem fileSystem = _FileSystem(text: 'A', revision: 'R1');
+      final ToolExecutable executable = await _tool(fileSystem, 'apply_patch');
+      final ToolOutcome outcome = await _execute(
+        executable,
+        _patchArguments(
+          executable,
+          edits: const <Map<String, Object?>>[
+            <String, Object?>{'search': 'A', 'replace': 'B'},
+            <String, Object?>{'search': 'B', 'replace': 'A'},
+          ],
+        ),
+        fileSystem.sessionId,
+      );
+
+      expect(fileSystem.text, 'A');
+      expect(fileSystem.replacements, isEmpty);
+      expect(outcome.failureKind, ToolFailureKind.domain);
+      expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
+      expect(outcome.hostData['code'], 'no_change');
+      expect(outcome.hostData['editCount'], 2);
+      expect(outcome.hostData, isNot(contains('failedEditIndex')));
+      expect(
+        outcome.modelContent,
+        contains('2 edits leave the file unchanged'),
+      );
+    },
+  );
+
+  test('Apply Patch searches literals rather than regex patterns', () async {
+    final _FileSystem fileSystem = _FileSystem(
+      text: r'a.*[b] axb',
+      revision: 'R1',
+    );
+    final ToolExecutable executable = await _tool(fileSystem, 'apply_patch');
+    final ToolOutcome outcome = await _execute(
+      executable,
+      _patchArguments(
+        executable,
+        edits: const <Map<String, Object?>>[
+          <String, Object?>{'search': r'a.*[b]', 'replace': r'$1'},
+        ],
+      ),
+      fileSystem.sessionId,
+    );
+
+    expect(outcome.disposition, ToolOutcomeDisposition.success);
+    expect(fileSystem.replacements.single.replacementText, r'$1 axb');
   });
 
   test(
@@ -854,13 +1141,20 @@ void main() {
         );
         final ToolOutcome outcome = await _execute(
           executable,
-          _patchArguments(executable, search: fixture.search),
+          _patchArguments(
+            executable,
+            edits: <Map<String, Object?>>[
+              <String, Object?>{'search': fixture.search, 'replace': 'new'},
+            ],
+          ),
           fileSystem.sessionId,
         );
 
         expect(outcome.failureKind, ToolFailureKind.domain);
         expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
         expect(outcome.hostData['code'], fixture.code);
+        expect(outcome.hostData['failedEditIndex'], 0);
+        expect(outcome.hostData['editCount'], 1);
         if (fixture.code == 'patch_target_ambiguous') {
           expect(outcome.modelContent, contains('matched multiple locations'));
           expect(outcome.modelContent, isNot(contains('3 locations')));
@@ -882,8 +1176,12 @@ void main() {
       executable,
       _patchArguments(
         executable,
-        search: 'bool second() {\n  return false;\n}',
-        replace: 'bool second() {\n  return true;\n}',
+        edits: const <Map<String, Object?>>[
+          <String, Object?>{
+            'search': 'bool second() {\n  return false;\n}',
+            'replace': 'bool second() {\n  return true;\n}',
+          },
+        ],
       ),
       fileSystem.sessionId,
     );
@@ -903,10 +1201,17 @@ void main() {
     final ToolExecutable noOp = await _tool(noOpFileSystem, 'apply_patch');
     final ToolOutcome noOpOutcome = await _execute(
       noOp,
-      _patchArguments(noOp, search: 'remove me', replace: 'remove me'),
+      _patchArguments(
+        noOp,
+        edits: const <Map<String, Object?>>[
+          <String, Object?>{'search': 'remove me', 'replace': 'remove me'},
+        ],
+      ),
       noOpFileSystem.sessionId,
     );
     expect(noOpOutcome.hostData['code'], 'no_change');
+    expect(noOpOutcome.hostData['failedEditIndex'], 0);
+    expect(noOpOutcome.hostData['editCount'], 1);
     expect(noOpOutcome.effectCertainty, EffectCertainty.knownNotOccurred);
     expect(noOpFileSystem.replacements, isEmpty);
 
@@ -920,7 +1225,12 @@ void main() {
     );
     final ToolOutcome deletionOutcome = await _execute(
       deletion,
-      _patchArguments(deletion, search: 'remove me', replace: ''),
+      _patchArguments(
+        deletion,
+        edits: const <Map<String, Object?>>[
+          <String, Object?>{'search': 'remove me', 'replace': ''},
+        ],
+      ),
       deletionFileSystem.sessionId,
     );
     expect(deletionOutcome.disposition, ToolOutcomeDisposition.success);
@@ -943,7 +1253,12 @@ void main() {
       final ToolExecutable executable = await _tool(fileSystem, 'apply_patch');
       final ToolOutcome outcome = await _execute(
         executable,
-        _patchArguments(executable, search: 'same', replace: 'same'),
+        _patchArguments(
+          executable,
+          edits: const <Map<String, Object?>>[
+            <String, Object?>{'search': 'same', 'replace': 'same'},
+          ],
+        ),
         fileSystem.sessionId,
       );
 
@@ -968,13 +1283,20 @@ void main() {
         executable,
         _patchArguments(
           executable,
-          search: fixture.search,
-          replace: fixture.search,
+          edits: <Map<String, Object?>>[
+            <String, Object?>{
+              'search': fixture.search,
+              'replace': fixture.search,
+            },
+            <String, Object?>{'search': 'absent', 'replace': 'new'},
+          ],
         ),
         fileSystem.sessionId,
       );
 
       expect(outcome.hostData['code'], environmentRevisionConflictCode);
+      expect(outcome.hostData['editCount'], 2);
+      expect(outcome.hostData, isNot(contains('failedEditIndex')));
       expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
       expect(outcome.modelContent, contains('Re-read the file'));
       expect(fileSystem.replacements, isEmpty);
@@ -1002,6 +1324,22 @@ void main() {
     expect(fileSystem.replacements, isEmpty);
   });
 
+  test('unexpected read failure is known not occurred', () async {
+    final _FileSystem fileSystem = _FileSystem(
+      readError: StateError('Unexpected read failure.'),
+    );
+    final ToolExecutable executable = await _tool(fileSystem, 'apply_patch');
+    final ToolOutcome outcome = await _execute(
+      executable,
+      _patchArguments(executable),
+      fileSystem.sessionId,
+    );
+
+    expect(outcome.failureKind, ToolFailureKind.infrastructure);
+    expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
+    expect(fileSystem.replacements, isEmpty);
+  });
+
   test('conditional replacement conflict is known not occurred', () async {
     final _FileSystem fileSystem = _FileSystem(
       text: 'old',
@@ -1015,13 +1353,24 @@ void main() {
     final ToolExecutable executable = await _tool(fileSystem, 'apply_patch');
     final ToolOutcome outcome = await _execute(
       executable,
-      _patchArguments(executable, search: 'old', replace: 'new'),
+      _patchArguments(
+        executable,
+        edits: const <Map<String, Object?>>[
+          <String, Object?>{'search': 'old', 'replace': 'intermediate'},
+          <String, Object?>{'search': 'intermediate', 'replace': 'new'},
+        ],
+      ),
       fileSystem.sessionId,
     );
 
     expect(fileSystem.replacements, hasLength(1));
+    expect(fileSystem.replacements.single.expectedRevision, 'R1');
+    expect(fileSystem.replacements.single.replacementText, 'new');
+    expect(fileSystem.text, 'old');
     expect(outcome.failureKind, ToolFailureKind.domain);
     expect(outcome.hostData['code'], environmentRevisionConflictCode);
+    expect(outcome.hostData['editCount'], 2);
+    expect(outcome.hostData, isNot(contains('failedEditIndex')));
     expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
     expect(outcome.hostData, isNot(contains('details')));
   });
@@ -1041,7 +1390,7 @@ void main() {
       final ToolExecutable executable = await _tool(fileSystem, 'apply_patch');
       final ToolOutcome outcome = await _execute(
         executable,
-        _patchArguments(executable, search: 'old', replace: 'new'),
+        _patchArguments(executable),
         fileSystem.sessionId,
       );
 
@@ -1052,25 +1401,49 @@ void main() {
     },
   );
 
-  test('post-invocation binding failure remains uncertain', () async {
-    final _FileSystem fileSystem = _FileSystem(
-      text: 'old',
-      revision: 'R1',
-      replacementError: const AuthorizedEnvironmentBindingUnavailable(
-        'Response failed after replacement dispatch.',
-      ),
-    );
-    final ToolExecutable executable = await _tool(fileSystem, 'apply_patch');
-    final ToolOutcome outcome = await _execute(
-      executable,
-      _patchArguments(executable, search: 'old', replace: 'new'),
-      fileSystem.sessionId,
-    );
+  test(
+    'post-invocation binding and unexpected failures remain uncertain',
+    () async {
+      for (final ({Object error, ToolFailureKind kind}) fixture
+          in <({Object error, ToolFailureKind kind})>[
+            (
+              error: const AuthorizedEnvironmentBindingUnavailable(
+                'Response failed after replacement dispatch.',
+              ),
+              kind: ToolFailureKind.infrastructure,
+            ),
+            (
+              error: const AuthorizedEnvironmentBindingStale(
+                'Stale after dispatch.',
+              ),
+              kind: ToolFailureKind.staleBinding,
+            ),
+            (
+              error: StateError('Unexpected provider failure after dispatch.'),
+              kind: ToolFailureKind.infrastructure,
+            ),
+          ]) {
+        final _FileSystem fileSystem = _FileSystem(
+          text: 'old',
+          revision: 'R1',
+          replacementError: fixture.error,
+        );
+        final ToolExecutable executable = await _tool(
+          fileSystem,
+          'apply_patch',
+        );
+        final ToolOutcome outcome = await _execute(
+          executable,
+          _patchArguments(executable),
+          fileSystem.sessionId,
+        );
 
-    expect(fileSystem.replacements, hasLength(1));
-    expect(outcome.failureKind, ToolFailureKind.infrastructure);
-    expect(outcome.effectCertainty, EffectCertainty.uncertain);
-  });
+        expect(fileSystem.replacements, hasLength(1));
+        expect(outcome.failureKind, fixture.kind);
+        expect(outcome.effectCertainty, EffectCertainty.uncertain);
+      }
+    },
+  );
 
   test('Session mismatch and stale binding do not reach mutation', () async {
     final _FileSystem wrongSessionFileSystem = _FileSystem(
@@ -1106,6 +1479,30 @@ void main() {
     expect(staleOutcome.failureKind, ToolFailureKind.staleBinding);
     expect(staleOutcome.effectCertainty, EffectCertainty.knownNotOccurred);
     expect(staleFileSystem.replacements, isEmpty);
+
+    final _FileSystem unavailableFileSystem = _FileSystem(
+      text: 'old',
+      revision: 'R1',
+    )..available = false;
+    final ToolExecutable unavailable = await _tool(
+      unavailableFileSystem,
+      'apply_patch',
+    );
+    expect(
+      unavailable.validateBinding,
+      throwsA(isA<ToolBindingUnavailableException>()),
+    );
+    final ToolOutcome unavailableOutcome = await _execute(
+      unavailable,
+      _patchArguments(unavailable),
+      unavailableFileSystem.sessionId,
+    );
+    expect(unavailableOutcome.failureKind, ToolFailureKind.infrastructure);
+    expect(
+      unavailableOutcome.effectCertainty,
+      EffectCertainty.knownNotOccurred,
+    );
+    expect(unavailableFileSystem.replacements, isEmpty);
   });
 
   test('Filesystem Tools rejects facets from different authorities', () async {
@@ -1152,13 +1549,13 @@ CanonicalToolArguments _patchArguments(
   ToolExecutable executable, {
   String relativePath = 'source.dart',
   String expectedRevision = 'R1',
-  String search = 'old',
-  String replace = 'new',
+  List<Map<String, Object?>> edits = const <Map<String, Object?>>[
+    <String, Object?>{'search': 'old', 'replace': 'new'},
+  ],
 }) => executable.validateAndNormalize(<String, Object?>{
   'relativePath': relativePath,
   'expectedRevision': expectedRevision,
-  'search': search,
-  'replace': replace,
+  'edits': edits,
 });
 
 ToolExecutionContext _execution(SessionId sessionId) =>
@@ -1179,8 +1576,9 @@ Map<String, Object?> _argumentsFor(String alias, String relativePath) =>
       'apply_patch' => <String, Object?>{
         'relativePath': relativePath,
         'expectedRevision': 'R1',
-        'search': 'old',
-        'replace': 'new',
+        'edits': <Object?>[
+          <String, Object?>{'search': 'old', 'replace': 'new'},
+        ],
       },
       'create_file' => <String, Object?>{
         'relativePath': relativePath,

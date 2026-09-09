@@ -17,7 +17,8 @@ const String _validationPrompt =
     'Read app/lib/development/agent/simple_tool_loop_strategy.dart. '
     'Change the default maxModelInvocations assignment from 8 to 9 using '
     'apply_patch. Use the exact opaque Revision returned by read_file as '
-    'expectedRevision. After the patch succeeds, validate the Task worktree '
+    'expectedRevision. Supply an ordered edits array of {search, replace} '
+    'objects. After the patch succeeds, validate the Task worktree '
     'by using run_command to run git diff --check from the Environment root. '
     'If validation succeeds, report that the source change was made and that '
     'git diff --check passed.';
@@ -25,8 +26,10 @@ const String _validationInstructions =
     'You must inspect the exact requested file with read_file before editing. '
     'Do not invent, infer, transform, hash, or derive the revision. Copy the '
     'exact opaque Revision visible in the read_file result into apply_patch as '
-    'expectedRevision. Use apply_patch for the edit. If a safe patch attempt '
-    'fails, re-read before retrying. For validation, use run_command directly '
+    'expectedRevision. Use apply_patch with relativePath, expectedRevision, '
+    'and edits. Each search must match exactly once in the working text after '
+    'earlier edits. If a safe patch attempt fails, re-read before retrying. '
+    'For validation, use run_command directly '
     'rather than constructing a shell command. Run the git executable with '
     'arguments ["diff", "--check"] from the Environment root. Set program to '
     'exactly "git"; do not combine the executable and arguments into one '
@@ -313,6 +316,10 @@ _ValidationEvidence _expectSuccessfulValidationRun({
   final SourceCodingToolAttempt successfulPatch = successfulPatches.single;
   final ToolInvocation patchInvocation = successfulPatch.prepared.invocation;
   expect(
+    patchInvocation.canonicalArguments.keys,
+    unorderedEquals(<String>['relativePath', 'expectedRevision', 'edits']),
+  );
+  expect(
     patchInvocation.canonicalArguments['relativePath'],
     sourceCodingStrategyPath,
   );
@@ -337,6 +344,16 @@ _ValidationEvidence _expectSuccessfulValidationRun({
     expect(attempt.outcome.disposition, ToolOutcomeDisposition.failure);
     expect(attempt.outcome.effectCertainty, EffectCertainty.knownNotOccurred);
     expect(attempt.outcome.hostData['code'], isIn(safeFailureCodes));
+    if (attempt.outcome.hostData['code'] != environmentRevisionConflictCode) {
+      final List<Object?> edits =
+          attempt.prepared.invocation.canonicalArguments['edits']!
+              as List<Object?>;
+      expect(attempt.outcome.hostData['editCount'], edits.length);
+      expect(
+        attempt.outcome.hostData['failedEditIndex'],
+        inInclusiveRange(0, edits.length - 1),
+      );
+    }
     expect(
       attempt.terminalRecord.sequence,
       lessThan(successfulPatch.preparedRecord.sequence),
@@ -355,14 +372,25 @@ _ValidationEvidence _expectSuccessfulValidationRun({
     );
   }
 
-  final Object? search = patchInvocation.canonicalArguments['search'];
-  final Object? replace = patchInvocation.canonicalArguments['replace'];
-  expect(search, isA<String>());
-  expect(replace, isA<String>());
-  expect(
-    _replaceUnique(originalText, search! as String, replace! as String),
-    expectedText,
-  );
+  final Object? editsValue = patchInvocation.canonicalArguments['edits'];
+  expect(editsValue, isA<List<Object?>>());
+  final List<Object?> edits = editsValue! as List<Object?>;
+  expect(edits, isNotEmpty);
+  String replayedText = originalText;
+  for (final Object? edit in edits) {
+    expect(edit, isA<Map<String, Object?>>());
+    final Map<String, Object?> entry = edit! as Map<String, Object?>;
+    expect(entry.keys, unorderedEquals(<String>['search', 'replace']));
+    expect(entry['search'], allOf(isA<String>(), isNotEmpty));
+    expect(entry['replace'], isA<String>());
+    expect(entry['replace'], isNot(entry['search']));
+    replayedText = _replaceUnique(
+      replayedText,
+      entry['search']! as String,
+      entry['replace']! as String,
+    );
+  }
+  expect(replayedText, expectedText);
 
   final Object? expectedRevision =
       patchInvocation.canonicalArguments['expectedRevision'];
@@ -407,23 +435,22 @@ _ValidationEvidence _expectSuccessfulValidationRun({
     lessThan(successfulPatch.preparedRecord.sequence),
   );
 
-  expect(
-    successfulPatch.outcome.hostData['environmentId'],
-    authority.environmentId.value,
-  );
-  expect(
-    successfulPatch.outcome.hostData['relativePath'],
-    sourceCodingStrategyPath,
-  );
   final Object? newRevisionValue =
       successfulPatch.outcome.hostData['newRevision'];
   expect(newRevisionValue, isA<String>());
   final String newRevision = newRevisionValue! as String;
   expect(newRevision, isNotEmpty);
   expect(newRevision, isNot(readRevision));
+  expect(successfulPatch.outcome.hostData, <String, Object?>{
+    'environmentId': authority.environmentId.value,
+    'relativePath': sourceCodingStrategyPath,
+    'editCount': edits.length,
+    'newRevision': newRevision,
+  });
   expect(
     successfulPatch.outcome.modelContent,
     'Patched: ${jsonEncode(sourceCodingStrategyPath)}\n'
+    'Edits applied: ${edits.length}\n'
     'Revision: ${jsonEncode(newRevision)}',
   );
 
@@ -714,7 +741,7 @@ String _replaceUnique(String original, String search, String replace) {
   if (match < 0) {
     throw StateError('The maintained mutation target is missing.');
   }
-  if (original.indexOf(search, match + search.length) >= 0) {
+  if (original.indexOf(search, match + 1) >= 0) {
     throw StateError('The maintained mutation target is not unique.');
   }
   return original.replaceRange(match, match + search.length, replace);
