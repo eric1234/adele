@@ -758,6 +758,80 @@ void main() {
     },
   );
 
+  for (final _InfrastructureFailure failure in _InfrastructureFailure.values) {
+    test('$failure returns a tool failure and finishes the batch', () async {
+      final _BatchFixture fixture = _BatchFixture(
+        infrastructureFailure: failure,
+      );
+
+      await fixture.strategy.start();
+
+      expect(fixture.run.state, RunState.completed);
+      expect(fixture.model.requests, hasLength(2));
+      expect(fixture.model.completedAtInvocation.last, <int>[1, 3]);
+      expect(
+        fixture.outcomes.map(
+          (SemanticToolOutcomeInput item) => item.providerCallId,
+        ),
+        <String>['call-1', 'call-2', 'call-3'],
+      );
+      expect(
+        fixture.outcomes.map(
+          (SemanticToolOutcomeInput item) => item.outcome.disposition,
+        ),
+        <ToolOutcomeDisposition>[
+          ToolOutcomeDisposition.success,
+          ToolOutcomeDisposition.failure,
+          ToolOutcomeDisposition.success,
+        ],
+      );
+      final ToolOutcome outcome = fixture.outcomes[1].outcome;
+      expect(outcome.failureKind, ToolFailureKind.infrastructure);
+      final bool executionStarted =
+          failure == _InfrastructureFailure.execution ||
+          failure == _InfrastructureFailure.missingTerminal;
+      expect(
+        outcome.effectCertainty,
+        executionStarted
+            ? EffectCertainty.uncertain
+            : EffectCertainty.knownNotOccurred,
+      );
+      expect(fixture.executable.timeline, <String>[
+        'start-1',
+        'complete-1',
+        if (executionStarted) 'start-2',
+        'start-3',
+        'complete-3',
+      ]);
+      final List<ExecutionEvent> events = fixture.events.toList();
+      final int failureIndex = events.indexWhere(
+        (ExecutionEvent event) => switch (event) {
+          ToolInvocationCompleted(:final invocationId) ||
+          ToolExecutionCompleted(
+            :final invocationId,
+          ) => invocationId.value == 'batch-run-tool-2',
+          _ => false,
+        },
+      );
+      expect(failureIndex, greaterThanOrEqualTo(0));
+      expect(
+        events[failureIndex].runtimeType,
+        executionStarted ? ToolExecutionCompleted : ToolInvocationCompleted,
+      );
+      expect(
+        events[failureIndex + 1],
+        isA<ToolInvocationPrepared>().having(
+          (ToolInvocationPrepared event) =>
+              event.invocation.proposal.providerCallId,
+          'next proposal',
+          'call-3',
+        ),
+      );
+      expect(events.whereType<ModelInvocationFailed>(), isEmpty);
+      expect(events.whereType<RunFailed>(), isEmpty);
+    });
+  }
+
   test(
     'zero proposals completes with assistant output in the only slot',
     () async {
@@ -786,8 +860,9 @@ final class _BatchFixture {
     int maxModelInvocations = 8,
     ModelSettlement settlement = ModelSettlement.completed,
     Object? modelFailure,
+    _InfrastructureFailure? infrastructureFailure,
   }) {
-    executable = _BatchExecutable(failedStep);
+    executable = _BatchExecutable(failedStep, infrastructureFailure);
     for (int step = 1; step <= 3; step++) {
       catalog.register(
         ToolRegistration(
@@ -851,7 +926,7 @@ final class _BatchFixture {
       contextAssembler: const DevelopmentContextAssembler(),
       model: model,
       toolCatalog: catalog,
-      policy: _BatchPolicy(decisions),
+      policy: _BatchPolicy(decisions, infrastructureFailure),
       maxModelInvocations: maxModelInvocations,
     );
   }
@@ -937,20 +1012,33 @@ final class _BatchModel implements ModelPort {
   }
 }
 
+enum _InfrastructureFailure {
+  effectDescription,
+  policyEvaluation,
+  execution,
+  missingTerminal,
+}
+
 final class _BatchPolicy implements ToolPolicy {
-  const _BatchPolicy(this.decisions);
+  const _BatchPolicy(this.decisions, this.failure);
   final Map<int, ToolPolicyDecision> decisions;
+  final _InfrastructureFailure? failure;
 
   @override
-  ToolPolicyDecision evaluate(ToolPolicyInput input) =>
-      decisions[input.invocation.canonicalArguments['step']] ??
-      ToolPolicyDecision.allow;
+  ToolPolicyDecision evaluate(ToolPolicyInput input) {
+    final Object? step = input.invocation.canonicalArguments['step'];
+    if (step == 2 && failure == _InfrastructureFailure.policyEvaluation) {
+      throw StateError('Policy evaluation failed.');
+    }
+    return decisions[step] ?? ToolPolicyDecision.allow;
+  }
 }
 
 final class _BatchExecutable implements ToolExecutable {
-  _BatchExecutable(this.failedStep);
+  _BatchExecutable(this.failedStep, this.infrastructureFailure);
 
   final int? failedStep;
+  final _InfrastructureFailure? infrastructureFailure;
   final List<int> completed = <int>[];
   final List<String> timeline = <String>[];
   Future<void> Function(int step)? beforeTerminal;
@@ -977,11 +1065,17 @@ final class _BatchExecutable implements ToolExecutable {
   Future<EffectDescription> describe(
     CanonicalToolArguments arguments,
     ToolExecutionContext context,
-  ) async => EffectDescription(
-    effects: const <ToolEffect>[ToolEffect.sourceMutation],
-    targets: const <EffectTarget>[],
-    summary: 'Perform step.',
-  );
+  ) async {
+    if (arguments.snapshot['step'] == 2 &&
+        infrastructureFailure == _InfrastructureFailure.effectDescription) {
+      throw StateError('Effect description failed.');
+    }
+    return EffectDescription(
+      effects: const <ToolEffect>[ToolEffect.sourceMutation],
+      targets: const <EffectTarget>[],
+      summary: 'Perform step.',
+    );
+  }
 
   @override
   Stream<ToolExecutionEvent> execute(
@@ -990,6 +1084,14 @@ final class _BatchExecutable implements ToolExecutable {
   ) async* {
     final int step = arguments.snapshot['step']! as int;
     timeline.add('start-$step');
+    if (step == 2) {
+      if (infrastructureFailure == _InfrastructureFailure.execution) {
+        throw StateError('Execution failed.');
+      }
+      if (infrastructureFailure == _InfrastructureFailure.missingTerminal) {
+        return;
+      }
+    }
     await beforeTerminal?.call(step);
     completed.add(step);
     timeline.add('complete-$step');
