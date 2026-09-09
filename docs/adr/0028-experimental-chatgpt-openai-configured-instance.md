@@ -113,7 +113,11 @@ ordered request/item lowering, canonical `store:false` replay, encrypted
 reasoning/native items, function tools and outcomes, HTTP/SSE streaming,
 completed-item authority, semantic terminals, cancellation/backpressure, and
 common failure normalization. No public provider abstraction is introduced.
-The API-key profile retains its B4 request and failure behavior.
+The API-key profile retains its B4 public Responses and failure semantics;
+both maintained profiles now explicitly send `parallel_tool_calls:true`. This
+permits multiple function-call outputs from one model invocation, not concurrent
+ADELE host-tool execution. The development strategy executes the ordered batch
+sequentially before one model continuation, without changing the common contract.
 
 The managed route does not currently have documented support for an explicit
 `max_output_tokens` field. Until authorized documentation or validation proves

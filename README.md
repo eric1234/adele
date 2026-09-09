@@ -43,7 +43,9 @@ generation-bound routing. The real OpenAI plugin provides the public API-key
 Responses route and two separately routed configured contexts: API key and an
 explicitly experimental ChatGPT subscription-backed route. The latter is
 positive interoperability evidence, not a documented/stable third-party OpenAI
-integration contract.
+integration contract. Both profiles explicitly send `parallel_tool_calls:true`,
+which permits multiple function-call outputs from one model invocation, not
+concurrent ADELE host-tool execution or a common-contract change.
 
 Phase V-A establishes durable Project, Task, and Environment values and binds
 provisional agent Sessions authoritatively to one Task-associated Environment.
@@ -55,6 +57,15 @@ supplies coherent read, mutation, and process facets over the one authorized
 Environment. Search requests only the read facet and recursively composes
 `readDirectory` and `readFile` in Dart; Command Tools requests only the process
 facet.
+
+The provisional `DevelopmentToolLoopStrategy` accepts multiple proposals from
+one completed model invocation and executes them sequentially in output order
+against that turn's same materialized tool set and executable generations.
+Proposal and tool failures or policy denial produce results and continue to later
+proposals; `ask` pauses the batch, and approval or rejection resumes it in order
+with prior results retained. One model continuation follows all proposal results.
+A batch emitted in the final allowed model-invocation slot fails before any
+proposal is prepared or executed because no continuation slot remains.
 
 Filesystem Tools owns the model-facing
 `apply_patch(relativePath, expectedRevision, edits)` grammar. Its non-empty

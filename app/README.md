@@ -78,6 +78,19 @@ tools. The isolated repository does not share Git refs or a writable local
 origin with the launching checkout; final Git evidence records what actually
 remained clean. This is source-layout isolation, not a command sandbox.
 
+The bounded development strategy accepts multiple proposals from one completed
+model invocation and executes them sequentially in output order against that
+turn's same materialized tool set and executable generations. Proposal and tool
+failures or policy denial produce results and continue to later proposals. An
+`ask` decision pauses the batch, and approval or rejection resumes it in order with
+prior results retained; the runner itself keeps its existing allow policy and
+does not add an approval UI. One model continuation follows all proposal results.
+A batch emitted in the final allowed model-invocation slot fails before any
+proposal is prepared or executed because no continuation slot remains. Both
+OpenAI profiles explicitly send `parallel_tool_calls:true` to permit multi-call
+outputs, not concurrent ADELE host tools; common model/tool contracts are
+unchanged.
+
 The output directory must be outside the launching Git checkout or inside a
 path Git considers ignored. The documented `.dart_tool` location is ignored by
 this repository. A non-ignored in-repository output directory is rejected
@@ -87,7 +100,16 @@ literal Git status rather than a runner-specific exclusion.
 The run directory retains Project and Task source after success and failure. It
 also contains a versioned manifest, raw Run journal, deterministic JSON and
 Markdown summaries, runner log, and Task/Project/launching-checkout Git
-evidence. A failed Task is intentionally preserved for review; there is no
+evidence. Summary aggregates retain `toolProposalCount` and report
+`modelInvocationsWithToolProposals`, `multiProposalModelInvocations`, and
+`maxToolProposalsPerModelInvocation`. JSON additionally includes
+`toolProposalCountsByModelInvocation`, an ordered sequence of
+`{modelInvocationId, toolProposalCount}` records in journal model-start order,
+including zero-proposal invocations. Counts use observed proposals, whether or
+not prepared or executed; empty/no-run cases have zero aggregates and an empty
+sequence. Markdown renders compact aggregate rows, while JSON and the raw journal
+retain detailed tool evidence.
+A failed Task is intentionally preserved for review; there is no
 automatic cleanup, validation planning, commit, push, or PR workflow.
 
 ## Deferred

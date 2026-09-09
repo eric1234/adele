@@ -46,6 +46,7 @@ void main() {
               final Map<String, Object?> body =
                   jsonDecode(await utf8.decoder.bind(request).join())!
                       as Map<String, Object?>;
+              expect(body['parallel_tool_calls'], isTrue);
               captured.add(
                 _CapturedRequest(
                   path: request.uri.path,

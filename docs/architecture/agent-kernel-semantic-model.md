@@ -124,7 +124,21 @@ An Agent and a Workflow/orchestration strategy are distinct concepts.
 
 The kernel supplies execution primitives and invariants. A workflow/strategy decides what happens next.
 
-The maintained `DevelopmentToolLoopStrategy` implements a bounded sequential source-inspection coding loop. That development algorithm does not define what a Run fundamentally is and is not a general Workflow framework.
+The maintained `DevelopmentToolLoopStrategy` implements a bounded sequential
+coding loop. One completed model invocation may yield multiple tool proposals;
+each resolves in output order against that turn's same immutable materialized
+tool set and retained executable generations. Normal proposal-resolution
+failures, tool failure outcomes, and policy denial produce results and do not
+skip later proposals; model invocation and Run infrastructure failures retain
+their terminal semantics. An `ask` decision pauses the ordered batch at that
+invocation; approval or rejection resumes the same batch with prior results
+retained. Only after all proposal results are collected does one model
+continuation run. A proposal batch emitted in the final allowed model-invocation
+slot fails before any proposal is prepared or executed because no continuation
+slot remains; a proposal-free final answer may still complete in that slot.
+Host-tool execution is sequential only. This development algorithm does not
+define what a Run fundamentally is, introduce a general Workflow framework, or
+change the common model/tool contracts.
 
 The long-term product direction expects Sessions to be permanently bound to an orchestration strategy supplied through plugin extension composition. That orchestration registration system is not yet implemented.
 

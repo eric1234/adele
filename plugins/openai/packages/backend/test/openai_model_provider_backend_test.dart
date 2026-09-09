@@ -98,7 +98,7 @@ void main() {
       expect(captured['stream'], isTrue);
       expect(captured['max_output_tokens'], 42);
       expect(captured['tool_choice'], 'auto');
-      expect(captured['parallel_tool_calls'], isFalse);
+      expect(captured['parallel_tool_calls'], isTrue);
       expect(captured['include'], <Object?>['reasoning.encrypted_content']);
       expect(captured['tools'], <Object?>[
         <String, Object?>{
@@ -130,137 +130,220 @@ void main() {
       expect(events[2].terminal?.usage?.providerDetails['reasoningTokens'], 2);
     });
 
-    test(
-      'preserves native/text/tool order and exact continuation replay',
-      () async {
-        final List<Map<String, Object?>> requests = <Map<String, Object?>>[];
-        final _FakeServer server = await _FakeServer.start((request) async {
-          requests.add(await _jsonBody(request));
-          final HttpResponse response = request.response;
-          response.statusCode = HttpStatus.ok;
-          response.headers.contentType = ContentType(
-            'text',
-            'event-stream',
-            charset: 'utf-8',
-          );
-          if (requests.length == 1) {
-            _sse(response, _outputDone(_reasoning('rs_a', 'enc-a')));
-            _sse(response, _outputDone(_message('msg_1', 'Inspecting.')));
-            _sse(response, _outputDone(_reasoning('rs_b', 'enc-b')));
-            _sse(
-              response,
-              _outputDone(<String, Object?>{
-                'type': 'function_call',
-                'id': 'fc_1',
-                'call_id': 'call_1',
-                'name': 'inspect_resource',
-                'arguments': '{"uri":"file:///tmp/test.txt"}',
-                'status': 'completed',
-              }),
-            );
-            _sse(response, _outputDone(_reasoning('rs_c', 'enc-c')));
-            _sse(response, _completed('resp_1'));
-          } else {
-            _sse(response, _outputDone(_message('msg_2', 'Finished.')));
-            _sse(response, _completed('resp_2'));
-          }
-          await response.close();
-        });
-        addTearDown(server.close);
-        final OpenAiModelProvider provider = OpenAiModelProvider(
-          apiKey: 'fake-openai-key',
-          endpoint: server.responsesUri,
-        );
-        addTearDown(provider.close);
-        final List<ModelProviderEvent> first = await provider
-            .invoke(_request())
-            .toList();
-        final List<ModelProviderOutput> output = first
-            .map((event) => event.output)
-            .whereType<ModelProviderOutput>()
-            .toList();
-        expect(output.map((item) => item.kind), <ModelProviderOutputKind>[
-          ModelProviderOutputKind.nativeItem,
-          ModelProviderOutputKind.text,
-          ModelProviderOutputKind.nativeItem,
-          ModelProviderOutputKind.toolProposal,
-          ModelProviderOutputKind.nativeItem,
-        ]);
-        expect(output[0].itemId, 'rs_a');
-        expect(output[2].itemId, 'rs_b');
-        expect(output[4].itemId, 'rs_c');
-        expect(output[3].toolProposal?.callId, 'call_1');
-        expect(output[3].toolProposal?.arguments, <String, Object?>{
-          'uri': 'file:///tmp/test.txt',
-        });
-
-        final List<ModelProviderInput> replay = <ModelProviderInput>[
-          _userInput(),
-          for (final ModelProviderOutput item in output) _replay(item),
-          ModelProviderInput(
-            kind: ModelProviderInputKind.toolOutcome,
-            message: null,
-            toolProposal: null,
-            toolOutcome: ModelProviderToolOutcome(
-              callId: 'call_1',
-              status: ModelProviderToolOutcomeStatus.success,
-              content: 'Local inspection result.',
-            ),
-            itemId: null,
-            nativeMetadata: null,
-          ),
-        ];
-        final List<ModelProviderEvent> second = await provider
-            .invoke(_request(input: replay))
-            .toList();
-        expect(
-          second.last.terminal?.settlement,
-          ModelProviderSettlement.completed,
-        );
-        final List<Object?> input = requests[1]['input']! as List<Object?>;
-        expect(
-          input.map((item) => (item! as Map<String, Object?>)['type']),
-          <String>[
-            'message',
-            'reasoning',
-            'message',
-            'reasoning',
-            'function_call',
-            'reasoning',
-            'function_call_output',
-          ],
-        );
-        expect(input[1], _reasoning('rs_a', 'enc-a'));
-        expect(input[3], _reasoning('rs_b', 'enc-b'));
-        expect(input[5], _reasoning('rs_c', 'enc-c'));
-        expect(input[4], <String, Object?>{
-          'type': 'function_call',
-          'id': 'fc_1',
-          'call_id': 'call_1',
-          'name': 'inspect_resource',
-          'arguments': '{"uri":"file:///tmp/test.txt"}',
-          'status': 'completed',
-        });
-        expect(input[2], <String, Object?>{
-          'type': 'message',
-          'role': 'assistant',
-          'content': <Object?>[
+    for (final bool chatGpt in <bool>[false, true]) {
+      test(
+        '${chatGpt ? 'ChatGPT' : 'API key'} preserves multiple calls, metadata, and ordered replay',
+        () async {
+          final List<Map<String, Object?>> items = <Map<String, Object?>>[
+            _reasoning('rs_a', 'enc-a'),
             <String, Object?>{
-              'type': 'output_text',
-              'text': 'Inspecting.',
-              'annotations': <Object?>[],
+              ..._message('msg_1', 'Inspecting.'),
+              'phase': 'commentary',
             },
-          ],
-          'id': 'msg_1',
-          'status': 'completed',
-        });
-        expect(input[6], <String, Object?>{
-          'type': 'function_call_output',
-          'call_id': 'call_1',
-          'output': 'Local inspection result.',
-        });
-      },
-    );
+            _reasoning('rs_b', 'enc-b'),
+            <String, Object?>{
+              'type': 'function_call',
+              'id': 'fc_z',
+              'call_id': 'call_z',
+              'name': 'inspect_resource',
+              'arguments': '{"uri":"file:///tmp/first.txt"}',
+              'namespace': 'resources.first',
+              'status': 'completed',
+            },
+            _reasoning('rs_c', 'enc-c'),
+            <String, Object?>{
+              'type': 'function_call',
+              'id': 'fc_a',
+              'call_id': 'call_a',
+              'name': 'inspect_resource',
+              'arguments': '{"uri":"file:///tmp/second.txt"}',
+              'namespace': 'resources.second',
+              'status': 'completed',
+            },
+          ];
+          final List<Map<String, Object?>> requests = <Map<String, Object?>>[];
+          final _FakeServer server = await _FakeServer.start((request) async {
+            expect(
+              request.headers.value(HttpHeaders.authorizationHeader),
+              chatGpt ? 'Bearer access-semantics' : 'Bearer fake-openai-key',
+            );
+            expect(
+              request.headers.value('ChatGPT-Account-ID'),
+              chatGpt ? 'account-semantics' : null,
+            );
+            requests.add(await _jsonBody(request));
+            final HttpResponse response = request.response;
+            response.headers.contentType = ContentType(
+              'text',
+              'event-stream',
+              charset: 'utf-8',
+            );
+            if (requests.length == 1) {
+              // Argument fragments are not authoritative tool proposals.
+              for (final String itemId in <String>['fc_z', 'fc_a']) {
+                _sse(response, <String, Object?>{
+                  'type': 'response.function_call_arguments.delta',
+                  'item_id': itemId,
+                  'delta': '{"uri":',
+                });
+              }
+              for (var index = 0; index < items.length; index++) {
+                _sse(response, <String, Object?>{
+                  ..._outputDone(items[index]),
+                  'output_index': index,
+                });
+              }
+              _sse(response, <String, Object?>{
+                'type': 'response.completed',
+                'response': _response(
+                  'resp_1',
+                  extra: <String, Object?>{'output': items},
+                ),
+              });
+            } else {
+              _sse(response, _outputDone(_message('msg_2', 'Finished.')));
+              _sse(response, _completed('resp_2'));
+            }
+            await response.close();
+          });
+          addTearDown(server.close);
+          final OpenAiModelProvider provider;
+          if (chatGpt) {
+            final OpenAiOAuthClient oauth = _oauth(server);
+            addTearDown(oauth.close);
+            final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
+              instanceId: 'semantics',
+              store: InMemoryOpenAiCredentialStore(),
+              oauth: oauth,
+            );
+            await auth.install(
+              OpenAiChatGptCredential(
+                idToken: _idToken('account-semantics'),
+                accessToken: 'access-semantics',
+                refreshToken: 'refresh-semantics',
+                accountId: 'account-semantics',
+                fedRamp: false,
+                expiresAt: DateTime.now().toUtc().add(const Duration(hours: 1)),
+              ),
+            );
+            provider = OpenAiModelProvider.chatGpt(
+              auth: auth,
+              endpoint: server.responsesUri,
+            );
+          } else {
+            provider = OpenAiModelProvider(
+              apiKey: 'fake-openai-key',
+              endpoint: server.responsesUri,
+            );
+          }
+          addTearDown(provider.close);
+          final List<ModelProviderEvent> first = await provider
+              .invoke(_request())
+              .toList();
+          expect(first.map((event) => event.kind), <ModelProviderEventKind>[
+            for (final _ in items) ModelProviderEventKind.output,
+            ModelProviderEventKind.terminal,
+          ]);
+          expect(
+            first.last.terminal?.settlement,
+            ModelProviderSettlement.completed,
+          );
+          final List<ModelProviderOutput> output = first
+              .map((event) => event.output)
+              .whereType<ModelProviderOutput>()
+              .toList();
+          expect(output.map((item) => item.kind), <ModelProviderOutputKind>[
+            ModelProviderOutputKind.nativeItem,
+            ModelProviderOutputKind.text,
+            ModelProviderOutputKind.nativeItem,
+            ModelProviderOutputKind.toolProposal,
+            ModelProviderOutputKind.nativeItem,
+            ModelProviderOutputKind.toolProposal,
+          ]);
+          expect(
+            output.map((item) => item.itemId),
+            items.map((item) => item['id']),
+          );
+          for (final int index in <int>[0, 2, 4]) {
+            expect(
+              output[index].nativeMetadata!.kind,
+              'openai.responses.item.v1',
+            );
+            expect(
+              output[index].nativeMetadata!.compatibility,
+              <String, Object?>{'version': 1},
+            );
+            expect(output[index].nativeMetadata!.data, <String, Object?>{
+              'item': items[index],
+            });
+          }
+          expect(output[1].text, 'Inspecting.');
+          expect(output[1].nativeMetadata!.data, <String, Object?>{
+            'phase': 'commentary',
+          });
+          for (final int index in <int>[3, 5]) {
+            final ModelProviderOutput proposal = output[index];
+            expect(proposal.toolProposal!.callId, items[index]['call_id']);
+            expect(proposal.toolProposal!.name, 'inspect_resource');
+            expect(
+              proposal.toolProposal!.arguments,
+              jsonDecode(items[index]['arguments']! as String),
+            );
+            expect(
+              proposal.nativeMetadata!.kind,
+              'openai.responses.semantic-item.v1',
+            );
+            expect(proposal.nativeMetadata!.compatibility, <String, Object?>{
+              'version': 1,
+              'itemType': 'function_call',
+            });
+            expect(proposal.nativeMetadata!.data, <String, Object?>{
+              'namespace': items[index]['namespace'],
+            });
+          }
+
+          final List<ModelProviderInput> replay = <ModelProviderInput>[
+            _userInput(),
+            for (final ModelProviderOutput item in output) _replay(item),
+            for (final String callId in <String>['call_z', 'call_a'])
+              ModelProviderInput(
+                kind: ModelProviderInputKind.toolOutcome,
+                message: null,
+                toolProposal: null,
+                toolOutcome: ModelProviderToolOutcome(
+                  callId: callId,
+                  status: ModelProviderToolOutcomeStatus.success,
+                  content: 'Local result for $callId.',
+                ),
+                itemId: null,
+                nativeMetadata: null,
+              ),
+          ];
+          final List<ModelProviderEvent> second = await provider
+              .invoke(_request(input: replay))
+              .toList();
+          expect(
+            second.last.terminal?.settlement,
+            ModelProviderSettlement.completed,
+          );
+          expect(requests, hasLength(2));
+          expect(
+            requests.map((request) => request['parallel_tool_calls']),
+            everyElement(isTrue),
+          );
+          expect(requests[1]['input'], <Object?>[
+            (requests[0]['input']! as List<Object?>).single,
+            ...items,
+            for (final String callId in <String>['call_z', 'call_a'])
+              <String, Object?>{
+                'type': 'function_call_output',
+                'call_id': callId,
+                'output': 'Local result for $callId.',
+              },
+          ]);
+        },
+      );
+    }
 
     test('keeps consecutive native items distinct', () async {
       final _FakeServer server = await _FakeServer.start((request) async {

@@ -525,15 +525,27 @@ PTY-by-default is worth experimentation because ADELE places unusual value on pl
 
 # 12. Tool concurrency and asynchronous work
 
-Agent work should not be forced into a strictly serial pattern. ADELE should allow both concurrent foreground tool execution and longer-lived background work, while keeping scheduling semantics separate from individual tool definitions.
+Long-term, agent work should not be forced into a strictly serial pattern. ADELE should allow both concurrent foreground tool execution and longer-lived background work, while keeping scheduling semantics separate from individual tool definitions. The maintained development strategy currently executes host tools sequentially only.
 
 These are related but distinct capabilities.
 
 ## 12.1 Parallel foreground tool invocations
 
-One model invocation may produce several independent tool proposals. ADELE should be able to execute compatible proposals concurrently and perform the next model inference after the foreground set has settled.
+One model invocation can produce multiple tool proposals. The maintained
+development strategy resolves and executes them sequentially in output order
+against that turn's same materialized tool set and executable generations.
+Proposal and tool failures or policy denial become results without skipping later
+proposals.
+An `ask` decision pauses the batch; approval or rejection resumes that same
+ordered batch. One model continuation follows only after all proposal results
+are collected. A batch in the final allowed model-invocation slot fails before
+preparation or execution because no continuation slot remains. OpenAI's explicit
+`parallel_tool_calls:true` permits multi-call model outputs; it does not enable
+concurrent ADELE host tools.
 
-Conceptually:
+Future scheduling should allow compatible proposals to execute concurrently and
+perform the next model inference after the foreground set has settled.
+The deferred concurrent shape is:
 
 ```text
 Model invocation
@@ -901,7 +913,7 @@ A plausible progression, with the first three foundations now implemented, is:
 
 3. structured source mutation (implemented bounded create/patch/delete slice)
 
-4. support multiple foreground ToolInvocations with safe concurrency
+4. safe concurrency for multiple foreground ToolInvocations (ordered sequential batches implemented; concurrency deferred)
 
 5. richer retained command-output inspection/projection
 

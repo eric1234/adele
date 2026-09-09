@@ -31,9 +31,13 @@ Responses terminals into ADELE events. EOF is never completion. Consumer
 cancellation aborts invocation-owned request/response consumption; no terminal
 is manufactured after cancellation.
 
-B4 sends `parallel_tool_calls:false` because the provisional development
-strategy currently supports one proposal per invocation. This is provider
-request policy for the current vertical, not a common ModelProvider restriction.
+B4 originally sent `parallel_tool_calls:false` because the provisional
+development strategy supported one proposal per invocation. The maintained
+API-key and experimental ChatGPT profiles now explicitly send
+`parallel_tool_calls:true`, permitting multiple function-call outputs from one
+model invocation. ADELE executes those proposals sequentially in output order,
+not concurrently. This remains provider request policy, not a change to the
+common ModelProvider contract.
 
 ADELE canonical ordered replay remains authoritative. The provider lowers user
 and assistant messages, ordinary function calls, function outputs, and tools.
