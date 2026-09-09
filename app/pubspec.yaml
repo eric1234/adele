@@ -18,22 +18,23 @@ dependencies:
   adele_model_provider: ^0.1.0
   adele_plugin_api: ^0.1.0
   adele_product: ^0.1.0
+  command_tools_plugin: ^0.1.0
+  crypto: ^3.0.6
   dart_eval: 0.8.5
+  filesystem_tools_plugin: ^0.1.0
   flutter:
     sdk: flutter
   flutter_eval: 0.8.2
   plugin_builder: ^0.1.0
   plugin_runtime: ^0.1.0
   resource_inspector_contract: ^0.1.0
+  search_tools_plugin: ^0.1.0
   scripted_model_contract: ^0.1.0
   workspace_demo_contract: ^0.1.0
 
 dev_dependencies:
-  command_tools_plugin: ^0.1.0
-  filesystem_tools_plugin: ^0.1.0
   flutter_test:
     sdk: flutter
-  search_tools_plugin: ^0.1.0
 
 flutter:
   uses-material-design: true

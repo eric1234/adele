@@ -1,0 +1,742 @@
+import 'dart:convert';
+import 'dart:ffi';
+import 'dart:io';
+
+import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_desktop/development/agent/agent_capability_adapters.dart';
+import 'package:adele_desktop/development/agent/development_self_hosting.dart';
+import 'package:adele_desktop/development/agent/development_self_hosting_report.dart';
+import 'package:adele_model_provider/adele_model_provider.dart';
+import 'package:agent_kernel/agent_kernel.dart';
+import 'package:crypto/crypto.dart';
+
+const List<String> developmentSelfHostingPhases = <String>[
+  'sourceReconciliationPreflight',
+  'artifactCompilation',
+  'projectClone',
+  'lifecycleTaskEnvironmentSetup',
+  'providerActivation',
+  'adeleRun',
+  'evidenceReportGeneration',
+  'teardown',
+];
+
+const String developmentSelfHostingHostRequirementMessage =
+    'ADELE developer self-hosting currently requires Linux x64 with setsid '
+    'because the maintained six-tool profile includes run_command.';
+
+const List<String> _developmentSelfHostingSetSidCandidates = <String>[
+  '/usr/bin/setsid',
+  '/bin/setsid',
+];
+
+final class DevelopmentSelfHostingUsageException implements Exception {
+  const DevelopmentSelfHostingUsageException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+final class DevelopmentSelfHostingOutputRootException implements Exception {
+  const DevelopmentSelfHostingOutputRootException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => 'DevelopmentSelfHostingOutputRootException: $message';
+}
+
+final class DevelopmentSelfHostingEffectiveModelException implements Exception {
+  DevelopmentSelfHostingEffectiveModelException({
+    required this.selectedModel,
+    required Iterable<String?> completedEffectiveModels,
+  }) : completedEffectiveModels = List<String?>.unmodifiable(
+         completedEffectiveModels,
+       );
+
+  final String selectedModel;
+  final List<String?> completedEffectiveModels;
+
+  @override
+  String toString() =>
+      'DevelopmentSelfHostingEffectiveModelException: successful ChatGPT Run '
+      'selected $selectedModel but completed effective models were '
+      '$completedEffectiveModels.';
+}
+
+final class DevelopmentSelfHostingOptions {
+  const DevelopmentSelfHostingOptions({
+    required this.promptFile,
+    required this.instructionsFile,
+    required this.taskTitle,
+    required this.maxModelInvocations,
+    required this.outputRoot,
+    required this.profile,
+  });
+
+  final File promptFile;
+  final File instructionsFile;
+  final String taskTitle;
+  final int maxModelInvocations;
+  final Directory outputRoot;
+  final DevelopmentSelfHostingProfile profile;
+
+  static DevelopmentSelfHostingOptions parse(List<String> arguments) {
+    final Map<String, String> values = <String, String>{};
+    for (var index = 0; index < arguments.length; index++) {
+      final String argument = arguments[index];
+      if (!argument.startsWith('--')) {
+        throw DevelopmentSelfHostingUsageException(
+          'Unexpected positional argument: $argument',
+        );
+      }
+      final int equals = argument.indexOf('=');
+      final String name = equals < 0 ? argument : argument.substring(0, equals);
+      if (values.containsKey(name)) {
+        throw DevelopmentSelfHostingUsageException(
+          '$name may only be specified once.',
+        );
+      }
+      final String value;
+      if (equals >= 0) {
+        value = argument.substring(equals + 1);
+      } else {
+        if (index + 1 >= arguments.length ||
+            arguments[index + 1].startsWith('--')) {
+          throw DevelopmentSelfHostingUsageException('$name requires a value.');
+        }
+        value = arguments[++index];
+      }
+      if (value.isEmpty) {
+        throw DevelopmentSelfHostingUsageException(
+          '$name requires a non-empty value.',
+        );
+      }
+      values[name] = value;
+    }
+    const Set<String> supported = <String>{
+      '--prompt-file',
+      '--instructions-file',
+      '--task-title',
+      '--max-model-invocations',
+      '--output-dir',
+      '--profile',
+    };
+    final List<String> unknown = values.keys
+        .where((String name) => !supported.contains(name))
+        .toList(growable: false);
+    if (unknown.isNotEmpty) {
+      throw DevelopmentSelfHostingUsageException(
+        'Unknown option: ${unknown.first}',
+      );
+    }
+    String required(String name) {
+      final String? value = values[name];
+      if (value == null) {
+        throw DevelopmentSelfHostingUsageException('$name is required.');
+      }
+      return value;
+    }
+
+    final String maximumValue = required('--max-model-invocations');
+    final int? maximum = RegExp(r'^[1-9][0-9]*$').hasMatch(maximumValue)
+        ? int.tryParse(maximumValue)
+        : null;
+    if (maximum == null) {
+      throw const DevelopmentSelfHostingUsageException(
+        '--max-model-invocations requires a positive integer.',
+      );
+    }
+    final String profileValue = values['--profile'] ?? 'chatgpt';
+    final DevelopmentSelfHostingProfile profile = switch (profileValue) {
+      'chatgpt' => DevelopmentSelfHostingProfile.chatgpt,
+      'api-key' => DevelopmentSelfHostingProfile.apiKey,
+      _ => throw DevelopmentSelfHostingUsageException(
+        'Unknown --profile value "$profileValue"; expected chatgpt or api-key.',
+      ),
+    };
+    return DevelopmentSelfHostingOptions(
+      promptFile: File(required('--prompt-file')).absolute,
+      instructionsFile: File(required('--instructions-file')).absolute,
+      taskTitle: required('--task-title'),
+      maxModelInvocations: maximum,
+      outputRoot: Directory(required('--output-dir')).absolute,
+      profile: profile,
+    );
+  }
+}
+
+final class DevelopmentSelfHostingRunnerResult {
+  const DevelopmentSelfHostingRunnerResult({
+    required this.runDirectory,
+    required this.projectSource,
+    required this.taskWorktree,
+    required this.runState,
+    required this.failure,
+  });
+
+  final Directory runDirectory;
+  final Directory? projectSource;
+  final Directory? taskWorktree;
+  final RunState? runState;
+  final Object? failure;
+
+  int get exitCode => failure == null ? 0 : 1;
+}
+
+DevelopmentSelfHostingEffectiveModelException?
+validateDevelopmentSelfHostingEffectiveModels({
+  required DevelopmentSelfHostingProfile profile,
+  required String selectedModel,
+  required DevelopmentSelfHostingRunResult result,
+}) {
+  if (profile != DevelopmentSelfHostingProfile.chatgpt || !result.succeeded) {
+    return null;
+  }
+  final List<String?> completedEffectiveModels = result.run.journal.records
+      .map((ExecutionEventRecord record) => record.event)
+      .whereType<ModelInvocationSettled>()
+      .where(
+        (ModelInvocationSettled event) =>
+            event.settlement == ModelSettlement.completed,
+      )
+      .map((ModelInvocationSettled event) => event.metadata.effectiveModel)
+      .toList(growable: false);
+  if (completedEffectiveModels.isNotEmpty &&
+      completedEffectiveModels.every(
+        (String? effectiveModel) => effectiveModel == selectedModel,
+      )) {
+    return null;
+  }
+  return DevelopmentSelfHostingEffectiveModelException(
+    selectedModel: selectedModel,
+    completedEffectiveModels: completedEffectiveModels,
+  );
+}
+
+Future<void> validateDevelopmentSelfHostingOutputRoot({
+  required Directory launchingRepository,
+  required Directory outputRoot,
+}) async {
+  if (outputRoot.path.split(RegExp(r'[/\\]')).contains('..')) {
+    throw DevelopmentSelfHostingOutputRootException(
+      'The output directory must not contain parent traversal: '
+      '${outputRoot.path}',
+    );
+  }
+  final String repositoryPath = await launchingRepository
+      .resolveSymbolicLinks();
+  final String outputPath = await _prospectiveCanonicalDirectory(outputRoot);
+  if (!_pathIsWithin(repositoryPath, outputPath)) return;
+  final String relativePath = outputPath == repositoryPath
+      ? '.'
+      : outputPath
+            .substring(repositoryPath.length + 1)
+            .replaceAll(Platform.pathSeparator, '/');
+  final ProcessResult ignored = await _runRunnerGit(<String>[
+    'check-ignore',
+    '--quiet',
+    '--no-index',
+    '--',
+    relativePath,
+  ], workingDirectory: repositoryPath);
+  if (ignored.exitCode == 0) return;
+  if (ignored.exitCode == 1) {
+    throw DevelopmentSelfHostingOutputRootException(
+      'An output directory inside the launching checkout must be ignored by '
+      'Git: ${outputRoot.path}',
+    );
+  }
+  throw DevelopmentSelfHostingOutputRootException(
+    'Unable to inspect output-directory ignore status: '
+    '${ignored.stderr.toString().trim()}',
+  );
+}
+
+Future<void> validateDevelopmentSelfHostingCommandHost({
+  bool? hostIsLinux,
+  bool? hostIsLinuxX64,
+  Future<bool> Function(String path)? isExecutable,
+}) async {
+  final bool isLinux = hostIsLinux ?? Platform.isLinux;
+  final bool isLinuxX64 =
+      hostIsLinuxX64 ?? (isLinux && Abi.current() == Abi.linuxX64);
+  if (!isLinux || !isLinuxX64) {
+    throw StateError(developmentSelfHostingHostRequirementMessage);
+  }
+  final Future<bool> Function(String path) executableCheck =
+      isExecutable ?? _canExecute;
+  for (final String candidate in _developmentSelfHostingSetSidCandidates) {
+    if (await executableCheck(candidate)) return;
+  }
+  throw StateError(developmentSelfHostingHostRequirementMessage);
+}
+
+Future<Directory> claimDevelopmentSelfHostingRunDirectory({
+  required Directory outputRoot,
+  required DateTime startedAt,
+  required String? sourceHead,
+}) async {
+  await outputRoot.create(recursive: true);
+  final String timestamp = startedAt.toUtc().toIso8601String().replaceAll(
+    RegExp(r'[-:.]'),
+    '',
+  );
+  final String revision = sourceHead == null
+      ? 'unknown'
+      : sourceHead.substring(
+          0,
+          sourceHead.length < 12 ? sourceHead.length : 12,
+        );
+  return outputRoot.createTemp('run-$timestamp-$revision-');
+}
+
+final class DevelopmentSelfHostingRunner {
+  const DevelopmentSelfHostingRunner();
+
+  Future<DevelopmentSelfHostingRunnerResult> run(
+    DevelopmentSelfHostingOptions options,
+  ) async {
+    final DateTime startedAt = DateTime.now().toUtc();
+    final _PhaseTimings timings = _PhaseTimings();
+    Directory launchingRepository = Directory.current.absolute;
+    String? sourceHead;
+    String? promptHash;
+    String? instructionsHash;
+    String? prompt;
+    String? instructions;
+    DevelopmentSelfHostingProviderConfiguration? providerConfiguration;
+    Object? failure;
+    DevelopmentSelfHostingArtifacts? artifacts;
+    DevelopmentSelfHostingTopology? topology;
+    DevelopmentSelfHostingRetainedState? retainedState;
+    DevelopmentSelfHostingProviderActivation? providerActivation;
+    DevelopmentSelfHostingRunResult? runResult;
+    late final Directory runDirectory;
+    late final _RunnerLogger logger;
+
+    try {
+      await timings.measure('sourceReconciliationPreflight', () async {
+        launchingRepository = await _discoverRepository();
+        sourceHead = await _gitValue(launchingRepository, const <String>[
+          'rev-parse',
+          'HEAD',
+        ]);
+        await validateDevelopmentSelfHostingOutputRoot(
+          launchingRepository: launchingRepository,
+          outputRoot: options.outputRoot,
+        );
+        await validateDevelopmentSelfHostingCommandHost();
+        final String status = await _gitValue(
+          launchingRepository,
+          const <String>['status', '--porcelain', '--untracked-files=all'],
+        );
+        if (status.trim().isNotEmpty) {
+          throw StateError(
+            'Developer self-hosting requires a clean launching checkout.',
+          );
+        }
+        final List<int> promptBytes = await options.promptFile.readAsBytes();
+        final List<int> instructionBytes = await options.instructionsFile
+            .readAsBytes();
+        prompt = utf8.decode(promptBytes);
+        instructions = utf8.decode(instructionBytes);
+        if (prompt!.trim().isEmpty) {
+          throw StateError('The prompt file must not be empty.');
+        }
+        if (instructions!.trim().isEmpty) {
+          throw StateError('The instructions file must not be empty.');
+        }
+        promptHash = sha256.convert(promptBytes).toString();
+        instructionsHash = sha256.convert(instructionBytes).toString();
+        providerConfiguration =
+            DevelopmentSelfHostingProviderConfiguration.fromEnvironment(
+              options.profile,
+            );
+      });
+    } on DevelopmentSelfHostingOutputRootException {
+      rethrow;
+    } on Object catch (error) {
+      failure = error;
+    }
+
+    runDirectory = await claimDevelopmentSelfHostingRunDirectory(
+      outputRoot: options.outputRoot,
+      startedAt: startedAt,
+      sourceHead: sourceHead,
+    );
+    logger = await _RunnerLogger.open(runDirectory);
+    logger.log('ADELE developer self-hosting runner started.');
+    logger.log('Run directory: ${runDirectory.path}');
+    logger.log('Launching checkout: ${launchingRepository.path}');
+    if (sourceHead != null) logger.log('Starting source SHA: $sourceHead');
+    if (failure != null) logger.log('Preflight failed: $failure');
+
+    final String identity = _identity(startedAt, sourceHead);
+    final Directory transientArtifacts = Directory(
+      '${runDirectory.path}/.artifacts',
+    );
+    final Directory projectSource = Directory(
+      '${runDirectory.path}/state/project',
+    );
+    try {
+      if (failure == null) {
+        artifacts = await timings.measure('artifactCompilation', () async {
+          final DevelopmentSelfHostingArtifacts compiled =
+              await DevelopmentSelfHostingArtifacts.compile(
+                repository: launchingRepository,
+                outputDirectory: transientArtifacts,
+                log: logger.log,
+              );
+          await _requireSourceBaseline(launchingRepository, sourceHead!);
+          return compiled;
+        });
+        await timings.measure('projectClone', () async {
+          await Directory('${runDirectory.path}/state').create(recursive: true);
+          await cloneDevelopmentSelfHostingProject(
+            repository: launchingRepository,
+            destination: projectSource,
+            sourceHead: sourceHead!,
+            log: logger.log,
+          );
+        });
+        topology = await timings.measure(
+          'lifecycleTaskEnvironmentSetup',
+          () => DevelopmentSelfHostingTopology.start(
+            artifacts: artifacts!,
+            projectSource: projectSource,
+            hostEnvironment: providerConfiguration!.hostEnvironment,
+            identity: identity,
+            taskTitle: options.taskTitle,
+            log: logger.log,
+            onTaskEstablished: (DevelopmentSelfHostingRetainedState state) {
+              retainedState = state;
+              logger.log('Project source: ${state.projectSource.path}');
+              logger.log('Task worktree: ${state.taskWorktreePath}');
+            },
+          ),
+        );
+        final DevelopmentSelfHostingTopology activeTopology = topology!;
+        final DevelopmentSelfHostingArtifacts activeArtifacts = artifacts!;
+        final DevelopmentSelfHostingProviderConfiguration activeConfiguration =
+            providerConfiguration!;
+        providerActivation = await timings.measure(
+          'providerActivation',
+          () => activateDevelopmentSelfHostingModelProvider(
+            host: activeTopology.host,
+            registry: activeTopology.registry,
+            artifact: activeArtifacts.openAiArtifact,
+            profile: options.profile,
+          ),
+        );
+        final ModelProviderCapabilityAdapter model =
+            ModelProviderCapabilityAdapter(
+              activeTopology.registry.resolve(
+                modelProviderCapability,
+                providerId: ProviderId(options.profile.providerId),
+              ),
+              selectedModel: activeConfiguration.selectedModel,
+            );
+        final List<String> aliases = activeTopology.catalog
+            .materialize()
+            .tools
+            .map((MaterializedTool tool) => tool.modelDefinition.alias)
+            .toList(growable: false);
+        if (!_sameStrings(aliases, developmentSelfHostingToolAliases)) {
+          throw StateError('Unexpected developer tool catalog: $aliases');
+        }
+        logger.log('Model profile: ${options.profile.cliName}.');
+        logger.log('Selected model: ${activeConfiguration.selectedModel}.');
+        logger.log('Model invocation ceiling: ${options.maxModelInvocations}.');
+        final DevelopmentSelfHostingRunResult completedRun = await timings
+            .measure(
+              'adeleRun',
+              () => executeDevelopmentSelfHostingRun(
+                identity: identity,
+                sessionId: activeTopology.sessionId,
+                prompt: prompt!,
+                instructions: instructions!,
+                model: model,
+                catalog: activeTopology.catalog,
+                maxModelInvocations: options.maxModelInvocations,
+              ),
+            );
+        runResult = completedRun;
+        logger.log('ADELE Run state: ${completedRun.run.state.name}.');
+        if (!completedRun.succeeded) {
+          failure =
+              completedRun.run.failure ??
+              completedRun.executionFailure ??
+              StateError('The ADELE Run did not complete successfully.');
+        } else if (validateDevelopmentSelfHostingEffectiveModels(
+              profile: options.profile,
+              selectedModel: activeConfiguration.selectedModel,
+              result: completedRun,
+            )
+            case final DevelopmentSelfHostingEffectiveModelException error) {
+          failure = error;
+          logger.log('Effective model validation failed: $error');
+        }
+      }
+    } on Object catch (error) {
+      failure ??= error;
+      logger.log('Runner failure: $error');
+    } finally {
+      try {
+        await timings.measure('teardown', () async {
+          await closeDevelopmentSelfHostingResources(<Future<void> Function()>[
+            if (providerActivation != null) providerActivation.close,
+            if (topology != null) topology.close,
+            if (await transientArtifacts.exists())
+              () => transientArtifacts.delete(recursive: true),
+          ]);
+        });
+      } on Object catch (error) {
+        failure ??= error;
+        logger.log('Teardown failure: $error');
+      }
+    }
+
+    DevelopmentSelfHostingGitEvidence git;
+    final Stopwatch evidenceCollection = Stopwatch()..start();
+    git = await collectDevelopmentSelfHostingGitEvidence(
+      launchingRepository: launchingRepository,
+      projectSource: await projectSource.exists() ? projectSource : null,
+      taskWorktree: retainedState == null
+          ? null
+          : Directory(retainedState!.taskWorktreePath),
+      taskBaseline: retainedState?.baselineCommit,
+    );
+    evidenceCollection.stop();
+    timings.set(
+      'evidenceReportGeneration',
+      evidenceCollection.elapsedMilliseconds,
+    );
+    if (git.failure
+        case final DevelopmentSelfHostingGitEvidenceException error) {
+      failure ??= error;
+      logger.log('Required Git evidence failure: $error');
+    }
+    final DevelopmentSelfHostingEvidenceContext evidenceContext =
+        DevelopmentSelfHostingEvidenceContext(
+          runDirectory: runDirectory,
+          launchingRepository: launchingRepository,
+          sourceHead: sourceHead,
+          projectSource: await projectSource.exists() ? projectSource : null,
+          taskWorktree: retainedState == null
+              ? null
+              : Directory(retainedState!.taskWorktreePath),
+          taskTitle: options.taskTitle,
+          taskBranch: retainedState?.taskBranch,
+          taskBaseline: retainedState?.baselineCommit,
+          projectId: retainedState?.projectId.value,
+          taskId: retainedState?.taskId.value,
+          environmentId: retainedState?.environmentId.value,
+          sessionId: topology?.sessionId.value,
+          profile: options.profile.cliName,
+          providerId: options.profile.providerId,
+          configuredContext: options.profile.configuredContext,
+          selectedModel: providerConfiguration?.selectedModel,
+          maxModelInvocations: options.maxModelInvocations,
+          promptFileHash: promptHash,
+          instructionsFileHash: instructionsHash,
+          startedAt: startedAt,
+          phaseDurations: timings.values,
+          runnerFailure: failure,
+        );
+    try {
+      await const DevelopmentSelfHostingEvidenceWriter().write(
+        context: evidenceContext,
+        result: runResult,
+        git: git,
+      );
+      logger.log('Evidence written to ${runDirectory.path}.');
+    } on Object catch (error) {
+      failure ??= error;
+      logger.log('Evidence generation failed: $error');
+    }
+    final Directory? retainedProject = await projectSource.exists()
+        ? projectSource
+        : null;
+    final Directory? retainedTask = retainedState == null
+        ? null
+        : Directory(retainedState!.taskWorktreePath);
+    logger.log('Project source: ${retainedProject?.path ?? 'unavailable'}');
+    logger.log('Task worktree: ${retainedTask?.path ?? 'unavailable'}');
+    logger.log('Runner exit status: ${failure == null ? 0 : 1}.');
+    await logger.close();
+    return DevelopmentSelfHostingRunnerResult(
+      runDirectory: runDirectory,
+      projectSource: retainedProject,
+      taskWorktree: retainedTask,
+      runState: runResult?.run.state,
+      failure: failure,
+    );
+  }
+}
+
+Future<Directory> _discoverRepository() async {
+  final ProcessResult result = await _runRunnerGit(const <String>[
+    'rev-parse',
+    '--show-toplevel',
+  ], workingDirectory: Directory.current.path);
+  if (result.exitCode != 0) {
+    throw StateError('The runner must be launched from an ADELE Git checkout.');
+  }
+  return Directory(result.stdout.toString().trim()).absolute;
+}
+
+Future<String> _gitValue(Directory repository, List<String> arguments) async {
+  final ProcessResult result = await _runRunnerGit(
+    arguments,
+    workingDirectory: repository.path,
+  );
+  if (result.exitCode != 0) {
+    throw StateError(
+      'git ${arguments.join(' ')} failed: ${result.stderr.toString().trim()}',
+    );
+  }
+  return result.stdout.toString().trim();
+}
+
+Future<ProcessResult> _runRunnerGit(
+  List<String> arguments, {
+  required String workingDirectory,
+  Map<String, String>? inheritedEnvironment,
+}) => Process.run(
+  'git',
+  arguments,
+  workingDirectory: workingDirectory,
+  runInShell: Platform.isWindows,
+  environment: developmentSelfHostingGitProcessEnvironment(
+    inheritedEnvironment: inheritedEnvironment,
+  ),
+  includeParentEnvironment: false,
+);
+
+Future<bool> _canExecute(String path) async {
+  final FileStat stat = await FileStat.stat(path);
+  if (stat.type != FileSystemEntityType.file) return false;
+  try {
+    await Process.run(path, const <String>['--help']);
+    return true;
+  } on ProcessException {
+    return false;
+  }
+}
+
+Future<void> _requireSourceBaseline(
+  Directory repository,
+  String expectedHead,
+) async {
+  final String currentHead = await _gitValue(repository, const <String>[
+    'rev-parse',
+    'HEAD',
+  ]);
+  if (currentHead != expectedHead) {
+    throw StateError(
+      'The launching checkout HEAD changed during artifact compilation.',
+    );
+  }
+  final String status = await _gitValue(repository, const <String>[
+    'status',
+    '--porcelain',
+    '--untracked-files=all',
+  ]);
+  if (status.trim().isNotEmpty) {
+    throw StateError(
+      'The launching checkout changed during artifact compilation.',
+    );
+  }
+}
+
+Future<String> _prospectiveCanonicalDirectory(Directory directory) async {
+  Directory current = directory.absolute;
+  final List<String> missingSegments = <String>[];
+  while (!await current.exists()) {
+    final Directory parent = current.parent;
+    if (parent.path == current.path) {
+      throw StateError('No existing parent for ${directory.path}.');
+    }
+    final List<String> segments = current.uri.pathSegments
+        .where((String segment) => segment.isNotEmpty)
+        .toList(growable: false);
+    missingSegments.insert(0, segments.last);
+    current = parent;
+  }
+  String resolved = await current.resolveSymbolicLinks();
+  for (final String segment in missingSegments) {
+    resolved = '$resolved${Platform.pathSeparator}$segment';
+  }
+  return resolved;
+}
+
+bool _pathIsWithin(String parent, String candidate) {
+  if (Platform.isWindows) {
+    parent = parent.toLowerCase();
+    candidate = candidate.toLowerCase();
+  }
+  return candidate == parent ||
+      candidate.startsWith('$parent${Platform.pathSeparator}');
+}
+
+String _identity(DateTime startedAt, String? sourceHead) {
+  final String micros = startedAt.microsecondsSinceEpoch.toString();
+  final String revision = sourceHead == null
+      ? 'unknown'
+      : sourceHead.substring(0, sourceHead.length < 8 ? sourceHead.length : 8);
+  return '$micros-$revision';
+}
+
+bool _sameStrings(List<String> left, List<String> right) {
+  if (left.length != right.length) return false;
+  for (var index = 0; index < left.length; index++) {
+    if (left[index] != right[index]) return false;
+  }
+  return true;
+}
+
+final class _PhaseTimings {
+  _PhaseTimings()
+    : _values = <String, int?>{
+        for (final String phase in developmentSelfHostingPhases) phase: null,
+      };
+
+  final Map<String, int?> _values;
+
+  Map<String, int?> get values => Map<String, int?>.unmodifiable(_values);
+
+  Future<T> measure<T>(String phase, Future<T> Function() operation) async {
+    final Stopwatch stopwatch = Stopwatch()..start();
+    try {
+      return await operation();
+    } finally {
+      stopwatch.stop();
+      _values[phase] = stopwatch.elapsedMilliseconds;
+    }
+  }
+
+  void set(String phase, int milliseconds) => _values[phase] = milliseconds;
+}
+
+final class _RunnerLogger {
+  _RunnerLogger._(this._sink);
+
+  final IOSink _sink;
+
+  static Future<_RunnerLogger> open(Directory runDirectory) async {
+    final File file = File('${runDirectory.path}/runner.log');
+    return _RunnerLogger._(file.openWrite());
+  }
+
+  void log(String message) {
+    final String line =
+        '[${DateTime.now().toUtc().toIso8601String()}] $message';
+    stdout.writeln(line);
+    _sink.writeln(line);
+  }
+
+  Future<void> close() => _sink.close();
+}
