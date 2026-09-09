@@ -73,6 +73,12 @@ tools. The isolated repository does not share Git refs or a writable local
 origin with the launching checkout; final Git evidence records what actually
 remained clean. This is source-layout isolation, not a command sandbox.
 
+The output directory must be outside the launching Git checkout or inside a
+path Git considers ignored. The documented `.dart_tool` location is ignored by
+this repository. A non-ignored in-repository output directory is rejected
+before the runner creates it, so final checkout-cleanliness evidence remains
+literal Git status rather than a runner-specific exclusion.
+
 The run directory retains Project and Task source after success and failure. It
 also contains a versioned manifest, raw Run journal, deterministic JSON and
 Markdown summaries, runner log, and Task/Project/launching-checkout Git

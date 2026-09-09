@@ -17,8 +17,14 @@ Future<void> main(List<String> arguments) async {
     return;
   }
 
-  final DevelopmentSelfHostingRunnerResult result =
-      await const DevelopmentSelfHostingRunner().run(options);
+  final DevelopmentSelfHostingRunnerResult result;
+  try {
+    result = await const DevelopmentSelfHostingRunner().run(options);
+  } on DevelopmentSelfHostingOutputRootException catch (error) {
+    stderr.writeln('ERROR: ${error.message}');
+    exitCode = 64;
+    return;
+  }
   stdout.writeln('Run evidence: ${result.runDirectory.path}');
   stdout.writeln(
     'Project source: ${result.projectSource?.path ?? 'unavailable'}',

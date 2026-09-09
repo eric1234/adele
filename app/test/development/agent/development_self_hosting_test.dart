@@ -116,6 +116,91 @@ void main() {
     },
   );
 
+  test('ChatGPT requires matching reported effective models', () async {
+    final DevelopmentSelfHostingRunResult matching =
+        await executeDevelopmentSelfHostingRun(
+          identity: 'matching-model',
+          sessionId: SessionId('session-matching-model'),
+          prompt: 'Complete.',
+          instructions: 'Respond.',
+          model: _FinalModel(),
+          catalog: ToolCatalog(),
+          maxModelInvocations: 1,
+        );
+    final DevelopmentSelfHostingRunResult substituted =
+        await executeDevelopmentSelfHostingRun(
+          identity: 'substituted-model',
+          sessionId: SessionId('session-substituted-model'),
+          prompt: 'Complete.',
+          instructions: 'Respond.',
+          model: _FinalModel(effectiveModel: 'substituted-model'),
+          catalog: ToolCatalog(),
+          maxModelInvocations: 1,
+        );
+    final DevelopmentSelfHostingRunResult unreported =
+        await executeDevelopmentSelfHostingRun(
+          identity: 'unreported-model',
+          sessionId: SessionId('session-unreported-model'),
+          prompt: 'Complete.',
+          instructions: 'Respond.',
+          model: const _FinalModel(effectiveModel: null),
+          catalog: ToolCatalog(),
+          maxModelInvocations: 1,
+        );
+    final DevelopmentSelfHostingRunResult noCompletedSettlement =
+        await executeDevelopmentSelfHostingRun(
+          identity: 'refused-model',
+          sessionId: SessionId('session-refused-model'),
+          prompt: 'Complete.',
+          instructions: 'Respond.',
+          model: const _RefusedModel(),
+          catalog: ToolCatalog(),
+          maxModelInvocations: 1,
+        );
+
+    expect(
+      validateDevelopmentSelfHostingEffectiveModels(
+        profile: DevelopmentSelfHostingProfile.chatgpt,
+        selectedModel: 'fake-model',
+        result: matching,
+      ),
+      isNull,
+    );
+    expect(
+      validateDevelopmentSelfHostingEffectiveModels(
+        profile: DevelopmentSelfHostingProfile.chatgpt,
+        selectedModel: 'fake-model',
+        result: substituted,
+      ),
+      isA<DevelopmentSelfHostingEffectiveModelException>(),
+    );
+    expect(noCompletedSettlement.run.state, RunState.completed);
+    expect(
+      validateDevelopmentSelfHostingEffectiveModels(
+        profile: DevelopmentSelfHostingProfile.chatgpt,
+        selectedModel: 'fake-model',
+        result: noCompletedSettlement,
+      ),
+      isA<DevelopmentSelfHostingEffectiveModelException>(),
+    );
+    expect(
+      validateDevelopmentSelfHostingEffectiveModels(
+        profile: DevelopmentSelfHostingProfile.chatgpt,
+        selectedModel: 'fake-model',
+        result: unreported,
+      ),
+      isA<DevelopmentSelfHostingEffectiveModelException>(),
+    );
+    expect(
+      validateDevelopmentSelfHostingEffectiveModels(
+        profile: DevelopmentSelfHostingProfile.apiKey,
+        selectedModel: 'fake-model',
+        result: substituted,
+      ),
+      isNull,
+    );
+  });
+
   test(
     'reports deterministic model, tool, revision, command, and Git evidence',
     () async {
@@ -213,6 +298,7 @@ void main() {
         ),
       );
       expect(gitEvidence.changedFiles, <String>['fixture.txt']);
+      expect(gitEvidence.collectionSucceeded, isTrue);
       expect(gitEvidence.launchingClean, isTrue);
       expect(gitEvidence.projectClean, isTrue);
       expect(
@@ -439,7 +525,7 @@ void main() {
     },
   );
 
-  test('git diff check includes untracked created files', () async {
+  test('Git path evidence preserves unusual untracked filenames', () async {
     final Directory container = await Directory.systemTemp.createTemp(
       'adele-self-hosting-untracked-test-',
     );
@@ -447,9 +533,10 @@ void main() {
       if (await container.exists()) await container.delete(recursive: true);
     });
     final _GitFixture git = await _createGitFixture(container);
+    const String unusualPath = 'café "quoted" \\ tab\tline\nbreak.dart';
     await File(
-      '${git.task.path}/created.txt',
-    ).writeAsString('trailing space \n');
+      '${git.task.path}/$unusualPath',
+    ).writeAsString('unusual path payload with trailing space \n');
 
     final DevelopmentSelfHostingGitEvidence evidence =
         await collectDevelopmentSelfHostingGitEvidence(
@@ -459,10 +546,139 @@ void main() {
           taskBaseline: git.startingHead,
         );
 
-    expect(evidence.changedFiles, contains('created.txt'));
-    expect(evidence.taskDiff, contains('created.txt'));
+    expect(evidence.collectionSucceeded, isTrue);
+    expect(evidence.changedFiles, contains(unusualPath));
+    expect(evidence.taskDiff, contains('unusual path payload'));
     expect(evidence.taskDiffCheck, contains('trailing whitespace'));
     expect(evidence.taskDiffCheckExitCode, isNot(0));
+  });
+
+  test('missing Task Git repository fails required evidence', () async {
+    final Directory container = await Directory.systemTemp.createTemp(
+      'adele-self-hosting-missing-task-git-test-',
+    );
+    addTearDown(() async {
+      if (await container.exists()) await container.delete(recursive: true);
+    });
+    final _GitFixture git = await _createGitFixture(container);
+    await Directory('${git.task.path}/.git').delete(recursive: true);
+    final DevelopmentSelfHostingRunResult run =
+        await executeDevelopmentSelfHostingRun(
+          identity: 'missing-task-git',
+          sessionId: SessionId('session-missing-task-git'),
+          prompt: 'Complete.',
+          instructions: 'Respond.',
+          model: _FinalModel(),
+          catalog: ToolCatalog(),
+          maxModelInvocations: 1,
+        );
+
+    final DevelopmentSelfHostingGitEvidence evidence =
+        await collectDevelopmentSelfHostingGitEvidence(
+          launchingRepository: git.launching,
+          projectSource: git.project,
+          taskWorktree: git.task,
+          taskBaseline: git.startingHead,
+        );
+    final Directory runDirectory = Directory('${container.path}/evidence');
+    final DevelopmentSelfHostingRunnerResult runnerResult =
+        DevelopmentSelfHostingRunnerResult(
+          runDirectory: runDirectory,
+          projectSource: git.project,
+          taskWorktree: git.task,
+          runState: run.run.state,
+          failure: evidence.failure,
+        );
+    final Map<String, Object?> manifest =
+        await const DevelopmentSelfHostingEvidenceWriter().write(
+          context: _evidenceContext(
+            runDirectory: runDirectory,
+            git: git,
+            runnerFailure: evidence.failure,
+          ),
+          result: run,
+          git: evidence,
+        );
+
+    expect(run.run.state, RunState.completed);
+    expect(evidence.collectionSucceeded, isFalse);
+    expect(evidence.failure, isNotNull);
+    expect(runnerResult.exitCode, 1);
+    expect(
+      (manifest['terminal']! as Map<String, Object?>)['failure'],
+      containsPair('type', 'DevelopmentSelfHostingGitEvidenceException'),
+    );
+    final Map<String, Object?> summary =
+        jsonDecode(
+              await File('${runDirectory.path}/summary.json').readAsString(),
+            )
+            as Map<String, Object?>;
+    final Map<String, Object?> summaryGit =
+        summary['git']! as Map<String, Object?>;
+    expect(
+      (summaryGit['collection']! as Map<String, Object?>)['succeeded'],
+      isFalse,
+    );
+  });
+
+  test('output root must be outside the checkout or ignored', () async {
+    final Directory container = await Directory.systemTemp.createTemp(
+      'adele-self-hosting-output-root-test-',
+    );
+    addTearDown(() async {
+      if (await container.exists()) await container.delete(recursive: true);
+    });
+    final _GitFixture git = await _createGitFixture(container);
+
+    await validateDevelopmentSelfHostingOutputRoot(
+      launchingRepository: git.launching,
+      outputRoot: Directory('${git.launching.path}/.ignored/self-hosting'),
+    );
+    await validateDevelopmentSelfHostingOutputRoot(
+      launchingRepository: git.launching,
+      outputRoot: Directory('${container.path}/outside-output'),
+    );
+    expect(
+      () => validateDevelopmentSelfHostingOutputRoot(
+        launchingRepository: git.launching,
+        outputRoot: Directory('${git.launching.path}/visible-output'),
+      ),
+      throwsA(isA<DevelopmentSelfHostingOutputRootException>()),
+    );
+    expect(
+      () => validateDevelopmentSelfHostingOutputRoot(
+        launchingRepository: git.launching,
+        outputRoot: Directory(
+          '${git.launching.path}/.ignored/../visible-output',
+        ),
+      ),
+      throwsA(isA<DevelopmentSelfHostingOutputRootException>()),
+    );
+  });
+
+  test('concurrent run-directory claims are distinct', () async {
+    final Directory outputRoot = await Directory.systemTemp.createTemp(
+      'adele-self-hosting-directory-claim-test-',
+    );
+    addTearDown(() async {
+      if (await outputRoot.exists()) await outputRoot.delete(recursive: true);
+    });
+    final DateTime startedAt = DateTime.utc(2026, 9, 9);
+
+    final List<Directory> claimed = await Future.wait(<Future<Directory>>[
+      for (var index = 0; index < 8; index++)
+        claimDevelopmentSelfHostingRunDirectory(
+          outputRoot: outputRoot,
+          startedAt: startedAt,
+          sourceHead: '0123456789abcdef',
+        ),
+    ]);
+
+    expect(claimed.map((Directory value) => value.path).toSet(), hasLength(8));
+    expect(
+      await Future.wait(claimed.map((Directory value) => value.exists())),
+      everyElement(isTrue),
+    );
   });
 
   test('setup failure is represented in deterministic summary', () {
@@ -524,6 +740,10 @@ ToolCatalog _catalog(Iterable<String> aliases) {
 }
 
 final class _FinalModel implements ModelPort {
+  const _FinalModel({this.effectiveModel = 'fake-model'});
+
+  final String? effectiveModel;
+
   @override
   Stream<ModelEvent> invoke(SemanticModelRequest request) async* {
     yield ModelOutputItemCompleted(
@@ -532,7 +752,7 @@ final class _FinalModel implements ModelPort {
     );
     yield ModelInvocationSettledEvent(
       invocationId: request.invocationId,
-      metadata: ModelTerminalMetadata(effectiveModel: 'fake-model'),
+      metadata: ModelTerminalMetadata(effectiveModel: effectiveModel),
     );
   }
 }
@@ -554,6 +774,23 @@ final class _AlwaysProposalModel implements ModelPort {
     );
     yield ModelInvocationSettledEvent(
       invocationId: request.invocationId,
+      metadata: ModelTerminalMetadata(effectiveModel: 'fake-model'),
+    );
+  }
+}
+
+final class _RefusedModel implements ModelPort {
+  const _RefusedModel();
+
+  @override
+  Stream<ModelEvent> invoke(SemanticModelRequest request) async* {
+    yield ModelOutputItemCompleted(
+      invocationId: request.invocationId,
+      item: ModelTextOutput('Refused.'),
+    );
+    yield ModelInvocationSettledEvent(
+      invocationId: request.invocationId,
+      settlement: ModelSettlement.refused,
       metadata: ModelTerminalMetadata(effectiveModel: 'fake-model'),
     );
   }
@@ -752,6 +989,7 @@ Future<_GitFixture> _createGitFixture(Directory container) async {
     'adele@example.invalid',
   ]);
   await File('${launching.path}/fixture.txt').writeAsString('base\n');
+  await File('${launching.path}/.gitignore').writeAsString('.ignored/\n');
   await _git(launching, const <String>['add', '.']);
   await _git(launching, const <String>['commit', '--quiet', '-m', 'Initial']);
   final String startingHead = await _git(launching, const <String>[
@@ -778,6 +1016,35 @@ Future<_GitFixture> _createGitFixture(Directory container) async {
     startingHead: startingHead,
   );
 }
+
+DevelopmentSelfHostingEvidenceContext _evidenceContext({
+  required Directory runDirectory,
+  required _GitFixture git,
+  required Object? runnerFailure,
+}) => DevelopmentSelfHostingEvidenceContext(
+  runDirectory: runDirectory,
+  launchingRepository: git.launching,
+  sourceHead: git.startingHead,
+  projectSource: git.project,
+  taskWorktree: git.task,
+  taskTitle: 'Fixture task',
+  taskBranch: 'fixture-task',
+  taskBaseline: git.startingHead,
+  projectId: 'project-fixture',
+  taskId: 'task-fixture',
+  environmentId: 'environment-fixture',
+  sessionId: 'session-fixture',
+  profile: 'chatgpt',
+  providerId: developmentSelfHostingChatGptProviderId,
+  configuredContext: 'chatgpt-experimental',
+  selectedModel: 'fake-model',
+  maxModelInvocations: 1,
+  promptFileHash: 'prompt-hash',
+  instructionsFileHash: 'instructions-hash',
+  startedAt: DateTime.utc(2026, 9, 9),
+  phaseDurations: const <String, int?>{},
+  runnerFailure: runnerFailure,
+);
 
 Future<String> _git(Directory directory, List<String> arguments) async {
   final ProcessResult result = await Process.run(

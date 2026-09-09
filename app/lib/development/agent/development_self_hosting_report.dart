@@ -83,6 +83,8 @@ final class DevelopmentSelfHostingGitEvidence {
     required this.taskMergeBase,
     required this.taskAheadBehind,
     required this.changedFiles,
+    this.collectionFailures =
+        const <DevelopmentSelfHostingGitEvidenceFailure>[],
   });
 
   final String? launchingHead;
@@ -98,12 +100,26 @@ final class DevelopmentSelfHostingGitEvidence {
   final String? taskMergeBase;
   final String? taskAheadBehind;
   final List<String> changedFiles;
+  final List<DevelopmentSelfHostingGitEvidenceFailure> collectionFailures;
 
   bool get launchingClean => launchingStatus.trim().isEmpty;
   bool get projectClean => projectStatus.trim().isEmpty;
+  bool get collectionSucceeded => collectionFailures.isEmpty;
+
+  DevelopmentSelfHostingGitEvidenceException? get failure => collectionSucceeded
+      ? null
+      : DevelopmentSelfHostingGitEvidenceException(collectionFailures);
 
   Map<String, Object?> toJson({required String? taskBaseline}) =>
       <String, Object?>{
+        'collection': <String, Object?>{
+          'succeeded': collectionSucceeded,
+          'failures': <Object?>[
+            for (final DevelopmentSelfHostingGitEvidenceFailure failure
+                in collectionFailures)
+              failure.toJson(),
+          ],
+        },
         'launchingCheckout': <String, Object?>{
           'head': launchingHead,
           'clean': launchingClean,
@@ -130,6 +146,42 @@ final class DevelopmentSelfHostingGitEvidence {
       };
 }
 
+final class DevelopmentSelfHostingGitEvidenceFailure {
+  const DevelopmentSelfHostingGitEvidenceFailure({
+    required this.label,
+    required this.arguments,
+    required this.exitCode,
+    required this.message,
+  });
+
+  final String label;
+  final List<String> arguments;
+  final int exitCode;
+  final String message;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'label': label,
+    'arguments': arguments,
+    'exitCode': exitCode,
+    'message': message,
+  };
+}
+
+final class DevelopmentSelfHostingGitEvidenceException implements Exception {
+  DevelopmentSelfHostingGitEvidenceException(
+    Iterable<DevelopmentSelfHostingGitEvidenceFailure> failures,
+  ) : failures = List<DevelopmentSelfHostingGitEvidenceFailure>.unmodifiable(
+        failures,
+      );
+
+  final List<DevelopmentSelfHostingGitEvidenceFailure> failures;
+
+  @override
+  String toString() =>
+      'DevelopmentSelfHostingGitEvidenceException: required Git evidence '
+      'failed for ${failures.map((failure) => failure.label).join(', ')}.';
+}
+
 Future<DevelopmentSelfHostingGitEvidence>
 collectDevelopmentSelfHostingGitEvidence({
   required Directory launchingRepository,
@@ -137,24 +189,57 @@ collectDevelopmentSelfHostingGitEvidence({
   required Directory? taskWorktree,
   required String? taskBaseline,
 }) async {
+  final List<DevelopmentSelfHostingGitEvidenceFailure> failures =
+      <DevelopmentSelfHostingGitEvidenceFailure>[];
+  void requireGitResult(
+    String label,
+    List<String> arguments,
+    _GitResult result, {
+    bool Function(_GitResult result)? accepts,
+  }) {
+    if ((accepts ?? (_GitResult value) => value.exitCode == 0)(result)) return;
+    failures.add(
+      DevelopmentSelfHostingGitEvidenceFailure(
+        label: label,
+        arguments: List<String>.unmodifiable(arguments),
+        exitCode: result.exitCode,
+        message: _gitFailureMessage(result),
+      ),
+    );
+  }
+
+  const List<String> headArguments = <String>['rev-parse', 'HEAD'];
+  const List<String> statusArguments = <String>[
+    'status',
+    '--short',
+    '--untracked-files=all',
+  ];
   final _GitResult launchingHead = await _git(
     launchingRepository,
-    const <String>['rev-parse', 'HEAD'],
+    headArguments,
   );
   final _GitResult launchingStatus = await _git(
     launchingRepository,
-    const <String>['status', '--short', '--untracked-files=all'],
+    statusArguments,
+  );
+  requireGitResult('launching checkout HEAD', headArguments, launchingHead);
+  requireGitResult(
+    'launching checkout status',
+    statusArguments,
+    launchingStatus,
   );
   final _GitResult? projectHead = projectSource == null
       ? null
-      : await _git(projectSource, const <String>['rev-parse', 'HEAD']);
+      : await _git(projectSource, headArguments);
   final _GitResult? projectStatus = projectSource == null
       ? null
-      : await _git(projectSource, const <String>[
-          'status',
-          '--short',
-          '--untracked-files=all',
-        ]);
+      : await _git(projectSource, statusArguments);
+  if (projectHead != null) {
+    requireGitResult('Project HEAD', headArguments, projectHead);
+  }
+  if (projectStatus != null) {
+    requireGitResult('Project status', statusArguments, projectStatus);
+  }
   if (taskWorktree == null) {
     return DevelopmentSelfHostingGitEvidence(
       launchingHead: launchingHead.success ? launchingHead.stdout.trim() : null,
@@ -173,69 +258,120 @@ collectDevelopmentSelfHostingGitEvidence({
       taskMergeBase: null,
       taskAheadBehind: null,
       changedFiles: const <String>[],
+      collectionFailures:
+          List<DevelopmentSelfHostingGitEvidenceFailure>.unmodifiable(failures),
     );
   }
 
   final String baseline = taskBaseline ?? 'HEAD';
+  final List<List<String>> taskArguments = <List<String>>[
+    headArguments,
+    statusArguments,
+    <String>['diff', '--binary', baseline, '--'],
+    <String>['diff', '--stat', baseline, '--'],
+    <String>['diff', '--check', baseline, '--'],
+    <String>['merge-base', baseline, 'HEAD'],
+    <String>['rev-list', '--left-right', '--count', '$baseline...HEAD'],
+    <String>['diff', '--name-only', '-z', baseline, '--'],
+    const <String>['ls-files', '-z', '--others', '--exclude-standard'],
+  ];
   final List<_GitResult> taskResults = await Future.wait(<Future<_GitResult>>[
-    _git(taskWorktree, const <String>['rev-parse', 'HEAD']),
-    _git(taskWorktree, const <String>[
-      'status',
-      '--short',
-      '--untracked-files=all',
-    ]),
-    _git(taskWorktree, <String>['diff', '--binary', baseline, '--']),
-    _git(taskWorktree, <String>['diff', '--stat', baseline, '--']),
-    _git(taskWorktree, <String>['diff', '--check', baseline, '--']),
-    _git(taskWorktree, <String>['merge-base', baseline, 'HEAD']),
-    _git(taskWorktree, <String>[
-      'rev-list',
-      '--left-right',
-      '--count',
-      '$baseline...HEAD',
-    ]),
-    _git(taskWorktree, <String>['diff', '--name-only', baseline, '--']),
-    _git(taskWorktree, const <String>[
-      'ls-files',
-      '--others',
-      '--exclude-standard',
-    ]),
+    for (final List<String> arguments in taskArguments)
+      _git(taskWorktree, arguments),
   ]);
-  final Set<String> changedFiles = <String>{
-    ..._nonEmptyLines(taskResults[7].stdout),
-    ..._nonEmptyLines(taskResults[8].stdout),
-  };
+  const List<String> taskLabels = <String>[
+    'Task HEAD',
+    'Task status',
+    'Task diff',
+    'Task diff stat',
+    'Task diff check',
+    'Task merge base',
+    'Task ahead/behind relationship',
+    'Task tracked changed paths',
+    'Task untracked paths',
+  ];
+  for (var index = 0; index < taskResults.length; index++) {
+    requireGitResult(
+      taskLabels[index],
+      taskArguments[index],
+      taskResults[index],
+      accepts: index == 4 ? _expectedTrackedDiffCheck : null,
+    );
+  }
+  final List<String> trackedPaths = _nulValues(
+    taskResults[7],
+    label: taskLabels[7],
+    arguments: taskArguments[7],
+    failures: failures,
+  );
+  final List<String> untrackedPaths = _nulValues(
+    taskResults[8],
+    label: taskLabels[8],
+    arguments: taskArguments[8],
+    failures: failures,
+  );
+  final Set<String> changedFiles = <String>{...trackedPaths, ...untrackedPaths};
   final StringBuffer taskDiff = StringBuffer(taskResults[2].rendered);
   final StringBuffer taskDiffStat = StringBuffer(taskResults[3].rendered);
   final StringBuffer taskDiffCheck = StringBuffer(
     '${taskResults[4].stdout}${taskResults[4].stderr}',
   );
   var taskDiffCheckExitCode = taskResults[4].exitCode;
-  for (final String path in _nonEmptyLines(taskResults[8].stdout)) {
-    final _GitResult untrackedDiff = await _git(taskWorktree, <String>[
+  for (final String path in untrackedPaths) {
+    final List<String> untrackedDiffArguments = <String>[
       'diff',
       '--no-index',
       '--binary',
       '--',
       '/dev/null',
       path,
-    ]);
-    final _GitResult untrackedStat = await _git(taskWorktree, <String>[
+    ];
+    final List<String> untrackedStatArguments = <String>[
       'diff',
       '--no-index',
       '--stat',
       '--',
       '/dev/null',
       path,
-    ]);
-    final _GitResult untrackedCheck = await _git(taskWorktree, <String>[
+    ];
+    final List<String> untrackedCheckArguments = <String>[
       'diff',
       '--no-index',
       '--check',
       '--',
       '/dev/null',
       path,
-    ]);
+    ];
+    final _GitResult untrackedDiff = await _git(
+      taskWorktree,
+      untrackedDiffArguments,
+    );
+    final _GitResult untrackedStat = await _git(
+      taskWorktree,
+      untrackedStatArguments,
+    );
+    final _GitResult untrackedCheck = await _git(
+      taskWorktree,
+      untrackedCheckArguments,
+    );
+    requireGitResult(
+      'Task untracked diff for ${jsonEncode(path)}',
+      untrackedDiffArguments,
+      untrackedDiff,
+      accepts: _expectedNoIndexDifference,
+    );
+    requireGitResult(
+      'Task untracked diff stat for ${jsonEncode(path)}',
+      untrackedStatArguments,
+      untrackedStat,
+      accepts: _expectedNoIndexDifference,
+    );
+    requireGitResult(
+      'Task untracked diff check for ${jsonEncode(path)}',
+      untrackedCheckArguments,
+      untrackedCheck,
+      accepts: _expectedNoIndexDiffCheck,
+    );
     taskDiff.write(_expectedNoIndexDiff(untrackedDiff));
     taskDiffStat.write(_expectedNoIndexDiff(untrackedStat));
     if (untrackedCheck.exitCode != 0 && untrackedCheck.exitCode != 1) {
@@ -272,6 +408,8 @@ collectDevelopmentSelfHostingGitEvidence({
         ? taskResults[6].stdout.trim()
         : null,
     changedFiles: List<String>.unmodifiable(sortedChangedFiles),
+    collectionFailures:
+        List<DevelopmentSelfHostingGitEvidenceFailure>.unmodifiable(failures),
   );
 }
 
@@ -315,7 +453,14 @@ final class DevelopmentSelfHostingEvidenceWriter {
         '${gitDirectory.path}/diff-check.txt',
       ).writeAsString(git.taskDiffCheck),
       File('${gitDirectory.path}/changed-files.txt').writeAsString(
-        git.changedFiles.isEmpty ? '' : '${git.changedFiles.join('\n')}\n',
+        git.changedFiles.isEmpty
+            ? ''
+            : '${git.changedFiles.map(jsonEncode).join('\n')}\n',
+      ),
+      File('${gitDirectory.path}/collection-errors.txt').writeAsString(
+        git.collectionFailures.isEmpty
+            ? ''
+            : '${git.collectionFailures.map((failure) => '${failure.label}: ${failure.message}').join('\n')}\n',
       ),
       File(
         '${gitDirectory.path}/project-status.txt',
@@ -835,12 +980,15 @@ String developmentSelfHostingSummaryMarkdown(Map<String, Object?> summary) {
     }
   }
   final Map<String, Object?> git = summary['git']! as Map<String, Object?>;
+  final Map<String, Object?> collection =
+      git['collection']! as Map<String, Object?>;
   final Map<String, Object?> task =
       git['taskWorktree']! as Map<String, Object?>;
   output
     ..writeln()
     ..writeln('## Git Evidence')
     ..writeln()
+    ..writeln('- Collection succeeded: `${collection['succeeded']}`')
     ..writeln('- Diff check exit code: `${task['diffCheckExitCode']}`')
     ..writeln(
       '- Changed areas: `${(task['changedAreas']! as List).join(', ')}`',
@@ -1380,10 +1528,49 @@ Future<_GitResult> _git(Directory directory, List<String> arguments) async {
   }
 }
 
-Iterable<String> _nonEmptyLines(String value) => const LineSplitter()
-    .convert(value)
-    .map((String line) => line.trim())
-    .where((String line) => line.isNotEmpty);
+List<String> _nulValues(
+  _GitResult result, {
+  required String label,
+  required List<String> arguments,
+  required List<DevelopmentSelfHostingGitEvidenceFailure> failures,
+}) {
+  if (result.stdout.isEmpty) return const <String>[];
+  if (!result.stdout.endsWith('\u0000')) {
+    failures.add(
+      DevelopmentSelfHostingGitEvidenceFailure(
+        label: '$label encoding',
+        arguments: List<String>.unmodifiable(arguments),
+        exitCode: result.exitCode,
+        message: 'Git pathname output was not NUL terminated.',
+      ),
+    );
+  }
+  final List<String> values = result.stdout.split('\u0000');
+  if (values.isNotEmpty && values.last.isEmpty) values.removeLast();
+  return values;
+}
+
+bool _expectedTrackedDiffCheck(_GitResult result) =>
+    result.exitCode == 0 ||
+    (result.exitCode == 2 && result.stderr.isEmpty && result.stdout.isNotEmpty);
+
+bool _expectedNoIndexDifference(_GitResult result) =>
+    result.exitCode == 0 ||
+    (result.exitCode == 1 && result.stderr.isEmpty && result.stdout.isNotEmpty);
+
+bool _expectedNoIndexDiffCheck(_GitResult result) =>
+    result.exitCode == 0 ||
+    (result.exitCode == 1 && result.stderr.isEmpty) ||
+    (result.exitCode == 3 && result.stderr.isEmpty && result.stdout.isNotEmpty);
+
+String _gitFailureMessage(_GitResult result) {
+  final String diagnostic = result.stderr.trim().isNotEmpty
+      ? result.stderr.trim()
+      : result.stdout.trim();
+  return diagnostic.isEmpty
+      ? 'Git exited ${result.exitCode} without diagnostics.'
+      : diagnostic;
+}
 
 final class _GitResult {
   const _GitResult({
