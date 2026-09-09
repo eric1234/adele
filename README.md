@@ -56,12 +56,23 @@ Environment. Search requests only the read facet and recursively composes
 `readDirectory` and `readFile` in Dart; Command Tools requests only the process
 facet.
 
+Filesystem Tools owns the model-facing
+`apply_patch(relativePath, expectedRevision, edits)` grammar. Its non-empty
+`edits` array contains `{search, replace}` objects applied in list order to a
+working string, so later edits see earlier replacements. Each non-empty search
+must match exactly once, literally and case-sensitively, including overlapping
+candidate starts; replacement text may be empty. The tool preflights the original
+opaque revision once, validates every edit before writing, and makes one
+conditional whole-file replacement with that same revision. A failed edit or a
+final result identical to the original text causes no write. Environment owns
+the conditional replacement primitive, not the model patch grammar.
+
 The OpenAI API-key and experimental ChatGPT source-coding paths now use this
 plugin-composed, Session-authorized Environment tool path. Deterministic AOT
 integration proves recursive discovery and reading of copied maintained ADELE
 source, real-model continuation, and generation-safe replacement of tool and
 Environment-provider generations. Deterministic integration now also proves
-model-visible Read File revision flow into plugin-owned exact-unique
+model-visible Read File revision flow into plugin-owned ordered exact-unique
 `apply_patch`, conditional mutation of the Session-authorized Git worktree, and
 model continuation. An opt-in paid OpenAI API-key full-stack smoke now also
 proves real-model `read_file` opaque-revision flow into `apply_patch`, mutation

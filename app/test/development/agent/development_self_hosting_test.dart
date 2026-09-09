@@ -357,6 +357,7 @@ void main() {
       expect(run['effectiveModelSequence'], everyElement('fake-model'));
       expect(run['hasFinalAssistantResponse'], isTrue);
       expect(aggregates['totalBytesRead'], 12);
+      expect(aggregates['patchEditCount'], 4);
       expect(aggregates['failedToolCount'], 1);
       expect(aggregates['revisionConflictCount'], 1);
       expect(aggregates['commandCount'], 1);
@@ -375,9 +376,22 @@ void main() {
         _attemptEvidence(attempts, 'read_file'),
         containsPair('revision', 'r1'),
       );
+      expect(_attemptEvidence(attempts, 'apply_patch'), <String, Object?>{
+        'relativePath': 'lib/a.dart',
+        'expectedRevision': 'r1',
+        'editCount': 2,
+        'resultingRevision': null,
+        'failureCode': 'revision_conflict',
+      });
       expect(
         _attemptEvidence(attempts, 'apply_patch', last: true),
-        containsPair('resultingRevision', 'r2'),
+        <String, Object?>{
+          'relativePath': 'lib/a.dart',
+          'expectedRevision': 'r1',
+          'editCount': 2,
+          'resultingRevision': 'r2',
+          'failureCode': null,
+        },
       );
       expect(
         _attemptEvidence(attempts, 'create_file'),
@@ -540,7 +554,15 @@ void main() {
       expect(manifestText, isNot(contains('/private/credential.json')));
       expect(
         await File('${runDirectory.path}/summary.md').readAsString(),
-        allOf(contains('## Model Usage'), isNot(contains('whole file text'))),
+        allOf(
+          contains('## Model Usage'),
+          contains('| Patch edits | 4 |'),
+          contains('editCount=2'),
+          isNot(contains('whole file text')),
+          isNot(contains('caf\u00e9')),
+          isNot(contains('\u8336')),
+          isNot(contains('na\u00efve')),
+        ),
       );
       final Map<String, Object?> journal =
           jsonDecode(
@@ -552,11 +574,51 @@ void main() {
         developmentSelfHostingReportSchemaVersion,
       );
       expect(journal['records'], isNotEmpty);
+      final List<Map<String, Object?>> journalRecords =
+          (journal['records']! as List<Object?>).cast<Map<String, Object?>>();
+      final List<Map<String, Object?>> patchInvocations = journalRecords
+          .where((record) => record['event'] == 'toolInvocationPrepared')
+          .map((record) => record['invocation']! as Map<String, Object?>)
+          .where(
+            (invocation) =>
+                (invocation['proposal']! as Map<String, Object?>)['alias'] ==
+                'apply_patch',
+          )
+          .toList();
+      expect(patchInvocations, hasLength(2));
+      for (final Map<String, Object?> invocation in patchInvocations) {
+        expect(invocation['canonicalArguments'], _patchArguments);
+        expect(
+          (invocation['proposal']! as Map<String, Object?>)['arguments'],
+          _patchArguments,
+        );
+      }
+      final Map<String, Object?> patchSuccess = journalRecords.singleWhere(
+        (record) =>
+            record['event'] == 'toolExecutionCompleted' &&
+            record['invocationId'] == patchInvocations.last['id'],
+      );
+      expect(
+        patchSuccess['outcome'],
+        containsPair(
+          'modelContent',
+          'Patched: "lib/a.dart"\nEdits applied: 2\nRevision: "r2"',
+        ),
+      );
+      expect(
+        (patchSuccess['outcome']! as Map<String, Object?>)['hostData'],
+        <String, Object?>{
+          'environmentId': 'environment-fixture',
+          'relativePath': 'lib/a.dart',
+          'editCount': 2,
+          'newRevision': 'r2',
+        },
+      );
     },
   );
 
   test(
-    'failed Run still writes predictable evidence and failure manifest',
+    'failed Run reports prepared patch failures but excludes unprepared edits',
     () async {
       final Directory container = await Directory.systemTemp.createTemp(
         'adele-self-hosting-failure-test-',
@@ -565,15 +627,34 @@ void main() {
         if (await container.exists()) await container.delete(recursive: true);
       });
       final _GitFixture git = await _createGitFixture(container);
+      // Deliberately differ from the proposal to verify canonical edit counts.
+      final Map<String, Object?> canonicalPatchArguments = <String, Object?>{
+        ..._patchArguments,
+        'edits': <Object?>[
+          ..._patchArguments['edits']! as List<Object?>,
+          <String, Object?>{'search': 'na\u00efve\n', 'replace': 'caf\u00e9'},
+        ],
+      };
       final DevelopmentSelfHostingRunResult failed =
           await executeDevelopmentSelfHostingRun(
             identity: 'failed-evidence',
             sessionId: SessionId('session-failed-evidence'),
             prompt: 'Keep proposing.',
             instructions: 'Exercise the ceiling.',
-            model: _AlwaysProposalModel(),
-            catalog: _catalog(<String>['read_file']),
-            maxModelInvocations: 1,
+            model: _EvidenceModel(
+              turns: const <String?>[
+                'apply_patch',
+                'apply_patch',
+                'apply_patch',
+                'apply_patch',
+                'apply_patch',
+                'apply_patch',
+              ],
+            ),
+            catalog: _catalog(<String>[
+              'apply_patch',
+            ], canonicalPatchArguments: canonicalPatchArguments),
+            maxModelInvocations: 6,
           );
       final DevelopmentSelfHostingGitEvidence gitEvidence =
           await collectDevelopmentSelfHostingGitEvidence(
@@ -602,7 +683,7 @@ void main() {
               providerId: developmentSelfHostingChatGptProviderId,
               configuredContext: 'chatgpt-experimental',
               selectedModel: 'fake-model',
-              maxModelInvocations: 1,
+              maxModelInvocations: 6,
               promptFileHash: 'prompt-hash',
               instructionsFileHash: 'instructions-hash',
               startedAt: DateTime.utc(2026, 9, 9),
@@ -628,6 +709,75 @@ void main() {
         await File('${runDirectory.path}/git/diff.patch').exists(),
         isTrue,
       );
+      final Map<String, Object?> summary =
+          jsonDecode(
+                await File('${runDirectory.path}/summary.json').readAsString(),
+              )
+              as Map<String, Object?>;
+      final Map<String, Object?> aggregates =
+          summary['aggregates']! as Map<String, Object?>;
+      expect(aggregates['patchEditCount'], 15);
+      expect(aggregates['toolProposalCount'], 6);
+      expect(aggregates['preparedToolCount'], 5);
+      expect(aggregates['executedToolCount'], 5);
+      expect(aggregates['failedToolCount'], 4);
+      expect(aggregates['revisionConflictCount'], 1);
+      final Map<String, Object?> tools =
+          summary['tools']! as Map<String, Object?>;
+      final List<Map<String, Object?>> attempts =
+          (tools['attempts']! as List<Object?>).cast<Map<String, Object?>>();
+      expect(attempts, hasLength(5));
+      const List<String?> failureCodes = <String?>[
+        'revision_conflict',
+        null,
+        'patch_target_not_found',
+        'patch_target_ambiguous',
+        'no_change',
+      ];
+      for (var index = 0; index < attempts.length; index++) {
+        expect(attempts[index]['canonicalArguments'], canonicalPatchArguments);
+        expect(attempts[index]['proposedArguments'], _patchArguments);
+        expect(attempts[index]['evidence'], <String, Object?>{
+          'relativePath': 'lib/a.dart',
+          'expectedRevision': 'r1',
+          'editCount': 3,
+          'resultingRevision': index == 1 ? 'r2' : null,
+          'failureCode': failureCodes[index],
+          if (index == 2) 'failedEditIndex': 1,
+          if (index == 3) 'failedEditIndex': 0,
+        });
+      }
+      final List<Map<String, Object?>> proposals =
+          (tools['proposals']! as List<Object?>).cast<Map<String, Object?>>();
+      expect(proposals, hasLength(6));
+      for (var index = 0; index < proposals.length; index++) {
+        expect(proposals[index]['providerCallId'], 'call-${index + 1}');
+        expect(proposals[index]['arguments'], _patchArguments);
+      }
+      final List<Object?> unprepared =
+          tools['unpreparedProposals']! as List<Object?>;
+      expect(unprepared, <Object?>[proposals.last]);
+      expect(unprepared.single, isNot(contains('reason')));
+      expect(proposals.last['prepared'], isFalse);
+      expect(proposals.last['toolInvocationId'], isNull);
+      final String markdown = await File(
+        '${runDirectory.path}/summary.md',
+      ).readAsString();
+      expect(markdown, contains('| Patch edits | 15 |'));
+      expect(markdown, contains('editCount=3'));
+      expect(markdown, contains('failedEditIndex=1'));
+      expect(markdown, contains('failedEditIndex=0'));
+      expect(
+        markdown,
+        contains(
+          '`{"relativePath":"lib/a.dart","expectedRevision":"r1",'
+          '"editCount":2,"searchBytes":8,"replaceBytes":10}`',
+        ),
+      );
+      expect(markdown, isNot(contains('"edits"')));
+      expect(markdown, isNot(contains('caf\u00e9')));
+      expect(markdown, isNot(contains('\u8336')));
+      expect(markdown, isNot(contains('na\u00efve')));
     },
   );
 
@@ -837,6 +987,7 @@ void main() {
 
     final Map<String, Object?> run = summary['run']! as Map<String, Object?>;
     expect(run['terminalState'], isNull);
+    expect(summary['aggregates'], containsPair('patchEditCount', 0));
     expect(
       run['failure'],
       allOf(
@@ -864,7 +1015,10 @@ Map<String, Object?> _attemptEvidence(
   return attempt['evidence']! as Map<String, Object?>;
 }
 
-ToolCatalog _catalog(Iterable<String> aliases) {
+ToolCatalog _catalog(
+  Iterable<String> aliases, {
+  Map<String, Object?>? canonicalPatchArguments,
+}) {
   final ToolCatalog catalog = ToolCatalog();
   for (final String alias in aliases) {
     catalog.register(
@@ -878,7 +1032,10 @@ ToolCatalog _catalog(Iterable<String> aliases) {
           description: 'Fixture $alias tool.',
           argumentsSchema: const <String, Object?>{'type': 'object'},
         ),
-        executable: _FixtureTool(alias),
+        executable: _FixtureTool(
+          alias,
+          canonicalPatchArguments: canonicalPatchArguments,
+        ),
       ),
     );
   }
@@ -942,8 +1099,19 @@ final class _RefusedModel implements ModelPort {
   }
 }
 
+const Map<String, Object?> _patchArguments = <String, Object?>{
+  'relativePath': 'lib/a.dart',
+  'expectedRevision': 'r1',
+  'edits': <Object?>[
+    <String, Object?>{'search': 'caf\u00e9', 'replace': '\u8336'},
+    <String, Object?>{'search': '\u8336', 'replace': 'na\u00efve\n'},
+  ],
+};
+
 final class _EvidenceModel implements ModelPort {
-  static const List<String?> _turns = <String?>[
+  _EvidenceModel({this.turns = _defaultTurns});
+
+  static const List<String?> _defaultTurns = <String?>[
     'search',
     'read_file',
     'apply_patch',
@@ -954,12 +1122,13 @@ final class _EvidenceModel implements ModelPort {
     null,
   ];
 
+  final List<String?> turns;
   var _invocations = 0;
 
   @override
   Stream<ModelEvent> invoke(SemanticModelRequest request) async* {
     final int invocation = ++_invocations;
-    final String? alias = _turns[invocation - 1];
+    final String? alias = turns[invocation - 1];
     if (alias == null) {
       yield ModelOutputItemCompleted(
         invocationId: request.invocationId,
@@ -996,12 +1165,7 @@ final class _EvidenceModel implements ModelPort {
   Map<String, Object?> _arguments(String alias) => switch (alias) {
     'search' => <String, Object?>{'query': 'needle'},
     'read_file' => <String, Object?>{'relativePath': 'lib/a.dart'},
-    'apply_patch' => <String, Object?>{
-      'relativePath': 'lib/a.dart',
-      'expectedRevision': 'r1',
-      'search': 'old',
-      'replace': 'new',
-    },
+    'apply_patch' => _patchArguments,
     'create_file' => <String, Object?>{
       'relativePath': 'lib/new.dart',
       'content': 'new',
@@ -1021,9 +1185,10 @@ final class _EvidenceModel implements ModelPort {
 }
 
 final class _FixtureTool implements ToolExecutable {
-  _FixtureTool(this.alias);
+  _FixtureTool(this.alias, {this.canonicalPatchArguments});
 
   final String alias;
+  final Map<String, Object?>? canonicalPatchArguments;
   var _executions = 0;
 
   @override
@@ -1050,16 +1215,40 @@ final class _FixtureTool implements ToolExecutable {
     ToolExecutionContext context,
   ) async* {
     _executions++;
-    if (alias == 'apply_patch' && _executions == 1) {
+    if (alias == 'apply_patch') {
+      final String relativePath = arguments.snapshot['relativePath']! as String;
+      final int editCount =
+          (arguments.snapshot['edits']! as List<Object?>).length;
+      final String? failureCode = switch (_executions) {
+        1 => 'revision_conflict',
+        3 => 'patch_target_not_found',
+        4 => 'patch_target_ambiguous',
+        5 => 'no_change',
+        _ => null,
+      };
+      const String newRevision = 'r2';
       yield ToolExecutionTerminal(
         ToolOutcome(
-          disposition: ToolOutcomeDisposition.failure,
-          failureKind: ToolFailureKind.domain,
-          effectCertainty: EffectCertainty.knownNotOccurred,
-          modelContent: 'Revision conflict.',
-          hostData: const <String, Object?>{
-            'relativePath': 'lib/a.dart',
-            'code': 'revision_conflict',
+          disposition: failureCode == null
+              ? ToolOutcomeDisposition.success
+              : ToolOutcomeDisposition.failure,
+          failureKind: failureCode == null ? null : ToolFailureKind.domain,
+          effectCertainty: failureCode == null
+              ? EffectCertainty.knownOccurred
+              : EffectCertainty.knownNotOccurred,
+          modelContent: failureCode == null
+              ? 'Patched: ${jsonEncode(relativePath)}\n'
+                    'Edits applied: $editCount\n'
+                    'Revision: ${jsonEncode(newRevision)}'
+              : 'Fixture patch failed: $failureCode.',
+          hostData: <String, Object?>{
+            'environmentId': 'environment-fixture',
+            'relativePath': relativePath,
+            'editCount': editCount,
+            if (failureCode == null) 'newRevision': newRevision,
+            'code': ?failureCode,
+            if (_executions == 3) 'failedEditIndex': 1,
+            if (_executions == 4) 'failedEditIndex': 0,
           },
         ),
       );
@@ -1078,7 +1267,11 @@ final class _FixtureTool implements ToolExecutable {
   @override
   CanonicalToolArguments validateAndNormalize(
     Map<String, Object?> proposedArguments,
-  ) => CanonicalToolArguments(proposedArguments);
+  ) => CanonicalToolArguments(
+    alias == 'apply_patch'
+        ? canonicalPatchArguments ?? proposedArguments
+        : proposedArguments,
+  );
 
   @override
   void validateBinding() {}
@@ -1098,10 +1291,6 @@ final class _FixtureTool implements ToolExecutable {
       'sizeBytes': 12,
       'revision': 'r1',
       'text': 'whole file text',
-    },
-    'apply_patch' => <String, Object?>{
-      'relativePath': 'lib/a.dart',
-      'newRevision': 'r2',
     },
     'create_file' => <String, Object?>{
       'relativePath': 'lib/new.dart',

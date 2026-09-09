@@ -678,11 +678,16 @@ Map<String, Object?> developmentSelfHostingSummaryJson({
     summary['proposalCount'] = (summary['proposalCount']! as int) + 1;
   }
   var totalBytesRead = 0;
+  var patchEditCount = 0;
   var failedToolCount = 0;
   var revisionConflictCount = 0;
   for (final ({int sequence, ToolInvocationPrepared event}) item in prepared) {
     final ToolInvocation invocation = item.event.invocation;
     final String alias = invocation.tool.modelDefinition.alias;
+    if (alias == 'apply_patch') {
+      patchEditCount +=
+          (invocation.canonicalArguments['edits']! as List<Object?>).length;
+    }
     final Map<String, Object?> aliasSummary = aliases.putIfAbsent(
       alias,
       () => _emptyAliasSummary(alias),
@@ -843,6 +848,7 @@ Map<String, Object?> developmentSelfHostingSummaryJson({
     },
     'aggregates': <String, Object?>{
       'totalBytesRead': totalBytesRead,
+      'patchEditCount': patchEditCount,
       'toolProposalCount': proposalJson.length,
       'preparedToolCount': prepared.length,
       'executedToolCount': executed.length,
@@ -930,6 +936,7 @@ String developmentSelfHostingSummaryMarkdown(Map<String, Object?> summary) {
     ..writeln('| Executed tools | ${aggregates['executedToolCount']} |')
     ..writeln('| Failed tools | ${aggregates['failedToolCount']} |')
     ..writeln('| Revision conflicts | ${aggregates['revisionConflictCount']} |')
+    ..writeln('| Patch edits | ${aggregates['patchEditCount']} |')
     ..writeln('| Commands | ${aggregates['commandCount']} |')
     ..writeln('| Bytes read | ${aggregates['totalBytesRead']} |')
     ..writeln()
@@ -1377,8 +1384,11 @@ Map<String, Object?> _attemptEvidence(
     'apply_patch' => <String, Object?>{
       'relativePath': arguments['relativePath'] ?? hostData['relativePath'],
       'expectedRevision': arguments['expectedRevision'],
+      'editCount': (arguments['edits']! as List<Object?>).length,
       'resultingRevision': hostData['newRevision'],
       'failureCode': hostData['code'],
+      if (hostData.containsKey('failedEditIndex'))
+        'failedEditIndex': hostData['failedEditIndex'],
     },
     'create_file' => <String, Object?>{
       'relativePath': arguments['relativePath'] ?? hostData['relativePath'],
@@ -1444,16 +1454,31 @@ String _proposalMarkdownArguments(
   String alias,
   Map<String, Object?> arguments,
 ) {
+  if (alias == 'apply_patch') {
+    final List<Object?>? edits = switch (arguments['edits']) {
+      final List<Object?> value => value,
+      _ => null,
+    };
+    int? totalBytes(String field) => edits == null
+        ? null
+        : _sumKnown(
+            edits.map(
+              (Object? edit) =>
+                  edit is Map<String, Object?> ? _utf8Size(edit[field]) : null,
+            ),
+          );
+    return _markdownJsonCode(<String, Object?>{
+      'relativePath': arguments['relativePath'],
+      'expectedRevision': arguments['expectedRevision'],
+      'editCount': edits?.length,
+      'searchBytes': totalBytes('search'),
+      'replaceBytes': totalBytes('replace'),
+    });
+  }
   final Map<String, Object?> concise = switch (alias) {
     'create_file' => <String, Object?>{
       'relativePath': arguments['relativePath'],
       'contentBytes': _utf8Size(arguments['content']),
-    },
-    'apply_patch' => <String, Object?>{
-      'relativePath': arguments['relativePath'],
-      'expectedRevision': arguments['expectedRevision'],
-      'searchBytes': _utf8Size(arguments['search']),
-      'replaceBytes': _utf8Size(arguments['replace']),
     },
     _ => _boundedArguments(arguments) as Map<String, Object?>,
   };
