@@ -173,11 +173,36 @@ continuation, with the exact model-visible read revision and mutation confined
 to the disposable Task Git worktree while Project source and the launching
 checkout remain unchanged.
 
-Authenticated account-catalog evidence indicates that newer advertised models
-use the distinct Responses Lite profile, which this experimental provider does
-not implement. Account-aware model discovery, classic/Lite profile selection,
-production readiness, and a stable third-party OpenAI integration contract
-remain unproven or deferred.
+Authenticated account-catalog metadata currently advertises
+`use_responses_lite:true` for newer subscription models. That preference does
+not establish a requirement to use Responses Lite. Refreshed Kilo, Codex, and
+OpenCode source research plus independent live probes found that current classic
+ChatGPT Responses accepts `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, and
+`gpt-5.6-luna`, including ordinary function tools and canonical continuation.
+That external evidence is distinct from ADELE-specific live validation.
+
+ADELE itself has now validated the exact override
+`ADELE_OPENAI_CHATGPT_TEST_MODEL=gpt-6-astra` through its existing classic
+Responses backend: an ordinary `adele_validation_echo` proposal, correlated
+tool outcome, and final assistant response completed in two model invocations.
+The full-stack configured-provider/AOT/backend/adapter/development-strategy
+smoke also completed `search` -> `read_file` -> final response in three model
+invocations, with Session Environment authority and unchanged Task, Project,
+and launching-checkout strategy source. Every completed invocation in both
+proofs reported `effectiveModel == gpt-6-astra`. Terminal `effectiveModel` now
+preserves only a nonblank service-reported model, or null when absent/invalid;
+the request is never substituted as identity evidence. Successful ChatGPT
+self-host and live proofs reject missing or mismatched effective models.
+The strengthened backend tool-continuation smoke also passed with the unchanged
+`gpt-5.5` fallback. ADELE live validation of the named 5.6 models is not claimed.
+
+ADELE remains on classic Responses with `store:false`, encrypted reasoning/native
+replay, and `parallel_tool_calls:true`. No model discovery, allowlist, alias
+rewriting, substitution, inference-settings system, or common contract change is
+needed for this Astra validation. Responses Lite remains an unimplemented private
+OpenAI transport option to revisit only if concrete compatibility pressure
+requires it, not a prerequisite for the next Astra experiment. Production
+readiness and a stable third-party OpenAI integration contract remain unproven.
 
 ## Consequences
 

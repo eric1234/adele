@@ -182,5 +182,24 @@ credential configuration. Both ChatGPT app smokes honor
 Responses fallback `gpt-5.5`. All five remain opt-in and are excluded from
 normal CI.
 
+With `ADELE_OPENAI_CHATGPT_TEST_MODEL=gpt-6-astra`, ADELE's backend smoke now
+proves an ordinary function-tool outcome and canonical continuation in two
+model invocations. The full-stack ChatGPT source-coding smoke proves
+`search` -> `read_file` -> final response in three, with the strategy source
+unchanged in the distinct Task worktree, Project source, and launching checkout.
+Every completed invocation in these proofs must contain the exact selected
+service-reported `effectiveModel`; missing or substituted model identity fails
+validation. The backend no longer falls back to the request when the service
+omits its model. The backend tool smoke also passes with the retained `gpt-5.5`
+default.
+
+These are classic Responses proofs, retaining `store:false`, native replay, and
+`parallel_tool_calls:true`, not a Responses Lite implementation or a larger
+self-hosting experiment. Newer account-catalog `use_responses_lite:true` metadata
+does not establish a classic-route limitation. ADR 0028 distinguishes current
+external Astra/5.6 interoperability evidence from ADELE's Astra-specific proof;
+Lite is deferred unless concrete compatibility pressure requires it. The route
+remains experimental.
+
 See `docs/architecture/overview.md`, `docs/architecture/plugin-extension-model.md`,
 and ADR 0031.

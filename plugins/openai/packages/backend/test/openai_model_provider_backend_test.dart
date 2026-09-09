@@ -130,15 +130,67 @@ void main() {
       expect(events[2].terminal?.usage?.providerDetails['reasoningTokens'], 2);
     });
 
-    for (final bool chatGpt in <bool>[false, true]) {
+    for (final (String label, Map<String, Object?> reported, String? expected)
+        in <(String, Map<String, Object?>, String?)>[
+          (
+            'matching',
+            <String, Object?>{'model': 'gpt-6-astra'},
+            'gpt-6-astra',
+          ),
+          ('different', <String, Object?>{'model': 'gpt-5.5'}, 'gpt-5.5'),
+          ('omitted', <String, Object?>{}, null),
+          ('null', <String, Object?>{'model': null}, null),
+          ('empty', <String, Object?>{'model': ''}, null),
+          ('blank', <String, Object?>{'model': ' \t '}, null),
+          ('non-string', <String, Object?>{'model': 42}, null),
+        ]) {
       test(
-        '${chatGpt ? 'ChatGPT' : 'API key'} preserves multiple calls, metadata, and ordered replay',
+        'normalizes $label service-reported model without fallback',
+        () async {
+          final _FakeServer server = await _FakeServer.start((request) async {
+            expect((await _jsonBody(request))['model'], 'gpt-6-astra');
+            _sse(request.response, _outputDone(_message('msg_model', 'OK')));
+            _sse(request.response, <String, Object?>{
+              'type': 'response.completed',
+              'response': <String, Object?>{'id': 'resp_model', ...reported},
+            });
+            await request.response.close();
+          });
+          addTearDown(server.close);
+          final OpenAiModelProvider provider = OpenAiModelProvider(
+            apiKey: 'fake-openai-key',
+            endpoint: server.responsesUri,
+          );
+          addTearDown(provider.close);
+
+          final List<ModelProviderEvent> events = await provider
+              .invoke(_request(model: 'gpt-6-astra'))
+              .toList();
+
+          expect(events.first.output?.text, 'OK');
+          expect(
+            events.last.terminal?.settlement,
+            ModelProviderSettlement.completed,
+          );
+          expect(events.last.terminal!.effectiveModel, expected);
+        },
+      );
+    }
+
+    for (final (bool chatGpt, String phase) in <(bool, String)>[
+      (false, 'commentary'),
+      (false, 'final_answer'),
+      (true, 'commentary'),
+      (true, 'final_answer'),
+    ]) {
+      test(
+        '${chatGpt ? 'ChatGPT' : 'API key'} preserves Astra calls, $phase metadata, and ordered replay',
         () async {
           final List<Map<String, Object?>> items = <Map<String, Object?>>[
             _reasoning('rs_a', 'enc-a'),
             <String, Object?>{
               ..._message('msg_1', 'Inspecting.'),
-              'phase': 'commentary',
+              'phase': phase,
             },
             _reasoning('rs_b', 'enc-b'),
             <String, Object?>{
@@ -188,6 +240,14 @@ void main() {
                 });
               }
               for (var index = 0; index < items.length; index++) {
+                if (items[index]['type'] == 'function_call') {
+                  _sse(response, <String, Object?>{
+                    'type': 'response.function_call_arguments.done',
+                    'item_id': items[index]['id'],
+                    'output_index': index,
+                    'arguments': items[index]['arguments'],
+                  });
+                }
                 _sse(response, <String, Object?>{
                   ..._outputDone(items[index]),
                   'output_index': index,
@@ -197,12 +257,27 @@ void main() {
                 'type': 'response.completed',
                 'response': _response(
                   'resp_1',
-                  extra: <String, Object?>{'output': items},
+                  extra: <String, Object?>{
+                    'model': 'gpt-6-astra',
+                    'output': items,
+                  },
                 ),
               });
             } else {
-              _sse(response, _outputDone(_message('msg_2', 'Finished.')));
-              _sse(response, _completed('resp_2'));
+              _sse(
+                response,
+                _outputDone(<String, Object?>{
+                  ..._message('msg_2', 'Finished.'),
+                  'phase': 'final_answer',
+                }),
+              );
+              _sse(response, <String, Object?>{
+                'type': 'response.completed',
+                'response': _response(
+                  'resp_2',
+                  extra: <String, Object?>{'model': 'gpt-6-astra'},
+                ),
+              });
             }
             await response.close();
           });
@@ -238,7 +313,7 @@ void main() {
           }
           addTearDown(provider.close);
           final List<ModelProviderEvent> first = await provider
-              .invoke(_request())
+              .invoke(_request(model: 'gpt-6-astra'))
               .toList();
           expect(first.map((event) => event.kind), <ModelProviderEventKind>[
             for (final _ in items) ModelProviderEventKind.output,
@@ -248,6 +323,7 @@ void main() {
             first.last.terminal?.settlement,
             ModelProviderSettlement.completed,
           );
+          expect(first.last.terminal!.effectiveModel, 'gpt-6-astra');
           final List<ModelProviderOutput> output = first
               .map((event) => event.output)
               .whereType<ModelProviderOutput>()
@@ -279,7 +355,7 @@ void main() {
           }
           expect(output[1].text, 'Inspecting.');
           expect(output[1].nativeMetadata!.data, <String, Object?>{
-            'phase': 'commentary',
+            'phase': phase,
           });
           for (final int index in <int>[3, 5]) {
             final ModelProviderOutput proposal = output[index];
@@ -320,13 +396,37 @@ void main() {
               ),
           ];
           final List<ModelProviderEvent> second = await provider
-              .invoke(_request(input: replay))
+              .invoke(_request(model: 'gpt-6-astra', input: replay))
               .toList();
           expect(
             second.last.terminal?.settlement,
             ModelProviderSettlement.completed,
           );
+          expect(second.last.terminal!.effectiveModel, 'gpt-6-astra');
+          expect(second.first.output!.text, 'Finished.');
+          expect(second.first.output!.itemId, 'msg_2');
+          expect(second.first.output!.nativeMetadata!.data, <String, Object?>{
+            'phase': 'final_answer',
+          });
           expect(requests, hasLength(2));
+          for (final Map<String, Object?> request in requests) {
+            expect(request['model'], 'gpt-6-astra');
+            expect(request['store'], isFalse);
+            expect(
+              request.keys,
+              unorderedEquals(<String>[
+                'model',
+                'instructions',
+                'input',
+                'tools',
+                'tool_choice',
+                'parallel_tool_calls',
+                'include',
+                'store',
+                'stream',
+              ]),
+            );
+          }
           expect(
             requests.map((request) => request['parallel_tool_calls']),
             everyElement(isTrue),
@@ -1990,12 +2090,13 @@ void main() {
 }
 
 ModelProviderRequest _request({
+  String model = 'test-model',
   List<ModelProviderInput>? input,
   int? maxOutputTokens,
   Map<String, Object?> providerOptions = const <String, Object?>{},
   ModelProviderToolChoice toolChoice = ModelProviderToolChoice.auto,
 }) => ModelProviderRequest(
-  model: 'test-model',
+  model: model,
   instructions: 'Follow test instructions.',
   input: input ?? <ModelProviderInput>[_userInput()],
   tools: <ModelProviderTool>[

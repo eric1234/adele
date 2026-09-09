@@ -239,7 +239,6 @@ final class OpenAiModelProvider implements ModelProviderService {
           }
           final _SseRecordDecoder decoder = _SseRecordDecoder();
           final _ResponsesNormalizer normalizer = _ResponsesNormalizer(
-            requestedModel: request.model,
             requestId: requestId,
             emit: (ModelProviderEvent event) {
               if (cancelled || settled) return;
@@ -616,13 +615,8 @@ final class _SseRecordDecoder {
 }
 
 final class _ResponsesNormalizer {
-  _ResponsesNormalizer({
-    required this.requestedModel,
-    required this.requestId,
-    required this.emit,
-  });
+  _ResponsesNormalizer({required this.requestId, required this.emit});
 
-  final String requestedModel;
   final String? requestId;
   final void Function(ModelProviderEvent) emit;
   bool settled = false;
@@ -1002,7 +996,7 @@ final class _ResponsesNormalizer {
                   'reasoningTokens': value,
               },
             ),
-      effectiveModel: _optionalString(response['model']) ?? requestedModel,
+      effectiveModel: _optionalNonBlankString(response['model']),
       responseId: _optionalString(response['id']),
       requestId: requestId,
       nativeState: null,

@@ -31,6 +31,13 @@ void main() {
             taskTitle: 'Inspect ADELE source with ChatGPT',
           );
       addTearDown(harness.close);
+      final File checkoutSource = File(
+        '${artifacts.repository}/$sourceCodingStrategyPath',
+      );
+      final String originalCheckoutText = await checkoutSource.readAsString();
+      final String originalProjectText = await harness.readProjectSourceFile(
+        sourceCodingStrategyPath,
+      );
       final SourceCodingLiveProviderActivation model =
           await startOpenAiChatGptProvider(
             host: harness.host,
@@ -55,6 +62,21 @@ void main() {
       expectSuccessfulSourceCodingRun(
         result: result,
         authority: harness.authority,
+        expectedEffectiveModel: selectedModel,
+      );
+      expect(harness.taskWorktreePath, isNot(harness.projectSourcePath));
+      expect(
+        await harness.readTaskWorktreeFile(sourceCodingStrategyPath),
+        originalProjectText,
+      );
+      expect(
+        await harness.readProjectSourceFile(sourceCodingStrategyPath),
+        originalProjectText,
+      );
+      expect(await checkoutSource.readAsString(), originalCheckoutText);
+      print(
+        'ChatGPT source isolation: distinct Task worktree; '
+        'Task, Project, and launching-checkout strategy source unchanged.',
       );
       await model.close();
       await harness.close();

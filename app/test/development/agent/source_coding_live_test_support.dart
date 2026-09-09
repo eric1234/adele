@@ -273,6 +273,7 @@ List<SourceCodingToolAttempt> sourceCodingToolAttempts(
 void expectSuccessfulSourceCodingRun({
   required SourceCodingLiveResult result,
   required SessionEnvironmentAuthority authority,
+  String? expectedEffectiveModel,
 }) {
   final Object? failure = result.run.failure;
   expect(
@@ -283,6 +284,28 @@ void expectSuccessfulSourceCodingRun({
               '${failure.providerMessage}: ${failure.providerDetails}'
         : failure?.toString(),
   );
+  if (expectedEffectiveModel != null) {
+    final List<String?> effectiveModels = result.run.journal.records
+        .map((record) => record.event)
+        .whereType<ModelInvocationSettled>()
+        .where((event) => event.settlement == ModelSettlement.completed)
+        .map((event) => event.metadata.effectiveModel)
+        .toList(growable: false);
+    print('ChatGPT source selected model: $expectedEffectiveModel');
+    print(
+      'ChatGPT source completed model invocations: ${effectiveModels.length}',
+    );
+    print('ChatGPT source service-reported effective models: $effectiveModels');
+    expect(expectedEffectiveModel.trim(), isNotEmpty);
+    expect(effectiveModels, isNotEmpty);
+    expect(
+      effectiveModels,
+      everyElement(expectedEffectiveModel),
+      reason:
+          'Every completed ChatGPT invocation must report the selected model; '
+          'missing or substituted model identity is not successful evidence.',
+    );
+  }
   final List<ToolInvocationPrepared> prepared = result.run.journal.records
       .map((ExecutionEventRecord record) => record.event)
       .whereType<ToolInvocationPrepared>()
@@ -369,6 +392,10 @@ void expectSuccessfulSourceCodingRun({
   expect(answer.trim(), isNotEmpty);
   expect(answer, contains(sourceCodingStrategyPath));
   expect(answer.toLowerCase(), anyOf(contains('8'), contains('eight')));
+  if (expectedEffectiveModel != null) {
+    print('ChatGPT source tool sequence: ${aliases.join(' -> ')}');
+    print('ChatGPT source final assistant response: $answer');
+  }
 }
 
 Future<void> _createSourceRepository({
