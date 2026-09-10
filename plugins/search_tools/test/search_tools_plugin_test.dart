@@ -28,6 +28,10 @@ void main() {
       );
       expect(tool.modelDefinition.description, contains('.git'));
       expect(tool.modelDefinition.description, contains('node_modules'));
+      expect(
+        tool.modelDefinition.description,
+        contains('case-insensitively on every Environment'),
+      );
       expect(tool.modelDefinition.argumentsSchema['required'], const <Object?>[
         'query',
       ]);
@@ -280,12 +284,20 @@ void main() {
       expect(outcomes[3].hostData['incomplete'], true);
     });
 
-    test('excluded segments fail without provider reads', () async {
+    test('excluded segments ignore case without provider reads', () async {
       for (final String excluded in <String>[
         '.git',
         '.dart_tool',
         'build',
         'node_modules',
+        '.GIT',
+        '.Git',
+        '.DART_TOOL',
+        '.Dart_Tool',
+        'BUILD',
+        'Build',
+        'NODE_MODULES',
+        'Node_Modules',
       ]) {
         for (final String path in <String>[excluded, 'src/$excluded/nested']) {
           final _FileSystem fs = _FileSystem();
@@ -293,6 +305,7 @@ void main() {
           expect(outcome.disposition, ToolOutcomeDisposition.failure);
           expect(outcome.failureKind, ToolFailureKind.domain);
           expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
+          expect(outcome.hostDiagnostic, 'excluded_scope');
           expect(outcome.modelContent, contains('excluded'));
           expect(outcome.hostData['path'], path);
           expect(fs.directoryReads, isEmpty);
@@ -342,6 +355,61 @@ void main() {
   });
 
   group('search algorithm', () {
+    test('exclusions ignore case on every Environment, not queries', () async {
+      const List<String> excludedNames = <String>[
+        '.GIT',
+        '.DART_TOOL',
+        'BUILD',
+        'Build',
+        'NODE_MODULES',
+      ];
+      for (final String scope in <String>['', 'Src']) {
+        final String prefix = scope.isEmpty ? '' : '$scope/';
+        final List<String> parents = <String>[prefix, '${prefix}nested/'];
+        final _FileSystem fs = _FileSystem(
+          directories: <String, List<EnvironmentDirectoryEntry>>{
+            for (final String parent in parents)
+              (parent == prefix
+                  ? scope
+                  : '${prefix}nested'): <EnvironmentDirectoryEntry>[
+                for (final String name in excludedNames)
+                  _directory(name, '$parent$name'),
+                _file('${parent}visible.txt'),
+                if (parent == prefix) _directory('nested', '${prefix}nested'),
+              ],
+            for (final String parent in parents)
+              for (final String name in excludedNames)
+                '$parent$name': <EnvironmentDirectoryEntry>[
+                  _file('$parent$name/hidden.txt'),
+                ],
+          },
+          files: <String, String>{
+            for (final String parent in parents)
+              '${parent}visible.txt': 'Needle\nneedle\nNEEDLE',
+            for (final String parent in parents)
+              for (final String name in excludedNames)
+                '$parent$name/hidden.txt': 'needle',
+          },
+        );
+
+        final ToolOutcome outcome = await _run(fs, 'needle', path: scope);
+        expect(outcome.disposition, ToolOutcomeDisposition.success);
+        expect(_matchLocations(outcome), <String>[
+          '${prefix}nested/visible.txt:2',
+          '${prefix}visible.txt:2',
+        ]);
+        expect(fs.directoryReads, <String>[scope, '${prefix}nested']);
+        expect(fs.fileReads, <String>[
+          '${prefix}nested/visible.txt',
+          '${prefix}visible.txt',
+        ]);
+        expect(outcome.hostData['path'], scope);
+        expect(outcome.hostData['query'], 'needle');
+        expect(outcome.hostData['incomplete'], false);
+        expect(outcome.hostData['truncated'], false);
+      }
+    });
+
     test(
       'recurses lexically, searches literally, and reports once per line',
       () async {

@@ -51,6 +51,9 @@ final class _SearchExecutable implements ToolExecutable {
     'node_modules',
   };
 
+  static bool _isExcludedDirectory(String name) =>
+      _excludedDirectories.contains(name.toLowerCase());
+
   final AuthorizedEnvironmentFileReadFacet _fileSystem;
 
   ToolRegistration get registration => ToolRegistration(
@@ -65,7 +68,8 @@ final class _SearchExecutable implements ToolExecutable {
           'Optional path selects an Environment-relative directory; omitted or '
           'empty means root. Use read_file for a known file. '
           'Current stock search defaults exclude common generated, dependency, '
-          'and metadata directories: .git, .dart_tool, build, and node_modules.',
+          'and metadata directories: .git, .dart_tool, build, and node_modules. '
+          'These directory names match case-insensitively on every Environment.',
       argumentsSchema: const <String, Object?>{
         'type': 'object',
         'required': <Object?>['query'],
@@ -174,7 +178,7 @@ final class _SearchExecutable implements ToolExecutable {
     try {
       _requireAuthorizedSession(context);
       _fileSystem.validateBinding();
-      if (state.path.split('/').any(_excludedDirectories.contains)) {
+      if (state.path.split('/').any(_isExcludedDirectory)) {
         yield ToolExecutionTerminal(
           _failure(
             state,
@@ -279,7 +283,7 @@ final class _SearchExecutable implements ToolExecutable {
         case EnvironmentDirectoryEntryKind.file:
           await _searchFile(entry.relativePath, state);
         case EnvironmentDirectoryEntryKind.directory:
-          if (_excludedDirectories.contains(entry.name)) continue;
+          if (_isExcludedDirectory(entry.name)) continue;
           try {
             final EnvironmentDirectoryListing nested = await _fileSystem
                 .readDirectory(entry.relativePath);
