@@ -243,6 +243,33 @@ void main() {
       expect(materializationB, isNot(same(materializationA)));
       expect(materializationB.environment.id, materializationA.environment.id);
       expect(restoredSearch.disposition, ToolOutcomeDisposition.success);
+      expect(restoredSearch.hostData['path'], 'app/lib/development/agent');
+      for (final String path in <String>[
+        'missing-directory',
+        _sourceRelativePath,
+      ]) {
+        final CanonicalToolArguments arguments = searchC.executable
+            .validateAndNormalize(<String, Object?>{
+              'query': 'needle',
+              'path': path,
+            });
+        final ToolOutcome failure =
+            (await searchC.executable
+                        .execute(
+                          arguments,
+                          ToolExecutionContext(
+                            runId: RunId('invalid-scope'),
+                            sessionId: sessionId,
+                          ),
+                        )
+                        .single
+                    as ToolExecutionTerminal)
+                .outcome;
+        expect(failure.disposition, ToolOutcomeDisposition.failure);
+        expect(failure.failureKind, ToolFailureKind.domain);
+        expect(failure.hostData['path'], path);
+        expect(failure.hostData['code'], isNotNull);
+      }
       expect(
         restoredSearch.hostData['matches'],
         contains(
@@ -819,8 +846,9 @@ final class _SearchReadModel implements ModelPort {
       if (searchProperties is! Map<String, Object?> ||
           searchProperties.keys.toSet().difference(<String>{
             'query',
+            'path',
           }).isNotEmpty ||
-          searchProperties.length != 1 ||
+          searchProperties.length != 2 ||
           readProperties is! Map<String, Object?> ||
           readProperties.keys.toSet().difference(<String>{
             'relativePath',
@@ -838,6 +866,7 @@ final class _SearchReadModel implements ModelPort {
             alias: 'search',
             arguments: const <String, Object?>{
               'query': 'final class DevelopmentToolLoopStrategy',
+              'path': './app/lib//development/agent/',
             },
           ),
         ),
@@ -1337,9 +1366,11 @@ Future<ToolOutcome> _executeSearch(
   MaterializedTool tool,
   SessionId sessionId,
 ) async {
-  final CanonicalToolArguments arguments = tool.executable.validateAndNormalize(
-    const <String, Object?>{'query': 'final class DevelopmentToolLoopStrategy'},
-  );
+  final CanonicalToolArguments arguments = tool.executable
+      .validateAndNormalize(const <String, Object?>{
+        'query': 'final class DevelopmentToolLoopStrategy',
+        'path': 'app/lib/development/agent',
+      });
   return (await tool.executable
               .execute(
                 arguments,

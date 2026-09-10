@@ -32,6 +32,19 @@ void main() {
         'query',
       ]);
 
+      expect(tool.modelDefinition.argumentsSchema, <String, Object?>{
+        'type': 'object',
+        'required': <Object?>['query'],
+        'properties': <String, Object?>{
+          'query': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 256,
+          },
+          'path': <String, Object?>{'type': 'string'},
+        },
+        'additionalProperties': false,
+      });
       await generationA.close();
       final ExtensionRegistration generationB = const SearchToolsPlugin()
           .activate(extensions);
@@ -51,7 +64,12 @@ void main() {
         const <String, Object?>{'query': 'a\nb'},
         const <String, Object?>{'query': 'a\u0000b'},
         <String, Object?>{'query': 'x' * 257},
-        const <String, Object?>{'query': 'x', 'path': 'forbidden'},
+        const <String, Object?>{'query': 'x', 'unknown': 'forbidden'},
+        const <String, Object?>{'query': 'x', 'path': null},
+        const <String, Object?>{'query': 'x', 'path': 1},
+        const <String, Object?>{'query': 'x', 'path': '/absolute'},
+        const <String, Object?>{'query': 'x', 'path': 'a/../b'},
+        const <String, Object?>{'query': 'x', 'path': 'a\u0000b'},
       ]) {
         expect(
           () => tool.validateAndNormalize(invalid),
@@ -62,7 +80,7 @@ void main() {
         tool.validateAndNormalize(const <String, Object?>{
           'query': r'a.*[literal]',
         }).snapshot,
-        const <String, Object?>{'query': r'a.*[literal]'},
+        const <String, Object?>{'query': r'a.*[literal]', 'path': ''},
       );
     });
 
@@ -92,6 +110,234 @@ void main() {
         )).failureKind,
         ToolFailureKind.infrastructure,
       );
+    });
+  });
+
+  group('directory scope', () {
+    test('rejects unpaired surrogates during argument validation', () async {
+      final _FileSystem fs = _FileSystem();
+      final ToolExecutable tool = await _search(fs);
+      for (final String path in <String>[
+        'bad\uD800name',
+        'bad\uDC00name',
+        'bad\uD800',
+        '\uDC00',
+        '\uD800\uD800',
+        '\uDC00\uD800',
+        './bad\uD800/./',
+      ]) {
+        // Validation itself must reject, without describe/execute or encoding.
+        expect(
+          () => tool.validateAndNormalize(<String, Object?>{
+            'query': 'needle',
+            'path': path,
+          }),
+          throwsA(isA<ToolArgumentValidationException>()),
+        );
+      }
+      expect(fs.directoryReads, isEmpty);
+      expect(fs.fileReads, isEmpty);
+    });
+
+    test('omitted and empty scopes both read root', () async {
+      for (final String? path in <String?>[null, '']) {
+        final _FileSystem fs = _FileSystem();
+        final ToolExecutable tool = await _search(fs);
+        final ToolOutcome outcome = await _execute(
+          tool,
+          tool.validateAndNormalize(<String, Object?>{
+            'query': 'needle',
+            'path': ?path,
+          }),
+          fs.sessionId,
+        );
+        expect(outcome.hostData['path'], '');
+        expect(fs.directoryReads, <String>['']);
+      }
+    });
+
+    test(
+      'canonical subtree identity preserves Unicode and backslashes',
+      () async {
+        for (final String scope in <String>[
+          'src',
+          r'odd\name',
+          'café_日本語',
+          'paired-\uD83D\uDE00',
+          'bad\uFFFDname',
+        ]) {
+          final _FileSystem fs = _FileSystem(
+            directories: <String, List<EnvironmentDirectoryEntry>>{
+              scope: <EnvironmentDirectoryEntry>[
+                _file('$scope/a.txt'),
+                _directory('nested', '$scope/nested'),
+                for (final String excluded in <String>[
+                  '.git',
+                  '.dart_tool',
+                  'build',
+                  'node_modules',
+                ])
+                  _directory(excluded, '$scope/$excluded'),
+              ],
+              '$scope/nested': <EnvironmentDirectoryEntry>[
+                _file('$scope/nested/b.txt'),
+              ],
+            },
+            files: <String, String>{
+              '$scope/a.txt': 'needle',
+              '$scope/nested/b.txt': 'Needle\nneedle',
+            },
+          );
+          final ToolExecutable tool = await _search(fs);
+          final CanonicalToolArguments args = tool.validateAndNormalize(
+            <String, Object?>{'query': 'needle', 'path': './$scope//./'},
+          );
+          expect(args.snapshot['path'], scope);
+          final EffectDescription effect = await tool.describe(
+            args,
+            _execution(fs.sessionId),
+          );
+          expect(effect.effects, <ToolEffect>{ToolEffect.sourceRead});
+          expect(effect.targets.single.uri.pathSegments, <String>[
+            'environment-1',
+            scope,
+          ]);
+          expect(effect.summary, contains(jsonEncode(scope)));
+          final ToolOutcome outcome = await _execute(tool, args, fs.sessionId);
+          expect(outcome.hostData['path'], scope);
+          expect(outcome.modelContent, contains('Scope: ${jsonEncode(scope)}'));
+          expect(_matchLocations(outcome), <String>[
+            '$scope/a.txt:1',
+            '$scope/nested/b.txt:2',
+          ]);
+          expect(fs.directoryReads, <String>[scope, '$scope/nested']);
+          expect(fs.fileReads, <String>['$scope/a.txt', '$scope/nested/b.txt']);
+          expect(outcome.hostData['incomplete'], false);
+        }
+      },
+    );
+
+    test('all resource budgets remain bounded within a scope', () async {
+      final List<_FileSystem> fixtures = <_FileSystem>[
+        _FileSystem(
+          directories: <String, List<EnvironmentDirectoryEntry>>{
+            'src': <EnvironmentDirectoryEntry>[_file('src/many.txt')],
+          },
+          files: <String, String>{
+            'src/many.txt': List.filled(101, '${'x' * 600}hit').join('\n'),
+          },
+        ),
+        _FileSystem(
+          directories: <String, List<EnvironmentDirectoryEntry>>{
+            'src': <EnvironmentDirectoryEntry>[
+              for (int i = 0; i < 10001; i++)
+                EnvironmentDirectoryEntry(
+                  name: '$i',
+                  relativePath: 'src/$i',
+                  kind: EnvironmentDirectoryEntryKind.other,
+                ),
+            ],
+          },
+        ),
+        _FileSystem(
+          directories: <String, List<EnvironmentDirectoryEntry>>{
+            'src': <EnvironmentDirectoryEntry>[_file('src/a'), _file('src/b')],
+          },
+          files: <String, String>{'src/a': 'hit', 'src/b': 'hit'},
+          sizes: <String, int>{'src/a': 16 * 1024 * 1024, 'src/b': 1},
+        ),
+        _FileSystem(
+          directories: <String, List<EnvironmentDirectoryEntry>>{
+            'src': <EnvironmentDirectoryEntry>[
+              for (int i = 0; i < 33; i++) _file('src/$i'),
+            ],
+          },
+          fileErrors: <String, Object>{
+            for (int i = 0; i < 33; i++) 'src/$i': _environmentFailure,
+          },
+        ),
+      ];
+      final List<ToolOutcome> outcomes = <ToolOutcome>[];
+      for (final _FileSystem fs in fixtures) {
+        final ToolOutcome outcome = await _run(fs, 'hit', path: 'src');
+        outcomes.add(outcome);
+        expect(outcome.disposition, ToolOutcomeDisposition.success);
+        expect(outcome.hostData['path'], 'src');
+        expect(outcome.hostData['truncated'], true);
+        expect(fs.directoryReads, <String>['src']);
+      }
+      final List<Object?> matches =
+          outcomes[0].hostData['matches']! as List<Object?>;
+      expect(matches, hasLength(100));
+      for (final Object? match in matches) {
+        expect(
+          ((match! as Map<String, Object?>)['snippet']! as String).length,
+          lessThanOrEqualTo(500),
+        );
+      }
+      expect(_matchLocations(outcomes[2]), <String>['src/a:1']);
+      expect(fixtures[3].fileReads, hasLength(32));
+      expect(outcomes[3].hostData['incomplete'], true);
+    });
+
+    test('excluded segments fail without provider reads', () async {
+      for (final String excluded in <String>[
+        '.git',
+        '.dart_tool',
+        'build',
+        'node_modules',
+      ]) {
+        for (final String path in <String>[excluded, 'src/$excluded/nested']) {
+          final _FileSystem fs = _FileSystem();
+          final ToolOutcome outcome = await _run(fs, 'needle', path: path);
+          expect(outcome.disposition, ToolOutcomeDisposition.failure);
+          expect(outcome.failureKind, ToolFailureKind.domain);
+          expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
+          expect(outcome.modelContent, contains('excluded'));
+          expect(outcome.hostData['path'], path);
+          expect(fs.directoryReads, isEmpty);
+          expect(fs.fileReads, isEmpty);
+        }
+      }
+    });
+
+    test(
+      'missing and file scopes fail at the directory-read boundary',
+      () async {
+        for (final String code in <String>['not_found', 'not_a_directory']) {
+          final _FileSystem fs = _FileSystem(
+            directoryErrors: <String, Object>{
+              'scope': EnvironmentFailure(
+                code: code,
+                message: code,
+                details: const <String, Object?>{},
+              ),
+            },
+          );
+          final ToolOutcome outcome = await _run(fs, 'needle', path: 'scope');
+          expect(outcome.failureKind, ToolFailureKind.domain);
+          expect(outcome.effectCertainty, EffectCertainty.uncertain);
+          expect(outcome.hostData['code'], code);
+          expect(outcome.hostData['path'], 'scope');
+          expect(fs.directoryReads, <String>['scope']);
+          expect(fs.fileReads, isEmpty);
+        }
+      },
+    );
+
+    test('scoped binding failures retain no-read certainty', () async {
+      for (final bool stale in <bool>[true, false]) {
+        final _FileSystem fs = _FileSystem()
+          ..stale = stale
+          ..available = stale;
+        final ToolOutcome outcome = await _run(fs, 'needle', path: 'src');
+        expect(
+          outcome.failureKind,
+          stale ? ToolFailureKind.staleBinding : ToolFailureKind.infrastructure,
+        );
+        expect(outcome.effectCertainty, EffectCertainty.knownNotOccurred);
+        expect(fs.directoryReads, isEmpty);
+      }
     });
   });
 
@@ -575,9 +821,17 @@ CanonicalToolArguments _arguments(ToolExecutable tool, String query) =>
 ToolExecutionContext _execution(SessionId sessionId) =>
     ToolExecutionContext(runId: RunId('run-1'), sessionId: sessionId);
 
-Future<ToolOutcome> _run(_FileSystem fileSystem, String query) async {
+Future<ToolOutcome> _run(
+  _FileSystem fileSystem,
+  String query, {
+  String? path,
+}) async {
   final ToolExecutable tool = await _search(fileSystem);
-  return _execute(tool, _arguments(tool, query), fileSystem.sessionId);
+  return _execute(
+    tool,
+    tool.validateAndNormalize(<String, Object?>{'query': query, 'path': ?path}),
+    fileSystem.sessionId,
+  );
 }
 
 Future<ToolOutcome> _execute(

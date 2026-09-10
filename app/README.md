@@ -20,6 +20,16 @@ authority. Independent stock Filesystem Tools, Search Tools, and Command Tools
 plugins use that context to provide Environment-authorized `read_file`,
 `apply_patch`, `create_file`, `delete_file`, `search`, and `run_command`. Search
 requests only the read facet; Command Tools requests only the process facet.
+`search(query, path?)` performs bounded, case-sensitive literal substring search.
+The optional Environment-relative `path` scopes recursion to a directory;
+omitted or empty selects root (canonical `""`). Redundant slashes and `.`
+segments are removed; parent traversal and absolute paths are rejected.
+Canonical `path` is retained in host evidence and used in effect descriptions.
+Normal scopes are opened through the authorized directory-read boundary, so
+missing directories and file-valued scopes fail rather than falling back to root.
+The stock `.git`, `.dart_tool`, `build`, and `node_modules` exclusions remain in
+force; explicit scopes through those segments fail before provider reads.
+Use `read_file` for an exact known file.
 Lifecycle UI and normal stock-plugin composition are not implemented yet.
 
 The normal application does not display the `workspace_demo` reference plugin.

@@ -62,6 +62,8 @@ final class _SearchExecutable implements ToolExecutable {
       alias: 'search',
       description:
           'Recursively search Environment text files for one literal query. '
+          'Optional path selects an Environment-relative directory; omitted or '
+          'empty means root. Use read_file for a known file. '
           'Current stock search defaults exclude common generated, dependency, '
           'and metadata directories: .git, .dart_tool, build, and node_modules.',
       argumentsSchema: const <String, Object?>{
@@ -73,6 +75,7 @@ final class _SearchExecutable implements ToolExecutable {
             'minLength': 1,
             'maxLength': 256,
           },
+          'path': <String, Object?>{'type': 'string'},
         },
         'additionalProperties': false,
       },
@@ -84,10 +87,14 @@ final class _SearchExecutable implements ToolExecutable {
   CanonicalToolArguments validateAndNormalize(
     Map<String, Object?> proposedArguments,
   ) {
-    if (proposedArguments.length != 1 ||
-        proposedArguments['query'] is! String) {
+    if (proposedArguments.keys.any(
+          (String key) => key != 'query' && key != 'path',
+        ) ||
+        proposedArguments['query'] is! String ||
+        (proposedArguments.containsKey('path') &&
+            proposedArguments['path'] is! String)) {
       throw const ToolArgumentValidationException(
-        'search requires exactly one string argument named query.',
+        'search requires string query and accepts only optional string path.',
       );
     }
     final String query = proposedArguments['query']! as String;
@@ -102,7 +109,12 @@ final class _SearchExecutable implements ToolExecutable {
         'query must be non-empty, single-line, NUL-free, and at most 256 UTF-16 code units.',
       );
     }
-    return CanonicalToolArguments(<String, Object?>{'query': query});
+    return CanonicalToolArguments(<String, Object?>{
+      'query': query,
+      'path': _canonicalDirectoryPath(
+        proposedArguments['path'] as String? ?? '',
+      ),
+    });
   }
 
   @override
@@ -111,17 +123,24 @@ final class _SearchExecutable implements ToolExecutable {
     ToolExecutionContext context,
   ) async {
     _requireAuthorizedSession(context);
+    final String path = arguments.snapshot['path']! as String;
     return EffectDescription(
       effects: const <ToolEffect>[ToolEffect.sourceRead],
       targets: <EffectTarget>[
         EffectTarget(
           uri: Uri(
             scheme: 'adele-environment',
-            path: '/${_fileSystem.environmentId.value}/',
+            pathSegments: <String>[
+              '',
+              _fileSystem.environmentId.value,
+              ...path.split('/'),
+            ],
           ),
         ),
       ],
-      summary: 'Search the authorized Environment root.',
+      summary: path.isEmpty
+          ? 'Search the authorized Environment root.'
+          : 'Search the authorized Environment directory ${jsonEncode(path)}.',
     );
   }
 
@@ -148,12 +167,28 @@ final class _SearchExecutable implements ToolExecutable {
     ToolExecutionContext context,
   ) async* {
     final String query = arguments.snapshot['query']! as String;
-    final _SearchState state = _SearchState(query);
+    final _SearchState state = _SearchState(
+      query,
+      arguments.snapshot['path']! as String,
+    );
     try {
       _requireAuthorizedSession(context);
       _fileSystem.validateBinding();
+      if (state.path.split('/').any(_excludedDirectories.contains)) {
+        yield ToolExecutionTerminal(
+          _failure(
+            state,
+            _fileSystem.environmentId.value,
+            'Search scope ${jsonEncode(state.path)} is excluded by stock Search defaults.',
+            ToolFailureKind.domain,
+            'excluded_scope',
+            certainty: EffectCertainty.knownNotOccurred,
+          ),
+        );
+        return;
+      }
       final EnvironmentDirectoryListing root = await _fileSystem.readDirectory(
-        '',
+        state.path,
       );
       state.readOccurred = true;
       await _searchListing(root, state);
@@ -304,6 +339,7 @@ final class _SearchExecutable implements ToolExecutable {
   ToolOutcome _success(_SearchState state) {
     final String modelContent = <String>[
       'Search results:',
+      if (state.path.isNotEmpty) 'Scope: ${jsonEncode(state.path)}',
       if (state.matches.isEmpty)
         'No matches.'
       else ...<String>[
@@ -327,6 +363,7 @@ final class _SearchExecutable implements ToolExecutable {
 
   Map<String, Object?> _hostData(_SearchState state) => <String, Object?>{
     'query': state.query,
+    'path': state.path,
     'matches': <Object?>[
       for (final _SearchMatch match in state.matches)
         <String, Object?>{
@@ -347,10 +384,47 @@ final class _SearchExecutable implements ToolExecutable {
   }
 }
 
+String _canonicalDirectoryPath(String path) {
+  // Reject before normalization or URI encoding can change the path identity.
+  for (int index = 0; index < path.length; index++) {
+    final int codeUnit = path.codeUnitAt(index);
+    if (_isHighSurrogate(codeUnit)) {
+      if (++index < path.length && _isLowSurrogate(path.codeUnitAt(index))) {
+        continue;
+      }
+      throw const ToolArgumentValidationException(
+        'path must contain well-formed Unicode text.',
+      );
+    }
+    if (_isLowSurrogate(codeUnit)) {
+      throw const ToolArgumentValidationException(
+        'path must contain well-formed Unicode text.',
+      );
+    }
+  }
+  if (path.startsWith('/') || path.contains('\u0000')) {
+    throw const ToolArgumentValidationException(
+      'path must be a NUL-free Environment-relative directory path.',
+    );
+  }
+  final List<String> segments = <String>[];
+  for (final String segment in path.split('/')) {
+    if (segment.isEmpty || segment == '.') continue;
+    if (segment == '..') {
+      throw const ToolArgumentValidationException(
+        'path must not contain parent traversal.',
+      );
+    }
+    segments.add(segment);
+  }
+  return segments.join('/');
+}
+
 final class _SearchState {
-  _SearchState(this.query);
+  _SearchState(this.query, this.path);
 
   final String query;
+  final String path;
   final List<_SearchMatch> matches = <_SearchMatch>[];
   int entries = 0;
   int searchedBytes = 0;
@@ -423,6 +497,7 @@ ToolOutcome _failure(
   modelContent: modelContent,
   hostData: <String, Object?>{
     'query': state.query,
+    'path': state.path,
     'matches': <Object?>[
       for (final _SearchMatch match in state.matches)
         <String, Object?>{
