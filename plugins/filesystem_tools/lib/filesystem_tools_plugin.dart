@@ -69,12 +69,17 @@ final class _ReadFileExecutable implements ToolExecutable {
       alias: 'read_file',
       description:
           'Read one UTF-8 file and its opaque revision from the current Session '
-          'Environment by relative path.',
+          'Environment by relative path. Optional positive integer startLine (1-based) '
+          'and lineCount independently select exact unnumbered logical lines; '
+          'defaults are line 1 and through EOF. Returns the whole-file revision '
+          'and size; existing whole-file read bounds still apply.',
       argumentsSchema: const <String, Object?>{
         'type': 'object',
         'required': <Object?>['relativePath'],
         'properties': <String, Object?>{
-          'relativePath': <String, Object?>{'type': 'string'},
+          'relativePath': <String, Object?>{'type': 'string', 'minLength': 1},
+          'startLine': <String, Object?>{'type': 'integer', 'minimum': 1},
+          'lineCount': <String, Object?>{'type': 'integer', 'minimum': 1},
         },
         'additionalProperties': false,
       },
@@ -86,17 +91,37 @@ final class _ReadFileExecutable implements ToolExecutable {
   CanonicalToolArguments validateAndNormalize(
     Map<String, Object?> proposedArguments,
   ) {
-    if (proposedArguments.length != 1 ||
+    if (proposedArguments.keys.any(
+          (key) => !const <String>{
+            'relativePath',
+            'startLine',
+            'lineCount',
+          }.contains(key),
+        ) ||
         proposedArguments['relativePath'] is! String ||
         (proposedArguments['relativePath']! as String).isEmpty) {
       throw const ToolArgumentValidationException(
-        'read_file requires exactly one non-empty string argument named relativePath.',
+        'read_file requires a non-empty relativePath and only optional startLine and lineCount.',
       );
+    }
+    for (final String field in const <String>['startLine', 'lineCount']) {
+      if (proposedArguments.containsKey(field)) {
+        final Object? value = proposedArguments[field];
+        if (value is! int || value < 1) {
+          throw ToolArgumentValidationException(
+            '$field must be a positive integer.',
+          );
+        }
+      }
     }
     final String relativePath = proposedArguments['relativePath']! as String;
     _requireWellFormedUnicode('relativePath', relativePath);
     return CanonicalToolArguments(<String, Object?>{
       'relativePath': _canonicalFilePath(relativePath),
+      if (proposedArguments.containsKey('startLine'))
+        'startLine': proposedArguments['startLine'],
+      if (proposedArguments.containsKey('lineCount'))
+        'lineCount': proposedArguments['lineCount'],
     });
   }
 
@@ -147,6 +172,18 @@ final class _ReadFileExecutable implements ToolExecutable {
     try {
       _requireAuthorizedSession(context);
       final EnvironmentTextFile file = await _fileSystem.readFile(relativePath);
+      if (arguments.snapshot.containsKey('startLine') ||
+          arguments.snapshot.containsKey('lineCount')) {
+        yield ToolExecutionTerminal(
+          _rangedOutcome(
+            file,
+            relativePath,
+            arguments.snapshot['startLine'] as int? ?? 1,
+            arguments.snapshot['lineCount'] as int?,
+          ),
+        );
+        return;
+      }
       yield ToolExecutionTerminal(
         ToolOutcome(
           disposition: ToolOutcomeDisposition.success,
@@ -217,6 +254,74 @@ final class _ReadFileExecutable implements ToolExecutable {
         ),
       );
     }
+  }
+
+  ToolOutcome _rangedOutcome(
+    EnvironmentTextFile file,
+    String relativePath,
+    int startLine,
+    int? lineCount,
+  ) {
+    // Scan original UTF-16 boundaries, never split/reconstruct source. CRLF
+    // is one terminator; a trailing terminator does not create another line.
+    int totalLines = 0;
+    int returnedLineCount = 0;
+    int selectionStart = file.text.length;
+    int selectionEnd = file.text.length;
+    int offset = 0;
+    while (offset < file.text.length) {
+      final int lineStart = offset;
+      while (offset < file.text.length) {
+        final int unit = file.text.codeUnitAt(offset++);
+        if (unit == 13) {
+          if (offset < file.text.length && file.text.codeUnitAt(offset) == 10) {
+            offset++;
+          }
+          break;
+        }
+        if (unit == 10) break;
+      }
+      totalLines++;
+      if (totalLines >= startLine &&
+          (lineCount == null || returnedLineCount < lineCount)) {
+        if (returnedLineCount == 0) selectionStart = lineStart;
+        selectionEnd = offset;
+        returnedLineCount++;
+      }
+    }
+    final String text = file.text.substring(selectionStart, selectionEnd);
+    final int? nextStartLine =
+        lineCount != null &&
+            returnedLineCount > 0 &&
+            selectionEnd < file.text.length
+        ? startLine + returnedLineCount
+        : null;
+    final String lines = returnedLineCount == 0
+        ? 'Lines: empty selection at line $startLine of $totalLines (0 returned)'
+        : 'Lines: $startLine-${startLine + returnedLineCount - 1} of $totalLines';
+    final String continuation = nextStartLine == null
+        ? ''
+        : '\nNext read: ${jsonEncode(<String, Object?>{'relativePath': relativePath, 'startLine': nextStartLine, 'lineCount': lineCount})}';
+    return ToolOutcome(
+      disposition: ToolOutcomeDisposition.success,
+      effectCertainty: EffectCertainty.knownOccurred,
+      modelContent:
+          'File: ${jsonEncode(relativePath)}\n'
+          'Revision: ${jsonEncode(file.revision)}\n'
+          '$lines$continuation\n\n$text',
+      hostData: <String, Object?>{
+        'environmentId': _fileSystem.environmentId.value,
+        'relativePath': relativePath,
+        'sizeBytes': file.sizeBytes,
+        'revision': file.revision,
+        'text': text,
+        'startLine': startLine,
+        'requestedLineCount': lineCount,
+        'returnedLineCount': returnedLineCount,
+        'totalLines': totalLines,
+        'nextStartLine': nextStartLine,
+      },
+    );
   }
 
   void _requireAuthorizedSession(ToolExecutionContext context) {

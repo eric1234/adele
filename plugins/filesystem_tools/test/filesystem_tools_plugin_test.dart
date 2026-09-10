@@ -9,6 +9,250 @@ import 'package:test/test.dart';
 
 void main() {
   test(
+    'Read File exact schema and strict independent range arguments',
+    () async {
+      final ToolRegistration registration = await _registration(
+        _FileSystem(),
+        'read_file',
+      );
+      expect(registration.modelDefinition.argumentsSchema, <String, Object?>{
+        'type': 'object',
+        'required': <Object?>['relativePath'],
+        'properties': <String, Object?>{
+          'relativePath': <String, Object?>{'type': 'string', 'minLength': 1},
+          'startLine': <String, Object?>{'type': 'integer', 'minimum': 1},
+          'lineCount': <String, Object?>{'type': 'integer', 'minimum': 1},
+        },
+        'additionalProperties': false,
+      });
+      final ToolExecutable tool = registration.executable;
+      for (final String field in <String>['startLine', 'lineCount']) {
+        for (final Object? value in <Object?>[
+          null,
+          '1',
+          1.0,
+          1.5,
+          0,
+          -1,
+          true,
+          <String, Object?>{'startLine': 1},
+        ]) {
+          expect(
+            () => tool.validateAndNormalize(<String, Object?>{
+              'relativePath': 'a',
+              field: value,
+            }),
+            throwsA(isA<ToolArgumentValidationException>()),
+          );
+        }
+        expect(
+          tool.validateAndNormalize(<String, Object?>{
+            'relativePath': './a',
+            field: 1,
+          }).snapshot,
+          <String, Object?>{'relativePath': 'a', field: 1},
+        );
+      }
+      for (final String field in <String>[
+        'endLine',
+        'offset',
+        'range',
+        'start',
+        'count',
+        'environmentId',
+      ]) {
+        expect(
+          () => tool.validateAndNormalize(<String, Object?>{
+            'relativePath': 'a',
+            field: 1,
+          }),
+          throwsA(isA<ToolArgumentValidationException>()),
+        );
+      }
+    },
+  );
+
+  test(
+    'Read File ranges preserve exact logical source and whole-file evidence',
+    () async {
+      final String longLine = ' 😀\t${'x' * 100000}  ';
+      for (final List<String> lines in <List<String>>[
+        <String>[],
+        <String>['a'],
+        <String>['a\n'],
+        <String>['\n'],
+        <String>['a\n', '\n'],
+        <String>['\n', '\n', '\n'],
+        <String>['first\n', '  😀 e\u0301\t\n', 'last'],
+        <String>['first\r\n', '\r\n', ' last\r\n'],
+        <String>['first\r', '\r', 'last\r'],
+        <String>['a\r\n', 'b\r', 'c\n', longLine],
+      ]) {
+        final String source = lines.join();
+        final _FileSystem fs = _FileSystem(
+          text: source,
+          revision: 'whole revision',
+        );
+        final ToolExecutable tool = await _tool(fs, 'read_file');
+        for (final int? start in <int?>[null, 1, 2, lines.length + 1]) {
+          for (final int? count in <int?>[null, 1, 2, 20]) {
+            if (start == null && count == null) continue;
+            final int effective = start ?? 1;
+            final List<String> selected = lines
+                .skip(effective - 1)
+                .take(count ?? lines.length)
+                .toList();
+            final int? next =
+                count != null &&
+                    selected.isNotEmpty &&
+                    effective - 1 + selected.length < lines.length
+                ? effective + selected.length
+                : null;
+            final CanonicalToolArguments args = tool
+                .validateAndNormalize(<String, Object?>{
+                  'relativePath': './source.dart',
+                  'startLine': ?start,
+                  'lineCount': ?count,
+                });
+            final ToolOutcome result = await _execute(tool, args, fs.sessionId);
+            expect(result.disposition, ToolOutcomeDisposition.success);
+            expect(result.hostData, <String, Object?>{
+              'environmentId': 'environment-1',
+              'relativePath': 'source.dart',
+              'sizeBytes': utf8.encode(source).length,
+              'revision': 'whole revision',
+              'text': selected.join(),
+              'startLine': effective,
+              'requestedLineCount': count,
+              'returnedLineCount': selected.length,
+              'totalLines': lines.length,
+              'nextStartLine': next,
+            });
+            final String heading = selected.isEmpty
+                ? 'Lines: empty selection at line $effective of ${lines.length} (0 returned)'
+                : 'Lines: $effective-${effective + selected.length - 1} of ${lines.length}';
+            final String continuation = next == null
+                ? ''
+                : '\nNext read: ${jsonEncode(<String, Object?>{'relativePath': 'source.dart', 'startLine': next, 'lineCount': count})}';
+            expect(
+              result.modelContent,
+              'File: "source.dart"\nRevision: "whole revision"\n$heading$continuation\n\n${selected.join()}',
+            );
+            final EffectDescription effect = await tool.describe(
+              args,
+              _execution(fs.sessionId),
+            );
+            expect(effect.effects, <ToolEffect>{ToolEffect.sourceRead});
+            expect(
+              effect.targets.single.uri.toString(),
+              'adele-environment:/environment-1/source.dart',
+            );
+          }
+        }
+      }
+    },
+  );
+
+  test('Ranged revision composes with whole-file patch guards', () async {
+    for (final String mode in <String>[
+      'success',
+      'outside change',
+      'duplicate',
+    ]) {
+      final _FileSystem fs = _FileSystem(
+        text: mode == 'duplicate' ? 'old\nold\n' : 'old\nkeep\n',
+        revision: 'observed',
+      );
+      final ToolExecutable read = await _tool(fs, 'read_file');
+      final ToolOutcome view = await _execute(
+        read,
+        read.validateAndNormalize(<String, Object?>{
+          'relativePath': 'source.dart',
+          'lineCount': 1,
+        }),
+        fs.sessionId,
+      );
+      expect(view.hostData['text'], 'old\n');
+      if (mode == 'outside change') {
+        fs.text = 'old\nchanged\n';
+        fs.revision = 'changed revision';
+      }
+      final ToolExecutable patch = await _tool(fs, 'apply_patch');
+      final ToolOutcome result = await _execute(
+        patch,
+        _patchArguments(
+          patch,
+          expectedRevision: view.hostData['revision']! as String,
+        ),
+        fs.sessionId,
+      );
+      if (mode == 'success') {
+        expect(result.disposition, ToolOutcomeDisposition.success);
+        expect(fs.text, 'new\nkeep\n');
+        expect(fs.replacements.single.expectedRevision, 'observed');
+      } else {
+        expect(
+          result.hostData['code'],
+          mode == 'duplicate'
+              ? 'patch_target_ambiguous'
+              : environmentRevisionConflictCode,
+        );
+        expect(fs.replacements, isEmpty);
+      }
+    }
+  });
+
+  test('Ranged reads retain Session and provider failure boundaries', () async {
+    final _FileSystem fs = _FileSystem();
+    final ToolExecutable tool = await _tool(fs, 'read_file');
+    final CanonicalToolArguments args = tool.validateAndNormalize(
+      <String, Object?>{
+        'relativePath': 'source.dart',
+        'startLine': 100,
+        'lineCount': 1,
+      },
+    );
+    final ToolOutcome wrong = await _execute(tool, args, SessionId('other'));
+    expect(wrong.failureKind, ToolFailureKind.infrastructure);
+    expect(fs.readPaths, isEmpty);
+    for (final String code in <String>[
+      'not_found',
+      'file_too_large',
+      'invalid_utf8',
+      'path_alias_unsupported',
+      'unreadable',
+    ]) {
+      final _FileSystem failing = _FileSystem(
+        readError: EnvironmentFailure(
+          code: code,
+          message: code,
+          details: const <String, Object?>{},
+        ),
+      );
+      final ToolOutcome result = await _execute(
+        await _tool(failing, 'read_file'),
+        args,
+        failing.sessionId,
+      );
+      expect(result.failureKind, ToolFailureKind.domain);
+      expect(result.hostData['code'], code);
+      expect(result.effectCertainty, EffectCertainty.uncertain);
+    }
+    fs.stale = true;
+    expect(
+      (await _execute(tool, args, fs.sessionId)).failureKind,
+      ToolFailureKind.staleBinding,
+    );
+    fs.stale = false;
+    fs.available = false;
+    expect(
+      (await _execute(tool, args, fs.sessionId)).failureKind,
+      ToolFailureKind.infrastructure,
+    );
+    expect(fs.readPaths, isEmpty);
+  });
+
+  test(
     'activation contributes four exact-generation filesystem tools',
     () async {
       final ExtensionRegistry extensions = ExtensionRegistry();

@@ -10,6 +10,7 @@ import 'package:agent_kernel/agent_kernel.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'source_coding_live_test_support.dart';
+import 'source_read_evidence_test_support.dart';
 
 const String _originalFragment = '    this.maxModelInvocations = 8,';
 const String _replacementFragment = '    this.maxModelInvocations = 9,';
@@ -269,12 +270,12 @@ _MutationEvidence _expectSuccessfulMutationRun({
     relevantRead.outcome.hostData['relativePath'],
     sourceCodingStrategyPath,
   );
-  expect(relevantRead.outcome.hostData['text'], originalText);
-  expect(
-    relevantRead.outcome.modelContent,
-    'File: ${jsonEncode(sourceCodingStrategyPath)}\n'
-    'Revision: ${jsonEncode(readRevision)}\n\n'
-    '$originalText',
+  expectSourceReadEvidence(
+    arguments: relevantRead.prepared.invocation.canonicalArguments,
+    outcome: relevantRead.outcome,
+    originalText: originalText,
+    relativePath: sourceCodingStrategyPath,
+    revision: readRevision,
   );
 
   final Object? newRevisionValue =

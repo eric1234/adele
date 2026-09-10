@@ -16,6 +16,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:search_tools_plugin/search_tools_plugin.dart';
 
+import 'source_read_evidence_test_support.dart';
+
 const String _gitEnvironmentPluginId = 'dev.adele.plugin.git-environment';
 const String _gitEnvironmentProviderId = 'dev.adele.environment.git-worktree';
 const String _sourceRelativePath =
@@ -402,7 +404,10 @@ void main() {
       expect(run.state, RunState.completed);
       expect(model.invocations, 4);
       expect(model.observedPath, _sourceRelativePath);
-      expect(model.observedSource, originalSource);
+      expect(
+        model.observedSource,
+        originalSource.substring(originalSource.indexOf('\n') + 1),
+      );
       expect(model.expectedRevision, isNotEmpty);
       expect(model.postWriteRevision, isNot(model.expectedRevision));
       expect(model.commandResultValidated, isTrue);
@@ -467,7 +472,19 @@ void main() {
         completed.first.outcome.hostData['revision'],
         model.expectedRevision,
       );
-      expect(completed.first.outcome.hostData['text'], originalSource);
+      expect(completed.first.outcome.hostData['text'], model.observedSource);
+      expect(completed.first.outcome.hostData['startLine'], 2);
+      expectSourceReadEvidence(
+        arguments: prepared.first.invocation.canonicalArguments,
+        outcome: completed.first.outcome,
+        originalText: originalSource,
+        relativePath: _sourceRelativePath,
+        revision: model.expectedRevision!,
+      );
+      expect(
+        completed.first.outcome.hostData['sizeBytes'],
+        utf8.encode(originalSource).length,
+      );
       expect(completed[1].outcome.hostData, <String, Object?>{
         'environmentId': authority.environmentId.value,
         'relativePath': _sourceRelativePath,
@@ -852,8 +869,10 @@ final class _SearchReadModel implements ModelPort {
           readProperties is! Map<String, Object?> ||
           readProperties.keys.toSet().difference(<String>{
             'relativePath',
+            'startLine',
+            'lineCount',
           }).isNotEmpty ||
-          readProperties.length != 1) {
+          readProperties.length != 3) {
         throw StateError(
           'Stock tools exposed Environment selection to the model.',
         );
@@ -945,7 +964,11 @@ final class _ReadPatchCommandModel implements ModelPort {
       final MaterializedTool applyPatch = request.tools.byAlias('apply_patch')!;
       _requireModelSchema(
         readFile,
-        expectedProperties: const <String>{'relativePath'},
+        expectedProperties: const <String>{
+          'relativePath',
+          'startLine',
+          'lineCount',
+        },
       );
       expect(
         applyPatch.modelDefinition.argumentsSchema,
@@ -989,6 +1012,7 @@ final class _ReadPatchCommandModel implements ModelPort {
             alias: 'read_file',
             arguments: const <String, Object?>{
               'relativePath': _sourceRelativePath,
+              'startLine': 2,
             },
           ),
         ),
@@ -1116,7 +1140,11 @@ final class _CreateReadDeleteModel implements ModelPort {
       );
       _requireModelSchema(
         request.tools.byAlias('read_file')!,
-        expectedProperties: const <String>{'relativePath'},
+        expectedProperties: const <String>{
+          'relativePath',
+          'startLine',
+          'lineCount',
+        },
       );
       _requireModelSchema(
         request.tools.byAlias('delete_file')!,
@@ -1245,10 +1273,10 @@ final class _VisibleFile {
 _VisibleFile _parseVisibleFile(String modelContent) {
   final int firstNewline = modelContent.indexOf('\n');
   final int secondNewline = modelContent.indexOf('\n', firstNewline + 1);
+  final int sourceSeparator = modelContent.indexOf('\n\n');
   if (firstNewline < 0 ||
       secondNewline < 0 ||
-      secondNewline + 1 >= modelContent.length ||
-      modelContent.codeUnitAt(secondNewline + 1) != 0x0a) {
+      sourceSeparator < secondNewline) {
     throw StateError('Read File returned malformed model-visible content.');
   }
   final String fileLine = modelContent.substring(0, firstNewline);
@@ -1274,7 +1302,7 @@ _VisibleFile _parseVisibleFile(String modelContent) {
   return _VisibleFile(
     relativePath: relativePath,
     revision: revision,
-    text: modelContent.substring(secondNewline + 2),
+    text: modelContent.substring(sourceSeparator + 2),
   );
 }
 

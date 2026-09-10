@@ -46,6 +46,8 @@ void main() {
       expect(properties, isA<Map<String, Object?>>());
       expect((properties! as Map<String, Object?>).keys, <String>[
         'relativePath',
+        'startLine',
+        'lineCount',
       ]);
       final CanonicalToolArguments arguments = tool.executable
           .validateAndNormalize(const <String, Object?>{

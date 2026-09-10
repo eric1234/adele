@@ -13,6 +13,31 @@ Environment-relative logical file paths canonicalized before policy and
 execution. Reads return bounded UTF-8 text and a provider-produced opaque
 revision.
 
+`read_file(relativePath, startLine?, lineCount?)` reads the whole file when both
+range arguments are omitted. Each range argument is independently optional:
+`startLine` defaults to 1 and is 1-based; omitted `lineCount` means through EOF.
+Both must be positive integers, and `lineCount` is a maximum number of logical
+lines, not an ending line. Unknown arguments and alternate range grammars are
+rejected.
+
+Ranged results contain compact metadata and one exact, unnumbered source
+substring. LF, CRLF, and lone CR delimit logical lines without normalization,
+trimming, Unicode changes, or per-line shortening. A final terminator creates no
+phantom line. Empty files and starts beyond EOF return explicit successful empty
+selections. Finite counts extending beyond EOF return available lines. If later
+source remains, `nextStartLine` and a model-visible next call retain the requested
+finite count. Host evidence includes the selected text only, effective
+`startLine`, `requestedLineCount`, `returnedLineCount`, `totalLines`, and nullable
+`nextStartLine`, alongside ordinary file identity, whole-file size and revision.
+
+The revision always identifies the complete observed file and can be passed
+directly to `apply_patch`; outside-view changes still conflict and matching is
+still unique across the whole file. The effect remains `sourceRead` targeting
+the file itself. Filesystem Tools selects the view after the existing authorized
+whole-file Environment read, subject to its unchanged size, UTF-8, accessibility,
+and confinement rules. There is no provider-level ranged I/O or oversized-file
+partial access yet, and no default window or new model-output cap.
+
 `apply_patch(relativePath, expectedRevision, edits)` takes exactly those three
 arguments. `edits` is a non-empty ordered array of objects with exactly `search`
 and `replace` string fields. Each non-empty search must occur exactly once in
