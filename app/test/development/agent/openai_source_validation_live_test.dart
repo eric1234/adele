@@ -10,6 +10,7 @@ import 'package:agent_kernel/agent_kernel.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'source_coding_live_test_support.dart';
+import 'source_read_evidence_test_support.dart';
 
 const String _originalFragment = '    this.maxModelInvocations = 8,';
 const String _replacementFragment = '    this.maxModelInvocations = 9,';
@@ -395,20 +396,15 @@ _ValidationEvidence _expectSuccessfulValidationRun({
   final Object? expectedRevision =
       patchInvocation.canonicalArguments['expectedRevision'];
   expect(expectedRevision, isA<String>());
-  final List<SourceCodingToolAttempt> relevantReads = reads
-      .where((SourceCodingToolAttempt attempt) {
-        return attempt.terminalRecord.sequence <
-                successfulPatch.preparedRecord.sequence &&
-            attempt.outcome.disposition == ToolOutcomeDisposition.success &&
-            attempt.prepared.invocation.canonicalArguments['relativePath'] ==
-                sourceCodingStrategyPath &&
-            attempt.outcome.hostData['revision'] == expectedRevision;
-      })
-      .toList(growable: false);
-  expect(relevantReads, isNotEmpty);
-  final SourceCodingToolAttempt relevantRead = relevantReads.last;
   final String readRevision = expectedRevision! as String;
   expect(readRevision, isNotEmpty);
+  final SourceCodingToolAttempt relevantRead = expectRelevantSourceRead(
+    reads: reads,
+    beforeSequence: successfulPatch.preparedRecord.sequence,
+    relativePath: sourceCodingStrategyPath,
+    revision: readRevision,
+    originalFragment: _originalFragment,
+  );
   expect(
     relevantRead.prepared.invocation.tool.definition.id.value,
     'dev.adele.plugin.filesystem-tools.read-file',
@@ -423,12 +419,12 @@ _ValidationEvidence _expectSuccessfulValidationRun({
     relevantRead.outcome.hostData['relativePath'],
     sourceCodingStrategyPath,
   );
-  expect(relevantRead.outcome.hostData['text'], originalText);
-  expect(
-    relevantRead.outcome.modelContent,
-    'File: ${jsonEncode(sourceCodingStrategyPath)}\n'
-    'Revision: ${jsonEncode(readRevision)}\n\n'
-    '$originalText',
+  expectSourceReadEvidence(
+    arguments: relevantRead.prepared.invocation.canonicalArguments,
+    outcome: relevantRead.outcome,
+    originalText: originalText,
+    relativePath: sourceCodingStrategyPath,
+    revision: readRevision,
   );
   expect(
     relevantRead.terminalRecord.sequence,
