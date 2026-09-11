@@ -1,5 +1,6 @@
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
@@ -8,6 +9,7 @@ import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 final class ChatTestTopology {
   ChatTestTopology(SessionId sessionId) {
     final ExtensionRegistry extensions = ExtensionRegistry();
+    contextComposer = InferenceContextComposer(extensions);
     _activation = chat.activate(extensions);
     final InMemoryProductStore store = InMemoryProductStore();
     lifecycle = ProductLifecycleCoordinator.generated(
@@ -42,6 +44,7 @@ final class ChatTestTopology {
 
   final ChatStrategyPlugin chat = ChatStrategyPlugin();
   late final ProductLifecycleCoordinator lifecycle;
+  late final InferenceContextComposer contextComposer;
   late final Session session;
   late final ExtensionRegistration _activation;
 

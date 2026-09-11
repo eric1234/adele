@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted; generic registration/liveness, typed model-tool contributions, and executable stock Chat strategy composition implemented, broader composition deferred
+Accepted; generic registration/liveness, typed model tools, executable stock Chat, and instruction-only inference-context composition implemented, broader composition deferred
 
 ## Context
 
@@ -24,7 +24,7 @@ ADELE adopts a recursive typed extension model.
 6. Extension discovery is live for future composition. New or removed registrations may change future affordances/operations, but already-resolved operations retain exact generation-bound bindings and do not silently migrate.
 7. **Events** remain read-only notifications of facts that occurred. Event consumers cannot change whether the event occurred, and subscriber failure normally does not retroactively fail the producer. Events do not imply durable replay/history.
 8. Operation-modifying participation uses structured typed composition rather than arbitrary mutation of opaque host objects. Core inference preparation will use structured buckets whose conflict/merge rules are domain-specific.
-9. Ordering, when required, should normally use numeric priority plus deterministic tie-breaking rather than direct `before X` / `after Y` references that couple extensions by identity.
+9. Ordering is contract-specific. Where contributor-selected placement is needed, numeric priority plus deterministic tie-breaking is preferred to direct `before X` / `after Y` coupling; it is not universal. Instruction-context sources have no numeric priority: lexicographic extension identity ordering preserves local order, not semantic authority.
 10. Failure semantics belong to each extension contract. Decorative UI, selected providers, mandatory policy contributors, and Event subscribers need not share one failure rule.
 11. Plugin-facing UI extension points should describe semantic roles rather than current physical placement. The host may change or make workbench placement configurable without changing the semantic extension identity.
 12. ADELE core owns application Command registration, Command Palette/search, keybinding resolution, and user overrides. Plugins register Commands and suggested bindings; UI affordances should normally invoke the same domain/Command behavior rather than define UI-only functionality.
@@ -44,9 +44,10 @@ Only part of this model is currently implemented:
 - its narrow `OrchestrationExecutionHost` accepts `StrategyInferenceMaterial`, returns semantic model turns with opaque `StrategyToolSnapshot` handles, processes proposals through host-owned policy/execution, and resolves approvals to semantic continuation; minimal semantic DTOs are shared with the kernel, not duplicated or placed in another public package;
 - headless stock `chat_strategy_plugin` activates in process like the stock tool plugins, using semantic ID `dev.adele.strategy.chat` and separate plugin/extension identities; it owns Chat history/configuration and private sequencing without importing `agent_kernel`;
 - application Session-routed Run creation resolves and materializes one exact contribution; host operations, approval resume, and asynchronous settlement validate the retained binding, so stale active Runs fail without migration while later Runs may freshly resolve replacements under the same Session strategy ID;
-- `StrategyInferenceMaterial` (instructions and ordered `SemanticModelInputItem` values) is the deliberate seam between strategy projection/replay and internal `SemanticModelRequest`; general context composition is the next slice at this seam, not an implemented framework;
-- profile-aware preference, Chat UI/persistence, child Sessions, general context contributors, and token budgets are not implemented;
-- plugin-defined extension APIs, production UI composition, Commands/keybindings, generic Event subscription, and structured multi-plugin inference composition remain future work.
+- `InferenceContextComposer` captures instruction-only `inferenceContextSources` over the same `ExtensionRegistry` into immutable `InferenceContextSnapshot` with typed groups, unchanged semantic input, and source results; orchestration's `renderInferenceInstructions` lowers at the current app adapter to the unchanged provider instructions string;
+- each new inference discovers sources; exact-binding capture aborts on required failure or omits an optional source with original diagnostics, distinct from successful empty output; there is no same-capture fallback, and safely captured data survives retirement without changing executable binding rules;
+- source freshness is source-owned without a generic refresh API; no production context sources, profile-aware preference, Chat UI/persistence, child Sessions, token budgets, or compaction are implemented;
+- plugin-defined extension APIs, production UI composition, Commands/keybindings, generic Event subscription, broader Reference/Observation material, and provider-aware projection/cache planning remain future work.
 
 The execution facade does not expose kernel model ports/streams/collectors, tool catalogs, policy gates, `AgentRun`, or journal objects. The host accepts only unused proposals from its exact completed model turn and only the current host-supplied approval resolution for its retained invocation. This ADR accepts the broader architectural direction without claiming deferred mechanisms are implemented or live-service validation of Chat.
 

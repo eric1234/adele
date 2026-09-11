@@ -27,8 +27,8 @@ architecture rather than validated behavior.
 19. Extension is recursive: core may define typed extension points, and plugins may define more-specific typed extension points consumed by other plugins.
 20. Runtime composition should prefer zero/one/many compatible interface discovery over hidden plugin-activation dependency chains.
 21. Operation-modifying integration should use structured typed composition rather than arbitrary mutation of opaque host objects.
-22. Extension-point ordering, composition, applicability, and failure semantics are domain-specific; numeric priority is preferred over direct before/after coupling where ordering is needed.
-23. Future composition may react to registrations appearing/disappearing, while already-resolved execution-sensitive operations retain stable exact bindings.
+22. Extension-point ordering, composition, applicability, and failure semantics are domain-specific. Numeric priority is an option for contracts needing contributor-selected placement, not a universal rule; inference-context sources have none. Their lexicographic identity order preserves local order and grants no semantic authority.
+23. New composition may discover registrations appearing/disappearing, while already-resolved executable operations retain stable exact bindings. Instruction-source bindings are validated through capture; safely captured immutable data no longer depends on source liveness, and later inference discovers replacements without same-capture fallback.
 24. ADELE core owns lifecycle, routing, persistence facilities, agent execution mechanics, host integration, final authorization, and stable product identities that unrelated plugins must share.
 25. Project, Task, Session, Run, and Environment are core domain concepts; owning the identities does not imply core provides most concrete behavior.
 26. Project is not intrinsically a local directory. Concrete Project selection/association belongs to replaceable providers/plugins.
@@ -61,7 +61,7 @@ architecture rather than validated behavior.
 53. ADELE provides lifecycle-aware persistence facilities for ordinary plugin-owned state, while domain-native external systems may remain authoritative where that is semantically part of the feature.
 54. Open windows own independent live workbench state. UI-state changes may update remembered defaults for future windows without rearranging already-open windows.
 55. Persisted workbench updates should be fine-grained enough that unrelated changes from multiple windows do not overwrite one another through stale full-state snapshots.
-56. Execution-sensitive work should use stable resolved configuration/context boundaries where live mutation would make behavior unpredictable or irreproducible.
+56. Execution-sensitive work should use stable resolved configuration/context boundaries where live mutation would make behavior unpredictable or irreproducible. Instruction context is captured per new inference, including continuation; sources own freshness without a generic refresh API. Required failure stops composition; optional failure omits the entire source with diagnostics, distinct from successful empty output.
 57. The maintained runtime may use one implicit default development profile, but APIs must not prevent future ordered multi-profile support.
 58. Pure-Dart implementation packages should remain usable and testable without Flutter.
 59. The architecture must support Windows, macOS, and Linux desktop.

@@ -1,6 +1,7 @@
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 
+import 'inference_context_host.dart';
 import 'product_lifecycle.dart';
 
 /// Resolves only the canonical Session's stored strategy, once for this Run.
@@ -8,6 +9,7 @@ SessionOrchestrationRun createSessionOrchestrationRun({
   required ProductLifecycleCoordinator lifecycle,
   required SessionId sessionId,
   required RunId runId,
+  required InferenceContextComposer contextComposer,
   required ModelPort model,
   required ToolCatalog toolCatalog,
   required ToolPolicy policy,
@@ -21,6 +23,12 @@ SessionOrchestrationRun createSessionOrchestrationRun({
   final KernelOrchestrationHost host = KernelOrchestrationHost(
     run: AgentRun(id: runId, sessionId: sessionId),
     strategy: binding,
+    contextComposer: contextComposer,
+    sourceContextFactory: () => SessionInferenceContextSourceContext(
+      session: session,
+      runId: runId,
+      environmentRuntime: lifecycle.environmentRuntime,
+    ),
     model: model,
     toolCatalog: toolCatalog,
     policy: policy,
@@ -107,17 +115,23 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
   KernelOrchestrationHost({
     required AgentRun run,
     required ResolvedOrchestrationStrategy strategy,
+    required InferenceContextComposer contextComposer,
+    required InferenceContextSourceContext Function() sourceContextFactory,
     required ModelPort model,
     required ToolCatalog toolCatalog,
     required ToolPolicy policy,
   }) : _run = run,
        _strategy = strategy,
+       _contextComposer = contextComposer,
+       _sourceContextFactory = sourceContextFactory,
        _model = model,
        _toolCatalog = toolCatalog,
        _policy = policy;
 
   final AgentRun _run;
   final ResolvedOrchestrationStrategy _strategy;
+  final InferenceContextComposer _contextComposer;
+  final InferenceContextSourceContext Function() _sourceContextFactory;
   final ModelPort _model;
   final ToolCatalog _toolCatalog;
   final ToolPolicy _policy;
@@ -182,17 +196,26 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
     StrategyInferenceMaterial material,
   ) => _operation(() async {
     _requireRunning();
+    final InferenceContextSourceContext sourceContext = _sourceContextFactory();
+    if (sourceContext.session.id != sessionId || sourceContext.runId != id) {
+      throw ArgumentError('Context source and Run identities must match.');
+    }
+    final InferenceContextSnapshot context = await _contextComposer.compose(
+      strategyMaterial: material,
+      sourceContext: sourceContext,
+    );
+    // Preparation may await plugin code; executable strategy authority is still
+    // required, unlike the pure data copied from context-source bindings.
+    validateBinding();
+    _requireRunning();
     final ModelInvocationId invocationId = ModelInvocationId(
       '${id.value}-model-${_nextModelInvocation++}',
     );
     final MaterializedToolSet tools = _toolCatalog.materialize();
     _lastModelTools = tools;
-    // Deliberate provider-neutral seam for future core context composition.
-    // The strategy supplies material, never an invocation ID or executable set.
     final SemanticModelRequest request = SemanticModelRequest(
       invocationId: invocationId,
-      instructions: material.instructions,
-      input: material.input,
+      context: context,
       tools: tools,
     );
     final _ToolSnapshot snapshot = _ToolSnapshot(this, tools);

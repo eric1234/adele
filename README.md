@@ -11,6 +11,7 @@ Dynamic source-plugin runtime and generated typed transport
 Active capability registry and exact-generation routing
 Provider-neutral Run/model/tool/policy/approval mechanics
 Session-bound executable strategies and headless stock Chat
+Per-inference instruction-source capture and immutable context snapshots
 Session-authorized Environment read/search and bounded text-file mutation
 Foreground process execution and model-facing command validation
 ```
@@ -92,10 +93,25 @@ lifecycle and orchestration hosting rather than constructing a loop directly.
 This is executable plugin composition, not production plugin discovery or Chat UI.
 
 Chat supplies `StrategyInferenceMaterial` containing instructions and ordered
-semantic input from history projection plus Run-local replay. The host constructs
-internal `SemanticModelRequest` with invocation identity and materialized tools.
-This deliberate context-composition seam leaves core model/tool/policy and
-Environment selection unchanged; no general context framework is implemented.
+semantic input from history projection plus Run-local replay. Public
+`adele_orchestration` now supplies `InferenceContextComposer` over the same
+`ExtensionRegistry`: each new inference, including Chat continuation, discovers
+`inferenceContextSources` and captures instruction material into an immutable
+`InferenceContextSnapshot` without changing semantic input. Strategy instructions
+come first, then sources in lexicographic `ExtensionId` order with source-local
+order preserved. This is deterministic composition, not priority or semantic
+authority. Required source failure stops preparation before model invocation;
+optional failure omits that entire source and retains diagnostics.
+
+The host constructs internal `SemanticModelRequest(context, invocationId, tools)`.
+The current app `ModelProviderCapabilityAdapter` calls orchestration's
+`renderInferenceInstructions` to lower the snapshot to the unchanged
+`ModelProviderRequest.instructions` string. With no source material, strategy
+instruction bytes remain unchanged. Source freshness is source-owned, not a
+generic refresh API. No production context source is activated by Chat or the
+development composition; tools, policy, model controls, and Environment authority
+retain their existing owners. See `packages/orchestration/README.md` for capture
+and rendering semantics.
 
 Filesystem Tools owns the model-facing
 `apply_patch(relativePath, expectedRevision, edits)` grammar. Its non-empty
@@ -192,8 +208,8 @@ runtime discovery rather than dependencies on specific implementation plugins.
 Capabilities remain the callable Action/Service provider mechanism; Events are
 read-only fact notifications; UI/composition extension points may use different
 zero/one/many and merge/failure semantics. Generic registration/liveness and
-typed model-tool and orchestration-strategy contribution points are implemented;
-broader recursive composition and plugin-facing UI APIs remain deferred.
+typed model-tool, orchestration-strategy, and inference-context-source points are
+implemented; broader recursive composition and plugin-facing UI APIs remain deferred.
 
 ADR 0031 accepts these shared product-domain identities:
 
@@ -292,7 +308,7 @@ packages/model_provider/     adele_model_provider (experimental public)
 packages/model_tool/         adele_model_tool public contribution/execution API
 packages/capabilities/       adele_capabilities (experimental public)
 packages/product/            adele_product canonical product identities/values
-packages/orchestration/      adele_orchestration strategy binding/execution API
+packages/orchestration/      adele_orchestration strategies/execution/context API
 packages/environment/        adele_environment provider/filesystem contract
 packages/plugin_runtime/     plugin_runtime (internal, pure Dart)
 packages/plugin_backend_host/ shared backend host (internal, pure Dart)
@@ -382,10 +398,11 @@ See `docs/architecture/profiles-and-configuration.md`.
 
 ## Deferred
 
-The current public execution boundary and headless Chat do not implement general
-context composition; that is the next slice. `StrategyInferenceMaterial` is the strategy-to-host seam
-before internal `SemanticModelRequest` construction; context contributors,
-structured merge/provenance, token budgets, and compaction remain deferred.
+The implemented context slice is instruction-only. Production sources such as
+repository instructions, time, roles, or repository maps are not included.
+Broader Reference/Observation material remains directional, without placeholder
+public APIs. Provider-aware projection and cache planning, token budgets,
+compaction, and context preview remain deferred.
 Chat UI/persistence, profiles, child Session lifecycle, strategy defaults,
 SCM/review integration, general whole-file overwrite, and directory/move/copy/
 binary operations also remain unimplemented.

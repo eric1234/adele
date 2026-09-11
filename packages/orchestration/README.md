@@ -1,8 +1,8 @@
 # ADELE Orchestration
 
 `adele_orchestration` is the experimental public provider-neutral registration,
-binding, and execution boundary for orchestration strategies. It is pure Dart
-and depends only on public `adele_product`, `adele_plugin_api`, and
+binding, execution, and inference-context boundary for orchestration. It is pure
+Dart and depends only on public `adele_product`, `adele_plugin_api`, and
 `adele_model_tool`. Its API is not stable. Neither this package nor its stock
 Chat consumer depends on `agent_kernel` or the application.
 
@@ -103,18 +103,103 @@ materializations, policy machinery, `AgentRun`, and the journal remain internal.
 This public boundary returns collected semantic turns; it does not make the
 kernel's streaming execution or observation implementation public.
 
-## Inference Seam
+## Inference Context
 
 `StrategyInferenceMaterial` carries instructions and an immutable ordered list of
-`SemanticModelInputItem` values before host inference preparation. Stock Chat projects its own canonical
-history and adds Run-local replay into this value. The host currently forwards
-that material into internal `SemanticModelRequest`, supplying invocation
-identity and materialized tools itself; model/tool/policy/Environment selection
-remains host-owned.
+`SemanticModelInputItem` values before host inference preparation. Stock Chat
+projects its own canonical history and adds Run-local replay into this value.
+`InferenceContextComposer(registry).compose(strategyMaterial: ...,
+sourceContext: ...)` discovers current instruction sources over the **same existing
+`ExtensionRegistry`**, not a second registry or source runtime. The host composes
+before allocating model invocation identity, materializing tools, recording
+model-start evidence, or calling the provider. It then constructs internal
+`SemanticModelRequest(context: snapshot, invocationId: ..., tools: ...)`.
+Model/tool/policy/Environment selection remains with its existing owners.
 
-General context composition is the next slice at this seam, not an implemented
-framework. Context contributors, structured multi-plugin merge rules,
-provenance, compaction, and token budgets are not supplied by this API.
+### Source Contract
+
+Register final `InferenceContextSourceContribution` at `inferenceContextSources`,
+the typed point with ID `dev.adele.extension.inference-context-sources`. Each
+contribution requires explicit `failureMode` (`InferenceContextFailureMode.required`
+or `.optional`) and a `snapshot` callback returning
+`Future<Iterable<InferenceContextMaterial>>`.
+
+`InferenceContextSourceContext` exposes canonical product `Session`, `RunId runId`,
+and `Future<T> requireHostService<T extends Object>()`. The app's fresh-per-inference
+`SessionInferenceContextSourceContext` accepts only the published canonical Session
+and delegates service access to the existing `SessionModelToolHostContext`.
+Authority follows Session -> Task -> authorized Environment -> exact provider
+generation. This is typed host access, not an untyped service map or permission
+to select another Environment.
+
+The sealed `InferenceContextMaterial` root has only one implemented variant,
+final `InferenceInstructionMaterial`:
+
+| Field | Contract |
+| --- | --- |
+| `String key` | Nonblank, source-local logical identity, stable across captures; paired with source `ExtensionId` to identify material |
+| `String text` | Nonblank instruction text, preserved byte-for-byte without trimming |
+| `String? revision` | Optional opaque source-owned version, not parsed or used for host cache/freshness decisions |
+
+Duplicate keys within one source invalidate the whole capture; the same local key
+may occur in different sources. There is no cross-source override or deduplication.
+Reuse the same key for the same logical material across captures, even when its
+text or revision changes.
+No Reference/Observation variants, roles, repository maps, or placeholder public
+APIs are supplied.
+
+### Snapshot And Rendering
+
+`InferenceContextSnapshot` retains immutable `input`, `instructionGroups`, and
+`sourceResults`. Semantic input values and order are unchanged from strategy
+material. Groups are typed as `StrategyInstructionGroup.instructions` and
+`SourceInstructionGroup.sourceId/materials`, preserving source identity and each
+material's key, text, and revision. `InferenceContextSnapshot.fromStrategy(material)`
+constructs the zero-source case. Every snapshot starts with exactly one
+`StrategyInstructionGroup`, including when its `instructions` is empty; the group
+is never structurally omitted.
+
+Composition puts strategy instructions first, then sources in lexicographic
+`ExtensionId` order, preserving each source's local material order. There is no
+numeric priority, registration-order dependence, or global precedence mechanism;
+sorting is deterministic composition, not semantic authority or trust.
+
+`renderInferenceInstructions(snapshot)` is the lowering helper called by the
+current app `ModelProviderCapabilityAdapter`. It joins instruction text with
+`\n\n` into the unchanged `ModelProviderRequest.instructions` string, without
+headers, labels, or trimming. Only rendering omits empty strategy text; the
+snapshot's strategy group remains present. Whitespace-only strategy text is
+preserved. Successful empty and omitted sources produce no source instruction
+group. With zero sources, the exact strategy instruction
+bytes, including the empty-string case, are unchanged. Semantic input is not
+rewritten by rendering; no provider contract or generated transport changes.
+
+Each `InferenceContextSourceResult` retains `sourceId`, `failureMode`, immutable
+`materials`, and optional `failure`. Its `InferenceContextSourceStatus` is
+`contributed`, `empty`, or `omitted`. Successful empty output is distinct from an
+optional failure. `InferenceContextSourceFailed` preserves the source ID, original
+`cause`, and `stackTrace`; diagnostics are not rendered as instructions.
+
+### Capture And Lifetime
+
+Each genuinely new inference, including Chat continuation, discovers current
+sources anew. Each `snapshot` callback returns current material according to that
+source's freshness semantics. Rereads, watches, caches, and version tracking are
+internal source choices. There is no generic refresh API or host cache plan; a
+revision is opaque metadata, not a refresh command.
+
+Capture uses the exact discovered binding: validate -> snapshot -> copy/freeze
+and validate all material, including lazy iteration and duplicate keys ->
+postvalidate -> commit that source's data. No partial source material is published.
+Required failure throws `InferenceContextSourceFailed` and stops composition
+before invocation identity/evidence/provider work. Optional failure omits the
+entire source and records the original diagnostic. Neither mode retries a
+replacement registration within the same capture.
+
+After safe capture, the immutable data has no executable-binding dependency.
+Source retirement during the provider call does not invalidate that request; the
+next inference discovers any replacement. Executable strategy/tool exact-binding
+rules are unchanged: already-resolved executable work cannot migrate.
 
 ## Boundaries
 
@@ -127,6 +212,14 @@ Chat's only direct production dependencies are `adele_orchestration` and
 `adele_plugin_api`; `agent_kernel` is absent from both its production and
 development dependencies.
 
+Chat contributes no production context source and does not discover sources
+itself. It owns history, instructions, Run-local replay, and bounded sequencing;
+tools, policy, and model controls remain separate. Current development composition
+activates no production context sources.
+
 There are no kernel, Flutter, app, or plugin-runtime imports. Scheduling,
-production discovery, Chat UI, persistence, profiles, child Sessions, and general
-context composition remain outside this implemented seam.
+production discovery, Chat UI, persistence, profiles, and child Sessions remain
+deferred. This slice adds no production repository-instruction, time, role, or
+repository-map source. Broader Reference/Observation material is directional;
+provider-aware projection/cache planning, token budgets, compaction, and context
+inspection/persistence are deferred.

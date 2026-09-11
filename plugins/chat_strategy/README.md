@@ -56,11 +56,29 @@ provider, Flutter, or runtime dependency. Tests exercise activation, resolver
 materialization, conversation state, and sequencing through a fake public host;
 internal execution-evidence checks belong to the host adapter's tests.
 
+Chat submits `StrategyInferenceMaterial` with its instructions and ordered history
+projection plus Run-local replay. It neither registers nor discovers context
+sources in production. The host's `InferenceContextComposer` discovers current
+sources through the existing `ExtensionRegistry` on every new inference,
+including Chat continuation, and captures instruction material without changing
+Chat's semantic input. No production context source is activated by the current
+composition; zero-source provider instructions retain their exact bytes.
+
+Context-source freshness belongs to each source, not Chat. Chat still owns only
+its conversation/instructions, Run-local replay, and bounded sequencing; tool
+availability, policy, model controls, and Environment authority retain their
+existing owners. The host captures context before allocating model invocation
+identity or recording model-start evidence. A required source failure stops
+composition; an optional failure omits that source with diagnostics. Safely
+captured data survives later source retirement, unlike the unchanged exact-binding
+requirements on executable strategies and tools.
+
 ## Deferred Work
 
 The current context projection deliberately preserves the development loop's
 simple conversation-plus-Run-items behavior. Rich context selection, context
-truncation and summarization, context contributors, Chat UI, persistence,
+truncation and summarization, production context sources, provider-aware
+projection/cache planning, token budgets, Chat UI, persistence,
 profiles, child Sessions, state migration, and concurrent conversation editing
 are not implemented. State retention is
 in-memory and scoped to the supplied store, not durable product Session storage.

@@ -15,7 +15,7 @@ The expected stock composition should be read alongside:
 - [`agent-tooling-direction.md`](agent-tooling-direction.md), which describes model tools and execution presentation;
 - [`../mockups/README.md`](../mockups/README.md), which shows the default development UX produced by a stock plugin/configuration set.
 
-The maintained codebase implements only a small subset of this topology: source-plugin runtime/build infrastructure, generated contracts, active capability routing, the common ModelProvider and OpenAI provider, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, a Git Worktree Environment provider, generic model-tool registration, stock Filesystem Tools, Search Tools, and Command Tools, and headless stock Chat. Public `adele_orchestration` provides executable strategy contributions and the narrow execution facade; application Session-routed hosting materializes the exact contribution rather than constructing a loop directly. Chat owns in-memory state and sequencing, not UI or persistence. Most stock plugins below do not yet exist.
+The maintained codebase implements only a small subset of this topology: source-plugin runtime/build infrastructure, generated contracts, active capability routing, the common ModelProvider and OpenAI provider, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, a Git Worktree Environment provider, generic model-tool registration, stock Filesystem Tools, Search Tools, and Command Tools, and headless stock Chat. Public `adele_orchestration` provides executable strategy contributions, the narrow execution facade, and instruction-only inference-context composition over the same extension registry; application Session-routed hosting materializes the exact strategy contribution rather than constructing a loop directly. Chat owns in-memory state and sequencing, not context sources, UI, or persistence. No production context source is included. Most stock plugins below do not yet exist.
 
 ---
 
@@ -72,7 +72,8 @@ Some responsibilities may ultimately share one plugin. Session Forking may stay 
 
 # 2. Likely core/public extension surfaces
 
-These names are provisional. The important point is the semantic role.
+Names below are provisional except where explicitly identified as implemented.
+The important point is the semantic role.
 
 ## 2.1 Workbench/UI semantics
 
@@ -167,6 +168,16 @@ core execution events
 ```
 
 Plugins may define more specific extension points inside their own ecosystems.
+
+The implemented context subset is `inferenceContextSources` with
+`InferenceContextSourceContribution(failureMode, snapshot)` and
+`InferenceContextComposer` in `adele_orchestration`. It captures only
+`InferenceInstructionMaterial` into typed immutable instruction groups with source
+identity/results and unchanged semantic input. Broader Reference/Observation
+material, provider-aware projection/cache planning, token budgets, compaction, and
+the other policy/model-control buckets remain deferred. Source ordering is
+lexicographic `ExtensionId` after strategy instructions, preserving local order;
+there is no numeric priority or semantic authority implied by sorting.
 
 ---
 
@@ -332,11 +343,18 @@ executed; a proposal-free final answer can complete in that slot. This invocatio
 budget is not a token budget.
 
 Chat supplies instructions and history projection plus Run-local replay as
-`StrategyInferenceMaterial`. Core adds invocation identity and tools to internal
-`SemanticModelRequest`, retaining model/tool/policy/Environment selection. The
-boundary is a deliberate future context-composition seam, not an implemented
-general context framework. General context composition is the next slice at
-this seam; contributors, token budgets, and compaction remain unimplemented.
+`StrategyInferenceMaterial`. The host discovers and captures current instruction
+sources on every new inference, including Chat continuation, then constructs
+internal `SemanticModelRequest(context, invocationId, tools)`. The current app
+adapter renders instructions with orchestration's `renderInferenceInstructions`
+into the unchanged provider string; zero-source bytes and semantic input are
+unchanged. Required source failure prevents invocation identity/evidence/provider
+work; optional failure omits that source with diagnostics. Safely captured data
+survives later source retirement, without weakening executable binding rules.
+Sources own freshness, with no generic refresh API. Chat owns no production
+context source or source discovery; tools, policy, model controls, and Environment
+authority retain their existing owners. No repository-instruction/time/role/map
+source or context UI/persistence is added by this slice.
 
 Further expected Chat functionality remains unimplemented:
 
@@ -650,8 +668,8 @@ the same Session may freshly resolve B under the unchanged semantic ID. The
 self-hosting topology uses this path, not direct loop construction.
 
 The following richer product flows are directional, including the UI, effective
-Agent binding, multi-plugin inference composition, persistence, and child-Session
-steps that headless Chat does not implement.
+Agent binding, inference composition beyond the implemented instruction sources,
+persistence, and child-Session steps that headless Chat does not implement.
 
 ## 12.1 Select a Project
 

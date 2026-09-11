@@ -2,7 +2,7 @@
 
 ## Status
 
-**Guiding architecture; bounded execution/Environment verticals, Session-bound strategy execution, and headless stock Chat are implemented.**
+**Guiding architecture; bounded execution/Environment verticals, Session-bound strategy execution, headless stock Chat, and instruction-only inference context composition are implemented.**
 
 ADR 0031 defines Session as a core container permanently bound to one orchestration strategy; strategy-specific state defines its semantic contents. Environment is the practical filesystem/source + process context. The Chat-shaped kernel Session/history/context types and separate Workspace discussion in ADR 0022 describe the historical Phase IV proof, not the current kernel API or universal product semantics.
 
@@ -20,7 +20,7 @@ This document covers:
 - the narrow responsibility of `agent_kernel`;
 - model invocation and provider boundaries;
 - tool discovery, materialization, invocation, policy, approval, execution, and result semantics;
-- strategy input projection and the future context-composition seam;
+- strategy input projection and per-inference instruction context capture;
 - execution events;
 - runtime-resource references;
 - orchestration boundaries;
@@ -126,6 +126,7 @@ A user message submitted while a Run is active may steer that Run, satisfy an in
 | Workflow/orchestration definition | Extensions/catalog outside execution state |
 | Model provider implementation | Plugin/capability provider |
 | Model invocation mechanics | `agent_kernel` through provider-neutral ports |
+| Instruction context capture | Public `adele_orchestration` composer + source-owned freshness |
 | Provider request lowering/protocol | Provider implementation |
 | Tool catalog extension | Plugins/host composition |
 | Tool invocation lifecycle | `agent_kernel` |
@@ -231,31 +232,91 @@ and disk persistence remain deferred.
 
 # Strategy state and context assembly
 
-## Current inference seam
+## Implemented inference composition
 
 ```text
 Chat-owned canonical history projection + Run-local replay
     -> StrategyInferenceMaterial(instructions, ordered semantic input)
-    -> KernelOrchestrationHost
-        + host-owned invocation identity and materialized tools
-    -> internal SemanticModelRequest
+    -> InferenceContextComposer over the existing ExtensionRegistry
+        + current inferenceContextSources instruction snapshots
+    -> immutable InferenceContextSnapshot
+    -> KernelOrchestrationHost adds invocation identity and materialized tools
+    -> internal SemanticModelRequest(context, invocationId, tools)
     -> internal streaming ModelPort
+    -> app ModelProviderCapabilityAdapter calls renderInferenceInstructions
+    -> unchanged ModelProviderRequest.instructions string + ordered input
 ```
 
 `StrategyInferenceMaterial` carries instructions and an immutable ordered list of
 `SemanticModelInputItem` values between strategy-owned projection and internal
 request construction. Chat controls the meaning and order of its
 material, but does not select executable tools, allocate model invocation IDs,
-or mutate a provider request. The host currently forwards instructions and
-semantic input into `SemanticModelRequest` while supplying execution mechanics.
+or mutate a provider request. The host composes instruction context before
+allocating model invocation identity, materializing tools, recording model-start
+evidence, or calling the provider. Semantic input remains unchanged.
 Canonical history is reused across Runs; native replay and tool continuation
 items are local to the Run that produced them.
 
-This is not an implemented general context framework or a renamed generic
-`ContextAssembler`. General context composition is the next slice at this seam.
-Context contributors, multi-plugin merge/provenance rules, compaction, context
-preview, and token budgets remain unimplemented. The positive Chat invocation budget limits
-model-call count, not context size or token use.
+Public `adele_orchestration` owns `InferenceContextComposer` and the typed
+`inferenceContextSources` point (`dev.adele.extension.inference-context-sources`)
+over the same existing `ExtensionRegistry`, not another registry or runtime.
+Each final `InferenceContextSourceContribution` has an explicit required
+`failureMode` and `snapshot` callback. `InferenceContextSourceContext` supplies
+the canonical `Session`, `runId`, and `requireHostService<T>()`. A fresh app
+`SessionInferenceContextSourceContext` per inference delegates typed service
+access to `SessionModelToolHostContext`: Session -> Task -> authorized Environment
+-> exact provider generation. It does not accept a reconstructed Session or grant
+independent Environment selection.
+
+The sealed `InferenceContextMaterial` root currently has only final
+`InferenceInstructionMaterial`: a nonblank source-local `String key`, nonblank
+`text` preserved byte-for-byte, and optional opaque `String revision`. The snapshot
+retains typed `instructionGroups`: `StrategyInstructionGroup.instructions` and
+`SourceInstructionGroup.sourceId/materials`, plus immutable unchanged semantic
+`input` and `sourceResults`. Results distinguish successful contributed or empty
+output from optional omission with original diagnostics. Material keys are unique
+within each source and stable across captures of the same logical material, even
+when text or revision changes; they are not a global deduplication or override
+mechanism. Every snapshot starts with `StrategyInstructionGroup`, even when its
+instructions are empty. Empty strategy text never removes the structural group.
+
+Strategy instructions come first; sources follow in lexicographic `ExtensionId`
+order, preserving each source's returned material order. This deterministic order
+does not establish semantic authority, trust, or priority. There is no numeric
+priority field. `renderInferenceInstructions` in orchestration lowers these groups
+at the current app provider adapter using blank-line separators. Only this rendering
+omits empty strategy text, not whitespace-only strategy text; source text must
+be nonblank and is not trimmed. Zero-source instruction bytes are unchanged.
+
+### Capture and freshness
+
+Every genuinely new inference, including Chat continuation after tool results,
+discovers current sources. Each snapshot callback returns current material according
+to the source's freshness semantics: reread, watch, cache, or version tracking is
+an internal implementation choice. No generic refresh API,
+host freshness scheduler, or provider cache plan is introduced.
+
+One source capture is exact-binding validate -> snapshot callback -> copy/freeze
+and validate all material, including duplicate local keys -> postvalidate binding
+-> commit captured data. Required failure aborts composition before invocation
+identity, model-start evidence, or provider work. Optional failure omits the whole
+source and retains its original diagnostic; no partial source material survives.
+Successful empty output is not omission. The same capture never retries against
+a replacement registration.
+
+After safe capture, source material is immutable data independent of the live
+binding. Retirement during the provider call does not invalidate the captured
+request; the next inference discovers any replacement. Executable strategy/tool
+bindings still require their existing exact-generation checks and never migrate.
+Chat owns no production source; current composition activates none. Tools,
+policy, and model controls retain their existing owners.
+
+This is a bounded instruction-only slice, not a renamed generic
+`ContextAssembler`. No production repository-instruction, time, role, or
+repository-map source is included. Broader Reference/Observation material remains
+directional without placeholder public APIs. Provider-aware projection/cache
+planning, compaction, context preview, and token budgets remain deferred. Chat's
+positive invocation budget limits model-call count, not context size or token use.
 
 ## Future composition
 
@@ -285,7 +346,7 @@ semantic model request
 
 For a Chat strategy, canonical conversation history is an important input. It is not the universal definition of Session and it is never itself the provider request.
 
-Future context/inference composition belongs at the host-controlled provider-neutral boundary so ADELE can support ordering, provenance, budgeting, deduplication, compaction, caching, pinning/exclusion, explainability, provider projection, and user inspection. These mechanisms are not implemented by the current material-to-request seam.
+Broader context/inference composition belongs at the host-controlled provider-neutral boundary. The implemented slice preserves typed instruction groups, source identity/results, and deterministic order; budgeting, cross-source deduplication, compaction, provider-aware projection/cache planning, pinning/exclusion, and user inspection remain deferred. The possible inputs above are direction, not implemented sources or public material variants.
 
 Context extensions should return structured material rather than mutate one prompt string or an opaque provider request.
 
@@ -631,7 +692,8 @@ Plugins may define their own public extension APIs. Depending on such an interfa
 
 Generic typed registration/discovery, retirement, and binding liveness are
 implemented, with model-tool and executable orchestration-strategy contribution
-points. Broader recursive composition remains deferred; neither the generic
+points and instruction-only inference-context sources. Broader recursive
+composition remains deferred; neither the generic
 registry nor the capability registry supplies universal composition or execution
 semantics for every extension type.
 
@@ -695,6 +757,7 @@ The current implementation supplies:
 - executable strategy registration/materialization and exact-binding validation;
 - headless Chat with in-memory canonical user/final assistant history;
 - `StrategyInferenceMaterial` before host request construction;
+- per-inference instruction-source discovery/capture and immutable `InferenceContextSnapshot`;
 - Run lifecycle;
 - workflow/strategy separation;
 - streaming-capable model invocation semantics;
@@ -754,7 +817,9 @@ canonical SessionId + retained Chat state
     -> exact contribution materialization
     -> Chat start
     -> StrategyInferenceMaterial
-    -> host SemanticModelRequest + exact tool materialization
+    -> current source capture into InferenceContextSnapshot
+    -> host SemanticModelRequest(context, invocationId, tools)
+    -> adapter renderInferenceInstructions + exact tool materialization lowering
     -> generated streaming ModelProvider invocation
     -> StrategyModelTurn
     -> ordered proposals through host policy / optional approval / execution

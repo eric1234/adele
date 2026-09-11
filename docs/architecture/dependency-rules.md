@@ -8,7 +8,10 @@ public contracts and plugin-facing APIs
   adele_contract
   adele_capabilities
   adele_model_provider
-  future core extension/UI/orchestration APIs
+  adele_product
+  adele_model_tool
+  adele_orchestration
+  future broader extension/UI APIs
   plugin-defined public extension APIs
             ^
 internal host implementations
@@ -22,7 +25,11 @@ desktop composition root
 
 Arrows point toward dependencies. Dependencies flow toward public contracts and APIs; public packages never depend on internal host packages or the desktop application. All packages are initially private to the repository via `publish_to: none`, even when described as public or plugin-facing.
 
-The maintained code currently implements only part of this picture. Plugin-defined extension API packages and general plugin-facing UI/extension/orchestration APIs remain architectural direction rather than a proven package structure.
+The maintained code currently implements only part of this picture. Public
+`adele_orchestration` implements strategy registration/execution and instruction
+context composition, sharing semantic values with the internal kernel without
+depending on it. Plugin-defined extension API packages and broader plugin-facing
+UI/extension APIs remain architectural direction.
 
 ## Package boundaries
 
@@ -32,7 +39,10 @@ The maintained code currently implements only part of this picture. Plugin-defin
 | `adele_capabilities` | Experimental plugin-facing | Dart SDK and lightweight public contract types when required | Flutter, internal host packages, application code |
 | `adele_plugin_api` | Experimental plugin-facing | Dart SDK and lightweight public packages when required | Flutter unless a future UI API explicitly establishes a boundary; internal host packages; application code |
 | `adele_model_provider` | Experimental plugin-facing | Dart SDK, `adele_contract`, and `adele_capabilities` | Flutter, internal host packages, application code, concrete providers |
-| future core extension/UI/orchestration APIs | Experimental plugin-facing | Only lightweight public dependencies required by concrete interfaces | Internal host packages, application code, concrete plugins |
+| `adele_product` | Experimental plugin-facing, pure Dart | Dart SDK and `adele_capabilities` | Flutter, internal host packages, application code, `adele_orchestration` |
+| `adele_model_tool` | Experimental plugin-facing, pure Dart | Dart SDK, `adele_plugin_api`, and `adele_product` | Flutter, internal host packages, application code, concrete tools |
+| `adele_orchestration` | Experimental plugin-facing, pure Dart | Dart SDK, `adele_product`, `adele_plugin_api`, and `adele_model_tool` | Flutter, `agent_kernel`, other internal host packages, application code, concrete strategies or sources |
+| future broader extension/UI APIs | Experimental plugin-facing | Only lightweight public dependencies required by concrete interfaces | Internal host packages, application code, concrete plugins |
 | plugin-defined public extension API | Experimental plugin-facing | Public/core APIs and other deliberately public interface packages needed by the concept | Another plugin's implementation packages, internal host packages, application code |
 | `plugin_runtime` | Internal, pure Dart | Dart SDK, public packages, and concrete acyclic internal dependencies | Flutter, application code, plugin implementations |
 | `plugin_builder` | Internal, pure Dart | Dart SDK, public packages, and build dependencies required by the implemented pipeline | Flutter UI, application code, plugin implementations as linked host dependencies |
@@ -52,7 +62,10 @@ adele_plugin_api
 adele_contract
 adele_capabilities
 adele_model_provider
-future core plugin-facing extension/UI/orchestration APIs
+adele_product
+adele_model_tool
+adele_orchestration
+future broader plugin-facing extension/UI APIs
 public extension API packages defined by other plugins/components
 ```
 

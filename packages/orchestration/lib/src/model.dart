@@ -4,6 +4,17 @@ import 'package:adele_model_tool/adele_model_tool.dart';
 
 import 'tool.dart';
 
+/// Strategy-owned input before host inference preparation.
+final class StrategyInferenceMaterial {
+  StrategyInferenceMaterial({
+    this.instructions = '',
+    required Iterable<SemanticModelInputItem> input,
+  }) : input = List<SemanticModelInputItem>.unmodifiable(input);
+
+  final String instructions;
+  final List<SemanticModelInputItem> input;
+}
+
 enum SemanticMessageRole { user, assistant }
 
 final class ModelNativeEnvelope {

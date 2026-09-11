@@ -3,6 +3,8 @@ import 'dart:collection';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
+import 'package:adele_orchestration/adele_orchestration.dart'
+    show renderInferenceInstructions;
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
@@ -196,8 +198,8 @@ ModelProviderRequest _toProviderRequest(
   ModelProviderCapabilityAdapter adapter,
 ) => ModelProviderRequest(
   model: adapter.selectedModel,
-  instructions: request.instructions,
-  input: request.input.map(_toProviderInput).toList(growable: false),
+  instructions: renderInferenceInstructions(request.context),
+  input: request.context.input.map(_toProviderInput).toList(growable: false),
   tools: request.tools.tools
       .map(
         (MaterializedTool tool) => ModelProviderTool(

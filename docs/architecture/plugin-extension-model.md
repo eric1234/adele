@@ -6,9 +6,9 @@
 
 This document defines ADELE's long-term composition model for plugins and plugin-defined extension ecosystems. It records architectural boundaries rather than a frozen Dart API. Implemented APIs such as `ExtensionPoint` remain experimental; other example interfaces below remain directional until concrete implementation requires them.
 
-The maintained repository includes source plugins, interpreted frontend execution, AOT backend execution, generated typed transport, active capability registration/resolution, configured provider contexts, provider-neutral agent execution, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, and generic registration/liveness. The registry supports typed extension points, activation-scoped registrations, exact-generation bindings, public contextual model-tool contributions, and executable orchestration-strategy contributions. Statically composed stock Filesystem Tools, Search Tools, and Command Tools own `read_file`/`apply_patch`/`create_file`/`delete_file`, `search`, and `run_command`. Headless stock Chat uses the public `adele_orchestration` execution facade and the same in-process activation conventions; this is not production plugin discovery. ADELE does **not** yet implement the broader recursive extension system described here, production plugin-facing UI composition, generic commands/keybindings, product/Chat persistence, general context composition, or most of the expected stock plugin topology.
+The maintained repository includes source plugins, interpreted frontend execution, AOT backend execution, generated typed transport, active capability registration/resolution, configured provider contexts, provider-neutral agent execution, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, and generic registration/liveness. The registry supports typed extension points, activation-scoped registrations, exact-generation bindings, public contextual model-tool contributions, executable orchestration-strategy contributions, and instruction-only inference-context sources. Statically composed stock Filesystem Tools, Search Tools, and Command Tools own `read_file`/`apply_patch`/`create_file`/`delete_file`, `search`, and `run_command`. Headless stock Chat uses the public `adele_orchestration` execution facade and the same in-process activation conventions; this is not production plugin discovery. ADELE does **not** yet implement the broader recursive extension system described here, production plugin-facing UI composition, generic commands/keybindings, product/Chat persistence, broader inference material or production context sources, or most of the expected stock plugin topology.
 
-The generic registry deliberately defines only registration, discovery, retirement, and binding liveness. Model-tool composition defines its own zero-or-many composition and alias-collision semantics. Strategy resolution requires exactly one current contribution for an explicit semantic ID, with unavailable/ambiguous errors rather than defaults or tie-breaking. Priority, applicability languages, ordering, and universal failure behavior remain deferred. `EnvironmentRuntime` remains a provisional application/domain implementation rather than a template for extension runtimes.
+The generic registry deliberately defines only registration, discovery, retirement, and binding liveness. Model-tool composition defines its own zero-or-many composition and alias-collision semantics. Strategy resolution requires exactly one current contribution for an explicit semantic ID, with unavailable/ambiguous errors rather than defaults or tie-breaking. Instruction-context composition defines its own zero-or-many capture, deterministic identity ordering, and required/optional source failure behavior; it has no numeric priority. Generic priority, applicability languages, and universal ordering/failure rules are not supplied by the registry. `EnvironmentRuntime` remains a provisional application/domain implementation rather than a template for extension runtimes.
 
 See also:
 
@@ -288,6 +288,15 @@ or rewrite that ID. Permanent Session strategy identity does not pin one
 activation generation for the Session's life, and retirement does not roll back
 already-started effects.
 
+Instruction-context sources have a capture lifetime, not an executable lifetime.
+The composer validates the exact binding before snapshot and after copying,
+freezing, and validating all returned material, then commits immutable data.
+There is no replacement fallback within that capture. Once safely captured, the
+data no longer depends on binding liveness: source retirement during provider
+execution does not invalidate the request. The next inference discovers current
+sources, including replacements. This does not change executable model/tool or
+strategy binding rules.
+
 ---
 
 # 7. Host-owned contextual defaults
@@ -348,13 +357,49 @@ An Event does not imply a durable replay log. Historical access is a separate do
 
 # 9. Structured operation composition
 
-The implemented seam is `StrategyInferenceMaterial`: instructions plus an
-immutable ordered list of `SemanticModelInputItem` values from Chat history
-projection and Run-local replay. The host adds invocation identity and
-materialized tools to build internal `SemanticModelRequest`. General context
-composition is the next slice at this seam; it is not an implemented context framework,
-contributor registry, token budget, compaction
-system, or implementation of the broader buckets below.
+The implemented instruction-only slice starts with `StrategyInferenceMaterial`:
+instructions plus an immutable ordered list of `SemanticModelInputItem` values
+from strategy-owned projection and Run-local replay. Public `adele_orchestration`
+provides `InferenceContextComposer` over the same `ExtensionRegistry`, composing
+`inferenceContextSources` at point ID
+`dev.adele.extension.inference-context-sources`. Final
+`InferenceContextSourceContribution` requires `failureMode` and a `snapshot`
+callback. Its `InferenceContextSourceContext` exposes canonical `Session`, `runId`,
+and typed `requireHostService<T>()`, not a mutable request or untyped service map.
+The fresh app context delegates the existing Session-authorized host services.
+
+The sealed `InferenceContextMaterial` root currently supports only final
+`InferenceInstructionMaterial(key, text, revision?)`: source-local nonblank string
+keys stable across captures of the same logical material, nonblank exact-byte text,
+and optional opaque string revisions. The immutable
+`InferenceContextSnapshot` preserves unchanged semantic input, typed strategy/source
+instruction groups, and source results. It always retains `StrategyInstructionGroup`,
+even for empty instructions; only `renderInferenceInstructions` omits empty strategy
+text. Ordering is defined in section 10 below.
+
+Each genuinely new inference, including Chat continuation, discovers and captures
+current sources. Snapshot callbacks return current material according to source-owned
+freshness through rereads, watches, caches, or versions; there is no generic refresh
+API. Required failure stops composition
+before invocation identity, model-start evidence, or provider work. Optional
+failure omits the entire source and retains original diagnostics, distinct from
+successful empty output. Capture validates all material, including duplicate local
+keys, before committing any of that source's data; section 6 distinguishes its
+lifetime from executable bindings.
+
+The host constructs internal `SemanticModelRequest(context, invocationId, tools)`.
+At the current app `ModelProviderCapabilityAdapter`, orchestration's
+`renderInferenceInstructions` lowers groups to the unchanged
+`ModelProviderRequest.instructions` string with blank-line separation and unchanged
+zero-source bytes. Tools, policy, model controls, and Environment selection
+retain their existing owners. Chat registers no production context source, and
+the current composition activates none. Exact fields and rendering rules are in
+[`adele_orchestration`](../../packages/orchestration/README.md#inference-context).
+
+Broader Reference/Observation material is directional, without placeholder public
+APIs. Production repository-instruction/time/role/map sources, provider-aware
+projection/cache planning, token budgets, compaction, and context UI/persistence
+remain deferred. The broader buckets below are not implemented by this slice.
 
 Some extensions need to influence an operation **before** it occurs. These should not receive arbitrary mutable host objects.
 
@@ -395,13 +440,20 @@ Conflict resolution is domain-specific. Restrictions may compose conservatively,
 
 # 10. Priority and ordering
 
-When an Extension Point needs ordering, numeric priority is preferred over direct `before X` / `after Y` references.
+There is no universal priority mechanism. When an Extension Point specifically
+needs contributor-selected placement, its contract may prefer numeric priority
+over direct `before X` / `after Y` references.
 
 Relative ordering creates knowledge of another extension and can evolve into an implicit dependency graph. Numeric priority lets extensions express approximate placement independently. An owner may define priority bands such as early/normal/late when useful.
 
-Equal priorities must have deterministic secondary ordering, such as stable extension identity.
+If a contract defines numeric priority, equal priorities need deterministic
+secondary ordering, such as stable extension identity.
 
-Not every Extension Point needs ordering.
+Not every Extension Point needs priority or ordering. The implemented
+`inferenceContextSources` contract has no numeric priority: strategy instructions
+come first, then lexicographic source `ExtensionId` order with source-local order
+preserved. Sorting makes composition reproducible; it is not semantic authority,
+trust, conflict resolution, or an override rule.
 
 ---
 
@@ -415,7 +467,7 @@ Examples:
 - Decorative UI extension failure may omit that fragment while keeping the parent surface usable.
 - Failure of the selected Environment provider means that Environment lifecycle operation failed.
 - A mandatory security/policy participant failing may make it unsafe to continue.
-- A nonessential inference-context extension may or may not be omittable depending on the contract.
+- Implemented inference-context sources explicitly declare required or optional failure behavior: required failure aborts preparation, optional failure omits the whole source with diagnostics, and successful empty output remains distinct.
 
 Each Extension Point must define failure semantics appropriate to its role.
 

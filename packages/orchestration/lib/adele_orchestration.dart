@@ -13,6 +13,7 @@ export 'package:adele_model_tool/adele_model_tool.dart'
 export 'package:adele_product/adele_product.dart'
     show OrchestrationStrategyId, RunId, SessionId, Session;
 
+export 'src/context.dart';
 export 'src/model.dart';
 export 'src/run.dart';
 export 'src/tool.dart';
@@ -83,17 +84,6 @@ abstract interface class OrchestrationExecutionHost {
   Future<SemanticToolOutcomeInput> resolveApproval(
     ToolApprovalResolution resolution,
   );
-}
-
-/// Strategy-owned input before host inference preparation.
-final class StrategyInferenceMaterial {
-  StrategyInferenceMaterial({
-    this.instructions = '',
-    required Iterable<SemanticModelInputItem> input,
-  }) : input = List<SemanticModelInputItem>.unmodifiable(input);
-
-  final String instructions;
-  final List<SemanticModelInputItem> input;
 }
 
 /// Opaque host-owned tool materialization retained for one model turn.

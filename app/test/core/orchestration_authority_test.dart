@@ -280,6 +280,90 @@ void main() {
     },
   );
 
+  for (final InferenceContextFailureMode mode
+      in InferenceContextFailureMode.values) {
+    test(
+      'strategy retirement during $mode context capture fails before model invocation',
+      () async {
+        final _Fixture fixture = await _Fixture.create();
+        final Completer<void> entered = Completer<void>();
+        final Completer<void> release = Completer<void>();
+        int captures = 0;
+        bool captured = false;
+        final ExtensionId sourceId = ExtensionId('dev.adele.test.context');
+        addTearDown(
+          fixture.extensions
+              .register(
+                point: inferenceContextSources,
+                id: sourceId,
+                value: InferenceContextSourceContribution(
+                  failureMode: mode,
+                  snapshot: (InferenceContextSourceContext context) async {
+                    captures++;
+                    expect(context.session.id, fixture.run.sessionId);
+                    expect(context.runId, fixture.run.id);
+                    entered.complete();
+                    await release.future;
+                    captured = true;
+                    return <InferenceContextMaterial>[
+                      InferenceInstructionMaterial(
+                        key: 'valid',
+                        text: 'Source remains available.',
+                      ),
+                    ];
+                  },
+                ),
+              )
+              .close,
+        );
+        final Future<void> failed = expectLater(
+          fixture.strategy.start(),
+          throwsA(
+            isA<StaleExtensionBinding>().having(
+              (StaleExtensionBinding error) => error.id,
+              'strategy, not source, retired',
+              _extensionId,
+            ),
+          ),
+        );
+        await entered.future;
+        expect(fixture.execution.startCalls, 1);
+        expect(fixture.run.state, RunState.running);
+        expect(fixture.model.requests, isEmpty);
+        final List<ExecutionEventRecord> preparing =
+            fixture.run.journal.records;
+        expect(fixture.events.single, isA<RunStarted>());
+
+        await fixture.registration.close();
+        fixture.extensions.discover(inferenceContextSources).single.validate();
+        expect(fixture.run.journal.records, orderedEquals(preparing));
+        expect(fixture.run.failure, isNull);
+        release.complete();
+        await failed;
+
+        expect(captures, 1);
+        expect(captured, isTrue);
+        expect(fixture.run.state, RunState.failed);
+        expect(fixture.run.failure, isA<StaleExtensionBinding>());
+        expect(fixture.run.failure, isNot(isA<InferenceContextSourceFailed>()));
+        expect(fixture.model.requests, isEmpty);
+        expect(fixture.strategy.lastModelTools, isNull);
+        expect(fixture.tool.executions, 0);
+        expect(fixture.events.whereType<ModelInvocationStarted>(), isEmpty);
+        expect(fixture.events.whereType<ModelInvocationFailed>(), isEmpty);
+        expect(fixture.events.whereType<ModelInvocationSettled>(), isEmpty);
+        expect(
+          fixture.events.map((ExecutionEvent event) => event.runtimeType),
+          <Type>[RunStarted, RunFailed],
+        );
+        expect(
+          fixture.events.whereType<RunFailed>().single.error,
+          same(fixture.run.failure),
+        );
+      },
+    );
+  }
+
   for (final bool? approved in <bool?>[null, false, true]) {
     test(
       'escaped ${approved == null ? 'manufactured' : 'substituted ($approved)'} approval fails the strategy Run',
@@ -754,6 +838,7 @@ final class _Fixture {
     tool ??= _Tool();
     final SessionOrchestrationRun strategy = createSessionOrchestrationRun(
       lifecycle: topology.lifecycle,
+      contextComposer: InferenceContextComposer(extensions),
       sessionId: session.id,
       runId: RunId('run-authority'),
       model: model,

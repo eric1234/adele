@@ -7,6 +7,7 @@ import 'tool.dart';
 
 export 'package:adele_orchestration/adele_orchestration.dart'
     show
+        InferenceContextSnapshot,
         SemanticMessageRole,
         ModelNativeEnvelope,
         SemanticModelInputItem,
@@ -27,15 +28,16 @@ export 'package:adele_orchestration/adele_orchestration.dart'
 final class SemanticModelRequest {
   SemanticModelRequest({
     required this.invocationId,
-    this.instructions = '',
-    required Iterable<SemanticModelInputItem> input,
+    required this.context,
     required this.tools,
-  }) : input = List<SemanticModelInputItem>.unmodifiable(input);
+  });
 
   final ModelInvocationId invocationId;
-  final String instructions;
-  final List<SemanticModelInputItem> input;
+  final InferenceContextSnapshot context;
   final MaterializedToolSet tools;
+
+  String get instructions => renderInferenceInstructions(context);
+  List<SemanticModelInputItem> get input => context.input;
 }
 
 sealed class ModelObservation {

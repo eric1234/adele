@@ -2,10 +2,13 @@ import 'package:adele_orchestration/adele_orchestration.dart' as orchestration;
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:test/test.dart';
 
+import 'support/fakes.dart';
+
 void main() {
   test('kernel reexports the public semantic definitions without copies', () {
     expect(
       <Type>[
+        InferenceContextSnapshot,
         SemanticMessageRole,
         ModelNativeEnvelope,
         SemanticModelInputItem,
@@ -33,6 +36,7 @@ void main() {
         ToolApprovalResolution,
       ],
       <Type>[
+        orchestration.InferenceContextSnapshot,
         orchestration.SemanticMessageRole,
         orchestration.ModelNativeEnvelope,
         orchestration.SemanticModelInputItem,
@@ -62,38 +66,90 @@ void main() {
     );
   });
 
-  test('semantic requests snapshot input and retain exact kernel tools', () {
-    final orchestration.SemanticMessageInput item =
-        orchestration.SemanticMessageInput(
-          role: orchestration.SemanticMessageRole.user,
-          content: 'Inspect.',
-        );
-    final List<SemanticModelInputItem> input = <SemanticModelInputItem>[item];
-    final MaterializedToolSet tools = MaterializedToolSet(
-      const <MaterializedTool>[],
-    );
-    final ModelInvocationId invocationId = ModelInvocationId('model-request');
+  test(
+    'semantic requests retain the exact frozen context and kernel tools',
+    () {
+      final orchestration.SemanticMessageInput item =
+          orchestration.SemanticMessageInput(
+            role: orchestration.SemanticMessageRole.user,
+            content: 'Inspect.',
+          );
+      final List<SemanticModelInputItem> input = <SemanticModelInputItem>[item];
+      final TestExecutable executable = TestExecutable();
+      final ToolCatalog catalog = ToolCatalog()
+        ..register(testRegistration(executable));
+      final MaterializedToolSet tools = catalog.materialize();
+      final MaterializedTool tool = tools.tools.single;
+      final ModelInvocationId invocationId = ModelInvocationId('model-request');
+      final InferenceContextSnapshot context =
+          InferenceContextSnapshot.fromStrategy(
+            orchestration.StrategyInferenceMaterial(
+              instructions: 'Explicit instructions.\n ',
+              input: input,
+            ),
+          );
+      final SemanticModelRequest request = SemanticModelRequest(
+        invocationId: invocationId,
+        context: context,
+        tools: tools,
+      );
+
+      input.clear();
+      catalog.register(
+        testRegistration(TestExecutable(provider: 'replacement')),
+      );
+      expect(request.invocationId, same(invocationId));
+      expect(request.context, same(context));
+      expect(request.instructions, 'Explicit instructions.\n ');
+      expect(
+        request.instructions,
+        orchestration.renderInferenceInstructions(context),
+      );
+      expect(request.tools, same(tools));
+      expect(request.tools.tools.single, same(tool));
+      expect(request.tools.byAlias('inspect_resource'), same(tool));
+      expect(request.tools.tools.single.executable, same(executable));
+      expect(request.input, same(context.input));
+      expect(request.input.single, same(item));
+      expect(() => request.input.clear(), throwsUnsupportedError);
+      expect(() => request.input[0] = item, throwsUnsupportedError);
+      expect(
+        request.context.instructionGroups.single,
+        isA<orchestration.StrategyInstructionGroup>().having(
+          (group) => group.instructions,
+          'instructions',
+          'Explicit instructions.\n ',
+        ),
+      );
+      expect(
+        () => request.context.instructionGroups.clear(),
+        throwsUnsupportedError,
+      );
+      expect(request.context.sourceResults, isEmpty);
+    },
+  );
+
+  test('strategy-only empty context derives empty instructions and input', () {
     final SemanticModelRequest request = SemanticModelRequest(
-      invocationId: invocationId,
-      input: input,
-      tools: tools,
+      invocationId: ModelInvocationId('empty-context'),
+      context: InferenceContextSnapshot.fromStrategy(
+        orchestration.StrategyInferenceMaterial(
+          input: const <SemanticModelInputItem>[],
+        ),
+      ),
+      tools: MaterializedToolSet(const <MaterializedTool>[]),
     );
 
-    input.clear();
-    expect(request.invocationId, same(invocationId));
     expect(request.instructions, '');
-    expect(request.tools, same(tools));
-    expect(request.input.single, same(item));
-    expect(() => request.input.clear(), throwsUnsupportedError);
-    expect(() => request.input[0] = item, throwsUnsupportedError);
+    expect(request.input, isEmpty);
+    expect(request.input, same(request.context.input));
     expect(
-      SemanticModelRequest(
-        invocationId: invocationId,
-        instructions: 'Explicit instructions.',
-        input: const <SemanticModelInputItem>[],
-        tools: tools,
-      ).instructions,
-      'Explicit instructions.',
+      request.context.instructionGroups.single,
+      isA<orchestration.StrategyInstructionGroup>().having(
+        (group) => group.instructions,
+        'empty strategy origin',
+        '',
+      ),
     );
   });
 
@@ -323,9 +379,16 @@ void main() {
 
 SemanticModelRequest _request(String id) => SemanticModelRequest(
   invocationId: ModelInvocationId(id),
-  input: <SemanticModelInputItem>[
-    SemanticMessageInput(role: SemanticMessageRole.user, content: 'Inspect.'),
-  ],
+  context: InferenceContextSnapshot.fromStrategy(
+    orchestration.StrategyInferenceMaterial(
+      input: <SemanticModelInputItem>[
+        SemanticMessageInput(
+          role: SemanticMessageRole.user,
+          content: 'Inspect.',
+        ),
+      ],
+    ),
+  ),
   tools: MaterializedToolSet(const <MaterializedTool>[]),
 );
 

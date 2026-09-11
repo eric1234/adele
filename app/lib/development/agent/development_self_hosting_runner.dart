@@ -456,6 +456,7 @@ final class DevelopmentSelfHostingRunner {
               () => executeDevelopmentSelfHostingRun(
                 identity: identity,
                 lifecycle: activeTopology.lifecycle,
+                contextComposer: activeTopology.contextComposer,
                 sessions: activeTopology.chat.sessions,
                 sessionId: activeTopology.sessionId,
                 prompt: prompt!,
