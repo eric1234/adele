@@ -4,6 +4,7 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
+import 'package:adele_desktop/development/agent/development_strategy_registration.dart';
 import 'package:adele_desktop/development/agent/simple_tool_loop_strategy.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
@@ -235,15 +236,17 @@ final class DevelopmentSelfHostingTopology {
     required this.project,
     required this.task,
     required this.environment,
-    required this.sessionId,
+    required this.session,
     required this.authority,
     required this.catalog,
     required this.projectSource,
     required PluginCapabilityActivation environmentActivation,
+    required ExtensionRegistration strategyActivation,
     required ExtensionRegistration filesystemActivation,
     required ExtensionRegistration searchActivation,
     required ExtensionRegistration? commandActivation,
   }) : _environmentActivation = environmentActivation,
+       _strategyActivation = strategyActivation,
        _filesystemActivation = filesystemActivation,
        _searchActivation = searchActivation,
        _commandActivation = commandActivation;
@@ -255,15 +258,18 @@ final class DevelopmentSelfHostingTopology {
   final Project project;
   final Task task;
   final Environment environment;
-  final SessionId sessionId;
+  final Session session;
   final SessionEnvironmentAuthority authority;
   final ToolCatalog catalog;
   final Directory projectSource;
   final PluginCapabilityActivation _environmentActivation;
+  final ExtensionRegistration _strategyActivation;
   final ExtensionRegistration _filesystemActivation;
   final ExtensionRegistration _searchActivation;
   final ExtensionRegistration? _commandActivation;
   bool _closed = false;
+
+  SessionId get sessionId => session.id;
 
   static Future<DevelopmentSelfHostingTopology> start({
     required DevelopmentSelfHostingArtifacts artifacts,
@@ -282,6 +288,7 @@ final class DevelopmentSelfHostingTopology {
     );
     final CapabilityRegistry registry = CapabilityRegistry();
     PluginCapabilityActivation? environmentActivation;
+    ExtensionRegistration? strategyActivation;
     ExtensionRegistration? filesystemActivation;
     ExtensionRegistration? searchActivation;
     ExtensionRegistration? commandActivation;
@@ -296,6 +303,7 @@ final class DevelopmentSelfHostingTopology {
         providerId: environmentProviderId,
       );
       final ExtensionRegistry extensions = ExtensionRegistry();
+      strategyActivation = registerDevelopmentToolLoopStrategy(extensions);
       filesystemActivation = const FilesystemToolsPlugin().activate(extensions);
       searchActivation = const SearchToolsPlugin().activate(extensions);
       if (includeCommandTools) {
@@ -310,6 +318,7 @@ final class DevelopmentSelfHostingTopology {
           ProductLifecycleCoordinator.generated(
             store: store,
             registry: registry,
+            extensions: extensions,
             ids: _DevelopmentSelfHostingIds(identity),
           );
       final Project project = lifecycle.createProject(projectSource.uri);
@@ -335,11 +344,12 @@ final class DevelopmentSelfHostingTopology {
             ),
           );
       onTaskEstablished?.call(retainedState);
-      final SessionId sessionId = SessionId('session-$identity');
-      final SessionEnvironmentAuthority authority = store.associateSession(
-        sessionId: sessionId,
+      final Session session = lifecycle.createSession(
         taskId: created.task.id,
+        strategyId: developmentToolLoopStrategyId,
       );
+      final SessionEnvironmentAuthority authority = store
+          .requireSessionAuthority(session.id);
       if (authority.environmentId != created.environment.id) {
         throw StateError('Session authority selected another Environment.');
       }
@@ -359,7 +369,7 @@ final class DevelopmentSelfHostingTopology {
         );
       }
       final ToolCatalog catalog = await buildModelToolCatalogForSession(
-        sessionId: sessionId,
+        sessionId: session.id,
         environmentRuntime: lifecycle.environmentRuntime,
         extensions: extensions,
       );
@@ -372,11 +382,12 @@ final class DevelopmentSelfHostingTopology {
             project: project,
             task: created.task,
             environment: created.environment,
-            sessionId: sessionId,
+            session: session,
             authority: authority,
             catalog: catalog,
             projectSource: projectSource,
             environmentActivation: environmentActivation,
+            strategyActivation: strategyActivation,
             filesystemActivation: filesystemActivation,
             searchActivation: searchActivation,
             commandActivation: commandActivation,
@@ -390,6 +401,7 @@ final class DevelopmentSelfHostingTopology {
           if (commandActivation != null) commandActivation.close,
           if (searchActivation != null) searchActivation.close,
           if (filesystemActivation != null) filesystemActivation.close,
+          if (strategyActivation != null) strategyActivation.close,
           if (environmentActivation != null) environmentActivation.close,
           if (!host.isClosed) () => host.close(graceful: false),
         ]);
@@ -423,6 +435,7 @@ final class DevelopmentSelfHostingTopology {
       if (_commandActivation != null) _commandActivation.close,
       _searchActivation.close,
       _filesystemActivation.close,
+      _strategyActivation.close,
       _environmentActivation.close,
       if (!host.isClosed) host.close,
     ]);
@@ -728,6 +741,9 @@ final class _DevelopmentSelfHostingIds implements ProductIdSource {
 
   @override
   ProjectId nextProjectId() => ProjectId('project-$identity');
+
+  @override
+  SessionId nextSessionId() => SessionId('session-$identity');
 
   @override
   TaskId nextTaskId() => TaskId('task-$identity');

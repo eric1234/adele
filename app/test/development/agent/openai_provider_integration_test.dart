@@ -8,6 +8,7 @@ import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/development/agent/agent_capability_adapters.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
+import 'package:adele_desktop/development/agent/development_strategy_registration.dart';
 import 'package:adele_desktop/development/agent/simple_tool_loop_strategy.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
@@ -592,10 +593,15 @@ void main() {
         modelProviderCapability,
       );
       final InMemoryProductStore store = InMemoryProductStore();
+      final ExtensionRegistry extensions = ExtensionRegistry();
+      final ExtensionRegistration strategyActivation =
+          registerDevelopmentToolLoopStrategy(extensions);
+      addTearDown(strategyActivation.close);
       final ProductLifecycleCoordinator lifecycle =
           ProductLifecycleCoordinator.generated(
             store: store,
             registry: registry,
+            extensions: extensions,
             ids: const _IntegrationIds('openai'),
           );
       final Project project = lifecycle.createProject(sourceRepository.uri);
@@ -604,11 +610,13 @@ void main() {
         title: 'Inspect ADELE source with OpenAI',
         providerId: environmentProviderId,
       );
-      final SessionId sessionId = SessionId('session-source-coding');
-      final SessionEnvironmentAuthority authority = store.associateSession(
-        sessionId: sessionId,
+      final Session productSession = lifecycle.createSession(
         taskId: created.task.id,
+        strategyId: developmentToolLoopStrategyId,
       );
+      final SessionId sessionId = productSession.id;
+      final SessionEnvironmentAuthority authority = store
+          .requireSessionAuthority(sessionId);
       expect(authority.environmentId, created.environment.id);
       final ProviderBinding materializedEnvironmentBinding = lifecycle
           .environmentRuntime
@@ -622,7 +630,6 @@ void main() {
         materializedEnvironmentBinding.requestChannel,
         same(environmentBinding.requestChannel),
       );
-      final ExtensionRegistry extensions = ExtensionRegistry();
       final ExtensionRegistration filesystemActivation =
           const FilesystemToolsPlugin().activate(extensions);
       addTearDown(filesystemActivation.close);
@@ -947,6 +954,9 @@ final class _IntegrationIds implements ProductIdSource {
 
   @override
   ProjectId nextProjectId() => ProjectId('project-$suffix');
+
+  @override
+  SessionId nextSessionId() => SessionId('session-source-coding');
 
   @override
   TaskId nextTaskId() => TaskId('task-$suffix');

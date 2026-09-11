@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted as architectural direction; general implementation deferred
+Accepted; generic registration/liveness and typed model-tool/strategy contributions implemented, broader composition deferred
 
 ## Context
 
@@ -38,8 +38,10 @@ Only part of this model is currently implemented:
 
 - generated typed contract transport is implemented for the maintained supported shapes;
 - active one-to-many capability registration/resolution and exact generation bindings are implemented;
-- model-tool materialization and provider-neutral agent execution semantics are implemented internally;
-- profile-aware preference and generic extension-point registration are not implemented;
+- generic typed extension registration/discovery, activation-scoped retirement, exact `ExtensionBinding` liveness, and `StaleExtensionBinding` are implemented;
+- public contextual model-tool contributions and internal materialization/provider-neutral agent execution semantics are implemented;
+- public `adele_orchestration` adds identity-only strategy contributions and semantic-ID resolution over the existing registry for canonical Session binding; missing/ambiguous IDs fail explicitly and old resolved bindings never migrate to replacement generations;
+- profile-aware preference and a public strategy execution facade are not implemented;
 - plugin-defined extension APIs, production UI composition, Commands/keybindings, generic Event subscription, and structured multi-plugin inference composition remain future work.
 
 This ADR accepts the architectural direction without claiming those mechanisms are proven.

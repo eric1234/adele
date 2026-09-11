@@ -69,6 +69,25 @@ final class SessionId {
   String toString() => value;
 }
 
+/// Stable product identity, independent of extension registrations.
+final class OrchestrationStrategyId {
+  OrchestrationStrategyId(String value)
+    : value = _requireId(value, 'Orchestration strategy ID');
+
+  final String value;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OrchestrationStrategyId && other.value == value;
+
+  @override
+  int get hashCode => value.hashCode;
+
+  @override
+  String toString() => value;
+}
+
 final class RunId {
   RunId(String value) : value = _requireId(value, 'Run ID');
 
@@ -114,6 +133,18 @@ final class Task {
   final TaskId id;
   final ProjectId projectId;
   final String title;
+}
+
+final class Session {
+  const Session({
+    required this.id,
+    required this.taskId,
+    required this.strategyId,
+  });
+
+  final SessionId id;
+  final TaskId taskId;
+  final OrchestrationStrategyId strategyId;
 }
 
 enum EnvironmentRole { primary, additional }

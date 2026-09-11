@@ -5,8 +5,11 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
+import 'package:adele_desktop/development/agent/development_self_hosting.dart';
+import 'package:adele_desktop/development/agent/development_strategy_registration.dart';
 import 'package:adele_desktop/development/agent/simple_tool_loop_strategy.dart';
 import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
@@ -60,6 +63,72 @@ void main() {
   });
 
   test(
+    'self-hosting topology stores its canonical Session strategy and authority',
+    () async {
+      final Directory container = await Directory.systemTemp.createTemp(
+        'adele-self-hosting-topology-',
+      );
+      addTearDown(() async {
+        if (await container.exists()) await container.delete(recursive: true);
+      });
+      final Directory source = Directory('${container.path}/source');
+      await _createSourceRepository(repository: repository, source: source);
+      final DevelopmentSelfHostingTopology topology =
+          await DevelopmentSelfHostingTopology.start(
+            artifacts: DevelopmentSelfHostingArtifacts(
+              repository: Directory(repository),
+              dartAotRuntime: dartaotruntime,
+              directory: hostArtifact.parent,
+              hostArtifact: hostArtifact,
+              // Topology establishment does not activate a model provider.
+              openAiArtifact: File(
+                '${hostArtifact.parent.path}/unused-openai.aot',
+              ),
+              gitEnvironmentArtifact: gitEnvironmentArtifact,
+            ),
+            projectSource: source,
+            hostEnvironment: const <String, String>{},
+            identity: 'topology',
+            taskTitle: 'Establish a canonical development Session',
+          );
+      addTearDown(topology.close);
+
+      expect(topology.sessionId, SessionId('session-topology'));
+      expect(topology.sessionId, topology.session.id);
+      expect(topology.session.taskId, topology.task.id);
+      expect(topology.session.strategyId, developmentToolLoopStrategyId);
+      expect(
+        topology.store.session(topology.sessionId),
+        same(topology.session),
+      );
+      expect(
+        topology.store.requireSessionAuthority(topology.sessionId),
+        same(topology.authority),
+      );
+      expect(topology.authority.sessionId, topology.session.id);
+      expect(topology.authority.taskId, topology.session.taskId);
+      expect(topology.authority.environmentId, topology.environment.id);
+      final ResolvedOrchestrationStrategy strategy = topology.lifecycle
+          .resolveSessionStrategy(topology.sessionId);
+      expect(strategy.strategyId, topology.session.strategyId);
+      expect(strategy.validateBinding, returnsNormally);
+
+      await topology.close();
+
+      expect(
+        () => topology.lifecycle.resolveSessionStrategy(topology.sessionId),
+        throwsA(isA<OrchestrationStrategyUnavailable>()),
+      );
+      expect(
+        topology.store.session(topology.sessionId),
+        same(topology.session),
+      );
+      expect(topology.session.strategyId, developmentToolLoopStrategyId);
+    },
+    timeout: const Timeout(Duration(minutes: 4)),
+  );
+
+  test(
     'agent searches then reads real source through Environment generations',
     () async {
       final Directory container = await Directory.systemTemp.createTemp(
@@ -90,11 +159,16 @@ void main() {
             providerId: providerId,
           );
       final InMemoryProductStore store = InMemoryProductStore();
+      final ExtensionRegistry extensions = ExtensionRegistry();
+      final ExtensionRegistration strategyActivation =
+          registerDevelopmentToolLoopStrategy(extensions);
+      addTearDown(strategyActivation.close);
       final ProductLifecycleCoordinator lifecycle =
           ProductLifecycleCoordinator.generated(
             store: store,
             registry: registry,
-            ids: const _IntegrationIds(),
+            extensions: extensions,
+            ids: const _IntegrationIds('session-environment-read'),
           );
       final Project project = lifecycle.createProject(source.uri);
       final TaskCreationResult created = await lifecycle.createTask(
@@ -105,12 +179,13 @@ void main() {
       final EnvironmentMaterialization materializationA = lifecycle
           .environmentRuntime
           .currentMaterialization(created.environment.id)!;
-      final SessionId sessionId = SessionId('session-environment-read');
-      final SessionEnvironmentAuthority authority = store.associateSession(
-        sessionId: sessionId,
+      final Session session = lifecycle.createSession(
         taskId: created.task.id,
+        strategyId: developmentToolLoopStrategyId,
       );
-      final ExtensionRegistry extensions = ExtensionRegistry();
+      final SessionId sessionId = session.id;
+      final SessionEnvironmentAuthority authority = store
+          .requireSessionAuthority(sessionId);
       final ExtensionRegistration filesystemActivation =
           const FilesystemToolsPlugin().activate(extensions);
       addTearDown(filesystemActivation.close);
@@ -330,11 +405,16 @@ void main() {
           );
       addTearDown(environmentActivation.close);
       final InMemoryProductStore store = InMemoryProductStore();
+      final ExtensionRegistry extensions = ExtensionRegistry();
+      final ExtensionRegistration strategyActivation =
+          registerDevelopmentToolLoopStrategy(extensions);
+      addTearDown(strategyActivation.close);
       final ProductLifecycleCoordinator lifecycle =
           ProductLifecycleCoordinator.generated(
             store: store,
             registry: registry,
-            ids: const _IntegrationIds(),
+            extensions: extensions,
+            ids: const _IntegrationIds('session-environment-patch'),
           );
       final Project project = lifecycle.createProject(source.uri);
       final TaskCreationResult created = await lifecycle.createTask(
@@ -342,12 +422,13 @@ void main() {
         title: 'Patch real ADELE source',
         providerId: providerId,
       );
-      final SessionId sessionId = SessionId('session-environment-patch');
-      final SessionEnvironmentAuthority authority = store.associateSession(
-        sessionId: sessionId,
+      final Session session = lifecycle.createSession(
         taskId: created.task.id,
+        strategyId: developmentToolLoopStrategyId,
       );
-      final ExtensionRegistry extensions = ExtensionRegistry();
+      final SessionId sessionId = session.id;
+      final SessionEnvironmentAuthority authority = store
+          .requireSessionAuthority(sessionId);
       final ExtensionRegistration filesystemActivation =
           const FilesystemToolsPlugin().activate(extensions);
       addTearDown(filesystemActivation.close);
@@ -654,11 +735,16 @@ void main() {
           );
       addTearDown(environmentActivation.close);
       final InMemoryProductStore store = InMemoryProductStore();
+      final ExtensionRegistry extensions = ExtensionRegistry();
+      final ExtensionRegistration strategyActivation =
+          registerDevelopmentToolLoopStrategy(extensions);
+      addTearDown(strategyActivation.close);
       final ProductLifecycleCoordinator lifecycle =
           ProductLifecycleCoordinator.generated(
             store: store,
             registry: registry,
-            ids: const _IntegrationIds(),
+            extensions: extensions,
+            ids: const _IntegrationIds('session-environment-create-delete'),
           );
       final Project project = lifecycle.createProject(source.uri);
       final TaskCreationResult created = await lifecycle.createTask(
@@ -666,14 +752,13 @@ void main() {
         title: 'Create and delete transient source',
         providerId: providerId,
       );
-      final SessionId sessionId = SessionId(
-        'session-environment-create-delete',
-      );
-      final SessionEnvironmentAuthority authority = store.associateSession(
-        sessionId: sessionId,
+      final Session session = lifecycle.createSession(
         taskId: created.task.id,
+        strategyId: developmentToolLoopStrategyId,
       );
-      final ExtensionRegistry extensions = ExtensionRegistry();
+      final SessionId sessionId = session.id;
+      final SessionEnvironmentAuthority authority = store
+          .requireSessionAuthority(sessionId);
       final ExtensionRegistration filesystemActivation =
           const FilesystemToolsPlugin().activate(extensions);
       addTearDown(filesystemActivation.close);
@@ -1520,13 +1605,18 @@ String _dartExecutable() {
 }
 
 final class _IntegrationIds implements ProductIdSource {
-  const _IntegrationIds();
+  const _IntegrationIds(this.sessionId);
+
+  final String sessionId;
 
   @override
   EnvironmentId nextEnvironmentId() => EnvironmentId('environment-real-source');
 
   @override
   ProjectId nextProjectId() => ProjectId('project-real-source');
+
+  @override
+  SessionId nextSessionId() => SessionId(sessionId);
 
   @override
   TaskId nextTaskId() => TaskId('task-real-source');

@@ -2,9 +2,9 @@
 
 ## Status
 
-ADELE's maintained Linux x64 foundation proves source compilation, generated unary and server-streaming/cancellation transport, interpreted frontend execution, active capability routing, configured provider contexts, the Phase IV/V-A source-inspection agent vertical, the Phase V-B conditional Environment mutation vertical, the Phase V-C Environment foreground-process and model-facing command slices, and the Phase V-D1 create/delete completion slice. It includes the real OpenAI `ModelProvider`, generation-bound configured provider contexts, an explicitly experimental ChatGPT configured instance, provisional Project/Task/Environment and Session authority, generic extension/model-tool composition, a Git Environment provider, and independent stock Filesystem Tools, Search Tools, and Command Tools plugins that own Session-authorized `read_file`, `apply_patch`, `create_file`, `delete_file`, `search`, and `run_command`.
+ADELE's maintained Linux x64 foundation proves source compilation, generated unary and server-streaming/cancellation transport, interpreted frontend execution, active capability routing, configured provider contexts, the Phase IV/V-A source-inspection agent vertical, the Phase V-B conditional Environment mutation vertical, the Phase V-C Environment foreground-process and model-facing command slices, and the Phase V-D1 create/delete completion slice. It includes the real OpenAI `ModelProvider`, generation-bound configured provider contexts, an explicitly experimental ChatGPT configured instance, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, generic extension/model-tool composition and identity-only strategy contributions, a Git Environment provider, and independent stock Filesystem Tools, Search Tools, and Command Tools plugins that own Session-authorized `read_file`, `apply_patch`, `create_file`, `delete_file`, `search`, and `run_command`.
 
-Phase V-A is complete: deterministic real-model integration now crosses provisional app orchestration, generic model-tool extension composition, plugin-owned Search, Session-authorized Environment access, plugin-owned Read File, maintained ADELE source, and model continuation. Search is bounded native Dart traversal over authorized Environment directory/file reads, not an Environment provider method. These proofs do **not** yet implement ADELE's complete product/domain model, production orchestration-strategy registration/binding, a plugin-owned Chat strategy, or the general recursive extension system described by the current architecture.
+Phase V-A is complete: deterministic real-model integration now crosses provisional app orchestration, generic model-tool extension composition, plugin-owned Search, Session-authorized Environment access, plugin-owned Read File, maintained ADELE source, and model continuation. Search is bounded native Dart traversal over authorized Environment directory/file reads, not an Environment provider method. These proofs do **not** yet implement ADELE's complete product/domain model, a public strategy execution facade, a plugin-owned Chat strategy, or the general recursive extension system described by the current architecture.
 
 Phase V-B1 adds provider-neutral opaque file revisions and conditional replacement of existing bounded UTF-8 text files. The Git Worktree provider serializes ADELE replacements within each live Environment and detects practical out-of-band changes immediately before promotion, but cannot provide portable atomic compare-and-replace against arbitrary external processes. Phase V-B2 exposes coherent read and mutation facets over one Session-authorized filesystem authority and adds Filesystem Tools' exact-unique `apply_patch`, which lowers a localized model request to B1 complete-file conditional replacement. Deterministic real-Git integration proves Read-to-Revision-to-Patch model continuation. Phase V-B3 adds an opt-in paid OpenAI API-key proof of real-model `read_file` opaque-revision flow through `apply_patch`, Task-worktree-only mutation, post-write observation, and continuation. The experimental ChatGPT subscription-backed route has parity for that model-visible revision flow while remaining interoperability evidence rather than a stable contract.
 
@@ -25,10 +25,10 @@ Phase V-D1 adds provider-neutral create-new and revision-conditional delete oper
 
 The following remain largely or entirely unimplemented:
 
-- Project/Task/Session/Environment product persistence and lifecycle;
-- production orchestration-strategy registration;
+- Project/Task/Session/Environment disk persistence and complete lifecycle;
+- a public strategy execution facade, a plugin-owned Chat strategy, and strategy-specific durable state;
 - parent/child Session lifecycle;
-- plugin-defined extension points beyond the initial registration/model-tool slice;
+- plugin-defined extension ecosystems beyond the initial registration/model-tool/strategy binding slices;
 - production plugin-facing UI composition;
 - application Command/Command Palette/keybinding infrastructure;
 - profile-aware provider preference and general configuration services;
@@ -91,9 +91,9 @@ Runtime composition should prefer typed interface discovery over hidden activati
 
 Capabilities remain the implemented callable-provider mechanism for Actions and Services. Events are read-only fact notifications. Other extension points may collect UI fragments or structured operation contributions without being callable capabilities.
 
-Future extension discovery may react live to registrations appearing/disappearing, while already-resolved execution-sensitive operations continue to retain exact generation bindings.
+The generic `ExtensionRegistry` supports typed registration/discovery, retirement, and exact binding liveness. Current model-tool and orchestration-strategy contribution points reuse it with their own composition semantics; already-resolved bindings do not migrate to replacement generations.
 
-The general extension-point runtime, plugin-defined UI extension APIs, generic Event subscription, Commands/keybindings, and multi-plugin inference composition are direction rather than implemented production systems.
+Broader recursive composition, plugin-defined UI extension APIs, generic Event subscription, Commands/keybindings, and multi-plugin inference composition are direction rather than implemented production systems.
 
 ## Contracts, capabilities, and providers
 
@@ -140,15 +140,47 @@ A Task normally has one primary Environment and may own additional Environments 
 
 Session is a core identity/lifecycle container permanently bound to one orchestration strategy. Core does not assume every Session is chat history; strategy-specific state defines the Session's semantic contents.
 
-Run remains the core unit of execution inside a Session. The maintained development proof currently uses a chat-shaped Session representation and bounded development strategy; that is implemented evidence, not the long-term universal Session definition.
+The implemented `adele_product` value is final and immutable:
+`Session(id, taskId, strategyId)`. The semantic `OrchestrationStrategyId` also lives
+in product so product does not depend on orchestration. Public pure-Dart
+`adele_orchestration` defines immutable identity-only
+`OrchestrationStrategyContribution`, the typed
+`orchestrationStrategyContributions` extension point, and thin
+`OrchestrationStrategyResolver.resolve(id)` over the existing `ExtensionRegistry`.
+It is a registration/binding API, not a public execution facade or second registry.
 
-A Session may create child Sessions for delegated work. Child Sessions may share an Environment or use another Task-associated Environment and are primarily surfaced through the parent Session/orchestration experience.
+`ProductLifecycleCoordinator.createSession` requires `taskId` and `strategyId`
+and accepts an optional `environmentId`. It validates the existing Task, exactly
+one current strategy contribution, and the Task's primary or explicitly selected
+same-Task Environment. It then allocates `SessionId`, atomically publishes the
+canonical Session and separate Task/Environment authority, and returns `Session`.
+Failed validation publishes neither value. Publication is private; there is no
+public `associateSession` operation. `store.session(id)` reads the canonical value,
+while `requireSessionAuthority` remains the tool-host authority read path.
+
+`coordinator.resolveSessionStrategy(sessionId)` resolves the canonical Session's
+stored strategy ID. Zero matches produce an explicit unavailable error; multiple
+matches produce an explicit ambiguous error even under different `ExtensionId`
+values.
+`ResolvedOrchestrationStrategy` retains the exact `ExtensionBinding`; retirement
+makes it fail with generic `StaleExtensionBinding`. Only fresh resolution may use
+a replacement registration, with no fallback or rewrite of the stored strategy
+ID. The permanent semantic binding is not a lifetime activation-generation pin.
+
+Run remains the core unit of execution inside a Session. The maintained development proof retains separate Chat-shaped history and a bounded development strategy; that is implemented evidence, not the universal Session aggregate. The binding spine does not redesign the kernel or context assembly, add strategy-specific durable state, or implement Session disk persistence, strategy defaults/profiles, or lifecycle UI.
+
+The accepted direction allows child Sessions for delegated work. They may share an Environment or use another Task-associated Environment and are primarily surfaced through the parent Session/orchestration experience. Child Session lifecycle remains deferred.
 
 ## Agent execution
 
 `agent_kernel` remains an internal provider-neutral execution substrate. Concrete models, tools, editors, SCM integrations, terminals, orchestration strategies, and presentation belong outside the kernel.
 
 The maintained `DevelopmentToolLoopStrategy` is a bounded development-only algorithm, not the definition of Run or a general workflow system.
+
+Development composition registers temporary identity-only metadata under
+`dev.adele.strategy.development-tool-loop` with a separate extension ID. The
+strategy remains app-owned and unchanged; execution still calls it directly
+rather than routing through registration. No Chat strategy plugin is added.
 
 The kernel model boundary is streaming-shaped. The common ModelProvider transport supports generated streaming/cancellation, ordered semantic input/output, live observations, terminal settlement, and provider-native item metadata. Materialized model/tool bindings remain exact-generation bound.
 
@@ -222,6 +254,7 @@ This proves self-inspection, deterministic model-facing conditional mutation and
 | Rebuild/reload | Proven for three cycles without orphan host processes. |
 | General recursive extension system | Accepted architecture; not implemented. |
 | Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, Session-authorized read/mutation/process facets, bounded create/patch/delete text-file mutation, and generated foreground process streaming through the Git provider are proven; persistence and complete lifecycle remain unimplemented. |
+| Session strategy binding | Canonical immutable Session creation, atomic publication with separate Environment authority, identity-only strategy contributions, explicit unavailable/ambiguous resolution, and exact binding liveness are implemented in memory; public strategy execution, durable strategy state, child Sessions, and disk persistence remain deferred. |
 | Production orchestration/UI/Commands | Directional; not implemented. |
 | Cross-platform/release | Unproven on Windows, macOS, and release mode. |
 | Packaging/sandboxing | Unproven; process isolation is not a sandbox. |

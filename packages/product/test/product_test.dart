@@ -44,6 +44,62 @@ void main() {
     expect(() => SessionId(' session-1'), throwsFormatException);
   });
 
+  test('strategy identity has typed value equality and matching hashes', () {
+    final OrchestrationStrategyId first = OrchestrationStrategyId('strategy-1');
+    final OrchestrationStrategyId same = OrchestrationStrategyId('strategy-1');
+    final OrchestrationStrategyId other = OrchestrationStrategyId('strategy-2');
+
+    expect(first, first);
+    expect(first, same);
+    expect(same, first);
+    expect(first.hashCode, same.hashCode);
+    expect(<OrchestrationStrategyId>{first, same, other}, hasLength(2));
+    expect(first, isNot(other));
+    expect(first, isNot(SessionId('strategy-1')));
+    expect(first, isNot('strategy-1'));
+    expect(first.value, 'strategy-1');
+    expect(first.toString(), 'strategy-1');
+  });
+
+  test(
+    'strategy identity follows product ID validation without normalizing',
+    () {
+      for (final String value in <String>[
+        '',
+        ' ',
+        '\t\n',
+        ' strategy-1',
+        'strategy-1 ',
+        '\tstrategy-1',
+        'strategy-1\n',
+      ]) {
+        expect(() => OrchestrationStrategyId(value), throwsFormatException);
+      }
+
+      expect(OrchestrationStrategyId('strategy 1').value, 'strategy 1');
+      expect(
+        OrchestrationStrategyId('Strategy-1'),
+        isNot(OrchestrationStrategyId('strategy-1')),
+      );
+    },
+  );
+
+  test('Session retains only its identity, Task, and semantic strategy', () {
+    final SessionId id = SessionId('session-1');
+    final OrchestrationStrategyId strategyId = OrchestrationStrategyId(
+      'strategy-1',
+    );
+    final Session session = Session(
+      id: id,
+      taskId: task.id,
+      strategyId: strategyId,
+    );
+
+    expect(session.id, same(id));
+    expect(session.taskId, same(task.id));
+    expect(session.strategyId, same(strategyId));
+  });
+
   test('provisional Environment has absent provider state', () {
     final Environment provisional = Environment(
       id: EnvironmentId('environment-1'),

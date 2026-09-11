@@ -4,11 +4,11 @@
 
 **Accepted architectural direction; implementation is partial and most public extension APIs remain unimplemented.**
 
-This document defines ADELE's long-term composition model for plugins and plugin-defined extension ecosystems. It records architectural boundaries rather than a frozen Dart API. Names such as `ExtensionPoint`, `Extension`, and the example interfaces below remain provisional until concrete implementation requires them.
+This document defines ADELE's long-term composition model for plugins and plugin-defined extension ecosystems. It records architectural boundaries rather than a frozen Dart API. Implemented APIs such as `ExtensionPoint` remain experimental; other example interfaces below remain directional until concrete implementation requires them.
 
-The maintained repository already proves source plugins, interpreted frontend execution, AOT backend execution, generated typed transport, active capability registration/resolution, configured provider contexts, provider-neutral agent execution, provisional Project/Task/Environment lifecycle and Session authority, and the first generic registration/liveness slice. That slice supports typed extension points, activation-scoped registrations, exact-generation bindings, and a public contextual model-tool contribution point. The statically composed stock Filesystem Tools, Search Tools, and Command Tools source modules consume it and own `read_file`/`apply_patch`/`create_file`/`delete_file`, `search`, and `run_command`; this is not production plugin discovery. ADELE does **not** yet implement the broader recursive extension system described here, production plugin-facing UI composition, generic commands/keybindings, production product persistence, the orchestration-strategy registry/public execution facade, or most of the expected stock plugin topology.
+The maintained repository already proves source plugins, interpreted frontend execution, AOT backend execution, generated typed transport, active capability registration/resolution, configured provider contexts, provider-neutral agent execution, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, and generic registration/liveness. The registry supports typed extension points, activation-scoped registrations, exact-generation bindings, a public contextual model-tool contribution point, and public identity-only orchestration-strategy contributions. The statically composed stock Filesystem Tools, Search Tools, and Command Tools source modules consume the model-tool point and own `read_file`/`apply_patch`/`create_file`/`delete_file`, `search`, and `run_command`; this is not production plugin discovery. ADELE does **not** yet implement the broader recursive extension system described here, production plugin-facing UI composition, generic commands/keybindings, production product persistence, a public strategy execution facade or Chat plugin, or most of the expected stock plugin topology.
 
-The generic registry deliberately defines only registration, discovery, retirement, and binding liveness. Model-tool composition defines its own zero-or-many composition and alias-collision semantics. Priority, applicability languages, ordering, and universal failure behavior remain deferred. `EnvironmentRuntime` remains a provisional application/domain implementation rather than a template for extension runtimes.
+The generic registry deliberately defines only registration, discovery, retirement, and binding liveness. Model-tool composition defines its own zero-or-many composition and alias-collision semantics. Strategy resolution requires exactly one current contribution for an explicit semantic ID, with unavailable/ambiguous errors rather than defaults or tie-breaking. Priority, applicability languages, ordering, and universal failure behavior remain deferred. `EnvironmentRuntime` remains a provisional application/domain implementation rather than a template for extension runtimes.
 
 See also:
 
@@ -86,7 +86,7 @@ Core directionally owns:
 
 Plugins normally own provider-specific, workflow-specific, tool-specific, integration-specific, and specialized presentation behavior. Expected examples include model providers, Environment implementations, Git integration, editors, Diff/Review, terminals, agent orchestration strategy implementations, model tools, model/agent policy, accounting, TODO/progress, and context monitoring.
 
-A strategy plugin must not import the internal `agent_kernel`. It consumes a public provider-neutral orchestration/execution API backed by core/kernel implementation. The exact public package/type surface remains deferred until a concrete strategy implementation requires it.
+A strategy plugin must not import the internal `agent_kernel`. The public identity-only registration/binding API is implemented in `adele_orchestration`; a public provider-neutral execution facade backed by core/kernel implementation remains deferred until a concrete strategy implementation requires it.
 
 One plugin may register several independent extensions into different systems. Splitting those registrations into separate plugins should not fundamentally change the extension mechanisms involved.
 
@@ -203,6 +203,38 @@ Session
 
 An optional Agent Interaction UI may consume that registry to offer strategy selection or host a strategy surface, but Session validity cannot depend on that UI plugin being active. Core therefore owns the minimal public registration/binding contract; strategy implementations remain plugins.
 
+The implemented binding spine separates durable product identity from live
+registration identity:
+
+```text
+adele_product: Session(id, taskId, strategyId)
+    -> semantic OrchestrationStrategyId
+        != registration ExtensionId
+        != exact activation-generation ExtensionBinding
+```
+
+`Session` is a final immutable value. `OrchestrationStrategyId` lives in
+`adele_product` so product values do not depend on orchestration. Public pure-Dart
+`adele_orchestration` defines immutable identity-only
+`OrchestrationStrategyContribution` and `orchestrationStrategyContributions`, an
+`ExtensionPoint<OrchestrationStrategyContribution>` over the existing
+`ExtensionRegistry`. `OrchestrationStrategyResolver.resolve(id)` is a thin lookup,
+not a second registry or materialization cache. It returns a
+`ResolvedOrchestrationStrategy` retaining the exact `ExtensionBinding`, or throws
+`OrchestrationStrategyUnavailable` or `AmbiguousOrchestrationStrategy`. Multiple
+current contributions with the same semantic ID are ambiguous even when
+registered under different extension
+IDs; neither registration order nor deterministic tie-breaking selects one.
+
+The application lifecycle coordinator validates the current strategy and a
+same-Task Environment, then atomically publishes the canonical Session and its
+separate Environment authority. Later strategy resolution uses the stored
+canonical ID. Development composition registers only temporary metadata for
+`dev.adele.strategy.development-tool-loop`, under a separate extension ID; the
+unchanged app-owned `DevelopmentToolLoopStrategy` still executes directly.
+Registration supplies no execution callback, Chat state, or public execution
+facade. See ADR 0031 for the creation boundary and deferred lifecycle scope.
+
 ---
 
 # 6. Composition is live; resolved operations remain stable
@@ -222,6 +254,13 @@ resolved operation
 ```
 
 This preserves the existing generation-bound execution rule. A new provider generation can participate in a future materialization, but an already-resolved model/tool operation retains its original binding and fails explicitly if that binding becomes stale.
+
+The same distinction applies to strategy resolution. Retiring a contribution
+makes its retained binding fail with generic `StaleExtensionBinding`. An old
+`ResolvedOrchestrationStrategy` never adopts a replacement; only fresh resolution
+of the Session's stored semantic ID may use it. Missing or ambiguous availability
+does not trigger fallback or rewrite that stored ID. Permanent Session strategy
+identity does not mean pinning one activation generation for the Session's life.
 
 ---
 

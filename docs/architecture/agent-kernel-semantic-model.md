@@ -2,7 +2,7 @@
 
 ## Status
 
-**Guiding architecture; execution, Environment source-tool, and foreground-command verticals implemented through Phase V-C.**
+**Guiding architecture; bounded execution/Environment verticals and the Session strategy binding spine are implemented.**
 
 ADR 0031 subsequently refined the long-term product-domain model: Session is a core container permanently bound to one orchestration strategy, strategy-specific state defines the semantic contents of that Session, and Environment is the practical filesystem/source + process context. The earlier chat-shaped Session history and separate Workspace discussion remain valid descriptions of the Phase IV proof/history but are not universal long-term product semantics.
 
@@ -74,7 +74,22 @@ A Session is a durable orchestration container permanently bound to one orchestr
 
 Core does not define every Session as conversation/chat history. The bound strategy owns the semantic structure of strategy-specific Session state. A Chat strategy may own canonical user/assistant messages, tool/reasoning timeline state, drafts, compaction, and forks; a Goal strategy may own iterations/evaluations or a substantially different structure.
 
-The maintained Phase IV implementation currently uses a chat-shaped `SessionHistoryPort` and canonical user/assistant entries. That representation remains valid implementation evidence for the Chat-like proof, but ADR 0031 supersedes it as the universal definition of Session.
+`adele_product` owns the final immutable `Session(id, taskId, strategyId)` and the
+semantic `OrchestrationStrategyId`. Keeping that ID in product preserves the
+dependency direction: product does not depend on orchestration. The canonical
+Session stores no live extension binding, Environment authority, or Chat state.
+Application lifecycle creation validates an existing Task, exactly one current
+strategy, and the primary or explicitly selected same-Task Environment, then
+allocates `SessionId` and atomically publishes the Session and separate authority.
+`store.session(id)` reads the product value; `requireSessionAuthority` remains the
+Environment authority read path. This lifecycle is in memory, not disk persistence.
+
+The maintained execution proof still uses a separate chat-shaped
+`SessionHistoryPort` and canonical user/assistant entries, sharing the canonical
+`SessionId` consumed/re-exported by `agent_kernel`. That history remains valid
+implementation evidence for the Chat-like proof, not the universal Session
+aggregate. This binding spine does not redesign history, context assembly, or
+kernel execution semantics.
 
 Sessions should survive independently of Environment lifetime where the product lifecycle supports retaining history after Environment resources are released.
 
@@ -140,7 +155,22 @@ Host-tool execution is sequential only. This development algorithm does not
 define what a Run fundamentally is, introduce a general Workflow framework, or
 change the common model/tool contracts.
 
-The long-term product direction expects Sessions to be permanently bound to an orchestration strategy supplied through plugin extension composition. That orchestration registration system is not yet implemented.
+Public pure-Dart `adele_orchestration` implements the minimal identity-only
+registration/binding boundary: immutable `OrchestrationStrategyContribution`, the
+typed `orchestrationStrategyContributions` extension point over the existing
+`ExtensionRegistry`, and thin `OrchestrationStrategyResolver.resolve(id)`.
+`ResolvedOrchestrationStrategy` retains its exact `ExtensionBinding`. Zero matches
+produce an explicit unavailable error; duplicate semantic IDs are ambiguous even
+under distinct `ExtensionId` values. The lifecycle coordinator's
+`resolveSessionStrategy(sessionId)` resolves the canonical Session's stored ID.
+
+Development composition registers temporary metadata under
+`dev.adele.strategy.development-tool-loop` with a separate extension ID. The
+app-owned `DevelopmentToolLoopStrategy` is unchanged and still executes directly,
+not through registration. This is not a Chat plugin or public strategy execution
+facade. Strategy-specific durable state, child Sessions, context redesign,
+strategy defaults/profiles, lifecycle UI, and disk persistence remain deferred;
+plugins still must not import `agent_kernel`.
 
 # Strategy state and context assembly
 
@@ -435,6 +465,13 @@ This applies to model continuation, model-visible tool materialization, approved
 
 A new generation can participate in a new materialization cycle.
 
+Strategy resolution follows the same exact-binding invariant without making the
+Session's permanent semantic strategy ID a lifetime generation pin. A retired
+`ResolvedOrchestrationStrategy` binding fails with generic `StaleExtensionBinding`
+and never migrates. Only fresh resolution of the stored ID may use a replacement
+registration; unavailable or ambiguous resolution never falls back to another
+strategy or rewrites the canonical Session.
+
 # Environment
 
 Run execution may be associated with a Task Environment:
@@ -509,7 +546,11 @@ An Extension Point is the broader typed composition concept described in [`plugi
 
 Plugins may define their own public extension APIs. Depending on such an interface is distinct from requiring one implementation plugin to be active.
 
-The exact generic extension runtime remains to be implemented; the existing capability registry should not be overloaded into a universal registry for every extension type.
+Generic typed registration/discovery, retirement, and binding liveness are
+implemented, with model-tool and identity-only orchestration-strategy contribution
+points. Broader recursive composition remains deferred; neither the generic
+registry nor the capability registry supplies universal composition or execution
+semantics for every extension type.
 
 ## Library
 
