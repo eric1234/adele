@@ -562,7 +562,7 @@ Map<String, Object?> developmentSelfHostingJournalJson(
   'sessionEntries': result == null
       ? const <Object?>[]
       : <Object?>[
-          for (final ChatEntry entry in result.session.snapshot().entries)
+          for (final ChatEntry entry in result.sessionSnapshot.entries)
             <String, Object?>{
               'role': switch (entry) {
                 ChatUserMessage() => 'user',

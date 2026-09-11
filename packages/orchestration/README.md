@@ -42,6 +42,12 @@ before and after the callback. It returns one `OrchestrationExecution`, whose
 `start()` and `resolveApproval(ToolApprovalResolution)` methods drive that Run's
 strategy sequencing.
 
+Materialization constructs an execution; it is not an execution entry point.
+The application host keeps Run/model/tool operations disabled until it enters
+the returned execution. Invalid caller starts/resolutions remain recoverable,
+while invalid strategy operations escaping an active execution fail that Run
+rather than leaving it running without a continuation.
+
 The narrow host interface supplies:
 
 | Operation | Boundary |

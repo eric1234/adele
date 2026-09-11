@@ -241,7 +241,7 @@ void main() {
           catalog: ToolCatalog(),
           maxModelInvocations: 1,
         );
-    final ChatSessionSnapshot firstSnapshot = first.session.snapshot();
+    final ChatSessionSnapshot firstSnapshot = first.sessionSnapshot;
     final DevelopmentSelfHostingRunResult second =
         await executeDevelopmentSelfHostingRun(
           identity: 'retained-second',
@@ -288,7 +288,7 @@ void main() {
   });
 
   test(
-    'summary final response belongs to its Run, not the Session tail',
+    'Run reports retain captured Chat history and Run-specific final responses',
     () async {
       final ChatTestTopology topology = ChatTestTopology(
         SessionId('session-run-responses'),
@@ -320,6 +320,14 @@ void main() {
         const _FinalModel(),
       );
       final Map<String, Object?> firstSummary = summary(first);
+      final Map<String, Object?> firstJournal =
+          developmentSelfHostingJournalJson(first);
+      final String firstJournalJson = jsonEncode(firstJournal);
+      final String firstSummaryJson = jsonEncode(firstSummary);
+      expect(firstJournal['sessionEntries'], <Object?>[
+        <String, Object?>{'role': 'user', 'content': 'first'},
+        <String, Object?>{'role': 'assistant', 'content': 'Complete.'},
+      ]);
       expect(first.run.state, RunState.completed);
       expect(
         (firstSummary['run']!
@@ -332,6 +340,18 @@ void main() {
         _AlwaysProposalModel(),
       );
       final Map<String, Object?> secondSummary = summary(second);
+      final Map<String, Object?> secondJournal =
+          developmentSelfHostingJournalJson(second);
+      final String secondJournalJson = jsonEncode(secondJournal);
+      final String secondSummaryJson = jsonEncode(secondSummary);
+      expect(secondJournal['sessionEntries'], <Object?>[
+        ...firstJournal['sessionEntries']! as List<Object?>,
+        <String, Object?>{'role': 'user', 'content': 'second'},
+      ]);
+      expect(
+        jsonEncode(developmentSelfHostingJournalJson(first)),
+        firstJournalJson,
+      );
       final Map<String, Object?> failedRun =
           secondSummary['run']! as Map<String, Object?>;
       expect(second.run.state, RunState.failed);
@@ -351,9 +371,32 @@ void main() {
       expect(thirdRun['finalAssistantResponse'], 'Third response.');
       expect(summary(first), firstSummary);
       expect(summary(second), secondSummary);
+      expect(developmentSelfHostingJournalJson(first), firstJournal);
+      expect(developmentSelfHostingJournalJson(second), secondJournal);
+      expect(jsonEncode(firstJournal), firstJournalJson);
+      expect(jsonEncode(secondJournal), secondJournalJson);
+      expect(jsonEncode(firstSummary), firstSummaryJson);
+      expect(jsonEncode(secondSummary), secondSummaryJson);
+      expect(first.sessionSnapshot.id, topology.session.id);
+      expect(
+        first.sessionSnapshot.entries.map((entry) => entry.content),
+        <String>['first', 'Complete.'],
+      );
+      expect(
+        developmentSelfHostingJournalJson(third)['sessionEntries'],
+        <Object?>[
+          ...secondJournal['sessionEntries']! as List<Object?>,
+          <String, Object?>{'role': 'user', 'content': 'third'},
+          <String, Object?>{'role': 'assistant', 'content': 'Third response.'},
+        ],
+      );
       expect(first.finalAssistantResponse, 'Complete.');
       expect(first.session, same(second.session));
       expect(first.session, same(third.session));
+      expect(
+        first.session,
+        same(topology.chat.sessions.obtain(topology.session.id)),
+      );
       expect(
         first.session.snapshot().entries.map((entry) => entry.content),
         <String>['first', 'Complete.', 'second', 'third', 'Third response.'],

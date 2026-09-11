@@ -30,6 +30,9 @@ final class OrchestrationStrategyContribution {
   });
 
   final OrchestrationStrategyId strategyId;
+
+  /// Constructs an execution without starting Run or model/tool work. The host
+  /// keeps execution disabled until the application enters the returned execution.
   final OrchestrationExecution Function(OrchestrationStrategyHostContext)
   materialize;
 }

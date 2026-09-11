@@ -1500,6 +1500,60 @@ void main() {
   );
 
   test(
+    'invalid caller resumes preserve the unprocessed approval batch',
+    () async {
+      final _BatchFixture fixture = await _BatchFixture.create(
+        decisions: <int, ToolPolicyDecision>{2: ToolPolicyDecision.ask},
+      );
+      await fixture.strategy.start();
+      final ToolApprovalResolution valid = _approval(fixture.run);
+      final RunInterruption pending = fixture.run.interruptions.values.single;
+      final List<ExecutionEventRecord> waiting = fixture.run.journal.records;
+      for (final ToolApprovalResolution invalid in <ToolApprovalResolution>[
+        ToolApprovalResolution(
+          interruptionId: RunInterruptionId('wrong-interruption'),
+          toolInvocationId: valid.toolInvocationId,
+          approved: true,
+        ),
+        ToolApprovalResolution(
+          interruptionId: valid.interruptionId,
+          toolInvocationId: ToolInvocationId('wrong-tool'),
+          approved: true,
+        ),
+      ]) {
+        await expectLater(
+          fixture.strategy.resolveApproval(invalid),
+          throwsA(isA<InvalidRunOperation>()),
+        );
+      }
+      await expectLater(
+        fixture.strategy.start(),
+        throwsA(isA<InvalidRunOperation>()),
+      );
+      expect(fixture.run.state, RunState.waiting);
+      expect(fixture.run.failure, isNull);
+      expect(fixture.run.interruptions.values.single, same(pending));
+      expect(fixture.run.journal.records, orderedEquals(waiting));
+      expect(fixture.executable.completed, <int>[1]);
+      expect(fixture.model.requests, hasLength(1));
+
+      await fixture.strategy.resolveApproval(valid);
+
+      expect(fixture.run.state, RunState.completed);
+      expect(fixture.executable.completed, <int>[1, 2, 3]);
+      expect(fixture.model.requests, hasLength(2));
+      expect(
+        fixture.outcomes.map(
+          (SemanticToolOutcomeInput input) => input.providerCallId,
+        ),
+        <String>['call-1', 'call-2', 'call-3'],
+      );
+      expect(fixture.events.whereType<RunInterruptionResolved>(), hasLength(1));
+      expect(fixture.events.whereType<RunFailed>(), isEmpty);
+    },
+  );
+
+  test(
     'reentrant start and approval cannot advance an in-flight resume',
     () async {
       final _BatchFixture fixture = await _BatchFixture.create(

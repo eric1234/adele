@@ -24,7 +24,7 @@ SessionOrchestrationRun createSessionOrchestrationRun({
     model: model,
     toolCatalog: toolCatalog,
     policy: policy,
-  );
+  ).._executionEnabled = false;
   final OrchestrationExecution execution = binding.materialize(
     OrchestrationStrategyHostContext(session: session, host: host),
   );
@@ -45,31 +45,55 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
   MaterializedToolSet? get lastModelTools => _host._lastModelTools;
 
   @override
-  Future<void> start() => _advance(_execution.start);
+  Future<void> start() => _advance();
 
   @override
   Future<void> resolveApproval(ToolApprovalResolution resolution) =>
-      _advance(() => _host._resume(_execution, resolution));
+      _advance(resolution: resolution);
 
-  Future<void> _advance(Future<void> Function() operation) async {
+  Future<void> _advance({ToolApprovalResolution? resolution}) async {
     if (_busy) {
       throw const InvalidRunOperation(
         'The strategy is already advancing this Run.',
       );
     }
+    // Reject caller mistakes before entering strategy-owned execution.
+    final ToolInvocation? pending = _host._pendingApproval;
+    if (resolution == null) {
+      if (run.state != RunState.created) {
+        throw InvalidRunOperation(
+          'Cannot start Run ${run.id} while ${run.state}.',
+        );
+      }
+    } else {
+      final RunInterruption? interruption =
+          run.interruptions[resolution.interruptionId];
+      if (run.state != RunState.waiting ||
+          pending == null ||
+          interruption is! ToolApprovalInterruption ||
+          !identical(interruption.invocation, pending) ||
+          !interruption.accepts(resolution)) {
+        throw const InvalidRunOperation(
+          'Resolution does not match this Run\'s pending tool approval.',
+        );
+      }
+    }
     _busy = true;
     try {
+      _host._executionEnabled = true;
       _host.validateBinding();
-      await operation();
+      if (resolution == null) {
+        await _execution.start();
+      } else {
+        await _host._resume(_execution, resolution);
+      }
       if (run.state == RunState.created ||
           run.state == RunState.running ||
           run.state == RunState.waiting) {
         _host.validateBinding();
       }
-    } on InvalidRunOperation {
-      rethrow;
     } on Object catch (error) {
-      _host.fail(error);
+      _host._fail(error);
       rethrow;
     } finally {
       _busy = false;
@@ -102,7 +126,10 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
   int _nextModelInvocation = 1;
   int _nextToolInvocation = 1;
   int _nextInterruption = 1;
+  // Direct adapter construction is trusted; canonical Runs enable at start.
+  bool _executionEnabled = true;
   bool _busy = false;
+  Object? _deferredFailure;
   ToolInvocation? _pendingApproval;
   ToolApprovalResolution? _authorizedResolution;
   ToolOutcome? _lastToolOutcome;
@@ -140,6 +167,11 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
   }
 
   void _fail(Object error) {
+    if (_busy) {
+      // Preserve the active mechanics operation's terminal evidence first.
+      _deferredFailure ??= error;
+      return;
+    }
     if (state == RunState.running || state == RunState.waiting) {
       _run.fail(error);
     }
@@ -487,10 +519,18 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
       rethrow;
     } finally {
       _busy = false;
+      final Object? failure = _deferredFailure;
+      _deferredFailure = null;
+      if (failure != null) _fail(failure);
     }
   }
 
   void _requireIdle() {
+    if (!_executionEnabled) {
+      throw const InvalidRunOperation(
+        'The execution host is unavailable before its wrapper starts the Run.',
+      );
+    }
     if (_busy) {
       throw const InvalidRunOperation(
         'An execution host operation is already active.',

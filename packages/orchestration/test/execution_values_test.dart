@@ -344,6 +344,14 @@ void main() {
     ]) {
       expect(() => ModelUsage(providerDetails: invalid), throwsFormatException);
       expect(
+        () => ProviderToolProposal(
+          providerCallId: 'call-1',
+          alias: 'inspect',
+          arguments: invalid,
+        ),
+        throwsFormatException,
+      );
+      expect(
         () => ModelNativeEnvelope(
           kind: 'native-v1',
           compatibility: const <String, Object?>{},
@@ -358,6 +366,57 @@ void main() {
         providerDetails: <String, Object?>{'left': shared, 'right': shared},
       ).providerDetails,
       <String, Object?>{'left': shared, 'right': shared},
+    );
+  });
+
+  test('proposal arguments reject list and mixed container cycles', () {
+    final List<Object?> cyclicList = <Object?>[];
+    cyclicList.add(cyclicList);
+    final Map<String, Object?> mixed = <String, Object?>{};
+    mixed['list'] = <Object?>[mixed];
+    for (final Map<String, Object?> arguments in <Map<String, Object?>>[
+      <String, Object?>{'list': cyclicList},
+      mixed,
+    ]) {
+      expect(
+        () => ProviderToolProposal(
+          providerCallId: 'call-1',
+          alias: 'inspect',
+          arguments: arguments,
+        ),
+        throwsFormatException,
+      );
+    }
+  });
+
+  test('proposal arguments bound depth without rejecting shared values', () {
+    Object? nested = true;
+    for (int index = 0; index < 63; index++) {
+      nested = <Object?>[nested];
+    }
+    final Map<String, Object?> arguments = <String, Object?>{
+      'left': nested,
+      'right': nested,
+    };
+    final ProviderToolProposal proposal = ProviderToolProposal(
+      providerCallId: 'call-1',
+      alias: 'inspect',
+      arguments: arguments,
+    );
+    expect(proposal.arguments, arguments);
+    expect(
+      () => (proposal.arguments['left']! as List<Object?>).clear(),
+      throwsUnsupportedError,
+    );
+    expect(
+      () => ProviderToolProposal(
+        providerCallId: 'call-1',
+        alias: 'inspect',
+        arguments: <String, Object?>{
+          'nested': <Object?>[nested],
+        },
+      ),
+      throwsFormatException,
     );
   });
 

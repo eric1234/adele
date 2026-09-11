@@ -99,6 +99,12 @@ resolution or change rejection into approval. The host consumes the authorizatio
 on resolution and clears it when the resume call ends, preventing later reuse.
 The retained invocation still binds the exact executable generation.
 
+Materialization cannot start Run/model/tool work: host execution stays disabled
+until the application enters the returned execution. Invalid caller operations
+remain recoverable, but escaped invalid strategy work cannot strand a running
+Run. Per-Run self-hosting reports capture immutable Chat history snapshots;
+serializing an earlier result never reads a later Session tail.
+
 The returned `SessionOrchestrationRun` retains the exact strategy execution and
 binding. It exposes the Run and tool evidence only to application callers, not
 plugins. Host validation applies to later operations, approval resume, and

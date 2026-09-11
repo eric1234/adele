@@ -528,16 +528,19 @@ activateDevelopmentSelfHostingModelProvider({
 }
 
 final class DevelopmentSelfHostingRunResult {
-  const DevelopmentSelfHostingRunResult({
+  DevelopmentSelfHostingRunResult({
     required this.run,
     required this.session,
     required this.finalAssistantResponse,
     required this.executionFailure,
     required this.executionStackTrace,
-  });
+  }) : sessionSnapshot = session.snapshot();
 
   final AgentRun run;
   final ChatSessionState session;
+
+  /// Canonical Chat history captured when this Run result was created.
+  final ChatSessionSnapshot sessionSnapshot;
 
   /// Captured for this Run, independent of later changes to the retained Session.
   final String? finalAssistantResponse;
