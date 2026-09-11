@@ -1,13 +1,14 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:adele_desktop/development/agent/development_agent_support.dart';
 import 'package:adele_desktop/development/agent/development_self_hosting.dart';
 import 'package:adele_desktop/development/agent/development_self_hosting_report.dart';
 import 'package:adele_desktop/development/agent/development_self_hosting_runner.dart';
-import 'package:adele_desktop/development/agent/simple_tool_loop_strategy.dart';
 import 'package:agent_kernel/agent_kernel.dart';
+import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'chat_test_topology.dart';
 
 void main() {
   test('parses explicit runner inputs and rejects a nonpositive ceiling', () {
@@ -179,26 +180,24 @@ void main() {
   test(
     'successful and invocation-limited Runs have explicit exit semantics',
     () async {
-      final DevelopmentSelfHostingRunResult success =
-          await executeDevelopmentSelfHostingRun(
-            identity: 'success',
-            sessionId: SessionId('session-success'),
-            prompt: 'Complete.',
-            instructions: 'Respond.',
-            model: _FinalModel(),
-            catalog: ToolCatalog(),
-            maxModelInvocations: 1,
-          );
-      final DevelopmentSelfHostingRunResult limited =
-          await executeDevelopmentSelfHostingRun(
-            identity: 'limited',
-            sessionId: SessionId('session-limited'),
-            prompt: 'Loop.',
-            instructions: 'Use a tool.',
-            model: _AlwaysProposalModel(),
-            catalog: _catalog(<String>['read_file']),
-            maxModelInvocations: 1,
-          );
+      final DevelopmentSelfHostingRunResult success = await _executeRun(
+        identity: 'success',
+        sessionId: SessionId('session-success'),
+        prompt: 'Complete.',
+        instructions: 'Respond.',
+        model: _FinalModel(),
+        catalog: ToolCatalog(),
+        maxModelInvocations: 1,
+      );
+      final DevelopmentSelfHostingRunResult limited = await _executeRun(
+        identity: 'limited',
+        sessionId: SessionId('session-limited'),
+        prompt: 'Loop.',
+        instructions: 'Use a tool.',
+        model: _AlwaysProposalModel(),
+        catalog: _catalog(<String>['read_file']),
+        maxModelInvocations: 1,
+      );
 
       expect(success.run.state, RunState.completed);
       expect(success.exitCode, 0);
@@ -223,39 +222,175 @@ void main() {
     },
   );
 
+  test('successive Runs retain Chat state for the canonical Session', () async {
+    final ChatTestTopology topology = ChatTestTopology(
+      SessionId('session-retained'),
+    );
+    addTearDown(topology.close);
+    final List<SemanticModelRequest> requests = <SemanticModelRequest>[];
+    final _FinalModel model = _FinalModel(requests: requests);
+    final DevelopmentSelfHostingRunResult first =
+        await executeDevelopmentSelfHostingRun(
+          identity: 'retained-first',
+          lifecycle: topology.lifecycle,
+          sessions: topology.chat.sessions,
+          sessionId: topology.session.id,
+          prompt: 'First request.',
+          instructions: 'First instructions.',
+          model: model,
+          catalog: ToolCatalog(),
+          maxModelInvocations: 1,
+        );
+    final ChatSessionSnapshot firstSnapshot = first.session.snapshot();
+    final DevelopmentSelfHostingRunResult second =
+        await executeDevelopmentSelfHostingRun(
+          identity: 'retained-second',
+          lifecycle: topology.lifecycle,
+          sessions: topology.chat.sessions,
+          sessionId: topology.session.id,
+          prompt: 'Second request.',
+          instructions: 'Second instructions.',
+          model: model,
+          catalog: ToolCatalog(),
+          maxModelInvocations: 2,
+        );
+
+    expect(first.run.state, RunState.completed);
+    expect(second.run.state, RunState.completed);
+    expect(first.run.id, isNot(second.run.id));
+    expect(second.run.sessionId, topology.session.id);
+    expect(second.session, same(first.session));
+    expect(
+      second.session,
+      same(topology.chat.sessions.obtain(topology.session.id)),
+    );
+    expect(firstSnapshot.entries, hasLength(2));
+    expect(
+      second.session.snapshot().entries.map((entry) => entry.content),
+      <String>['First request.', 'Complete.', 'Second request.', 'Complete.'],
+    );
+    expect(requests.map((request) => request.instructions), <String>[
+      'First instructions.',
+      'Second instructions.',
+    ]);
+    expect(
+      requests.last.input.whereType<SemanticMessageInput>().map(
+        (item) => item.content,
+      ),
+      <String>['First request.', 'Complete.', 'Second request.'],
+    );
+    expect(second.session.maxModelInvocations, 2);
+    expect(
+      topology.lifecycle.store.session(topology.session.id),
+      same(topology.session),
+    );
+    expect(topology.session.strategyId, chatStrategyId);
+  });
+
+  test(
+    'summary final response belongs to its Run, not the Session tail',
+    () async {
+      final ChatTestTopology topology = ChatTestTopology(
+        SessionId('session-run-responses'),
+      );
+      addTearDown(topology.close);
+      Future<DevelopmentSelfHostingRunResult> execute(
+        String identity,
+        ModelPort model,
+      ) => executeDevelopmentSelfHostingRun(
+        identity: identity,
+        lifecycle: topology.lifecycle,
+        sessions: topology.chat.sessions,
+        sessionId: topology.session.id,
+        prompt: identity,
+        instructions: 'Respond.',
+        model: model,
+        catalog: _catalog(<String>['read_file']),
+        maxModelInvocations: 1,
+      );
+      Map<String, Object?> summary(DevelopmentSelfHostingRunResult result) =>
+          developmentSelfHostingSummaryJson(
+            result: result,
+            selectedModel: 'fake-model',
+            git: _emptyGitEvidence,
+          );
+
+      final DevelopmentSelfHostingRunResult first = await execute(
+        'first',
+        const _FinalModel(),
+      );
+      final Map<String, Object?> firstSummary = summary(first);
+      expect(first.run.state, RunState.completed);
+      expect(
+        (firstSummary['run']!
+            as Map<String, Object?>)['finalAssistantResponse'],
+        'Complete.',
+      );
+
+      final DevelopmentSelfHostingRunResult second = await execute(
+        'second',
+        _AlwaysProposalModel(),
+      );
+      final Map<String, Object?> secondSummary = summary(second);
+      final Map<String, Object?> failedRun =
+          secondSummary['run']! as Map<String, Object?>;
+      expect(second.run.state, RunState.failed);
+      expect(second.run.failure, isA<ModelInvocationLimitExceeded>());
+      expect(failedRun['hasFinalAssistantResponse'], isFalse);
+      expect(failedRun['finalAssistantResponse'], isNull);
+      expect(second.finalAssistantResponse, isNull);
+
+      final DevelopmentSelfHostingRunResult third = await execute(
+        'third',
+        const _FinalModel(response: 'Third response.'),
+      );
+      final Map<String, Object?> thirdRun =
+          summary(third)['run']! as Map<String, Object?>;
+      expect(third.run.state, RunState.completed);
+      expect(thirdRun['hasFinalAssistantResponse'], isTrue);
+      expect(thirdRun['finalAssistantResponse'], 'Third response.');
+      expect(summary(first), firstSummary);
+      expect(summary(second), secondSummary);
+      expect(first.finalAssistantResponse, 'Complete.');
+      expect(first.session, same(second.session));
+      expect(first.session, same(third.session));
+      expect(
+        first.session.snapshot().entries.map((entry) => entry.content),
+        <String>['first', 'Complete.', 'second', 'third', 'Third response.'],
+      );
+    },
+  );
+
   test('ChatGPT requires matching reported effective models', () async {
-    final DevelopmentSelfHostingRunResult matching =
-        await executeDevelopmentSelfHostingRun(
-          identity: 'matching-model',
-          sessionId: SessionId('session-matching-model'),
-          prompt: 'Complete.',
-          instructions: 'Respond.',
-          model: _FinalModel(),
-          catalog: ToolCatalog(),
-          maxModelInvocations: 1,
-        );
-    final DevelopmentSelfHostingRunResult substituted =
-        await executeDevelopmentSelfHostingRun(
-          identity: 'substituted-model',
-          sessionId: SessionId('session-substituted-model'),
-          prompt: 'Complete.',
-          instructions: 'Respond.',
-          model: _FinalModel(effectiveModel: 'substituted-model'),
-          catalog: ToolCatalog(),
-          maxModelInvocations: 1,
-        );
-    final DevelopmentSelfHostingRunResult unreported =
-        await executeDevelopmentSelfHostingRun(
-          identity: 'unreported-model',
-          sessionId: SessionId('session-unreported-model'),
-          prompt: 'Complete.',
-          instructions: 'Respond.',
-          model: const _FinalModel(effectiveModel: null),
-          catalog: ToolCatalog(),
-          maxModelInvocations: 1,
-        );
+    final DevelopmentSelfHostingRunResult matching = await _executeRun(
+      identity: 'matching-model',
+      sessionId: SessionId('session-matching-model'),
+      prompt: 'Complete.',
+      instructions: 'Respond.',
+      model: _FinalModel(),
+      catalog: ToolCatalog(),
+      maxModelInvocations: 1,
+    );
+    final DevelopmentSelfHostingRunResult substituted = await _executeRun(
+      identity: 'substituted-model',
+      sessionId: SessionId('session-substituted-model'),
+      prompt: 'Complete.',
+      instructions: 'Respond.',
+      model: _FinalModel(effectiveModel: 'substituted-model'),
+      catalog: ToolCatalog(),
+      maxModelInvocations: 1,
+    );
+    final DevelopmentSelfHostingRunResult unreported = await _executeRun(
+      identity: 'unreported-model',
+      sessionId: SessionId('session-unreported-model'),
+      prompt: 'Complete.',
+      instructions: 'Respond.',
+      model: const _FinalModel(effectiveModel: null),
+      catalog: ToolCatalog(),
+      maxModelInvocations: 1,
+    );
     final DevelopmentSelfHostingRunResult noCompletedSettlement =
-        await executeDevelopmentSelfHostingRun(
+        await _executeRun(
           identity: 'refused-model',
           sessionId: SessionId('session-refused-model'),
           prompt: 'Complete.',
@@ -309,7 +444,7 @@ void main() {
   });
 
   test('reports deterministic proposal counts in model-start order', () {
-    final DevelopmentSessionHistory session = DevelopmentSessionHistory(
+    final ChatSessionState session = ChatSessionState(
       SessionId('session-proposal-counts'),
     );
     final AgentRun run = AgentRun(
@@ -356,6 +491,7 @@ void main() {
         DevelopmentSelfHostingRunResult(
           run: run,
           session: session,
+          finalAssistantResponse: null,
           executionFailure: null,
           executionStackTrace: null,
         );
@@ -415,7 +551,7 @@ void main() {
 
   test('reports zero proposal metrics for empty and proposal-free Runs', () {
     for (final bool startModel in <bool>[false, true]) {
-      final DevelopmentSessionHistory session = DevelopmentSessionHistory(
+      final ChatSessionState session = ChatSessionState(
         SessionId('session-zero-proposals'),
       );
       final AgentRun run = AgentRun(
@@ -430,6 +566,7 @@ void main() {
         result: DevelopmentSelfHostingRunResult(
           run: run,
           session: session,
+          finalAssistantResponse: null,
           executionFailure: null,
           executionStackTrace: null,
         ),
@@ -473,16 +610,15 @@ void main() {
         if (await container.exists()) await container.delete(recursive: true);
       });
       final _GitFixture git = await _createGitFixture(container);
-      final DevelopmentSelfHostingRunResult result =
-          await executeDevelopmentSelfHostingRun(
-            identity: 'evidence',
-            sessionId: SessionId('session-evidence'),
-            prompt: 'Exercise the tools.',
-            instructions: 'Use deterministic fixtures.',
-            model: _EvidenceModel(),
-            catalog: _catalog(developmentSelfHostingToolAliases),
-            maxModelInvocations: 10,
-          );
+      final DevelopmentSelfHostingRunResult result = await _executeRun(
+        identity: 'evidence',
+        sessionId: SessionId('session-evidence'),
+        prompt: 'Exercise the tools.',
+        instructions: 'Use deterministic fixtures.',
+        model: _EvidenceModel(),
+        catalog: _catalog(developmentSelfHostingToolAliases),
+        maxModelInvocations: 10,
+      );
       expect(result.exitCode, 0);
 
       final DevelopmentSelfHostingGitEvidence gitEvidence =
@@ -791,27 +927,26 @@ void main() {
           <String, Object?>{'search': 'na\u00efve\n', 'replace': 'caf\u00e9'},
         ],
       };
-      final DevelopmentSelfHostingRunResult failed =
-          await executeDevelopmentSelfHostingRun(
-            identity: 'failed-evidence',
-            sessionId: SessionId('session-failed-evidence'),
-            prompt: 'Keep proposing.',
-            instructions: 'Exercise the ceiling.',
-            model: _EvidenceModel(
-              turns: const <String?>[
-                'apply_patch',
-                'apply_patch',
-                'apply_patch',
-                'apply_patch',
-                'apply_patch',
-                'apply_patch',
-              ],
-            ),
-            catalog: _catalog(<String>[
-              'apply_patch',
-            ], canonicalPatchArguments: canonicalPatchArguments),
-            maxModelInvocations: 6,
-          );
+      final DevelopmentSelfHostingRunResult failed = await _executeRun(
+        identity: 'failed-evidence',
+        sessionId: SessionId('session-failed-evidence'),
+        prompt: 'Keep proposing.',
+        instructions: 'Exercise the ceiling.',
+        model: _EvidenceModel(
+          turns: const <String?>[
+            'apply_patch',
+            'apply_patch',
+            'apply_patch',
+            'apply_patch',
+            'apply_patch',
+            'apply_patch',
+          ],
+        ),
+        catalog: _catalog(<String>[
+          'apply_patch',
+        ], canonicalPatchArguments: canonicalPatchArguments),
+        maxModelInvocations: 6,
+      );
       final DevelopmentSelfHostingGitEvidence gitEvidence =
           await collectDevelopmentSelfHostingGitEvidence(
             launchingRepository: git.launching,
@@ -965,16 +1100,15 @@ void main() {
     expect(evidence.taskDiff, contains('unusual path payload'));
     expect(evidence.taskDiffCheck, contains('trailing whitespace'));
     expect(evidence.taskDiffCheckExitCode, isNot(0));
-    final DevelopmentSelfHostingRunResult run =
-        await executeDevelopmentSelfHostingRun(
-          identity: 'unusual-path-markdown',
-          sessionId: SessionId('session-unusual-path-markdown'),
-          prompt: 'Complete.',
-          instructions: 'Respond.',
-          model: _FinalModel(),
-          catalog: ToolCatalog(),
-          maxModelInvocations: 1,
-        );
+    final DevelopmentSelfHostingRunResult run = await _executeRun(
+      identity: 'unusual-path-markdown',
+      sessionId: SessionId('session-unusual-path-markdown'),
+      prompt: 'Complete.',
+      instructions: 'Respond.',
+      model: _FinalModel(),
+      catalog: ToolCatalog(),
+      maxModelInvocations: 1,
+    );
     final Map<String, Object?> summary = developmentSelfHostingSummaryJson(
       result: run,
       selectedModel: 'fake-model',
@@ -1014,16 +1148,15 @@ void main() {
     });
     final _GitFixture git = await _createGitFixture(container);
     await Directory('${git.task.path}/.git').delete(recursive: true);
-    final DevelopmentSelfHostingRunResult run =
-        await executeDevelopmentSelfHostingRun(
-          identity: 'missing-task-git',
-          sessionId: SessionId('session-missing-task-git'),
-          prompt: 'Complete.',
-          instructions: 'Respond.',
-          model: _FinalModel(),
-          catalog: ToolCatalog(),
-          maxModelInvocations: 1,
-        );
+    final DevelopmentSelfHostingRunResult run = await _executeRun(
+      identity: 'missing-task-git',
+      sessionId: SessionId('session-missing-task-git'),
+      prompt: 'Complete.',
+      instructions: 'Respond.',
+      model: _FinalModel(),
+      catalog: ToolCatalog(),
+      maxModelInvocations: 1,
+    );
 
     final DevelopmentSelfHostingGitEvidence evidence =
         await collectDevelopmentSelfHostingGitEvidence(
@@ -1211,16 +1344,47 @@ ToolCatalog _catalog(
   return catalog;
 }
 
+Future<DevelopmentSelfHostingRunResult> _executeRun({
+  required String identity,
+  required SessionId sessionId,
+  required String prompt,
+  required String instructions,
+  required ModelPort model,
+  required ToolCatalog catalog,
+  required int maxModelInvocations,
+}) {
+  final ChatTestTopology topology = ChatTestTopology(sessionId);
+  addTearDown(topology.close);
+  return executeDevelopmentSelfHostingRun(
+    identity: identity,
+    lifecycle: topology.lifecycle,
+    sessions: topology.chat.sessions,
+    sessionId: topology.session.id,
+    prompt: prompt,
+    instructions: instructions,
+    model: model,
+    catalog: catalog,
+    maxModelInvocations: maxModelInvocations,
+  );
+}
+
 final class _FinalModel implements ModelPort {
-  const _FinalModel({this.effectiveModel = 'fake-model'});
+  const _FinalModel({
+    this.effectiveModel = 'fake-model',
+    this.requests,
+    this.response = 'Complete.',
+  });
 
   final String? effectiveModel;
+  final List<SemanticModelRequest>? requests;
+  final String response;
 
   @override
   Stream<ModelEvent> invoke(SemanticModelRequest request) async* {
+    requests?.add(request);
     yield ModelOutputItemCompleted(
       invocationId: request.invocationId,
-      item: ModelTextOutput('Complete.'),
+      item: ModelTextOutput(response),
     );
     yield ModelInvocationSettledEvent(
       invocationId: request.invocationId,

@@ -2,15 +2,15 @@ import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
+import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
-import 'package:adele_desktop/development/agent/development_strategy_registration.dart';
-import 'package:adele_desktop/development/agent/simple_tool_loop_strategy.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
+import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:command_tools_plugin/command_tools_plugin.dart';
 import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
@@ -233,6 +233,7 @@ final class DevelopmentSelfHostingTopology {
     required this.registry,
     required this.store,
     required this.lifecycle,
+    required this.chat,
     required this.project,
     required this.task,
     required this.environment,
@@ -255,6 +256,7 @@ final class DevelopmentSelfHostingTopology {
   final CapabilityRegistry registry;
   final InMemoryProductStore store;
   final ProductLifecycleCoordinator lifecycle;
+  final ChatStrategyPlugin chat;
   final Project project;
   final Task task;
   final Environment environment;
@@ -303,7 +305,8 @@ final class DevelopmentSelfHostingTopology {
         providerId: environmentProviderId,
       );
       final ExtensionRegistry extensions = ExtensionRegistry();
-      strategyActivation = registerDevelopmentToolLoopStrategy(extensions);
+      final ChatStrategyPlugin chat = ChatStrategyPlugin();
+      strategyActivation = chat.activate(extensions);
       filesystemActivation = const FilesystemToolsPlugin().activate(extensions);
       searchActivation = const SearchToolsPlugin().activate(extensions);
       if (includeCommandTools) {
@@ -346,7 +349,7 @@ final class DevelopmentSelfHostingTopology {
       onTaskEstablished?.call(retainedState);
       final Session session = lifecycle.createSession(
         taskId: created.task.id,
-        strategyId: developmentToolLoopStrategyId,
+        strategyId: chatStrategyId,
       );
       final SessionEnvironmentAuthority authority = store
           .requireSessionAuthority(session.id);
@@ -379,6 +382,7 @@ final class DevelopmentSelfHostingTopology {
             registry: registry,
             store: store,
             lifecycle: lifecycle,
+            chat: chat,
             project: project,
             task: created.task,
             environment: created.environment,
@@ -527,12 +531,16 @@ final class DevelopmentSelfHostingRunResult {
   const DevelopmentSelfHostingRunResult({
     required this.run,
     required this.session,
+    required this.finalAssistantResponse,
     required this.executionFailure,
     required this.executionStackTrace,
   });
 
   final AgentRun run;
-  final DevelopmentSessionHistory session;
+  final ChatSessionState session;
+
+  /// Captured for this Run, independent of later changes to the retained Session.
+  final String? finalAssistantResponse;
   final Object? executionFailure;
   final StackTrace? executionStackTrace;
 
@@ -542,6 +550,8 @@ final class DevelopmentSelfHostingRunResult {
 
 Future<DevelopmentSelfHostingRunResult> executeDevelopmentSelfHostingRun({
   required String identity,
+  required ProductLifecycleCoordinator lifecycle,
+  required ChatSessionStore sessions,
   required SessionId sessionId,
   required String prompt,
   required String instructions,
@@ -549,32 +559,39 @@ Future<DevelopmentSelfHostingRunResult> executeDevelopmentSelfHostingRun({
   required ToolCatalog catalog,
   required int maxModelInvocations,
 }) async {
-  final DevelopmentSessionHistory session = DevelopmentSessionHistory(sessionId)
-    ..append(UserSessionMessage(prompt));
-  final AgentRun run = AgentRun(
-    id: RunId('run-$identity'),
-    sessionId: session.id,
-  );
-  final DevelopmentToolLoopStrategy strategy = DevelopmentToolLoopStrategy(
-    run: run,
-    session: session,
-    contextAssembler: DevelopmentContextAssembler(instructions: instructions),
+  final ChatSessionState session = sessions.obtain(sessionId)
+    ..instructions = instructions
+    ..maxModelInvocations = maxModelInvocations
+    ..append(ChatUserMessage(prompt));
+  final int initialEntryCount = session.snapshot().entries.length;
+  final SessionOrchestrationRun execution = createSessionOrchestrationRun(
+    lifecycle: lifecycle,
+    sessionId: sessionId,
+    runId: RunId('run-$identity'),
     model: model,
     toolCatalog: catalog,
     policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
-    maxModelInvocations: maxModelInvocations,
   );
   Object? executionFailure;
   StackTrace? executionStackTrace;
   try {
-    await strategy.start();
+    await execution.start();
   } on Object catch (error, stackTrace) {
     executionFailure = error;
     executionStackTrace = stackTrace;
   }
+  final List<ChatEntry> entries = session.snapshot().entries;
+  final ChatEntry? finalEntry =
+      execution.run.state == RunState.completed &&
+          entries.length > initialEntryCount
+      ? entries.last
+      : null;
   return DevelopmentSelfHostingRunResult(
-    run: run,
+    run: execution.run,
     session: session,
+    finalAssistantResponse: finalEntry is ChatAssistantMessage
+        ? finalEntry.content
+        : null,
     executionFailure: executionFailure,
     executionStackTrace: executionStackTrace,
   );

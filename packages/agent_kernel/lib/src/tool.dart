@@ -1,7 +1,12 @@
 import 'package:adele_model_tool/adele_model_tool.dart';
+import 'package:adele_orchestration/adele_orchestration.dart'
+    show ProviderToolProposal, ToolProposalFailure, ToolProposalFailureKind;
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 
 import 'identifiers.dart';
+
+export 'package:adele_orchestration/adele_orchestration.dart'
+    show ProviderToolProposal, ToolProposalFailure, ToolProposalFailureKind;
 
 final class ToolCatalog {
   final Map<ToolId, ToolRegistration> _registrations =
@@ -165,20 +170,6 @@ final class MaterializedToolSet {
   MaterializedTool? byAlias(String alias) => _byAlias[alias];
 }
 
-final class ProviderToolProposal {
-  ProviderToolProposal({
-    required String providerCallId,
-    required String alias,
-    required Map<String, Object?> arguments,
-  }) : providerCallId = _requireNonEmpty(providerCallId, 'Provider call ID'),
-       alias = _requireNonEmpty(alias, 'Proposed model tool alias'),
-       arguments = _freezeMap(arguments);
-
-  final String providerCallId;
-  final String alias;
-  final Map<String, Object?> arguments;
-}
-
 final class ToolInvocation {
   ToolInvocation._({
     required this.id,
@@ -196,31 +187,6 @@ final class ToolInvocation {
   final Map<String, Object?> canonicalArguments;
 
   ToolId get toolId => tool.definition.id;
-}
-
-enum ToolProposalFailureKind {
-  unknownAlias,
-  invalidArguments,
-  staleBinding,
-  bindingUnavailable,
-}
-
-final class ToolProposalFailure {
-  ToolProposalFailure({
-    required this.kind,
-    required String providerCallId,
-    required String alias,
-    required String message,
-    this.cause,
-  }) : providerCallId = _requireNonEmpty(providerCallId, 'Provider call ID'),
-       alias = _requireNonEmpty(alias, 'Proposed model tool alias'),
-       message = _requireNonEmpty(message, 'Tool proposal failure message');
-
-  final ToolProposalFailureKind kind;
-  final String providerCallId;
-  final String alias;
-  final String message;
-  final Object? cause;
 }
 
 sealed class ToolProposalResolution {
@@ -341,11 +307,6 @@ final class ToolMaterializationException implements Exception {
 
   @override
   String toString() => 'ToolMaterializationException: $message';
-}
-
-String _requireNonEmpty(String value, String label) {
-  if (value.trim().isEmpty) throw FormatException('$label must not be empty.');
-  return value;
 }
 
 Map<String, Object?> _freezeMap(Map<String, Object?> source) =>

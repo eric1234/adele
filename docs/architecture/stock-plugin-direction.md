@@ -15,7 +15,7 @@ The expected stock composition should be read alongside:
 - [`agent-tooling-direction.md`](agent-tooling-direction.md), which describes model tools and execution presentation;
 - [`../mockups/README.md`](../mockups/README.md), which shows the default development UX produced by a stock plugin/configuration set.
 
-The maintained codebase currently implements only a small subset of this topology: source-plugin runtime/build infrastructure, generated contracts, active capability routing, the common ModelProvider and OpenAI provider, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, a Git Worktree Environment provider, generic model-tool registration, stock Filesystem Tools, Search Tools, and Command Tools plugins, and a provisional application orchestration strategy. The minimal `adele_orchestration` registration/binding API is identity-only; temporary development registration does not route the app-owned strategy's execution or implement the Chat plugin/public execution facade. Most stock plugins below do not yet exist.
+The maintained codebase implements only a small subset of this topology: source-plugin runtime/build infrastructure, generated contracts, active capability routing, the common ModelProvider and OpenAI provider, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, a Git Worktree Environment provider, generic model-tool registration, stock Filesystem Tools, Search Tools, and Command Tools, and headless stock Chat. Public `adele_orchestration` provides executable strategy contributions and the narrow execution facade; application Session-routed hosting materializes the exact contribution rather than constructing a loop directly. Chat owns in-memory state and sequencing, not UI or persistence. Most stock plugins below do not yet exist.
 
 ---
 
@@ -149,7 +149,7 @@ public orchestration/execution service
 
 The minimal `OrchestrationStrategy` registry/binding contract belongs to core/public APIs because core Session creation/restoration must authoritatively validate and retain the bound strategy identity. Strategy implementations remain plugins. Optional strategy-selection or presentation UI consumes this registry; it does not own it.
 
-A strategy plugin must not import the internal `agent_kernel`. Core exposes a narrow provider-neutral orchestration/execution API backed by the kernel so strategy plugins can create/drive Runs, request model/tool execution, observe execution state, and otherwise use the concrete execution semantics they need without depending on internal implementation packages. Exact methods/types remain deferred until implementation makes them concrete.
+A strategy plugin must not import the internal `agent_kernel`. The implemented `adele_orchestration` facade provides `OrchestrationStrategyContribution(strategyId, materialize)`, `OrchestrationStrategyHostContext(session, host)`, and `OrchestrationExecution(start/resolveApproval)`. Its host exposes lifecycle/binding validation, `invokeModel(StrategyInferenceMaterial)`, `processProposal` using an opaque `StrategyToolSnapshot` and `ProviderToolProposal`, and approval resolution returning semantic continuation. Minimal semantic DTOs are shared with the kernel, not duplicated or placed in another public package. Model ports/streams/collectors, tool catalogs, policy, `AgentRun`, and the journal stay internal; the app wrapper exposes internal evidence only to app callers.
 
 ## 2.4 Agent/tool composition
 
@@ -302,18 +302,48 @@ A strategy may register and execute through core facilities even if no Agent Int
 
 ## 5.2 Chat Strategy
 
-**Role:** expected initial orchestration strategy: conversational model/tool/model work with a rich Chat Session surface.
+**Role:** implemented headless conversational model/tool/model strategy; a rich Chat Session surface remains future work.
 
-It is the likely long-term home of the sequencing behavior currently represented by the provisional application `DevelopmentToolLoopStrategy`. The strategy registers against the core/public `OrchestrationStrategy` contract and uses a public provider-neutral orchestration/execution API backed by `agent_kernel`; it **does not import `agent_kernel`** and does not redefine Run semantics.
+`plugins/chat_strategy` contains `chat_strategy_plugin`, the first executable
+stock strategy. `ChatStrategyPlugin.activate` follows the same in-process
+registration convention as the stock tool plugins. Semantic strategy ID
+`dev.adele.strategy.chat`, plugin ID `dev.adele.plugin.chat-strategy`, and
+extension ID `dev.adele.plugin.chat-strategy.orchestration` are separate
+identities. Chat's only direct production dependencies are public
+`adele_orchestration` and `adele_plugin_api`. It **does not import
+`agent_kernel`**, has no kernel development dependency, and does not redefine Run
+semantics.
 
-Likely provides:
+`ChatSessionStore.obtain(SessionId)` retains `ChatSessionState` in memory.
+Immutable snapshots contain canonical `ChatEntry` values (`ChatUserMessage` and
+`ChatAssistantMessage`) reused across Runs. Only user/final assistant messages
+are canonical. Intermediate model/native output, proposals, and tool results are
+Run-local replay. Instructions and a positive model-invocation budget are
+Chat-owned configuration snapshotted for each materialized Run, not fields on the
+canonical product `Session(id, taskId, strategyId)`.
 
-- orchestration strategy registration into the core registry;
-- Chat-specific durable Session state;
+The private Chat loop is extracted from the former app-owned
+`DevelopmentToolLoopStrategy`. It drains proposal batches sequentially against
+the same opaque per-turn tool snapshot. Proposal/tool failures and policy denial
+continue to later proposals; `ask` pauses, and approval/rejection resumes in
+order with earlier results retained. One model continuation follows the batch.
+A batch in the final invocation slot fails before any proposal is prepared or
+executed; a proposal-free final answer can complete in that slot. This invocation
+budget is not a token budget.
+
+Chat supplies instructions and history projection plus Run-local replay as
+`StrategyInferenceMaterial`. Core adds invocation identity and tools to internal
+`SemanticModelRequest`, retaining model/tool/policy/Environment selection. The
+boundary is a deliberate future context-composition seam, not an implemented
+general context framework. General context composition is the next slice at
+this seam; contributors, token budgets, and compaction remain unimplemented.
+
+Further expected Chat functionality remains unimplemented:
+
+- Chat-specific persistent Session state;
 - timeline and Draft Request/composer UI;
 - user/agent message and operation-group presentation;
 - child-Session activity/inspection when delegated work is created;
-- strategy-specific continuation behavior;
 - Chat-specific events such as `ChatTurnCompleted` where useful.
 
 Likely defines Chat-specific extension points such as:
@@ -325,7 +355,7 @@ ChatTurnAction
 ChatTimelineDecoration / ChatOperationPresentation
 ```
 
-Likely consumes the core/public Run/model/tool execution facade, structured inference composition, tool catalogs, Session persistence, child-Session query/creation, common timeline/composer components, and optional tool/review presentation interfaces.
+Chat currently consumes the public execution facade and opaque tool snapshots, not kernel catalogs. Future UI and state features may consume structured inference composition, Session persistence, child-Session query/creation, common timeline/composer components, and optional tool/review presentation interfaces. Profiles, child Sessions, persistence, and Chat UI are not part of the implemented headless strategy.
 
 Expected stock integrations:
 
@@ -368,7 +398,7 @@ Chat does not call an `AgentSelector`; the Agent plugin independently participat
 
 In the expected stock workflow, a model-callable `set_agent`/selection tool routes the user to the Agent used for the **next user invocation**. It does not implicitly change the Agent for a model continuation that still belongs to the current user turn. A future orchestration strategy may deliberately define an explicit intra-Run Agent handoff, but that is separate orchestration behavior rather than an accidental consequence of changing the selected Agent.
 
-For stock Chat, the selected Agent and the effective Agent for an already-started user turn are distinct pieces of state. When a user-submitted Chat turn starts, Chat snapshots/binds the effective Agent for that turn and uses that binding for the turn's model/tool continuations. The Agent plugin continues to own the selected-Agent state; `set_agent` changes that selection for a later user-submitted turn rather than replacing the current turn binding. The exact storage/API for the turn binding is deferred. User input that merely resolves an interruption or otherwise continues the same turn does not retroactively replace that binding; treatment of queued/new-turn input remains strategy-specific.
+The proposed stock Agent integration distinguishes selected Agent state from the effective Agent for an already-started user turn. In that design, Chat snapshots/binds the effective Agent for the turn's model/tool continuations. The Agent plugin owns selected-Agent state; `set_agent` changes that selection for a later user-submitted turn rather than replacing the current turn binding. This integration and its storage/API remain deferred; the headless Chat implementation snapshots only its instructions and invocation budget. User input that merely resolves an interruption would not retroactively replace an effective-Agent binding; treatment of queued/new-turn input remains strategy-specific.
 
 ## 6.2 Model Routing / Control
 
@@ -600,6 +630,28 @@ The maintained repository already implements substantial OpenAI provider functio
 ---
 
 # 12. Concrete default flows
+
+The current headless execution path is:
+
+```text
+composition activates Chat and stock tools
+    -> core lifecycle creates Session bound to dev.adele.strategy.chat
+    -> caller obtains retained ChatSessionState and appends the prompt
+    -> createSessionOrchestrationRun(SessionId, host execution dependencies)
+    -> canonical Session lookup and one exact contribution resolution
+    -> materialize against KernelOrchestrationHost
+    -> Chat drives the public execution facade
+```
+
+`SessionOrchestrationRun` retains the exact binding and internal app evidence.
+Host validation covers subsequent operations, approval resume, and asynchronous
+settlement. If A retires, its active Run fails without migrating; a later Run in
+the same Session may freshly resolve B under the unchanged semantic ID. The
+self-hosting topology uses this path, not direct loop construction.
+
+The following richer product flows are directional, including the UI, effective
+Agent binding, multi-plugin inference composition, persistence, and child-Session
+steps that headless Chat does not implement.
 
 ## 12.1 Select a Project
 

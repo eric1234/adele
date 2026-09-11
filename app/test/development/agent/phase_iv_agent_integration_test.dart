@@ -2,16 +2,19 @@ import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/development/agent/agent_capability_adapters.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
-import 'package:adele_desktop/development/agent/simple_tool_loop_strategy.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:agent_kernel/agent_kernel.dart';
+import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:resource_inspector_contract/resource_inspector_contract.dart';
 import 'package:scripted_model_contract/scripted_model_contract.dart';
+
+import 'chat_test_topology.dart';
 
 void main() {
   late String repository;
@@ -151,9 +154,9 @@ void main() {
       expect(modelA.streamCount, 2);
       expect(modelA.requestCount, 0);
       expect(happy.session.snapshot().entries, <Matcher>[
-        isA<UserSessionMessage>(),
-        isA<AssistantSessionMessage>().having(
-          (AssistantSessionMessage message) => message.content,
+        isA<ChatUserMessage>(),
+        isA<ChatAssistantMessage>().having(
+          (ChatAssistantMessage message) => message.content,
           'content',
           contains('Basic inspection'),
         ),
@@ -240,7 +243,7 @@ void main() {
         ToolOutcomeDisposition.userRejected,
       );
       expect(
-        (rejected.session.snapshot().entries.last as AssistantSessionMessage)
+        (rejected.session.snapshot().entries.last as ChatAssistantMessage)
             .content,
         contains('rejected'),
       );
@@ -482,23 +485,21 @@ _RunFixture _runFixture({
   required ModelPort model,
   required ToolRegistration registration,
 }) {
-  final DevelopmentSessionHistory session = DevelopmentSessionHistory(
-    SessionId('session-$id'),
-  )..append(UserSessionMessage(userContent));
-  final AgentRun run = AgentRun(id: RunId('run-$id'), sessionId: session.id);
+  final ChatTestTopology topology = ChatTestTopology(SessionId('session-$id'));
+  addTearDown(topology.close);
+  final ChatSessionState session = topology.chat.sessions.obtain(
+    topology.session.id,
+  )..append(ChatUserMessage(userContent));
   final ToolCatalog catalog = ToolCatalog()..register(registration);
-  return _RunFixture(
-    session: session,
-    run: run,
-    strategy: DevelopmentToolLoopStrategy(
-      run: run,
-      session: session,
-      contextAssembler: const DevelopmentContextAssembler(),
-      model: model,
-      toolCatalog: catalog,
-      policy: const DevelopmentToolPolicy(ToolPolicyDecision.ask),
-    ),
+  final SessionOrchestrationRun strategy = createSessionOrchestrationRun(
+    lifecycle: topology.lifecycle,
+    sessionId: topology.session.id,
+    runId: RunId('run-$id'),
+    model: model,
+    toolCatalog: catalog,
+    policy: const DevelopmentToolPolicy(ToolPolicyDecision.ask),
   );
+  return _RunFixture(session: session, run: strategy.run, strategy: strategy);
 }
 
 ProviderDescriptor _modelDescriptor(String pluginId) => ProviderDescriptor(
@@ -604,9 +605,9 @@ final class _RunFixture {
     required this.strategy,
   });
 
-  final DevelopmentSessionHistory session;
+  final ChatSessionState session;
   final AgentRun run;
-  final DevelopmentToolLoopStrategy strategy;
+  final SessionOrchestrationRun strategy;
 }
 
 final class _ActiveProvider {

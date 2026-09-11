@@ -1,7 +1,102 @@
+import 'package:adele_orchestration/adele_orchestration.dart' as orchestration;
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('kernel reexports the public semantic definitions without copies', () {
+    expect(
+      <Type>[
+        SemanticMessageRole,
+        ModelNativeEnvelope,
+        SemanticModelInputItem,
+        SemanticNativeInput,
+        SemanticMessageInput,
+        SemanticToolOutcomeInput,
+        SemanticToolProposalInput,
+        SemanticToolProposalFailureInput,
+        ModelOutputItem,
+        ModelNativeOutput,
+        ModelTextOutput,
+        ModelToolProposalOutput,
+        ModelSettlement,
+        ModelIncompleteReason,
+        ModelTerminalMetadata,
+        ModelUsage,
+        ProviderToolProposal,
+        ToolProposalFailure,
+        ToolProposalFailureKind,
+        ToolInvocationId,
+        RunInterruptionId,
+        RunState,
+        InvalidRunOperation,
+        RunInterruptionResolution,
+        ToolApprovalResolution,
+      ],
+      <Type>[
+        orchestration.SemanticMessageRole,
+        orchestration.ModelNativeEnvelope,
+        orchestration.SemanticModelInputItem,
+        orchestration.SemanticNativeInput,
+        orchestration.SemanticMessageInput,
+        orchestration.SemanticToolOutcomeInput,
+        orchestration.SemanticToolProposalInput,
+        orchestration.SemanticToolProposalFailureInput,
+        orchestration.ModelOutputItem,
+        orchestration.ModelNativeOutput,
+        orchestration.ModelTextOutput,
+        orchestration.ModelToolProposalOutput,
+        orchestration.ModelSettlement,
+        orchestration.ModelIncompleteReason,
+        orchestration.ModelTerminalMetadata,
+        orchestration.ModelUsage,
+        orchestration.ProviderToolProposal,
+        orchestration.ToolProposalFailure,
+        orchestration.ToolProposalFailureKind,
+        orchestration.ToolInvocationId,
+        orchestration.RunInterruptionId,
+        orchestration.RunState,
+        orchestration.InvalidRunOperation,
+        orchestration.RunInterruptionResolution,
+        orchestration.ToolApprovalResolution,
+      ],
+    );
+  });
+
+  test('semantic requests snapshot input and retain exact kernel tools', () {
+    final orchestration.SemanticMessageInput item =
+        orchestration.SemanticMessageInput(
+          role: orchestration.SemanticMessageRole.user,
+          content: 'Inspect.',
+        );
+    final List<SemanticModelInputItem> input = <SemanticModelInputItem>[item];
+    final MaterializedToolSet tools = MaterializedToolSet(
+      const <MaterializedTool>[],
+    );
+    final ModelInvocationId invocationId = ModelInvocationId('model-request');
+    final SemanticModelRequest request = SemanticModelRequest(
+      invocationId: invocationId,
+      input: input,
+      tools: tools,
+    );
+
+    input.clear();
+    expect(request.invocationId, same(invocationId));
+    expect(request.instructions, '');
+    expect(request.tools, same(tools));
+    expect(request.input.single, same(item));
+    expect(() => request.input.clear(), throwsUnsupportedError);
+    expect(() => request.input[0] = item, throwsUnsupportedError);
+    expect(
+      SemanticModelRequest(
+        invocationId: invocationId,
+        instructions: 'Explicit instructions.',
+        input: const <SemanticModelInputItem>[],
+        tools: tools,
+      ).instructions,
+      'Explicit instructions.',
+    );
+  });
+
   test('model invocation is a typed semantic event stream', () async {
     final SemanticModelRequest request = _request('model-1');
     final List<ModelEvent> events = await const _CompletingModel()

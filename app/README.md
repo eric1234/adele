@@ -45,8 +45,10 @@ runtime only through the explicit root smoke command.
 `adele_product` owns the final immutable `Session(id, taskId, strategyId)` and
 semantic `OrchestrationStrategyId`. The strategy ID lives in product so product
 values do not depend on the orchestration package. Public pure-Dart
-`adele_orchestration` provides identity-only strategy contributions and a thin
-resolver over the existing `ExtensionRegistry`, not an execution facade.
+`adele_orchestration` provides executable strategy contributions, a thin resolver
+over the existing `ExtensionRegistry`, and the narrow provider-neutral execution
+facade consumed by strategy plugins. The public package and stock Chat do not
+depend on the internal kernel.
 
 `ProductLifecycleCoordinator.createSession` requires `taskId` and `strategyId`
 and accepts an optional `environmentId`. It requires an existing Task and exactly
@@ -70,18 +72,74 @@ makes it stale with `StaleExtensionBinding`, and only fresh resolution can selec
 a replacement. Resolution never falls back to another strategy or rewrites the
 Session's stored ID.
 
-Development composition registers temporary identity-only metadata under
-`dev.adele.strategy.development-tool-loop` with a separate extension ID.
-`DevelopmentToolLoopStrategy` remains app-owned and unchanged, and development
-execution still calls it directly rather than through the registration. This
-spine adds no Chat plugin, public strategy execution facade, kernel/context
-redesign, strategy-specific durable state, child Sessions, strategy defaults,
-profiles, lifecycle UI, or disk persistence.
+## Orchestration Hosting
+
+`lib/core/orchestration_host.dart` owns `createSessionOrchestrationRun`. It accepts
+`SessionId`, looks up the published canonical Session, resolves that Session's
+stored strategy exactly once for this Run, and materializes the retained
+contribution against `KernelOrchestrationHost` via
+`OrchestrationStrategyHostContext(session, host)`. Callers do not supply a
+replacement strategy or construct the strategy loop directly.
+
+The contribution's `materialize` callback returns `OrchestrationExecution` with
+`start` and `resolveApproval`. `OrchestrationExecutionHost` exposes lifecycle
+operations and binding validation, `invokeModel(StrategyInferenceMaterial)`,
+`processProposal` using an opaque `StrategyToolSnapshot` and
+`ProviderToolProposal`, and approval resolution returning semantic continuation.
+Model selection/adapters, tool catalogs, policy, and Environment authority remain
+core composition choices. Stream collection, proposal resolution, policy gates,
+exact executable objects, `AgentRun`, and journal evidence stay internal.
+
+The host accepts each proposal only once from the completed model turn that
+issued it, using that turn's exact materialization. Approval continuation accepts
+only the exact host-issued `ToolApprovalResolution` object forwarded during the
+current `SessionOrchestrationRun.resolveApproval` call. Matching interruption and
+invocation IDs alone is insufficient: a plugin cannot manufacture a replacement
+resolution or change rejection into approval. The host consumes the authorization
+on resolution and clears it when the resume call ends, preventing later reuse.
+The retained invocation still binds the exact executable generation.
+
+The returned `SessionOrchestrationRun` retains the exact strategy execution and
+binding. It exposes the Run and tool evidence only to application callers, not
+plugins. Host validation applies to later operations, approval resume, and
+asynchronous settlement. If generation A retires, its active Run fails explicitly
+and cannot advance using B. A later Run in the same Session may freshly resolve B
+under the unchanged semantic strategy ID. Retirement does not imply cancellation
+or rollback of effects already in flight.
+
+Headless stock `chat_strategy_plugin` registers executable Chat under
+`dev.adele.strategy.chat`, distinct from plugin ID
+`dev.adele.plugin.chat-strategy` and extension ID
+`dev.adele.plugin.chat-strategy.orchestration`. `ChatStrategyPlugin.activate`
+uses the existing in-process stock tool activation convention. Its
+`ChatSessionStore.obtain(SessionId)` retains `ChatSessionState` across Runs;
+immutable snapshots contain `ChatEntry` values (`ChatUserMessage` and
+`ChatAssistantMessage`). Only user and final assistant messages are canonical.
+Intermediate native/model output, proposals, and tool results stay Run-local.
+Chat instructions and its positive invocation budget are snapshotted when each
+Run is materialized.
+
+Chat projects history plus Run-local replay into `StrategyInferenceMaterial`
+(instructions and ordered semantic input). The host adds invocation identity and
+materialized tools to construct internal `SemanticModelRequest`. General context
+composition is the next slice at this seam, not an implemented framework.
+Minimal semantic DTOs are shared from `adele_orchestration`
+and reused by the kernel, without adding another public package.
+
+The app has no `simple_tool_loop_strategy.dart` or
+`development_strategy_registration.dart`; `development_agent_support.dart`
+contains only development policy. The private Chat loop lives in the plugin.
+Chat UI, persistence, profiles, child Sessions, strategy defaults, and general
+context contributors/token budgets remain deferred.
 
 ## Dependencies
 
 Allowed dependencies are Flutter, ADELE public packages, and internal host
-implementations required at the composition root.
+implementations required at the composition root. Statically composed stock
+plugins include `chat_strategy_plugin`, resolved through the root pub workspace.
+Chat's only direct production dependencies are `adele_orchestration` and
+`adele_plugin_api`; it has no `agent_kernel` dependency, including in
+`dev_dependencies`.
 
 The app must not be a dependency of plugins or reusable core packages. Plugin
 implementations, Agent/orchestration logic, public plugin APIs, and reusable
@@ -130,7 +188,13 @@ tools. The isolated repository does not share Git refs or a writable local
 origin with the launching checkout; final Git evidence records what actually
 remained clean. This is source-layout isolation, not a command sandbox.
 
-The bounded development strategy accepts multiple proposals from one completed
+The topology activates Chat before creating the canonical Session. Execution
+obtains that Session's retained Chat state, sets instructions and invocation
+budget, appends `ChatUserMessage(prompt)`, and passes `SessionId` through lifecycle
+resolution and `createSessionOrchestrationRun`. It does not construct a Chat loop
+or a separate development history adapter.
+
+The bounded stock Chat strategy accepts multiple proposals from one completed
 model invocation and executes them sequentially in output order against that
 turn's same materialized tool set and executable generations. Proposal and tool
 failures or policy denial produce results and continue to later proposals. An
@@ -166,17 +230,18 @@ automatic cleanup, validation planning, commit, push, or PR workflow.
 
 ## Deferred
 
-Normal Project selection, Session persistence and child lifecycle, a public
-strategy execution facade and plugin-owned Chat strategy, additional
+Normal Project selection, Chat UI, Session/Chat persistence and child lifecycle,
+general context composition/contributors and token budgets, additional
 Environment-backed mutation tools, profiles, product
 plugin discovery/activation, production Agent UI, application
 Commands/keybindings, and plugin-facing UI extension APIs remain deferred. The
 stock Git worktree Environment provider is currently exercised through focused
 backend and shared-host AOT tests rather than normal UI.
 
-The application composition root contains the development-only Phase IV model
-adapters, bounded Chat-shaped tool-loop strategy, generic Session-scoped
-model-tool host context, and AOT integration tests. The independent stock
+The application composition root contains the model adapters, core orchestration
+host, generic Session-scoped model-tool host context, and AOT integration tests.
+The Chat plugin owns bounded loop sequencing and retained conversation state.
+The independent stock
 Filesystem Tools, Search Tools, and Command Tools plugins, not application code,
 define `read_file`, `apply_patch`, `create_file`, `delete_file`, `search`, and
 `run_command`; the host context exposes facets of only the Session-selected
@@ -198,9 +263,10 @@ does not make that route a stable OpenAI integration contract or establish the
 final product workflow, strategy-bound Session persistence, stock UI
 composition, general whole-file overwrite, directory/move/copy/binary mutation,
 fine-grained command classification, or background command execution.
-`DevelopmentToolLoopStrategy` and `EnvironmentRuntime` remain provisional
-application/domain-specific implementation rather than production orchestration
-or a general extension-runtime pattern.
+`EnvironmentRuntime` remains provisional application/domain-specific
+implementation rather than a general extension-runtime pattern. Headless Chat
+execution is not a claim of production orchestration UI, persistence, or complete
+self-hosting.
 
 ## Live Tests
 
@@ -208,7 +274,7 @@ The OpenAI backend's provider-only API-key and ChatGPT live smokes validate
 network, authentication, and Responses behavior in isolation. Separate app-level
 source-coding live smokes validate the current read/search stack through
 Project/Task/Environment establishment, Session authority, plugin-contributed
-Search and Read File tools, provisional orchestration, and real model
+Search and Read File tools, Session-routed Chat orchestration, and real model
 continuation. A separate paid API-key smoke validates real-model `read_file`
 opaque-revision flow through `apply_patch`, Task-worktree-only mutation, and
 continuation. A separate paid API-key source-validation smoke and an
@@ -235,16 +301,17 @@ credential configuration. Both ChatGPT app smokes honor
 Responses fallback `gpt-5.5`. All five remain opt-in and are excluded from
 normal CI.
 
-With `ADELE_OPENAI_CHATGPT_TEST_MODEL=gpt-6-astra`, ADELE's backend smoke now
-proves an ordinary function-tool outcome and canonical continuation in two
-model invocations. The full-stack ChatGPT source-coding smoke proves
-`search` -> `read_file` -> final response in three, with the strategy source
+Recorded `ADELE_OPENAI_CHATGPT_TEST_MODEL=gpt-6-astra` evidence includes an
+ordinary function-tool outcome and canonical continuation in two model
+invocations in the backend smoke. The full-stack ChatGPT source-coding smoke
+recorded `search` -> `read_file` -> final response in three, with inspected source
 unchanged in the distinct Task worktree, Project source, and launching checkout.
 Every completed invocation in these proofs must contain the exact selected
 service-reported `effectiveModel`; missing or substituted model identity fails
 validation. The backend no longer falls back to the request when the service
 omits its model. The backend tool smoke also passes with the retained `gpt-5.5`
-default.
+default. Deterministic tests validate the current Session-routed Chat path;
+paid live services have not been rerun against it.
 
 These are classic Responses proofs, retaining `store:false`, native replay, and
 `parallel_tool_calls:true`, not a Responses Lite implementation or a larger

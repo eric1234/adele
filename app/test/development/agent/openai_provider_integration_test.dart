@@ -5,21 +5,23 @@ import 'dart:io';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
+import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/development/agent/agent_capability_adapters.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
-import 'package:adele_desktop/development/agent/development_strategy_registration.dart';
-import 'package:adele_desktop/development/agent/simple_tool_loop_strategy.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
+import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:resource_inspector_contract/resource_inspector_contract.dart';
 import 'package:search_tools_plugin/search_tools_plugin.dart';
+
+import 'chat_test_topology.dart';
 
 const String _gitEnvironmentPluginId = 'dev.adele.plugin.git-environment';
 const String _gitEnvironmentProviderId = 'dev.adele.environment.git-worktree';
@@ -200,22 +202,23 @@ void main() {
               providerId: basicResourceInspectorProviderId,
             ),
           );
-      final DevelopmentSessionHistory session = DevelopmentSessionHistory(
+      final ChatTestTopology topology = ChatTestTopology(
         SessionId('session-openai-b4'),
-      )..append(UserSessionMessage('Inspect the three Phase IV resources.'));
-      final AgentRun run = AgentRun(
-        id: RunId('run-openai-b4'),
-        sessionId: session.id,
       );
+      addTearDown(topology.close);
+      final ChatSessionState session = topology.chat.sessions.obtain(
+        topology.session.id,
+      )..append(ChatUserMessage('Inspect the three Phase IV resources.'));
       final ToolCatalog catalog = ToolCatalog()..register(tool.registration);
-      final DevelopmentToolLoopStrategy strategy = DevelopmentToolLoopStrategy(
-        run: run,
-        session: session,
-        contextAssembler: const DevelopmentContextAssembler(),
+      final SessionOrchestrationRun strategy = createSessionOrchestrationRun(
+        lifecycle: topology.lifecycle,
+        sessionId: topology.session.id,
+        runId: RunId('run-openai-b4'),
         model: modelAdapter,
         toolCatalog: catalog,
         policy: const DevelopmentToolPolicy(ToolPolicyDecision.ask),
       );
+      final AgentRun run = strategy.run;
 
       await strategy.start();
 
@@ -315,7 +318,7 @@ void main() {
       expect(outbound, hasLength(2));
       expect(outbound[1]['parallel_tool_calls'], isTrue);
       expect(
-        (session.snapshot().entries.last as AssistantSessionMessage).content,
+        (session.snapshot().entries.last as ChatAssistantMessage).content,
         'The resource inspections are complete.',
       );
       final List<Object?> secondInput = outbound[1]['input']! as List<Object?>;
@@ -375,7 +378,7 @@ void main() {
     'searches and reads real ADELE source through two AOT providers',
     () async {
       const String strategyPath =
-          'app/lib/development/agent/simple_tool_loop_strategy.dart';
+          'plugins/chat_strategy/lib/chat_strategy_plugin.dart';
       final Directory container = await Directory.systemTemp.createTemp(
         'adele-openai-environment-source-',
       );
@@ -444,8 +447,7 @@ void main() {
                   'id': 'fc_search',
                   'call_id': 'call_search',
                   'name': 'search',
-                  'arguments':
-                      '{"query":"final class DevelopmentToolLoopStrategy"}',
+                  'arguments': '{"query":"final class ChatSessionState"}',
                   'status': 'completed',
                 }),
               );
@@ -521,8 +523,8 @@ void main() {
                 (input[6]! as Map<String, Object?>)['output'],
                 allOf(
                   startsWith('File: ${jsonEncode(strategyPath)}'),
-                  contains('final class DevelopmentToolLoopStrategy'),
-                  contains('this.maxModelInvocations = 8'),
+                  contains('final class ChatSessionState'),
+                  contains('_maxModelInvocations = 8'),
                 ),
               );
               _sse(
@@ -530,7 +532,7 @@ void main() {
                 _outputDone(
                   _message(
                     'msg_final',
-                    '$strategyPath declares DevelopmentToolLoopStrategy and defaults its model-invocation limit to 8.',
+                    '$strategyPath declares ChatSessionState and defaults its model-invocation limit to 8.',
                   ),
                 ),
               );
@@ -594,8 +596,10 @@ void main() {
       );
       final InMemoryProductStore store = InMemoryProductStore();
       final ExtensionRegistry extensions = ExtensionRegistry();
-      final ExtensionRegistration strategyActivation =
-          registerDevelopmentToolLoopStrategy(extensions);
+      final ChatStrategyPlugin chat = ChatStrategyPlugin();
+      final ExtensionRegistration strategyActivation = chat.activate(
+        extensions,
+      );
       addTearDown(strategyActivation.close);
       final ProductLifecycleCoordinator lifecycle =
           ProductLifecycleCoordinator.generated(
@@ -612,7 +616,7 @@ void main() {
       );
       final Session productSession = lifecycle.createSession(
         taskId: created.task.id,
-        strategyId: developmentToolLoopStrategyId,
+        strategyId: chatStrategyId,
       );
       final SessionId sessionId = productSession.id;
       final SessionEnvironmentAuthority authority = store
@@ -646,28 +650,23 @@ void main() {
             modelBinding,
             selectedModel: 'test-openai-model',
           );
-      final DevelopmentSessionHistory
-      session = DevelopmentSessionHistory(sessionId)
+      final ChatSessionState session = chat.sessions.obtain(sessionId)
+        ..instructions =
+            'Use search to locate the requested declaration, then use read_file with the returned relative path before answering.'
         ..append(
-          UserSessionMessage(
-            'Find where DevelopmentToolLoopStrategy is declared, inspect the source, and report its path and model invocation limit.',
+          ChatUserMessage(
+            'Find where ChatSessionState is declared, inspect the source, and report its path and model invocation limit.',
           ),
         );
-      final AgentRun run = AgentRun(
-        id: RunId('run-source-coding'),
-        sessionId: session.id,
-      );
-      final DevelopmentToolLoopStrategy strategy = DevelopmentToolLoopStrategy(
-        run: run,
-        session: session,
-        contextAssembler: const DevelopmentContextAssembler(
-          instructions:
-              'Use search to locate the requested declaration, then use read_file with the returned relative path before answering.',
-        ),
+      final SessionOrchestrationRun strategy = createSessionOrchestrationRun(
+        lifecycle: lifecycle,
+        sessionId: sessionId,
+        runId: RunId('run-source-coding'),
         model: modelAdapter,
         toolCatalog: catalog,
         policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
       );
+      final AgentRun run = strategy.run;
 
       await strategy.start();
 
@@ -678,8 +677,8 @@ void main() {
       expect(model.requestCount, 0);
       expect(outbound, hasLength(3));
       expect(
-        (session.snapshot().entries.last as AssistantSessionMessage).content,
-        '$strategyPath declares DevelopmentToolLoopStrategy and defaults its model-invocation limit to 8.',
+        (session.snapshot().entries.last as ChatAssistantMessage).content,
+        '$strategyPath declares ChatSessionState and defaults its model-invocation limit to 8.',
       );
       final List<ToolInvocationPrepared> prepared = run.journal.records
           .map((ExecutionEventRecord record) => record.event)
@@ -770,7 +769,7 @@ Future<void> _createSourceRepository({
   const List<String> sourcePaths = <String>[
     'README.md',
     'app/lib/development/agent/development_agent_support.dart',
-    'app/lib/development/agent/simple_tool_loop_strategy.dart',
+    'plugins/chat_strategy/lib/chat_strategy_plugin.dart',
   ];
   await source.create(recursive: true);
   for (final String relativePath in sourcePaths) {

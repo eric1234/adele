@@ -3,9 +3,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_desktop/development/agent/development_self_hosting.dart';
-import 'package:adele_desktop/development/agent/simple_tool_loop_strategy.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:agent_kernel/agent_kernel.dart';
+import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 
 const int developmentSelfHostingReportSchemaVersion = 1;
 
@@ -562,11 +562,11 @@ Map<String, Object?> developmentSelfHostingJournalJson(
   'sessionEntries': result == null
       ? const <Object?>[]
       : <Object?>[
-          for (final SessionEntry entry in result.session.snapshot().entries)
+          for (final ChatEntry entry in result.session.snapshot().entries)
             <String, Object?>{
               'role': switch (entry) {
-                UserSessionMessage() => 'user',
-                AssistantSessionMessage() => 'assistant',
+                ChatUserMessage() => 'user',
+                ChatAssistantMessage() => 'assistant',
               },
               'content': entry.content,
             },
@@ -793,16 +793,7 @@ Map<String, Object?> developmentSelfHostingSummaryJson({
       'failure': developmentSelfHostingErrorJson(terminal.failure),
     });
   }
-  final List<AssistantSessionMessage> assistantEntries = result == null
-      ? const <AssistantSessionMessage>[]
-      : result.session
-            .snapshot()
-            .entries
-            .whereType<AssistantSessionMessage>()
-            .toList(growable: false);
-  final String? finalAssistantResponse = assistantEntries.isEmpty
-      ? null
-      : assistantEntries.last.content;
+  final String? finalAssistantResponse = result?.finalAssistantResponse;
   final Object? summaryFailure = result?.run.failure ?? runnerFailure;
 
   return <String, Object?>{

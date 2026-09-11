@@ -1,4 +1,5 @@
-export 'package:adele_product/adele_product.dart' show RunId, SessionId;
+export 'package:adele_orchestration/adele_orchestration.dart'
+    show RunId, SessionId, ToolInvocationId, RunInterruptionId;
 
 final class ModelInvocationId {
   ModelInvocationId(String value)
@@ -10,42 +11,6 @@ final class ModelInvocationId {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is ModelInvocationId && other.value == value;
-
-  @override
-  int get hashCode => value.hashCode;
-
-  @override
-  String toString() => value;
-}
-
-final class ToolInvocationId {
-  ToolInvocationId(String value)
-    : value = _requireId(value, 'Tool invocation ID');
-
-  final String value;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is ToolInvocationId && other.value == value;
-
-  @override
-  int get hashCode => value.hashCode;
-
-  @override
-  String toString() => value;
-}
-
-final class RunInterruptionId {
-  RunInterruptionId(String value)
-    : value = _requireId(value, 'Run interruption ID');
-
-  final String value;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is RunInterruptionId && other.value == value;
 
   @override
   int get hashCode => value.hashCode;

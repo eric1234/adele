@@ -28,6 +28,7 @@ workspace:
   - plugins/filesystem_tools
   - plugins/search_tools
   - plugins/command_tools
+  - plugins/chat_strategy
   - plugins/git_environment
 
 dev_dependencies:

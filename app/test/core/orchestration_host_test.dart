@@ -1,16 +1,19 @@
 import 'dart:async';
 
-import 'package:adele_desktop/development/agent/development_agent_support.dart';
-import 'package:adele_desktop/development/agent/simple_tool_loop_strategy.dart';
+import 'package:adele_desktop/core/orchestration_host.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:agent_kernel/agent_kernel.dart';
+import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../support/orchestration_test_lifecycle.dart';
 
 void main() {
   test(
     'allow executes without interruption and preserves proposal context',
     () async {
-      final _StrategyFixture fixture = _fixture(ToolPolicyDecision.allow);
+      final _StrategyFixture fixture = await _fixture(ToolPolicyDecision.allow);
 
       await fixture.strategy.start();
 
@@ -29,7 +32,7 @@ void main() {
   test(
     'journals live structured progress before terminal continuation',
     () async {
-      final _StrategyFixture fixture = _fixture(
+      final _StrategyFixture fixture = await _fixture(
         ToolPolicyDecision.allow,
         progress: <ToolProgress>[
           ToolProgress(kind: ToolProgressKind.stdout, content: 'out'),
@@ -57,7 +60,7 @@ void main() {
   );
 
   test('incomplete settlement fails without executing proposed tool', () async {
-    final _StrategyFixture fixture = _fixture(
+    final _StrategyFixture fixture = await _fixture(
       ToolPolicyDecision.allow,
       settlement: ModelSettlement.incomplete,
     );
@@ -78,7 +81,7 @@ void main() {
   });
 
   test('refused settlement records refusal and never executes tool', () async {
-    final _StrategyFixture fixture = _fixture(
+    final _StrategyFixture fixture = await _fixture(
       ToolPolicyDecision.allow,
       settlement: ModelSettlement.refused,
     );
@@ -98,7 +101,7 @@ void main() {
   });
 
   test('continuation preserves proposal-before-text output order', () async {
-    final _StrategyFixture fixture = _fixture(
+    final _StrategyFixture fixture = await _fixture(
       ToolPolicyDecision.allow,
       proposalBeforeText: true,
     );
@@ -110,7 +113,7 @@ void main() {
   });
 
   test('deny continues without interruption or execution', () async {
-    final _StrategyFixture fixture = _fixture(ToolPolicyDecision.deny);
+    final _StrategyFixture fixture = await _fixture(ToolPolicyDecision.deny);
 
     await fixture.strategy.start();
 
@@ -135,25 +138,144 @@ void main() {
   });
 
   test(
-    'context assembly cannot replace the model-visible tool snapshot',
+    'opaque snapshots reject cross-run, forged, wrong-turn and duplicate proposals',
     () async {
-      final _StrategyFixture fixture = _fixture(
-        ToolPolicyDecision.allow,
-        contextAssembler: const _ReplacingContextAssembler(),
+      final ExtensionRegistry extensions = ExtensionRegistry();
+      final ChatStrategyPlugin chat = ChatStrategyPlugin();
+      addTearDown(chat.activate(extensions).close);
+      final OrchestrationTestLifecycle topology =
+          await OrchestrationTestLifecycle.create(
+            extensions,
+            SessionId('snapshot-session'),
+          );
+      final Session session = topology.createSession(chatStrategyId);
+      final _Executable executable = _Executable();
+      final ToolCatalog catalog = _catalog(executable);
+      final _Model model = _Model();
+      KernelOrchestrationHost host(AgentRun run) => KernelOrchestrationHost(
+        run: run,
+        strategy: topology.lifecycle.resolveSessionStrategy(session.id),
+        model: model,
+        toolCatalog: catalog,
+        policy: const _Policy(ToolPolicyDecision.allow),
+      );
+      final AgentRun firstRun = AgentRun(
+        id: RunId('snapshot-a'),
+        sessionId: session.id,
+      );
+      final AgentRun secondRun = AgentRun(
+        id: RunId('snapshot-b'),
+        sessionId: session.id,
+      );
+      final KernelOrchestrationHost first = host(firstRun)..start();
+      final KernelOrchestrationHost second = host(secondRun)..start();
+      final StrategyInferenceMaterial material = StrategyInferenceMaterial(
+        instructions: 'Host owns tools and invocation IDs.',
+        input: <SemanticModelInputItem>[
+          SemanticMessageInput(
+            role: SemanticMessageRole.user,
+            content: 'Inspect.',
+          ),
+          SemanticNativeInput(
+            providerNativeMetadata: ModelNativeEnvelope(
+              kind: 'untrusted-inference-material',
+              compatibility: const <String, Object?>{},
+              data: const <String, Object?>{
+                'invocationId': 'replacement-model',
+                'tools': <Object?>[],
+              },
+            ),
+          ),
+        ],
+      );
+      final StrategyModelTurn turn = await first.invokeModel(material);
+      final MaterializedToolSet originalTools = model.requests.single.tools;
+      final ProviderToolProposal proposal = turn.output
+          .whereType<ModelToolProposalOutput>()
+          .single
+          .proposal;
+      final StrategyModelTurn later = await first.invokeModel(material);
+      final ProviderToolProposal laterProposal = later.output
+          .whereType<ModelToolProposalOutput>()
+          .single
+          .proposal;
+      final ProviderToolProposal forged = ProviderToolProposal(
+        providerCallId: proposal.providerCallId,
+        alias: proposal.alias,
+        arguments: proposal.arguments,
       );
 
-      await fixture.strategy.start();
+      expect(
+        model.requests.map(
+          (SemanticModelRequest request) => request.invocationId.value,
+        ),
+        <String>['snapshot-a-model-1', 'snapshot-a-model-2'],
+      );
+      expect(model.requests.first.instructions, material.instructions);
+      expect(model.requests.first.input, orderedEquals(material.input));
+      expect(model.requests.first.tools, same(originalTools));
+      expect(originalTools.tools, hasLength(1));
+      expect(model.requests.last.tools, isNot(same(originalTools)));
+      expect(turn.tools, isNot(isA<MaterializedToolSet>()));
+      expect(turn.tools, isNot(same(later.tools)));
+      for (final ({
+            KernelOrchestrationHost host,
+            StrategyToolSnapshot tools,
+            ProviderToolProposal proposal,
+          })
+          attempt
+          in [
+            (host: second, tools: turn.tools, proposal: proposal),
+            (host: first, tools: _ForgedToolSnapshot(), proposal: proposal),
+            (host: first, tools: turn.tools, proposal: forged),
+            (host: first, tools: later.tools, proposal: proposal),
+            (host: first, tools: turn.tools, proposal: laterProposal),
+          ]) {
+        await expectLater(
+          attempt.host.processProposal(
+            tools: attempt.tools,
+            proposal: attempt.proposal,
+          ),
+          throwsA(isA<InvalidRunOperation>()),
+        );
+        expect(firstRun.state, RunState.running);
+        expect(secondRun.state, RunState.running);
+        expect(executable.executions, 0);
+        expect(_events(firstRun).whereType<ToolInvocationPrepared>(), isEmpty);
+        expect(_events(secondRun).whereType<ToolInvocationPrepared>(), isEmpty);
+      }
 
-      expect(fixture.run.state, RunState.failed);
-      expect(fixture.model.invocations, 0);
-      expect(fixture.executable.executions, 0);
+      catalog.remove(ToolId('dev.adele.tool.resource-inspection'));
+      final StrategyToolResult result = await first.processProposal(
+        tools: turn.tools,
+        proposal: proposal,
+      );
+      expect(result, isA<StrategyToolContinuation>());
+      final ToolInvocation invocation = _events(
+        firstRun,
+      ).whereType<ToolInvocationPrepared>().single.invocation;
+      expect(invocation.id.value, 'snapshot-a-tool-1');
+      expect(invocation.proposal, same(proposal));
+      expect(invocation.tool, same(originalTools.byAlias(proposal.alias)));
+      expect(invocation.context.runId, first.id);
+      expect(invocation.context.sessionId, session.id);
+      expect(executable.executions, 1);
+      final int records = firstRun.journal.records.length;
+      await expectLater(
+        first.processProposal(tools: turn.tools, proposal: proposal),
+        throwsA(isA<InvalidRunOperation>()),
+      );
+      expect(firstRun.journal.records, hasLength(records));
+      expect(executable.executions, 1);
+      expect(_events(firstRun).whereType<ToolExecutionStarted>(), hasLength(1));
+      expect(_events(secondRun).whereType<ToolExecutionStarted>(), isEmpty);
     },
   );
 
   test(
     'unknown proposal continues without creating a ToolInvocation',
     () async {
-      final _StrategyFixture fixture = _fixture(
+      final _StrategyFixture fixture = await _fixture(
         ToolPolicyDecision.allow,
         modelAlias: 'unknown_tool',
       );
@@ -184,27 +306,27 @@ void main() {
         value: _RetiringContribution(executable),
       );
       final SessionId sessionId = SessionId('session-in-flight-retirement');
-      final DevelopmentSessionHistory session = DevelopmentSessionHistory(
-        sessionId,
-      )..append(UserSessionMessage('Inspect.'));
-      final AgentRun run = AgentRun(
-        id: RunId('run-in-flight-retirement'),
-        sessionId: sessionId,
-      );
+      final ChatStrategyPlugin chat = ChatStrategyPlugin();
+      addTearDown(chat.activate(extensions).close);
+      final OrchestrationTestLifecycle topology =
+          await OrchestrationTestLifecycle.create(extensions, sessionId);
+      final Session session = topology.createSession(chatStrategyId);
+      chat.sessions.obtain(session.id).append(ChatUserMessage('Inspect.'));
       final _RetiringProposalModel model = _RetiringProposalModel(
         generationA.close,
       );
       final ToolCatalog catalog = await ModelToolComposer(
         extensions,
       ).materialize(_NoHostServices(sessionId));
-      final DevelopmentToolLoopStrategy strategy = DevelopmentToolLoopStrategy(
-        run: run,
-        session: session,
-        contextAssembler: const DevelopmentContextAssembler(),
+      final SessionOrchestrationRun strategy = createSessionOrchestrationRun(
+        lifecycle: topology.lifecycle,
+        sessionId: session.id,
+        runId: RunId('run-in-flight-retirement'),
         model: model,
         toolCatalog: catalog,
-        policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
+        policy: const _Policy(ToolPolicyDecision.allow),
       );
+      final AgentRun run = strategy.run;
 
       await strategy.start();
 
@@ -222,7 +344,7 @@ void main() {
   );
 
   test('model invocation limit fails an accidental tool loop', () async {
-    final _StrategyFixture fixture = _fixture(
+    final _StrategyFixture fixture = await _fixture(
       ToolPolicyDecision.allow,
       alwaysPropose: true,
       maxModelInvocations: 2,
@@ -243,28 +365,21 @@ void main() {
     expect(fixture.executable.executions, 1);
   });
 
-  test('development context assembler carries host instructions', () {
-    final DevelopmentSessionHistory session = DevelopmentSessionHistory(
-      SessionId('instructions-session'),
-    )..append(UserSessionMessage('Inspect source.'));
-
-    final SemanticModelRequest request =
-        const DevelopmentContextAssembler(
-          instructions: 'Use source tools before answering.',
-        ).assemble(
-          ContextAssemblyInput(
-            invocationId: ModelInvocationId('instructions-model'),
-            session: session.snapshot(),
-            runItems: const <SemanticModelInputItem>[],
-            tools: MaterializedToolSet(const <MaterializedTool>[]),
-          ),
-        );
-
+  test('Chat inference material carries host instructions', () async {
+    final _StrategyFixture fixture = await _fixture(
+      ToolPolicyDecision.allow,
+      instructions: 'Use source tools before answering.',
+    );
+    await fixture.strategy.start();
+    final SemanticModelRequest request = fixture.model.requests.first;
     expect(request.instructions, 'Use source tools before answering.');
+    expect(fixture.model.requests.last.instructions, request.instructions);
+    expect(request.input.single, isA<SemanticMessageInput>());
+    expect(fixture.run.state, RunState.completed);
   });
 
   test('three proposals drain sequentially from one tool generation', () async {
-    final _BatchFixture fixture = _BatchFixture();
+    final _BatchFixture fixture = await _BatchFixture.create();
     fixture.executable.beforeTerminal = (int step) async {
       // A catalog change must only affect the next model turn.
       if (step == 1) fixture.removeTools();
@@ -441,7 +556,7 @@ void main() {
   test(
     'a later proposal cannot start until prior execution completes',
     () async {
-      final _BatchFixture fixture = _BatchFixture();
+      final _BatchFixture fixture = await _BatchFixture.create();
       final Completer<void> started = Completer<void>();
       final Completer<void> release = Completer<void>();
       fixture.executable.beforeTerminal = (int step) async {
@@ -473,7 +588,7 @@ void main() {
     test(
       'batch continues after ${unknownAlias ? 'unknown alias' : 'invalid arguments'}',
       () async {
-        final _BatchFixture fixture = _BatchFixture(
+        final _BatchFixture fixture = await _BatchFixture.create(
           invalidSecondProposal: true,
           unknownAlias: unknownAlias,
         );
@@ -524,7 +639,7 @@ void main() {
   }
 
   test('normal tool failure does not abort later proposals', () async {
-    final _BatchFixture fixture = _BatchFixture(failedStep: 1);
+    final _BatchFixture fixture = await _BatchFixture.create(failedStep: 1);
 
     await fixture.strategy.start();
 
@@ -548,7 +663,7 @@ void main() {
   test(
     'policy denial records a result and continues the ordered batch',
     () async {
-      final _BatchFixture fixture = _BatchFixture(
+      final _BatchFixture fixture = await _BatchFixture.create(
         decisions: <int, ToolPolicyDecision>{2: ToolPolicyDecision.deny},
       );
 
@@ -571,7 +686,7 @@ void main() {
     test(
       '${approved ? 'approval' : 'rejection'} resumes remaining proposals before continuation',
       () async {
-        final _BatchFixture fixture = _BatchFixture(
+        final _BatchFixture fixture = await _BatchFixture.create(
           decisions: <int, ToolPolicyDecision>{2: ToolPolicyDecision.ask},
         );
 
@@ -631,7 +746,7 @@ void main() {
   }
 
   test('approval of one proposal does not approve a later proposal', () async {
-    final _BatchFixture fixture = _BatchFixture(
+    final _BatchFixture fixture = await _BatchFixture.create(
       decisions: <int, ToolPolicyDecision>{
         2: ToolPolicyDecision.ask,
         3: ToolPolicyDecision.ask,
@@ -658,7 +773,7 @@ void main() {
   test(
     'approval revalidates bindings without dropping remaining proposals',
     () async {
-      final _BatchFixture fixture = _BatchFixture(
+      final _BatchFixture fixture = await _BatchFixture.create(
         decisions: <int, ToolPolicyDecision>{2: ToolPolicyDecision.ask},
       );
       await fixture.strategy.start();
@@ -686,7 +801,9 @@ void main() {
   test(
     'final permitted model invocation cannot start a proposed batch',
     () async {
-      final _BatchFixture fixture = _BatchFixture(maxModelInvocations: 1);
+      final _BatchFixture fixture = await _BatchFixture.create(
+        maxModelInvocations: 1,
+      );
 
       await fixture.strategy.start();
 
@@ -719,7 +836,9 @@ void main() {
     test(
       '$settlement never executes an observed multi-proposal batch',
       () async {
-        final _BatchFixture fixture = _BatchFixture(settlement: settlement);
+        final _BatchFixture fixture = await _BatchFixture.create(
+          settlement: settlement,
+        );
 
         await fixture.strategy.start();
 
@@ -743,7 +862,9 @@ void main() {
     'model failure after multiple proposals remains a model failure',
     () async {
       final StateError failure = StateError('Provider failed.');
-      final _BatchFixture fixture = _BatchFixture(modelFailure: failure);
+      final _BatchFixture fixture = await _BatchFixture.create(
+        modelFailure: failure,
+      );
 
       await fixture.strategy.start();
 
@@ -760,7 +881,7 @@ void main() {
 
   for (final _InfrastructureFailure failure in _InfrastructureFailure.values) {
     test('$failure returns a tool failure and finishes the batch', () async {
-      final _BatchFixture fixture = _BatchFixture(
+      final _BatchFixture fixture = await _BatchFixture.create(
         infrastructureFailure: failure,
       );
 
@@ -835,7 +956,7 @@ void main() {
   test(
     'zero proposals completes with assistant output in the only slot',
     () async {
-      final _BatchFixture fixture = _BatchFixture(
+      final _BatchFixture fixture = await _BatchFixture.create(
         proposalCount: 0,
         maxModelInvocations: 1,
       );
@@ -848,10 +969,611 @@ void main() {
       expect(fixture.session.snapshot().entries.last.content, 'Complete.');
     },
   );
+
+  test(
+    'canonical Session stored strategy selects the contribution without fallback',
+    () async {
+      final ExtensionRegistry extensions = ExtensionRegistry();
+      final ChatStrategyPlugin chat = ChatStrategyPlugin();
+      addTearDown(chat.activate(extensions).close);
+      final OrchestrationStrategyId selectedId = OrchestrationStrategyId(
+        'dev.adele.strategy.selected',
+      );
+      final List<Session> materialized = <Session>[];
+      final List<String> callbacks = <String>[];
+      addTearDown(
+        extensions
+            .register(
+              point: orchestrationStrategyContributions,
+              id: ExtensionId('dev.adele.test.selected'),
+              value: OrchestrationStrategyContribution(
+                strategyId: selectedId,
+                materialize: (OrchestrationStrategyHostContext context) {
+                  materialized.add(context.session);
+                  return _CompletingExecution(context.host, callbacks);
+                },
+              ),
+            )
+            .close,
+      );
+      final OrchestrationTestLifecycle topology =
+          await OrchestrationTestLifecycle.create(
+            extensions,
+            SessionId('routing-session'),
+          );
+      final Session session = topology.createSession(selectedId);
+      final _Model model = _Model();
+      final _Executable executable = _Executable();
+      final SessionOrchestrationRun execution = createSessionOrchestrationRun(
+        lifecycle: topology.lifecycle,
+        sessionId: session.id,
+        runId: RunId('routing-run'),
+        model: model,
+        toolCatalog: _catalog(executable),
+        policy: const _Policy(ToolPolicyDecision.allow),
+      );
+
+      expect(materialized.single, same(session));
+      expect(topology.lifecycle.store.session(session.id), same(session));
+      expect(session.strategyId, selectedId);
+      expect(execution.run.sessionId, session.id);
+      expect(execution.run.state, RunState.created);
+      expect(callbacks, isEmpty);
+      await execution.start();
+
+      expect(callbacks, <String>['start']);
+      expect(execution.run.state, RunState.completed);
+      expect(
+        _events(execution.run).map((ExecutionEvent event) => event.runtimeType),
+        <Type>[RunStarted, RunCompleted],
+      );
+      expect(model.invocations, 0);
+      expect(executable.executions, 0);
+      expect(chat.sessions.obtain(session.id).snapshot().entries, isEmpty);
+    },
+  );
+
+  for (final bool ambiguous in <bool>[false, true]) {
+    test(
+      'canonical Run rejects ${ambiguous ? 'ambiguous' : 'unavailable'} stored strategy without fallback',
+      () async {
+        final ExtensionRegistry extensions = ExtensionRegistry();
+        final ChatStrategyPlugin chat = ChatStrategyPlugin();
+        addTearDown(chat.activate(extensions).close);
+        final OrchestrationStrategyId selectedId = OrchestrationStrategyId(
+          'dev.adele.strategy.selected',
+        );
+        final List<String> callbacks = <String>[];
+        final OrchestrationStrategyContribution contribution =
+            OrchestrationStrategyContribution(
+              strategyId: selectedId,
+              materialize: (OrchestrationStrategyHostContext context) {
+                callbacks.add('materialize');
+                return _CompletingExecution(context.host, callbacks);
+              },
+            );
+        final ExtensionRegistration selected = extensions.register(
+          point: orchestrationStrategyContributions,
+          id: ExtensionId('dev.adele.test.selected'),
+          value: contribution,
+        );
+        addTearDown(selected.close);
+        final OrchestrationTestLifecycle topology =
+            await OrchestrationTestLifecycle.create(
+              extensions,
+              SessionId('unresolved-session'),
+            );
+        final Session session = topology.createSession(selectedId);
+        final Object authority = topology.lifecycle.store
+            .requireSessionAuthority(session.id);
+        if (ambiguous) {
+          addTearDown(
+            extensions
+                .register(
+                  point: orchestrationStrategyContributions,
+                  id: ExtensionId('dev.adele.test.duplicate'),
+                  value: contribution,
+                )
+                .close,
+          );
+        } else {
+          await selected.close();
+        }
+        final _Model model = _Model();
+        final _Executable executable = _Executable();
+        SessionOrchestrationRun create(SessionId id) =>
+            createSessionOrchestrationRun(
+              lifecycle: topology.lifecycle,
+              sessionId: id,
+              runId: RunId('unresolved-run'),
+              model: model,
+              toolCatalog: _catalog(executable),
+              policy: const _Policy(ToolPolicyDecision.allow),
+            );
+
+        expect(
+          () => create(session.id),
+          throwsA(
+            ambiguous
+                ? isA<AmbiguousOrchestrationStrategy>()
+                      .having(
+                        (AmbiguousOrchestrationStrategy error) =>
+                            error.strategyId,
+                        'stored strategy',
+                        selectedId,
+                      )
+                      .having(
+                        (AmbiguousOrchestrationStrategy error) =>
+                            error.extensionIds,
+                        'competing registrations',
+                        <ExtensionId>[
+                          ExtensionId('dev.adele.test.duplicate'),
+                          ExtensionId('dev.adele.test.selected'),
+                        ],
+                      )
+                : isA<OrchestrationStrategyUnavailable>().having(
+                    (OrchestrationStrategyUnavailable error) =>
+                        error.strategyId,
+                    'stored strategy',
+                    selectedId,
+                  ),
+          ),
+        );
+        expect(
+          () => create(SessionId('unpublished-session')),
+          throwsStateError,
+        );
+        expect(callbacks, isEmpty);
+        expect(model.invocations, 0);
+        expect(executable.executions, 0);
+        expect(topology.lifecycle.store.session(session.id), same(session));
+        expect(session.strategyId, selectedId);
+        expect(
+          topology.lifecycle.store.requireSessionAuthority(session.id),
+          same(authority),
+        );
+        expect(chat.sessions.obtain(session.id).snapshot().entries, isEmpty);
+      },
+    );
+  }
+
+  test(
+    'approved Run retains exact Chat generation; fresh Run resolves replacement',
+    () async {
+      final ExtensionRegistry extensions = ExtensionRegistry();
+      final ChatSessionStore sessions = ChatSessionStore();
+      final ChatStrategyPlugin chatA = ChatStrategyPlugin(sessions: sessions);
+      final ExtensionRegistration generationA = chatA.activate(extensions);
+      addTearDown(generationA.close);
+      final OrchestrationTestLifecycle topology =
+          await OrchestrationTestLifecycle.create(
+            extensions,
+            SessionId('generation-session'),
+          );
+      final Session session = topology.createSession(chatStrategyId);
+      final ChatSessionState history = sessions.obtain(session.id)
+        ..instructions = 'Generation A'
+        ..append(ChatUserMessage('Inspect.'));
+      final ResolvedOrchestrationStrategy bindingA = topology.lifecycle
+          .resolveSessionStrategy(session.id);
+      final _Model modelA = _Model();
+      final _Executable executable = _Executable();
+      final ToolCatalog catalog = _catalog(executable);
+      final SessionOrchestrationRun runA = createSessionOrchestrationRun(
+        lifecycle: topology.lifecycle,
+        sessionId: session.id,
+        runId: RunId('generation-run-a'),
+        model: modelA,
+        toolCatalog: catalog,
+        policy: const _Policy(ToolPolicyDecision.ask),
+      );
+      await runA.start();
+      expect(runA.run.state, RunState.waiting);
+      expect(modelA.invocations, 1);
+      expect(modelA.requests.single.instructions, 'Generation A');
+      expect(executable.executions, 0);
+      final ToolApprovalResolution approval = _approval(runA.run);
+      final ToolInvocation retainedInvocation = runA.lastToolInvocation!;
+      final List<ExecutionEventRecord> beforeResume = runA.run.journal.records;
+      expect(
+        retainedInvocation.tool,
+        same(modelA.requests.single.tools.byAlias('inspect_resource')),
+      );
+      expect(_events(runA.run).whereType<RunInterrupted>(), hasLength(1));
+      expect(
+        _events(runA.run).whereType<ToolPolicyEvaluated>().single.decision,
+        ToolPolicyDecision.ask,
+      );
+
+      await generationA.close();
+      final ChatStrategyPlugin chatB = ChatStrategyPlugin(sessions: sessions);
+      chatB.sessions.obtain(session.id).instructions = 'Generation B';
+      // Observe the real plugin materializer, without substituting its execution.
+      final ExtensionRegistry activationRegistryB = ExtensionRegistry();
+      addTearDown(chatB.activate(activationRegistryB).close);
+      final ResolvedOrchestrationStrategy activatedB =
+          OrchestrationStrategyResolver(
+            activationRegistryB,
+          ).resolve(chatStrategyId);
+      final List<Session> materializedB = <Session>[];
+      final List<String> callbacksB = <String>[];
+      addTearDown(
+        extensions
+            .register(
+              point: orchestrationStrategyContributions,
+              id: activatedB.binding.id,
+              value: OrchestrationStrategyContribution(
+                strategyId: chatStrategyId,
+                materialize: (OrchestrationStrategyHostContext context) {
+                  materializedB.add(context.session);
+                  return _ObservedExecution(
+                    activatedB.materialize(context),
+                    callbacksB,
+                  );
+                },
+              ),
+            )
+            .close,
+      );
+      final ResolvedOrchestrationStrategy bindingB = topology.lifecycle
+          .resolveSessionStrategy(session.id);
+      expect(bindingB.binding.id, bindingA.binding.id);
+      expect(bindingB.binding, isNot(same(bindingA.binding)));
+      expect(bindingA.validateBinding, throwsA(isA<StaleExtensionBinding>()));
+      bindingB.validateBinding();
+      expect(chatB.sessions.obtain(session.id), same(history));
+
+      await expectLater(
+        runA.resolveApproval(approval),
+        throwsA(isA<StaleExtensionBinding>()),
+      );
+
+      expect(runA.run.state, RunState.failed);
+      expect(runA.run.failure, isA<StaleExtensionBinding>());
+      expect(runA.run.interruptions, isEmpty);
+      expect(runA.lastToolInvocation, same(retainedInvocation));
+      expect(runA.lastToolOutcome, isNull);
+      expect(modelA.invocations, 1);
+      expect(executable.executions, 0);
+      expect(materializedB, isEmpty);
+      expect(callbacksB, isEmpty);
+      expect(
+        history.snapshot().entries.map((ChatEntry entry) => entry.content),
+        <String>['Inspect.'],
+      );
+      expect(
+        runA.run.journal.records.take(beforeResume.length),
+        orderedEquals(beforeResume),
+      );
+      expect(runA.run.journal.records, hasLength(beforeResume.length + 1));
+      expect(
+        _events(runA.run).whereType<RunFailed>().single.error,
+        same(runA.run.failure),
+      );
+      expect(_events(runA.run).whereType<RunInterruptionResolved>(), isEmpty);
+      expect(_events(runA.run).whereType<ToolExecutionStarted>(), isEmpty);
+
+      final _Model modelB = _Model();
+      final SessionOrchestrationRun runB = createSessionOrchestrationRun(
+        lifecycle: topology.lifecycle,
+        sessionId: session.id,
+        runId: RunId('generation-run-b'),
+        model: modelB,
+        toolCatalog: catalog,
+        policy: const _Policy(ToolPolicyDecision.allow),
+      );
+      expect(materializedB.single, same(session));
+      expect(callbacksB, isEmpty);
+      await runB.start();
+
+      expect(callbacksB, <String>['start']);
+      expect(runB.run.state, RunState.completed);
+      expect(runB.run.sessionId, runA.run.sessionId);
+      expect(runB.run.id, isNot(runA.run.id));
+      expect(runB.lastToolInvocation!.context.runId, runB.run.id);
+      expect(runB.lastToolInvocation!.context.sessionId, session.id);
+      expect(modelB.invocations, 2);
+      expect(modelB.requests.first.instructions, 'Generation B');
+      expect(modelB.sawCorrelatedContinuation, isTrue);
+      expect(executable.executions, 1);
+      expect(history.snapshot().entries.last, isA<ChatAssistantMessage>());
+      expect(history.snapshot().entries.last.content, 'Complete.');
+      expect(topology.lifecycle.store.session(session.id), same(session));
+      expect(session.strategyId, chatStrategyId);
+      expect(runA.run.state, RunState.failed);
+      expect(modelA.invocations, 1);
+      expect(runA.run.journal.records, hasLength(beforeResume.length + 1));
+    },
+  );
+
+  for (final bool duringModel in <bool>[true, false]) {
+    test(
+      'Chat retirement during in-flight ${duringModel ? 'model' : 'tool'} work fails at the next host boundary',
+      () async {
+        final ExtensionRegistry extensions = ExtensionRegistry();
+        final ChatStrategyPlugin chat = ChatStrategyPlugin();
+        final ExtensionRegistration generation = chat.activate(extensions);
+        addTearDown(generation.close);
+        final OrchestrationTestLifecycle topology =
+            await OrchestrationTestLifecycle.create(
+              extensions,
+              SessionId('retiring-chat-session'),
+            );
+        final Session session = topology.createSession(chatStrategyId);
+        final ChatSessionState history = chat.sessions.obtain(session.id)
+          ..append(ChatUserMessage('Inspect.'));
+        final _Executable executable = _Executable();
+        final _Model model = _Model();
+        final Completer<void> started = Completer<void>();
+        final Completer<void> release = Completer<void>();
+        Future<void> suspend() async {
+          started.complete();
+          await release.future;
+        }
+
+        if (duringModel) {
+          model.beforeSettlement = suspend;
+        } else {
+          executable.beforeTerminal = suspend;
+        }
+        final SessionOrchestrationRun execution = createSessionOrchestrationRun(
+          lifecycle: topology.lifecycle,
+          sessionId: session.id,
+          runId: RunId('retiring-chat-run'),
+          model: model,
+          toolCatalog: _catalog(executable),
+          policy: const _Policy(ToolPolicyDecision.allow),
+        );
+        final Future<void> running = execution.start();
+        await started.future;
+        expect(execution.run.state, RunState.running);
+        expect(model.invocations, 1);
+        expect(executable.executions, duringModel ? 0 : 1);
+        expect(
+          _events(execution.run).whereType<ModelInvocationStarted>(),
+          hasLength(1),
+        );
+        expect(
+          _events(execution.run).whereType<ModelOutputObserved>(),
+          hasLength(1),
+        );
+        expect(
+          _events(execution.run).whereType<ToolExecutionCompleted>(),
+          isEmpty,
+        );
+        await generation.close();
+        expect(execution.run.state, RunState.running);
+        expect(execution.run.failure, isNull);
+        final Future<void> failed = expectLater(
+          running,
+          throwsA(isA<StaleExtensionBinding>()),
+        );
+        release.complete();
+        await failed;
+
+        expect(execution.run.state, RunState.failed);
+        expect(execution.run.failure, isA<StaleExtensionBinding>());
+        expect(model.invocations, 1);
+        expect(
+          _events(execution.run).whereType<ModelOutputObserved>(),
+          hasLength(1),
+        );
+        expect(
+          _events(
+            execution.run,
+          ).whereType<ModelInvocationSettled>().single.settlement,
+          ModelSettlement.completed,
+        );
+        expect(
+          _events(execution.run).whereType<ModelInvocationFailed>(),
+          isEmpty,
+        );
+        expect(
+          _events(execution.run).whereType<ToolInvocationPrepared>(),
+          hasLength(duringModel ? 0 : 1),
+        );
+        expect(
+          _events(execution.run).whereType<ToolExecutionStarted>(),
+          hasLength(duringModel ? 0 : 1),
+        );
+        expect(
+          _events(execution.run).whereType<ToolExecutionCompleted>(),
+          hasLength(duringModel ? 0 : 1),
+        );
+        expect(
+          _events(execution.run).whereType<RunFailed>().single.error,
+          same(execution.run.failure),
+        );
+        final List<ExecutionEvent> events = _events(execution.run).toList();
+        expect(
+          events[events.length - 2],
+          duringModel
+              ? isA<ModelInvocationSettled>()
+              : isA<ToolExecutionCompleted>(),
+        );
+        expect(events.last, isA<RunFailed>());
+        expect(events.whereType<RunCancelled>(), isEmpty);
+        expect(events.whereType<RunCompleted>(), isEmpty);
+        if (duringModel) {
+          expect(execution.lastToolInvocation, isNull);
+          expect(execution.lastToolOutcome, isNull);
+        } else {
+          expect(
+            execution.lastToolInvocation,
+            same(events.whereType<ToolInvocationPrepared>().single.invocation),
+          );
+          expect(
+            execution.lastToolOutcome,
+            same(events.whereType<ToolExecutionCompleted>().single.outcome),
+          );
+          expect(
+            execution.lastToolOutcome!.disposition,
+            ToolOutcomeDisposition.success,
+          );
+          expect(
+            execution.lastToolOutcome!.effectCertainty,
+            EffectCertainty.knownOccurred,
+          );
+        }
+        expect(executable.executions, duringModel ? 0 : 1);
+        expect(
+          history.snapshot().entries.map((ChatEntry entry) => entry.content),
+          <String>['Inspect.'],
+        );
+      },
+    );
+  }
+
+  test(
+    'invalid and duplicate approval resumes preserve pending authority and evidence',
+    () async {
+      final _StrategyFixture fixture = await _fixture(ToolPolicyDecision.ask);
+      final ToolApprovalResolution early = ToolApprovalResolution(
+        interruptionId: RunInterruptionId('not-pending'),
+        toolInvocationId: ToolInvocationId('not-pending'),
+        approved: true,
+      );
+      await expectLater(
+        fixture.strategy.resolveApproval(early),
+        throwsA(isA<InvalidRunOperation>()),
+      );
+      expect(fixture.run.state, RunState.created);
+      expect(fixture.run.journal.records, isEmpty);
+      expect(fixture.model.invocations, 0);
+      await fixture.strategy.start();
+      final ToolApprovalResolution valid = _approval(fixture.run);
+      final ToolApprovalInterruption pending =
+          fixture.run.interruptions.values.single as ToolApprovalInterruption;
+      final List<ExecutionEventRecord> waiting = fixture.run.journal.records;
+      for (final ToolApprovalResolution invalid in <ToolApprovalResolution>[
+        ToolApprovalResolution(
+          interruptionId: early.interruptionId,
+          toolInvocationId: valid.toolInvocationId,
+          approved: true,
+        ),
+        ToolApprovalResolution(
+          interruptionId: valid.interruptionId,
+          toolInvocationId: early.toolInvocationId,
+          approved: true,
+        ),
+      ]) {
+        await expectLater(
+          fixture.strategy.resolveApproval(invalid),
+          throwsA(isA<InvalidRunOperation>()),
+        );
+        expect(fixture.run.state, RunState.waiting);
+        expect(fixture.run.interruptions.values.single, same(pending));
+        expect(fixture.run.journal.records, orderedEquals(waiting));
+        expect(fixture.run.failure, isNull);
+        expect(fixture.executable.executions, 0);
+        expect(fixture.model.invocations, 1);
+      }
+      await expectLater(
+        fixture.strategy.start(),
+        throwsA(isA<InvalidRunOperation>()),
+      );
+      expect(fixture.run.journal.records, orderedEquals(waiting));
+      await fixture.strategy.resolveApproval(valid);
+      expect(fixture.run.state, RunState.completed);
+      expect(fixture.run.interruptions, isEmpty);
+      expect(fixture.executable.executions, 1);
+      expect(fixture.model.invocations, 2);
+      expect(fixture.model.sawCorrelatedContinuation, isTrue);
+      expect(
+        _events(fixture.run).whereType<RunInterruptionResolved>(),
+        hasLength(1),
+      );
+      final List<ExecutionEventRecord> completed = fixture.run.journal.records;
+      await expectLater(
+        fixture.strategy.resolveApproval(valid),
+        throwsA(isA<InvalidRunOperation>()),
+      );
+      await expectLater(
+        fixture.strategy.start(),
+        throwsA(isA<InvalidRunOperation>()),
+      );
+      expect(fixture.run.journal.records, orderedEquals(completed));
+      expect(fixture.run.state, RunState.completed);
+      expect(fixture.executable.executions, 1);
+      expect(fixture.model.invocations, 2);
+    },
+  );
+
+  test(
+    'reentrant start and approval cannot advance an in-flight resume',
+    () async {
+      final _BatchFixture fixture = await _BatchFixture.create(
+        decisions: <int, ToolPolicyDecision>{2: ToolPolicyDecision.ask},
+      );
+      await fixture.strategy.start();
+      final ToolApprovalResolution resolution = _approval(fixture.run);
+      final Completer<void> started = Completer<void>();
+      final Completer<void> release = Completer<void>();
+      fixture.executable.beforeTerminal = (int step) async {
+        if (step == 2) {
+          started.complete();
+          await release.future;
+        }
+      };
+      final Future<void> resuming = fixture.strategy.resolveApproval(
+        resolution,
+      );
+      await started.future;
+      final List<ExecutionEventRecord> inFlight = fixture.run.journal.records;
+      await expectLater(
+        fixture.strategy.resolveApproval(resolution),
+        throwsA(isA<InvalidRunOperation>()),
+      );
+      await expectLater(
+        fixture.strategy.start(),
+        throwsA(isA<InvalidRunOperation>()),
+      );
+      expect(fixture.run.state, RunState.running);
+      expect(fixture.run.failure, isNull);
+      expect(fixture.run.journal.records, orderedEquals(inFlight));
+      expect(fixture.executable.timeline, <String>[
+        'start-1',
+        'complete-1',
+        'start-2',
+      ]);
+      expect(fixture.model.requests, hasLength(1));
+      expect(fixture.events.whereType<RunInterruptionResolved>(), hasLength(1));
+      release.complete();
+      await resuming;
+
+      expect(fixture.run.state, RunState.completed);
+      expect(fixture.executable.timeline, <String>[
+        'start-1',
+        'complete-1',
+        'start-2',
+        'complete-2',
+        'start-3',
+        'complete-3',
+      ]);
+      expect(fixture.model.requests, hasLength(2));
+      expect(
+        fixture.outcomes.map(
+          (SemanticToolOutcomeInput input) => input.providerCallId,
+        ),
+        <String>['call-1', 'call-2', 'call-3'],
+      );
+      expect(fixture.events.whereType<RunInterruptionResolved>(), hasLength(1));
+      expect(fixture.events.whereType<ToolExecutionStarted>(), hasLength(3));
+      expect(fixture.events.whereType<RunFailed>(), isEmpty);
+    },
+  );
 }
 
 final class _BatchFixture {
-  _BatchFixture({
+  _BatchFixture._(
+    this.session,
+    this.strategy,
+    this.catalog,
+    this.executable,
+    this.model,
+  );
+
+  static Future<_BatchFixture> create({
     Map<int, ToolPolicyDecision> decisions = const <int, ToolPolicyDecision>{},
     int? failedStep,
     bool invalidSecondProposal = false,
@@ -861,8 +1583,12 @@ final class _BatchFixture {
     ModelSettlement settlement = ModelSettlement.completed,
     Object? modelFailure,
     _InfrastructureFailure? infrastructureFailure,
-  }) {
-    executable = _BatchExecutable(failedStep, infrastructureFailure);
+  }) async {
+    final _BatchExecutable executable = _BatchExecutable(
+      failedStep,
+      infrastructureFailure,
+    );
+    final ToolCatalog catalog = ToolCatalog();
     for (int step = 1; step <= 3; step++) {
       catalog.register(
         ToolRegistration(
@@ -884,7 +1610,7 @@ final class _BatchFixture {
       compatibility: const <String, Object?>{},
       data: const <String, Object?>{'retained': true},
     );
-    model = _BatchModel(
+    final _BatchModel model = _BatchModel(
       executable,
       <ModelOutputItem>[
         if (proposalCount == 0) ModelTextOutput('Complete.'),
@@ -920,28 +1646,35 @@ final class _BatchFixture {
       settlement: settlement,
       failure: modelFailure,
     );
-    strategy = DevelopmentToolLoopStrategy(
-      run: run,
-      session: session,
-      contextAssembler: const DevelopmentContextAssembler(),
+    final ExtensionRegistry extensions = ExtensionRegistry();
+    final ChatStrategyPlugin chat = ChatStrategyPlugin();
+    addTearDown(chat.activate(extensions).close);
+    final OrchestrationTestLifecycle topology =
+        await OrchestrationTestLifecycle.create(
+          extensions,
+          SessionId('batch-session'),
+        );
+    final Session productSession = topology.createSession(chatStrategyId);
+    final ChatSessionState session = chat.sessions.obtain(productSession.id)
+      ..maxModelInvocations = maxModelInvocations
+      ..append(ChatUserMessage('Perform steps.'));
+    final SessionOrchestrationRun strategy = createSessionOrchestrationRun(
+      lifecycle: topology.lifecycle,
+      sessionId: productSession.id,
+      runId: RunId('batch-run'),
       model: model,
       toolCatalog: catalog,
       policy: _BatchPolicy(decisions, infrastructureFailure),
-      maxModelInvocations: maxModelInvocations,
     );
+    return _BatchFixture._(session, strategy, catalog, executable, model);
   }
 
-  final DevelopmentSessionHistory session = DevelopmentSessionHistory(
-    SessionId('batch-session'),
-  )..append(UserSessionMessage('Perform steps.'));
-  final AgentRun run = AgentRun(
-    id: RunId('batch-run'),
-    sessionId: SessionId('batch-session'),
-  );
-  final ToolCatalog catalog = ToolCatalog();
-  late final _BatchExecutable executable;
-  late final _BatchModel model;
-  late final DevelopmentToolLoopStrategy strategy;
+  final ChatSessionState session;
+  AgentRun get run => strategy.run;
+  final ToolCatalog catalog;
+  final _BatchExecutable executable;
+  final _BatchModel model;
+  final SessionOrchestrationRun strategy;
 
   Iterable<ExecutionEvent> get events =>
       run.journal.records.map((ExecutionEventRecord record) => record.event);
@@ -1108,20 +1841,29 @@ final class _BatchExecutable implements ToolExecutable {
   }
 }
 
-_StrategyFixture _fixture(
+Future<_StrategyFixture> _fixture(
   ToolPolicyDecision decision, {
-  ContextAssembler contextAssembler = const DevelopmentContextAssembler(),
+  String instructions = '',
   String modelAlias = 'inspect_resource',
   bool proposalBeforeText = false,
   ModelSettlement settlement = ModelSettlement.completed,
   bool alwaysPropose = false,
   int maxModelInvocations = 8,
   List<ToolProgress> progress = const <ToolProgress>[],
-}) {
-  final DevelopmentSessionHistory session = DevelopmentSessionHistory(
-    SessionId('session-1'),
-  )..append(UserSessionMessage('Inspect.'));
-  final AgentRun run = AgentRun(id: RunId('run-1'), sessionId: session.id);
+}) async {
+  final ExtensionRegistry extensions = ExtensionRegistry();
+  final ChatStrategyPlugin chat = ChatStrategyPlugin();
+  addTearDown(chat.activate(extensions).close);
+  final OrchestrationTestLifecycle topology =
+      await OrchestrationTestLifecycle.create(
+        extensions,
+        SessionId('session-1'),
+      );
+  final Session session = topology.createSession(chatStrategyId);
+  chat.sessions.obtain(session.id)
+    ..instructions = instructions
+    ..maxModelInvocations = maxModelInvocations
+    ..append(ChatUserMessage('Inspect.'));
   final _Model model = _Model(
     alias: modelAlias,
     proposalBeforeText: proposalBeforeText,
@@ -1129,70 +1871,56 @@ _StrategyFixture _fixture(
     alwaysPropose: alwaysPropose,
   );
   final _Executable executable = _Executable(progress: progress);
-  final ToolCatalog catalog = ToolCatalog()
-    ..register(
-      ToolRegistration(
-        definition: ToolDefinition(
-          id: ToolId('dev.adele.tool.resource-inspection'),
-          description: 'Inspect.',
-        ),
-        modelDefinition: ModelToolDefinition(
-          alias: 'inspect_resource',
-          description: 'Inspect.',
-          argumentsSchema: const <String, Object?>{},
-        ),
-        executable: executable,
-      ),
-    );
+  final ToolCatalog catalog = _catalog(executable);
   return _StrategyFixture(
-    run: run,
     model: model,
     executable: executable,
-    strategy: DevelopmentToolLoopStrategy(
-      run: run,
-      session: session,
-      contextAssembler: contextAssembler,
+    strategy: createSessionOrchestrationRun(
+      lifecycle: topology.lifecycle,
+      sessionId: session.id,
+      runId: RunId('run-1'),
       model: model,
       toolCatalog: catalog,
-      policy: DevelopmentToolPolicy(decision),
-      maxModelInvocations: maxModelInvocations,
+      policy: _Policy(decision),
     ),
   );
 }
 
 final class _StrategyFixture {
   const _StrategyFixture({
-    required this.run,
     required this.model,
     required this.executable,
     required this.strategy,
   });
 
-  final AgentRun run;
+  AgentRun get run => strategy.run;
   final _Model model;
   final _Executable executable;
-  final DevelopmentToolLoopStrategy strategy;
+  final SessionOrchestrationRun strategy;
 }
 
 final class _Model implements ModelPort {
   _Model({
-    required this.alias,
-    required this.proposalBeforeText,
-    required this.settlement,
-    required this.alwaysPropose,
+    this.alias = 'inspect_resource',
+    this.proposalBeforeText = false,
+    this.settlement = ModelSettlement.completed,
+    this.alwaysPropose = false,
   });
 
   final String alias;
   final bool proposalBeforeText;
   final ModelSettlement settlement;
   final bool alwaysPropose;
+  final List<SemanticModelRequest> requests = <SemanticModelRequest>[];
   int invocations = 0;
+  Future<void> Function()? beforeSettlement;
   bool sawCorrelatedContinuation = false;
   bool sawPreservedOutputOrder = false;
 
   @override
   Stream<ModelEvent> invoke(SemanticModelRequest request) async* {
     invocations++;
+    requests.add(request);
     final List<SemanticToolOutcomeInput> outcomes = request.input
         .whereType<SemanticToolOutcomeInput>()
         .toList(growable: false);
@@ -1253,6 +1981,7 @@ final class _Model implements ModelPort {
         item: ModelTextOutput('Complete.'),
       );
     }
+    await beforeSettlement?.call();
     yield ModelInvocationSettledEvent(
       invocationId: request.invocationId,
       settlement: settlement,
@@ -1269,6 +1998,7 @@ final class _Executable implements ToolExecutable {
 
   final List<ToolProgress> progress;
   int executions = 0;
+  Future<void> Function()? beforeTerminal;
 
   @override
   Future<EffectDescription> describe(
@@ -1291,6 +2021,7 @@ final class _Executable implements ToolExecutable {
     for (final ToolProgress item in progress) {
       yield ToolExecutionProgress(item);
     }
+    await beforeTerminal?.call();
     yield ToolExecutionTerminal(
       ToolOutcome(
         disposition: ToolOutcomeDisposition.success,
@@ -1394,14 +2125,81 @@ final class _RetiringProposalModel implements ModelPort {
   }
 }
 
-final class _ReplacingContextAssembler implements ContextAssembler {
-  const _ReplacingContextAssembler();
+final class _ForgedToolSnapshot implements StrategyToolSnapshot {}
+
+final class _Policy implements ToolPolicy {
+  const _Policy(this.decision);
+
+  final ToolPolicyDecision decision;
 
   @override
-  SemanticModelRequest assemble(ContextAssemblyInput input) =>
-      SemanticModelRequest(
-        invocationId: input.invocationId,
-        input: input.runItems,
-        tools: MaterializedToolSet(const <MaterializedTool>[]),
+  ToolPolicyDecision evaluate(ToolPolicyInput input) => decision;
+}
+
+ToolCatalog _catalog(ToolExecutable executable) => ToolCatalog()
+  ..register(
+    ToolRegistration(
+      definition: ToolDefinition(
+        id: ToolId('dev.adele.tool.resource-inspection'),
+        description: 'Inspect.',
+      ),
+      modelDefinition: ModelToolDefinition(
+        alias: 'inspect_resource',
+        description: 'Inspect.',
+        argumentsSchema: const <String, Object?>{},
+      ),
+      executable: executable,
+    ),
+  );
+
+Iterable<ExecutionEvent> _events(AgentRun run) =>
+    run.journal.records.map((ExecutionEventRecord record) => record.event);
+
+ToolApprovalResolution _approval(AgentRun run) {
+  final ToolApprovalInterruption interruption =
+      run.interruptions.values.single as ToolApprovalInterruption;
+  return ToolApprovalResolution(
+    interruptionId: interruption.id,
+    toolInvocationId: interruption.toolInvocationId,
+    approved: true,
+  );
+}
+
+final class _CompletingExecution implements OrchestrationExecution {
+  _CompletingExecution(this.host, this.callbacks);
+
+  final OrchestrationExecutionHost host;
+  final List<String> callbacks;
+
+  @override
+  Future<void> start() async {
+    callbacks.add('start');
+    host.start();
+    host.complete();
+  }
+
+  @override
+  Future<void> resolveApproval(ToolApprovalResolution resolution) =>
+      throw const InvalidRunOperation(
+        'This fixture does not request approval.',
       );
+}
+
+final class _ObservedExecution implements OrchestrationExecution {
+  _ObservedExecution(this.delegate, this.callbacks);
+
+  final OrchestrationExecution delegate;
+  final List<String> callbacks;
+
+  @override
+  Future<void> start() {
+    callbacks.add('start');
+    return delegate.start();
+  }
+
+  @override
+  Future<void> resolveApproval(ToolApprovalResolution resolution) {
+    callbacks.add('resolveApproval');
+    return delegate.resolveApproval(resolution);
+  }
 }

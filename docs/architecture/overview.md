@@ -2,11 +2,11 @@
 
 ## Status
 
-ADELE's maintained Linux x64 foundation proves source compilation, generated unary and server-streaming/cancellation transport, interpreted frontend execution, active capability routing, configured provider contexts, the Phase IV/V-A source-inspection agent vertical, the Phase V-B conditional Environment mutation vertical, the Phase V-C Environment foreground-process and model-facing command slices, and the Phase V-D1 create/delete completion slice. It includes the real OpenAI `ModelProvider`, generation-bound configured provider contexts, an explicitly experimental ChatGPT configured instance, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, generic extension/model-tool composition and identity-only strategy contributions, a Git Environment provider, and independent stock Filesystem Tools, Search Tools, and Command Tools plugins that own Session-authorized `read_file`, `apply_patch`, `create_file`, `delete_file`, `search`, and `run_command`.
+ADELE's maintained Linux x64 foundation includes source compilation, generated unary and server-streaming/cancellation transport, interpreted frontend execution, active capability routing, configured provider contexts, bounded agent/source-inspection, conditional Environment mutation, foreground-process execution, and create/delete tooling. It includes the real OpenAI `ModelProvider`, an explicitly experimental ChatGPT configured instance, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, generic extension/model-tool composition, executable strategy contributions, a Git Environment provider, and independent stock Filesystem Tools, Search Tools, and Command Tools that own Session-authorized `read_file`, `apply_patch`, `create_file`, `delete_file`, `search`, and `run_command`. Headless stock Chat owns conversation state and sequencing through a narrow public execution facade backed internally by the kernel.
 
-Phase V-A is complete: deterministic real-model integration now crosses provisional app orchestration, generic model-tool extension composition, plugin-owned Search, Session-authorized Environment access, plugin-owned Read File, maintained ADELE source, and model continuation. Search is bounded native Dart traversal over authorized Environment directory/file reads, not an Environment provider method. These proofs do **not** yet implement ADELE's complete product/domain model, a public strategy execution facade, a plugin-owned Chat strategy, or the general recursive extension system described by the current architecture.
+The maintained source-inspection topology routes the canonical Session through core strategy resolution and Chat materialization, generic model-tool extension composition, plugin-owned Search, Session-authorized Environment access, plugin-owned Read File, maintained ADELE source, and model continuation. Search is bounded native Dart traversal over authorized Environment directory/file reads, not an Environment provider method. Focused deterministic validation passes for public orchestration, kernel model/run/tool mechanics, Chat, and maintained application lifecycle, model-tool hosting, self-hosting, Environment, OpenAI fixture, and provider-adapter integration. This implements neither ADELE's complete product/domain model nor the general recursive extension system.
 
-Phase V-B1 adds provider-neutral opaque file revisions and conditional replacement of existing bounded UTF-8 text files. The Git Worktree provider serializes ADELE replacements within each live Environment and detects practical out-of-band changes immediately before promotion, but cannot provide portable atomic compare-and-replace against arbitrary external processes. Phase V-B2 exposes coherent read and mutation facets over one Session-authorized filesystem authority and adds Filesystem Tools' exact-unique `apply_patch`, which lowers a localized model request to B1 complete-file conditional replacement. Deterministic real-Git integration proves Read-to-Revision-to-Patch model continuation. Phase V-B3 adds an opt-in paid OpenAI API-key proof of real-model `read_file` opaque-revision flow through `apply_patch`, Task-worktree-only mutation, post-write observation, and continuation. The experimental ChatGPT subscription-backed route has parity for that model-visible revision flow while remaining interoperability evidence rather than a stable contract.
+Environment exposes provider-neutral opaque file revisions and conditional replacement of existing bounded UTF-8 text files. The Git Worktree provider serializes ADELE replacements within each live Environment and detects practical out-of-band changes immediately before promotion, but cannot provide portable atomic compare-and-replace against arbitrary external processes. Coherent read and mutation facets share one Session-authorized filesystem authority. Filesystem Tools' exact-unique `apply_patch` lowers localized model edits to complete-file conditional replacement. Deterministic real-Git integration covers Read-to-Revision-to-Patch continuation. Opt-in OpenAI API-key and experimental ChatGPT tests cover real-model revision flow, Task-worktree-only mutation, post-write observation, and continuation; recorded live results remain bounded interoperability evidence rather than a stable contract.
 
 Filesystem Tools owns the model patch grammar, not `EnvironmentProvider`. It
 preflights the original opaque revision once and applies the non-empty `edits`
@@ -19,20 +19,21 @@ to the original reports `no_change` with no writes. Only after all edits pass
 does the tool request one conditional whole-file replacement using the unchanged
 original expected revision.
 
-Phase V-C1 adds provider-neutral foreground process execution to the Environment provider contract, with one Session-authorized process view over the existing Environment authority. The stock Git Worktree provider supplies bounded stdout/stderr streaming, timeout and cancellation cleanup, confined cwd resolution, direct argv execution, and practical Linux x64 process-group ownership. Phase V-C2 projects that surface through stock plugin-owned `run_command`, structured stdout/stderr progress, bounded terminal model output, and the existing allow/deny/ask policy path. Deterministic real-Git integration proves source edit -> direct `git diff --check` -> model continuation in the Task worktree. Phase V-C3 adds a completed paid opt-in OpenAI API-key proof of the combined real-model edit, direct-argv validation, model-visible command-result interpretation, and continuation path while checking revision provenance and worktree isolation. The experimental ChatGPT subscription-backed route has parity through that sequence with Task/Project/checkout isolation. Phase V-C is complete. The ChatGPT route remains experimental; fine-grained command classification, implicit shell syntax, background process resources, general build/test success, sandboxing, and complete self-hosting remain unproven.
+The Environment provider contract supports foreground process execution through one Session-authorized process view over the existing Environment authority. The stock Git Worktree provider supplies bounded stdout/stderr streaming, timeout and cancellation cleanup, confined cwd resolution, direct argv execution, and practical Linux x64 process-group ownership. Stock `run_command` projects that surface through structured stdout/stderr progress, bounded terminal model output, and the allow/deny/ask policy path. Deterministic real-Git integration covers source edit -> direct `git diff --check` -> model continuation in the Task worktree. Opt-in OpenAI API-key and experimental ChatGPT tests cover the same real-model sequence with revision provenance and Task/Project/checkout isolation. Fine-grained command classification, implicit shell syntax, background process resources, general build/test success, sandboxing, and complete self-hosting remain unproven.
 
-Phase V-D1 adds provider-neutral create-new and revision-conditional delete operations to the existing Environment mutation facet and generated transport. Filesystem Tools projects them as `create_file` and `delete_file` with exact `sourceMutation` targets. The Git provider serializes create/replace/delete together, rejects indirect paths, never intentionally overwrites on create, and rechecks revisions immediately before delete. Deterministic real-Git integration proves model-visible create -> read -> delete revision provenance, policy/effect ordering, and final Task/Project/checkout isolation. General whole-file overwrite, directory/move/copy/binary mutation, portable filesystem transactions, and full self-hosting remain unimplemented.
+The Environment mutation facet and generated transport also support create-new and revision-conditional delete operations. Filesystem Tools projects them as `create_file` and `delete_file` with exact `sourceMutation` targets. The Git provider serializes create/replace/delete together, rejects indirect paths, never intentionally overwrites on create, and rechecks revisions immediately before delete. Deterministic real-Git integration covers model-visible create -> read -> delete revision provenance, policy/effect ordering, and final Task/Project/checkout isolation. General whole-file overwrite, directory/move/copy/binary mutation, portable filesystem transactions, and full self-hosting remain unimplemented.
 
 The following remain largely or entirely unimplemented:
 
 - Project/Task/Session/Environment disk persistence and complete lifecycle;
-- a public strategy execution facade, a plugin-owned Chat strategy, and strategy-specific durable state;
+- Chat UI and persistent strategy-specific state;
+- general context composition/contributors, compaction, and token budgets;
 - parent/child Session lifecycle;
-- plugin-defined extension ecosystems beyond the initial registration/model-tool/strategy binding slices;
+- plugin-defined extension ecosystems beyond registration, model tools, and executable strategy composition;
 - production plugin-facing UI composition;
 - application Command/Command Palette/keybinding infrastructure;
 - profile-aware provider preference and general configuration services;
-- additional Environment providers, process modes beyond the V-C1 foreground surface, and broader mutable source tooling such as whole-file overwrite, directory/move/copy, and binary operations;
+- additional Environment providers, process modes beyond the foreground surface, and broader mutable source tooling such as whole-file overwrite, directory/move/copy, and binary operations;
 - the expected stock plugin topology;
 - cross-platform release, packaging, and sandboxing.
 
@@ -143,11 +144,13 @@ Session is a core identity/lifecycle container permanently bound to one orchestr
 The implemented `adele_product` value is final and immutable:
 `Session(id, taskId, strategyId)`. The semantic `OrchestrationStrategyId` also lives
 in product so product does not depend on orchestration. Public pure-Dart
-`adele_orchestration` defines immutable identity-only
-`OrchestrationStrategyContribution`, the typed
+`adele_orchestration` defines
+`OrchestrationStrategyContribution(strategyId, materialize)`, the typed
 `orchestrationStrategyContributions` extension point, and thin
 `OrchestrationStrategyResolver.resolve(id)` over the existing `ExtensionRegistry`.
-It is a registration/binding API, not a public execution facade or second registry.
+It also supplies the narrow public execution facade, not a second registry or a
+new public package. Canonical Session contains no live binding, Environment
+authority, or Chat history.
 
 `ProductLifecycleCoordinator.createSession` requires `taskId` and `strategyId`
 and accepts an optional `environmentId`. It validates the existing Task, exactly
@@ -167,7 +170,15 @@ makes it fail with generic `StaleExtensionBinding`. Only fresh resolution may us
 a replacement registration, with no fallback or rewrite of the stored strategy
 ID. The permanent semantic binding is not a lifetime activation-generation pin.
 
-Run remains the core unit of execution inside a Session. The maintained development proof retains separate Chat-shaped history and a bounded development strategy; that is implemented evidence, not the universal Session aggregate. The binding spine does not redesign the kernel or context assembly, add strategy-specific durable state, or implement Session disk persistence, strategy defaults/profiles, or lifecycle UI.
+Run remains the core unit of execution inside a Session. Stock Chat owns
+`ChatSessionStore.obtain(SessionId)` and retained in-memory `ChatSessionState`.
+Immutable snapshots contain `ChatEntry` values (`ChatUserMessage` and
+`ChatAssistantMessage`); only user/final assistant messages are canonical and
+reused across Runs. Intermediate model/native output, proposals, and tool
+results are Run-local replay. Instructions and a positive invocation budget are
+Chat-owned configuration snapshotted per materialized Run, not product Session
+fields. Chat UI/persistence, strategy defaults/profiles, and lifecycle UI remain
+deferred.
 
 The accepted direction allows child Sessions for delegated work. They may share an Environment or use another Task-associated Environment and are primarily surfaced through the parent Session/orchestration experience. Child Session lifecycle remains deferred.
 
@@ -175,18 +186,67 @@ The accepted direction allows child Sessions for delegated work. They may share 
 
 `agent_kernel` remains an internal provider-neutral execution substrate. Concrete models, tools, editors, SCM integrations, terminals, orchestration strategies, and presentation belong outside the kernel.
 
-The maintained `DevelopmentToolLoopStrategy` is a bounded development-only algorithm, not the definition of Run or a general workflow system.
+`plugins/chat_strategy` contains the first executable stock strategy,
+`chat_strategy_plugin`. `ChatStrategyPlugin.activate` follows the in-process
+stock tool convention with semantic ID `dev.adele.strategy.chat`, distinct from
+plugin ID `dev.adele.plugin.chat-strategy` and extension ID
+`dev.adele.plugin.chat-strategy.orchestration`. The private Chat loop owns bounded
+sequential proposal batches, approval/rejection continuation, and invocation
+budget behavior. A final-slot proposal batch fails before preparation/execution
+because it has no continuation slot. This is not concurrent tool execution or a
+general workflow system.
 
-Development composition registers temporary identity-only metadata under
-`dev.adele.strategy.development-tool-loop` with a separate extension ID. The
-strategy remains app-owned and unchanged; execution still calls it directly
-rather than routing through registration. No Chat strategy plugin is added.
+`createSessionOrchestrationRun` in `app/lib/core/orchestration_host.dart` looks up
+the canonical Session, resolves its exact contribution once for the Run, and
+materializes against `KernelOrchestrationHost` via
+`OrchestrationStrategyHostContext(session, host)`. The callback returns
+`OrchestrationExecution` with `start` and `resolveApproval`.
+`SessionOrchestrationRun` retains that exact binding/execution and exposes
+internal Run/tool/journal evidence only to application callers.
+
+The public `OrchestrationExecutionHost` exposes lifecycle operations and binding
+validation, `invokeModel(StrategyInferenceMaterial)`, `processProposal` using an
+opaque `StrategyToolSnapshot` and `ProviderToolProposal`, and approval resolution
+returning semantic continuation. Host validation covers subsequent operations,
+approval resume, and asynchronous settlement. Stale active Runs fail explicitly
+and do not migrate; a later Run in the same Session can freshly resolve B under
+the unchanged strategy ID. Already-started effects are not rolled back by
+retirement.
+
+`invokeModel` returns a collected `StrategyModelTurn` with ordered output,
+settlement/metadata or failure, and the opaque tool snapshot. The host accepts
+only unused proposals from that exact completed turn. Approval continuation
+applies only the current host-supplied resolution to its retained invocation;
+Chat cannot manufacture approval or substitute a tool generation.
+
+Minimal semantic input/output, native-envelope, proposal/failure,
+settlement/metadata, and approval DTOs live in public `adele_orchestration` and
+are reused by the kernel. `SemanticModelRequest`, model ports/streams/collectors,
+tool catalogs, policy, `AgentRun`, and the journal remain internal. Neither the
+public package nor Chat depends on the kernel. The kernel has no Chat history
+port or generic `ContextAssembler`; the Session/context types in ADR 0022 are
+historical proof details, not current kernel APIs.
+
+Self-hosting activates Chat, obtains retained state and appends the prompt, then
+routes `SessionId` through lifecycle and the core host. The app no longer has
+`simple_tool_loop_strategy.dart` or `development_strategy_registration.dart`;
+`development_agent_support.dart` contains only policy.
 
 The kernel model boundary is streaming-shaped. The common ModelProvider transport supports generated streaming/cancellation, ordered semantic input/output, live observations, terminal settlement, and provider-native item metadata. Materialized model/tool bindings remain exact-generation bound.
 
 Tool availability, materialization, policy, optional approval interruption, execution, progress, structured outcome, and effect certainty remain distinct.
 
-Future inference preparation should be structured composition rather than arbitrary request mutation. Agent policy, model routing, orchestration/history, context, tool availability, and other plugins should contribute typed material into provider-neutral buckets; resolution produces a stable invocation snapshot.
+The deliberate future inference seam is `StrategyInferenceMaterial`, containing
+instructions and ordered `SemanticModelInputItem` values from Chat history
+projection plus Run-local replay. The host supplies invocation identity and tools to construct
+internal `SemanticModelRequest`. Core model/tool/policy and Environment selection
+are unchanged. General context composition is the next slice at this seam; no
+context framework, contributor mechanism, or token budget is implemented yet.
+
+Future inference preparation should use structured composition rather than
+arbitrary request mutation. Agent policy, model routing, orchestration/history,
+context, tool availability, and other plugins may contribute typed material into
+provider-neutral buckets whose resolution produces a stable invocation snapshot.
 
 See [`agent-kernel-semantic-model.md`](agent-kernel-semantic-model.md).
 
@@ -234,9 +294,27 @@ See [`profiles-and-configuration.md`](profiles-and-configuration.md) and [`plugi
 
 The stock Search Tools plugin contributes literal `search` and composes only the Session-authorized Environment filesystem's read facet; Filesystem Tools independently contributes revision-bearing `read_file`, exact-unique `apply_patch`, create-new-only `create_file`, and revision-conditional `delete_file` over coherent read and mutation facets. Command Tools contributes direct-argv `run_command` over only the Session-authorized process facet. The OpenAI API-key and experimental ChatGPT source-coding consumers use the read/search tools rather than the retired Phase IV DevelopmentSource capability, and a separate API-key smoke exercises `read_file` and `apply_patch` without relying on Search.
 
-Deterministic inspection integration uses the real shared AOT host, OpenAI plugin, Git Environment provider, Project/Task/Environment lifecycle, Session authority, generic extension/model-tool composition, stock tools, and development strategy. Only remote model responses come from a local fake Responses endpoint. It proves recursive source discovery, model-visible Search-to-Read path flow, reading, and model continuation. Separate deterministic integration uses the real shared AOT host and Git Environment provider to prove model-visible Read File revision and source flow into `apply_patch`, Task-worktree-only mutation, direct `git diff --check` validation through `run_command`, and continuation based on the model-visible exit result. A further deterministic sequence proves `create_file` -> `read_file` -> `delete_file`, with the exact visible read revision passed to deletion and final absence from Task, Project, and checkout. Generation coverage proves fresh tools replace retired Search-tool and Environment-provider bindings while old tools remain stale. Opt-in live API-key and experimental ChatGPT source-coding smokes have completed successfully through the read/search topology. API-key and separately gated experimental ChatGPT subscription-backed validation smokes complete real-model edit, direct-argv `git diff --check`, command-result continuation, and exact isolation evidence. No paid create/delete smoke is claimed.
+Deterministic inspection integration uses the real shared AOT host, OpenAI
+plugin, Git Environment provider, Project/Task/Environment lifecycle, Session
+authority, generic extension/model-tool composition, stock tools, and
+Session-routed Chat. Only remote model responses come from a local fake Responses
+endpoint. Coverage exercises recursive source discovery, model-visible
+Search-to-Read flow, and continuation. Separate deterministic sequences exercise
+Read-to-Patch mutation, direct `git diff --check` validation through
+`run_command`, and `create_file` -> `read_file` -> `delete_file` with model-visible
+revision provenance and final Task/Project/checkout isolation. Generation
+coverage checks that fresh tools replace retired Search-tool and
+Environment-provider bindings while old tools remain stale.
 
-This proves self-inspection, deterministic model-facing conditional mutation and command-backed validation, opt-in paid OpenAI API-key conditional existing-file mutation in the Task worktree, and API-key plus experimental subscription-backed ChatGPT real-model direct-argv `git diff --check` use after that mutation. It does not establish stable ChatGPT/OpenAI third-party support, general filesystem mutation, production readiness, or full self-hosting.
+Recorded opt-in live API-key and experimental ChatGPT evidence covers read/search,
+real-model existing-file edit, direct-argv command validation, continuation, and
+isolation. Paid live services have not been rerun against the current
+deterministically validated Chat path. No paid create/delete smoke is claimed.
+
+The bounded vertical covers self-inspection, conditional mutation, and
+command-backed validation. It does not establish stable ChatGPT/OpenAI
+third-party support, general filesystem mutation, production readiness, or full
+self-hosting.
 
 ## Remaining runtime validation
 
@@ -254,8 +332,8 @@ This proves self-inspection, deterministic model-facing conditional mutation and
 | Rebuild/reload | Proven for three cycles without orphan host processes. |
 | General recursive extension system | Accepted architecture; not implemented. |
 | Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, Session-authorized read/mutation/process facets, bounded create/patch/delete text-file mutation, and generated foreground process streaming through the Git provider are proven; persistence and complete lifecycle remain unimplemented. |
-| Session strategy binding | Canonical immutable Session creation, atomic publication with separate Environment authority, identity-only strategy contributions, explicit unavailable/ambiguous resolution, and exact binding liveness are implemented in memory; public strategy execution, durable strategy state, child Sessions, and disk persistence remain deferred. |
-| Production orchestration/UI/Commands | Directional; not implemented. |
+| Session-bound strategy execution | Canonical immutable Session creation, atomic publication with separate Environment authority, executable contributions, explicit unavailable/ambiguous resolution, and exact binding validation across Run operations/resume/settlement are implemented and deterministically validated. Headless Chat uses the public facade with validated state, sequencing, and application integration. Persistent strategy state, child Sessions, and disk persistence remain deferred. |
+| Production orchestration/UI/Commands | Headless stock Chat is implemented; production UI, Commands, discovery, and general context composition remain directional. |
 | Cross-platform/release | Unproven on Windows, macOS, and release mode. |
 | Packaging/sandboxing | Unproven; process isolation is not a sandbox. |
 

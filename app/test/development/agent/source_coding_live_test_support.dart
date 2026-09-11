@@ -3,23 +3,23 @@ import 'dart:io';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/development/agent/agent_capability_adapters.dart';
-import 'package:adele_desktop/development/agent/development_agent_support.dart';
 import 'package:adele_desktop/development/agent/development_self_hosting.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:agent_kernel/agent_kernel.dart';
+import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 const String sourceCodingStrategyPath =
-    'app/lib/development/agent/simple_tool_loop_strategy.dart';
+    'plugins/chat_strategy/lib/chat_strategy_plugin.dart';
 const String sourceCodingPrompt =
     'Locate the maintained ADELE file that declares '
-    'DevelopmentToolLoopStrategy. Use search to locate it, then use '
+    'ChatSessionState. Use search to locate it, then use '
     'read_file on the returned relative path. Report the exact relative '
     'path and the default maxModelInvocations value. You must inspect the '
     'source rather than answer from memory.';
 const String sourceCodingInstructions =
-    'You must call search for "final class DevelopmentToolLoopStrategy", '
+    'You must call search for "final class ChatSessionState", '
     'then call read_file with the relative path returned by search before '
     'answering.';
 const String openAiApiKeyProviderId = developmentSelfHostingApiKeyProviderId;
@@ -114,6 +114,8 @@ final class SourceCodingLiveHarness {
     final DevelopmentSelfHostingRunResult result =
         await executeDevelopmentSelfHostingRun(
           identity: '$identity-source-live',
+          lifecycle: _topology.lifecycle,
+          sessions: _topology.chat.sessions,
           sessionId: sessionId,
           prompt: userPrompt,
           instructions: developmentInstructions,
@@ -210,7 +212,7 @@ final class SourceCodingLiveResult {
   const SourceCodingLiveResult({required this.run, required this.session});
 
   final AgentRun run;
-  final DevelopmentSessionHistory session;
+  final ChatSessionState session;
 }
 
 /// A prepared tool invocation and its unique terminal outcome in a Run journal.
@@ -418,8 +420,7 @@ void expectSuccessfulSourceCodingRun({
   );
 
   final String answer =
-      (result.session.snapshot().entries.last as AssistantSessionMessage)
-          .content;
+      (result.session.snapshot().entries.last as ChatAssistantMessage).content;
   expect(answer.trim(), isNotEmpty);
   expect(answer, contains(sourceCodingStrategyPath));
   expect(answer.toLowerCase(), anyOf(contains('8'), contains('eight')));

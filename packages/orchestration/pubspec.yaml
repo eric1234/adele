@@ -1,5 +1,5 @@
 name: adele_orchestration
-description: Experimental public ADELE orchestration strategy metadata API.
+description: Public provider-neutral ADELE orchestration strategy execution API.
 publish_to: none
 version: 0.1.0
 
@@ -9,6 +9,7 @@ environment:
 resolution: workspace
 
 dependencies:
+  adele_model_tool: ^0.1.0
   adele_plugin_api: ^0.1.0
   adele_product: ^0.1.0
 

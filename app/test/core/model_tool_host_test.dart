@@ -3,11 +3,11 @@ import 'dart:async';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
-import 'package:adele_desktop/development/agent/development_strategy_registration.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
+import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:command_tools_plugin/command_tools_plugin.dart';
 import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -469,8 +469,8 @@ Future<_Fixture> _fixture() async {
   );
   addTearDown(registration.close);
   final ExtensionRegistry extensions = ExtensionRegistry();
-  final ExtensionRegistration strategyActivation =
-      registerDevelopmentToolLoopStrategy(extensions);
+  final ExtensionRegistration strategyActivation = ChatStrategyPlugin()
+      .activate(extensions);
   addTearDown(strategyActivation.close);
   final InMemoryProductStore store = InMemoryProductStore();
   final ProductLifecycleCoordinator lifecycle = ProductLifecycleCoordinator(
@@ -488,7 +488,7 @@ Future<_Fixture> _fixture() async {
   );
   final Session session = lifecycle.createSession(
     taskId: created.task.id,
-    strategyId: developmentToolLoopStrategyId,
+    strategyId: chatStrategyId,
   );
   return _Fixture(
     session.id,
