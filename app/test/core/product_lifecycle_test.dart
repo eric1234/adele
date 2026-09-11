@@ -4,6 +4,8 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
@@ -24,6 +26,7 @@ void main() {
     final ProductLifecycleCoordinator coordinator = ProductLifecycleCoordinator(
       store: store,
       registry: registry,
+      extensions: ExtensionRegistry(),
       ids: _FixedIds(),
       providerForBinding: (ProviderBinding binding) =>
           binding.endpointAs<_ProviderEndpoint>().provider,
@@ -90,6 +93,7 @@ void main() {
     final ProductLifecycleCoordinator coordinator = ProductLifecycleCoordinator(
       store: store,
       registry: registry,
+      extensions: ExtensionRegistry(),
       ids: _FixedIds(),
       providerForBinding: (ProviderBinding binding) =>
           binding.endpointAs<_ProviderEndpoint>().provider,
@@ -133,6 +137,7 @@ void main() {
           ProductLifecycleCoordinator(
             store: store,
             registry: registry,
+            extensions: ExtensionRegistry(),
             ids: _FixedIds(),
             providerForBinding: (ProviderBinding binding) =>
                 binding.endpointAs<_ProviderEndpoint>().provider,
@@ -192,6 +197,7 @@ void main() {
           ProductLifecycleCoordinator.generated(
             store: store,
             registry: registry,
+            extensions: ExtensionRegistry(),
             ids: _FixedIds(),
           );
       final Project project = coordinator.createProject(
@@ -220,80 +226,267 @@ void main() {
     },
   );
 
-  test('Session authority validates the Task and Environment graph', () {
-    final InMemoryProductStore store = InMemoryProductStore();
-    final Project project = Project(
-      id: ProjectId('project-authority'),
-      sourceLocation: Uri.parse('file:///tmp/source'),
+  group('canonical Session lifecycle', () {
+    final OrchestrationStrategyId strategyId = OrchestrationStrategyId(
+      'dev.adele.strategy.fixture',
     );
-    final Task taskA = Task(
-      id: TaskId('task-a'),
-      projectId: project.id,
-      title: 'Task A',
+    final OrchestrationStrategyId otherStrategyId = OrchestrationStrategyId(
+      'dev.adele.strategy.other',
     );
-    final Task taskB = Task(
-      id: TaskId('task-b'),
-      projectId: project.id,
-      title: 'Task B',
-    );
-    final Environment environmentA = _finalEnvironment(
-      id: 'environment-a',
-      task: taskA,
-      providerId: providerId,
-    );
-    final Environment environmentB = _finalEnvironment(
-      id: 'environment-b',
-      task: taskB,
-      providerId: providerId,
-    );
-    store.publishProject(project);
-    store.publishTaskWithPrimaryEnvironment(taskA, environmentA);
-    store.publishTaskWithPrimaryEnvironment(taskB, environmentB);
+    final ExtensionId extensionId = ExtensionId('dev.adele.fixture.strategy');
+    late InMemoryProductStore store;
+    late ExtensionRegistry extensions;
+    late ProductLifecycleCoordinator coordinator;
+    late ExtensionRegistration registration;
+    late Task taskA;
+    late Task taskB;
+    late Environment environmentA;
+    late Environment environmentB;
 
-    final SessionEnvironmentAuthority authority = store.associateSession(
-      sessionId: SessionId('session-a'),
-      taskId: taskA.id,
+    setUp(() {
+      store = InMemoryProductStore();
+      extensions = ExtensionRegistry();
+      registration = extensions.register(
+        point: orchestrationStrategyContributions,
+        id: extensionId,
+        value: OrchestrationStrategyContribution(strategyId: strategyId),
+      );
+      addTearDown(registration.close);
+      coordinator = ProductLifecycleCoordinator.generated(
+        store: store,
+        registry: CapabilityRegistry(),
+        extensions: extensions,
+        ids: MonotonicProductIdSource(seed: 'test'),
+      );
+      final Project project = coordinator.createProject(
+        Uri.parse('file:///tmp/source'),
+      );
+      taskA = Task(
+        id: TaskId('task-a'),
+        projectId: project.id,
+        title: 'Task A',
+      );
+      taskB = Task(
+        id: TaskId('task-b'),
+        projectId: project.id,
+        title: 'Task B',
+      );
+      environmentA = _finalEnvironment(
+        id: 'environment-a',
+        task: taskA,
+        providerId: providerId,
+      );
+      environmentB = _finalEnvironment(
+        id: 'environment-b',
+        task: taskB,
+        providerId: providerId,
+      );
+      store.publishTaskWithPrimaryEnvironment(taskA, environmentA);
+      store.publishTaskWithPrimaryEnvironment(taskB, environmentB);
+    });
+
+    test(
+      'publishes strategy-bound Session with primary or explicit authority',
+      () {
+        final Session session = coordinator.createSession(
+          taskId: taskA.id,
+          strategyId: strategyId,
+        );
+        final SessionEnvironmentAuthority authority = store
+            .requireSessionAuthority(session.id);
+        expect(session.id, SessionId('session-test-1'));
+        expect(store.session(session.id), same(session));
+        expect(session.taskId, taskA.id);
+        expect(session.strategyId, strategyId);
+        expect(authority.sessionId, session.id);
+        expect(authority.taskId, session.taskId);
+        expect(authority.environmentId, environmentA.id);
+        expect(store.sessionAuthority(session.id), same(authority));
+        expect(
+          store.environment(authority.environmentId)!.taskId,
+          session.taskId,
+        );
+
+        final Session explicit = coordinator.createSession(
+          taskId: taskB.id,
+          strategyId: strategyId,
+          environmentId: environmentB.id,
+        );
+        expect(explicit.id, SessionId('session-test-2'));
+        expect(
+          store.requireSessionAuthority(explicit.id).environmentId,
+          environmentB.id,
+        );
+        expect(
+          store.requireSessionAuthority(explicit.id).taskId,
+          explicit.taskId,
+        );
+      },
     );
 
-    expect(authority.taskId, taskA.id);
-    expect(authority.environmentId, environmentA.id);
-    expect(
-      store.associateSession(
-        sessionId: authority.sessionId,
-        taskId: taskA.id,
-        environmentId: environmentA.id,
-      ),
-      same(authority),
+    test(
+      'invalid Task or Environment publishes neither Session nor authority',
+      () {
+        for (final ({TaskId taskId, EnvironmentId? environmentId}) request in [
+          (taskId: TaskId('unknown-task'), environmentId: null),
+          (
+            taskId: taskA.id,
+            environmentId: EnvironmentId('unknown-environment'),
+          ),
+          (taskId: taskA.id, environmentId: environmentB.id),
+        ]) {
+          expect(
+            () => coordinator.createSession(
+              taskId: request.taskId,
+              strategyId: strategyId,
+              environmentId: request.environmentId,
+            ),
+            throwsStateError,
+          );
+          expect(store.session(SessionId('session-test-1')), isNull);
+          expect(store.sessionAuthority(SessionId('session-test-1')), isNull);
+        }
+        expect(
+          () => store.requireSessionAuthority(SessionId('session-test-1')),
+          throwsStateError,
+        );
+        expect(
+          () => coordinator.resolveSessionStrategy(SessionId('session-test-1')),
+          throwsStateError,
+        );
+        expect(
+          coordinator
+              .createSession(taskId: taskA.id, strategyId: strategyId)
+              .id,
+          SessionId('session-test-1'),
+        );
+      },
     );
-    expect(
-      () => store.associateSession(
-        sessionId: SessionId('unknown-task-session'),
-        taskId: TaskId('unknown-task'),
-      ),
-      throwsStateError,
+
+    test(
+      'unavailable or ambiguous strategy cannot publish a Session',
+      () async {
+        expect(
+          () => coordinator.createSession(
+            taskId: taskA.id,
+            strategyId: otherStrategyId,
+          ),
+          throwsA(isA<OrchestrationStrategyUnavailable>()),
+        );
+        final ExtensionRegistration duplicate = extensions.register(
+          point: orchestrationStrategyContributions,
+          id: ExtensionId('dev.adele.fixture.duplicate'),
+          value: OrchestrationStrategyContribution(strategyId: strategyId),
+        );
+        expect(
+          () => coordinator.createSession(
+            taskId: taskA.id,
+            strategyId: strategyId,
+          ),
+          throwsA(isA<AmbiguousOrchestrationStrategy>()),
+        );
+        await duplicate.close();
+        await registration.close();
+        expect(
+          () => coordinator.createSession(
+            taskId: taskA.id,
+            strategyId: strategyId,
+          ),
+          throwsA(isA<OrchestrationStrategyUnavailable>()),
+        );
+        expect(store.session(SessionId('session-test-1')), isNull);
+        expect(store.sessionAuthority(SessionId('session-test-1')), isNull);
+      },
     );
-    expect(
-      () => store.associateSession(
-        sessionId: SessionId('unknown-environment-session'),
-        taskId: taskA.id,
-        environmentId: EnvironmentId('unknown-environment'),
-      ),
-      throwsStateError,
+
+    test(
+      'another strategy requires another Session; identity cannot be overwritten',
+      () {
+        final ExtensionRegistration other = extensions.register(
+          point: orchestrationStrategyContributions,
+          id: ExtensionId('dev.adele.fixture.other'),
+          value: OrchestrationStrategyContribution(strategyId: otherStrategyId),
+        );
+        addTearDown(other.close);
+        final Session original = coordinator.createSession(
+          taskId: taskA.id,
+          strategyId: strategyId,
+        );
+        final Session changed = coordinator.createSession(
+          taskId: taskA.id,
+          strategyId: otherStrategyId,
+        );
+        expect(changed.id, isNot(original.id));
+        expect(changed.strategyId, otherStrategyId);
+        expect(store.session(original.id)!.strategyId, strategyId);
+
+        final ProductLifecycleCoordinator fixedIds =
+            ProductLifecycleCoordinator.generated(
+              store: store,
+              registry: CapabilityRegistry(),
+              extensions: extensions,
+              ids: _FixedIds(),
+            );
+        final Session fixed = fixedIds.createSession(
+          taskId: taskA.id,
+          strategyId: strategyId,
+        );
+        final SessionEnvironmentAuthority authority = store
+            .requireSessionAuthority(fixed.id);
+        expect(
+          () => fixedIds.createSession(
+            taskId: taskB.id,
+            strategyId: otherStrategyId,
+          ),
+          throwsStateError,
+        );
+        expect(store.session(fixed.id), same(fixed));
+        expect(store.session(fixed.id)!.strategyId, strategyId);
+        expect(store.requireSessionAuthority(fixed.id), same(authority));
+      },
     );
-    expect(
-      () => store.associateSession(
-        sessionId: SessionId('cross-task-session'),
-        taskId: taskA.id,
-        environmentId: environmentB.id,
-      ),
-      throwsStateError,
-    );
-    expect(
-      () => store.associateSession(
-        sessionId: authority.sessionId,
-        taskId: taskB.id,
-      ),
-      throwsStateError,
+
+    test(
+      'stored identity survives retirement; old resolution never migrates',
+      () async {
+        final Session session = coordinator.createSession(
+          taskId: taskA.id,
+          strategyId: strategyId,
+        );
+        final ResolvedOrchestrationStrategy old = coordinator
+            .resolveSessionStrategy(session.id);
+        final OrchestrationStrategyContribution original = old.contribution;
+        await registration.close();
+        expect(old.validateBinding, throwsA(isA<StaleExtensionBinding>()));
+        expect(
+          () => coordinator.resolveSessionStrategy(session.id),
+          throwsA(isA<OrchestrationStrategyUnavailable>()),
+        );
+        expect(store.session(session.id), same(session));
+        expect(store.session(session.id)!.strategyId, strategyId);
+        expect(
+          store.requireSessionAuthority(session.id).environmentId,
+          environmentA.id,
+        );
+
+        final OrchestrationStrategyContribution replacement =
+            OrchestrationStrategyContribution(strategyId: strategyId);
+        final ExtensionRegistration next = extensions.register(
+          point: orchestrationStrategyContributions,
+          id: extensionId,
+          value: replacement,
+        );
+        addTearDown(next.close);
+        final ResolvedOrchestrationStrategy fresh = coordinator
+            .resolveSessionStrategy(session.id);
+        expect(fresh.contribution, same(replacement));
+        expect(fresh.contribution, isNot(same(original)));
+        expect(fresh.binding.id, old.binding.id);
+        fresh.validateBinding();
+        expect(old.validateBinding, throwsA(isA<StaleExtensionBinding>()));
+        expect(() => old.contribution, throwsA(isA<StaleExtensionBinding>()));
+        expect(store.session(session.id), same(session));
+      },
     );
   });
 
@@ -314,6 +507,7 @@ void main() {
           ProductLifecycleCoordinator(
             store: store,
             registry: registry,
+            extensions: ExtensionRegistry(),
             ids: _FixedIds(),
             providerForBinding: (ProviderBinding binding) =>
                 binding.endpointAs<_ProviderEndpoint>().provider,
@@ -395,6 +589,7 @@ void main() {
           ProductLifecycleCoordinator(
             store: store,
             registry: registry,
+            extensions: ExtensionRegistry(),
             ids: _FixedIds(),
             providerForBinding: (ProviderBinding binding) =>
                 binding.endpointAs<_ProviderEndpoint>().provider,
@@ -499,6 +694,9 @@ final class _FixedIds implements ProductIdSource {
 
   @override
   TaskId nextTaskId() => TaskId('task-1');
+
+  @override
+  SessionId nextSessionId() => SessionId('session-1');
 }
 
 final class _EstablishmentChannel implements AdeleRequestChannel {

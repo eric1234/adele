@@ -249,6 +249,7 @@ void main() {
         'contract_codegen|dart|packages/contract_codegen|test --concurrency 2',
         'adele_plugin_api|dart|packages/plugin_api|test',
         'adele_product|dart|packages/product|test',
+        'adele_orchestration|dart|packages/orchestration|test',
         'adele_environment|dart|packages/environment|test',
         'adele_model_tool|dart|packages/model_tool|test',
         'adele_model_provider|dart|packages/model_provider|test',

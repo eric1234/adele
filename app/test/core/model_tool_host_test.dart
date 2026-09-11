@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_desktop/development/agent/development_strategy_registration.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
@@ -467,10 +468,15 @@ Future<_Fixture> _fixture() async {
     endpoint: endpoint,
   );
   addTearDown(registration.close);
+  final ExtensionRegistry extensions = ExtensionRegistry();
+  final ExtensionRegistration strategyActivation =
+      registerDevelopmentToolLoopStrategy(extensions);
+  addTearDown(strategyActivation.close);
   final InMemoryProductStore store = InMemoryProductStore();
   final ProductLifecycleCoordinator lifecycle = ProductLifecycleCoordinator(
     store: store,
     registry: registry,
+    extensions: extensions,
     ids: const _Ids(),
     providerForBinding: (binding) => binding.endpointAs<_Endpoint>().provider,
   );
@@ -480,10 +486,12 @@ Future<_Fixture> _fixture() async {
     title: 'Host tools',
     providerId: providerId,
   );
-  final SessionId sessionId = SessionId('session-1');
-  store.associateSession(sessionId: sessionId, taskId: created.task.id);
+  final Session session = lifecycle.createSession(
+    taskId: created.task.id,
+    strategyId: developmentToolLoopStrategyId,
+  );
   return _Fixture(
-    sessionId,
+    session.id,
     created.environment.id,
     lifecycle.environmentRuntime,
     provider,
@@ -694,6 +702,9 @@ final class _Ids implements ProductIdSource {
 
   @override
   ProjectId nextProjectId() => ProjectId('project-1');
+
+  @override
+  SessionId nextSessionId() => SessionId('session-1');
 
   @override
   TaskId nextTaskId() => TaskId('task-1');

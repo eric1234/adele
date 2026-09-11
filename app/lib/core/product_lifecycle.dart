@@ -1,5 +1,7 @@
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
@@ -12,6 +14,8 @@ abstract interface class ProductIdSource {
   TaskId nextTaskId();
 
   EnvironmentId nextEnvironmentId();
+
+  SessionId nextSessionId();
 }
 
 final class MonotonicProductIdSource implements ProductIdSource {
@@ -22,6 +26,7 @@ final class MonotonicProductIdSource implements ProductIdSource {
   int _nextProject = 1;
   int _nextTask = 1;
   int _nextEnvironment = 1;
+  int _nextSession = 1;
 
   @override
   ProjectId nextProjectId() => ProjectId('project-$_seed-${_nextProject++}');
@@ -32,6 +37,9 @@ final class MonotonicProductIdSource implements ProductIdSource {
   @override
   EnvironmentId nextEnvironmentId() =>
       EnvironmentId('environment-$_seed-${_nextEnvironment++}');
+
+  @override
+  SessionId nextSessionId() => SessionId('session-$_seed-${_nextSession++}');
 }
 
 final class InMemoryProductStore {
@@ -39,8 +47,12 @@ final class InMemoryProductStore {
   final Map<TaskId, Task> _tasks = <TaskId, Task>{};
   final Map<EnvironmentId, Environment> _environments =
       <EnvironmentId, Environment>{};
-  final Map<SessionId, SessionEnvironmentAuthority> _sessionAuthorities =
-      <SessionId, SessionEnvironmentAuthority>{};
+  final Map<
+    SessionId,
+    ({Session session, SessionEnvironmentAuthority authority})
+  >
+  _sessions =
+      <SessionId, ({Session session, SessionEnvironmentAuthority authority})>{};
 
   Project? project(ProjectId id) => _projects[id];
 
@@ -48,8 +60,10 @@ final class InMemoryProductStore {
 
   Environment? environment(EnvironmentId id) => _environments[id];
 
+  Session? session(SessionId id) => _sessions[id]?.session;
+
   SessionEnvironmentAuthority? sessionAuthority(SessionId id) =>
-      _sessionAuthorities[id];
+      _sessions[id]?.authority;
 
   Environment? primaryEnvironmentFor(TaskId taskId) {
     for (final Environment environment in _environments.values) {
@@ -97,8 +111,7 @@ final class InMemoryProductStore {
     _environments[environment.id] = environment;
   }
 
-  SessionEnvironmentAuthority associateSession({
-    required SessionId sessionId,
+  Environment _requireSessionEnvironment({
     required TaskId taskId,
     EnvironmentId? environmentId,
   }) {
@@ -121,29 +134,26 @@ final class InMemoryProductStore {
         'Environment ${environment.id} does not belong to Task ${task.id}.',
       );
     }
-    final SessionEnvironmentAuthority authority = SessionEnvironmentAuthority._(
-      sessionId: sessionId,
-      taskId: task.id,
-      environmentId: environment.id,
-    );
-    final SessionEnvironmentAuthority? existing =
-        _sessionAuthorities[sessionId];
-    if (existing != null) {
-      if (existing.taskId == authority.taskId &&
-          existing.environmentId == authority.environmentId) {
-        return existing;
-      }
-      throw StateError(
-        'Session $sessionId already has conflicting Environment authority.',
-      );
+    return environment;
+  }
+
+  void _publishSession(Session session, Environment environment) {
+    if (_sessions.containsKey(session.id)) {
+      throw StateError('Session ${session.id} is already published.');
     }
-    _sessionAuthorities[sessionId] = authority;
-    return authority;
+    // A single publication keeps canonical identity and authority inseparable.
+    _sessions[session.id] = (
+      session: session,
+      authority: SessionEnvironmentAuthority._(
+        sessionId: session.id,
+        taskId: session.taskId,
+        environmentId: environment.id,
+      ),
+    );
   }
 
   SessionEnvironmentAuthority requireSessionAuthority(SessionId sessionId) {
-    final SessionEnvironmentAuthority? authority =
-        _sessionAuthorities[sessionId];
+    final SessionEnvironmentAuthority? authority = sessionAuthority(sessionId);
     if (authority == null) {
       throw StateError(
         'Session $sessionId does not have Environment authority.',
@@ -360,6 +370,7 @@ final class ProductLifecycleCoordinator {
   ProductLifecycleCoordinator({
     required this.store,
     required CapabilityRegistry registry,
+    required ExtensionRegistry extensions,
     required ProductIdSource ids,
     required EnvironmentProviderForBinding providerForBinding,
   }) : environmentRuntime = EnvironmentRuntime(
@@ -367,21 +378,25 @@ final class ProductLifecycleCoordinator {
          registry: registry,
          providerForBinding: providerForBinding,
        ),
+       strategyResolver = OrchestrationStrategyResolver(extensions),
        _ids = ids;
 
   factory ProductLifecycleCoordinator.generated({
     required InMemoryProductStore store,
     required CapabilityRegistry registry,
+    required ExtensionRegistry extensions,
     ProductIdSource? ids,
   }) => ProductLifecycleCoordinator(
     store: store,
     registry: registry,
+    extensions: extensions,
     ids: ids ?? MonotonicProductIdSource(),
     providerForBinding: _generatedProviderForBinding,
   );
 
   final InMemoryProductStore store;
   final EnvironmentRuntime environmentRuntime;
+  final OrchestrationStrategyResolver strategyResolver;
   final ProductIdSource _ids;
 
   Project createProject(Uri sourceLocation) {
@@ -391,6 +406,39 @@ final class ProductLifecycleCoordinator {
     );
     store.publishProject(project);
     return project;
+  }
+
+  Session createSession({
+    required TaskId taskId,
+    required OrchestrationStrategyId strategyId,
+    EnvironmentId? environmentId,
+  }) {
+    if (store.task(taskId) == null) {
+      throw StateError('Task $taskId is not published.');
+    }
+    final ResolvedOrchestrationStrategy strategy = strategyResolver.resolve(
+      strategyId,
+    );
+    final Environment environment = store._requireSessionEnvironment(
+      taskId: taskId,
+      environmentId: environmentId,
+    );
+    final Session session = Session(
+      id: _ids.nextSessionId(),
+      taskId: taskId,
+      strategyId: strategyId,
+    );
+    strategy.validateBinding();
+    store._publishSession(session, environment);
+    return session;
+  }
+
+  ResolvedOrchestrationStrategy resolveSessionStrategy(SessionId sessionId) {
+    final Session? session = store.session(sessionId);
+    if (session == null) {
+      throw StateError('Session $sessionId is not published.');
+    }
+    return strategyResolver.resolve(session.strategyId);
   }
 
   Future<TaskCreationResult> createTask({

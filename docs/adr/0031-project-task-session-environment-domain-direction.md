@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted; initial Environment-authorized Session read/mutation implemented, broader lifecycle deferred
+Accepted; in-memory Session strategy binding spine and Environment-authorized tools implemented, broader lifecycle deferred
 
 Partially supersedes ADR 0022 for long-term Session semantics.
 
@@ -62,9 +62,13 @@ Core must not define Session as inherently chat history. The bound strategy owns
 
 Changing orchestration strategy means creating another Session rather than converting an existing Session into another semantic type.
 
+Permanent binding is to a semantic `OrchestrationStrategyId`, not to an `ExtensionId` or one activation generation. Creation requires exactly one current contribution for that semantic ID. Zero matches produce an explicit unavailable error; multiple matches produce an explicit ambiguous error even if their extension IDs differ. There is no default or fallback strategy selection in this binding path.
+
+A resolved strategy retains its exact `ExtensionBinding`. Retirement makes that binding stale; replacement registrations can be used only through fresh resolution of the same stored strategy ID. Existing resolved bindings never migrate, and availability changes never rewrite the Session's durable identity fields.
+
 Core owns the minimal public orchestration-strategy registration/discovery/binding contract required to create, restore, and validate Sessions. Strategy implementations are plugins, but Session validity must not depend on an optional Agent Interaction or other presentation plugin being active.
 
-A strategy plugin consumes a narrow public provider-neutral orchestration/execution API backed internally by ADELE's execution substrate. Strategy implementations must not import the internal `agent_kernel` package directly. The exact public package/type surface remains deferred until a concrete implementation requires it.
+A strategy plugin will consume a narrow public provider-neutral execution API backed internally by ADELE's execution substrate. Strategy implementations must not import the internal `agent_kernel` package directly. The identity-only registration/binding API is implemented in `adele_orchestration`; the public execution facade and its exact methods/types remain deferred until a concrete strategy implementation requires them.
 
 A Session may create child Sessions for delegated work. A child Session:
 
@@ -85,14 +89,17 @@ Core owns authoritative Session creation/parent linkage/strategy binding. Orches
 
 The maintained repository does **not** yet implement this complete product-domain model.
 
-- `adele_product` owns the one canonical `SessionId`; `agent_kernel` consumes/re-exports it and retains the chat-shaped development Session history used by the Phase IV proof.
-- The provisional application strategy remains a bounded chat/tool loop.
-- `adele_product` now owns the initial immutable Project, Task, and Environment values, including generic provider identity and opaque provider state.
+- `adele_product` owns immutable Project, Task, and Environment values, including generic provider identity and opaque provider state. It also owns the one canonical `SessionId`, semantic `OrchestrationStrategyId`, and the final immutable `Session(id, taskId, strategyId)`. The strategy ID lives in product to keep product independent of orchestration. `Session` stores no live binding, Environment authority, or strategy-specific history.
+- Public pure-Dart `adele_orchestration` owns immutable identity-only `OrchestrationStrategyContribution`, the typed `orchestrationStrategyContributions` extension point, and a thin `OrchestrationStrategyResolver.resolve(id)` over the existing `ExtensionRegistry`. It does not introduce a second registry, materialization cache, or execution API.
+- Resolution returns a `ResolvedOrchestrationStrategy` retaining the exact `ExtensionBinding`, or throws `OrchestrationStrategyUnavailable` or `AmbiguousOrchestrationStrategy`. Duplicate semantic IDs are ambiguous regardless of distinct `ExtensionId` values. Retired bindings fail with generic `StaleExtensionBinding`; a replacement is eligible only for fresh resolution, without fallback or rewriting the stored strategy ID.
+- `ProductLifecycleCoordinator.createSession` requires an existing `taskId` and a currently resolvable `strategyId`, and accepts an optional `environmentId`. The selected Environment must exist and belong to that Task; omission selects the Task's primary Environment. It then allocates `SessionId`, revalidates the retained strategy binding, atomically publishes the canonical Session and separate Task/Environment authority, and returns the `Session`. Failure publishes neither Session nor authority. Publication is private; there is no public `associateSession` operation.
+- `store.session(id)` reads the canonical product value, while `requireSessionAuthority` retains the existing authority read path. `coordinator.resolveSessionStrategy(sessionId)` resolves the stored canonical Session's strategy ID, not a caller-supplied replacement.
+- Development composition registers temporary metadata under `dev.adele.strategy.development-tool-loop` with a separate extension ID. The bounded `DevelopmentToolLoopStrategy` remains app-owned and unchanged; direct execution is not routed through registration. `agent_kernel` still consumes/re-exports the canonical `SessionId` and retains the separate Chat-shaped development history used by the Phase IV proof.
 - The application has an in-memory Task establishment coordinator that publishes a Task and finalized primary Environment and records the exact establishment-time materialization only after provider success; disk persistence remains deferred.
 - `adele_environment` and the stock Git worktree backend prove establishment, restoration, bounded filesystem reads, opaque observed-file revisions, create-new text files, conditional existing-text-file replacement and deletion, component-local value reification, and exact-generation rebinding. Filesystem Tools owns the model-facing create/patch/delete semantics and lowers them to those provider-neutral primitives.
-- The application owns one provisional authoritative `SessionId -> TaskId + EnvironmentId` relation and uses it to materialize one Environment filesystem authority with coherent read and mutation facets for independently contributed `search`, `read_file`, `apply_patch`, `create_file`, and `delete_file` tools; Run and generic tool context do not independently select Environment, and Search requests only the read facet.
+- The application owns one authoritative `SessionId -> TaskId + EnvironmentId` relation, separate from the canonical Session, and uses it to materialize coherent read, mutation, and process facets for independently contributed `search`, `read_file`, `apply_patch`, `create_file`, `delete_file`, and `run_command` tools. Run and generic tool context do not independently select Environment; Search requests only the read facet and Command Tools only the process facet.
 - Deterministic agent Runs prove Search-to-Read, Read-to-Patch, and Create-to-Read-to-Delete continuation against real copied ADELE source through a real Git Environment. Mutation proofs obtain opaque revisions and source content from model-visible tool results, affect only the Task worktree, and verify final create/delete isolation. Integration coverage also proves old tool bindings remain stale while fresh access restores the durable Environment through a replacement provider generation.
-- Task Browser, the complete strategy-bound Session aggregate/lifecycle, the core/public orchestration-strategy registry, the public strategy execution facade, child Session lifecycle, and parent Session presentation are not implemented.
+- The binding spine does not add a Chat plugin, public strategy execution facade, kernel redesign, strategy-specific durable state, child Session lifecycle, context redesign, strategy defaults, profiles, Task Browser or other lifecycle UI, or disk persistence. Complete Session lifecycle and restoration remain deferred.
 - Phase V-A5 migrated the OpenAI API-key and experimental ChatGPT source-coding consumers to the Session-authorized Environment tool composition and retired the provisional DevelopmentSource plugin.
 
 The current implementation remains valid evidence for the narrower vertical. Future APIs should migrate toward this accepted direction as concrete features are built.

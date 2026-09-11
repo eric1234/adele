@@ -33,9 +33,22 @@ implemented.
 
 Phase IV establishes provider-neutral Run/context/model/tool/policy/approval,
 outcome/effect-certainty, and execution-observation semantics. The maintained
-proof uses a bounded Chat-shaped Session representation; ADR 0031 now defines
-the long-term Session as a core container permanently bound to one orchestration
-strategy, with strategy-specific state defining its semantic contents.
+execution proof retains bounded Chat-shaped history, separate from the canonical
+product `Session`. As defined by ADR 0031, Session is a core container permanently
+bound to one orchestration strategy, with strategy-specific state defining its
+semantic contents.
+
+The Session strategy binding spine is implemented in memory. `adele_product`
+owns the final immutable `Session(id, taskId, strategyId)` and semantic
+`OrchestrationStrategyId`; public pure-Dart `adele_orchestration` supplies
+identity-only contributions and exact-binding resolution over the existing
+extension registry. Creation requires an existing Task and one current matching
+strategy, validates the Task's primary or explicitly selected same-Task
+Environment, and atomically publishes the Session and separate Environment
+authority. Missing or duplicate strategy IDs fail explicitly; retired bindings
+stay stale, and only fresh resolution can use a replacement without changing
+the Session's stored strategy ID. This is not a public execution facade, a Chat
+plugin, or disk persistence.
 
 The common `ModelProvider` capability uses generated streaming/cancellation,
 ordered semantic/provider-native items, explicit settlement, and exact
@@ -48,7 +61,7 @@ which permits multiple function-call outputs from one model invocation, not
 concurrent ADELE host-tool execution or a common-contract change.
 
 Phase V-A establishes durable Project, Task, and Environment values and binds
-provisional agent Sessions authoritatively to one Task-associated Environment.
+Sessions authoritatively to one Task-associated Environment.
 Active plugin generations contribute contextual model tools through the generic
 extension registry. The independent stock Filesystem Tools, Search Tools, and
 Command Tools plugins own `read_file`, `apply_patch`, `create_file`,
@@ -66,6 +79,11 @@ proposals; `ask` pauses the batch, and approval or rejection resumes it in order
 with prior results retained. One model continuation follows all proposal results.
 A batch emitted in the final allowed model-invocation slot fails before any
 proposal is prepared or executed because no continuation slot remains.
+
+Development composition registers temporary strategy metadata under
+`dev.adele.strategy.development-tool-loop` with a separate extension ID. The
+strategy remains app-owned and unchanged; direct execution is not routed through
+that registration.
 
 Filesystem Tools owns the model-facing
 `apply_patch(relativePath, expectedRevision, edits)` grammar. Its non-empty
@@ -159,8 +177,9 @@ Plugins should normally cooperate through public typed interfaces and live
 runtime discovery rather than dependencies on specific implementation plugins.
 Capabilities remain the callable Action/Service provider mechanism; Events are
 read-only fact notifications; UI/composition extension points may use different
-zero/one/many and merge/failure semantics. General extension-point runtime/UI
-APIs are not yet implemented.
+zero/one/many and merge/failure semantics. Generic registration/liveness and
+typed model-tool and orchestration-strategy contribution points are implemented;
+broader recursive composition and plugin-facing UI APIs remain deferred.
 
 ADR 0031 accepts these shared product-domain identities:
 
@@ -254,6 +273,7 @@ packages/model_provider/     adele_model_provider (experimental public)
 packages/model_tool/         adele_model_tool public contribution/execution API
 packages/capabilities/       adele_capabilities (experimental public)
 packages/product/            adele_product canonical product identities/values
+packages/orchestration/      adele_orchestration strategy contributions/bindings
 packages/environment/        adele_environment provider/filesystem contract
 packages/plugin_runtime/     plugin_runtime (internal, pure Dart)
 packages/plugin_backend_host/ shared backend host (internal, pure Dart)
@@ -371,12 +391,12 @@ read and mutation facets and adds Filesystem Tools' initial exact-unique
 `apply_patch`, with deterministic real-Git Read-to-Patch continuation coverage.
 V-B3 adds an opt-in paid OpenAI API-key proof that a real model carries the
 model-visible opaque revision from `read_file` into `apply_patch`, mutates only
-the Task worktree, observes the result, and continues. Production
-orchestration-strategy registration/binding, a plugin-owned Chat strategy,
-stable ChatGPT provider support, general whole-file overwrite,
-directory/move/copy/binary operations, complete strategy-bound Session
-lifecycle, and SCM/review integration remain later work rather than settled
-interfaces.
+the Task worktree, observes the result, and continues. The minimal Session strategy
+registration/binding spine is implemented, but a public strategy execution
+facade, a plugin-owned Chat strategy, strategy-specific durable state, child
+Session lifecycle, stable ChatGPT provider support, general whole-file overwrite,
+directory/move/copy/binary operations, and SCM/review integration remain later
+work rather than settled interfaces.
 
 V-C1 adds the provider-neutral Environment foreground-process substrate and its
 Git Worktree provider implementation/proof. V-C2 projects that substrate through

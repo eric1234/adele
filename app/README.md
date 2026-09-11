@@ -12,9 +12,10 @@ first-class Workspace product concept.
 
 ADR 0031 accepts Project, Task, Session, Run, and Environment as the shared
 product-domain identities. The application now contains the in-memory
-Project/Task establishment coordinator, a provisional authoritative
-Session-to-Task/Environment relation, exact-generation Environment runtime
-materialization, and a generic Session-scoped model-tool host context that
+Project/Task establishment and canonical strategy-bound Session creation
+coordinator, a separate authoritative Session-to-Task/Environment relation,
+exact-generation Environment runtime materialization, and a generic
+Session-scoped model-tool host context that
 projects coherent read, mutation, and process facets over one Environment
 authority. Independent stock Filesystem Tools, Search Tools, and Command Tools
 plugins use that context to provide Environment-authorized `read_file`,
@@ -38,6 +39,44 @@ Lifecycle UI and normal stock-plugin composition are not implemented yet.
 The normal application does not display the `workspace_demo` reference plugin.
 The maintained `lib/development_smoke.dart` entrypoint exercises the plugin
 runtime only through the explicit root smoke command.
+
+## Session Lifecycle
+
+`adele_product` owns the final immutable `Session(id, taskId, strategyId)` and
+semantic `OrchestrationStrategyId`. The strategy ID lives in product so product
+values do not depend on the orchestration package. Public pure-Dart
+`adele_orchestration` provides identity-only strategy contributions and a thin
+resolver over the existing `ExtensionRegistry`, not an execution facade.
+
+`ProductLifecycleCoordinator.createSession` requires `taskId` and `strategyId`
+and accepts an optional `environmentId`. It requires an existing Task and exactly
+one current strategy registration for that semantic ID. The selected Environment
+must exist and belong to that Task; omission selects the Task's primary
+Environment. The coordinator allocates `SessionId`, revalidates the retained
+strategy binding, atomically publishes the canonical Session and its separate
+Environment authority, and returns the `Session`. Failed validation publishes
+neither Session nor authority. Publication is private; there is no public
+`associateSession` operation.
+
+`store.session(id)` reads the canonical product value. Existing tool-host access
+continues through `requireSessionAuthority`; neither Run nor generic tool context
+selects another Environment. `coordinator.resolveSessionStrategy(sessionId)`
+looks up the canonical Session and resolves its stored strategy ID, not a
+caller-supplied replacement. No match throws `OrchestrationStrategyUnavailable`;
+multiple matches throw `AmbiguousOrchestrationStrategy` even when they have
+different `ExtensionId` values.
+`ResolvedOrchestrationStrategy` retains the exact `ExtensionBinding`: retirement
+makes it stale with `StaleExtensionBinding`, and only fresh resolution can select
+a replacement. Resolution never falls back to another strategy or rewrites the
+Session's stored ID.
+
+Development composition registers temporary identity-only metadata under
+`dev.adele.strategy.development-tool-loop` with a separate extension ID.
+`DevelopmentToolLoopStrategy` remains app-owned and unchanged, and development
+execution still calls it directly rather than through the registration. This
+spine adds no Chat plugin, public strategy execution facade, kernel/context
+redesign, strategy-specific durable state, child Sessions, strategy defaults,
+profiles, lifecycle UI, or disk persistence.
 
 ## Dependencies
 
@@ -127,8 +166,9 @@ automatic cleanup, validation planning, commit, push, or PR workflow.
 
 ## Deferred
 
-Normal Project selection, complete strategy-bound Task/Session lifecycle,
-additional Environment-backed mutation tools, profiles, product
+Normal Project selection, Session persistence and child lifecycle, a public
+strategy execution facade and plugin-owned Chat strategy, additional
+Environment-backed mutation tools, profiles, product
 plugin discovery/activation, production Agent UI, application
 Commands/keybindings, and plugin-facing UI extension APIs remain deferred. The
 stock Git worktree Environment provider is currently exercised through focused
