@@ -242,20 +242,15 @@ _MutationEvidence _expectSuccessfulMutationRun({
   final Object? expectedRevision =
       patchInvocation.canonicalArguments['expectedRevision'];
   expect(expectedRevision, isA<String>());
-  final List<SourceCodingToolAttempt> relevantReads = reads
-      .where((SourceCodingToolAttempt attempt) {
-        return attempt.terminalRecord.sequence <
-                successfulPatch.preparedRecord.sequence &&
-            attempt.outcome.disposition == ToolOutcomeDisposition.success &&
-            attempt.prepared.invocation.canonicalArguments['relativePath'] ==
-                sourceCodingStrategyPath &&
-            attempt.outcome.hostData['revision'] == expectedRevision;
-      })
-      .toList(growable: false);
-  expect(relevantReads, isNotEmpty);
-  final SourceCodingToolAttempt relevantRead = relevantReads.last;
   final String readRevision = expectedRevision! as String;
   expect(readRevision, isNotEmpty);
+  final SourceCodingToolAttempt relevantRead = expectRelevantSourceRead(
+    reads: reads,
+    beforeSequence: successfulPatch.preparedRecord.sequence,
+    relativePath: sourceCodingStrategyPath,
+    revision: readRevision,
+    originalFragment: _originalFragment,
+  );
   expect(
     relevantRead.prepared.invocation.tool.definition.id.value,
     'dev.adele.plugin.filesystem-tools.read-file',

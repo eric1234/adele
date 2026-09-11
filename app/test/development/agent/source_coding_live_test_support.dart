@@ -270,6 +270,37 @@ List<SourceCodingToolAttempt> sourceCodingToolAttempts(
     })
     .toList(growable: false);
 
+/// Selects a pre-mutation read that exposed the target at the expected revision.
+SourceCodingToolAttempt expectRelevantSourceRead({
+  required Iterable<SourceCodingToolAttempt> reads,
+  required int beforeSequence,
+  required String relativePath,
+  required String revision,
+  required String originalFragment,
+}) {
+  expect(originalFragment, isNotEmpty);
+  final List<SourceCodingToolAttempt> relevantReads = reads
+      .where((attempt) {
+        final Object? text = attempt.outcome.hostData['text'];
+        return attempt.terminalRecord.sequence < beforeSequence &&
+            attempt.outcome.disposition == ToolOutcomeDisposition.success &&
+            attempt.prepared.invocation.canonicalArguments['relativePath'] ==
+                relativePath &&
+            attempt.outcome.hostData['revision'] == revision &&
+            text is String &&
+            text.contains(originalFragment);
+      })
+      .toList(growable: false);
+  expect(
+    relevantReads,
+    isNotEmpty,
+    reason:
+        'A successful pre-patch read of $relativePath at the expected revision '
+        'must expose the original source fragment to the model.',
+  );
+  return relevantReads.last;
+}
+
 void expectSuccessfulSourceCodingRun({
   required SourceCodingLiveResult result,
   required SessionEnvironmentAuthority authority,
