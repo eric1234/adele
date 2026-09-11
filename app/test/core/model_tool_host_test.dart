@@ -18,7 +18,7 @@ import 'package:search_tools_plugin/search_tools_plugin.dart';
 
 void main() {
   test(
-    'inference sources use canonical Session and tool host authority',
+    'inference sources use canonical Session and read-only authority',
     () async {
       final _Fixture fixture = await _fixture();
       final Session session = fixture.runtime.store.session(fixture.sessionId)!;
@@ -71,11 +71,57 @@ void main() {
                   expect(sourceRead.environmentId, toolRead.environmentId);
                   expect(sourceRead.environmentId, fixture.environmentId);
                   expect(
+                    sourceRead,
+                    isNot(isA<AuthorizedEnvironmentFileMutationFacet>()),
+                  );
+                  expect(
+                    sourceRead,
+                    isNot(isA<AuthorizedEnvironmentProcessFacet>()),
+                  );
+                  expect(
                     await supplied
                         .requireHostService<
                           AuthorizedEnvironmentFileReadFacet
                         >(),
                     same(sourceRead),
+                  );
+                  await expectLater(
+                    supplied
+                        .requireHostService<
+                          AuthorizedEnvironmentFileMutationFacet
+                        >()
+                        .then(
+                          (AuthorizedEnvironmentFileMutationFacet facet) =>
+                              facet.createTextFile(
+                                'forbidden.txt',
+                                'forbidden',
+                              ),
+                        ),
+                    throwsStateError,
+                  );
+                  await expectLater(
+                    supplied
+                        .requireHostService<AuthorizedEnvironmentProcessFacet>()
+                        .then(
+                          (AuthorizedEnvironmentProcessFacet facet) => facet
+                              .runForegroundProcess(_processRequest())
+                              .toList(),
+                        ),
+                    throwsStateError,
+                  );
+                  await expectLater(
+                    supplied
+                        .requireHostService<AuthorizedEnvironmentAuthority>(),
+                    throwsStateError,
+                  );
+                  await expectLater(
+                    supplied
+                        .requireHostService<AuthorizedEnvironmentFileSystem>(),
+                    throwsStateError,
+                  );
+                  await expectLater(
+                    supplied.requireHostService<Object>(),
+                    throwsStateError,
                   );
                   await expectLater(
                     supplied.requireHostService<ExtensionRegistry>(),
@@ -120,6 +166,10 @@ void main() {
         fixture.environmentId,
       ]);
       expect(fixture.provider.restoreCount, 0);
+      expect(fixture.provider.creations, isEmpty);
+      expect(fixture.provider.replacements, isEmpty);
+      expect(fixture.provider.deletions, isEmpty);
+      expect(fixture.provider.processEnvironmentIds, isEmpty);
 
       await fixture.registration.close();
       for (final AuthorizedEnvironmentFileReadFacet read in [

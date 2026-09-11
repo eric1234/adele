@@ -127,7 +127,13 @@ or `.optional`) and a `snapshot` callback returning
 `InferenceContextSourceContext` exposes canonical product `Session`, `RunId runId`,
 and `Future<T> requireHostService<T extends Object>()`. The app's fresh-per-inference
 `SessionInferenceContextSourceContext` accepts only the published canonical Session
-and delegates service access to the existing `SessionModelToolHostContext`.
+and explicitly allowlists only `AuthorizedEnvironmentFileReadFacet`, resolving
+that service through the existing `SessionModelToolHostContext`. Other service
+types, including mutation/process facets and broader Environment authority or
+filesystem interfaces, are rejected. Context capture inspects state; mutation and
+process execution remain owned by the tool/execution/policy mechanisms. Future
+services require an intentional read/query-oriented addition with a concrete use
+case; the public generic source-context contract is unchanged.
 Authority follows Session -> Task -> authorized Environment -> exact provider
 generation. This is typed host access, not an untyped service map or permission
 to select another Environment.

@@ -138,8 +138,12 @@ and reused by the kernel, without adding another public package.
 
 `lib/core/inference_context_host.dart` supplies a fresh
 `SessionInferenceContextSourceContext` per inference. It accepts only the published
-canonical `Session`, supplies `runId`, and delegates `requireHostService<T>()` to
-the existing `SessionModelToolHostContext`. Typed service authority follows
+canonical `Session`, supplies `runId`, and explicitly allows only
+`requireHostService<AuthorizedEnvironmentFileReadFacet>()`, delegating that request
+to the existing `SessionModelToolHostContext`. All other service types are rejected,
+including mutation/process facets and broader Environment authority/filesystem
+interfaces. Mutation and process execution remain behind the existing tool,
+policy, approval, and execution-evidence boundary. Typed read authority follows
 Session -> Task -> authorized Environment -> exact provider generation; a source
 cannot select another Environment through this context.
 

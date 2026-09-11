@@ -263,10 +263,15 @@ over the same existing `ExtensionRegistry`, not another registry or runtime.
 Each final `InferenceContextSourceContribution` has an explicit required
 `failureMode` and `snapshot` callback. `InferenceContextSourceContext` supplies
 the canonical `Session`, `runId`, and `requireHostService<T>()`. A fresh app
-`SessionInferenceContextSourceContext` per inference delegates typed service
-access to `SessionModelToolHostContext`: Session -> Task -> authorized Environment
+`SessionInferenceContextSourceContext` per inference explicitly allowlists only
+`AuthorizedEnvironmentFileReadFacet`, resolving it through
+`SessionModelToolHostContext`: Session -> Task -> authorized Environment
 -> exact provider generation. It does not accept a reconstructed Session or grant
-independent Environment selection.
+independent Environment selection. All other service requests fail, including
+mutation/process facets and broader Environment authority/filesystem types.
+Context capture may inspect authorized state, not acquire tool effect authority;
+mutation and foreground processes retain their existing tool/policy/execution
+owners. This is an API ownership boundary, not an in-process plugin sandbox.
 
 The sealed `InferenceContextMaterial` root currently has only final
 `InferenceInstructionMaterial`: a nonblank source-local `String key`, nonblank

@@ -366,7 +366,12 @@ provides `InferenceContextComposer` over the same `ExtensionRegistry`, composing
 `InferenceContextSourceContribution` requires `failureMode` and a `snapshot`
 callback. Its `InferenceContextSourceContext` exposes canonical `Session`, `runId`,
 and typed `requireHostService<T>()`, not a mutable request or untyped service map.
-The fresh app context delegates the existing Session-authorized host services.
+The fresh app context explicitly allowlists only
+`AuthorizedEnvironmentFileReadFacet`, resolving it through the existing
+Session-authorized model-tool host path. All other service types are rejected,
+including mutation/process facets and broader Environment authority/filesystem
+interfaces. Context sources inspect state; mutation and process execution remain
+with the existing tool/policy/execution mechanisms.
 
 The sealed `InferenceContextMaterial` root currently supports only final
 `InferenceInstructionMaterial(key, text, revision?)`: source-local nonblank string

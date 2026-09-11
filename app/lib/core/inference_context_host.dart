@@ -1,9 +1,11 @@
+import 'package:adele_environment/adele_environment.dart'
+    show AuthorizedEnvironmentFileReadFacet;
 import 'package:adele_orchestration/adele_orchestration.dart';
 
 import 'model_tool_host.dart';
 import 'product_lifecycle.dart';
 
-/// One inference's services, scoped to the canonical Session's authority.
+/// One inference's read services, scoped to the canonical Session's authority.
 final class SessionInferenceContextSourceContext
     implements InferenceContextSourceContext {
   SessionInferenceContextSourceContext({
@@ -28,6 +30,11 @@ final class SessionInferenceContextSourceContext
   final SessionModelToolHostContext _services;
 
   @override
-  Future<T> requireHostService<T extends Object>() =>
-      _services.requireHostService<T>();
+  Future<T> requireHostService<T extends Object>() async {
+    // Context capture may inspect state, not acquire model-tool effect authority.
+    if (T == AuthorizedEnvironmentFileReadFacet) {
+      return _services.requireHostService<T>();
+    }
+    throw StateError('No inference context host service is registered for $T.');
+  }
 }
