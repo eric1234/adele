@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted; generic registration/liveness and typed model-tool/strategy contributions implemented, broader composition deferred
+Accepted; generic registration/liveness, typed model-tool contributions, and executable stock Chat strategy composition implemented, broader composition deferred
 
 ## Context
 
@@ -40,11 +40,15 @@ Only part of this model is currently implemented:
 - active one-to-many capability registration/resolution and exact generation bindings are implemented;
 - generic typed extension registration/discovery, activation-scoped retirement, exact `ExtensionBinding` liveness, and `StaleExtensionBinding` are implemented;
 - public contextual model-tool contributions and internal materialization/provider-neutral agent execution semantics are implemented;
-- public `adele_orchestration` adds identity-only strategy contributions and semantic-ID resolution over the existing registry for canonical Session binding; missing/ambiguous IDs fail explicitly and old resolved bindings never migrate to replacement generations;
-- profile-aware preference and a public strategy execution facade are not implemented;
+- public `adele_orchestration` provides `OrchestrationStrategyContribution(strategyId, materialize)`, semantic-ID resolution over the existing registry, `OrchestrationStrategyHostContext(session, host)`, and `OrchestrationExecution(start/resolveApproval)`; missing/ambiguous IDs fail explicitly;
+- its narrow `OrchestrationExecutionHost` accepts `StrategyInferenceMaterial`, returns semantic model turns with opaque `StrategyToolSnapshot` handles, processes proposals through host-owned policy/execution, and resolves approvals to semantic continuation; minimal semantic DTOs are shared with the kernel, not duplicated or placed in another public package;
+- headless stock `chat_strategy_plugin` activates in process like the stock tool plugins, using semantic ID `dev.adele.strategy.chat` and separate plugin/extension identities; it owns Chat history/configuration and private sequencing without importing `agent_kernel`;
+- application Session-routed Run creation resolves and materializes one exact contribution; host operations, approval resume, and asynchronous settlement validate the retained binding, so stale active Runs fail without migration while later Runs may freshly resolve replacements under the same Session strategy ID;
+- `StrategyInferenceMaterial` (instructions and ordered `SemanticModelInputItem` values) is the deliberate seam between strategy projection/replay and internal `SemanticModelRequest`; general context composition is the next slice at this seam, not an implemented framework;
+- profile-aware preference, Chat UI/persistence, child Sessions, general context contributors, and token budgets are not implemented;
 - plugin-defined extension APIs, production UI composition, Commands/keybindings, generic Event subscription, and structured multi-plugin inference composition remain future work.
 
-This ADR accepts the architectural direction without claiming those mechanisms are proven.
+The execution facade does not expose kernel model ports/streams/collectors, tool catalogs, policy gates, `AgentRun`, or journal objects. The host accepts only unused proposals from its exact completed model turn and only the current host-supplied approval resolution for its retained invocation. This ADR accepts the broader architectural direction without claiming deferred mechanisms are implemented or live-service validation of Chat.
 
 ## Consequences
 

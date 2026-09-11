@@ -6,7 +6,7 @@
 
 This document defines ADELE's long-term composition model for plugins and plugin-defined extension ecosystems. It records architectural boundaries rather than a frozen Dart API. Implemented APIs such as `ExtensionPoint` remain experimental; other example interfaces below remain directional until concrete implementation requires them.
 
-The maintained repository already proves source plugins, interpreted frontend execution, AOT backend execution, generated typed transport, active capability registration/resolution, configured provider contexts, provider-neutral agent execution, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, and generic registration/liveness. The registry supports typed extension points, activation-scoped registrations, exact-generation bindings, a public contextual model-tool contribution point, and public identity-only orchestration-strategy contributions. The statically composed stock Filesystem Tools, Search Tools, and Command Tools source modules consume the model-tool point and own `read_file`/`apply_patch`/`create_file`/`delete_file`, `search`, and `run_command`; this is not production plugin discovery. ADELE does **not** yet implement the broader recursive extension system described here, production plugin-facing UI composition, generic commands/keybindings, production product persistence, a public strategy execution facade or Chat plugin, or most of the expected stock plugin topology.
+The maintained repository includes source plugins, interpreted frontend execution, AOT backend execution, generated typed transport, active capability registration/resolution, configured provider contexts, provider-neutral agent execution, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, and generic registration/liveness. The registry supports typed extension points, activation-scoped registrations, exact-generation bindings, public contextual model-tool contributions, and executable orchestration-strategy contributions. Statically composed stock Filesystem Tools, Search Tools, and Command Tools own `read_file`/`apply_patch`/`create_file`/`delete_file`, `search`, and `run_command`. Headless stock Chat uses the public `adele_orchestration` execution facade and the same in-process activation conventions; this is not production plugin discovery. ADELE does **not** yet implement the broader recursive extension system described here, production plugin-facing UI composition, generic commands/keybindings, product/Chat persistence, general context composition, or most of the expected stock plugin topology.
 
 The generic registry deliberately defines only registration, discovery, retirement, and binding liveness. Model-tool composition defines its own zero-or-many composition and alias-collision semantics. Strategy resolution requires exactly one current contribution for an explicit semantic ID, with unavailable/ambiguous errors rather than defaults or tie-breaking. Priority, applicability languages, ordering, and universal failure behavior remain deferred. `EnvironmentRuntime` remains a provisional application/domain implementation rather than a template for extension runtimes.
 
@@ -86,7 +86,7 @@ Core directionally owns:
 
 Plugins normally own provider-specific, workflow-specific, tool-specific, integration-specific, and specialized presentation behavior. Expected examples include model providers, Environment implementations, Git integration, editors, Diff/Review, terminals, agent orchestration strategy implementations, model tools, model/agent policy, accounting, TODO/progress, and context monitoring.
 
-A strategy plugin must not import the internal `agent_kernel`. The public identity-only registration/binding API is implemented in `adele_orchestration`; a public provider-neutral execution facade backed by core/kernel implementation remains deferred until a concrete strategy implementation requires it.
+A strategy plugin must not import the internal `agent_kernel`. The public registration/binding and narrow provider-neutral execution facade are implemented in the existing `adele_orchestration` package. Minimal semantic DTOs are shared from that package and reused by the kernel, not duplicated. Kernel model ports/streams/collectors, tool catalogs, policy gates, `AgentRun`, and journal objects remain internal; the public facade is not a re-export of kernel mechanics.
 
 One plugin may register several independent extensions into different systems. Splitting those registrations into separate plugins should not fundamentally change the extension mechanisms involved.
 
@@ -182,7 +182,7 @@ Depending on that API definition is acceptable. Depending on a particular implem
 
 For example, a Chat strategy may publish `ChatPromptAccessory`. An Agent-control plugin can compile against that API and register an implementation. If Chat is inactive, the registration is simply unconsumed.
 
-Likewise, a Chat strategy implementation can compile against ADELE's future public orchestration/execution API without depending on the internal `agent_kernel` package that implements core execution semantics.
+The implemented stock Chat strategy compiles against public `adele_orchestration` without depending on the internal `agent_kernel` package that implements core execution semantics.
 
 This distinction enables recursive plugin-defined extension ecosystems without requiring a complex runtime activation dependency graph.
 
@@ -215,8 +215,9 @@ adele_product: Session(id, taskId, strategyId)
 
 `Session` is a final immutable value. `OrchestrationStrategyId` lives in
 `adele_product` so product values do not depend on orchestration. Public pure-Dart
-`adele_orchestration` defines immutable identity-only
-`OrchestrationStrategyContribution` and `orchestrationStrategyContributions`, an
+`adele_orchestration` defines
+`OrchestrationStrategyContribution(strategyId, materialize)` and
+`orchestrationStrategyContributions`, an
 `ExtensionPoint<OrchestrationStrategyContribution>` over the existing
 `ExtensionRegistry`. `OrchestrationStrategyResolver.resolve(id)` is a thin lookup,
 not a second registry or materialization cache. It returns a
@@ -229,11 +230,33 @@ IDs; neither registration order nor deterministic tie-breaking selects one.
 The application lifecycle coordinator validates the current strategy and a
 same-Task Environment, then atomically publishes the canonical Session and its
 separate Environment authority. Later strategy resolution uses the stored
-canonical ID. Development composition registers only temporary metadata for
-`dev.adele.strategy.development-tool-loop`, under a separate extension ID; the
-unchanged app-owned `DevelopmentToolLoopStrategy` still executes directly.
-Registration supplies no execution callback, Chat state, or public execution
-facade. See ADR 0031 for the creation boundary and deferred lifecycle scope.
+canonical ID. `createSessionOrchestrationRun` in the application resolves the
+canonical Session and exact contribution once per Run, then invokes
+materialization against `KernelOrchestrationHost`. The callback receives
+`OrchestrationStrategyHostContext(session, host)` and returns
+`OrchestrationExecution` with `start` and `resolveApproval` entry points.
+
+`OrchestrationExecutionHost` supplies lifecycle operations and binding validation,
+`invokeModel(StrategyInferenceMaterial)`, `processProposal` against an opaque
+`StrategyToolSnapshot` plus `ProviderToolProposal`, and approval resolution to
+semantic continuation. Strategies own sequencing, not policy authority, tool
+executables, or stream/journal mechanics. The application wrapper
+`SessionOrchestrationRun` retains the exact execution/binding and exposes internal
+evidence only to application callers. Core model/tool/policy and Environment
+selection are unchanged.
+
+`invokeModel` returns a `StrategyModelTurn` with ordered `ModelOutputItem` values,
+settlement/metadata or failure, and the opaque snapshot. The host accepts a
+proposal only once from its exact completed turn. It applies only the current
+host-supplied approval resolution to the retained invocation, so sequencing does
+not grant a strategy permission to approve itself.
+
+Stock `ChatStrategyPlugin.activate` registers Chat under semantic ID
+`dev.adele.strategy.chat` and extension ID
+`dev.adele.plugin.chat-strategy.orchestration`, distinct from plugin ID
+`dev.adele.plugin.chat-strategy`. Chat owns retained in-memory Session state and
+private loop sequencing; neither the canonical Session nor the registration API contains Chat
+history. See ADR 0031 for the creation boundary and deferred lifecycle scope.
 
 ---
 
@@ -255,12 +278,15 @@ resolved operation
 
 This preserves the existing generation-bound execution rule. A new provider generation can participate in a future materialization, but an already-resolved model/tool operation retains its original binding and fails explicitly if that binding becomes stale.
 
-The same distinction applies to strategy resolution. Retiring a contribution
-makes its retained binding fail with generic `StaleExtensionBinding`. An old
-`ResolvedOrchestrationStrategy` never adopts a replacement; only fresh resolution
-of the Session's stored semantic ID may use it. Missing or ambiguous availability
-does not trigger fallback or rewrite that stored ID. Permanent Session strategy
-identity does not mean pinning one activation generation for the Session's life.
+The same distinction applies to strategy execution. Retiring a contribution
+makes its retained binding fail with generic `StaleExtensionBinding`. Host
+validation covers subsequent operations, approval resume, and asynchronous
+settlement: an old active Run fails explicitly instead of continuing through a
+replacement. A later Run in the same Session may freshly resolve B under its
+stored semantic ID. Missing or ambiguous availability does not trigger fallback
+or rewrite that ID. Permanent Session strategy identity does not pin one
+activation generation for the Session's life, and retirement does not roll back
+already-started effects.
 
 ---
 
@@ -321,6 +347,14 @@ An Event does not imply a durable replay log. Historical access is a separate do
 ---
 
 # 9. Structured operation composition
+
+The implemented seam is `StrategyInferenceMaterial`: instructions plus an
+immutable ordered list of `SemanticModelInputItem` values from Chat history
+projection and Run-local replay. The host adds invocation identity and
+materialized tools to build internal `SemanticModelRequest`. General context
+composition is the next slice at this seam; it is not an implemented context framework,
+contributor registry, token budget, compaction
+system, or implementation of the broader buckets below.
 
 Some extensions need to influence an operation **before** it occurs. These should not receive arbitrary mutable host objects.
 
@@ -459,6 +493,14 @@ This keeps presentation replaceable and prevents UI widgets from becoming hidden
 ---
 
 # 15. Plugin-owned state and persistence
+
+Current Chat state is in memory: `ChatSessionStore.obtain(SessionId)` retains
+`ChatSessionState`, with immutable snapshots of `ChatEntry` values
+(`ChatUserMessage` and `ChatAssistantMessage`) reused across Runs. Only user/final
+assistant messages are canonical; intermediate native/model output, proposals,
+and tool results remain Run-local. Chat instructions and a positive invocation
+budget are snapshotted per materialized Run. This does not implement the
+persistence facilities described below, Chat UI, profiles, or child Sessions.
 
 ADELE should provide lifecycle-aware persistence facilities for plugin-owned state scoped to stable domain identities such as Project, Task, Session, or Environment where appropriate.
 

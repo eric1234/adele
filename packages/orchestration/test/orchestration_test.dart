@@ -33,7 +33,7 @@ void main() {
     );
   });
 
-  test('resolves current metadata by semantic ID, not registration ID', () {
+  test('resolves a contribution by semantic ID, not registration ID', () {
     final ExtensionRegistry registry = ExtensionRegistry();
     final OrchestrationStrategyResolver resolver =
         OrchestrationStrategyResolver(registry);
@@ -42,7 +42,10 @@ void main() {
       throwsA(isA<OrchestrationStrategyUnavailable>()),
     );
     final OrchestrationStrategyContribution contribution =
-        OrchestrationStrategyContribution(strategyId: strategyId);
+        OrchestrationStrategyContribution(
+          strategyId: strategyId,
+          materialize: _materialize,
+        );
     registry.register(
       point: orchestrationStrategyContributions,
       id: extensionId,
@@ -78,7 +81,10 @@ void main() {
       registry.register(
         point: orchestrationStrategyContributions,
         id: ExtensionId('dev.adele.test.unrelated.$suffix'),
-        value: OrchestrationStrategyContribution(strategyId: unrelatedId),
+        value: OrchestrationStrategyContribution(
+          strategyId: unrelatedId,
+          materialize: _materialize,
+        ),
       );
     }
     expect(
@@ -92,7 +98,10 @@ void main() {
       ),
     );
     final OrchestrationStrategyContribution contribution =
-        OrchestrationStrategyContribution(strategyId: strategyId);
+        OrchestrationStrategyContribution(
+          strategyId: strategyId,
+          materialize: _materialize,
+        );
     registry.register(
       point: orchestrationStrategyContributions,
       id: ExtensionId(strategyId.value),
@@ -118,7 +127,10 @@ void main() {
         registry.register(
           point: orchestrationStrategyContributions,
           id: id,
-          value: OrchestrationStrategyContribution(strategyId: strategyId),
+          value: OrchestrationStrategyContribution(
+            strategyId: strategyId,
+            materialize: _materialize,
+          ),
         );
       }
       registry.register(
@@ -126,6 +138,7 @@ void main() {
         id: ExtensionId('dev.adele.test.unrelated'),
         value: OrchestrationStrategyContribution(
           strategyId: OrchestrationStrategyId('unrelated'),
+          materialize: _materialize,
         ),
       );
 
@@ -168,7 +181,10 @@ void main() {
     final OrchestrationStrategyResolver resolver =
         OrchestrationStrategyResolver(registry);
     final OrchestrationStrategyContribution contribution =
-        OrchestrationStrategyContribution(strategyId: strategyId);
+        OrchestrationStrategyContribution(
+          strategyId: strategyId,
+          materialize: _materialize,
+        );
     registry.register(
       point: orchestrationStrategyContributions,
       id: extensionId,
@@ -179,7 +195,10 @@ void main() {
     final ExtensionRegistration duplicate = registry.register(
       point: orchestrationStrategyContributions,
       id: ExtensionId('dev.adele.test.strategy.duplicate'),
-      value: OrchestrationStrategyContribution(strategyId: strategyId),
+      value: OrchestrationStrategyContribution(
+        strategyId: strategyId,
+        materialize: _materialize,
+      ),
     );
     expect(
       () => resolver.resolve(strategyId),
@@ -197,7 +216,10 @@ void main() {
       final OrchestrationStrategyResolver resolver =
           OrchestrationStrategyResolver(registry);
       final OrchestrationStrategyContribution original =
-          OrchestrationStrategyContribution(strategyId: strategyId);
+          OrchestrationStrategyContribution(
+            strategyId: strategyId,
+            materialize: _materialize,
+          );
       final ExtensionRegistration registration = registry.register(
         point: orchestrationStrategyContributions,
         id: extensionId,
@@ -229,6 +251,7 @@ void main() {
       final OrchestrationStrategyContribution replacement =
           OrchestrationStrategyContribution(
             strategyId: OrchestrationStrategyId(strategyId.value),
+            materialize: _materialize,
           );
       registry.register(
         point: orchestrationStrategyContributions,
@@ -253,4 +276,334 @@ void main() {
       expect(oldBinding.validate, stale);
     },
   );
+
+  test('host context requires matching canonical Session identity', () {
+    final Session session = _session(strategyId);
+    final _TestHost host = _TestHost(SessionId('another-session'));
+
+    expect(
+      () => OrchestrationStrategyHostContext(session: session, host: host),
+      throwsArgumentError,
+    );
+  });
+
+  test('materializes an execution with the exact supplied context', () async {
+    final ExtensionRegistry registry = ExtensionRegistry();
+    final Session session = _session(strategyId);
+    final _TestHost host = _TestHost(session.id);
+    final OrchestrationStrategyHostContext context =
+        OrchestrationStrategyHostContext(session: session, host: host);
+    OrchestrationStrategyHostContext? received;
+    final OrchestrationExecution execution = _materialize(context);
+    registry.register(
+      point: orchestrationStrategyContributions,
+      id: extensionId,
+      value: OrchestrationStrategyContribution(
+        strategyId: strategyId,
+        materialize: (value) {
+          received = value;
+          return execution;
+        },
+      ),
+    );
+
+    final OrchestrationExecution materialized = OrchestrationStrategyResolver(
+      registry,
+    ).resolve(strategyId).materialize(context);
+
+    expect(materialized, same(execution));
+    expect(received, same(context));
+    expect(context.session, same(session));
+    expect(context.host, same(host));
+    expect(host.validations, 2);
+    expect(host.state, RunState.created);
+    await materialized.start();
+    expect(host.state, RunState.completed);
+    final ToolApprovalResolution resolution = ToolApprovalResolution(
+      interruptionId: RunInterruptionId('approval-1'),
+      toolInvocationId: ToolInvocationId('tool-1'),
+      approved: false,
+    );
+    await materialized.resolveApproval(resolution);
+    expect(host.resolution, same(resolution));
+  });
+
+  test('wrong strategy never reaches the contribution factory', () {
+    final ExtensionRegistry registry = ExtensionRegistry();
+    int calls = 0;
+    registry.register(
+      point: orchestrationStrategyContributions,
+      id: extensionId,
+      value: OrchestrationStrategyContribution(
+        strategyId: strategyId,
+        materialize: (context) {
+          calls++;
+          return _materialize(context);
+        },
+      ),
+    );
+    final Session session = _session(OrchestrationStrategyId('other-strategy'));
+    final OrchestrationStrategyHostContext context =
+        OrchestrationStrategyHostContext(
+          session: session,
+          host: _TestHost(session.id),
+        );
+
+    expect(
+      () => OrchestrationStrategyResolver(
+        registry,
+      ).resolve(strategyId).materialize(context),
+      throwsArgumentError,
+    );
+    expect(calls, 0);
+  });
+
+  test('retired materialization never uses a replacement factory', () async {
+    final ExtensionRegistry registry = ExtensionRegistry();
+    int originalCalls = 0;
+    int replacementCalls = 0;
+    final ExtensionRegistration registration = registry.register(
+      point: orchestrationStrategyContributions,
+      id: extensionId,
+      value: OrchestrationStrategyContribution(
+        strategyId: strategyId,
+        materialize: (context) {
+          originalCalls++;
+          return _materialize(context);
+        },
+      ),
+    );
+    final OrchestrationStrategyResolver resolver =
+        OrchestrationStrategyResolver(registry);
+    final ResolvedOrchestrationStrategy original = resolver.resolve(strategyId);
+    final Session session = _session(strategyId);
+    final OrchestrationStrategyHostContext context =
+        OrchestrationStrategyHostContext(
+          session: session,
+          host: _TestHost(session.id),
+        );
+    await registration.close();
+    registry.register(
+      point: orchestrationStrategyContributions,
+      id: extensionId,
+      value: OrchestrationStrategyContribution(
+        strategyId: strategyId,
+        materialize: (context) {
+          replacementCalls++;
+          return _materialize(context);
+        },
+      ),
+    );
+
+    expect(
+      () => original.materialize(context),
+      throwsA(isA<StaleExtensionBinding>()),
+    );
+    expect(originalCalls, 0);
+    expect(replacementCalls, 0);
+    resolver.resolve(strategyId).materialize(context);
+    expect(replacementCalls, 1);
+  });
+
+  test('retirement during a factory invalidates its result', () async {
+    final ExtensionRegistry registry = ExtensionRegistry();
+    final Session session = _session(strategyId);
+    final OrchestrationStrategyHostContext context =
+        OrchestrationStrategyHostContext(
+          session: session,
+          host: _TestHost(session.id),
+        );
+    Future<void>? retirement;
+    late final ExtensionRegistration registration;
+    registration = registry.register(
+      point: orchestrationStrategyContributions,
+      id: extensionId,
+      value: OrchestrationStrategyContribution(
+        strategyId: strategyId,
+        materialize: (context) {
+          retirement = registration.close();
+          return _materialize(context);
+        },
+      ),
+    );
+
+    expect(
+      () => OrchestrationStrategyResolver(
+        registry,
+      ).resolve(strategyId).materialize(context),
+      throwsA(isA<StaleExtensionBinding>()),
+    );
+    await retirement;
+  });
+
+  test('host identity is rechecked before and after the factory', () {
+    for (final bool changeDuringFactory in <bool>[false, true]) {
+      final ExtensionRegistry registry = ExtensionRegistry();
+      final Session session = _session(strategyId);
+      final _TestHost host = _TestHost(session.id);
+      final OrchestrationStrategyHostContext context =
+          OrchestrationStrategyHostContext(session: session, host: host);
+      int calls = 0;
+      registry.register(
+        point: orchestrationStrategyContributions,
+        id: extensionId,
+        value: OrchestrationStrategyContribution(
+          strategyId: strategyId,
+          materialize: (context) {
+            calls++;
+            host.sessionId = SessionId('another-session');
+            return _materialize(context);
+          },
+        ),
+      );
+      if (!changeDuringFactory) host.sessionId = SessionId('another-session');
+
+      expect(
+        () => OrchestrationStrategyResolver(
+          registry,
+        ).resolve(strategyId).materialize(context),
+        throwsArgumentError,
+      );
+      expect(calls, changeDuringFactory ? 1 : 0);
+    }
+  });
+
+  test('host binding is validated before and after the factory', () {
+    for (final bool retireDuringFactory in <bool>[false, true]) {
+      final ExtensionRegistry registry = ExtensionRegistry();
+      final Session session = _session(strategyId);
+      final _TestHost host = _TestHost(session.id);
+      final OrchestrationStrategyHostContext context =
+          OrchestrationStrategyHostContext(session: session, host: host);
+      final StateError failure = StateError('host binding is stale');
+      int calls = 0;
+      registry.register(
+        point: orchestrationStrategyContributions,
+        id: extensionId,
+        value: OrchestrationStrategyContribution(
+          strategyId: strategyId,
+          materialize: (context) {
+            calls++;
+            host.bindingFailure = failure;
+            return _materialize(context);
+          },
+        ),
+      );
+      if (!retireDuringFactory) host.bindingFailure = failure;
+
+      expect(
+        () => OrchestrationStrategyResolver(
+          registry,
+        ).resolve(strategyId).materialize(context),
+        throwsA(same(failure)),
+      );
+      expect(calls, retireDuringFactory ? 1 : 0);
+    }
+  });
+
+  test('factory failures propagate without fallback', () {
+    final ExtensionRegistry registry = ExtensionRegistry();
+    final Session session = _session(strategyId);
+    final StateError failure = StateError('materialization failed');
+    registry.register(
+      point: orchestrationStrategyContributions,
+      id: extensionId,
+      value: OrchestrationStrategyContribution(
+        strategyId: strategyId,
+        materialize: (_) => throw failure,
+      ),
+    );
+
+    expect(
+      () => OrchestrationStrategyResolver(registry)
+          .resolve(strategyId)
+          .materialize(
+            OrchestrationStrategyHostContext(
+              session: session,
+              host: _TestHost(session.id),
+            ),
+          ),
+      throwsA(same(failure)),
+    );
+  });
+}
+
+Session _session(OrchestrationStrategyId strategyId) => Session(
+  id: SessionId('session-1'),
+  taskId: product.TaskId('task-1'),
+  strategyId: strategyId,
+);
+
+OrchestrationExecution _materialize(OrchestrationStrategyHostContext context) =>
+    _TestExecution(context.host);
+
+final class _TestExecution implements OrchestrationExecution {
+  const _TestExecution(this.host);
+
+  final OrchestrationExecutionHost host;
+
+  @override
+  Future<void> start() async {
+    host.start();
+    host.complete();
+  }
+
+  @override
+  Future<void> resolveApproval(ToolApprovalResolution resolution) async {
+    await host.resolveApproval(resolution);
+  }
+}
+
+final class _TestHost implements OrchestrationExecutionHost {
+  _TestHost(this.sessionId);
+
+  @override
+  final RunId id = RunId('run-1');
+  @override
+  SessionId sessionId;
+  @override
+  RunState state = RunState.created;
+  int validations = 0;
+  Object? bindingFailure;
+  ToolApprovalResolution? resolution;
+
+  @override
+  void validateBinding() {
+    validations++;
+    if (bindingFailure case final Object error) throw error;
+  }
+
+  @override
+  void start() => state = RunState.running;
+
+  @override
+  void complete() => state = RunState.completed;
+
+  @override
+  void fail(Object error) => state = RunState.failed;
+
+  @override
+  Future<StrategyModelTurn> invokeModel(StrategyInferenceMaterial material) =>
+      throw UnimplementedError();
+
+  @override
+  Future<StrategyToolResult> processProposal({
+    required StrategyToolSnapshot tools,
+    required ProviderToolProposal proposal,
+  }) => throw UnimplementedError();
+
+  @override
+  Future<SemanticToolOutcomeInput> resolveApproval(
+    ToolApprovalResolution resolution,
+  ) async {
+    this.resolution = resolution;
+    return SemanticToolOutcomeInput(
+      providerCallId: 'call-1',
+      outcome: ToolOutcome(
+        disposition: ToolOutcomeDisposition.userRejected,
+        effectCertainty: EffectCertainty.knownNotOccurred,
+        modelContent: 'Rejected.',
+      ),
+    );
+  }
 }

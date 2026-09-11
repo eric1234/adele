@@ -19,6 +19,7 @@ dependencies:
   adele_orchestration: ^0.1.0
   adele_plugin_api: ^0.1.0
   adele_product: ^0.1.0
+  chat_strategy_plugin: ^0.1.0
   command_tools_plugin: ^0.1.0
   crypto: ^3.0.6
   dart_eval: 0.8.5

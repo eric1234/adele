@@ -10,6 +10,16 @@ import 'package:adele_product/adele_product.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+final class _NoOpExecution implements OrchestrationExecution {
+  const _NoOpExecution();
+
+  @override
+  Future<void> start() async {}
+
+  @override
+  Future<void> resolveApproval(ToolApprovalResolution resolution) async {}
+}
+
 void main() {
   final ProviderId providerId = ProviderId(
     'dev.adele.environment.lifecycle-fixture',
@@ -249,7 +259,10 @@ void main() {
       registration = extensions.register(
         point: orchestrationStrategyContributions,
         id: extensionId,
-        value: OrchestrationStrategyContribution(strategyId: strategyId),
+        value: OrchestrationStrategyContribution(
+          strategyId: strategyId,
+          materialize: (_) => const _NoOpExecution(),
+        ),
       );
       addTearDown(registration.close);
       coordinator = ProductLifecycleCoordinator.generated(
@@ -376,7 +389,10 @@ void main() {
         final ExtensionRegistration duplicate = extensions.register(
           point: orchestrationStrategyContributions,
           id: ExtensionId('dev.adele.fixture.duplicate'),
-          value: OrchestrationStrategyContribution(strategyId: strategyId),
+          value: OrchestrationStrategyContribution(
+            strategyId: strategyId,
+            materialize: (_) => const _NoOpExecution(),
+          ),
         );
         expect(
           () => coordinator.createSession(
@@ -405,7 +421,10 @@ void main() {
         final ExtensionRegistration other = extensions.register(
           point: orchestrationStrategyContributions,
           id: ExtensionId('dev.adele.fixture.other'),
-          value: OrchestrationStrategyContribution(strategyId: otherStrategyId),
+          value: OrchestrationStrategyContribution(
+            strategyId: otherStrategyId,
+            materialize: (_) => const _NoOpExecution(),
+          ),
         );
         addTearDown(other.close);
         final Session original = coordinator.createSession(
@@ -470,7 +489,10 @@ void main() {
         );
 
         final OrchestrationStrategyContribution replacement =
-            OrchestrationStrategyContribution(strategyId: strategyId);
+            OrchestrationStrategyContribution(
+              strategyId: strategyId,
+              materialize: (_) => const _NoOpExecution(),
+            );
         final ExtensionRegistration next = extensions.register(
           point: orchestrationStrategyContributions,
           id: extensionId,

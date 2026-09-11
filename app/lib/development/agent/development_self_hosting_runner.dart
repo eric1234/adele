@@ -455,6 +455,8 @@ final class DevelopmentSelfHostingRunner {
               'adeleRun',
               () => executeDevelopmentSelfHostingRun(
                 identity: identity,
+                lifecycle: activeTopology.lifecycle,
+                sessions: activeTopology.chat.sessions,
                 sessionId: activeTopology.sessionId,
                 prompt: prompt!,
                 instructions: instructions!,

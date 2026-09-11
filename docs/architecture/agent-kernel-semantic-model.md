@@ -2,13 +2,13 @@
 
 ## Status
 
-**Guiding architecture; bounded execution/Environment verticals and the Session strategy binding spine are implemented.**
+**Guiding architecture; bounded execution/Environment verticals, Session-bound strategy execution, and headless stock Chat are implemented.**
 
-ADR 0031 subsequently refined the long-term product-domain model: Session is a core container permanently bound to one orchestration strategy, strategy-specific state defines the semantic contents of that Session, and Environment is the practical filesystem/source + process context. The earlier chat-shaped Session history and separate Workspace discussion remain valid descriptions of the Phase IV proof/history but are not universal long-term product semantics.
+ADR 0031 defines Session as a core container permanently bound to one orchestration strategy; strategy-specific state defines its semantic contents. Environment is the practical filesystem/source + process context. The Chat-shaped kernel Session/history/context types and separate Workspace discussion in ADR 0022 describe the historical Phase IV proof, not the current kernel API or universal product semantics.
 
 This document records the semantic boundaries ADELE intends to preserve while implementing its agent execution substrate. It is more specific than the non-normative research survey, but it is **not** a stable public extension API and does not freeze exact Dart type names, persistence schemas, or extension APIs.
 
-It is informed by ADELE `main` through Phase IV, the provisional `phase-4-agent-run` branch, the external harness survey in [`../research/agent-harness-semantic-boundary-survey.md`](../research/agent-harness-semantic-boundary-survey.md), the disposable `experiment/tool-semantics` branch, and the current product/UX conceptual model. The architecture remains guiding and experimental rather than a stable public extension API.
+The current implementation, accepted ADRs, and external harness survey in [`../research/agent-harness-semantic-boundary-survey.md`](../research/agent-harness-semantic-boundary-survey.md) inform these boundaries. The architecture remains guiding and experimental rather than a stable public extension API.
 
 Existing architecture principles remain in force, especially the distinctions among plugins, contracts, capabilities, extension points, configured capability instances, provider generations, and runtime resources.
 
@@ -20,7 +20,7 @@ This document covers:
 - the narrow responsibility of `agent_kernel`;
 - model invocation and provider boundaries;
 - tool discovery, materialization, invocation, policy, approval, execution, and result semantics;
-- context assembly;
+- strategy input projection and the future context-composition seam;
 - execution events;
 - runtime-resource references;
 - orchestration boundaries;
@@ -84,12 +84,20 @@ allocates `SessionId` and atomically publishes the Session and separate authorit
 `store.session(id)` reads the product value; `requireSessionAuthority` remains the
 Environment authority read path. This lifecycle is in memory, not disk persistence.
 
-The maintained execution proof still uses a separate chat-shaped
-`SessionHistoryPort` and canonical user/assistant entries, sharing the canonical
-`SessionId` consumed/re-exported by `agent_kernel`. That history remains valid
-implementation evidence for the Chat-like proof, not the universal Session
-aggregate. This binding spine does not redesign history, context assembly, or
-kernel execution semantics.
+Headless stock `chat_strategy_plugin` owns `ChatSessionStore`, whose
+`obtain(SessionId)` retains `ChatSessionState` across Runs. Its immutable
+`ChatSessionSnapshot` contains canonical `ChatEntry` values:
+`ChatUserMessage` and `ChatAssistantMessage`. Only user and final assistant
+messages enter canonical history. Intermediate assistant/native output,
+proposals, and tool results remain Run-local replay; they are not promoted to
+canonical Session meaning. Chat owns instructions and a positive invocation
+budget, snapshotted when each Run is materialized.
+
+The kernel consumes/re-exports the same product `SessionId`, but has no
+`session.dart` or `context.dart`, `SessionEntry`, `UserSessionMessage`,
+`AssistantSessionMessage`, `SessionSnapshot`, `SessionHistoryPort`,
+`ContextAssembler`, or `ContextAssemblyInput`. These historical proof types are
+not a generic history interface that non-Chat strategies must implement.
 
 Sessions should survive independently of Environment lifetime where the product lifecycle supports retaining history after Environment resources are released.
 
@@ -139,8 +147,8 @@ An Agent and a Workflow/orchestration strategy are distinct concepts.
 
 The kernel supplies execution primitives and invariants. A workflow/strategy decides what happens next.
 
-The maintained `DevelopmentToolLoopStrategy` implements a bounded sequential
-coding loop. One completed model invocation may yield multiple tool proposals;
+The private stock Chat execution implements a bounded sequential model/tool
+loop. One completed model invocation may yield multiple tool proposals;
 each resolves in output order against that turn's same immutable materialized
 tool set and retained executable generations. Normal proposal-resolution
 failures, tool failure outcomes, and policy denial produce results and do not
@@ -151,30 +159,107 @@ retained. Only after all proposal results are collected does one model
 continuation run. A proposal batch emitted in the final allowed model-invocation
 slot fails before any proposal is prepared or executed because no continuation
 slot remains; a proposal-free final answer may still complete in that slot.
-Host-tool execution is sequential only. This development algorithm does not
+Host-tool execution is sequential only. This Chat algorithm does not
 define what a Run fundamentally is, introduce a general Workflow framework, or
 change the common model/tool contracts.
 
-Public pure-Dart `adele_orchestration` implements the minimal identity-only
-registration/binding boundary: immutable `OrchestrationStrategyContribution`, the
-typed `orchestrationStrategyContributions` extension point over the existing
+Public pure-Dart `adele_orchestration` implements executable
+`OrchestrationStrategyContribution(strategyId, materialize)`, the typed
+`orchestrationStrategyContributions` extension point over the existing
 `ExtensionRegistry`, and thin `OrchestrationStrategyResolver.resolve(id)`.
 `ResolvedOrchestrationStrategy` retains its exact `ExtensionBinding`. Zero matches
 produce an explicit unavailable error; duplicate semantic IDs are ambiguous even
 under distinct `ExtensionId` values. The lifecycle coordinator's
 `resolveSessionStrategy(sessionId)` resolves the canonical Session's stored ID.
 
-Development composition registers temporary metadata under
-`dev.adele.strategy.development-tool-loop` with a separate extension ID. The
-app-owned `DevelopmentToolLoopStrategy` is unchanged and still executes directly,
-not through registration. This is not a Chat plugin or public strategy execution
-facade. Strategy-specific durable state, child Sessions, context redesign,
-strategy defaults/profiles, lifecycle UI, and disk persistence remain deferred;
-plugins still must not import `agent_kernel`.
+`ChatStrategyPlugin.activate` follows the same in-process activation convention
+as stock tool plugins. It registers semantic strategy ID
+`dev.adele.strategy.chat`, distinct from plugin ID
+`dev.adele.plugin.chat-strategy` and extension ID
+`dev.adele.plugin.chat-strategy.orchestration`. This is the first real executable
+stock strategy, not identity-only metadata or production discovery. Its private
+loop is extracted from the former `DevelopmentToolLoopStrategy`; the app no
+longer owns the loop or temporary development strategy registration.
+
+## Public execution and internal mechanics
+
+`createSessionOrchestrationRun` in `app/lib/core/orchestration_host.dart` looks up
+the canonical Session by `SessionId`, resolves its exact contribution once per
+Run, and materializes it using `OrchestrationStrategyHostContext(session, host)`
+against `KernelOrchestrationHost`. The result is `OrchestrationExecution`, with
+`start` and `resolveApproval` entry points for strategy sequencing.
+
+The public `OrchestrationExecutionHost` exposes only the concrete operations a
+strategy needs:
+
+- Run/Session identity, small lifecycle state, `start`, `complete`, `fail`, and `validateBinding`;
+- `invokeModel(StrategyInferenceMaterial)`, returning a `StrategyModelTurn` with ordered semantic output, settlement/metadata or failure, and an opaque `StrategyToolSnapshot`;
+- `processProposal` with that snapshot and `ProviderToolProposal`, returning a semantic continuation item or `StrategyToolWaiting`;
+- `resolveApproval(ToolApprovalResolution)`, returning `SemanticToolOutcomeInput` after host-owned approval resolution and any authorized execution.
+
+Minimal semantic input/output, native-envelope, proposal/failure,
+settlement/metadata, and approval DTOs live in the existing public
+`adele_orchestration` package and are reused by the kernel, not duplicated.
+`SemanticModelRequest`, model ports/events/streams/collectors, tool catalogs and
+executable materializations, policy, `AgentRun`, and the journal remain internal.
+Neither public orchestration nor Chat imports `agent_kernel`. A collected public
+model turn does not replace the internal streaming model boundary.
+
+Application `SessionOrchestrationRun` retains the exact execution/binding and
+exposes internal Run/tool/journal evidence only to app callers. The host, not
+Chat, owns proposal preparation, effect/policy evaluation, retained approvals,
+tool execution, stream collection, and evidence recording. Core model/tool/policy
+and Environment selection remain unchanged.
+
+The host accepts only unused proposals issued by its own completed model turn
+against that exact snapshot. Chat can order and resume work, but it cannot replay
+an already-processed proposal or replace an executable generation.
+
+The adapter accepts approval resolution only for the exact host-issued
+`ToolApprovalResolution` object forwarded during the current
+`SessionOrchestrationRun.resolveApproval` call. Matching interruption/invocation
+IDs alone does not authorize execution: a plugin cannot construct its own
+approval or substitute approval for rejection. Authorization is consumed on
+resolution and cleared when the resume call ends, so it cannot be reused later.
+This is distinct from the retained invocation's exact executable-generation check.
+
+Self-hosting activates Chat, obtains retained state, sets Chat configuration,
+appends the prompt, and routes `SessionId` through lifecycle resolution and this
+host. It does not construct a development loop or kernel history adapter.
+Chat UI/persistence, child Sessions, strategy defaults/profiles, lifecycle UI,
+and disk persistence remain deferred.
 
 # Strategy state and context assembly
 
-The intended general relationship is:
+## Current inference seam
+
+```text
+Chat-owned canonical history projection + Run-local replay
+    -> StrategyInferenceMaterial(instructions, ordered semantic input)
+    -> KernelOrchestrationHost
+        + host-owned invocation identity and materialized tools
+    -> internal SemanticModelRequest
+    -> internal streaming ModelPort
+```
+
+`StrategyInferenceMaterial` carries instructions and an immutable ordered list of
+`SemanticModelInputItem` values between strategy-owned projection and internal
+request construction. Chat controls the meaning and order of its
+material, but does not select executable tools, allocate model invocation IDs,
+or mutate a provider request. The host currently forwards instructions and
+semantic input into `SemanticModelRequest` while supplying execution mechanics.
+Canonical history is reused across Runs; native replay and tool continuation
+items are local to the Run that produced them.
+
+This is not an implemented general context framework or a renamed generic
+`ContextAssembler`. General context composition is the next slice at this seam.
+Context contributors, multi-plugin merge/provenance rules, compaction, context
+preview, and token budgets remain unimplemented. The positive Chat invocation budget limits
+model-call count, not context size or token use.
+
+## Future composition
+
+The intended broader relationship is:
 
 ```text
 strategy-owned Session state/history
@@ -200,7 +285,7 @@ semantic model request
 
 For a Chat strategy, canonical conversation history is an important input. It is not the universal definition of Session and it is never itself the provider request.
 
-Context/inference composition remains host-controlled at the provider-neutral boundary so ADELE can support ordering, provenance, budgeting, deduplication, compaction, caching, pinning/exclusion, explainability, provider projection, and user inspection.
+Future context/inference composition belongs at the host-controlled provider-neutral boundary so ADELE can support ordering, provenance, budgeting, deduplication, compaction, caching, pinning/exclusion, explainability, provider projection, and user inspection. These mechanisms are not implemented by the current material-to-request seam.
 
 Context extensions should return structured material rather than mutate one prompt string or an opaque provider request.
 
@@ -247,7 +332,7 @@ Provider-native continuation is optional and compatibility-bound. Switching prov
 
 Capability major 1 now implements distinct instructions, ordered typed message/tool input, live text-delta observations, completed text and multiple completed tool proposals, and explicit terminal settlement. Item IDs and opaque item metadata survive model/tool/model continuation without becoming canonical Session meaning. Stream EOF is not semantic success.
 
-The kernel retains each native envelope's kind, compatibility, and opaque data as one immutable value. Completed, incomplete, and refused terminals are general settled events, and typed Run observation retains their settlement and metadata. The provisional development strategy never executes proposals from incomplete or refused turns.
+The shared `ModelNativeEnvelope` retains kind, compatibility, and opaque data as one immutable value. Completed, incomplete, and refused terminals are general settled events, and typed Run observation retains their settlement and metadata. Chat never executes proposals from incomplete or refused turns. Incomplete turns fail; a refusal with nonblank assistant text may become the final canonical assistant message, while a refusal without assistant output fails.
 
 Opaque provider-native state may either be metadata intrinsically attached to a semantic item or an independent native-only ordered item. Native-only items carry no common text, tool, reasoning, or compaction meaning; the kernel retains their exact list position for compatible model/tool/model replay.
 
@@ -276,16 +361,6 @@ Model-visible names may be sanitized, namespaced, aliased, or changed for provid
 A model-callable Tool is **not automatically an ADELE Capability**.
 
 A plugin may expose a sustained typed Environment filesystem/source Service and also contribute model tools such as `read_file`, `write_file`, or `search_text` whose executors project that Service into model-callable operations.
-
-The Phase IV proof applies this distinction concretely:
-
-```text
-DevelopmentSourceService capability
-    ↓ application projection
-search_source_text / read_source_file model tools
-```
-
-These development aliases are implementation evidence, not stable public API promises. The underlying capability is bounded and read-only and is not the final ADELE Environment filesystem/source abstraction.
 
 Dynamic external tools such as MCP definitions may be contributed without manufacturing a separate ADELE Capability for every external function.
 
@@ -378,7 +453,7 @@ Initial conceptual variants are:
 - Tool approval;
 - User input / elicitation.
 
-The earliest Phase IV slice implemented Tool approval. User-input elicitation and durable interruption handling remain deferred.
+Tool approval is implemented. User-input elicitation and durable interruption handling remain deferred.
 
 Approval must bind to the exact ToolInvocation, including semantic identity, canonical arguments, effect description, and executable generation.
 
@@ -451,7 +526,7 @@ The kernel may carry an opaque runtime-resource reference and provenance. It doe
 
 # Generation-bound execution
 
-ADELE's existing Phase III provider-binding behavior is a core execution invariant.
+ADELE's exact provider-binding behavior is a core execution invariant.
 
 When a model or tool is materialized against one provider/connection generation:
 
@@ -465,12 +540,20 @@ This applies to model continuation, model-visible tool materialization, approved
 
 A new generation can participate in a new materialization cycle.
 
-Strategy resolution follows the same exact-binding invariant without making the
-Session's permanent semantic strategy ID a lifetime generation pin. A retired
-`ResolvedOrchestrationStrategy` binding fails with generic `StaleExtensionBinding`
-and never migrates. Only fresh resolution of the stored ID may use a replacement
-registration; unavailable or ambiguous resolution never falls back to another
-strategy or rewrites the canonical Session.
+Strategy execution follows the same exact-binding invariant without making the
+Session's permanent semantic strategy ID a lifetime generation pin. Each
+`SessionOrchestrationRun` retains one resolved/materialized contribution. The
+host validates it at subsequent operations, approval resume, and asynchronous
+settlement. A retired `ResolvedOrchestrationStrategy` fails with generic
+`StaleExtensionBinding`: an old active Run fails explicitly and cannot advance
+on replacement B. An in-flight operation may settle and retain evidence, but
+retirement does not imply rollback of external effects.
+
+A later Run in the same Session freshly resolves the stored ID and may use B;
+unavailable or ambiguous resolution never falls back to another strategy or
+rewrites the canonical Session. Reusing Chat history from a retained
+`ChatSessionStore` across Runs is independent of migrating a live binding and
+does not establish disk persistence or automatic restoration after reactivation.
 
 # Environment
 
@@ -482,7 +565,7 @@ Run
 └── Environment?      filesystem/source + process context
 ```
 
-The initial Phase IV source implementation binds one local read-only source root through DevelopmentSource while execution remains on the local host. This does not establish final Environment identity, source mutation authority, process execution abstraction, or a security sandbox.
+Current application composition resolves one authoritative Session-to-Task/Environment relation and projects coherent read, mutation, and foreground-process facets. The kernel does not select another Environment. The historical Phase IV DevelopmentSource root binding was a read-only proof, not the current authority model or a security sandbox.
 
 Future Environment providers may represent Git worktrees, containers, VMs, SSH hosts, cloud sandboxes, or other plugin-provided contexts.
 
@@ -496,7 +579,7 @@ A child Run is subordinate execution that does not require an independent durabl
 
 A child Session remains under the same Task, records its parent Session, may use the same or another Task-associated Environment, and may be bound to another orchestration strategy. It is primarily surfaced through the parent Session/orchestration experience rather than flattened into normal top-level Task navigation.
 
-A workflow decides whether subordinate work needs a child Run or child Session. Phase IV did not implement either fully.
+A workflow decides whether subordinate work needs a child Run or child Session. Both remain deferred.
 
 # Execution events and projections
 
@@ -547,7 +630,7 @@ An Extension Point is the broader typed composition concept described in [`plugi
 Plugins may define their own public extension APIs. Depending on such an interface is distinct from requiring one implementation plugin to be active.
 
 Generic typed registration/discovery, retirement, and binding liveness are
-implemented, with model-tool and identity-only orchestration-strategy contribution
+implemented, with model-tool and executable orchestration-strategy contribution
 points. Broader recursive composition remains deferred; neither the generic
 registry nor the capability registry supplies universal composition or execution
 semantics for every extension type.
@@ -589,11 +672,7 @@ The architecture preserves at least these distinct questions:
 
 Future policy may combine profile, Environment, agent, workflow-step, user, tool, resource, and effect constraints. The UX may describe this as an intersection, but implementation should not assume policy is merely set intersection.
 
-# First Phase IV prototype: disposition
-
-The `phase-4-agent-run` branch is useful evidence but not accepted architecture by itself.
-
-## Keep in principle
+# Execution boundaries
 
 - `agent_kernel` is pure Dart and provider-neutral.
 - Plugins do not depend on `agent_kernel`.
@@ -606,38 +685,16 @@ The `phase-4-agent-run` branch is useful evidence but not accepted architecture 
 - Structured rejection/error semantics are preferable to display text alone.
 - A deterministic in-memory execution journal is valuable for tests/inspection.
 
-## Replace or redesign
-
-| Prototype assumption | Revised direction |
-| --- | --- |
-| `AgentRun` owns complete simple-chat loop | Run owns lifecycle; workflow/strategy owns sequencing |
-| Run begins from one `userRequest` | bound strategy owns durable Session input/state semantics |
-| Run owns `_messages` | context assembly derives model input from strategy/core/plugin state |
-| one fixed injected model | structured inference composition resolves model/provider preferences; exact active binding remains explicit |
-| fixed tool map | dynamic catalog + immutable model-invocation materialization |
-| every tool call requires approval | availability → policy → optional interruption → execution |
-| one pending approval | zero or more Run interruptions by design |
-| model call ID is central tool identity | semantic ToolId + ADELE ToolInvocation + provider correlation |
-| model-visible name is identity | alias is snapshot-local projection |
-| run state includes model/tool substate | subordinate operations own detailed state |
-| `ToolResult(String)` | structured ToolOutcome with model projection + host data |
-| `ModelResponse(String, calls)` | streaming semantic model events/items |
-| unary kernel model port | streaming-capable kernel port |
-| nullable-field generic run event | typed semantic execution events |
-| `ScriptedModelService` is future model contract | fixture/probe only |
-| generic tool failure implies safe retry | preserve effect certainty and indeterminate outcomes |
-| approval can re-resolve provider later | approval retains exact executable generation |
-
-The accepted Phase IV implementation preserves these revised execution boundaries. ADR 0022 records that semantic foundation; ADR 0031 later refines the long-term Session/Environment product semantics without invalidating the proof.
-
 # Foundational now, reserved, and deferred
 
-## Established in Phase IV
+## Implemented foundation
 
-Phase IV established semantic structure for:
+The current implementation supplies:
 
-- strategy-owned/context input versus Run execution (implemented proof is Chat-shaped);
-- context assembly boundary;
+- strategy-owned Session state distinct from Run execution;
+- executable strategy registration/materialization and exact-binding validation;
+- headless Chat with in-memory canonical user/final assistant history;
+- `StrategyInferenceMaterial` before host request construction;
 - Run lifecycle;
 - workflow/strategy separation;
 - streaming-capable model invocation semantics;
@@ -663,7 +720,7 @@ Do not fully implement yet without concrete need:
 - AgentDefinition catalog;
 - child Run graph;
 - child Session lifecycle;
-- EnvironmentProvider integrations;
+- additional EnvironmentProvider integrations;
 - plugin-defined durable document/content facilities;
 - persistent memory;
 - durable Run serialization/recovery;
@@ -689,127 +746,31 @@ Do not add before a concrete need:
 - arbitrary replacement of host-owned top-level workbench geometry;
 - full multi-agent scheduling.
 
-# Phase sequencing implications
-
-The original roadmap remains directionally correct:
+# Current execution path
 
 ```text
-plugin runtime
-    ↓
-typed contracts
-    ↓
-capability fabric
-    ↓
-agent kernel
-    ↓
-minimum self-hosting plugins
-    ↓
-self-hosting
+canonical SessionId + retained Chat state
+    -> createSessionOrchestrationRun
+    -> exact contribution materialization
+    -> Chat start
+    -> StrategyInferenceMaterial
+    -> host SemanticModelRequest + exact tool materialization
+    -> generated streaming ModelProvider invocation
+    -> StrategyModelTurn
+    -> ordered proposals through host policy / optional approval / execution
+    -> semantic continuation items in Run-local replay
+    -> next model turn or final canonical assistant entry
+    -> Run completion
 ```
 
-Implementation history narrowed the original typed-contract phase to unary transport even though the original plan included streams and cancellation.
-
-For clarity:
-
-```text
-Phase II-A — generated unary typed transport          complete
-Phase IV-A — semantic agent-execution foundation      complete
-Phase II-B — generated streaming + cancellation       complete
-Phase IV-B1 — scripted adapter streaming integration  complete
-Phase IV-B2 — common ModelProvider scripted vertical  complete
-Phase IV-B3 — ordered provider-native model items     complete
-Phase IV-B4 — OpenAI API-key Responses provider       complete
-Phase IV-B5a — generation-bound configuration contexts complete
-Phase IV-B5b — experimental ChatGPT configured instance complete
-Phase IV closeout — DevelopmentSource coding vertical complete
-```
-
-Completed Phase IV sequence and next milestone:
-
-```text
-Phase IV-A — semantic agent-execution foundation
-    ↓
-Phase II-B — generated typed streaming/cancellation
-    ↓
-Phase IV-B1 — scripted adapter streaming integration
-    ↓
-Phase IV-B2/B3/B4 — common provider, ordered items, real OpenAI
-    ↓
-Phase IV-B5a/B5b — configured contexts + experimental ChatGPT
-    ↓
-Phase IV closeout — read-only ADELE source search/read continuation
-    ↓
-Phase V — minimum self-hosting plugin set
-    ↓
-Phase VI — cross the self-hosting boundary
-```
-
-This sequence let Phase IV-A define the semantic stream consumer using the existing unary scripted fixture, Phase II-B implement the transport semantics required by that concrete consumer, and Phase IV-B1 connect the two before the common ModelProvider capability and real providers were added.
-
-## Phase IV-A target (historical proof shape)
-
-```text
-Chat-shaped Session with canonical user input
-    ↓
-simple provisional strategy
-    ↓
-Run
-    ↓
-context assembly
-    ↓
-streaming-shaped kernel model port
-    ↓
-unary scripted-model adapter
-    ↓
-provider tool proposal
-    ↓
-materialized ToolInvocation
-    ↓
-preflight/effect description
-    ↓
-policy → approval interruption
-    ↓
-generation-bound ResourceInspector execution
-    ↓
-structured ToolOutcome
-    ↓
-context assembly
-    ↓
-model continuation
-    ↓
-assistant output added to Chat-shaped Session state
-    ↓
-Run completion
-```
-
-The simple strategy is test scaffolding, not the definition of Run or universal Session semantics.
-
-## Phase II-B result
-
-Phase II-B extended generated typed transport with the minimum required streaming semantics:
-
-- typed stream items;
-- ordered delivery;
-- normal terminal completion;
-- declared/structured failure;
-- transport/provider disappearance;
-- consumer/subscription cancellation;
-- producer/request cancellation where supported;
-- generation-bound stream lifetime;
-- deterministic cleanup;
-- sufficient flow-control/backpressure behavior for bounded memory.
-
-Do not predesign distributed resumable streams or arbitrary bidirectional streaming without a concrete consumer.
-
-## Phase IV-B1 integration
-
-After II-B, the application adapter switched the scripted model to true generated streaming. It maps text and tool-call items incrementally, keeps transport probe items outside the kernel, preserves exact-generation failure, and propagates outer subscription cancellation to the generated producer. The unary fixture method remains regression/reference infrastructure.
-
-## Phase IV completion result
-
-Phase IV now proves the provider-neutral kernel semantics, common generated streaming ModelProvider boundary, real OpenAI provider, generation-bound configured contexts, experimental ChatGPT configured instance, and a bounded development strategy. That strategy can ask a real model to search and read the ADELE checkout through the generation-bound DevelopmentSource capability and continue to a final answer. The deterministic integration scripts only remote model responses; source access uses the real shared AOT host and capability path. The explicitly opt-in live ChatGPT source-coding smoke has also run successfully.
-
-DevelopmentSource has no mutation, indexing/watching, SCM, command execution, or sandbox claim. Its ordinary symlink confinement is not descriptor-level protection against a deliberate local path-resolution/open race. These limits keep the Phase IV result a self-inspection vertical rather than full self-hosting.
+The application adapters consume generated typed streams with ordered items,
+terminal settlement, structured failure, cancellation, and generation-bound
+lifetime. The public strategy facade receives collected turns, not model ports
+or transport events. Deterministic integration covers Session-authorized source
+inspection, bounded text-file mutation, foreground validation, and continuation.
+This current path is deterministically validated. Paid live services have not
+been rerun against it; recorded opt-in live results remain bounded
+interoperability evidence, not complete self-hosting.
 
 # Self-hosting remains the gate
 
@@ -830,7 +791,7 @@ Editor polish, provider breadth, sophisticated orchestration, memory, and market
 
 # Invariants for future design reviews
 
-When evaluating later designs against the Phase IV foundation and ADR 0031, ask:
+When evaluating designs against these execution boundaries and ADR 0031, ask:
 
 1. Is strategy-owned durable Session meaning distinct from one Run and one model request?
 2. Can Run support more than one model/tool step without defining simple Chat as Run itself?

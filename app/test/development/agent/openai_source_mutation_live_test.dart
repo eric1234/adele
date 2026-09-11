@@ -7,15 +7,16 @@ import 'package:adele_desktop/development/agent/agent_capability_adapters.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:agent_kernel/agent_kernel.dart';
+import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'source_coding_live_test_support.dart';
 import 'source_read_evidence_test_support.dart';
 
-const String _originalFragment = '    this.maxModelInvocations = 8,';
-const String _replacementFragment = '    this.maxModelInvocations = 9,';
+const String _originalFragment = '  int _maxModelInvocations = 8;';
+const String _replacementFragment = '  int _maxModelInvocations = 9;';
 const String _mutationPrompt =
-    'Read app/lib/development/agent/simple_tool_loop_strategy.dart using '
+    'Read plugins/chat_strategy/lib/chat_strategy_plugin.dart using '
     'read_file. Then use apply_patch to change the default '
     'maxModelInvocations assignment from 8 to 9. Use the exact opaque '
     'Revision returned by read_file as expectedRevision. Supply an ordered '
@@ -348,8 +349,7 @@ _MutationEvidence _expectSuccessfulMutationRun({
       .join();
   expect(finalText.trim(), isNotEmpty);
   final String answer =
-      (result.session.snapshot().entries.last as AssistantSessionMessage)
-          .content;
+      (result.session.snapshot().entries.last as ChatAssistantMessage).content;
   expect(answer, finalText);
   final String normalizedAnswer = answer
       .toLowerCase()

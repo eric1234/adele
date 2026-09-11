@@ -1,16 +1,21 @@
 import 'package:adele_model_tool/adele_model_tool.dart';
+import 'package:adele_orchestration/adele_orchestration.dart'
+    show
+        RunState,
+        RunInterruptionResolution,
+        ToolApprovalResolution,
+        InvalidRunOperation;
 
 import 'identifiers.dart';
 import 'model.dart';
 import 'tool.dart';
 
-enum RunState { created, running, waiting, completed, failed, cancelled }
-
-sealed class RunInterruptionResolution {
-  const RunInterruptionResolution(this.interruptionId);
-
-  final RunInterruptionId interruptionId;
-}
+export 'package:adele_orchestration/adele_orchestration.dart'
+    show
+        RunState,
+        RunInterruptionResolution,
+        ToolApprovalResolution,
+        InvalidRunOperation;
 
 sealed class RunInterruption {
   const RunInterruption(this.id);
@@ -39,17 +44,6 @@ final class ToolApprovalInterruption extends RunInterruption {
       resolution is ToolApprovalResolution &&
       resolution.interruptionId == id &&
       resolution.toolInvocationId == invocation.id;
-}
-
-final class ToolApprovalResolution extends RunInterruptionResolution {
-  const ToolApprovalResolution({
-    required RunInterruptionId interruptionId,
-    required this.toolInvocationId,
-    required this.approved,
-  }) : super(interruptionId);
-
-  final ToolInvocationId toolInvocationId;
-  final bool approved;
 }
 
 final class ResolvedRunInterruption {
@@ -537,13 +531,4 @@ final class AgentRun {
       );
     }
   }
-}
-
-final class InvalidRunOperation implements Exception {
-  const InvalidRunOperation(this.message);
-
-  final String message;
-
-  @override
-  String toString() => 'InvalidRunOperation: $message';
 }

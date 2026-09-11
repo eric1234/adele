@@ -3,16 +3,16 @@ import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
+import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
 import 'package:adele_desktop/development/agent/development_self_hosting.dart';
-import 'package:adele_desktop/development/agent/development_strategy_registration.dart';
-import 'package:adele_desktop/development/agent/simple_tool_loop_strategy.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
+import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:command_tools_plugin/command_tools_plugin.dart';
 import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -24,7 +24,7 @@ import 'source_read_evidence_test_support.dart';
 const String _gitEnvironmentPluginId = 'dev.adele.plugin.git-environment';
 const String _gitEnvironmentProviderId = 'dev.adele.environment.git-worktree';
 const String _sourceRelativePath =
-    'app/lib/development/agent/simple_tool_loop_strategy.dart';
+    'plugins/chat_strategy/lib/chat_strategy_plugin.dart';
 const String _transientSourceRelativePath =
     'app/lib/development/agent/phase_v_d1_transient_test_file.txt';
 const String _transientSourceContent = 'transient ADELE content \u{1f642}\n';
@@ -96,7 +96,7 @@ void main() {
       expect(topology.sessionId, SessionId('session-topology'));
       expect(topology.sessionId, topology.session.id);
       expect(topology.session.taskId, topology.task.id);
-      expect(topology.session.strategyId, developmentToolLoopStrategyId);
+      expect(topology.session.strategyId, chatStrategyId);
       expect(
         topology.store.session(topology.sessionId),
         same(topology.session),
@@ -123,7 +123,7 @@ void main() {
         topology.store.session(topology.sessionId),
         same(topology.session),
       );
-      expect(topology.session.strategyId, developmentToolLoopStrategyId);
+      expect(topology.session.strategyId, chatStrategyId);
     },
     timeout: const Timeout(Duration(minutes: 4)),
   );
@@ -160,8 +160,10 @@ void main() {
           );
       final InMemoryProductStore store = InMemoryProductStore();
       final ExtensionRegistry extensions = ExtensionRegistry();
-      final ExtensionRegistration strategyActivation =
-          registerDevelopmentToolLoopStrategy(extensions);
+      final ChatStrategyPlugin chat = ChatStrategyPlugin();
+      final ExtensionRegistration strategyActivation = chat.activate(
+        extensions,
+      );
       addTearDown(strategyActivation.close);
       final ProductLifecycleCoordinator lifecycle =
           ProductLifecycleCoordinator.generated(
@@ -181,7 +183,7 @@ void main() {
           .currentMaterialization(created.environment.id)!;
       final Session session = lifecycle.createSession(
         taskId: created.task.id,
-        strategyId: developmentToolLoopStrategyId,
+        strategyId: chatStrategyId,
       );
       final SessionId sessionId = session.id;
       final SessionEnvironmentAuthority authority = store
@@ -202,26 +204,22 @@ void main() {
       final MaterializedTool searchA = catalogA.materialize().byAlias(
         'search',
       )!;
-      final DevelopmentSessionHistory history =
-          DevelopmentSessionHistory(sessionId)..append(
-            UserSessionMessage('Inspect the maintained ADELE strategy source.'),
-          );
-      final AgentRun run = AgentRun(
-        id: RunId('run-environment-read'),
-        sessionId: sessionId,
-      );
+      final ChatSessionState history = chat.sessions.obtain(sessionId)
+        ..instructions =
+            'Search for and read the requested source before answering.'
+        ..append(
+          ChatUserMessage('Inspect the maintained ADELE strategy source.'),
+        );
       final _SearchReadModel model = _SearchReadModel();
-      final DevelopmentToolLoopStrategy strategy = DevelopmentToolLoopStrategy(
-        run: run,
-        session: history,
-        contextAssembler: const DevelopmentContextAssembler(
-          instructions:
-              'Search for and read the requested source before answering.',
-        ),
+      final SessionOrchestrationRun strategy = createSessionOrchestrationRun(
+        lifecycle: lifecycle,
+        sessionId: sessionId,
+        runId: RunId('run-environment-read'),
         model: model,
         toolCatalog: catalogA,
         policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
       );
+      final AgentRun run = strategy.run;
 
       await strategy.start();
 
@@ -232,7 +230,7 @@ void main() {
       expect(model.discoveredPath, _sourceRelativePath);
       expect(strategy.lastToolOutcome?.hostData['text'], expectedSource);
       expect(
-        (history.snapshot().entries.last as AssistantSessionMessage).content,
+        (history.snapshot().entries.last as ChatAssistantMessage).content,
         allOf(contains(_sourceRelativePath), contains('8')),
       );
 
@@ -320,7 +318,7 @@ void main() {
       expect(materializationB, isNot(same(materializationA)));
       expect(materializationB.environment.id, materializationA.environment.id);
       expect(restoredSearch.disposition, ToolOutcomeDisposition.success);
-      expect(restoredSearch.hostData['path'], 'app/lib/development/agent');
+      expect(restoredSearch.hostData['path'], 'plugins/chat_strategy/lib');
       for (final String path in <String>[
         'missing-directory',
         _sourceRelativePath,
@@ -406,8 +404,10 @@ void main() {
       addTearDown(environmentActivation.close);
       final InMemoryProductStore store = InMemoryProductStore();
       final ExtensionRegistry extensions = ExtensionRegistry();
-      final ExtensionRegistration strategyActivation =
-          registerDevelopmentToolLoopStrategy(extensions);
+      final ChatStrategyPlugin chat = ChatStrategyPlugin();
+      final ExtensionRegistration strategyActivation = chat.activate(
+        extensions,
+      );
       addTearDown(strategyActivation.close);
       final ProductLifecycleCoordinator lifecycle =
           ProductLifecycleCoordinator.generated(
@@ -424,7 +424,7 @@ void main() {
       );
       final Session session = lifecycle.createSession(
         taskId: created.task.id,
-        strategyId: developmentToolLoopStrategyId,
+        strategyId: chatStrategyId,
       );
       final SessionId sessionId = session.id;
       final SessionEnvironmentAuthority authority = store
@@ -442,26 +442,21 @@ void main() {
       );
       final MaterializedToolSet tools = catalog.materialize();
       final _ReadPatchCommandModel model = _ReadPatchCommandModel();
-      final DevelopmentSessionHistory history = DevelopmentSessionHistory(
-        sessionId,
-      )..append(UserSessionMessage('Update the strategy default safely.'));
-      final AgentRun run = AgentRun(
-        id: RunId('run-environment-patch'),
+      final ChatSessionState history = chat.sessions.obtain(sessionId)
+        ..instructions =
+            'Read the requested source, use its visible revision for one '
+            'apply_patch call with ordered exact edits, validate it with '
+            'git diff --check using direct arguments, then report the result.'
+        ..append(ChatUserMessage('Update the strategy default safely.'));
+      final SessionOrchestrationRun strategy = createSessionOrchestrationRun(
+        lifecycle: lifecycle,
         sessionId: sessionId,
-      );
-      final DevelopmentToolLoopStrategy strategy = DevelopmentToolLoopStrategy(
-        run: run,
-        session: history,
-        contextAssembler: const DevelopmentContextAssembler(
-          instructions:
-              'Read the requested source, use its visible revision for one '
-              'apply_patch call with ordered exact edits, validate it with '
-              'git diff --check using direct arguments, then report the result.',
-        ),
+        runId: RunId('run-environment-patch'),
         model: model,
         toolCatalog: catalog,
         policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
       );
+      final AgentRun run = strategy.run;
 
       expect(tools.tools.map((tool) => tool.modelDefinition.alias), <String>[
         'read_file',
@@ -494,7 +489,7 @@ void main() {
       expect(model.commandResultValidated, isTrue);
       expect(authority.environmentId, created.environment.id);
       expect(
-        (history.snapshot().entries.last as AssistantSessionMessage).content,
+        (history.snapshot().entries.last as ChatAssistantMessage).content,
         allOf(
           contains('maxModelInvocations to 9'),
           contains('git diff --check exited with code 0'),
@@ -668,8 +663,8 @@ void main() {
       final EnvironmentTextFile resultingFile = await materialization.provider
           .readFile(created.environment.id, _sourceRelativePath);
       final String expectedTaskSource = originalSource.replaceFirst(
-        'this.maxModelInvocations = 8',
-        'this.maxModelInvocations = 9',
+        '_maxModelInvocations = 8',
+        '_maxModelInvocations = 9',
       );
       expect(resultingFile.text, expectedTaskSource);
       expect(resultingFile.revision, model.postWriteRevision);
@@ -685,10 +680,10 @@ void main() {
         '${source.path}/$_sourceRelativePath',
       ).readAsString();
       expect(unchangedProjectSource, originalSource);
-      expect(unchangedProjectSource, contains('this.maxModelInvocations = 8'));
+      expect(unchangedProjectSource, contains('_maxModelInvocations = 8'));
       expect(
         unchangedProjectSource,
-        isNot(contains('this.maxModelInvocations = 9')),
+        isNot(contains('_maxModelInvocations = 9')),
       );
 
       await environmentActivation.close();
@@ -736,8 +731,10 @@ void main() {
       addTearDown(environmentActivation.close);
       final InMemoryProductStore store = InMemoryProductStore();
       final ExtensionRegistry extensions = ExtensionRegistry();
-      final ExtensionRegistration strategyActivation =
-          registerDevelopmentToolLoopStrategy(extensions);
+      final ChatStrategyPlugin chat = ChatStrategyPlugin();
+      final ExtensionRegistration strategyActivation = chat.activate(
+        extensions,
+      );
       addTearDown(strategyActivation.close);
       final ProductLifecycleCoordinator lifecycle =
           ProductLifecycleCoordinator.generated(
@@ -754,7 +751,7 @@ void main() {
       );
       final Session session = lifecycle.createSession(
         taskId: created.task.id,
-        strategyId: developmentToolLoopStrategyId,
+        strategyId: chatStrategyId,
       );
       final SessionId sessionId = session.id;
       final SessionEnvironmentAuthority authority = store
@@ -788,28 +785,22 @@ void main() {
           taskOnlyExistenceObserved = true;
         },
       );
-      final DevelopmentSessionHistory history =
-          DevelopmentSessionHistory(sessionId)..append(
-            UserSessionMessage(
-              'Create, verify, and remove the transient file.',
-            ),
-          );
-      final AgentRun run = AgentRun(
-        id: RunId('run-environment-create-delete'),
+      final ChatSessionState history = chat.sessions.obtain(sessionId)
+        ..instructions =
+            'Create the requested new file, read it, use the read result '
+            'Revision to delete it safely, then report completion.'
+        ..append(
+          ChatUserMessage('Create, verify, and remove the transient file.'),
+        );
+      final SessionOrchestrationRun strategy = createSessionOrchestrationRun(
+        lifecycle: lifecycle,
         sessionId: sessionId,
-      );
-      final DevelopmentToolLoopStrategy strategy = DevelopmentToolLoopStrategy(
-        run: run,
-        session: history,
-        contextAssembler: const DevelopmentContextAssembler(
-          instructions:
-              'Create the requested new file, read it, use the read result '
-              'Revision to delete it safely, then report completion.',
-        ),
+        runId: RunId('run-environment-create-delete'),
         model: model,
         toolCatalog: catalog,
         policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
       );
+      final AgentRun run = strategy.run;
 
       await strategy.start();
 
@@ -825,7 +816,7 @@ void main() {
       expect(taskOnlyExistenceObserved, isTrue);
       expect(authority.environmentId, created.environment.id);
       expect(
-        (history.snapshot().entries.last as AssistantSessionMessage).content,
+        (history.snapshot().entries.last as ChatAssistantMessage).content,
         contains('created, verified, and deleted'),
       );
 
@@ -969,8 +960,8 @@ final class _SearchReadModel implements ModelPort {
             providerCallId: 'search-call-1',
             alias: 'search',
             arguments: const <String, Object?>{
-              'query': 'final class DevelopmentToolLoopStrategy',
-              'path': './app/lib//development/agent/',
+              'query': 'final class ChatSessionState',
+              'path': './plugins/chat_strategy//lib/',
             },
           ),
         ),
@@ -1004,8 +995,8 @@ final class _SearchReadModel implements ModelPort {
     } else {
       final String content = outcomes.last.outcome.modelContent;
       receivedRealSource =
-          content.contains('final class DevelopmentToolLoopStrategy') &&
-          content.contains('this.maxModelInvocations = 8');
+          content.contains('final class ChatSessionState') &&
+          content.contains('_maxModelInvocations = 8');
       if (!receivedRealSource) {
         throw StateError(
           'The model did not receive real ADELE source content.',
@@ -1014,7 +1005,7 @@ final class _SearchReadModel implements ModelPort {
       yield ModelOutputItemCompleted(
         invocationId: request.invocationId,
         item: ModelTextOutput(
-          '$discoveredPath declares DevelopmentToolLoopStrategy and defaults maxModelInvocations to 8.',
+          '$discoveredPath declares ChatSessionState and defaults maxModelInvocations to 8.',
         ),
       );
     }
@@ -1109,7 +1100,7 @@ final class _ReadPatchCommandModel implements ModelPort {
       expectedRevision = file.revision;
       final List<String> candidateLines = file.text
           .split('\n')
-          .where((line) => line.contains('this.maxModelInvocations = 8'))
+          .where((line) => line.contains('_maxModelInvocations = 8'))
           .toList(growable: false);
       if (candidateLines.length != 1) {
         throw StateError(
@@ -1118,12 +1109,12 @@ final class _ReadPatchCommandModel implements ModelPort {
       }
       final String search = candidateLines.single;
       final String intermediate = search.replaceFirst(
-        'this.maxModelInvocations = 8',
-        'this.maxModelInvocations = 10',
+        '_maxModelInvocations = 8',
+        '_maxModelInvocations = 10',
       );
       final String replace = search.replaceFirst(
-        'this.maxModelInvocations = 8',
-        'this.maxModelInvocations = 9',
+        '_maxModelInvocations = 8',
+        '_maxModelInvocations = 9',
       );
       edits = <Map<String, Object?>>[
         <String, Object?>{'search': search, 'replace': intermediate},
@@ -1479,11 +1470,12 @@ Future<ToolOutcome> _executeSearch(
   MaterializedTool tool,
   SessionId sessionId,
 ) async {
-  final CanonicalToolArguments arguments = tool.executable
-      .validateAndNormalize(const <String, Object?>{
-        'query': 'final class DevelopmentToolLoopStrategy',
-        'path': 'app/lib/development/agent',
-      });
+  final CanonicalToolArguments arguments = tool.executable.validateAndNormalize(
+    const <String, Object?>{
+      'query': 'final class ChatSessionState',
+      'path': 'plugins/chat_strategy/lib',
+    },
+  );
   return (await tool.executable
               .execute(
                 arguments,

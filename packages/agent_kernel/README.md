@@ -1,18 +1,16 @@
 # Agent Kernel
 
 `agent_kernel` is ADELE's internal, pure-Dart, provider-neutral execution
-substrate. Phase IV establishes Run separation, context assembly,
-streaming-shaped model invocation, immutable tool materialization, proposal
-resolution, invocation-specific effects, policy, interruptions, structured tool
+substrate. It owns Run execution, streaming-shaped model invocation,
+immutable tool materialization, proposal resolution, invocation-specific effects,
+policy, interruptions, structured tool
 execution outcomes, and typed execution observation.
 
-The maintained Phase IV proof uses a chat-shaped Session port with canonical
-user/assistant snapshots. ADR 0031 subsequently defines the long-term product
-Session as a core container permanently bound to one orchestration strategy;
-strategy-specific state determines the Session's semantic contents. The current
-chat-shaped port therefore remains implementation evidence rather than the
-universal Session definition. The kernel consumes and re-exports the canonical
-`adele_product` `SessionId`; it does not define a competing identity.
+The canonical product `Session` contains only `id`, `taskId`, and `strategyId`.
+It is permanently bound to a semantic strategy identity, not to Chat history or
+one activation generation. The kernel consumes and re-exports the canonical
+`adele_product` `SessionId`; it does not define a competing identity or Session
+aggregate. Stock Chat owns its in-memory conversation state outside this package.
 
 ## Dependencies
 
@@ -21,22 +19,52 @@ packages required by proven execution mechanics. Flutter, `adele_desktop`,
 plugin implementations, and provider-specific SDKs or formats are prohibited.
 Plugins must not depend on this package.
 
+`adele_orchestration` is the public strategy execution boundary. Minimal semantic
+model input/output, native envelope, proposal/failure, settlement/metadata, Run
+state, and approval-resolution values are defined there and reused/re-exported
+here, not duplicated. Public orchestration and Chat do not depend on the kernel;
+the kernel depends on the public values.
+
 ## Ownership
 
 Runs own execution identity, a small lifecycle, interruptions, terminal failure,
 and a deterministic in-memory journal. Runs do not own durable strategy state,
 models, tool catalogs, context policy, or workflow sequencing.
 
-The bound orchestration strategy and broader product/domain layer own durable
-Session meaning. For the current Chat-like proof, the adapter exposes canonical
-conversation snapshots to context assembly; future strategies may provide a
-different state model.
+The bound orchestration strategy owns Session meaning. `chat_strategy_plugin`
+retains `ChatSessionState` by `SessionId`, with immutable canonical user/final
+assistant snapshots reused across Runs. Intermediate model/native items,
+proposals, and tool results are Chat's Run-local replay, not canonical history.
+Instructions and a positive model-invocation budget are Chat-owned configuration
+snapshotted for each materialized Run.
+
+The kernel has no `session.dart` or `context.dart`, and no `SessionEntry`,
+`UserSessionMessage`, `AssistantSessionMessage`, `SessionSnapshot`,
+`SessionHistoryPort`, `ContextAssembler`, or `ContextAssemblyInput`. ADR 0022's
+Chat-shaped Session/context types describe the historical Phase IV proof, not
+the current kernel API.
 
 Model ports return semantic event streams. The maintained common ModelProvider
 application path consumes generated server streaming and cancellation; the
 scripted fixture's unary method remains regression/reference infrastructure.
 Tools have semantic IDs independent from model aliases and retain exact
 executable objects in immutable per-model-invocation materializations.
+
+`SemanticModelRequest`, model ports/streams/collectors, tool catalogs, policy,
+`AgentRun`, and the journal stay internal. Application `KernelOrchestrationHost`
+adapts public strategy operations to these mechanics. Its
+`SessionOrchestrationRun` wrapper exposes internal evidence only to app callers;
+Chat receives semantic turns, opaque tool-snapshot handles, and continuation
+items instead. The host retains and validates the exact strategy binding on
+operations, approval resume, and asynchronous settlement. Stale active Runs fail
+without migrating; a new Run may resolve a replacement under the same Session's
+stored strategy ID.
+
+Chat projects history plus Run-local replay into `StrategyInferenceMaterial`
+(instructions and ordered semantic input). The host supplies invocation identity
+and tools when constructing internal `SemanticModelRequest`. This deliberate
+future context-composition seam leaves existing core model/tool/policy and
+Environment selection unchanged; it is not a general context framework.
 
 Concrete model providers, concrete tools, editors, Git, terminals, Environment
 implementations, coding-agent orchestration strategies, profile management, and
@@ -49,7 +77,8 @@ not implement Environment lifecycle or filesystem/process behavior. The generic
 tool context still identifies only Run and Session; application composition now
 uses authoritative Session association to construct an Environment-bound host
 context for plugin-contributed `read_file`, `apply_patch`, `create_file`,
-`delete_file`, `search`, and `run_command`. Tool policy remains kernel-owned;
+`delete_file`, `search`, and `run_command`. Application composition supplies tool
+policy; the policy gates and approval mechanics remain kernel-backed.
 Filesystem Tools owns file-tool interpretation, Command Tools owns command
 projection and terminal retention, and the host supplies only the authorized
 Environment facets.
@@ -57,9 +86,8 @@ Environment is the accepted practical filesystem/source + process context; a
 separate first-class Workspace concept is not required architecture unless
 future concrete needs justify it.
 
-The retired DevelopmentSource capability was the bounded Phase IV source-root
-proof; Phase V-A replaced its current consumers with Session-authorized
-Environment tooling.
+Source-coding consumers use Session-authorized Environment tooling, not the
+retired DevelopmentSource capability.
 
 ## Journal
 
@@ -68,11 +96,14 @@ durable storage, replay, recovery, or an event-sourcing decision.
 
 ## Deferred
 
-Persistent product Session/Run storage, strategy registration and binding,
-production orchestration extensions, parent/child Session lifecycle, parallel
-execution, complete effect/content taxonomies, durable approval, broader
-Environment/runtime-resource integration, artifacts, recovery, and multi-agent
-abstractions remain deferred.
+General context composition is the next slice at the material-to-request seam.
+Context contributors, token budgets, compaction,
+persistent product/Chat/Run storage, profiles, Chat UI,
+parent/child Session lifecycle, parallel tool execution, complete effect/content
+taxonomies, durable approval, broader Environment/runtime-resource integration,
+artifacts, recovery, and multi-agent abstractions remain deferred. Executable
+strategy registration and headless stock Chat are implemented, not deferred
+production UI or persistence claims.
 
 See `docs/architecture/agent-kernel-semantic-model.md` and ADRs 0022/0031 for
 the detailed implemented-versus-directional boundary.
