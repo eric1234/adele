@@ -313,13 +313,22 @@ After safe capture, source material is immutable data independent of the live
 binding. Retirement during the provider call does not invalidate the captured
 request; the next inference discovers any replacement. Executable strategy/tool
 bindings still require their existing exact-generation checks and never migrate.
-Chat owns no production source; current composition activates none. Tools,
-policy, and model controls retain their existing owners.
+Chat activates no source and remains AGENTS-unaware. Only development/self-hosting
+composition activates stock `agents_md_plugin`: each snapshot rereads root
+`AGENTS.md` through `AuthorizedEnvironmentFileReadFacet` in the Session-authorized
+Environment. `not_found` and blank files succeed empty; other read/service/authority
+errors fail the required source. Nonblank exact text and its Environment revision
+form one material, separate from stable plugin-owned semantics giving explicit
+user instructions and direct requests precedence over AGENTS.md guidance.
+Tools, policy, and model controls retain their existing owners.
 
 This is a bounded instruction-only slice, not a renamed generic
-`ContextAssembler`. No production repository-instruction, time, role, or
-repository-map source is included. Broader Reference/Observation material remains
-directional without placeholder public APIs. Provider-aware projection/cache
+`ContextAssembler` or generic repository-instructions framework. Nested/scoped
+AGENTS.md, aliases/overrides, global/home files, imports, and AGENTS.md caching
+remain deferred. Other sources, including time, Skills, roles, and repository
+maps, remain independent unimplemented plugin concerns. Broader
+Reference/Observation material remains directional without placeholder public
+APIs. Provider-aware projection/cache
 planning, compaction, context preview, and token budgets remain deferred. Chat's
 positive invocation budget limits model-call count, not context size or token use.
 
@@ -351,7 +360,7 @@ semantic model request
 
 For a Chat strategy, canonical conversation history is an important input. It is not the universal definition of Session and it is never itself the provider request.
 
-Broader context/inference composition belongs at the host-controlled provider-neutral boundary. The implemented slice preserves typed instruction groups, source identity/results, and deterministic order; budgeting, cross-source deduplication, compaction, provider-aware projection/cache planning, pinning/exclusion, and user inspection remain deferred. The possible inputs above are direction, not implemented sources or public material variants.
+Broader context/inference composition belongs at the host-controlled provider-neutral boundary. The implemented slice preserves typed instruction groups, source identity/results, and deterministic order; budgeting, cross-source deduplication, compaction, provider-aware projection/cache planning, pinning/exclusion, and user inspection remain deferred. The possible inputs above are broader direction, not implemented sources or public material variants beyond the root AGENTS.md instruction source described above.
 
 Context extensions should return structured material rather than mutate one prompt string or an opaque provider request.
 
@@ -763,6 +772,7 @@ The current implementation supplies:
 - headless Chat with in-memory canonical user/final assistant history;
 - `StrategyInferenceMaterial` before host request construction;
 - per-inference instruction-source discovery/capture and immutable `InferenceContextSnapshot`;
+- stock root-level AGENTS.md instructions in development/self-hosting composition, outside the kernel;
 - Run lifecycle;
 - workflow/strategy separation;
 - streaming-capable model invocation semantics;

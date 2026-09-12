@@ -79,6 +79,11 @@ executable strategy/tool binding checks. Source freshness is source-owned, witho
 a generic refresh API. The kernel owns neither source discovery nor Session
 service authority; see `../orchestration/README.md` for the capture contract.
 
+The independent stock `agents_md_plugin` is activated only in development/self-hosting
+composition, not by Chat or the kernel; it rereads root `AGENTS.md` through the
+Session-authorized Environment read facet for each snapshot. See
+[`plugins/agents_md`](../../plugins/agents_md/README.md) for its bounded source semantics.
+
 Concrete model providers, concrete tools, editors, Git, terminals, Environment
 implementations, coding-agent orchestration strategies, profile management, and
 provider account management do not belong here.
@@ -109,7 +114,7 @@ durable storage, replay, recovery, or an event-sourcing decision.
 
 ## Deferred
 
-Production context sources, material beyond instructions (including directional
+Other context sources, material beyond instructions (including directional
 Reference/Observation concepts), provider-aware projection/cache planning,
 token budgets, compaction,
 persistent product/Chat/Run storage, profiles, Chat UI,

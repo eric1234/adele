@@ -6,7 +6,7 @@
 
 This document defines ADELE's long-term composition model for plugins and plugin-defined extension ecosystems. It records architectural boundaries rather than a frozen Dart API. Implemented APIs such as `ExtensionPoint` remain experimental; other example interfaces below remain directional until concrete implementation requires them.
 
-The maintained repository includes source plugins, interpreted frontend execution, AOT backend execution, generated typed transport, active capability registration/resolution, configured provider contexts, provider-neutral agent execution, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, and generic registration/liveness. The registry supports typed extension points, activation-scoped registrations, exact-generation bindings, public contextual model-tool contributions, executable orchestration-strategy contributions, and instruction-only inference-context sources. Statically composed stock Filesystem Tools, Search Tools, and Command Tools own `read_file`/`apply_patch`/`create_file`/`delete_file`, `search`, and `run_command`. Headless stock Chat uses the public `adele_orchestration` execution facade and the same in-process activation conventions; this is not production plugin discovery. ADELE does **not** yet implement the broader recursive extension system described here, production plugin-facing UI composition, generic commands/keybindings, product/Chat persistence, broader inference material or production context sources, or most of the expected stock plugin topology.
+The maintained repository includes source plugins, interpreted frontend execution, AOT backend execution, generated typed transport, active capability registration/resolution, configured provider contexts, provider-neutral agent execution, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, and generic registration/liveness. The registry supports typed extension points, activation-scoped registrations, exact-generation bindings, public contextual model-tool contributions, executable orchestration-strategy contributions, and instruction-only inference-context sources. Statically composed stock Filesystem Tools, Search Tools, and Command Tools own `read_file`/`apply_patch`/`create_file`/`delete_file`, `search`, and `run_command`. Headless stock Chat uses the public `adele_orchestration` execution facade and the same in-process activation conventions; this is not production plugin discovery. Development/self-hosting also activates the independent stock root-level `agents_md_plugin` source. ADELE does **not** yet implement the broader recursive extension system described here, production plugin-facing UI composition, generic commands/keybindings, product/Chat persistence, broader inference material or other context sources, or most of the expected stock plugin topology.
 
 The generic registry deliberately defines only registration, discovery, retirement, and binding liveness. Model-tool composition defines its own zero-or-many composition and alias-collision semantics. Strategy resolution requires exactly one current contribution for an explicit semantic ID, with unavailable/ambiguous errors rather than defaults or tie-breaking. Instruction-context composition defines its own zero-or-many capture, deterministic identity ordering, and required/optional source failure behavior; it has no numeric priority. Generic priority, applicability languages, and universal ordering/failure rules are not supplied by the registry. `EnvironmentRuntime` remains a provisional application/domain implementation rather than a template for extension runtimes.
 
@@ -397,14 +397,23 @@ At the current app `ModelProviderCapabilityAdapter`, orchestration's
 `renderInferenceInstructions` lowers groups to the unchanged
 `ModelProviderRequest.instructions` string with blank-line separation and unchanged
 zero-source bytes. Tools, policy, model controls, and Environment selection
-retain their existing owners. Chat registers no production context source, and
-the current composition activates none. Exact fields and rendering rules are in
+retain their existing owners. Chat registers no context source and remains
+AGENTS-unaware. Only development/self-hosting composition activates the independent
+stock `agents_md_plugin`, rereading root `AGENTS.md` through the Session-authorized
+`AuthorizedEnvironmentFileReadFacet` each snapshot. Missing (`not_found`) and blank
+files succeed empty; other read/service/authority errors fail the required source.
+Exact file text and its revision form one material, separate from stable
+plugin-owned explicit-user-precedence semantics, not generic ordering authority.
+Exact fields and rendering rules are in
 [`adele_orchestration`](../../packages/orchestration/README.md#inference-context).
 
 Broader Reference/Observation material is directional, without placeholder public
-APIs. Production repository-instruction/time/role/map sources, provider-aware
+APIs. Nested/scoped AGENTS.md, aliases/overrides, global/home files, imports,
+AGENTS.md caching, other context sources, and provider-aware
 projection/cache planning, token budgets, compaction, and context UI/persistence
-remain deferred. The broader buckets below are not implemented by this slice.
+remain deferred. AGENTS.md does not own Skills, roles, or maps; these remain
+independent plugin concerns. The broader buckets below are not implemented by
+this slice.
 
 Some extensions need to influence an operation **before** it occurs. These should not receive arbitrary mutable host objects.
 

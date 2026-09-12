@@ -15,7 +15,7 @@ The expected stock composition should be read alongside:
 - [`agent-tooling-direction.md`](agent-tooling-direction.md), which describes model tools and execution presentation;
 - [`../mockups/README.md`](../mockups/README.md), which shows the default development UX produced by a stock plugin/configuration set.
 
-The maintained codebase implements only a small subset of this topology: source-plugin runtime/build infrastructure, generated contracts, active capability routing, the common ModelProvider and OpenAI provider, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, a Git Worktree Environment provider, generic model-tool registration, stock Filesystem Tools, Search Tools, and Command Tools, and headless stock Chat. Public `adele_orchestration` provides executable strategy contributions, the narrow execution facade, and instruction-only inference-context composition over the same extension registry; application Session-routed hosting materializes the exact strategy contribution rather than constructing a loop directly. Chat owns in-memory state and sequencing, not context sources, UI, or persistence. No production context source is included. Most stock plugins below do not yet exist.
+The maintained codebase implements only a small subset of this topology: source-plugin runtime/build infrastructure, generated contracts, active capability routing, the common ModelProvider and OpenAI provider, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, a Git Worktree Environment provider, generic model-tool registration, stock Filesystem Tools, Search Tools, and Command Tools, headless stock Chat, and the root-level AGENTS.md source. Public `adele_orchestration` provides executable strategy contributions, the narrow execution facade, and instruction-only inference-context composition over the same extension registry; application Session-routed hosting materializes the exact strategy contribution rather than constructing a loop directly. Chat owns in-memory state and sequencing, not context sources, UI, or persistence. Only development/self-hosting composition activates `agents_md_plugin`; Chat itself activates no source and remains AGENTS-unaware. Most stock plugins below do not yet exist.
 
 ---
 
@@ -56,6 +56,9 @@ Stock model-tool plugins
 ├── Command Tool
 ├── TODO / Progress
 └── Plan
+
+Stock context-source plugins
+└── AGENTS.md (root-only implementation)
 
 Stock review/presentation plugins
 ├── Diff / Review Viewer
@@ -178,6 +181,21 @@ material, provider-aware projection/cache planning, token budgets, compaction, a
 the other policy/model-control buckets remain deferred. Source ordering is
 lexicographic `ExtensionId` after strategy instructions, preserving local order;
 there is no numeric priority or semantic authority implied by sorting.
+
+The first stock context source is
+[`agents_md_plugin`](../../plugins/agents_md/README.md), activated in the maintained
+development/self-hosting composition. It reads only root `AGENTS.md` through the
+inference context's Session-authorized `AuthorizedEnvironmentFileReadFacet` for
+each new inference capture. Missing (`not_found`) and blank files are successful
+empty results; other failures abort as a required source. Exact opaque Markdown
+and its Environment revision remain distinct material, alongside stable
+plugin-owned guidance that explicit user requests take precedence. This initial
+root-only implementation adds no generic context infrastructure and does not
+claim complete AGENTS.md compatibility. Skills, Agent Roles, repository maps,
+memory, and other mechanisms remain independent plugin concerns.
+
+Nested/scoped AGENTS.md, `AGENTS.override.md`, alternate names, global/home files,
+imports, and AGENTS.md caching remain deferred.
 
 ---
 
@@ -351,10 +369,11 @@ into the unchanged provider string; zero-source bytes and semantic input are
 unchanged. Required source failure prevents invocation identity/evidence/provider
 work; optional failure omits that source with diagnostics. Safely captured data
 survives later source retirement, without weakening executable binding rules.
-Sources own freshness, with no generic refresh API. Chat owns no production
+Sources own freshness, with no generic refresh API. Chat owns no
 context source or source discovery; tools, policy, model controls, and Environment
-authority retain their existing owners. No repository-instruction/time/role/map
-source or context UI/persistence is added by this slice.
+authority retain their existing owners. The independent root AGENTS.md source
+described in section 2.4 is activated by development/self-hosting composition,
+not Chat. Other context sources and context UI/persistence remain deferred.
 
 Further expected Chat functionality remains unimplemented:
 
@@ -652,7 +671,7 @@ The maintained repository already implements substantial OpenAI provider functio
 The current headless execution path is:
 
 ```text
-composition activates Chat and stock tools
+development/self-hosting composition activates Chat, stock tools, and AGENTS.md
     -> core lifecycle creates Session bound to dev.adele.strategy.chat
     -> caller obtains retained ChatSessionState and appends the prompt
     -> createSessionOrchestrationRun(SessionId, host execution dependencies)

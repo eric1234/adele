@@ -61,8 +61,11 @@ projection plus Run-local replay. It neither registers nor discovers context
 sources in production. The host's `InferenceContextComposer` discovers current
 sources through the existing `ExtensionRegistry` on every new inference,
 including Chat continuation, and captures instruction material without changing
-Chat's semantic input. No production context source is activated by the current
-composition; zero-source provider instructions retain their exact bytes.
+Chat's semantic input. Only development/self-hosting composition activates the
+independent stock [`agents_md_plugin`](../agents_md/README.md), which rereads root
+`AGENTS.md` through the Session-authorized Environment read facet each snapshot.
+Chat remains AGENTS-unaware and activates no source; zero-source provider
+instructions retain their exact bytes.
 
 Context-source freshness belongs to each source, not Chat. Chat still owns only
 its conversation/instructions, Run-local replay, and bounded sequencing; tool
@@ -77,7 +80,7 @@ requirements on executable strategies and tools.
 
 The current context projection deliberately preserves the development loop's
 simple conversation-plus-Run-items behavior. Rich context selection, context
-truncation and summarization, production context sources, provider-aware
+truncation and summarization, context sources beyond root AGENTS.md, provider-aware
 projection/cache planning, token budgets, Chat UI, persistence,
 profiles, child Sessions, state migration, and concurrent conversation editing
 are not implemented. State retention is

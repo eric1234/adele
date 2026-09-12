@@ -237,6 +237,24 @@ void main() {
       expect(target.ciTestConcurrency, isNull);
     });
 
+    test(
+      'discovers AGENTS.md as a pure-Dart target with default CI policy',
+      () {
+        final TestOptions options = parseTestOptions(<String>[
+          '--target',
+          'agents_md_plugin',
+          '--ci',
+        ]);
+        final TestTarget target = lookupTestTarget(options.target!);
+
+        expect(target.path, 'plugins/agents_md');
+        expect(target.executable, 'dart');
+        expect(target.argumentsFor(ci: options.ci), <String>['test']);
+        expect(target.linuxDesktopDeps, isFalse);
+        expect(target.ciTestConcurrency, isNull);
+      },
+    );
+
     test('rejects an unknown target', () {
       expect(
         () => lookupTestTarget('missing'),
@@ -278,6 +296,7 @@ void main() {
         'filesystem_tools_plugin|dart|plugins/filesystem_tools|test',
         'search_tools_plugin|dart|plugins/search_tools|test',
         'command_tools_plugin|dart|plugins/command_tools|test',
+        'agents_md_plugin|dart|plugins/agents_md|test',
         'chat_strategy_plugin|dart|plugins/chat_strategy|test',
         'scripted_model_contract|dart|plugins/scripted_model/packages/contract|test --timeout 4m',
         'scripted_model_backend|dart|plugins/scripted_model/packages/backend|test',

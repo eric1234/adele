@@ -218,14 +218,24 @@ Chat's only direct production dependencies are `adele_orchestration` and
 `adele_plugin_api`; `agent_kernel` is absent from both its production and
 development dependencies.
 
-Chat contributes no production context source and does not discover sources
+Chat contributes no context source and does not discover sources
 itself. It owns history, instructions, Run-local replay, and bounded sequencing;
-tools, policy, and model controls remain separate. Current development composition
-activates no production context sources.
+tools, policy, and model controls remain separate. Only development/self-hosting
+composition activates the independent stock
+[`agents_md_plugin`](../../plugins/agents_md/README.md); Chat remains AGENTS-unaware.
+That source rereads root `AGENTS.md` through the Session-authorized
+`AuthorizedEnvironmentFileReadFacet` each snapshot. Missing (`not_found`) or blank
+files are successful empty results; other read/service/authority errors fail the
+required source. Nonblank exact text and its opaque Environment revision are
+retained as `AGENTS.md` material, separate from stable `semantics` material stating
+that explicit user instructions and direct requests take precedence. This is
+plugin-owned guidance, not a generic precedence or repository-instructions API.
 
 There are no kernel, Flutter, app, or plugin-runtime imports. Scheduling,
 production discovery, Chat UI, persistence, profiles, and child Sessions remain
-deferred. This slice adds no production repository-instruction, time, role, or
-repository-map source. Broader Reference/Observation material is directional;
+deferred. The generic context contract remains instruction-only. Nested/scoped
+AGENTS.md, aliases/overrides, global/home files, imports, and AGENTS.md caching are
+deferred; time, Skills, roles, and repository maps remain independent, unimplemented
+source concerns. Broader Reference/Observation material is directional;
 provider-aware projection/cache planning, token budgets, compaction, and context
 inspection/persistence are deferred.

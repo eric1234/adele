@@ -12,6 +12,7 @@ Active capability registry and exact-generation routing
 Provider-neutral Run/model/tool/policy/approval mechanics
 Session-bound executable strategies and headless stock Chat
 Per-inference instruction-source capture and immutable context snapshots
+Stock root-level AGENTS.md instructions in development/self-hosting composition
 Session-authorized Environment read/search and bounded text-file mutation
 Foreground process execution and model-facing command validation
 ```
@@ -108,10 +109,20 @@ The current app `ModelProviderCapabilityAdapter` calls orchestration's
 `renderInferenceInstructions` to lower the snapshot to the unchanged
 `ModelProviderRequest.instructions` string. With no source material, strategy
 instruction bytes remain unchanged. Source freshness is source-owned, not a
-generic refresh API. No production context source is activated by Chat or the
-development composition; tools, policy, model controls, and Environment authority
-retain their existing owners. See `packages/orchestration/README.md` for capture
-and rendering semantics.
+generic refresh API. Chat activates no context source and remains AGENTS-unaware;
+tools, policy, model controls, and Environment authority retain their existing
+owners. See `packages/orchestration/README.md` for capture and rendering semantics.
+
+The stock `agents_md_plugin` under `plugins/agents_md` is activated only in the
+development/self-hosting composition. Each snapshot rereads root `AGENTS.md` in
+the Session-authorized Environment through `AuthorizedEnvironmentFileReadFacet`.
+`not_found` or blank/whitespace-only text produces successful empty output; other
+read/service/authority errors fail composition as a required source. Exact nonblank
+file text and its opaque Environment revision are retained in one material,
+separate from stable plugin-owned semantics stating that explicit user
+instructions and direct requests take precedence over AGENTS.md guidance.
+This adds a concrete source, not generic context infrastructure or a
+repository-instructions owner for Skills, Agent Roles, or repository maps.
 
 Filesystem Tools owns the model-facing
 `apply_patch(relativePath, expectedRevision, edits)` grammar. Its non-empty
@@ -288,10 +299,12 @@ reports every failed package after all targets settle. `check` verifies
 formatting, analysis, and all implemented tests, including committed
 generated-output freshness.
 
-The workspace includes `plugins/chat_strategy`, and `app` depends on
-`chat_strategy_plugin`. The driver includes Chat in package analysis and test
-discovery; `test-plan --json` also includes it in the CI matrix. To run only its
-pure-Dart tests, use `dart tools/adele.dart test --target chat_strategy_plugin`.
+The workspace includes `plugins/chat_strategy` and `plugins/agents_md`, and `app`
+depends on `chat_strategy_plugin` and `agents_md_plugin`. The driver includes both
+in package analysis and test discovery; `test-plan --json` also includes both in
+the CI matrix. Run their pure-Dart tests with
+`dart tools/adele.dart test --target chat_strategy_plugin` or
+`dart tools/adele.dart test --target agents_md_plugin`.
 
 The repository development command above is unrelated to ADELE's future
 application-level Command Palette/keybinding subsystem described by the
@@ -322,6 +335,7 @@ plugins/filesystem_tools/    stock Session-authorized text-file tools
 plugins/search_tools/        stock Session-authorized literal Search tool
 plugins/command_tools/       stock Session-authorized foreground Command tool
 plugins/chat_strategy/       stock headless Chat strategy and in-memory history
+plugins/agents_md/           stock root-level AGENTS.md instruction source
 plugins/git_environment/     Git worktree Environment provider
 docs/architecture/           architecture boundaries/directional models
 docs/adr/                    architectural decision records
@@ -398,8 +412,11 @@ See `docs/architecture/profiles-and-configuration.md`.
 
 ## Deferred
 
-The implemented context slice is instruction-only. Production sources such as
-repository instructions, time, roles, or repository maps are not included.
+The implemented context slice remains instruction-only, with root-level
+AGENTS.md as its first stock source. Nested/path-scoped files, `AGENTS.override.md`,
+alternate names, global/home files, imports, and AGENTS.md caching remain
+deferred. Other context sources such as time, Skills, roles, or repository maps
+are not included and remain independent plugin concerns.
 Broader Reference/Observation material remains directional, without placeholder
 public APIs. Provider-aware projection and cache planning, token budgets,
 compaction, and context preview remain deferred.

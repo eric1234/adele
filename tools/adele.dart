@@ -125,6 +125,12 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
+    name: 'agents_md_plugin',
+    path: 'plugins/agents_md',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
     name: 'chat_strategy_plugin',
     path: 'plugins/chat_strategy',
     executable: 'dart',
@@ -203,6 +209,7 @@ _packages = <({String name, String path, bool flutter})>[
   ),
   (name: 'search_tools_plugin', path: 'plugins/search_tools', flutter: false),
   (name: 'command_tools_plugin', path: 'plugins/command_tools', flutter: false),
+  (name: 'agents_md_plugin', path: 'plugins/agents_md', flutter: false),
   (name: 'chat_strategy_plugin', path: 'plugins/chat_strategy', flutter: false),
   (
     name: 'git_environment_backend',
