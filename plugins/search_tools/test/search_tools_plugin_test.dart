@@ -26,6 +26,14 @@ void main() {
         tool.modelDefinition.description,
         contains('stock search defaults'),
       );
+      expect(
+        tool.modelDefinition.description,
+        contains('file or directory scope'),
+      );
+      expect(
+        tool.modelDefinition.description,
+        contains('case-sensitive literal'),
+      );
       expect(tool.modelDefinition.description, contains('.git'));
       expect(tool.modelDefinition.description, contains('node_modules'));
       expect(
@@ -270,6 +278,24 @@ void main() {
         expect(outcome.hostData['truncated'], true);
         expect(fs.directoryReads, <String>['src']);
       }
+      const List<String> reasons = <String>[
+        'max_matches',
+        'max_entries',
+        'max_searched_bytes',
+        'max_failed_file_reads',
+      ];
+      const List<int> limits = <int>[100, 10000, 16 * 1024 * 1024, 32];
+      for (int i = 0; i < outcomes.length; i++) {
+        expect(outcomes[i].hostData['stopReason'], reasons[i]);
+        expect(outcomes[i].hostData['stopLimit'], limits[i]);
+        expect(
+          outcomes[i].modelContent,
+          contains('${reasons[i]} limit (${limits[i]})'),
+        );
+      }
+      expect(outcomes[1].hostData['entriesVisited'], 10000);
+      expect(outcomes[2].hostData['searchedBytes'], 16 * 1024 * 1024);
+      expect(outcomes[3].hostData['failedFileReads'], 32);
       final List<Object?> matches =
           outcomes[0].hostData['matches']! as List<Object?>;
       expect(matches, hasLength(100));
@@ -299,7 +325,11 @@ void main() {
         'NODE_MODULES',
         'Node_Modules',
       ]) {
-        for (final String path in <String>[excluded, 'src/$excluded/nested']) {
+        for (final String path in <String>[
+          excluded,
+          'src/$excluded/nested',
+          'src/$excluded/file.txt',
+        ]) {
           final _FileSystem fs = _FileSystem();
           final ToolOutcome outcome = await _run(fs, 'needle', path: path);
           expect(outcome.disposition, ToolOutcomeDisposition.failure);
@@ -315,9 +345,13 @@ void main() {
     });
 
     test(
-      'missing and file scopes fail at the directory-read boundary',
+      'missing and denied scopes fail at the directory-read boundary',
       () async {
-        for (final String code in <String>['not_found', 'not_a_directory']) {
+        for (final String code in <String>[
+          'not_found',
+          'denied',
+          'unreadable',
+        ]) {
           final _FileSystem fs = _FileSystem(
             directoryErrors: <String, Object>{
               'scope': EnvironmentFailure(
@@ -337,6 +371,101 @@ void main() {
         }
       },
     );
+
+    test(
+      'file scope normalizes identity and searches only literal matching lines',
+      () async {
+        final _FileSystem fs = _FileSystem(
+          files: <String, String>{
+            'src/café.txt': 'A.*[x]\na.*[x] twice a.*[x]\naZZ[x]',
+            'other.txt': 'a.*[x]',
+          },
+        );
+        final ToolExecutable tool = await _search(fs);
+        final CanonicalToolArguments args = tool.validateAndNormalize(
+          <String, Object?>{'query': 'a.*[x]', 'path': './src//café.txt'},
+        );
+        final EffectDescription effect = await tool.describe(
+          args,
+          _execution(fs.sessionId),
+        );
+        expect(effect.effects, <ToolEffect>{ToolEffect.sourceRead});
+        expect(effect.targets.single.uri.pathSegments, <String>[
+          'environment-1',
+          'src',
+          'café.txt',
+        ]);
+        final ToolOutcome outcome = await _execute(tool, args, fs.sessionId);
+        expect(_matchLocations(outcome), <String>['src/café.txt:2']);
+        expect(fs.directoryReads, <String>['src/café.txt']);
+        expect(fs.fileReads, <String>['src/café.txt']);
+        expect(outcome.effectCertainty, EffectCertainty.knownOccurred);
+        expect(outcome.hostData['stopReason'], isNull);
+        expect(outcome.hostData['incomplete'], false);
+      },
+    );
+
+    test(
+      'explicit file read failures remain failures rather than skipped success',
+      () async {
+        for (final String code in <String>[
+          'not_found',
+          'not_regular_file',
+          'invalid_utf8',
+          'file_too_large',
+          'denied',
+        ]) {
+          final _FileSystem fs = _FileSystem(
+            directoryErrors: <String, Object>{
+              'scope': const EnvironmentFailure(
+                code: 'not_directory',
+                message: 'kind mismatch',
+                details: <String, Object?>{},
+              ),
+            },
+            fileErrors: <String, Object>{
+              'scope': EnvironmentFailure(
+                code: code,
+                message: code,
+                details: const <String, Object?>{},
+              ),
+            },
+          );
+          final ToolOutcome outcome = await _run(fs, 'needle', path: 'scope');
+          expect(outcome.failureKind, ToolFailureKind.domain);
+          expect(outcome.hostData['code'], code);
+          expect(fs.fileReads, <String>['scope']);
+        }
+      },
+    );
+
+    test(
+      'scope infrastructure and stale errors never trigger file probing',
+      () async {
+        for (final Object error in <Object>[
+          StateError('transport failed'),
+          const AuthorizedEnvironmentBindingUnavailable('unavailable'),
+          const AuthorizedEnvironmentBindingStale('stale'),
+        ]) {
+          final _FileSystem fs = _FileSystem(
+            directoryErrors: <String, Object>{'scope': error},
+          );
+          final ToolOutcome outcome = await _run(fs, 'needle', path: 'scope');
+          expect(outcome.disposition, ToolOutcomeDisposition.failure);
+          expect(fs.fileReads, isEmpty);
+        }
+      },
+    );
+
+    test('file scope uses the same match budget', () async {
+      final _FileSystem fs = _FileSystem(
+        files: <String, String>{'many.txt': List.filled(101, 'hit').join('\n')},
+      );
+      final ToolOutcome outcome = await _run(fs, 'hit', path: 'many.txt');
+      expect(outcome.hostData['truncated'], true);
+      expect(outcome.hostData['stopReason'], 'max_matches');
+      expect(outcome.hostData['matches'], hasLength(100));
+    });
 
     test('scoped binding failures retain no-read certainty', () async {
       for (final bool stale in <bool>[true, false]) {
@@ -551,6 +680,11 @@ void main() {
         expect(outcome.disposition, ToolOutcomeDisposition.success);
         expect(_matchLocations(outcome), <String>['good.txt:1']);
         expect(fileSystem.fileReads, <String>['good.txt']);
+        expect(outcome.hostData['failedDirectoryReads'], 1);
+        expect(outcome.hostData['failedFileReads'], 0);
+        expect(outcome.hostData['stopReason'], isNull);
+        expect(outcome.modelContent, contains('1 failed directory reads'));
+        expect(outcome.modelContent, contains('Traversal completed'));
         expect(outcome.hostData['incomplete'], isTrue);
         expect(outcome.hostData['truncated'], isFalse);
         expect(outcome.modelContent, contains('files or directories'));
@@ -615,6 +749,11 @@ void main() {
 
       final ToolOutcome outcome = await _run(fileSystem, 'needle');
       expect(fileSystem.fileReads, paths);
+      expect(outcome.hostData['failedFileReads'], 32);
+      expect(outcome.hostData['failedDirectoryReads'], 0);
+      expect(outcome.hostData['stopReason'], isNull);
+      expect(outcome.modelContent, contains('32 failed file reads'));
+      expect(outcome.modelContent, contains('Traversal completed'));
       expect(outcome.hostData['incomplete'], isTrue);
       expect(outcome.hostData['truncated'], isFalse);
     });
@@ -972,6 +1111,13 @@ final class _FileSystem implements AuthorizedEnvironmentFileReadFacet {
     validateBinding();
     directoryReads.add(relativePath);
     if (directoryErrors[relativePath] case final Object error) throw error;
+    if (files.containsKey(relativePath)) {
+      throw const EnvironmentFailure(
+        code: 'not_directory',
+        message: 'Not a directory.',
+        details: <String, Object?>{},
+      );
+    }
     return EnvironmentDirectoryListing(
       relativePath: relativePath,
       entries: directories[relativePath] ?? <EnvironmentDirectoryEntry>[],

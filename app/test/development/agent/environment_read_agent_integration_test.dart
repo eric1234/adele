@@ -311,6 +311,12 @@ void main() {
       final MaterializedTool searchC = catalogB.materialize().byAlias(
         'search',
       )!;
+      const String siblingPath = 'plugins/chat_strategy/lib/scope-decoy.txt';
+      final String worktreePath =
+          created.environment.providerState!['worktreePath']! as String;
+      await File(
+        '$worktreePath/$siblingPath',
+      ).writeAsString('final class ChatSessionState decoy\n');
       final ToolOutcome restoredSearch = await _executeSearch(
         searchC,
         sessionId,
@@ -320,32 +326,79 @@ void main() {
       expect(materializationB.environment.id, materializationA.environment.id);
       expect(restoredSearch.disposition, ToolOutcomeDisposition.success);
       expect(restoredSearch.hostData['path'], 'plugins/chat_strategy/lib');
-      for (final String path in <String>[
-        'missing-directory',
-        _sourceRelativePath,
-      ]) {
-        final CanonicalToolArguments arguments = searchC.executable
-            .validateAndNormalize(<String, Object?>{
-              'query': 'needle',
-              'path': path,
-            });
-        final ToolOutcome failure =
-            (await searchC.executable
-                        .execute(
-                          arguments,
-                          ToolExecutionContext(
-                            runId: RunId('invalid-scope'),
-                            sessionId: sessionId,
-                          ),
-                        )
-                        .single
-                    as ToolExecutionTerminal)
-                .outcome;
-        expect(failure.disposition, ToolOutcomeDisposition.failure);
-        expect(failure.failureKind, ToolFailureKind.domain);
-        expect(failure.hostData['path'], path);
-        expect(failure.hostData['code'], isNotNull);
-      }
+      final ToolOutcome missingScope = await _executeSearch(
+        searchC,
+        sessionId,
+        path: 'missing-directory',
+      );
+      expect(missingScope.disposition, ToolOutcomeDisposition.failure);
+      expect(missingScope.failureKind, ToolFailureKind.domain);
+      expect(missingScope.hostData['path'], 'missing-directory');
+      expect(missingScope.hostData['code'], 'not_found');
+      expect(
+        missingScope.hostData['environmentId'],
+        authority.environmentId.value,
+      );
+      expect(missingScope.hostData['matches'], isEmpty);
+
+      final ToolOutcome fileScope = await _executeSearch(
+        searchC,
+        sessionId,
+        path: _sourceRelativePath,
+      );
+      final List<String> sourceLines = const LineSplitter().convert(
+        expectedSource,
+      );
+      final int matchingLine = sourceLines.indexOf(
+        'final class ChatSessionState {',
+      );
+      expect(matchingLine, isNonNegative);
+      final Map<String, Object?> expectedMatch = <String, Object?>{
+        'relativePath': _sourceRelativePath,
+        'lineNumber': matchingLine + 1,
+        'snippet': sourceLines[matchingLine],
+      };
+      expect(fileScope.disposition, ToolOutcomeDisposition.success);
+      expect(fileScope.effectCertainty, EffectCertainty.knownOccurred);
+      expect(fileScope.hostData['path'], _sourceRelativePath);
+      expect(fileScope.hostData['query'], 'final class ChatSessionState');
+      expect(
+        fileScope.hostData['environmentId'],
+        authority.environmentId.value,
+      );
+      expect(fileScope.hostData['matches'], <Object?>[expectedMatch]);
+      expect(fileScope.hostData['truncated'], false);
+      expect(fileScope.hostData['incomplete'], false);
+      expect(fileScope.hostData['stopReason'], isNull);
+      expect(fileScope.hostData['entriesVisited'], 0);
+      expect(
+        fileScope.hostData['searchedBytes'],
+        utf8.encode(expectedSource).length,
+      );
+      expect(
+        fileScope.modelContent,
+        'Search results:\nScope: ${jsonEncode(_sourceRelativePath)}\n'
+        '${jsonEncode(expectedMatch)}',
+      );
+      expect(
+        restoredSearch.hostData['matches'],
+        contains(
+          equals(<String, Object?>{
+            'relativePath': siblingPath,
+            'lineNumber': 1,
+            'snippet': 'final class ChatSessionState decoy',
+          }),
+        ),
+      );
+      expect(await File('${source.path}/$siblingPath').exists(), false);
+      expect(
+        await File('$worktreePath/$_sourceRelativePath').readAsString(),
+        expectedSource,
+      );
+      expect(
+        await File('${source.path}/$_sourceRelativePath').readAsString(),
+        expectedSource,
+      );
       expect(
         restoredSearch.hostData['matches'],
         contains(
@@ -1471,13 +1524,11 @@ _VisiblePatch _parseVisiblePatch(String modelContent) {
 
 Future<ToolOutcome> _executeSearch(
   MaterializedTool tool,
-  SessionId sessionId,
-) async {
+  SessionId sessionId, {
+  String path = 'plugins/chat_strategy/lib',
+}) async {
   final CanonicalToolArguments arguments = tool.executable.validateAndNormalize(
-    const <String, Object?>{
-      'query': 'final class ChatSessionState',
-      'path': 'plugins/chat_strategy/lib',
-    },
+    <String, Object?>{'query': 'final class ChatSessionState', 'path': path},
   );
   return (await tool.executable
               .execute(
