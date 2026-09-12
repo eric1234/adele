@@ -64,9 +64,10 @@ final class _SearchExecutable implements ToolExecutable {
     modelDefinition: ModelToolDefinition(
       alias: 'search',
       description:
-          'Recursively search Environment text files for one literal query. '
-          'Optional path selects an Environment-relative directory; omitted or '
-          'empty means root. Use read_file for a known file. '
+          'Search Environment text files for one case-sensitive literal query. '
+          'Optional path is an Environment-relative file or directory scope: '
+          'search only that file, or recursively search that directory. '
+          'Omitted or empty path recursively searches root. '
           'Current stock search defaults exclude common generated, dependency, '
           'and metadata directories: .git, .dart_tool, build, and node_modules. '
           'These directory names match case-insensitively on every Environment.',
@@ -115,9 +116,7 @@ final class _SearchExecutable implements ToolExecutable {
     }
     return CanonicalToolArguments(<String, Object?>{
       'query': query,
-      'path': _canonicalDirectoryPath(
-        proposedArguments['path'] as String? ?? '',
-      ),
+      'path': _canonicalScopePath(proposedArguments['path'] as String? ?? ''),
     });
   }
 
@@ -144,7 +143,7 @@ final class _SearchExecutable implements ToolExecutable {
       ],
       summary: path.isEmpty
           ? 'Search the authorized Environment root.'
-          : 'Search the authorized Environment directory ${jsonEncode(path)}.',
+          : 'Search the authorized Environment scope ${jsonEncode(path)}.',
     );
   }
 
@@ -191,11 +190,20 @@ final class _SearchExecutable implements ToolExecutable {
         );
         return;
       }
-      final EnvironmentDirectoryListing root = await _fileSystem.readDirectory(
-        state.path,
-      );
-      state.readOccurred = true;
-      await _searchListing(root, state);
+      EnvironmentDirectoryListing? root;
+      try {
+        root = await _fileSystem.readDirectory(state.path);
+        state.readOccurred = true;
+      } on EnvironmentFailure catch (error) {
+        // Only a kind mismatch permits trying a file. The file read still
+        // enforces regular-text-file semantics and all Environment boundaries.
+        if (error.code != 'not_directory' || state.path.isEmpty) rethrow;
+      }
+      if (root != null) {
+        await _searchListing(root, state);
+      } else {
+        await _searchFile(state.path, state, requiredScope: true);
+      }
       yield ToolExecutionTerminal(_success(state));
     } on AuthorizedEnvironmentBindingStale catch (error) {
       yield ToolExecutionTerminal(
@@ -275,7 +283,7 @@ final class _SearchExecutable implements ToolExecutable {
     for (final EnvironmentDirectoryEntry entry in entries) {
       if (state.stopped) return;
       if (state.entries == _maxEntries) {
-        state.truncated = true;
+        state.stop('max_entries', _maxEntries);
         return;
       }
       state.entries++;
@@ -290,6 +298,7 @@ final class _SearchExecutable implements ToolExecutable {
             state.readOccurred = true;
             await _searchListing(nested, state);
           } on EnvironmentFailure {
+            state.failedDirectoryReads++;
             state.incomplete = true;
             continue;
           }
@@ -299,9 +308,13 @@ final class _SearchExecutable implements ToolExecutable {
     }
   }
 
-  Future<void> _searchFile(String relativePath, _SearchState state) async {
+  Future<void> _searchFile(
+    String relativePath,
+    _SearchState state, {
+    bool requiredScope = false,
+  }) async {
     if (state.failedFileReads >= _maxFailedFileReads) {
-      state.truncated = true;
+      state.stop('max_failed_file_reads', _maxFailedFileReads);
       return;
     }
     EnvironmentTextFile file;
@@ -309,12 +322,13 @@ final class _SearchExecutable implements ToolExecutable {
       file = await _fileSystem.readFile(relativePath);
       state.readOccurred = true;
     } on EnvironmentFailure {
+      if (requiredScope) rethrow;
       state.failedFileReads++;
       state.incomplete = true;
       return;
     }
     if (file.sizeBytes > _maxSearchedBytes - state.searchedBytes) {
-      state.truncated = true;
+      state.stop('max_searched_bytes', _maxSearchedBytes);
       return;
     }
     state.searchedBytes += file.sizeBytes;
@@ -323,7 +337,7 @@ final class _SearchExecutable implements ToolExecutable {
       lineNumber++;
       if (!line.contains(state.query)) continue;
       if (state.matches.length == _maxMatches) {
-        state.truncated = true;
+        state.stop('max_matches', _maxMatches);
         return;
       }
       state.matches.add(
@@ -353,9 +367,15 @@ final class _SearchExecutable implements ToolExecutable {
       if (state.matches.isEmpty)
         'Scope note: current stock search defaults exclude common generated, dependency, and metadata directories.',
       if (state.truncated)
-        'Search truncated: a configured search limit was reached.',
+        'Search truncated: ${state.stopReason} limit (${state.stopLimit}) reached. '
+            'Retained matches: ${state.matches.length}; directory entries visited: '
+            '${state.entries}; searched bytes: ${state.searchedBytes}; '
+            'failed file reads: ${state.failedFileReads}.',
       if (state.incomplete)
-        'Search incomplete: one or more files or directories could not be inspected.',
+        'Search incomplete: files or directories could not be inspected '
+            '(${state.failedFileReads} failed file reads, '
+            '${state.failedDirectoryReads} failed directory reads). '
+            '${state.truncated ? 'Traversal stopped at the limit above.' : 'Traversal completed with these paths skipped; no search resource limit stopped it.'}',
     ].join('\n');
     return ToolOutcome(
       disposition: ToolOutcomeDisposition.success,
@@ -378,6 +398,7 @@ final class _SearchExecutable implements ToolExecutable {
     ],
     'truncated': state.truncated,
     'incomplete': state.incomplete,
+    ...state.diagnostics,
     'environmentId': _fileSystem.environmentId.value,
   };
 
@@ -388,7 +409,7 @@ final class _SearchExecutable implements ToolExecutable {
   }
 }
 
-String _canonicalDirectoryPath(String path) {
+String _canonicalScopePath(String path) {
   // Reject before normalization or URI encoding can change the path identity.
   for (int index = 0; index < path.length; index++) {
     final int codeUnit = path.codeUnitAt(index);
@@ -408,7 +429,7 @@ String _canonicalDirectoryPath(String path) {
   }
   if (path.startsWith('/') || path.contains('\u0000')) {
     throw const ToolArgumentValidationException(
-      'path must be a NUL-free Environment-relative directory path.',
+      'path must be a NUL-free Environment-relative scope path.',
     );
   }
   final List<String> segments = <String>[];
@@ -433,7 +454,25 @@ final class _SearchState {
   int entries = 0;
   int searchedBytes = 0;
   int failedFileReads = 0;
-  bool truncated = false;
+  int failedDirectoryReads = 0;
+  String? stopReason;
+  int? stopLimit;
+
+  bool get truncated => stopReason != null;
+
+  void stop(String reason, int limit) {
+    stopReason = reason;
+    stopLimit = limit;
+  }
+
+  Map<String, Object?> get diagnostics => <String, Object?>{
+    'stopReason': stopReason,
+    'stopLimit': stopLimit,
+    'entriesVisited': entries,
+    'searchedBytes': searchedBytes,
+    'failedFileReads': failedFileReads,
+    'failedDirectoryReads': failedDirectoryReads,
+  };
   bool incomplete = false;
   bool readOccurred = false;
 
@@ -512,6 +551,7 @@ ToolOutcome _failure(
     ],
     'truncated': state.truncated,
     'incomplete': state.incomplete,
+    ...state.diagnostics,
     'environmentId': environmentId,
   },
   hostDiagnostic: cause.toString(),

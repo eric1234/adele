@@ -519,6 +519,29 @@ It should never silently fall back to unrelated host filesystem access when the 
 
 ## 8.2 Search Tools
 
+The current stock `search(query, path?)` performs case-sensitive literal text
+search using only Session-authorized Environment directory and bounded text-file
+reads. Omitted/empty `path` recursively searches root; an Environment-relative
+directory scopes recursion, while a regular text file scopes search to that file.
+Only the Environment `not_directory` failure permits trying a file read; missing,
+unreadable, stale, and unavailable scopes do not fall back to root or successful
+empty results. Existing path normalization and confinement remain in force.
+Stock exclusions (`.git`, `.dart_tool`, `build`, `node_modules`) are
+case-insensitive and also reject explicit scopes beneath excluded directories.
+
+Search retains at most 100 matching lines, visits at most 10,000 directory
+entries, searches at most 16 MiB, and attempts no further file reads after 32
+failed file reads. Reaching a boundary alone does not imply truncation: remaining
+work must encounter the limit. Model output and host evidence identify the stop
+reason (`max_matches`, `max_entries`, `max_searched_bytes`, or
+`max_failed_file_reads`) and limit, with bounded counters. `truncated` remains the
+resource-stop indicator; `incomplete` indicates skipped read failures. Completed
+traversal with skips reports file/directory failure counts, not unbounded path or
+exception lists. Provider whole-file read bounds still apply; searched bytes are
+not a transport-byte budget. Results remain deterministic lexical traversal with
+one bounded snippet per matching line. No regex, glob, ranking, or configurable
+budgets are implemented.
+
 Possible implementations include native text search, command-backed `rg`/`grep`, semantic/vector search, and future language-aware search.
 
 Likely provides model search tools, structured results, inspection UI, optional `NavigationView`, and explicit user Commands/keybindings.
