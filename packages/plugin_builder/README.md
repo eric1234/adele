@@ -12,6 +12,44 @@ package's name from `pubspec.yaml`, and checks the absolute
 Missing or stale plugin contract sources fail before Flutter validation,
 dependency resolution, or backend compilation.
 
+`compileAotSnapshot` is the reusable single-snapshot primitive. Callers select
+the Dart executable, working directory, entrypoint, output artifact, and diagnostic
+stage. It creates the output parent, runs `dart compile aot-snapshot`, delivers
+captured `PluginBuildDiagnostic` output (including failures), and throws
+`PluginBuildFailure` on process-start failure, a nonzero exit, or missing output.
+The optional diagnostic callback is awaited before checking the result, preserving
+the builder's stdout/stderr files even on compiler failure. Source discovery,
+toolchain selection, dependency resolution, and artifact lifetime stay with callers.
+The development builder, self-hosting compiler, and resource-inspector smoke
+compiler share this primitive.
+
+## Desktop Tooling
+
+Normal `dart tools/adele.dart run linux` and `build linux --profile` prepare the
+shared host and Git Environment backend AOT snapshots outside Flutter, before
+launching the Flutter run/build command. This also applies to explicit Linux
+debug/release modes; non-Linux commands and the explicit development smoke entry
+remain unchanged. `tools/backend_artifacts.dart` owns the repository source paths,
+not the app or the snapshot primitive.
+
+The launcher inspects its selected Flutter executable and uses that SDK's bundled
+`dart` and sibling `dartaotruntime`, not a potentially unrelated `dart` on PATH.
+It compiles the host first, then Git, and only after both succeed passes exactly:
+
+- `ADELE_DARTAOTRUNTIME_EXECUTABLE`: absolute matched runtime path.
+- `ADELE_BACKEND_HOST_ARTIFACT`: absolute shared host `.aot` path.
+- `ADELE_GIT_ENVIRONMENT_ARTIFACT`: absolute Git backend `.aot` path.
+
+Each invocation gets a fresh `.dart_tool/adele/desktop-backends/build-*` directory.
+Outputs are retained, including partial failed builds, so later invocations do not
+replace artifacts still used by an app or previously built bundle. This is local
+development provisioning, not portable distribution: bundles retain absolute paths,
+and removing those artifacts or changing the SDK can invalidate them. There is no
+cache, manifest, installation, automatic cleanup, or packaging architecture here.
+Workspace dependencies must already be bootstrapped for real compilation. The
+launcher uses SDK-only relative imports so `test-plan --json` still runs before
+bootstrap. Focused launcher tests use fake SDK processes rather than desktop builds.
+
 ## Dependencies
 
 It may depend on lightweight pure-Dart build libraries and public contract

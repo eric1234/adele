@@ -205,6 +205,95 @@ echo "Dart 3.10.9" >&2
     );
     expect(log.readAsLinesSync(), <String>['--version']);
   });
+
+  test(
+    'builds the shared host through the checked snapshot compiler',
+    () async {
+      final File fake = _script(root, 'fake', 'printf snapshot > "\$5"');
+      final BackendHostBuildResult build =
+          await const DevelopmentPluginBuilder().buildBackendHost(
+            repositoryRoot: root,
+            dartExecutable: fake.path,
+          );
+
+      expect(build.artifact.readAsStringSync(), 'snapshot');
+      expect(build.diagnostic.stage, 'backend-host-compilation');
+      expect(build.diagnostic.command, <String>[
+        fake.path,
+        'compile',
+        'aot-snapshot',
+        '${root.path}/packages/plugin_backend_host/bin/adele_backend_host.dart',
+        '-o',
+        build.artifact.absolute.path,
+      ]);
+    },
+  );
+
+  for (final int compilerExitCode in <int>[0, 9]) {
+    test(
+      'preserves backend diagnostic files on exit $compilerExitCode',
+      () async {
+        final File fake = _script(root, 'fake', '''
+if [ "\$1" = "--version" ]; then
+  printf 'Dart 3.10.9\n{"frameworkVersion":"3.38.10"}\n'
+elif [ "\$1" = "compile" ]; then
+  printf 'compiler output'
+  printf 'compiler diagnostics' >&2
+  if [ '$compilerExitCode' = '0' ]; then printf snapshot > "\$5"; fi
+  exit $compilerExitCode
+fi
+''');
+        final Future<PluginBuildResult> pending =
+            const DevelopmentPluginBuilder().prepareBackend(
+              repositoryRoot: root,
+              pluginDirectory: plugin,
+              dartExecutable: fake.path,
+              flutterExecutable: fake.path,
+              expectedDartVersion: '3.10.9',
+              expectedFlutterVersion: '3.38.10',
+            );
+        if (compilerExitCode == 0) {
+          final PluginBuildResult build = await pending;
+          expect(build.backendArtifact.readAsStringSync(), 'snapshot');
+          expect(build.diagnostics.last.stage, 'backend-compilation');
+        } else {
+          await expectLater(
+            pending,
+            throwsA(
+              isA<PluginBuildFailure>().having(
+                (PluginBuildFailure failure) => failure.diagnostic?.exitCode,
+                'exit code',
+                compilerExitCode,
+              ),
+            ),
+          );
+        }
+        final Iterable<File> files = root
+            .listSync(recursive: true)
+            .whereType<File>();
+        expect(
+          files
+              .singleWhere(
+                (File file) => file.path.endsWith('backend.stdout.txt'),
+              )
+              .readAsStringSync(),
+          'compiler output',
+        );
+        expect(
+          files
+              .singleWhere(
+                (File file) => file.path.endsWith('backend.stderr.txt'),
+              )
+              .readAsStringSync(),
+          'compiler diagnostics',
+        );
+        expect(
+          files.where((File file) => file.path.endsWith('current.json')),
+          isEmpty,
+        );
+      },
+    );
+  }
 }
 
 File _script(Directory directory, String name, String body) {

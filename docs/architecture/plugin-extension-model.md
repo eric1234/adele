@@ -15,6 +15,16 @@ means one button per contribution in registry registration order. They have no
 priorities, defaults, categories, or applicability rules. Cancellation is a
 successful `null` result, distinct from selector or lifecycle failure.
 
+Normal Task/primary Environment creation uses existing capability routing and
+product lifecycle, not a new extension point or Task Browser API. Synchronous,
+provider-free `AdeleRuntime()` owns generic application-lifetime backend bootstrap
+on the same capability registry. Explicit async stock composition activates Git
+through one shared host, using activation code shared with self-hosting; the
+generic bootstrap owner remains Git-neutral. See
+[`dependency-rules.md`](dependency-rules.md#application-backend-composition) for
+ownership and replaceability; profiles, discovery, and production packaging remain
+deferred.
+
 See also:
 
 - [`contracts-and-capabilities.md`](contracts-and-capabilities.md) for implemented contract and capability boundaries;
@@ -290,6 +300,19 @@ URI. Lifecycle publishes and returns the canonical Project; `_project` in app
 State is window-local presentation, not `runtime.currentProject`. No selector
 owns product creation, derived Project metadata, persistence, or deduplication.
 
+## 5.4 Task and Environment boundary
+
+Task presentation calls `runtime.lifecycle.createTask(projectId: ..., title: ...)`
+without a provider ID. The existing capability registry resolves the
+Environment provider; stock Git is supplied by composition, not selected by
+presentation. Providers own source validation, including non-Git rejection, while
+Project selection/opening remains independent of backend readiness or failure.
+
+Only lifecycle success presents the canonical Task and primary Environment;
+selection is window-local. Readiness comes from the live exact binding, not
+interpretation of opaque `providerState`. This adds no Session/Chat/Run flow,
+Task Browser, or public UI/Command API.
+
 ---
 
 # 6. Composition is live; resolved operations remain stable
@@ -335,6 +358,15 @@ after disposal/exit and never tries a replacement contribution. Buttons are
 disabled while selection is pending; cancellation is a no-op, and selector or
 lifecycle failure stays inline without changing the presented Project.
 
+Task establishment settlement is unchanged: provider success publishes the
+Task and finalized primary Environment and records the exact materialization.
+Successful provider state is intentionally retained even if its generation
+retires immediately afterward; unavailable live readiness does not roll back that
+state or permit presentation to migrate the old binding. Window lifetime guards
+reject late updates after disposal/exit. Application close drains pending Task
+establishment before runtime cleanup, even on failure, without cancellation or
+rollback.
+
 ---
 
 # 7. Host-owned contextual defaults
@@ -363,6 +395,11 @@ Provider default selection is distinct from extension ordering. An ordered list 
 
 This direction does not add default routing to B1 Project selectors. Each
 contribution is an explicitly invoked action, not a default/alternate provider.
+
+Task creation uses the existing callable capability default: descending
+provider rank, then ascending provider identity. It does not introduce an
+ambiguous-multiple-provider rule, applicability matching, or a profile preference
+resolver. Session strategy resolution's exactly-one semantics are distinct.
 
 ---
 
@@ -528,6 +565,7 @@ Examples:
 - A mandatory security/policy participant failing may make it unsafe to continue.
 - Implemented inference-context sources explicitly declare required or optional failure behavior: required failure aborts preparation, optional failure omits the whole source with diagnostics, and successful empty output remains distinct.
 - B1 Project selectors return `null` for cancellation; selector/lifecycle failure is an inline app error with no fallback or change to the presented Project.
+- Backend startup failure cleans up acquired resources and leaves Task support visibly unavailable without blocking Project opening; Task establishment failure publishes no new Task/Environment and substitutes no provider.
 
 Each Extension Point must define failure semantics appropriate to its role.
 
@@ -583,9 +621,10 @@ Application Commands are distinct from the model-callable Command Tool that exec
 
 B1's host-rendered selector buttons are temporary presentation over the typed
 callback and core Project lifecycle, not Command registration or a chooser
-framework. Command surfacing and Task Browser remain deferred; the minimal
-opened-Project view and remaining scope are described in
-[`overview.md`](overview.md#project).
+framework. Task presentation similarly invokes core Task lifecycle, not Git
+directly. Command surfacing and Task Browser remain deferred; the minimal
+Project/Task/Environment view and remaining scope are described in
+[`overview.md`](overview.md#core-product-domain-direction).
 
 ---
 

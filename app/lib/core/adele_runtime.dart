@@ -8,6 +8,7 @@ import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:local_directory_project_selector_plugin/local_directory_project_selector_plugin.dart';
 import 'package:search_tools_plugin/search_tools_plugin.dart';
 
+import 'application_plugin_bootstrap.dart';
 import 'product_lifecycle.dart';
 import 'resource_cleanup.dart';
 
@@ -15,6 +16,7 @@ import 'resource_cleanup.dart';
 /// Providers and product operations are established separately by callers.
 final class AdeleRuntime {
   AdeleRuntime({ProductIdSource? ids, bool includeCommandTools = true}) {
+    plugins = ApplicationPluginBootstrap(registry);
     lifecycle = ProductLifecycleCoordinator.generated(
       store: store,
       registry: registry,
@@ -39,12 +41,14 @@ final class AdeleRuntime {
   final ChatStrategyPlugin chat = ChatStrategyPlugin();
   late final ProductLifecycleCoordinator lifecycle;
   late final InferenceContextComposer contextComposer;
+  late final ApplicationPluginBootstrap plugins;
   late final List<ExtensionRegistration> _activations;
   Future<void>? _closing;
 
-  /// Retires owned extensions in reverse activation order, attempting every close.
+  /// Closes backend resources, then owned extensions in reverse activation order.
   /// Concurrent and subsequent callers observe the same completion or failure.
   Future<void> close() => _closing ??= closeResources(<Future<void> Function()>[
+    plugins.close,
     for (final ExtensionRegistration activation in _activations.reversed)
       activation.close,
   ]);

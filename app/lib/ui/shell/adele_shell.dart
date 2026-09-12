@@ -11,6 +11,10 @@ final class AdeleShell extends StatelessWidget {
     required this.onSelectProject,
     this.openingProject = false,
     this.projectError,
+    this.task,
+    this.environment,
+    this.environmentReady = false,
+    this.taskControls,
   });
 
   final Project? project;
@@ -19,6 +23,10 @@ final class AdeleShell extends StatelessWidget {
   onSelectProject;
   final bool openingProject;
   final String? projectError;
+  final Task? task;
+  final Environment? environment;
+  final bool environmentReady;
+  final Widget? taskControls;
 
   @override
   Widget build(BuildContext context) {
@@ -64,7 +72,31 @@ final class AdeleShell extends StatelessWidget {
                             const SizedBox(height: 8),
                             SelectableText(project.sourceLocation.toString()),
                             const SizedBox(height: 24),
-                            Text('No Tasks yet', style: textTheme.titleMedium),
+                            if (task case final Task task) ...[
+                              Text(
+                                'Task: ${task.title}',
+                                style: textTheme.titleMedium,
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                environmentReady
+                                    ? 'Primary Environment ready'
+                                    : 'Primary Environment unavailable',
+                              ),
+                              if (environment
+                                  case final Environment environment)
+                                SelectableText(
+                                  'Environment: ${environment.id}',
+                                ),
+                            ] else
+                              Text(
+                                'No Tasks yet',
+                                style: textTheme.titleMedium,
+                              ),
+                            if (taskControls case final Widget controls) ...[
+                              const SizedBox(height: 24),
+                              controls,
+                            ],
                           ] else ...<Widget>[
                             if (selectors.isEmpty)
                               const Text('No Project selectors are available.'),

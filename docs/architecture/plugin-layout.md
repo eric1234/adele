@@ -107,6 +107,29 @@ one runtime—for example Git may provide Environment behavior, review/SCM
 services, Commands, summary contributions, and model tools. Registration into
 multiple extension points does not imply multiple plugin runtimes.
 
+## Normal stock backend composition
+
+Normal composition uses the existing backend-only Git plugin without linking its
+implementation into Flutter. Synchronous, provider-free `AdeleRuntime()` owns
+in-process stock registrations and generic `ApplicationPluginBootstrap` on its
+existing capability registry. `AdeleApplication` explicitly invokes async stock
+composition, supplying activation callbacks to that application-lifetime owner
+of one shared backend host. Normal composition currently activates only Git.
+
+`app/lib/plugins/stock_git_environment.dart` centralizes stock Git plugin/provider
+IDs, display name, capability/service exposure, and default configuration-context
+registration for normal and self-hosting paths. It loads an artifact using host
+APIs and public Environment contracts, not backend implementation imports.
+Self-hosting retains its separate larger artifact/host topology.
+
+The app consumes prepared artifacts; source discovery and compilation belong to
+tooling. Missing configuration or startup failure leaves Task support unavailable
+without blocking Project opening; failed startup cleans up acquired resources.
+Deployment and build details are maintained in
+[`app/README.md`](../../app/README.md#b2-backend-startup) and the
+[`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
+This is not plugin installation, production packaging, discovery, or profiles.
+
 ## Proven and deferred
 
 The `workspace_demo` fixture proves local AOT compilation, shared process-hosted

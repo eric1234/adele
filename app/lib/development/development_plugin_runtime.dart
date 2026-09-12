@@ -198,11 +198,11 @@ final class DevelopmentPluginRuntime {
     final File alternateArtifact = File(
       '${artifactDirectory.path}/resource-inspector-alternate.aot',
     );
-    await _compileBackend(
+    await compileResourceInspectorBackend(
       '${root.path}/plugins/resource_inspector/packages/basic_backend/bin/resource_inspector_basic_backend.dart',
       basicArtifact,
     );
-    await _compileBackend(
+    await compileResourceInspectorBackend(
       '${root.path}/plugins/resource_inspector/packages/alternate_backend/bin/resource_inspector_alternate_backend.dart',
       alternateArtifact,
     );
@@ -267,16 +267,38 @@ final class DevelopmentPluginRuntime {
     );
   }
 
-  Future<void> _compileBackend(String entrypoint, File artifact) async {
-    final ProcessResult result = await Process.run(
-      configuration.dartExecutable,
-      <String>['compile', 'aot-snapshot', entrypoint, '-o', artifact.path],
-      workingDirectory: configuration.repositoryRoot.path,
-    );
-    diagnostics.add('resource-inspector compile: exit ${result.exitCode}');
-    if (result.exitCode != 0) {
-      throw StateError(
-        'Resource inspector compilation failed: ${result.stderr}',
+  @visibleForTesting
+  Future<void> compileResourceInspectorBackend(
+    String entrypoint,
+    File artifact,
+  ) async {
+    try {
+      await compileAotSnapshot(
+        dartExecutable: configuration.dartExecutable,
+        workingDirectory: configuration.repositoryRoot,
+        entrypoint: entrypoint,
+        artifact: artifact,
+        stage: 'resource-inspector compile',
+        onDiagnostic: (PluginBuildDiagnostic diagnostic) {
+          diagnostics.add('${diagnostic.stage}: exit ${diagnostic.exitCode}');
+        },
+      );
+    } on PluginBuildFailure catch (failure, stackTrace) {
+      final PluginBuildDiagnostic? diagnostic = failure.diagnostic;
+      if (diagnostic == null || diagnostic.exitCode == 0) rethrow;
+      // Smoke startup surfaces the exception before its final diagnostic dump.
+      Error.throwWithStackTrace(
+        PluginBuildFailure(
+          [
+            failure.message,
+            if (diagnostic.stdoutText.isNotEmpty)
+              'stdout:\n${diagnostic.stdoutText}',
+            if (diagnostic.stderrText.isNotEmpty)
+              'stderr:\n${diagnostic.stderrText}',
+          ].join('\n'),
+          diagnostic: diagnostic,
+        ),
+        stackTrace,
       );
     }
   }

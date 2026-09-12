@@ -78,6 +78,34 @@ Existing ownership remains singular:
 - Environment provider contracts belong to `adele_environment`.
 - Plugin-defined ecosystems keep their contracts with their deliberately public plugin/component API owners.
 
+### Application backend composition
+
+`AdeleRuntime()` synchronously registers in-process stock contributions and remains
+provider-free. Its pure-Dart `ApplicationPluginBootstrap` owns application-lifetime
+backend resources on the same `CapabilityRegistry` used by lifecycle. Normal
+`AdeleApplication` explicitly invokes async stock bootstrap. The generic owner
+uses `plugin_runtime` to own one shared backend host and callback-created activations;
+stock selection belongs to `app/lib/plugins/stock_backend_plugins.dart`, not
+generic runtime infrastructure. Future discovery/profile activation can replace
+that selection without changing downstream capability, extension, or lifecycle
+semantics.
+
+`app/lib/plugins/stock_git_environment.dart` owns the normal/self-hosting stock
+Git identities, display/service exposure, and configuration-context registration.
+It depends on public Environment contracts and host activation APIs, never Git
+backend implementation code. Generic Task presentation submits through product
+lifecycle and never parses opaque `providerState`; Environment providers own
+source validation.
+
+Normal bootstrap consumes prepared artifacts; source discovery and compilation
+belong to repository tooling and `plugin_builder`, outside the app startup import
+graph. Operational details live in [`app/README.md`](../../app/README.md#b2-backend-startup)
+and the [`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
+Self-hosting shares stock Git activation code but retains its
+independent artifact/host topology and does not consume normal configuration.
+These boundaries add no public API package, profile system, plugin discovery, or
+production packaging mechanism.
+
 ## Plugin dependencies
 
 A plugin may depend on public surfaces as needed:
