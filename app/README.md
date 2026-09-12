@@ -5,10 +5,33 @@ root. It is an internal application, not a plugin-facing package.
 
 ## Normal Application
 
-The app currently owns its minimal shell, theme, and private widgets. It
-displays only the ADELE name and static empty-state messages. The current
-`No workspace is open` text is legacy/provisional UI copy; it does not define a
-first-class Workspace product concept.
+The app owns its minimal shell, theme, and private widgets. The shell displays
+the ADELE name and `No Project is open`.
+
+The Stateful `AdeleApplication` constructs one `AdeleRuntime` synchronously in
+`initState` and retains it across rebuilds. `lib/core/adele_runtime.dart` owns one
+`CapabilityRegistry`, `ExtensionRegistry`, `InMemoryProductStore`,
+`ProductLifecycleCoordinator.generated` wired to those same registries and store,
+`InferenceContextComposer` over the same extension registry, and retained
+`ChatStrategyPlugin`. It statically activates Chat, root-level AGENTS.md,
+Filesystem Tools, Search Tools, and Command Tools in process. This is implicit
+stock composition, not plugin discovery or a profile API. The existing
+`includeCommandTools` flag only preserves the reduced live-smoke harness
+composition; normal startup includes Command Tools.
+
+Desktop exit requests await runtime close. Detach/dispose initiate the same
+cleanup without awaiting it, and failures are reported through `FlutterError`.
+`AdeleRuntime.close` shares one completion or failure across callers and closes
+only its owned activations, in reverse activation order. The `closeResources`
+helper in `lib/core/resource_cleanup.dart`, shared with development teardown,
+attempts every action before rethrowing the first error with its stack.
+
+Normal startup does not launch providers or a backend host, compile AOT
+artifacts, load credentials, create a Project, Task, Environment, or Session,
+build a tool catalog, or start a Run. Provider/model configuration, Project
+selection, Task/Environment establishment, Chat UI, and the Run product flow
+remain deferred for the normal application. The shared runtime has no dependency
+on development composition or its model capability adapter.
 
 ADR 0031 accepts Project, Task, Session, Run, and Environment as the shared
 product-domain identities. The application now contains the in-memory
@@ -22,19 +45,23 @@ plugins use that context to provide Environment-authorized `read_file`,
 `apply_patch`, `create_file`, `delete_file`, `search`, and `run_command`. Search
 requests only the read facet; Command Tools requests only the process facet.
 `search(query, path?)` performs bounded, case-sensitive literal substring search.
-The optional Environment-relative `path` scopes recursion to a directory;
-omitted or empty selects root (canonical `""`). Redundant slashes and `.`
-segments are removed; parent traversal and absolute paths are rejected.
+The optional Environment-relative `path` scopes search to one regular text file
+or recursively to a directory; omitted or empty recursively selects root
+(canonical `""`). A file scope searches only that file, never siblings.
+Redundant slashes and `.` segments are removed; parent traversal and absolute
+paths are rejected.
 Canonical `path` is retained in host evidence and used in effect descriptions.
-Normal scopes are opened through the authorized directory-read boundary, so
-missing directories and file-valued scopes fail rather than falling back to root.
+Scopes are opened through the authorized directory-read boundary; only a
+`not_directory` failure for a nonempty path permits trying a text-file read.
+Invalid, missing, unreadable, stale, or unavailable scopes fail rather than
+falling back to root or successful empty results.
 The stock `.git`, `.dart_tool`, `build`, and `node_modules` exclusions match
 directory names case-insensitively on every Environment, including case-sensitive
 filesystems. This policy applies both to recursive traversal and explicit scope
 segments; explicit excluded scopes fail before provider reads. It does not change
 case-sensitive query matching or the spelling of canonical paths.
-Use `read_file` for an exact known file.
-Lifecycle UI and normal stock-plugin composition are not implemented yet.
+Use `read_file` to retrieve an exact known file's contents and revision.
+Lifecycle UI remains deferred despite normal stock-plugin activation.
 
 The normal application does not display the `workspace_demo` reference plugin.
 The maintained `lib/development_smoke.dart` entrypoint exercises the plugin
@@ -170,8 +197,9 @@ text bytes, separated by blank lines. The snapshot always retains its
 empty strategy text; whitespace-only strategy text is preserved. Zero-source behavior is
 byte-for-byte unchanged. Source sorting grants no semantic authority or numeric
 priority, and semantic input is unchanged. Chat activates no source and remains
-AGENTS-unaware. Only development/self-hosting composition activates stock
-`agents_md_plugin`, which rereads root `AGENTS.md` through the Session-authorized
+AGENTS-unaware. `AdeleRuntime` activates stock `agents_md_plugin` in normal startup
+and development/self-hosting. Activation alone does not read a file; the source
+rereads root `AGENTS.md` through the Session-authorized
 `AuthorizedEnvironmentFileReadFacet` each snapshot. `not_found` and blank files
 produce successful empty output; other read/service/authority errors fail the
 required source. Nonblank exact file text and its Environment revision form one
@@ -188,8 +216,9 @@ token budgets, and compaction remain deferred.
 
 Allowed dependencies are Flutter, ADELE public packages, and internal host
 implementations required at the composition root. Statically composed stock
-plugins include `chat_strategy_plugin` and `agents_md_plugin`, resolved through
-the root pub workspace for development/self-hosting composition.
+plugins include `chat_strategy_plugin`, `agents_md_plugin`,
+`filesystem_tools_plugin`, `search_tools_plugin`, and `command_tools_plugin`,
+resolved through the root pub workspace for shared `AdeleRuntime` composition.
 Chat's only direct production dependencies are `adele_orchestration` and
 `adele_plugin_api`; it has no `agent_kernel` dependency, including in
 `dev_dependencies`.
@@ -241,12 +270,22 @@ tools. The isolated repository does not share Git refs or a writable local
 origin with the launching checkout; final Git evidence records what actually
 remained clean. This is source-layout isolation, not a command sandbox.
 
-The topology activates Chat and the independent root-level AGENTS.md source
-before creating the canonical Session. Execution obtains that Session's retained
-Chat state, sets instructions and invocation
-budget, appends `ChatUserMessage(prompt)`, and passes `SessionId` through lifecycle
-resolution and `createSessionOrchestrationRun`. It does not construct a Chat loop
-or a separate development history adapter.
+`DevelopmentSelfHostingTopology` owns an `AdeleRuntime` instance rather than
+duplicating its registries, store, lifecycle coordinator, context composer,
+Chat plugin, and stock activations. The topology/runner still owns the shared
+backend host and AOT artifacts, isolated Git source and provider activations,
+Project/Task/Environment/Session establishment, tool catalog, model selection,
+development IDs, Run execution, and evidence. The model capability adapter stays
+in `lib/development/agent/agent_capability_adapters.dart`; it is not a structural
+dependency of normal runtime composition. Topology teardown closes its runtime,
+then its Environment activation and host, attempting every cleanup action.
+
+The runtime activates Chat and the independent root-level AGENTS.md source
+before the topology creates the canonical Session. Execution obtains that
+Session's retained Chat state, sets instructions and invocation budget, appends
+`ChatUserMessage(prompt)`, and passes `SessionId` through lifecycle resolution and
+`createSessionOrchestrationRun`. It does not construct a Chat loop or a separate
+development history adapter.
 
 The bounded stock Chat strategy accepts multiple proposals from one completed
 model invocation and executes them sequentially in output order against that
@@ -284,12 +323,14 @@ automatic cleanup, validation planning, commit, push, or PR workflow.
 
 ## Deferred
 
-Normal Project selection, Chat UI, Session/Chat persistence and child lifecycle,
+Normal provider/model configuration, Project selection, Task/Environment
+establishment, Chat UI and the Run product flow, Session/Chat persistence and
+child lifecycle,
 context sources beyond root AGENTS.md, nested/scoped AGENTS.md, aliases/overrides,
 global/home files, imports, AGENTS.md caching, broader Reference/Observation material,
 provider-aware projection/cache planning, token budgets and compaction, additional
 Environment-backed mutation tools, profiles, product
-plugin discovery/activation, production Agent UI, application
+plugin discovery and configurable activation, production Agent UI, application
 Commands/keybindings, and plugin-facing UI extension APIs remain deferred. The
 stock Git worktree Environment provider is currently exercised through focused
 backend and shared-host AOT tests rather than normal UI.

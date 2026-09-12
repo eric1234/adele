@@ -1,22 +1,19 @@
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_desktop/core/resource_cleanup.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
-import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
-import 'package:agents_md_plugin/agents_md_plugin.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
-import 'package:command_tools_plugin/command_tools_plugin.dart';
-import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
-import 'package:search_tools_plugin/search_tools_plugin.dart';
 
 const String developmentSelfHostingApiKeyProviderId =
     'dev.adele.openai.api-key';
@@ -232,11 +229,7 @@ Future<void> cloneDevelopmentSelfHostingProject({
 final class DevelopmentSelfHostingTopology {
   DevelopmentSelfHostingTopology._({
     required this.host,
-    required this.registry,
-    required this.store,
-    required this.lifecycle,
-    required this.chat,
-    required this.contextComposer,
+    required this.runtime,
     required this.project,
     required this.task,
     required this.environment,
@@ -245,24 +238,16 @@ final class DevelopmentSelfHostingTopology {
     required this.catalog,
     required this.projectSource,
     required PluginCapabilityActivation environmentActivation,
-    required ExtensionRegistration agentsMdActivation,
-    required ExtensionRegistration strategyActivation,
-    required ExtensionRegistration filesystemActivation,
-    required ExtensionRegistration searchActivation,
-    required ExtensionRegistration? commandActivation,
-  }) : _environmentActivation = environmentActivation,
-       _agentsMdActivation = agentsMdActivation,
-       _strategyActivation = strategyActivation,
-       _filesystemActivation = filesystemActivation,
-       _searchActivation = searchActivation,
-       _commandActivation = commandActivation;
+  }) : _environmentActivation = environmentActivation;
 
   final PluginBackendHost host;
-  final CapabilityRegistry registry;
-  final InMemoryProductStore store;
-  final ProductLifecycleCoordinator lifecycle;
-  final ChatStrategyPlugin chat;
-  final InferenceContextComposer contextComposer;
+  final AdeleRuntime runtime;
+
+  CapabilityRegistry get registry => runtime.registry;
+  InMemoryProductStore get store => runtime.store;
+  ProductLifecycleCoordinator get lifecycle => runtime.lifecycle;
+  ChatStrategyPlugin get chat => runtime.chat;
+  InferenceContextComposer get contextComposer => runtime.contextComposer;
   final Project project;
   final Task task;
   final Environment environment;
@@ -271,12 +256,7 @@ final class DevelopmentSelfHostingTopology {
   final ToolCatalog catalog;
   final Directory projectSource;
   final PluginCapabilityActivation _environmentActivation;
-  final ExtensionRegistration _agentsMdActivation;
-  final ExtensionRegistration _strategyActivation;
-  final ExtensionRegistration _filesystemActivation;
-  final ExtensionRegistration _searchActivation;
-  final ExtensionRegistration? _commandActivation;
-  bool _closed = false;
+  Future<void>? _closing;
 
   SessionId get sessionId => session.id;
 
@@ -295,14 +275,16 @@ final class DevelopmentSelfHostingTopology {
       hostArtifactPath: artifacts.hostArtifact.path,
       environment: hostEnvironment,
     );
-    final CapabilityRegistry registry = CapabilityRegistry();
+    AdeleRuntime? runtime;
     PluginCapabilityActivation? environmentActivation;
-    ExtensionRegistration? agentsMdActivation;
-    ExtensionRegistration? strategyActivation;
-    ExtensionRegistration? filesystemActivation;
-    ExtensionRegistration? searchActivation;
-    ExtensionRegistration? commandActivation;
     try {
+      runtime = AdeleRuntime(
+        ids: _DevelopmentSelfHostingIds(identity),
+        includeCommandTools: includeCommandTools,
+      );
+      final CapabilityRegistry registry = runtime.registry;
+      final InMemoryProductStore store = runtime.store;
+      final ProductLifecycleCoordinator lifecycle = runtime.lifecycle;
       final ProviderId environmentProviderId = ProviderId(
         _gitEnvironmentProviderId,
       );
@@ -312,27 +294,10 @@ final class DevelopmentSelfHostingTopology {
         artifact: artifacts.gitEnvironmentArtifact,
         providerId: environmentProviderId,
       );
-      final ExtensionRegistry extensions = ExtensionRegistry();
-      final ChatStrategyPlugin chat = ChatStrategyPlugin();
-      strategyActivation = chat.activate(extensions);
-      agentsMdActivation = const AgentsMdPlugin().activate(extensions);
-      filesystemActivation = const FilesystemToolsPlugin().activate(extensions);
-      searchActivation = const SearchToolsPlugin().activate(extensions);
-      if (includeCommandTools) {
-        commandActivation = const CommandToolsPlugin().activate(extensions);
-      }
       final ProviderBinding environmentBinding = registry.resolve(
         environmentProviderCapability,
         providerId: environmentProviderId,
       );
-      final InMemoryProductStore store = InMemoryProductStore();
-      final ProductLifecycleCoordinator lifecycle =
-          ProductLifecycleCoordinator.generated(
-            store: store,
-            registry: registry,
-            extensions: extensions,
-            ids: _DevelopmentSelfHostingIds(identity),
-          );
       final Project project = lifecycle.createProject(projectSource.uri);
       final TaskCreationResult created = await lifecycle.createTask(
         projectId: project.id,
@@ -383,16 +348,12 @@ final class DevelopmentSelfHostingTopology {
       final ToolCatalog catalog = await buildModelToolCatalogForSession(
         sessionId: session.id,
         environmentRuntime: lifecycle.environmentRuntime,
-        extensions: extensions,
+        extensions: runtime.extensions,
       );
       final DevelopmentSelfHostingTopology topology =
           DevelopmentSelfHostingTopology._(
             host: host,
-            registry: registry,
-            store: store,
-            lifecycle: lifecycle,
-            chat: chat,
-            contextComposer: InferenceContextComposer(extensions),
+            runtime: runtime,
             project: project,
             task: created.task,
             environment: created.environment,
@@ -401,23 +362,14 @@ final class DevelopmentSelfHostingTopology {
             catalog: catalog,
             projectSource: projectSource,
             environmentActivation: environmentActivation,
-            agentsMdActivation: agentsMdActivation,
-            strategyActivation: strategyActivation,
-            filesystemActivation: filesystemActivation,
-            searchActivation: searchActivation,
-            commandActivation: commandActivation,
           );
       log?.call('Project source: ${topology.projectSource.path}');
       log?.call('Task worktree: ${topology.taskWorktreePath}');
       return topology;
     } catch (error, stackTrace) {
       try {
-        await closeDevelopmentSelfHostingResources(<Future<void> Function()>[
-          if (commandActivation != null) commandActivation.close,
-          if (searchActivation != null) searchActivation.close,
-          if (filesystemActivation != null) filesystemActivation.close,
-          if (agentsMdActivation != null) agentsMdActivation.close,
-          if (strategyActivation != null) strategyActivation.close,
+        await closeResources(<Future<void> Function()>[
+          if (runtime != null) runtime.close,
           if (environmentActivation != null) environmentActivation.close,
           if (!host.isClosed) () => host.close(graceful: false),
         ]);
@@ -444,19 +396,11 @@ final class DevelopmentSelfHostingTopology {
 
   String get baselineCommit => _requiredProviderStateString('baselineCommit');
 
-  Future<void> close() async {
-    if (_closed) return;
-    _closed = true;
-    await closeDevelopmentSelfHostingResources(<Future<void> Function()>[
-      if (_commandActivation != null) _commandActivation.close,
-      _searchActivation.close,
-      _filesystemActivation.close,
-      _agentsMdActivation.close,
-      _strategyActivation.close,
-      _environmentActivation.close,
-      if (!host.isClosed) host.close,
-    ]);
-  }
+  Future<void> close() => _closing ??= closeResources(<Future<void> Function()>[
+    runtime.close,
+    _environmentActivation.close,
+    if (!host.isClosed) host.close,
+  ]);
 
   String _requiredProviderStateString(String name) {
     final Object? value = environment.providerState?[name];
@@ -613,24 +557,6 @@ Future<DevelopmentSelfHostingRunResult> executeDevelopmentSelfHostingRun({
     executionFailure: executionFailure,
     executionStackTrace: executionStackTrace,
   );
-}
-
-Future<void> closeDevelopmentSelfHostingResources(
-  List<Future<void> Function()> actions,
-) async {
-  Object? firstError;
-  StackTrace? firstStackTrace;
-  for (final Future<void> Function() action in actions) {
-    try {
-      await action();
-    } catch (error, stackTrace) {
-      firstError ??= error;
-      firstStackTrace ??= stackTrace;
-    }
-  }
-  if (firstError != null) {
-    Error.throwWithStackTrace(firstError, firstStackTrace!);
-  }
 }
 
 Map<String, String> _chatGptHostEnvironment(Map<String, String> source) {

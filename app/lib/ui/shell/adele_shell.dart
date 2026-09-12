@@ -32,28 +32,13 @@ final class AdeleShell extends StatelessWidget {
               Center(
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 560),
-                  child: const Column(
-                    children: <Widget>[
-                      _StatusCard(
-                        icon: Icons.folder_off_outlined,
-                        message: 'No workspace is open',
-                      ),
-                      SizedBox(height: 16),
-                      _StatusCard(
-                        icon: Icons.extension_off_outlined,
-                        message: 'No plugins are loaded',
-                      ),
-                    ],
+                  child: const _StatusCard(
+                    icon: Icons.folder_off_outlined,
+                    message: 'No Project is open',
                   ),
                 ),
               ),
               const Spacer(),
-              Text(
-                'Phase 0',
-                style: textTheme.labelLarge?.copyWith(
-                  color: Theme.of(context).colorScheme.primary,
-                ),
-              ),
             ],
           ),
         ),
@@ -82,7 +67,12 @@ final class _StatusCard extends StatelessWidget {
           children: <Widget>[
             Icon(icon, color: Theme.of(context).colorScheme.primary),
             const SizedBox(width: 16),
-            Text(message, style: Theme.of(context).textTheme.titleMedium),
+            Expanded(
+              child: Text(
+                message,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
           ],
         ),
       ),

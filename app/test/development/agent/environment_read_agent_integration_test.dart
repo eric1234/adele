@@ -93,6 +93,11 @@ void main() {
           );
       addTearDown(topology.close);
 
+      expect(topology.registry, same(topology.runtime.registry));
+      expect(topology.lifecycle, same(topology.runtime.lifecycle));
+      expect(topology.store, same(topology.runtime.store));
+      expect(topology.contextComposer, same(topology.runtime.contextComposer));
+      expect(topology.chat, same(topology.runtime.chat));
       expect(topology.sessionId, SessionId('session-topology'));
       expect(topology.sessionId, topology.session.id);
       expect(topology.session.taskId, topology.task.id);
@@ -112,9 +117,85 @@ void main() {
           .resolveSessionStrategy(topology.sessionId);
       expect(strategy.strategyId, topology.session.strategyId);
       expect(strategy.validateBinding, returnsNormally);
+      final MaterializedToolSet tools = topology.catalog.materialize();
+      expect(
+        tools.tools.map((MaterializedTool tool) => tool.modelDefinition.alias),
+        <String>[
+          'read_file',
+          'apply_patch',
+          'create_file',
+          'delete_file',
+          'search',
+          'run_command',
+        ],
+      );
+
+      const String taskGuidance = 'Use the Session-authorized Task source.\n';
+      await File(
+        '${source.path}/AGENTS.md',
+      ).writeAsString('Wrong Project guidance.');
+      await File(
+        '${topology.taskWorktreePath}/AGENTS.md',
+      ).writeAsString(taskGuidance);
+      final EnvironmentTextFile guidance = await topology
+          .environmentMaterialization
+          .provider
+          .readFile(topology.environment.id, 'AGENTS.md');
+      final ChatSessionState chatState = topology.runtime.chat.sessions.obtain(
+        topology.sessionId,
+      );
+      final _SearchReadModel model = _SearchReadModel();
+      final DevelopmentSelfHostingRunResult result =
+          await executeDevelopmentSelfHostingRun(
+            identity: 'topology',
+            lifecycle: topology.lifecycle,
+            contextComposer: topology.contextComposer,
+            sessions: topology.chat.sessions,
+            sessionId: topology.sessionId,
+            prompt: 'Locate and read ChatSessionState.',
+            instructions: 'Inspect source through the authorized Environment.',
+            model: model,
+            catalog: topology.catalog,
+            maxModelInvocations: 3,
+          );
+      expect(result.succeeded, isTrue);
+      expect(result.session, same(chatState));
+      expect(chatState.snapshot().entries, hasLength(2));
+      expect(model.receivedRealSource, isTrue);
+      expect(model.requests, hasLength(3));
+      for (final SemanticModelRequest request in model.requests) {
+        final InferenceContextSourceResult source =
+            request.context.sourceResults.single;
+        expect(
+          source.sourceId.value,
+          'dev.adele.plugin.agents-md.instructions',
+        );
+        expect(source.materials.last.text, taskGuidance);
+        expect(source.materials.last.revision, guidance.revision);
+      }
 
       await topology.close();
 
+      expect(topology.host.isClosed, isTrue);
+      expect(
+        topology.registry.providersFor(environmentProviderCapability),
+        isEmpty,
+      );
+      expect(
+        topology.runtime.extensions.discover(modelToolContributions),
+        isEmpty,
+      );
+      expect(
+        topology.runtime.extensions.discover(inferenceContextSources),
+        isEmpty,
+      );
+      expect(strategy.validateBinding, throwsA(isA<StaleExtensionBinding>()));
+      for (final MaterializedTool tool in tools.tools) {
+        expect(
+          tool.executable.validateBinding,
+          throwsA(isA<StaleToolBindingException>()),
+        );
+      }
       expect(
         () => topology.lifecycle.resolveSessionStrategy(topology.sessionId),
         throwsA(isA<OrchestrationStrategyUnavailable>()),
@@ -978,10 +1059,12 @@ final class _SearchReadModel implements ModelPort {
   int invocations = 0;
   bool receivedRealSource = false;
   String? discoveredPath;
+  final List<SemanticModelRequest> requests = <SemanticModelRequest>[];
 
   @override
   Stream<ModelEvent> invoke(SemanticModelRequest request) async* {
     invocations++;
+    requests.add(request);
     final List<SemanticToolOutcomeInput> outcomes = request.input
         .whereType<SemanticToolOutcomeInput>()
         .toList(growable: false);
