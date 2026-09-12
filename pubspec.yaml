@@ -28,6 +28,7 @@ workspace:
   - plugins/filesystem_tools
   - plugins/search_tools
   - plugins/command_tools
+  - plugins/agents_md
   - plugins/chat_strategy
   - plugins/git_environment
 

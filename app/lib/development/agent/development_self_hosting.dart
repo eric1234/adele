@@ -11,6 +11,7 @@ import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
+import 'package:agents_md_plugin/agents_md_plugin.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:command_tools_plugin/command_tools_plugin.dart';
 import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
@@ -244,11 +245,13 @@ final class DevelopmentSelfHostingTopology {
     required this.catalog,
     required this.projectSource,
     required PluginCapabilityActivation environmentActivation,
+    required ExtensionRegistration agentsMdActivation,
     required ExtensionRegistration strategyActivation,
     required ExtensionRegistration filesystemActivation,
     required ExtensionRegistration searchActivation,
     required ExtensionRegistration? commandActivation,
   }) : _environmentActivation = environmentActivation,
+       _agentsMdActivation = agentsMdActivation,
        _strategyActivation = strategyActivation,
        _filesystemActivation = filesystemActivation,
        _searchActivation = searchActivation,
@@ -268,6 +271,7 @@ final class DevelopmentSelfHostingTopology {
   final ToolCatalog catalog;
   final Directory projectSource;
   final PluginCapabilityActivation _environmentActivation;
+  final ExtensionRegistration _agentsMdActivation;
   final ExtensionRegistration _strategyActivation;
   final ExtensionRegistration _filesystemActivation;
   final ExtensionRegistration _searchActivation;
@@ -293,6 +297,7 @@ final class DevelopmentSelfHostingTopology {
     );
     final CapabilityRegistry registry = CapabilityRegistry();
     PluginCapabilityActivation? environmentActivation;
+    ExtensionRegistration? agentsMdActivation;
     ExtensionRegistration? strategyActivation;
     ExtensionRegistration? filesystemActivation;
     ExtensionRegistration? searchActivation;
@@ -310,6 +315,7 @@ final class DevelopmentSelfHostingTopology {
       final ExtensionRegistry extensions = ExtensionRegistry();
       final ChatStrategyPlugin chat = ChatStrategyPlugin();
       strategyActivation = chat.activate(extensions);
+      agentsMdActivation = const AgentsMdPlugin().activate(extensions);
       filesystemActivation = const FilesystemToolsPlugin().activate(extensions);
       searchActivation = const SearchToolsPlugin().activate(extensions);
       if (includeCommandTools) {
@@ -395,6 +401,7 @@ final class DevelopmentSelfHostingTopology {
             catalog: catalog,
             projectSource: projectSource,
             environmentActivation: environmentActivation,
+            agentsMdActivation: agentsMdActivation,
             strategyActivation: strategyActivation,
             filesystemActivation: filesystemActivation,
             searchActivation: searchActivation,
@@ -409,6 +416,7 @@ final class DevelopmentSelfHostingTopology {
           if (commandActivation != null) commandActivation.close,
           if (searchActivation != null) searchActivation.close,
           if (filesystemActivation != null) filesystemActivation.close,
+          if (agentsMdActivation != null) agentsMdActivation.close,
           if (strategyActivation != null) strategyActivation.close,
           if (environmentActivation != null) environmentActivation.close,
           if (!host.isClosed) () => host.close(graceful: false),
@@ -443,6 +451,7 @@ final class DevelopmentSelfHostingTopology {
       if (_commandActivation != null) _commandActivation.close,
       _searchActivation.close,
       _filesystemActivation.close,
+      _agentsMdActivation.close,
       _strategyActivation.close,
       _environmentActivation.close,
       if (!host.isClosed) host.close,

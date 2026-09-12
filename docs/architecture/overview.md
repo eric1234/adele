@@ -27,7 +27,7 @@ The following remain largely or entirely unimplemented:
 
 - Project/Task/Session/Environment disk persistence and complete lifecycle;
 - Chat UI and persistent strategy-specific state;
-- production context sources, broader Reference/Observation material, provider-aware projection/cache planning, compaction, and token budgets;
+- context sources beyond root AGENTS.md, broader Reference/Observation material, provider-aware projection/cache planning, compaction, and token budgets;
 - parent/child Session lifecycle;
 - plugin-defined extension ecosystems beyond registration, model tools, executable strategies, and instruction-context composition;
 - production plugin-facing UI composition;
@@ -260,14 +260,26 @@ authority. The host constructs internal
 The current `ModelProviderCapabilityAdapter` calls orchestration's
 `renderInferenceInstructions` to lower groups to the unchanged provider instructions
 string, preserving zero-source bytes. Model/tool/policy and Environment selection
-are unchanged; Chat owns no production source, and current composition activates none.
+are unchanged; Chat activates no source and remains AGENTS-unaware.
+
+Only development/self-hosting composition activates the first stock source,
+`agents_md_plugin` under `plugins/agents_md`. Each snapshot rereads root `AGENTS.md`
+through `AuthorizedEnvironmentFileReadFacet` in the Session-authorized Environment.
+Missing (`not_found`) and blank files are successful empty results; other
+read/service/authority errors abort the required source. Nonblank exact text and
+its opaque Environment revision remain one material, separate from stable
+plugin-owned semantics giving explicit user instructions and direct requests
+precedence over AGENTS.md guidance. This adds no generic context infrastructure
+or ownership over Skills, roles, or repository maps.
 
 Broader inference preparation should use structured composition rather than
 arbitrary request mutation. Agent policy, model routing, orchestration/history,
 context, tool availability, and other plugins may contribute typed material into
 provider-neutral buckets whose resolution produces a stable invocation snapshot.
 These additional buckets remain deferred, as do Reference/Observation material,
-production sources, provider-aware projection/cache planning, budgets, and compaction.
+other context sources, provider-aware projection/cache planning, budgets, and
+compaction. Nested/scoped AGENTS.md, `AGENTS.override.md`, alternate names,
+global/home files, imports, and AGENTS.md caching remain deferred.
 
 See [`agent-kernel-semantic-model.md`](agent-kernel-semantic-model.md).
 
@@ -282,6 +294,7 @@ The default development UX is expected to be produced by a stock plugin/configur
 - Agent Configuration/Policy;
 - Model Routing/Control;
 - Context Monitoring/Compaction;
+- AGENTS.md instruction source (root-only in development/self-hosting today);
 - Accounting/Usage/Quota;
 - Filesystem/Search/Command/TODO/Plan tools;
 - Diff/Review;
@@ -354,7 +367,7 @@ self-hosting.
 | General recursive extension system | Accepted architecture; not implemented. |
 | Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, Session-authorized read/mutation/process facets, bounded create/patch/delete text-file mutation, and generated foreground process streaming through the Git provider are proven; persistence and complete lifecycle remain unimplemented. |
 | Session-bound strategy execution | Canonical immutable Session creation, atomic publication with separate Environment authority, executable contributions, explicit unavailable/ambiguous resolution, and exact binding validation across Run operations/resume/settlement are implemented and deterministically validated. Headless Chat uses the public facade with validated state, sequencing, and application integration. Persistent strategy state, child Sessions, and disk persistence remain deferred. |
-| Inference context | Instruction-only source discovery, exact-binding capture, immutable snapshots, and current adapter rendering are implemented; production sources, broader material, provider-aware projection/cache planning, budgets, and compaction remain deferred. |
+| Inference context | Instruction-only source discovery, exact-binding capture, immutable snapshots, current adapter rendering, and the stock root AGENTS.md source in development/self-hosting are implemented; other sources, broader material, provider-aware projection/cache planning, budgets, and compaction remain deferred. |
 | Production orchestration/UI/Commands | Headless stock Chat is implemented; production UI, Commands, and discovery remain directional. |
 | Cross-platform/release | Unproven on Windows, macOS, and release mode. |
 | Packaging/sandboxing | Unproven; process isolation is not a sandbox. |

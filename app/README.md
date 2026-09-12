@@ -169,8 +169,13 @@ text bytes, separated by blank lines. The snapshot always retains its
 `StrategyInstructionGroup`, even with empty instructions. Only the renderer omits
 empty strategy text; whitespace-only strategy text is preserved. Zero-source behavior is
 byte-for-byte unchanged. Source sorting grants no semantic authority or numeric
-priority, and semantic input is unchanged. No production context source is
-activated by the current Chat/development composition.
+priority, and semantic input is unchanged. Chat activates no source and remains
+AGENTS-unaware. Only development/self-hosting composition activates stock
+`agents_md_plugin`, which rereads root `AGENTS.md` through the Session-authorized
+`AuthorizedEnvironmentFileReadFacet` each snapshot. `not_found` and blank files
+produce successful empty output; other read/service/authority errors fail the
+required source. Nonblank exact file text and its Environment revision form one
+material, separate from stable plugin-owned explicit-user-precedence semantics.
 
 The app has no `simple_tool_loop_strategy.dart` or
 `development_strategy_registration.dart`; `development_agent_support.dart`
@@ -183,7 +188,8 @@ token budgets, and compaction remain deferred.
 
 Allowed dependencies are Flutter, ADELE public packages, and internal host
 implementations required at the composition root. Statically composed stock
-plugins include `chat_strategy_plugin`, resolved through the root pub workspace.
+plugins include `chat_strategy_plugin` and `agents_md_plugin`, resolved through
+the root pub workspace for development/self-hosting composition.
 Chat's only direct production dependencies are `adele_orchestration` and
 `adele_plugin_api`; it has no `agent_kernel` dependency, including in
 `dev_dependencies`.
@@ -235,8 +241,9 @@ tools. The isolated repository does not share Git refs or a writable local
 origin with the launching checkout; final Git evidence records what actually
 remained clean. This is source-layout isolation, not a command sandbox.
 
-The topology activates Chat before creating the canonical Session. Execution
-obtains that Session's retained Chat state, sets instructions and invocation
+The topology activates Chat and the independent root-level AGENTS.md source
+before creating the canonical Session. Execution obtains that Session's retained
+Chat state, sets instructions and invocation
 budget, appends `ChatUserMessage(prompt)`, and passes `SessionId` through lifecycle
 resolution and `createSessionOrchestrationRun`. It does not construct a Chat loop
 or a separate development history adapter.
@@ -278,7 +285,8 @@ automatic cleanup, validation planning, commit, push, or PR workflow.
 ## Deferred
 
 Normal Project selection, Chat UI, Session/Chat persistence and child lifecycle,
-production context sources, broader Reference/Observation material,
+context sources beyond root AGENTS.md, nested/scoped AGENTS.md, aliases/overrides,
+global/home files, imports, AGENTS.md caching, broader Reference/Observation material,
 provider-aware projection/cache planning, token budgets and compaction, additional
 Environment-backed mutation tools, profiles, product
 plugin discovery/activation, production Agent UI, application
