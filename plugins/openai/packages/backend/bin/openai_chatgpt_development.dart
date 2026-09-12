@@ -5,6 +5,9 @@ import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:openai_model_provider_backend/openai_model_provider_backend.dart';
 import 'package:openai_model_provider_backend/src/openai_chatgpt_auth.dart';
 
+String openAiChatGptDevelopmentModel(Map<String, String> environment) =>
+    environment['ADELE_OPENAI_CHATGPT_TEST_MODEL'] ?? 'gpt-6-astra';
+
 Future<void> main(List<String> arguments) async {
   if (arguments.length != 1 ||
       !const <String>{'login', 'test', 'logout'}.contains(arguments.single)) {
@@ -96,8 +99,7 @@ Future<void> _testInference(OpenAiChatGptAuth auth) async {
     endpoint: endpointValue == null ? null : Uri.parse(endpointValue),
   );
   try {
-    final String model =
-        Platform.environment['ADELE_OPENAI_CHATGPT_TEST_MODEL'] ?? 'gpt-5.5';
+    final String model = openAiChatGptDevelopmentModel(Platform.environment);
     final List<ModelProviderEvent> events = await provider
         .invoke(
           ModelProviderRequest(

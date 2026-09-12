@@ -159,9 +159,10 @@ ADELE has also validated `gpt-6-astra` through the existing classic ChatGPT
 Responses backend's ordinary function-tool continuation and the full-stack
 `search` -> `read_file` -> final-response smoke. Every completed invocation
 reported exactly `gpt-6-astra`; missing or mismatched service-reported model
-identity fails validation rather than falling back to the request. Select it
-with `ADELE_OPENAI_CHATGPT_TEST_MODEL=gpt-6-astra`; the maintained default remains
-`gpt-5.5`. Newer catalog `use_responses_lite:true` metadata is not a demonstrated
+identity fails validation rather than falling back to the request. The maintained
+development/self-hosting default is `gpt-6-astra`;
+`ADELE_OPENAI_CHATGPT_TEST_MODEL` remains the explicit override.
+Newer catalog `use_responses_lite:true` metadata is not a demonstrated
 requirement for Lite. [ADR 0028](docs/adr/0028-experimental-chatgpt-openai-configured-instance.md)
 separates external Astra/5.6 classic-route evidence from ADELE's Astra proof and
 defers Lite until concrete compatibility pressure requires it.

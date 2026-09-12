@@ -166,8 +166,10 @@ revalidated before shipping or material extension.
 Current interoperability evidence includes a real browser OAuth login, token
 exchange, account-bound credential persistence, and subscription-backed
 streamed Responses invocation. The maintained classic Responses-compatible
-fallback is `gpt-5.5`; provider-only and full Session source-coding live smokes
-complete with it. The source-coding evidence includes real-model `read_file` ->
+development/self-hosting fallback is `gpt-6-astra`, with
+`ADELE_OPENAI_CHATGPT_TEST_MODEL` retained as the explicit override. Recorded
+provider-only and full Session source-coding live smokes completed with the
+previous `gpt-5.5` fallback. The source-coding evidence includes real-model `read_file` ->
 `apply_patch` -> direct-argv `run_command("git", ["diff", "--check"])` -> final
 continuation, with the exact model-visible read revision and mutation confined
 to the disposable Task Git worktree while Project source and the launching
@@ -193,7 +195,7 @@ proofs reported `effectiveModel == gpt-6-astra`. Terminal `effectiveModel` now
 preserves only a nonblank service-reported model, or null when absent/invalid;
 the request is never substituted as identity evidence. Successful ChatGPT
 self-host and live proofs reject missing or mismatched effective models.
-The strengthened backend tool-continuation smoke also passed with the unchanged
+The strengthened backend tool-continuation smoke also passed with the previous
 `gpt-5.5` fallback. ADELE live validation of the named 5.6 models is not claimed.
 
 ADELE remains on classic Responses with `store:false`, encrypted reasoning/native
