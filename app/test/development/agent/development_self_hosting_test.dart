@@ -233,6 +233,7 @@ void main() {
         await executeDevelopmentSelfHostingRun(
           identity: 'retained-first',
           lifecycle: topology.lifecycle,
+          contextComposer: topology.contextComposer,
           sessions: topology.chat.sessions,
           sessionId: topology.session.id,
           prompt: 'First request.',
@@ -246,6 +247,7 @@ void main() {
         await executeDevelopmentSelfHostingRun(
           identity: 'retained-second',
           lifecycle: topology.lifecycle,
+          contextComposer: topology.contextComposer,
           sessions: topology.chat.sessions,
           sessionId: topology.session.id,
           prompt: 'Second request.',
@@ -300,6 +302,7 @@ void main() {
       ) => executeDevelopmentSelfHostingRun(
         identity: identity,
         lifecycle: topology.lifecycle,
+        contextComposer: topology.contextComposer,
         sessions: topology.chat.sessions,
         sessionId: topology.session.id,
         prompt: identity,
@@ -1401,6 +1404,7 @@ Future<DevelopmentSelfHostingRunResult> _executeRun({
   return executeDevelopmentSelfHostingRun(
     identity: identity,
     lifecycle: topology.lifecycle,
+    contextComposer: topology.contextComposer,
     sessions: topology.chat.sessions,
     sessionId: topology.session.id,
     prompt: prompt,

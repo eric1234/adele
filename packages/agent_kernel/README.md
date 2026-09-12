@@ -19,9 +19,9 @@ packages required by proven execution mechanics. Flutter, `adele_desktop`,
 plugin implementations, and provider-specific SDKs or formats are prohibited.
 Plugins must not depend on this package.
 
-`adele_orchestration` is the public strategy execution boundary. Minimal semantic
-model input/output, native envelope, proposal/failure, settlement/metadata, Run
-state, and approval-resolution values are defined there and reused/re-exported
+`adele_orchestration` is the public strategy execution and context boundary.
+Minimal semantic model input/output, native envelope, proposal/failure,
+settlement/metadata, Run state, and approval-resolution values are defined there and reused/re-exported
 here, not duplicated. Public orchestration and Chat do not depend on the kernel;
 the kernel depends on the public values.
 
@@ -61,10 +61,23 @@ without migrating; a new Run may resolve a replacement under the same Session's
 stored strategy ID.
 
 Chat projects history plus Run-local replay into `StrategyInferenceMaterial`
-(instructions and ordered semantic input). The host supplies invocation identity
-and tools when constructing internal `SemanticModelRequest`. This deliberate
-future context-composition seam leaves existing core model/tool/policy and
-Environment selection unchanged; it is not a general context framework.
+(instructions and ordered semantic input). Before model invocation identity,
+model-start evidence, or provider work, the app host uses public
+`InferenceContextComposer` over the existing `ExtensionRegistry` to capture an
+immutable `InferenceContextSnapshot`. Internal
+`SemanticModelRequest(context, invocationId, tools)` carries that snapshot and
+host-owned execution mechanics; semantic input is unchanged. The current app
+`ModelProviderCapabilityAdapter` calls orchestration's `renderInferenceInstructions`
+to lower typed instruction groups to the unchanged common provider instructions
+string, preserving zero-source bytes.
+
+Each genuinely new inference, including Chat continuation, discovers current
+instruction sources. Required capture failure stops composition; optional failure
+omits the entire source with original diagnostics, distinct from successful empty
+output. Safely captured data survives source retirement without weakening
+executable strategy/tool binding checks. Source freshness is source-owned, without
+a generic refresh API. The kernel owns neither source discovery nor Session
+service authority; see `../orchestration/README.md` for the capture contract.
 
 Concrete model providers, concrete tools, editors, Git, terminals, Environment
 implementations, coding-agent orchestration strategies, profile management, and
@@ -96,8 +109,9 @@ durable storage, replay, recovery, or an event-sourcing decision.
 
 ## Deferred
 
-General context composition is the next slice at the material-to-request seam.
-Context contributors, token budgets, compaction,
+Production context sources, material beyond instructions (including directional
+Reference/Observation concepts), provider-aware projection/cache planning,
+token budgets, compaction,
 persistent product/Chat/Run storage, profiles, Chat UI,
 parent/child Session lifecycle, parallel tool execution, complete effect/content
 taxonomies, durable approval, broader Environment/runtime-resource integration,

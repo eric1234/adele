@@ -131,6 +131,7 @@ At minimum, ADELE should treat these as distinct systems:
 | Provider availability/preference | Host-owned filtering and deterministic/contextual preference resolution |
 | Security/permissions/approvals/policy | Constraint/policy composition; not ordinary last-writer-wins settings |
 | Extension applicability/ordering | Defined by each extension contract; not a configuration deep merge |
+| Inference instruction context | Implemented immutable source capture; strategy first, then lexicographic source identity and preserved local order, not settings precedence |
 | Workbench/window state | Independent live window state with remembered persistence for future windows |
 | Product/runtime state | Domain semantics rather than configuration inheritance |
 
@@ -244,7 +245,19 @@ Execution-sensitive work should normally use a stable resolved configuration/con
 
 The same principle applies to structured inference composition: UI/model-tool changes made after a model invocation is resolved affect a subsequent invocation, not the in-flight one.
 
-Exact snapshot/reconfiguration mechanics remain deferred.
+The implemented instruction-only `InferenceContextComposer` captures current
+sources over the existing `ExtensionRegistry` for each new inference, including
+Chat continuation. Its immutable `InferenceContextSnapshot` survives source
+retirement after safe capture; a later inference discovers replacements.
+Executable binding rules remain unchanged. Sources own freshness through rereads,
+watches, caches, or versions, not a generic refresh API or settings cascade.
+
+This source order has no numeric priority and grants no semantic authority.
+Neither this bounded snapshot nor the current adapter's instruction-string
+rendering implements profile/configuration resolution. No production context
+source is activated by Chat; broader material, provider-aware projection/cache
+planning, token budgets, compaction, and general configuration/reconfiguration
+mechanics remain deferred.
 
 ## Workbench and window state
 

@@ -1,9 +1,11 @@
 import 'dart:async';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_desktop/core/inference_context_host.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
@@ -15,6 +17,187 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:search_tools_plugin/search_tools_plugin.dart';
 
 void main() {
+  test(
+    'inference sources use canonical Session and read-only authority',
+    () async {
+      final _Fixture fixture = await _fixture();
+      final Session session = fixture.runtime.store.session(fixture.sessionId)!;
+      final RunId runId = RunId('context-authority-run');
+      final SessionInferenceContextSourceContext context =
+          SessionInferenceContextSourceContext(
+            session: session,
+            runId: runId,
+            environmentRuntime: fixture.runtime,
+          );
+      final SessionModelToolHostContext toolContext =
+          SessionModelToolHostContext(
+            sessionId: session.id,
+            environmentRuntime: fixture.runtime,
+          );
+      final AuthorizedEnvironmentFileReadFacet toolRead = await toolContext
+          .requireHostService<AuthorizedEnvironmentFileReadFacet>();
+      // Another published Environment is not selectable through source services.
+      final Task otherTask = Task(
+        id: TaskId('other-task'),
+        projectId: fixture.runtime.store.task(session.taskId)!.projectId,
+        title: 'Not authorized for this Session',
+      );
+      fixture.runtime.store.publishTaskWithPrimaryEnvironment(
+        otherTask,
+        Environment(
+          id: EnvironmentId('other-environment'),
+          taskId: otherTask.id,
+          role: EnvironmentRole.primary,
+          providerId: fixture.providerId,
+          providerState: const <String, Object?>{'ready': true},
+        ),
+      );
+      final ExtensionRegistry extensions = ExtensionRegistry();
+      late AuthorizedEnvironmentFileReadFacet sourceRead;
+      addTearDown(
+        extensions
+            .register(
+              point: inferenceContextSources,
+              id: ExtensionId('dev.adele.test.authorized-context'),
+              value: InferenceContextSourceContribution(
+                failureMode: InferenceContextFailureMode.required,
+                snapshot: (InferenceContextSourceContext supplied) async {
+                  expect(supplied.session, same(session));
+                  expect(supplied.runId, runId);
+                  expect(supplied.session.strategyId, chatStrategyId);
+                  sourceRead = await supplied
+                      .requireHostService<AuthorizedEnvironmentFileReadFacet>();
+                  expect(sourceRead.sessionId, toolRead.sessionId);
+                  expect(sourceRead.environmentId, toolRead.environmentId);
+                  expect(sourceRead.environmentId, fixture.environmentId);
+                  expect(
+                    sourceRead,
+                    isNot(isA<AuthorizedEnvironmentFileMutationFacet>()),
+                  );
+                  expect(
+                    sourceRead,
+                    isNot(isA<AuthorizedEnvironmentProcessFacet>()),
+                  );
+                  expect(
+                    await supplied
+                        .requireHostService<
+                          AuthorizedEnvironmentFileReadFacet
+                        >(),
+                    same(sourceRead),
+                  );
+                  await expectLater(
+                    supplied
+                        .requireHostService<
+                          AuthorizedEnvironmentFileMutationFacet
+                        >()
+                        .then(
+                          (AuthorizedEnvironmentFileMutationFacet facet) =>
+                              facet.createTextFile(
+                                'forbidden.txt',
+                                'forbidden',
+                              ),
+                        ),
+                    throwsStateError,
+                  );
+                  await expectLater(
+                    supplied
+                        .requireHostService<AuthorizedEnvironmentProcessFacet>()
+                        .then(
+                          (AuthorizedEnvironmentProcessFacet facet) => facet
+                              .runForegroundProcess(_processRequest())
+                              .toList(),
+                        ),
+                    throwsStateError,
+                  );
+                  await expectLater(
+                    supplied
+                        .requireHostService<AuthorizedEnvironmentAuthority>(),
+                    throwsStateError,
+                  );
+                  await expectLater(
+                    supplied
+                        .requireHostService<AuthorizedEnvironmentFileSystem>(),
+                    throwsStateError,
+                  );
+                  await expectLater(
+                    supplied.requireHostService<Object>(),
+                    throwsStateError,
+                  );
+                  await expectLater(
+                    supplied.requireHostService<ExtensionRegistry>(),
+                    throwsStateError,
+                  );
+                  await expectLater(
+                    supplied.requireHostService<EnvironmentRuntime>(),
+                    throwsStateError,
+                  );
+                  await expectLater(
+                    supplied.requireHostService<ModelPort>(),
+                    throwsStateError,
+                  );
+                  await expectLater(
+                    supplied.requireHostService<ToolCatalog>(),
+                    throwsStateError,
+                  );
+                  final EnvironmentTextFile file = await sourceRead.readFile(
+                    'fixture.txt',
+                  );
+                  return <InferenceContextMaterial>[
+                    InferenceInstructionMaterial(
+                      key: 'fixture-guidance',
+                      text: file.text,
+                      revision: file.revision,
+                    ),
+                  ];
+                },
+              ),
+            )
+            .close,
+      );
+      final InferenceContextSnapshot snapshot =
+          await InferenceContextComposer(extensions).compose(
+            strategyMaterial: StrategyInferenceMaterial(
+              input: const <SemanticModelInputItem>[],
+            ),
+            sourceContext: context,
+          );
+      expect(renderInferenceInstructions(snapshot), 'authorized source');
+      expect(fixture.provider.fileEnvironmentIds, <EnvironmentId>[
+        fixture.environmentId,
+      ]);
+      expect(fixture.provider.restoreCount, 0);
+      expect(fixture.provider.creations, isEmpty);
+      expect(fixture.provider.replacements, isEmpty);
+      expect(fixture.provider.deletions, isEmpty);
+      expect(fixture.provider.processEnvironmentIds, isEmpty);
+
+      await fixture.registration.close();
+      for (final AuthorizedEnvironmentFileReadFacet read in [
+        toolRead,
+        sourceRead,
+      ]) {
+        await expectLater(
+          read.readFile('fixture.txt'),
+          throwsA(isA<AuthorizedEnvironmentBindingStale>()),
+        );
+      }
+      // Captured text is independent of the service or source's live authority.
+      expect(renderInferenceInstructions(snapshot), 'authorized source');
+      expect(
+        () => SessionInferenceContextSourceContext(
+          session: Session(
+            id: session.id,
+            taskId: otherTask.id,
+            strategyId: session.strategyId,
+          ),
+          runId: runId,
+          environmentRuntime: fixture.runtime,
+        ),
+        throwsArgumentError,
+      );
+    },
+  );
+
   test(
     'inactive plugin is absent and active plugin uses Session authority',
     () async {
@@ -358,6 +541,16 @@ void main() {
 
   test('fresh host context receives fresh provider facet bindings', () async {
     final _Fixture fixture = await _fixture();
+    final Session session = fixture.runtime.store.session(fixture.sessionId)!;
+    SessionInferenceContextSourceContext inferenceContext() =>
+        SessionInferenceContextSourceContext(
+          session: session,
+          runId: RunId('same-run'),
+          environmentRuntime: fixture.runtime,
+        );
+    final AuthorizedEnvironmentFileReadFacet oldSourceRead =
+        await inferenceContext()
+            .requireHostService<AuthorizedEnvironmentFileReadFacet>();
     final SessionModelToolHostContext oldContext = SessionModelToolHostContext(
       sessionId: fixture.sessionId,
       environmentRuntime: fixture.runtime,
@@ -399,6 +592,18 @@ void main() {
             .requireHostService<AuthorizedEnvironmentFileMutationFacet>();
     final AuthorizedEnvironmentProcessFacet freshProcess = await freshContext
         .requireHostService<AuthorizedEnvironmentProcessFacet>();
+    final AuthorizedEnvironmentFileReadFacet freshSourceRead =
+        await inferenceContext()
+            .requireHostService<AuthorizedEnvironmentFileReadFacet>();
+    expect(
+      (await freshSourceRead.readFile('fixture.txt')).text,
+      'fresh generation source',
+    );
+    expect(freshSourceRead.environmentId, fixture.environmentId);
+    await expectLater(
+      oldSourceRead.readFile('fixture.txt'),
+      throwsA(isA<AuthorizedEnvironmentBindingStale>()),
+    );
 
     expect(
       (await freshRead.readFile('source.dart')).text,

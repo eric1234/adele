@@ -126,17 +126,58 @@ Chat instructions and its positive invocation budget are snapshotted when each
 Run is materialized.
 
 Chat projects history plus Run-local replay into `StrategyInferenceMaterial`
-(instructions and ordered semantic input). The host adds invocation identity and
-materialized tools to construct internal `SemanticModelRequest`. General context
-composition is the next slice at this seam, not an implemented framework.
+(instructions and ordered semantic input). Before allocating invocation identity,
+materializing tools, recording model-start evidence, or calling the provider, the
+host calls `InferenceContextComposer` over the same existing `ExtensionRegistry`.
+Every genuinely new inference, including Chat continuation, discovers current
+`inferenceContextSources` and captures an immutable `InferenceContextSnapshot`.
+The host then constructs internal `SemanticModelRequest(context, invocationId,
+tools)`. Model/tool/policy selection and executable binding rules are unchanged.
 Minimal semantic DTOs are shared from `adele_orchestration`
 and reused by the kernel, without adding another public package.
+
+`lib/core/inference_context_host.dart` supplies a fresh
+`SessionInferenceContextSourceContext` per inference. It accepts only the published
+canonical `Session`, supplies `runId`, and explicitly allows only
+`requireHostService<AuthorizedEnvironmentFileReadFacet>()`, delegating that request
+to the existing `SessionModelToolHostContext`. All other service types are rejected,
+including mutation/process facets and broader Environment authority/filesystem
+interfaces. Mutation and process execution remain behind the existing tool,
+policy, approval, and execution-evidence boundary. Typed read authority follows
+Session -> Task -> authorized Environment -> exact provider generation; a source
+cannot select another Environment through this context.
+
+Capture validates the exact source binding, calls its snapshot callback, copies,
+freezes, and validates all returned material (including duplicate local keys),
+then postvalidates the binding before committing that source's data. Required
+failure aborts composition before model invocation identity/evidence/provider
+work. Optional failure omits the whole source with its original diagnostic;
+successful empty output is a distinct result. There is no replacement fallback
+within the same capture. After safe capture, instruction data no longer depends
+on source liveness: retirement during the provider call does not invalidate it,
+and a later inference discovers any replacement. Source implementations own
+freshness through rereads, watches, caches, or versions; each snapshot callback
+returns current material according to those semantics. Logical source-local keys
+remain stable across captures. There is no generic refresh API.
+
+The current `ModelProviderCapabilityAdapter` in
+`lib/development/agent/agent_capability_adapters.dart` calls orchestration's
+`renderInferenceInstructions` at lowering. The common capability still receives
+one `ModelProviderRequest.instructions` string: strategy first, then sources in
+lexicographic `ExtensionId` order, preserving each source's local order and exact
+text bytes, separated by blank lines. The snapshot always retains its
+`StrategyInstructionGroup`, even with empty instructions. Only the renderer omits
+empty strategy text; whitespace-only strategy text is preserved. Zero-source behavior is
+byte-for-byte unchanged. Source sorting grants no semantic authority or numeric
+priority, and semantic input is unchanged. No production context source is
+activated by the current Chat/development composition.
 
 The app has no `simple_tool_loop_strategy.dart` or
 `development_strategy_registration.dart`; `development_agent_support.dart`
 contains only development policy. The private Chat loop lives in the plugin.
 Chat UI, persistence, profiles, child Sessions, strategy defaults, and general
-context contributors/token budgets remain deferred.
+context material beyond instructions, provider-aware projection/cache planning,
+token budgets, and compaction remain deferred.
 
 ## Dependencies
 
@@ -237,7 +278,8 @@ automatic cleanup, validation planning, commit, push, or PR workflow.
 ## Deferred
 
 Normal Project selection, Chat UI, Session/Chat persistence and child lifecycle,
-general context composition/contributors and token budgets, additional
+production context sources, broader Reference/Observation material,
+provider-aware projection/cache planning, token budgets and compaction, additional
 Environment-backed mutation tools, profiles, product
 plugin discovery/activation, production Agent UI, application
 Commands/keybindings, and plugin-facing UI extension APIs remain deferred. The
@@ -245,7 +287,8 @@ stock Git worktree Environment provider is currently exercised through focused
 backend and shared-host AOT tests rather than normal UI.
 
 The application composition root contains the model adapters, core orchestration
-host, generic Session-scoped model-tool host context, and AOT integration tests.
+host, Session-scoped model-tool and inference-source host contexts, and AOT
+integration tests.
 The Chat plugin owns bounded loop sequencing and retained conversation state.
 The independent stock
 Filesystem Tools, Search Tools, and Command Tools plugins, not application code,

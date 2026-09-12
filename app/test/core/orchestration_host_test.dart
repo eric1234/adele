@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:adele_desktop/core/inference_context_host.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
@@ -155,6 +157,12 @@ void main() {
       KernelOrchestrationHost host(AgentRun run) => KernelOrchestrationHost(
         run: run,
         strategy: topology.lifecycle.resolveSessionStrategy(session.id),
+        contextComposer: InferenceContextComposer(extensions),
+        sourceContextFactory: () => SessionInferenceContextSourceContext(
+          session: session,
+          runId: run.id,
+          environmentRuntime: topology.lifecycle.environmentRuntime,
+        ),
         model: model,
         toolCatalog: catalog,
         policy: const _Policy(ToolPolicyDecision.allow),
@@ -170,7 +178,7 @@ void main() {
       final KernelOrchestrationHost first = host(firstRun)..start();
       final KernelOrchestrationHost second = host(secondRun)..start();
       final StrategyInferenceMaterial material = StrategyInferenceMaterial(
-        instructions: 'Host owns tools and invocation IDs.',
+        instructions: ' \tHost owns tools and invocation IDs.\r\n\n',
         input: <SemanticModelInputItem>[
           SemanticMessageInput(
             role: SemanticMessageRole.user,
@@ -213,8 +221,36 @@ void main() {
       );
       expect(model.requests.first.instructions, material.instructions);
       expect(model.requests.first.input, orderedEquals(material.input));
+      for (final SemanticModelRequest request in model.requests) {
+        expect(
+          utf8.encode(request.instructions),
+          orderedEquals(utf8.encode(material.instructions)),
+        );
+        expect(request.context.instructionGroups, hasLength(1));
+        expect(
+          request.context.instructionGroups.single,
+          isA<StrategyInstructionGroup>().having(
+            (StrategyInstructionGroup group) => group.instructions,
+            'verbatim strategy instructions',
+            material.instructions,
+          ),
+        );
+        expect(request.context.sourceResults, isEmpty);
+        expect(request.input, same(request.context.input));
+        expect(request.input, hasLength(material.input.length));
+        for (int index = 0; index < material.input.length; index++) {
+          expect(request.input[index], same(material.input[index]));
+        }
+      }
       expect(model.requests.first.tools, same(originalTools));
       expect(originalTools.tools, hasLength(1));
+      expect(
+        originalTools.byAlias('inspect_resource')!.executable,
+        same(executable),
+      );
+      expect(turn.settlement, ModelSettlement.completed);
+      expect(turn.metadata!.effectiveModel, 'fixture-v1');
+      expect(turn.failure, isNull);
       expect(model.requests.last.tools, isNot(same(originalTools)));
       expect(turn.tools, isNot(isA<MaterializedToolSet>()));
       expect(turn.tools, isNot(same(later.tools)));
@@ -320,6 +356,7 @@ void main() {
       ).materialize(_NoHostServices(sessionId));
       final SessionOrchestrationRun strategy = createSessionOrchestrationRun(
         lifecycle: topology.lifecycle,
+        contextComposer: InferenceContextComposer(extensions),
         sessionId: session.id,
         runId: RunId('run-in-flight-retirement'),
         model: model,
@@ -375,8 +412,736 @@ void main() {
     expect(request.instructions, 'Use source tools before answering.');
     expect(fixture.model.requests.last.instructions, request.instructions);
     expect(request.input.single, isA<SemanticMessageInput>());
+    expect(request.context.sourceResults, isEmpty);
+    expect(
+      request.context.instructionGroups.single,
+      isA<StrategyInstructionGroup>(),
+    );
+    expect(request.input, same(request.context.input));
+    expect(
+      (request.input.single as SemanticMessageInput).role,
+      SemanticMessageRole.user,
+    );
+    expect((request.input.single as SemanticMessageInput).content, 'Inspect.');
+    expect(fixture.model.requests, hasLength(2));
+    expect(fixture.model.sawCorrelatedContinuation, isTrue);
+    expect(
+      fixture.model.requests.map(
+        (SemanticModelRequest request) => request.invocationId.value,
+      ),
+      <String>['run-1-model-1', 'run-1-model-2'],
+    );
+    for (final SemanticModelRequest request in fixture.model.requests) {
+      expect(request.tools.tools, hasLength(1));
+      expect(
+        request.tools.byAlias('inspect_resource')!.executable,
+        same(fixture.executable),
+      );
+    }
     expect(fixture.run.state, RunState.completed);
   });
+
+  test(
+    'Chat receives structured source groups without partial optional context',
+    () async {
+      const String instructions = ' \tKeep strategy instructions.\r\n';
+      final _StrategyFixture fixture = await _fixture(
+        ToolPolicyDecision.allow,
+        instructions: instructions,
+      );
+      final ExtensionId firstId = ExtensionId('dev.adele.test.context.a');
+      final ExtensionId failedId = ExtensionId('dev.adele.test.context.b');
+      final ExtensionId emptyId = ExtensionId('dev.adele.test.context.c');
+      final ExtensionId lastId = ExtensionId('dev.adele.test.context.d');
+      final StateError failure = StateError('Optional source failed.');
+      final InferenceInstructionMaterial first = InferenceInstructionMaterial(
+        key: 'shared',
+        text: 'First source.',
+        revision: 'revision-a',
+      );
+      final InferenceInstructionMaterial last = InferenceInstructionMaterial(
+        key: 'shared',
+        text: 'Last source.',
+      );
+      final List<InferenceContextSourceContext> contexts =
+          <InferenceContextSourceContext>[];
+      final List<ExtensionId> captures = <ExtensionId>[];
+      Iterable<InferenceContextMaterial> partial() sync* {
+        yield InferenceInstructionMaterial(
+          key: 'partial',
+          text: 'Must never reach the model.',
+        );
+        throw failure;
+      }
+
+      // Registration order is deliberately not source identity order.
+      fixture.registerSource(
+        lastId,
+        snapshot: (InferenceContextSourceContext context) async {
+          captures.add(lastId);
+          return <InferenceContextMaterial>[last];
+        },
+      );
+      fixture.registerSource(
+        failedId,
+        failureMode: InferenceContextFailureMode.optional,
+        snapshot: (InferenceContextSourceContext context) async {
+          captures.add(failedId);
+          return partial();
+        },
+      );
+      fixture.registerSource(
+        emptyId,
+        snapshot: (InferenceContextSourceContext context) async {
+          captures.add(emptyId);
+          return const <InferenceContextMaterial>[];
+        },
+      );
+      fixture.registerSource(
+        firstId,
+        snapshot: (InferenceContextSourceContext context) async {
+          contexts.add(context);
+          captures.add(firstId);
+          expect(context.session, same(fixture.session));
+          expect(context.runId, fixture.run.id);
+          return <InferenceContextMaterial>[first];
+        },
+      );
+
+      await fixture.strategy.start();
+
+      expect(fixture.run.state, RunState.completed);
+      expect(fixture.model.requests, hasLength(2));
+      expect(captures, <ExtensionId>[
+        firstId,
+        failedId,
+        emptyId,
+        lastId,
+        firstId,
+        failedId,
+        emptyId,
+        lastId,
+      ]);
+      expect(contexts, hasLength(2));
+      expect(contexts.last, isNot(same(contexts.first)));
+      for (final SemanticModelRequest request in fixture.model.requests) {
+        final InferenceContextSnapshot snapshot = request.context;
+        expect(
+          snapshot.instructionGroups.first,
+          isA<StrategyInstructionGroup>(),
+        );
+        expect(
+          (snapshot.instructionGroups.first as StrategyInstructionGroup)
+              .instructions,
+          instructions,
+        );
+        final List<SourceInstructionGroup> groups = snapshot.instructionGroups
+            .whereType<SourceInstructionGroup>()
+            .toList();
+        expect(
+          groups.map((SourceInstructionGroup group) => group.sourceId),
+          <ExtensionId>[firstId, lastId],
+        );
+        final InferenceInstructionMaterial capturedFirst =
+            groups.first.materials.single;
+        final InferenceInstructionMaterial capturedLast =
+            groups.last.materials.single;
+        expect(capturedFirst.key, 'shared');
+        expect(capturedFirst.text, 'First source.');
+        expect(capturedFirst.revision, 'revision-a');
+        expect(capturedLast.key, 'shared');
+        expect(capturedLast.text, 'Last source.');
+        expect(capturedLast.revision, isNull);
+        expect(snapshot.sourceResults, hasLength(4));
+        expect(
+          snapshot.sourceResults.map(
+            (InferenceContextSourceResult result) => result.sourceId,
+          ),
+          <ExtensionId>[firstId, failedId, emptyId, lastId],
+        );
+        expect(
+          snapshot.sourceResults.map(
+            (InferenceContextSourceResult result) => result.status,
+          ),
+          <InferenceContextSourceStatus>[
+            InferenceContextSourceStatus.contributed,
+            InferenceContextSourceStatus.omitted,
+            InferenceContextSourceStatus.empty,
+            InferenceContextSourceStatus.contributed,
+          ],
+        );
+        final InferenceContextSourceResult omitted = snapshot.sourceResults[1];
+        expect(omitted.failureMode, InferenceContextFailureMode.optional);
+        expect(omitted.materials, isEmpty);
+        expect(omitted.failure!.sourceId, failedId);
+        expect(omitted.failure!.cause, same(failure));
+        final InferenceContextSourceResult empty = snapshot.sourceResults[2];
+        expect(empty.failureMode, InferenceContextFailureMode.required);
+        expect(empty.materials, isEmpty);
+        expect(empty.failure, isNull);
+        expect(snapshot.sourceResults.first.failure, isNull);
+        expect(snapshot.sourceResults.last.failure, isNull);
+        expect(request.instructions, renderInferenceInstructions(snapshot));
+        expect(
+          request.instructions,
+          '$instructions\n\nFirst source.\n\nLast source.',
+        );
+        expect(request.instructions, contains('First source.'));
+        expect(request.instructions, contains('Last source.'));
+        expect(
+          request.instructions,
+          isNot(contains('Must never reach the model.')),
+        );
+        expect(request.input, same(snapshot.input));
+        expect(request.tools.tools, hasLength(1));
+        expect(
+          request.tools.byAlias('inspect_resource')!.executable,
+          same(fixture.executable),
+        );
+        expect(
+          () => snapshot.instructionGroups.clear(),
+          throwsUnsupportedError,
+        );
+        expect(() => snapshot.sourceResults.clear(), throwsUnsupportedError);
+        expect(() => snapshot.input.clear(), throwsUnsupportedError);
+        expect(() => groups.first.materials.clear(), throwsUnsupportedError);
+      }
+      expect(fixture.model.sawCorrelatedContinuation, isTrue);
+      expect(fixture.executable.executions, 1);
+      expect(
+        fixture.history.snapshot().entries.map(
+          (ChatEntry entry) => entry.content,
+        ),
+        <String>['Inspect.', 'Complete.'],
+      );
+      expect(fixture.history.instructions, instructions);
+      expect(_events(fixture.run).whereType<ModelInvocationFailed>(), isEmpty);
+      expect(_events(fixture.run).whereType<RunFailed>(), isEmpty);
+    },
+  );
+
+  test(
+    'required source failure fails Chat before any model invocation',
+    () async {
+      final _StrategyFixture fixture = await _fixture(ToolPolicyDecision.allow);
+      final ExtensionId sourceId = ExtensionId(
+        'dev.adele.test.context.required',
+      );
+      final StateError failure = StateError('Required source unavailable.');
+      final StackTrace stackTrace = StackTrace.current;
+      fixture.registerSource(
+        sourceId,
+        snapshot: (InferenceContextSourceContext context) async {
+          Error.throwWithStackTrace(failure, stackTrace);
+        },
+      );
+
+      await expectLater(
+        fixture.strategy.start(),
+        throwsA(
+          isA<InferenceContextSourceFailed>()
+              .having(
+                (InferenceContextSourceFailed error) => error.sourceId,
+                'source',
+                sourceId,
+              )
+              .having(
+                (InferenceContextSourceFailed error) => error.cause,
+                'cause',
+                same(failure),
+              )
+              .having(
+                (InferenceContextSourceFailed error) =>
+                    error.stackTrace.toString(),
+                'source stack',
+                stackTrace.toString(),
+              ),
+        ),
+      );
+
+      _expectContextPreparationFailed(fixture);
+    },
+  );
+
+  for (final InferenceContextFailureMode mode
+      in InferenceContextFailureMode.values) {
+    for (final bool duplicate in <bool>[true, false]) {
+      test(
+        '$mode ${duplicate ? 'duplicate keys' : 'lazy invalid material'} rejects the whole source',
+        () async {
+          final _StrategyFixture fixture = await _fixture(
+            ToolPolicyDecision.allow,
+            instructions: 'Strategy only.',
+          );
+          final ExtensionId sourceId = ExtensionId(
+            'dev.adele.test.context.invalid',
+          );
+          final ExtensionId goodId = ExtensionId(
+            'dev.adele.test.context.valid',
+          );
+          int yielded = 0;
+          Iterable<InferenceContextMaterial> invalid() sync* {
+            yielded++;
+            yield InferenceInstructionMaterial(
+              key: 'first',
+              text: 'Partial material.',
+            );
+            yielded++;
+            yield InferenceInstructionMaterial(
+              key: duplicate ? 'first' : ' ',
+              text: 'Invalid material.',
+            );
+          }
+
+          fixture.registerSource(
+            sourceId,
+            failureMode: mode,
+            snapshot: (InferenceContextSourceContext context) async =>
+                invalid(),
+          );
+          fixture.registerSource(
+            goodId,
+            snapshot: (InferenceContextSourceContext context) async =>
+                <InferenceContextMaterial>[
+                  InferenceInstructionMaterial(
+                    key: 'first',
+                    text: 'Unaffected source.',
+                  ),
+                ],
+          );
+
+          if (mode == InferenceContextFailureMode.required) {
+            await expectLater(
+              fixture.strategy.start(),
+              throwsA(
+                isA<InferenceContextSourceFailed>()
+                    .having(
+                      (InferenceContextSourceFailed error) => error.sourceId,
+                      'invalid source',
+                      sourceId,
+                    )
+                    .having(
+                      (InferenceContextSourceFailed error) => error.cause,
+                      'invalid material',
+                      isA<FormatException>(),
+                    ),
+              ),
+            );
+            expect(yielded, 2);
+            _expectContextPreparationFailed(fixture);
+          } else {
+            await fixture.strategy.start();
+            expect(fixture.run.state, RunState.completed);
+            expect(fixture.model.requests, hasLength(2));
+            expect(yielded, 4);
+            for (final SemanticModelRequest request in fixture.model.requests) {
+              final SourceInstructionGroup group = request
+                  .context
+                  .instructionGroups
+                  .whereType<SourceInstructionGroup>()
+                  .single;
+              expect(group.sourceId, goodId);
+              expect(group.materials.single.text, 'Unaffected source.');
+              expect(request.instructions, contains('Unaffected source.'));
+              expect(
+                request.instructions,
+                isNot(contains('Partial material.')),
+              );
+              expect(
+                request.instructions,
+                isNot(contains('Invalid material.')),
+              );
+              expect(request.context.sourceResults, hasLength(2));
+              final InferenceContextSourceResult omitted =
+                  request.context.sourceResults.first;
+              expect(omitted.sourceId, sourceId);
+              expect(omitted.status, InferenceContextSourceStatus.omitted);
+              expect(omitted.materials, isEmpty);
+              expect(omitted.failure!.sourceId, sourceId);
+              expect(omitted.failure!.cause, isA<FormatException>());
+              expect(
+                request.context.sourceResults.last.status,
+                InferenceContextSourceStatus.contributed,
+              );
+            }
+            expect(fixture.model.sawCorrelatedContinuation, isTrue);
+            expect(fixture.executable.executions, 1);
+            expect(_events(fixture.run).whereType<RunFailed>(), isEmpty);
+            expect(
+              _events(fixture.run).whereType<ModelInvocationFailed>(),
+              isEmpty,
+            );
+          }
+        },
+      );
+    }
+  }
+
+  for (final InferenceContextFailureMode mode
+      in InferenceContextFailureMode.values) {
+    test(
+      '$mode pending source retirement never accepts A or calls replacement B in the same inference',
+      () async {
+        const String instructions = 'Canonical Chat instructions.';
+        final _StrategyFixture fixture = await _fixture(
+          ToolPolicyDecision.allow,
+          instructions: instructions,
+          proposalBeforeText: true,
+        );
+        final ExtensionId sourceId = ExtensionId(
+          'dev.adele.test.context.replace',
+        );
+        final Completer<void> captureStarted = Completer<void>();
+        final Completer<void> releaseCapture = Completer<void>();
+        final Completer<void> modelStarted = Completer<void>();
+        final Completer<void> releaseModel = Completer<void>();
+        final List<InferenceContextSourceContext> contexts =
+            <InferenceContextSourceContext>[];
+        final ChatEntry originalUser = fixture.history
+            .snapshot()
+            .entries
+            .single;
+        int callsA = 0;
+        int callsB = 0;
+        final ExtensionRegistration generationA = fixture.registerSource(
+          sourceId,
+          failureMode: mode,
+          snapshot: (InferenceContextSourceContext context) async {
+            callsA++;
+            contexts.add(context);
+            captureStarted.complete();
+            await releaseCapture.future;
+            return <InferenceContextMaterial>[
+              InferenceInstructionMaterial(
+                key: 'state',
+                text: 'Retired A.',
+                revision: 'a',
+              ),
+            ];
+          },
+        );
+        fixture.model.beforeSettlement = () async {
+          if (fixture.model.invocations != 1) return;
+          modelStarted.complete();
+          await releaseModel.future;
+        };
+        final Future<void> running = fixture.strategy.start();
+        final Future<void> finished =
+            mode == InferenceContextFailureMode.required
+            ? expectLater(
+                running,
+                throwsA(
+                  isA<InferenceContextSourceFailed>()
+                      .having(
+                        (InferenceContextSourceFailed error) => error.sourceId,
+                        'retired source',
+                        sourceId,
+                      )
+                      .having(
+                        (InferenceContextSourceFailed error) => error.cause,
+                        'retirement',
+                        isA<StaleExtensionBinding>().having(
+                          (StaleExtensionBinding error) => error.id,
+                          'generation A',
+                          sourceId,
+                        ),
+                      ),
+                ),
+              )
+            : running;
+        await captureStarted.future;
+        expect(fixture.model.requests, isEmpty);
+        expect(_events(fixture.run).single, isA<RunStarted>());
+        await generationA.close();
+        fixture.registerSource(
+          sourceId,
+          failureMode: mode,
+          snapshot: (InferenceContextSourceContext context) async {
+            callsB++;
+            contexts.add(context);
+            return <InferenceContextMaterial>[
+              InferenceInstructionMaterial(
+                key: 'state',
+                text: 'Fresh B.',
+                revision: 'b',
+              ),
+            ];
+          },
+        );
+        expect(callsA, 1);
+        expect(callsB, 0);
+        expect(fixture.run.state, RunState.running);
+        expect(fixture.run.failure, isNull);
+        releaseCapture.complete();
+
+        if (mode == InferenceContextFailureMode.required) {
+          await finished;
+          _expectContextPreparationFailed(fixture);
+          expect(callsB, 0);
+        } else {
+          await modelStarted.future;
+          expect(callsA, 1);
+          expect(callsB, 0);
+          final SemanticModelRequest first = fixture.model.requests.single;
+          final InferenceContextSnapshot frozen = first.context;
+          final InferenceContextSourceResult omitted =
+              frozen.sourceResults.single;
+          expect(omitted.sourceId, sourceId);
+          expect(omitted.status, InferenceContextSourceStatus.omitted);
+          expect(omitted.materials, isEmpty);
+          expect(omitted.failure!.cause, isA<StaleExtensionBinding>());
+          expect(
+            frozen.instructionGroups.whereType<SourceInstructionGroup>(),
+            isEmpty,
+          );
+          expect(first.instructions, instructions);
+          expect(fixture.history.snapshot().entries.single, same(originalUser));
+          releaseModel.complete();
+          await finished;
+
+          expect(fixture.run.state, RunState.completed);
+          expect(fixture.model.requests, hasLength(2));
+          expect(callsA, 1);
+          expect(callsB, 1);
+          final SemanticModelRequest next = fixture.model.requests.last;
+          expect(next.context, isNot(same(frozen)));
+          final SourceInstructionGroup replacement = next
+              .context
+              .instructionGroups
+              .whereType<SourceInstructionGroup>()
+              .single;
+          expect(replacement.sourceId, sourceId);
+          expect(replacement.materials.single.key, 'state');
+          expect(replacement.materials.single.text, 'Fresh B.');
+          expect(replacement.materials.single.revision, 'b');
+          expect(
+            next.context.sourceResults.single.status,
+            InferenceContextSourceStatus.contributed,
+          );
+          expect(next.context.sourceResults.single.failure, isNull);
+          expect(next.instructions, '$instructions\n\nFresh B.');
+          expect(next.instructions, renderInferenceInstructions(next.context));
+          expect(first.context, same(frozen));
+          expect(first.instructions, instructions);
+          expect(first.context.sourceResults.single, same(omitted));
+          expect(next.input, same(next.context.input));
+          expect(
+            next.input.map((SemanticModelInputItem item) => item.runtimeType),
+            <Type>[
+              SemanticMessageInput,
+              SemanticToolProposalInput,
+              SemanticMessageInput,
+              SemanticToolOutcomeInput,
+            ],
+          );
+          expect(
+            (next.input[0] as SemanticMessageInput).role,
+            SemanticMessageRole.user,
+          );
+          expect(
+            (next.input[0] as SemanticMessageInput).content,
+            originalUser.content,
+          );
+          final ProviderToolProposal proposal =
+              (_events(fixture.run).whereType<ModelOutputObserved>().first.item
+                      as ModelToolProposalOutput)
+                  .proposal;
+          expect(
+            (next.input[1] as SemanticToolProposalInput).proposal,
+            same(proposal),
+          );
+          expect(
+            (next.input[2] as SemanticMessageInput).role,
+            SemanticMessageRole.assistant,
+          );
+          expect(
+            (next.input[2] as SemanticMessageInput).content,
+            'Text after proposal.',
+          );
+          final SemanticToolOutcomeInput outcome =
+              next.input[3] as SemanticToolOutcomeInput;
+          expect(outcome.providerCallId, proposal.providerCallId);
+          expect(outcome.outcome, same(fixture.strategy.lastToolOutcome));
+          expect(outcome.outcome.modelContent, 'Inspected.');
+          expect(
+            fixture.strategy.lastToolInvocation!.tool,
+            same(first.tools.byAlias('inspect_resource')),
+          );
+          expect(next.tools, isNot(same(first.tools)));
+          expect(
+            next.tools.byAlias('inspect_resource')!.executable,
+            same(fixture.executable),
+          );
+          expect(fixture.model.sawCorrelatedContinuation, isTrue);
+          expect(fixture.model.sawPreservedOutputOrder, isTrue);
+          expect(fixture.executable.executions, 1);
+          expect(fixture.history.snapshot().entries.first, same(originalUser));
+          expect(
+            fixture.history.snapshot().entries.map(
+              (ChatEntry entry) => entry.content,
+            ),
+            <String>['Inspect.', 'Complete.'],
+          );
+          expect(
+            _events(fixture.run).whereType<ModelInvocationStarted>(),
+            hasLength(2),
+          );
+          expect(
+            _events(fixture.run).whereType<ModelInvocationSettled>(),
+            hasLength(2),
+          );
+          expect(
+            _events(fixture.run).whereType<ModelInvocationFailed>(),
+            isEmpty,
+          );
+          expect(_events(fixture.run).whereType<RunFailed>(), isEmpty);
+          expect(contexts.last, isNot(same(contexts.first)));
+        }
+        expect(fixture.history.instructions, instructions);
+        for (final InferenceContextSourceContext context in contexts) {
+          expect(context.session, same(fixture.session));
+          expect(context.runId, fixture.run.id);
+        }
+      },
+    );
+
+    test(
+      '$mode source retirement after frozen capture does not fail the held invocation',
+      () async {
+        final _StrategyFixture fixture = await _fixture(
+          ToolPolicyDecision.allow,
+        );
+        final ExtensionId sourceId = ExtensionId(
+          'dev.adele.test.context.frozen',
+        );
+        final List<InferenceContextMaterial> supplied =
+            <InferenceContextMaterial>[
+              InferenceInstructionMaterial(
+                key: 'frozen',
+                text: 'Captured once.',
+                revision: 'v1',
+              ),
+            ];
+        int captures = 0;
+        int replacementCaptures = 0;
+        final ExtensionRegistration registration = fixture.registerSource(
+          sourceId,
+          failureMode: mode,
+          snapshot: (InferenceContextSourceContext context) async {
+            captures++;
+            return supplied;
+          },
+        );
+        final Completer<void> modelStarted = Completer<void>();
+        final Completer<void> releaseModel = Completer<void>();
+        fixture.model.beforeSettlement = () async {
+          if (fixture.model.invocations != 1) return;
+          modelStarted.complete();
+          await releaseModel.future;
+        };
+        final Future<void> running = fixture.strategy.start();
+        await modelStarted.future;
+        final SemanticModelRequest request = fixture.model.requests.single;
+        final InferenceContextSnapshot frozen = request.context;
+        final SourceInstructionGroup group = frozen.instructionGroups
+            .whereType<SourceInstructionGroup>()
+            .single;
+        final InferenceInstructionMaterial material = group.materials.single;
+        expect(group.sourceId, sourceId);
+        expect(material.text, 'Captured once.');
+        expect(material.revision, 'v1');
+        expect(material, isNot(same(supplied.single)));
+        final List<ExecutionEventRecord> inFlight = fixture.run.journal.records;
+        expect(
+          _events(fixture.run).whereType<ModelInvocationStarted>(),
+          hasLength(1),
+        );
+        expect(
+          _events(fixture.run).whereType<ModelInvocationSettled>(),
+          isEmpty,
+        );
+
+        supplied.clear();
+        await registration.close();
+        fixture.registerSource(
+          sourceId,
+          failureMode: mode,
+          snapshot: (InferenceContextSourceContext context) async {
+            replacementCaptures++;
+            return <InferenceContextMaterial>[
+              InferenceInstructionMaterial(
+                key: 'frozen',
+                text: 'Replacement context.',
+                revision: 'v2',
+              ),
+            ];
+          },
+        );
+        expect(replacementCaptures, 0);
+        expect(fixture.run.state, RunState.running);
+        expect(fixture.run.failure, isNull);
+        expect(fixture.run.journal.records, orderedEquals(inFlight));
+        expect(group.materials.single, same(material));
+        expect(request.instructions, 'Captured once.');
+        expect(renderInferenceInstructions(frozen), 'Captured once.');
+        expect(
+          frozen.sourceResults.single.status,
+          InferenceContextSourceStatus.contributed,
+        );
+        expect(frozen.sourceResults.single.failure, isNull);
+        releaseModel.complete();
+        await running;
+
+        expect(fixture.run.state, RunState.completed);
+        expect(fixture.run.failure, isNull);
+        expect(captures, 1);
+        expect(replacementCaptures, 1);
+        expect(fixture.model.requests, hasLength(2));
+        expect(fixture.model.requests.first.context, same(frozen));
+        expect(request.instructions, 'Captured once.');
+        final InferenceContextSnapshot next =
+            fixture.model.requests.last.context;
+        final SourceInstructionGroup replacement = next.instructionGroups
+            .whereType<SourceInstructionGroup>()
+            .single;
+        expect(replacement.sourceId, sourceId);
+        expect(replacement.materials.single.key, material.key);
+        expect(replacement.materials.single.revision, 'v2');
+        expect(next.sourceResults.single.failure, isNull);
+        expect(
+          next.sourceResults.single.status,
+          InferenceContextSourceStatus.contributed,
+        );
+        expect(
+          fixture.model.requests.last.instructions,
+          'Replacement context.',
+        );
+        expect(fixture.model.sawCorrelatedContinuation, isTrue);
+        expect(fixture.executable.executions, 1);
+        expect(
+          _events(fixture.run).whereType<ModelInvocationFailed>(),
+          isEmpty,
+        );
+        expect(_events(fixture.run).whereType<RunFailed>(), isEmpty);
+        expect(
+          _events(fixture.run).whereType<ModelInvocationSettled>(),
+          hasLength(2),
+        );
+        expect(
+          _events(
+            fixture.run,
+          ).whereType<ModelInvocationSettled>().first.settlement,
+          ModelSettlement.completed,
+        );
+        expect(
+          fixture.history.snapshot().entries.map(
+            (ChatEntry entry) => entry.content,
+          ),
+          <String>['Inspect.', 'Complete.'],
+        );
+      },
+    );
+  }
 
   test('three proposals drain sequentially from one tool generation', () async {
     final _BatchFixture fixture = await _BatchFixture.create();
@@ -1006,6 +1771,7 @@ void main() {
       final _Executable executable = _Executable();
       final SessionOrchestrationRun execution = createSessionOrchestrationRun(
         lifecycle: topology.lifecycle,
+        contextComposer: InferenceContextComposer(extensions),
         sessionId: session.id,
         runId: RunId('routing-run'),
         model: model,
@@ -1084,6 +1850,7 @@ void main() {
         SessionOrchestrationRun create(SessionId id) =>
             createSessionOrchestrationRun(
               lifecycle: topology.lifecycle,
+              contextComposer: InferenceContextComposer(extensions),
               sessionId: id,
               runId: RunId('unresolved-run'),
               model: model,
@@ -1161,6 +1928,7 @@ void main() {
       final ToolCatalog catalog = _catalog(executable);
       final SessionOrchestrationRun runA = createSessionOrchestrationRun(
         lifecycle: topology.lifecycle,
+        contextComposer: InferenceContextComposer(extensions),
         sessionId: session.id,
         runId: RunId('generation-run-a'),
         model: modelA,
@@ -1256,6 +2024,7 @@ void main() {
       final _Model modelB = _Model();
       final SessionOrchestrationRun runB = createSessionOrchestrationRun(
         lifecycle: topology.lifecycle,
+        contextComposer: InferenceContextComposer(extensions),
         sessionId: session.id,
         runId: RunId('generation-run-b'),
         model: modelB,
@@ -1318,6 +2087,7 @@ void main() {
         }
         final SessionOrchestrationRun execution = createSessionOrchestrationRun(
           lifecycle: topology.lifecycle,
+          contextComposer: InferenceContextComposer(extensions),
           sessionId: session.id,
           runId: RunId('retiring-chat-run'),
           model: model,
@@ -1714,6 +2484,7 @@ final class _BatchFixture {
       ..append(ChatUserMessage('Perform steps.'));
     final SessionOrchestrationRun strategy = createSessionOrchestrationRun(
       lifecycle: topology.lifecycle,
+      contextComposer: InferenceContextComposer(extensions),
       sessionId: productSession.id,
       runId: RunId('batch-run'),
       model: model,
@@ -1914,7 +2685,7 @@ Future<_StrategyFixture> _fixture(
         SessionId('session-1'),
       );
   final Session session = topology.createSession(chatStrategyId);
-  chat.sessions.obtain(session.id)
+  final ChatSessionState history = chat.sessions.obtain(session.id)
     ..instructions = instructions
     ..maxModelInvocations = maxModelInvocations
     ..append(ChatUserMessage('Inspect.'));
@@ -1927,10 +2698,14 @@ Future<_StrategyFixture> _fixture(
   final _Executable executable = _Executable(progress: progress);
   final ToolCatalog catalog = _catalog(executable);
   return _StrategyFixture(
+    extensions: extensions,
+    session: session,
+    history: history,
     model: model,
     executable: executable,
     strategy: createSessionOrchestrationRun(
       lifecycle: topology.lifecycle,
+      contextComposer: InferenceContextComposer(extensions),
       sessionId: session.id,
       runId: RunId('run-1'),
       model: model,
@@ -1942,15 +2717,65 @@ Future<_StrategyFixture> _fixture(
 
 final class _StrategyFixture {
   const _StrategyFixture({
+    required this.extensions,
+    required this.session,
+    required this.history,
     required this.model,
     required this.executable,
     required this.strategy,
   });
 
   AgentRun get run => strategy.run;
+  final ExtensionRegistry extensions;
+  final Session session;
+  final ChatSessionState history;
   final _Model model;
   final _Executable executable;
   final SessionOrchestrationRun strategy;
+
+  ExtensionRegistration registerSource(
+    ExtensionId id, {
+    InferenceContextFailureMode failureMode =
+        InferenceContextFailureMode.required,
+    required Future<Iterable<InferenceContextMaterial>> Function(
+      InferenceContextSourceContext,
+    )
+    snapshot,
+  }) {
+    final ExtensionRegistration registration = extensions.register(
+      point: inferenceContextSources,
+      id: id,
+      value: InferenceContextSourceContribution(
+        failureMode: failureMode,
+        snapshot: snapshot,
+      ),
+    );
+    addTearDown(registration.close);
+    return registration;
+  }
+}
+
+void _expectContextPreparationFailed(_StrategyFixture fixture) {
+  expect(fixture.run.state, RunState.failed);
+  expect(fixture.run.failure, isA<InferenceContextSourceFailed>());
+  expect(fixture.model.requests, isEmpty);
+  expect(fixture.model.invocations, 0);
+  expect(fixture.executable.executions, 0);
+  expect(fixture.strategy.lastModelTools, isNull);
+  expect(fixture.strategy.lastToolInvocation, isNull);
+  expect(fixture.strategy.lastToolOutcome, isNull);
+  final Iterable<ExecutionEvent> events = _events(fixture.run);
+  expect(events.whereType<ModelInvocationStarted>(), isEmpty);
+  expect(events.whereType<ModelInvocationFailed>(), isEmpty);
+  expect(events.map((ExecutionEvent event) => event.runtimeType), <Type>[
+    RunStarted,
+    RunFailed,
+  ]);
+  expect(events.whereType<RunFailed>().single.error, same(fixture.run.failure));
+  expect(
+    fixture.history.snapshot().entries.map((ChatEntry entry) => entry.content),
+    <String>['Inspect.'],
+  );
 }
 
 final class _Model implements ModelPort {

@@ -7,6 +7,7 @@ import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
@@ -234,6 +235,7 @@ final class DevelopmentSelfHostingTopology {
     required this.store,
     required this.lifecycle,
     required this.chat,
+    required this.contextComposer,
     required this.project,
     required this.task,
     required this.environment,
@@ -257,6 +259,7 @@ final class DevelopmentSelfHostingTopology {
   final InMemoryProductStore store;
   final ProductLifecycleCoordinator lifecycle;
   final ChatStrategyPlugin chat;
+  final InferenceContextComposer contextComposer;
   final Project project;
   final Task task;
   final Environment environment;
@@ -383,6 +386,7 @@ final class DevelopmentSelfHostingTopology {
             store: store,
             lifecycle: lifecycle,
             chat: chat,
+            contextComposer: InferenceContextComposer(extensions),
             project: project,
             task: created.task,
             environment: created.environment,
@@ -554,6 +558,7 @@ final class DevelopmentSelfHostingRunResult {
 Future<DevelopmentSelfHostingRunResult> executeDevelopmentSelfHostingRun({
   required String identity,
   required ProductLifecycleCoordinator lifecycle,
+  required InferenceContextComposer contextComposer,
   required ChatSessionStore sessions,
   required SessionId sessionId,
   required String prompt,
@@ -569,6 +574,7 @@ Future<DevelopmentSelfHostingRunResult> executeDevelopmentSelfHostingRun({
   final int initialEntryCount = session.snapshot().entries.length;
   final SessionOrchestrationRun execution = createSessionOrchestrationRun(
     lifecycle: lifecycle,
+    contextComposer: contextComposer,
     sessionId: sessionId,
     runId: RunId('run-$identity'),
     model: model,

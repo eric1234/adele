@@ -115,6 +115,7 @@ final class SourceCodingLiveHarness {
         await executeDevelopmentSelfHostingRun(
           identity: '$identity-source-live',
           lifecycle: _topology.lifecycle,
+          contextComposer: _topology.contextComposer,
           sessions: _topology.chat.sessions,
           sessionId: sessionId,
           prompt: userPrompt,

@@ -27,9 +27,9 @@ The following remain largely or entirely unimplemented:
 
 - Project/Task/Session/Environment disk persistence and complete lifecycle;
 - Chat UI and persistent strategy-specific state;
-- general context composition/contributors, compaction, and token budgets;
+- production context sources, broader Reference/Observation material, provider-aware projection/cache planning, compaction, and token budgets;
 - parent/child Session lifecycle;
-- plugin-defined extension ecosystems beyond registration, model tools, and executable strategy composition;
+- plugin-defined extension ecosystems beyond registration, model tools, executable strategies, and instruction-context composition;
 - production plugin-facing UI composition;
 - application Command/Command Palette/keybinding infrastructure;
 - profile-aware provider preference and general configuration services;
@@ -92,9 +92,9 @@ Runtime composition should prefer typed interface discovery over hidden activati
 
 Capabilities remain the implemented callable-provider mechanism for Actions and Services. Events are read-only fact notifications. Other extension points may collect UI fragments or structured operation contributions without being callable capabilities.
 
-The generic `ExtensionRegistry` supports typed registration/discovery, retirement, and exact binding liveness. Current model-tool and orchestration-strategy contribution points reuse it with their own composition semantics; already-resolved bindings do not migrate to replacement generations.
+The generic `ExtensionRegistry` supports typed registration/discovery, retirement, and exact binding liveness. Current model-tool, orchestration-strategy, and inference-context-source points reuse it with their own composition semantics; already-resolved bindings do not migrate to replacement generations. Instruction-source data becomes independent of binding liveness after safe capture, unlike executable work.
 
-Broader recursive composition, plugin-defined UI extension APIs, generic Event subscription, Commands/keybindings, and multi-plugin inference composition are direction rather than implemented production systems.
+Broader recursive composition, plugin-defined UI extension APIs, generic Event subscription, Commands/keybindings, and inference composition beyond instruction material remain direction rather than implemented production systems.
 
 ## Contracts, capabilities, and providers
 
@@ -236,17 +236,38 @@ The kernel model boundary is streaming-shaped. The common ModelProvider transpor
 
 Tool availability, materialization, policy, optional approval interruption, execution, progress, structured outcome, and effect certainty remain distinct.
 
-The deliberate future inference seam is `StrategyInferenceMaterial`, containing
+The implemented inference path starts with `StrategyInferenceMaterial`, containing
 instructions and ordered `SemanticModelInputItem` values from Chat history
-projection plus Run-local replay. The host supplies invocation identity and tools to construct
-internal `SemanticModelRequest`. Core model/tool/policy and Environment selection
-are unchanged. General context composition is the next slice at this seam; no
-context framework, contributor mechanism, or token budget is implemented yet.
+projection plus Run-local replay. `InferenceContextComposer` in public
+`adele_orchestration` discovers `inferenceContextSources` over the same existing
+`ExtensionRegistry` for every new inference, including Chat continuation. It
+captures instruction-only material into immutable `InferenceContextSnapshot`
+groups and source results without changing semantic input. Strategy instructions
+come first, then lexicographic source `ExtensionId` order with local order
+preserved; sorting is not semantic authority and there is no numeric priority.
 
-Future inference preparation should use structured composition rather than
+Exact source binding validation brackets snapshot/copy/validation, including
+duplicate source-local keys, before data is committed. Required failure stops
+before invocation identity, model-start evidence, or provider work; optional
+failure omits the entire source with original diagnostics, distinct from
+successful empty output. No replacement is tried in the same capture. Captured
+data survives later source retirement; source freshness is source-owned without a
+generic refresh API. Executable strategy/tool binding rules are unchanged.
+
+The fresh app source context uses canonical Session and existing typed Environment
+authority. The host constructs internal
+`SemanticModelRequest(context, invocationId, tools)`.
+The current `ModelProviderCapabilityAdapter` calls orchestration's
+`renderInferenceInstructions` to lower groups to the unchanged provider instructions
+string, preserving zero-source bytes. Model/tool/policy and Environment selection
+are unchanged; Chat owns no production source, and current composition activates none.
+
+Broader inference preparation should use structured composition rather than
 arbitrary request mutation. Agent policy, model routing, orchestration/history,
 context, tool availability, and other plugins may contribute typed material into
 provider-neutral buckets whose resolution produces a stable invocation snapshot.
+These additional buckets remain deferred, as do Reference/Observation material,
+production sources, provider-aware projection/cache planning, budgets, and compaction.
 
 See [`agent-kernel-semantic-model.md`](agent-kernel-semantic-model.md).
 
@@ -333,7 +354,8 @@ self-hosting.
 | General recursive extension system | Accepted architecture; not implemented. |
 | Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, Session-authorized read/mutation/process facets, bounded create/patch/delete text-file mutation, and generated foreground process streaming through the Git provider are proven; persistence and complete lifecycle remain unimplemented. |
 | Session-bound strategy execution | Canonical immutable Session creation, atomic publication with separate Environment authority, executable contributions, explicit unavailable/ambiguous resolution, and exact binding validation across Run operations/resume/settlement are implemented and deterministically validated. Headless Chat uses the public facade with validated state, sequencing, and application integration. Persistent strategy state, child Sessions, and disk persistence remain deferred. |
-| Production orchestration/UI/Commands | Headless stock Chat is implemented; production UI, Commands, discovery, and general context composition remain directional. |
+| Inference context | Instruction-only source discovery, exact-binding capture, immutable snapshots, and current adapter rendering are implemented; production sources, broader material, provider-aware projection/cache planning, budgets, and compaction remain deferred. |
+| Production orchestration/UI/Commands | Headless stock Chat is implemented; production UI, Commands, and discovery remain directional. |
 | Cross-platform/release | Unproven on Windows, macOS, and release mode. |
 | Packaging/sandboxing | Unproven; process isolation is not a sandbox. |
 

@@ -495,6 +495,7 @@ _RunFixture _runFixture({
     lifecycle: topology.lifecycle,
     sessionId: topology.session.id,
     runId: RunId('run-$id'),
+    contextComposer: topology.contextComposer,
     model: model,
     toolCatalog: catalog,
     policy: const DevelopmentToolPolicy(ToolPolicyDecision.ask),

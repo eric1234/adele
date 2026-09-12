@@ -4,12 +4,353 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/development/agent/agent_capability_adapters.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_product/adele_product.dart' show TaskId;
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:resource_inspector_contract/resource_inspector_contract.dart';
 
 void main() {
+  test('structured context flattens only text into the exact provider contract '
+      'and remains captured across local retry', () async {
+    final ExtensionRegistry registry = ExtensionRegistry();
+    final ExtensionRegistrationGroup registrations =
+        ExtensionRegistrationGroup();
+    final List<String> sourceCalls = <String>[];
+    final List<InferenceContextMaterial> alphaMaterials =
+        <InferenceContextMaterial>[
+          InferenceInstructionMaterial(
+            key: 'second-key',
+            text: 'Alpha first.\n',
+            revision: 'alpha-revision',
+          ),
+          InferenceInstructionMaterial(
+            key: 'first-key',
+            text: ' \tAlpha second. ',
+          ),
+        ];
+    final StateError optionalFailure = StateError('private source failure');
+    for (final entry in <String, InferenceContextSourceContribution>{
+      'zulu': InferenceContextSourceContribution(
+        failureMode: InferenceContextFailureMode.required,
+        snapshot: (_) async {
+          sourceCalls.add('zulu');
+          return <InferenceContextMaterial>[
+            InferenceInstructionMaterial(
+              key: 'zulu-key',
+              text: 'Zulu.\r\n',
+              revision: 'zulu-revision',
+            ),
+          ];
+        },
+      ),
+      'failure': InferenceContextSourceContribution(
+        failureMode: InferenceContextFailureMode.optional,
+        snapshot: (_) async {
+          sourceCalls.add('failure');
+          throw optionalFailure;
+        },
+      ),
+      'empty': InferenceContextSourceContribution(
+        failureMode: InferenceContextFailureMode.optional,
+        snapshot: (_) async {
+          sourceCalls.add('empty');
+          return const <InferenceContextMaterial>[];
+        },
+      ),
+      'alpha': InferenceContextSourceContribution(
+        failureMode: InferenceContextFailureMode.required,
+        snapshot: (_) async {
+          sourceCalls.add('alpha');
+          return alphaMaterials;
+        },
+      ),
+    }.entries) {
+      registrations.add(
+        registry.register(
+          point: inferenceContextSources,
+          id: ExtensionId('dev.adele.fixture.context.${entry.key}'),
+          value: entry.value,
+        ),
+      );
+    }
+    addTearDown(registrations.close);
+    final List<SemanticModelInputItem> input = <SemanticModelInputItem>[
+      SemanticMessageInput(role: SemanticMessageRole.user, content: 'Inspect.'),
+      SemanticToolProposalInput(
+        proposal: ProviderToolProposal(
+          providerCallId: 'call-1',
+          alias: 'inspect_resource',
+          arguments: const <String, Object?>{'uri': 'file:///tmp/example.dart'},
+        ),
+        providerItemId: 'proposal-1',
+        providerNativeMetadata: ModelNativeEnvelope(
+          kind: 'fixture-v1',
+          compatibility: const <String, Object?>{'route': 'fixture'},
+          data: const <String, Object?>{'signed': 'call-signature'},
+        ),
+      ),
+      SemanticToolOutcomeInput(
+        providerCallId: 'call-1',
+        outcome: ToolOutcome(
+          disposition: ToolOutcomeDisposition.success,
+          effectCertainty: EffectCertainty.knownOccurred,
+          modelContent: 'Inspected.',
+          hostData: const <String, Object?>{'private': 'host-only'},
+        ),
+      ),
+    ];
+    final InferenceContextSnapshot context =
+        await InferenceContextComposer(registry).compose(
+          strategyMaterial: StrategyInferenceMaterial(
+            instructions: ' Strategy.\n',
+            input: input,
+          ),
+          sourceContext: _SourceContext(),
+        );
+    final ToolCatalog catalog = ToolCatalog()
+      ..register(
+        ResourceInspectorToolExecutable(_resourceBinding()).registration,
+      );
+    final SemanticModelRequest request = SemanticModelRequest(
+      invocationId: ModelInvocationId('captured-context'),
+      context: context,
+      tools: catalog.materialize(),
+    );
+
+    expect(sourceCalls, <String>['alpha', 'empty', 'failure', 'zulu']);
+    expect(
+      context.instructionGroups.first,
+      isA<StrategyInstructionGroup>().having(
+        (group) => group.instructions,
+        'instructions',
+        ' Strategy.\n',
+      ),
+    );
+    final List<SourceInstructionGroup> sourceGroups = context.instructionGroups
+        .whereType<SourceInstructionGroup>()
+        .toList();
+    expect(sourceGroups.map((group) => group.sourceId.value), <String>[
+      'dev.adele.fixture.context.alpha',
+      'dev.adele.fixture.context.zulu',
+    ]);
+    expect(
+      sourceGroups.first.materials.map(
+        (material) => (material.key, material.revision),
+      ),
+      <(String, String?)>[
+        ('second-key', 'alpha-revision'),
+        ('first-key', null),
+      ],
+    );
+    expect(
+      context.sourceResults.map((result) => result.status),
+      <InferenceContextSourceStatus>[
+        InferenceContextSourceStatus.contributed,
+        InferenceContextSourceStatus.empty,
+        InferenceContextSourceStatus.omitted,
+        InferenceContextSourceStatus.contributed,
+      ],
+    );
+    expect(
+      context.sourceResults[2].failureMode,
+      InferenceContextFailureMode.optional,
+    );
+    expect(context.sourceResults[2].failure!.cause, same(optionalFailure));
+    expect(context.sourceResults[1].failure, isNull);
+
+    late final _ProviderChannel channel;
+    channel = _ProviderChannel(
+      events: Stream<ModelProviderEvent>.multi((controller) {
+        controller.add(
+          channel.streamCount == 1 ? _failedTerminal() : _terminal(),
+        );
+        controller.close();
+      }),
+    );
+    final ModelProviderCapabilityAdapter adapter =
+        ModelProviderCapabilityAdapter(
+          _binding(channel),
+          selectedModel: 'scripted-v1',
+          maxOutputTokens: 200,
+          toolChoice: ModelProviderToolChoice.none,
+          providerOptions: const <String, Object?>{'fixture': true},
+        );
+    final Stream<ModelEvent> firstAttempt = adapter.invoke(request);
+    input.clear();
+    alphaMaterials.clear();
+    catalog.remove(resourceInspectionToolId);
+    await registrations.close();
+
+    for (var attempt = 0; attempt < 2; attempt++) {
+      final List<ModelEvent> events =
+          await (attempt == 0 ? firstAttempt : adapter.invoke(request))
+              .toList();
+      expect(
+        events.single,
+        attempt == 0
+            ? isA<ModelInvocationFailedEvent>()
+            : isA<ModelInvocationSettledEvent>(),
+      );
+      expect(events.single.invocationId, same(request.invocationId));
+      expect(channel.lastPayload!.keys, <String>['request']);
+      final Map<Object?, Object?> encoded =
+          channel.lastPayload!['request']! as Map<Object?, Object?>;
+      expect(
+        encoded.keys,
+        unorderedEquals(<String>[
+          'model',
+          'instructions',
+          'input',
+          'tools',
+          'toolChoice',
+          'maxOutputTokens',
+          'providerOptions',
+          'nativeState',
+        ]),
+      );
+      expect(encoded, <String, Object?>{
+        'model': 'scripted-v1',
+        'instructions':
+            ' Strategy.\n\n\nAlpha first.\n\n\n \tAlpha second. \n\nZulu.\r\n',
+        'input': <Object?>[
+          <String, Object?>{
+            'kind': 'message',
+            'message': <String, Object?>{
+              'role': 'user',
+              'content': <Object?>[
+                <String, Object?>{'kind': 'text', 'text': 'Inspect.'},
+              ],
+            },
+            'toolProposal': null,
+            'toolOutcome': null,
+            'itemId': null,
+            'nativeMetadata': null,
+          },
+          <String, Object?>{
+            'kind': 'toolProposal',
+            'message': null,
+            'toolProposal': <String, Object?>{
+              'callId': 'call-1',
+              'name': 'inspect_resource',
+              'arguments': <String, Object?>{'uri': 'file:///tmp/example.dart'},
+            },
+            'toolOutcome': null,
+            'itemId': 'proposal-1',
+            'nativeMetadata': <String, Object?>{
+              'kind': 'fixture-v1',
+              'compatibility': <String, Object?>{'route': 'fixture'},
+              'data': <String, Object?>{'signed': 'call-signature'},
+            },
+          },
+          <String, Object?>{
+            'kind': 'toolOutcome',
+            'message': null,
+            'toolProposal': null,
+            'toolOutcome': <String, Object?>{
+              'callId': 'call-1',
+              'status': 'success',
+              'content': 'Inspected.',
+            },
+            'itemId': null,
+            'nativeMetadata': null,
+          },
+        ],
+        'tools': <Object?>[
+          <String, Object?>{
+            'name': 'inspect_resource',
+            'description':
+                'Inspect one resource identified by an absolute URI.',
+            'argumentsSchema': <String, Object?>{
+              'type': 'object',
+              'required': <Object?>['uri'],
+              'properties': <String, Object?>{
+                'uri': <String, Object?>{'type': 'string', 'format': 'uri'},
+              },
+              'additionalProperties': false,
+            },
+          },
+        ],
+        'toolChoice': 'none',
+        'maxOutputTokens': 200,
+        'providerOptions': <String, Object?>{'fixture': true},
+        'nativeState': null,
+      });
+      expect(request.instructions, encoded['instructions']);
+    }
+    expect(request.context, same(context));
+    expect(sourceCalls, <String>['alpha', 'empty', 'failure', 'zulu']);
+    expect(adapter.invocationCount, 2);
+    expect(channel.streamCount, 2);
+    expect(channel.requestCount, 0);
+  });
+
+  for (final String strategy in <String>['', ' Strategy only.\n']) {
+    for (final String? source in <String?>[null, ' \tSource only.\n']) {
+      test(
+        'context rendering handles ${strategy.isEmpty ? 'empty' : 'nonempty'} '
+        'strategy and ${source == null ? 'zero' : 'one'} sources',
+        () async {
+          final ExtensionRegistry registry = ExtensionRegistry();
+          if (source != null) {
+            final ExtensionRegistration registration = registry.register(
+              point: inferenceContextSources,
+              id: ExtensionId('dev.adele.fixture.context.only'),
+              value: InferenceContextSourceContribution(
+                failureMode: InferenceContextFailureMode.required,
+                snapshot: (_) async => <InferenceContextMaterial>[
+                  InferenceInstructionMaterial(key: 'only', text: source),
+                ],
+              ),
+            );
+            addTearDown(registration.close);
+          }
+          final InferenceContextSnapshot context =
+              await InferenceContextComposer(registry).compose(
+                strategyMaterial: StrategyInferenceMaterial(
+                  instructions: strategy,
+                  input: const <SemanticModelInputItem>[],
+                ),
+                sourceContext: _SourceContext(),
+              );
+          final _ProviderChannel channel = _ProviderChannel(
+            events: Stream<ModelProviderEvent>.value(_terminal()),
+          );
+
+          final List<ModelEvent> events =
+              await ModelProviderCapabilityAdapter(
+                    _binding(channel),
+                    selectedModel: 'scripted-v1',
+                  )
+                  .invoke(
+                    SemanticModelRequest(
+                      invocationId: ModelInvocationId('empty-context'),
+                      context: context,
+                      tools: MaterializedToolSet(const <MaterializedTool>[]),
+                    ),
+                  )
+                  .toList();
+
+          expect(events.single, isA<ModelInvocationSettledEvent>());
+          final Map<Object?, Object?> encoded =
+              channel.lastPayload!['request']! as Map<Object?, Object?>;
+          expect(
+            encoded['instructions'],
+            source == null
+                ? strategy
+                : strategy.isEmpty
+                ? source
+                : '$strategy\n\n$source',
+          );
+          expect(encoded['input'], isEmpty);
+          expect(encoded['tools'], isEmpty);
+        },
+      );
+    }
+  }
+
   test(
     'common adapter preserves multiple proposals and metadata through replay',
     () async {
@@ -101,14 +442,18 @@ void main() {
           .invoke(
             SemanticModelRequest(
               invocationId: ModelInvocationId('replay-proposals'),
-              input: <SemanticModelInputItem>[
-                for (final ModelToolProposalOutput output in proposals)
-                  SemanticToolProposalInput(
-                    proposal: output.proposal,
-                    providerItemId: output.providerItemId,
-                    providerNativeMetadata: output.providerNativeMetadata,
-                  ),
-              ],
+              context: InferenceContextSnapshot.fromStrategy(
+                StrategyInferenceMaterial(
+                  input: <SemanticModelInputItem>[
+                    for (final ModelToolProposalOutput output in proposals)
+                      SemanticToolProposalInput(
+                        proposal: output.proposal,
+                        providerItemId: output.providerItemId,
+                        providerNativeMetadata: output.providerNativeMetadata,
+                      ),
+                  ],
+                ),
+              ),
               tools: MaterializedToolSet(const <MaterializedTool>[]),
             ),
           )
@@ -150,16 +495,22 @@ void main() {
         .invoke(
           SemanticModelRequest(
             invocationId: ModelInvocationId('native-replay'),
-            input: <SemanticModelInputItem>[
-              SemanticNativeInput(
-                providerItemId: 'native-1',
-                providerNativeMetadata: ModelNativeEnvelope(
-                  kind: 'reasoning-v1',
-                  compatibility: const <String, Object?>{'route': 'fixture'},
-                  data: const <String, Object?>{'opaque': 'signed'},
-                ),
+            context: InferenceContextSnapshot.fromStrategy(
+              StrategyInferenceMaterial(
+                input: <SemanticModelInputItem>[
+                  SemanticNativeInput(
+                    providerItemId: 'native-1',
+                    providerNativeMetadata: ModelNativeEnvelope(
+                      kind: 'reasoning-v1',
+                      compatibility: const <String, Object?>{
+                        'route': 'fixture',
+                      },
+                      data: const <String, Object?>{'opaque': 'signed'},
+                    ),
+                  ),
+                ],
               ),
-            ],
+            ),
             tools: MaterializedToolSet(const <MaterializedTool>[]),
           ),
         )
@@ -373,12 +724,16 @@ void main() {
         .invoke(
           SemanticModelRequest(
             invocationId: ModelInvocationId('replay-space'),
-            input: <SemanticModelInputItem>[
-              SemanticMessageInput(
-                role: SemanticMessageRole.assistant,
-                content: output.content,
+            context: InferenceContextSnapshot.fromStrategy(
+              StrategyInferenceMaterial(
+                input: <SemanticModelInputItem>[
+                  SemanticMessageInput(
+                    role: SemanticMessageRole.assistant,
+                    content: output.content,
+                  ),
+                ],
               ),
-            ],
+            ),
             tools: MaterializedToolSet(const <MaterializedTool>[]),
           ),
         )
@@ -607,12 +962,35 @@ void main() {
 
 SemanticModelRequest _request() => SemanticModelRequest(
   invocationId: ModelInvocationId('model-1'),
-  instructions: 'Be concise.',
-  input: <SemanticModelInputItem>[
-    SemanticMessageInput(role: SemanticMessageRole.user, content: 'Inspect.'),
-  ],
+  context: InferenceContextSnapshot.fromStrategy(
+    StrategyInferenceMaterial(
+      instructions: 'Be concise.',
+      input: <SemanticModelInputItem>[
+        SemanticMessageInput(
+          role: SemanticMessageRole.user,
+          content: 'Inspect.',
+        ),
+      ],
+    ),
+  ),
   tools: MaterializedToolSet(const <MaterializedTool>[]),
 );
+
+final class _SourceContext implements InferenceContextSourceContext {
+  @override
+  final Session session = Session(
+    id: SessionId('session-context'),
+    taskId: TaskId('task-context'),
+    strategyId: OrchestrationStrategyId('dev.adele.strategy.fixture'),
+  );
+
+  @override
+  final RunId runId = RunId('run-context');
+
+  @override
+  Future<T> requireHostService<T extends Object>() =>
+      throw StateError('The fixture does not require host services.');
+}
 
 ModelProviderEvent _delta(String text) => ModelProviderEvent(
   kind: ModelProviderEventKind.observation,

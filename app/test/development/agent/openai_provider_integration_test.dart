@@ -11,6 +11,7 @@ import 'package:adele_desktop/development/agent/agent_capability_adapters.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
@@ -214,6 +215,7 @@ void main() {
         lifecycle: topology.lifecycle,
         sessionId: topology.session.id,
         runId: RunId('run-openai-b4'),
+        contextComposer: topology.contextComposer,
         model: modelAdapter,
         toolCatalog: catalog,
         policy: const DevelopmentToolPolicy(ToolPolicyDecision.ask),
@@ -662,6 +664,7 @@ void main() {
         lifecycle: lifecycle,
         sessionId: sessionId,
         runId: RunId('run-source-coding'),
+        contextComposer: InferenceContextComposer(extensions),
         model: modelAdapter,
         toolCatalog: catalog,
         policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
