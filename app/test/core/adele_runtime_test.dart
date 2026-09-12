@@ -1,5 +1,6 @@
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
@@ -16,7 +17,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 void main() {
-  test('startup only composes five stock contributions and a shared graph', () {
+  test('startup only composes six stock contributions and a shared graph', () {
     final _RecordingIds ids = _RecordingIds();
     final AdeleRuntime runtime = AdeleRuntime(ids: ids);
     addTearDown(runtime.close);
@@ -49,7 +50,16 @@ void main() {
         'dev.adele.plugin.filesystem-tools.model-tools',
         'dev.adele.plugin.search-tools.model-tools',
         'dev.adele.plugin.command-tools.model-tools',
+        'dev.adele.plugin.local-directory-project-selector.project-selector',
       ]),
+    );
+    expect(
+      runtime.extensions
+          .discover(projectSelectorContributions)
+          .single
+          .value
+          .displayName,
+      'Open Local Directory...',
     );
     expect(
       runtime.lifecycle.strategyResolver.resolve(chatStrategyId).contribution,
@@ -75,6 +85,7 @@ void main() {
           'dev.adele.plugin.agents-md.instructions',
           'dev.adele.plugin.filesystem-tools.model-tools',
           'dev.adele.plugin.search-tools.model-tools',
+          'dev.adele.plugin.local-directory-project-selector.project-selector',
         ]),
       );
       final Project project = runtime.lifecycle.createProject(
@@ -269,6 +280,7 @@ List<ExtensionBinding<Object>> _contributions(AdeleRuntime runtime) => [
   ...runtime.extensions.discover(orchestrationStrategyContributions),
   ...runtime.extensions.discover(inferenceContextSources),
   ...runtime.extensions.discover(modelToolContributions),
+  ...runtime.extensions.discover(projectSelectorContributions),
 ];
 
 final class _RecordingIds implements ProductIdSource {

@@ -5,6 +5,7 @@ import 'package:agents_md_plugin/agents_md_plugin.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:command_tools_plugin/command_tools_plugin.dart';
 import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
+import 'package:local_directory_project_selector_plugin/local_directory_project_selector_plugin.dart';
 import 'package:search_tools_plugin/search_tools_plugin.dart';
 
 import 'product_lifecycle.dart';
@@ -28,6 +29,7 @@ final class AdeleRuntime {
       const SearchToolsPlugin().activate(extensions),
       // Retain the existing reduced live-smoke composition, not a profile API.
       if (includeCommandTools) const CommandToolsPlugin().activate(extensions),
+      const LocalDirectoryProjectSelectorPlugin().activate(extensions),
     ];
   }
 

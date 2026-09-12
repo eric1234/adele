@@ -5,19 +5,23 @@ root. It is an internal application, not a plugin-facing package.
 
 ## Normal Application
 
-The app owns its minimal shell, theme, and private widgets. The shell displays
-the ADELE name and `No Project is open`.
+The app owns its minimal shell, theme, and private widgets. B1 retains the ADELE
+header and initially displays `No Project is open` with registered Project
+selector buttons. After opening, it shows the Project source and `No Tasks yet`,
+not a Task Browser or active-Session workbench.
 
 The Stateful `AdeleApplication` constructs one `AdeleRuntime` synchronously in
 `initState` and retains it across rebuilds. `lib/core/adele_runtime.dart` owns one
 `CapabilityRegistry`, `ExtensionRegistry`, `InMemoryProductStore`,
 `ProductLifecycleCoordinator.generated` wired to those same registries and store,
 `InferenceContextComposer` over the same extension registry, and retained
-`ChatStrategyPlugin`. It statically activates Chat, root-level AGENTS.md,
-Filesystem Tools, Search Tools, and Command Tools in process. This is implicit
-stock composition, not plugin discovery or a profile API. The existing
+`ChatStrategyPlugin`. It statically owns six activations in order: Chat,
+root-level AGENTS.md, Filesystem Tools, Search Tools, Command Tools, and Local
+Directory Project Selector, all using the same `ExtensionRegistry`. This is
+implicit stock composition, not plugin discovery or a profile API. The existing
 `includeCommandTools` flag only preserves the reduced live-smoke harness
-composition; normal startup includes Command Tools.
+composition; it omits only Command Tools, not the selector. Normal startup
+includes all six.
 
 Desktop exit requests await runtime close. Detach/dispose initiate the same
 cleanup without awaiting it, and failures are reported through `FlutterError`.
@@ -28,10 +32,64 @@ attempts every action before rethrowing the first error with its stack.
 
 Normal startup does not launch providers or a backend host, compile AOT
 artifacts, load credentials, create a Project, Task, Environment, or Session,
-build a tool catalog, or start a Run. Provider/model configuration, Project
-selection, Task/Environment establishment, Chat UI, and the Run product flow
-remain deferred for the normal application. The shared runtime has no dependency
-on development composition or its model capability adapter.
+build a tool catalog, or start a Run. Project creation occurs only after explicit
+selection. Provider/model configuration, Task/Environment establishment, Chat UI,
+and the Run product flow remain deferred for the normal application. The shared
+runtime has no dependency on development composition or its model capability adapter.
+
+### B1 Project opening
+
+Pure-Dart `adele_core_extensions` defines `ProjectSelectorContribution` with only
+`String displayName` and `Future<Uri?> Function() selectProject`. Its typed
+`projectSelectorContributions` point is `dev.adele.extension.project-selectors`.
+`AdeleApplication.build` discovers current contributions through
+`runtime.extensions`; `AdeleShell` renders one button per contribution in
+deterministic registry registration order. Zero selectors displays
+`No Project selectors are available.`; one or multiple selectors are independent
+actions, not a default/alternate chooser. There are no priorities, categories,
+applicability predicates, or selector defaults.
+
+The application invokes the selected contribution and passes a non-null URI to
+`runtime.lifecycle.createProject`, which publishes and returns the canonical
+Project. Window presentation retains that value in `_project` on
+`_AdeleApplicationState`, never a shared `runtime.currentProject`. All selector
+buttons are disabled while selection is pending. `null` is cancellation, not
+failure, and creates nothing. Selector or lifecycle failure is an inline error;
+it neither tries another selector nor changes the presented Project. After
+asynchronous selection, the app validates the retained exact `ExtensionBinding`
+before creating a Project; retirement cannot silently substitute a replacement.
+Results arriving after disposal or exit has begun are ignored.
+
+The opened view derives its name from the last nonempty source URI path segment,
+falling back to the host, then the URI. It shows the source URI, `Project is open`,
+and `No Tasks yet`. These are presentation values, not new Project metadata;
+`adele_product` is unchanged and independent of the selector API. B1 adds no
+Task/Environment/Session creation, provider/model/Git startup, tool catalog, Run,
+persistence, Project catalog, or deduplication. GitHub/cloud/catalog selectors
+remain possible future plugins. These buttons are temporary presentation over
+the contribution and lifecycle operations; Command surfacing and Task Browser
+remain deferred.
+
+`plugins/local_directory_project_selector` supplies
+`local_directory_project_selector_plugin`. Its const
+`LocalDirectoryProjectSelectorPlugin` registers via `activate(ExtensionRegistry)`,
+returning an `ExtensionRegistration`, with extension ID
+`dev.adele.plugin.local-directory-project-selector.project-selector` and
+`displayName` `Open Local Directory...`. It uses `file_selector ^1.1.0` through an
+injected narrow picker function. The result is an absolute `file:` directory URI
+with lexical `.`/`..` normalization, without filesystem/Git validation or symlink
+resolution. Registration itself makes no OS call. A conditional Flutter-only
+picker import keeps the real plain-Dart self-hosting CLI import graph free of
+Flutter libraries; invoking the default picker headlessly explicitly throws
+`UnsupportedError`, rather than returning cancellation or falling back.
+
+B1 native integration adds only the minimum macOS
+`com.apple.security.files.user-selected.read-only` entitlement for picking.
+Flutter regenerates the Linux/macOS/Windows native registrants. The focused Linux
+profile build passes on the pinned toolchain. Interactive OS picking and
+macOS/Windows builds have not been validated. The maintained tooling tests also
+run the self-hosting CLI's `--help` with plain Dart to guard the shared import
+boundary without credentials or live provider calls.
 
 ADR 0031 accepts Project, Task, Session, Run, and Environment as the shared
 product-domain identities. The application now contains the in-memory
@@ -61,7 +119,8 @@ filesystems. This policy applies both to recursive traversal and explicit scope
 segments; explicit excluded scopes fail before provider reads. It does not change
 case-sensitive query matching or the spelling of canonical paths.
 Use `read_file` to retrieve an exact known file's contents and revision.
-Lifecycle UI remains deferred despite normal stock-plugin activation.
+Task/Environment/Session lifecycle UI remains deferred despite B1 Project opening
+and normal stock-plugin activation.
 
 The normal application does not display the `workspace_demo` reference plugin.
 The maintained `lib/development_smoke.dart` entrypoint exercises the plugin
@@ -217,11 +276,17 @@ token budgets, and compaction remain deferred.
 Allowed dependencies are Flutter, ADELE public packages, and internal host
 implementations required at the composition root. Statically composed stock
 plugins include `chat_strategy_plugin`, `agents_md_plugin`,
-`filesystem_tools_plugin`, `search_tools_plugin`, and `command_tools_plugin`,
-resolved through the root pub workspace for shared `AdeleRuntime` composition.
+`filesystem_tools_plugin`, `search_tools_plugin`, `command_tools_plugin`, and
+`local_directory_project_selector_plugin`, resolved through the root pub workspace
+for shared `AdeleRuntime` composition.
 Chat's only direct production dependencies are `adele_orchestration` and
 `adele_plugin_api`; it has no `agent_kernel` dependency, including in
 `dev_dependencies`.
+
+`adele_core_extensions` imports only `adele_plugin_api` and owns core extension
+contracts with no natural existing public domain package. It does not absorb
+product values, orchestration/context, tools, Environment providers, or
+plugin-defined ecosystems; see `docs/architecture/dependency-rules.md`.
 
 The app must not be a dependency of plugins or reusable core packages. Plugin
 implementations, Agent/orchestration logic, public plugin APIs, and reusable
@@ -323,9 +388,9 @@ automatic cleanup, validation planning, commit, push, or PR workflow.
 
 ## Deferred
 
-Normal provider/model configuration, Project selection, Task/Environment
-establishment, Chat UI and the Run product flow, Session/Chat persistence and
-child lifecycle,
+Normal provider/model configuration, Task/Environment establishment, Task Browser,
+Chat UI and the Run product flow, Project catalog/persistence/deduplication,
+additional selectors, Session/Chat persistence and child lifecycle,
 context sources beyond root AGENTS.md, nested/scoped AGENTS.md, aliases/overrides,
 global/home files, imports, AGENTS.md caching, broader Reference/Observation material,
 provider-aware projection/cache planning, token budgets and compaction, additional

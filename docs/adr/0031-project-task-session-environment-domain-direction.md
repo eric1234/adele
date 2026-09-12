@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted; in-memory Session-bound execution, headless stock Chat, Environment-authorized tools, and instruction-context capture implemented, broader lifecycle deferred
+Accepted; B1 Project opening, in-memory Session-bound execution, headless stock Chat, Environment-authorized tools, and instruction-context capture implemented, broader lifecycle deferred
 
 Partially supersedes ADR 0022 for long-term Session semantics.
 
@@ -28,7 +28,11 @@ ADELE adopts the following long-term product-domain direction.
 
 `Project` is a core ADELE identity/lifecycle concept. It is not intrinsically a filesystem directory.
 
-Plugins provide ways to select/associate concrete Projects. The stock development composition is expected to provide a local-directory `ProjectSelector`, while future selectors may use recent-project lists, databases/catalogs, cloud services, or other sources.
+Plugins provide ways to select/associate concrete Projects. B1 supplies a stock
+local-directory `ProjectSelectorContribution` that returns only a source URI;
+the app invokes core lifecycle to create the canonical Project. Future selectors
+may use recent-project lists, GitHub, databases/catalogs, cloud services, or other
+sources without changing Project identity.
 
 ### Task
 
@@ -91,7 +95,10 @@ Core owns authoritative Session creation/parent linkage/strategy binding. Orches
 
 The maintained repository does **not** yet implement this complete product-domain model.
 
-- `app/lib/core/adele_runtime.dart` owns the shared capability/extension registries, in-memory product store, generated lifecycle coordinator, inference context composer, retained Chat plugin, and static Chat/AGENTS.md/Filesystem/Search/Command activations. Normal `AdeleApplication` constructs one runtime synchronously and owns its cleanup; self-hosting owns an instance of the same runtime and adds provider and product/Run setup. Normal startup creates no providers, Project/Task/Environment/Session, tool catalog, or Run; provider/model configuration, Project selection, Task/Environment establishment, Chat UI, and the Run product flow remain deferred.
+- `app/lib/core/adele_runtime.dart` owns the shared capability/extension registries, in-memory product store, generated lifecycle coordinator, inference context composer, retained Chat plugin, and six static activations: Chat, AGENTS.md, Filesystem, Search, Command, and Local Directory Project Selector. All use the same extension registry and retire in reverse order; reduced composition omits only Command Tools. Normal `AdeleApplication` constructs one runtime synchronously and owns its cleanup; self-hosting owns an instance of the same runtime and adds provider and product/Run setup. Normal startup creates no providers, Project/Task/Environment/Session, tool catalog, or Run. B1 creates only a Project after explicit selection; normal provider/model configuration, Task/Environment establishment, Chat UI, and the Run product flow remain deferred.
+- B1's tiny pure-Dart `adele_core_extensions` imports only `adele_plugin_api` and defines `ProjectSelectorContribution` with only `String displayName` and `Future<Uri?> Function() selectProject` at typed `projectSelectorContributions` (`dev.adele.extension.project-selectors`). Its ownership is core extension contracts with no natural existing public domain package, not a catch-all; existing registry/product/orchestration/tool/Environment and plugin-ecosystem ownership remains unchanged. `adele_product` gains no dependency or derived Project metadata.
+- `AdeleApplication.build` discovers zero, one, or multiple independent selectors; the existing themed ADELE shell shows `No Project is open` and one button per contribution in deterministic registry registration order, or an unavailable state for zero. There are no priorities, defaults, categories, applicability rules, or chooser framework. Buttons are disabled during selection; `null` is cancellation and creates nothing. For a non-null URI, the app validates the retained exact binding after asynchronous selection, then calls `runtime.lifecycle.createProject`, which publishes and returns the canonical Project. Selector/lifecycle failure is inline, with no fallback or change to the presented Project; late results after disposal/exit are ignored.
+- The canonical returned Project is retained in window-local `_project` on app State, never `runtime.currentProject`. The shell shows a URI-derived leaf name (fallback host/URI), source URI, `Project is open`, and `No Tasks yet`. These buttons are temporary presentation, not Command surfacing or Task Browser. Opening starts no Task, Environment, Session, provider/model/Git, tool catalog, or Run work and adds no Project persistence, catalog, or deduplication. GitHub/cloud/catalog selectors remain future possibilities, not implementations.
 - `adele_product` owns immutable Project, Task, and Environment values, including generic provider identity and opaque provider state. It also owns the one canonical `SessionId`, semantic `OrchestrationStrategyId`, and the final immutable `Session(id, taskId, strategyId)`. The strategy ID lives in product to keep product independent of orchestration. `Session` stores no live binding, Environment authority, or strategy-specific history.
 - Public pure-Dart `adele_orchestration` owns `OrchestrationStrategyContribution(strategyId, materialize)`, the typed `orchestrationStrategyContributions` extension point, and a thin `OrchestrationStrategyResolver.resolve(id)` over the existing `ExtensionRegistry`. It extends that same package with the narrow execution facade, not a second registry, materialization cache, or new public package.
 - `OrchestrationExecutionHost` supplies `start`/`complete`/`fail`/`validateBinding`, `invokeModel(StrategyInferenceMaterial)`, `processProposal` with an opaque `StrategyToolSnapshot` plus `ProviderToolProposal`, and approval resolution returning semantic continuation. Minimal semantic input/output, native-envelope, proposal/failure, settlement/metadata, and approval DTOs are extracted into this public package and reused by the kernel. Model ports/streams/collectors, tool catalogs, policy, `AgentRun`, and the journal remain internal.
@@ -109,10 +116,15 @@ The maintained repository does **not** yet implement this complete product-domai
 - `adele_orchestration` now captures instruction-only sources over the existing registry into immutable `InferenceContextSnapshot` for each new inference, including Chat continuation. The fresh app `SessionInferenceContextSourceContext` accepts only canonical Session and explicitly allowlists only `AuthorizedEnvironmentFileReadFacet` through the existing Session -> Task -> authorized Environment -> generation authority path. All other service types are rejected; mutation/process authority remains with the existing tool/policy/execution mechanisms. Semantic input and the provider instructions-string contract are unchanged.
 - Required source failure stops preparation before invocation identity/evidence/provider work; optional failure omits the whole source with original diagnostics, distinct from successful empty output. Capture has no replacement fallback; captured data survives retirement without changing executable binding rules. Freshness is source-owned without a generic refresh API; deterministic source order is not semantic authority or numeric priority.
 - Shared `AdeleRuntime` composition activates stock `agents_md_plugin` in normal startup and development/self-hosting; Chat activates no source and remains AGENTS-unaware. Activation alone does not read a file. Each snapshot rereads root `AGENTS.md` through the Session-authorized `AuthorizedEnvironmentFileReadFacet`, not a Project or host filesystem fallback. `not_found` and blank files are successful empty results; other read/service/authority errors fail the required source. Exact nonblank text and its Environment revision form one material, separate from stable plugin-owned explicit-user-precedence semantics. Generic instruction-only composition and independent Skills/role/map ownership are unchanged.
-- Nested/scoped AGENTS.md, aliases/overrides, global/home files, imports, AGENTS.md caching, other context sources, broader Reference/Observation material, provider-aware projection/cache planning, token budgets, compaction, Chat UI/persistence, child Session lifecycle, strategy defaults, profiles, Task Browser or other lifecycle UI, and disk persistence remain deferred. Complete Session lifecycle and restoration are not implemented.
+- Nested/scoped AGENTS.md, aliases/overrides, global/home files, imports, AGENTS.md caching, other context sources, broader Reference/Observation material, provider-aware projection/cache planning, token budgets, compaction, Chat UI/persistence, child Session lifecycle, strategy defaults, profiles, Task Browser and lifecycle UI beyond B1 Project opening, and disk persistence remain deferred. Complete Session lifecycle and restoration are not implemented.
 - OpenAI API-key and experimental ChatGPT source-coding consumers use the Session-authorized Environment tool composition, not the retired DevelopmentSource plugin.
 
 The current implementation remains valid evidence for the narrower vertical. Future APIs should migrate toward this accepted direction as concrete features are built.
+
+ADR 0030 records B1's contribution and headless import boundaries. Native picker
+integration, including the minimum macOS read-only user-selected-file entitlement
+and generated registrants, and current validation status are maintained in
+`docs/architecture/overview.md`.
 
 ## Consequences
 

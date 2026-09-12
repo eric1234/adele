@@ -13,6 +13,7 @@ dependencies:
   agent_kernel: ^0.1.0
   adele_capabilities: ^0.1.0
   adele_contract: ^0.1.0
+  adele_core_extensions: ^0.1.0
   adele_environment: ^0.1.0
   adele_model_tool: ^0.1.0
   adele_model_provider: ^0.1.0
@@ -28,6 +29,7 @@ dependencies:
   flutter:
     sdk: flutter
   flutter_eval: 0.8.2
+  local_directory_project_selector_plugin: ^0.1.0
   plugin_builder: ^0.1.0
   plugin_runtime: ^0.1.0
   resource_inspector_contract: ^0.1.0

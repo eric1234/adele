@@ -6,9 +6,14 @@
 
 This document defines ADELE's long-term composition model for plugins and plugin-defined extension ecosystems. It records architectural boundaries rather than a frozen Dart API. Implemented APIs such as `ExtensionPoint` remain experimental; other example interfaces below remain directional until concrete implementation requires them.
 
-The maintained repository includes source plugins, interpreted frontend execution, AOT backend execution, generated typed transport, active capability registration/resolution, configured provider contexts, provider-neutral agent execution, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, and generic registration/liveness. The registry supports typed extension points, activation-scoped registrations, exact-generation bindings, public contextual model-tool contributions, executable orchestration-strategy contributions, and instruction-only inference-context sources. Statically composed stock Filesystem Tools, Search Tools, and Command Tools own `read_file`/`apply_patch`/`create_file`/`delete_file`, `search`, and `run_command`. Headless stock Chat uses the public `adele_orchestration` execution facade and the same in-process activation conventions; this is not production plugin discovery. Development/self-hosting also activates the independent stock root-level `agents_md_plugin` source. ADELE does **not** yet implement the broader recursive extension system described here, production plugin-facing UI composition, generic commands/keybindings, product/Chat persistence, broader inference material or other context sources, or most of the expected stock plugin topology.
+The maintained repository includes source plugins, interpreted frontend execution, AOT backend execution, generated typed transport, active capability registration/resolution, configured provider contexts, provider-neutral agent execution, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, and generic registration/liveness. The registry supports typed extension points, activation-scoped registrations, exact-generation bindings, public contextual model-tool contributions, executable orchestration-strategy contributions, instruction-only inference-context sources, and B1 Project selector contributions. Statically composed stock Filesystem Tools, Search Tools, and Command Tools own `read_file`/`apply_patch`/`create_file`/`delete_file`, `search`, and `run_command`. Headless stock Chat uses the public `adele_orchestration` execution facade and the same in-process activation conventions; this is not production plugin discovery. Shared `AdeleRuntime` activates the independent root-level `agents_md_plugin` source and Local Directory Project Selector in normal startup and development/self-hosting. B1 adds minimal host-rendered Project opening, not a general UI API. ADELE does **not** yet implement the broader recursive extension system described here, production plugin-facing UI composition, generic commands/keybindings, product/Chat persistence, broader inference material or other context sources, or most of the expected stock plugin topology.
 
 The generic registry deliberately defines only registration, discovery, retirement, and binding liveness. Model-tool composition defines its own zero-or-many composition and alias-collision semantics. Strategy resolution requires exactly one current contribution for an explicit semantic ID, with unavailable/ambiguous errors rather than defaults or tie-breaking. Instruction-context composition defines its own zero-or-many capture, deterministic identity ordering, and required/optional source failure behavior; it has no numeric priority. Generic priority, applicability languages, and universal ordering/failure rules are not supplied by the registry. `EnvironmentRuntime` remains a provisional application/domain implementation rather than a template for extension runtimes.
+
+Project selectors are independent actions: zero means unavailable, one or multiple
+means one button per contribution in registry registration order. They have no
+priorities, defaults, categories, or applicability rules. Cancellation is a
+successful `null` result, distinct from selector or lifecycle failure.
 
 See also:
 
@@ -258,6 +263,33 @@ Stock `ChatStrategyPlugin.activate` registers Chat under semantic ID
 private loop sequencing; neither the canonical Session nor the registration API contains Chat
 history. See ADR 0031 for the creation boundary and deferred lifecycle scope.
 
+## 5.3 B1 Project selector boundary
+
+Tiny pure-Dart `packages/core_extensions` (`adele_core_extensions`) imports only
+`adele_plugin_api`. It owns core extension contracts with no natural existing
+public domain package, not a catch-all for extension APIs. Existing registry,
+product, orchestration/context, tool, Environment, and plugin-ecosystem ownership
+remains as defined in [`dependency-rules.md`](dependency-rules.md).
+
+Its `ProjectSelectorContribution` contains only `String displayName` and
+`Future<Uri?> Function() selectProject`. `projectSelectorContributions` is an
+`ExtensionPoint<ProjectSelectorContribution>` at `dev.adele.extension.project-selectors`.
+A selector returns a source URI or `null` for cancellation, never a Project or
+host lifecycle context. `adele_product` remains unchanged and independent.
+
+The stock Local Directory Project Selector uses the existing in-process
+`activate(ExtensionRegistry)` registration convention; see
+[`stock-plugin-direction.md`](stock-plugin-direction.md#31-local-directory-project-selector)
+for its native-picker and headless import boundaries.
+
+`AdeleRuntime` owns this sixth stock activation on its existing registry and
+retires it with the others in reverse order. Reduced composition omits only
+Command Tools. `AdeleApplication` discovers selectors in `build`, invokes the
+chosen contribution, then calls `runtime.lifecycle.createProject` for a non-null
+URI. Lifecycle publishes and returns the canonical Project; `_project` in app
+State is window-local presentation, not `runtime.currentProject`. No selector
+owns product creation, derived Project metadata, persistence, or deduplication.
+
 ---
 
 # 6. Composition is live; resolved operations remain stable
@@ -297,6 +329,12 @@ execution does not invalidate the request. The next inference discovers current
 sources, including replacements. This does not change executable model/tool or
 strategy binding rules.
 
+For B1 selection, the app retains the exact selector binding and validates it
+after asynchronous selection before Project creation. It ignores late results
+after disposal/exit and never tries a replacement contribution. Buttons are
+disabled while selection is pending; cancellation is a no-op, and selector or
+lifecycle failure stays inline without changing the presented Project.
+
 ---
 
 # 7. Host-owned contextual defaults
@@ -322,6 +360,9 @@ EnvironmentProvider
 The host may provide reusable UI for a primary default action plus alternatives. Plugins may still use bespoke UI when the experience benefits from it.
 
 Provider default selection is distinct from extension ordering. An ordered list of UI fragments and a preferred implementation of a callable interface solve different problems.
+
+This direction does not add default routing to B1 Project selectors. Each
+contribution is an explicitly invoked action, not a default/alternate provider.
 
 ---
 
@@ -398,8 +439,9 @@ At the current app `ModelProviderCapabilityAdapter`, orchestration's
 `ModelProviderRequest.instructions` string with blank-line separation and unchanged
 zero-source bytes. Tools, policy, model controls, and Environment selection
 retain their existing owners. Chat registers no context source and remains
-AGENTS-unaware. Only development/self-hosting composition activates the independent
-stock `agents_md_plugin`, rereading root `AGENTS.md` through the Session-authorized
+AGENTS-unaware. Shared `AdeleRuntime` composition activates the independent stock
+`agents_md_plugin` in normal startup and development/self-hosting, rereading root
+`AGENTS.md` through the Session-authorized
 `AuthorizedEnvironmentFileReadFacet` each snapshot. Missing (`not_found`) and blank
 files succeed empty; other read/service/authority errors fail the required source.
 Exact file text and its revision form one material, separate from stable
@@ -469,6 +511,9 @@ come first, then lexicographic source `ExtensionId` order with source-local orde
 preserved. Sorting makes composition reproducible; it is not semantic authority,
 trust, conflict resolution, or an override rule.
 
+B1 Project selector buttons instead preserve deterministic registry registration
+order, with no selector priority or sorting by display name/extension ID.
+
 ---
 
 # 11. Failure semantics belong to the extension contract
@@ -482,6 +527,7 @@ Examples:
 - Failure of the selected Environment provider means that Environment lifecycle operation failed.
 - A mandatory security/policy participant failing may make it unsafe to continue.
 - Implemented inference-context sources explicitly declare required or optional failure behavior: required failure aborts preparation, optional failure omits the whole source with diagnostics, and successful empty output remains distinct.
+- B1 Project selectors return `null` for cancellation; selector/lifecycle failure is an inline app error with no fallback or change to the presented Project.
 
 Each Extension Point must define failure semantics appropriate to its role.
 
@@ -534,6 +580,12 @@ Plugins provide Commands and suggested bindings. The host owns how they are disc
 UI should normally invoke the same underlying Command/domain operation that could also be triggered from another surface. Rendering a button must not turn that widget into the definition of the domain behavior.
 
 Application Commands are distinct from the model-callable Command Tool that executes external programs.
+
+B1's host-rendered selector buttons are temporary presentation over the typed
+callback and core Project lifecycle, not Command registration or a chooser
+framework. Command surfacing and Task Browser remain deferred; the minimal
+opened-Project view and remaining scope are described in
+[`overview.md`](overview.md#project).
 
 ---
 

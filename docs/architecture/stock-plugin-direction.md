@@ -15,7 +15,7 @@ The expected stock composition should be read alongside:
 - [`agent-tooling-direction.md`](agent-tooling-direction.md), which describes model tools and execution presentation;
 - [`../mockups/README.md`](../mockups/README.md), which shows the default development UX produced by a stock plugin/configuration set.
 
-The maintained codebase implements only a small subset of this topology: source-plugin runtime/build infrastructure, generated contracts, active capability routing, the common ModelProvider and OpenAI provider, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, a Git Worktree Environment provider, generic model-tool registration, stock Filesystem Tools, Search Tools, and Command Tools, headless stock Chat, and the root-level AGENTS.md source. Public `adele_orchestration` provides executable strategy contributions, the narrow execution facade, and instruction-only inference-context composition over the same extension registry; application Session-routed hosting materializes the exact strategy contribution rather than constructing a loop directly. Chat owns in-memory state and sequencing, not context sources, UI, or persistence. Shared `AdeleRuntime` composition activates `agents_md_plugin` in normal startup and development/self-hosting; Chat itself activates no source and remains AGENTS-unaware. Most stock plugins below do not yet exist.
+The maintained codebase implements only a small subset of this topology: source-plugin runtime/build infrastructure, generated contracts, active capability routing, the common ModelProvider and OpenAI provider, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, a Git Worktree Environment provider, generic model-tool registration, stock Filesystem Tools, Search Tools, and Command Tools, headless stock Chat, the root-level AGENTS.md source, and B1 Local Directory Project Selector with minimal Project opening. Public `adele_orchestration` provides executable strategy contributions, the narrow execution facade, and instruction-only inference-context composition over the same extension registry; application Session-routed hosting materializes the exact strategy contribution rather than constructing a loop directly. Chat owns in-memory state and sequencing, not context sources, UI, or persistence. Shared `AdeleRuntime` composition activates `agents_md_plugin` and Local Directory Project Selector in normal startup and development/self-hosting; Chat itself activates no source and remains AGENTS-unaware. Most stock plugins below do not yet exist.
 
 ---
 
@@ -125,12 +125,12 @@ user/profile/project keybinding overrides
 
 Plugins register Commands and suggested bindings; core owns discovery, conflict handling, rebinding, and dispatch.
 
-## 2.3 General callable interfaces
+## 2.3 Selection and callable interfaces
 
 Expected broad interfaces include concepts such as:
 
 ```text
-ProjectSelector
+ProjectSelectorContribution (B1 implemented; not a callable capability)
 EnvironmentProvider
 Environment filesystem access
 Environment process execution
@@ -143,7 +143,9 @@ core OrchestrationStrategy registration/discovery/binding
 public orchestration/execution service
 ```
 
-`ProjectSelector` may use an OS picker, recent-project list, database, or cloud catalog.
+The implemented `ProjectSelectorContribution` returns only a URI or cancellation;
+see section 3.1. Future implementations may use a recent-project list, GitHub,
+database, or cloud catalog, without adding default routing to B1.
 
 `EnvironmentProvider` owns the implementation lifecycle rather than only creation. Git Worktree, Docker, and future remote providers can coexist.
 
@@ -203,24 +205,46 @@ imports, and AGENTS.md caching remain deferred.
 
 ## 3.1 Local Directory Project Selector
 
-**Role:** stock way to select a development Project from a local directory.
+**Role:** implemented B1 stock native directory selection, returning only a source URI.
 
-Likely provides:
+`plugins/local_directory_project_selector` contains
+`local_directory_project_selector_plugin`. Its const
+`LocalDirectoryProjectSelectorPlugin` uses `activate(ExtensionRegistry)` to return
+an `ExtensionRegistration` with extension ID
+`dev.adele.plugin.local-directory-project-selector.project-selector` and
+display name `Open Local Directory...`.
 
-- `ProjectSelector` implementation;
-- OS directory picker UI;
-- resolution/creation of a core Project associated with the selected root;
-- Project display metadata and persistence of the local-root association where needed.
+Tiny pure-Dart `adele_core_extensions` defines `ProjectSelectorContribution` with
+only `String displayName` and `Future<Uri?> Function() selectProject`, registered
+at typed `projectSelectorContributions` (`dev.adele.extension.project-selectors`).
+It imports only `adele_plugin_api`. Its narrow ownership is core extension
+contracts with no natural existing public domain package, not all public APIs;
+existing domain and plugin-ecosystem ownership is unchanged (see
+[`dependency-rules.md`](dependency-rules.md)). `adele_product` stays unchanged and
+independent.
 
-Likely consumes core Project lifecycle and host desktop picker integration.
+The plugin uses `file_selector ^1.1.0` through an injected narrow picker function.
+Selection returns an absolute `file:` directory URI with lexical dot
+normalization, without filesystem/Git validation or symlink resolution; `null`
+means cancellation, not failure. The Flutter-only picker is conditionally
+imported, preserving the real plain-Dart self-hosting CLI import graph. Activation
+makes no OS call, while headless invocation of the default picker explicitly
+throws `UnsupportedError`.
 
-It does **not** own Task identity, Environment lifecycle, Git semantics, or editing.
-
-Future alternative selectors may show Recent Projects, a database/catalog, or cloud-hosted Projects without changing Project identity.
+`AdeleRuntime` owns this as its sixth stock activation on the same shared
+`ExtensionRegistry`, retiring owned registrations in reverse order. Reduced
+composition omits only Command Tools. The selector does **not** create Projects,
+derive product metadata, persist associations, deduplicate sources, or own Task,
+Environment, Git, or editing behavior. The app invokes it and separately calls
+core lifecycle, as section 12.1 describes. Future GitHub/cloud/catalog or recent
+Project selectors are possible, not implemented.
 
 ## 3.2 Task Browser
 
 **Role:** Project/Task/Session selection and management experience represented by the stock mockups.
+
+Task Browser remains deferred. B1 stops at a minimal `Project is open` /
+`No Tasks yet` presentation rather than implementing the mockup browsing flow.
 
 The Task Browser is not assumed to be a `MainContentView`. Before a Task/Session is selected there may be no normal active-session workbench. The plugin may own a dedicated Project-level screen/window/shell, similar to a selector launching an OS-native picker. A future UI could embed the same experience in the normal workbench without changing semantic contracts.
 
@@ -695,7 +719,7 @@ The current headless execution path is:
 
 ```text
 development/self-hosting owns AdeleRuntime
-    -> runtime activates Chat, stock tools, and AGENTS.md
+    -> runtime activates Chat, stock tools, AGENTS.md, and Project selector
     -> core lifecycle creates Session bound to dev.adele.strategy.chat
     -> caller obtains retained ChatSessionState and appends the prompt
     -> createSessionOrchestrationRun(SessionId, host execution dependencies)
@@ -710,22 +734,40 @@ settlement. If A retires, its active Run fails without migrating; a later Run in
 the same Session may freshly resolve B under the unchanged semantic ID. The
 self-hosting topology uses this path, not direct loop construction.
 
-The following richer product flows are directional, including the UI, effective
-Agent binding, inference composition beyond the implemented instruction sources,
-persistence, and child-Session steps that headless Chat does not implement.
+Project opening in section 12.1 is the implemented B1 slice. The richer flows in
+sections 12.2 onward remain directional, including UI, effective Agent binding,
+inference composition beyond instruction sources, persistence, and child-Session
+steps that headless Chat does not implement.
 
 ## 12.1 Select a Project
 
 ```text
-User chooses Select/Open Project
-    -> host/default routing chooses Local Directory Project Selector
-    -> selector shows OS directory picker
-    -> selected directory resolves/creates core Project
-    -> local-root association is retained
-    -> Project-level Task/Session selection experience becomes available
+AdeleApplication.build discovers projectSelectorContributions
+    -> shell shows one button per contribution in registry registration order
+    -> user invokes a contribution (stock: Open Local Directory...)
+    -> selector shows native picker and returns Uri?; null cancels
+    -> app checks window lifetime and retained exact binding
+    -> runtime.lifecycle.createProject(uri) publishes/returns canonical Project
+    -> app State retains window-local _project
+    -> shell shows source-derived name/URI, Project is open, No Tasks yet
 ```
 
-Another selector could show Recent Projects or a cloud catalog.
+The existing themed shell keeps its ADELE header. Before opening it displays
+`No Project is open`; zero contributions displays an unavailable state. One or
+multiple contributions are independent buttons, with no chooser framework,
+priorities, defaults, categories, or applicability. Buttons are disabled during
+selection. Cancellation is a no-op; selector/lifecycle errors remain inline
+without fallback or changing the presented Project. Retired bindings cannot
+substitute replacements after selection, and results after disposal/exit are
+ignored.
+
+The display name is the URI's last nonempty path segment, falling back to host,
+then URI, not metadata added to Project. Current presentation is window-local,
+never `runtime.currentProject`. Opening starts no Task, Environment, Session,
+provider, model, Git, tool catalog, or Run. There is no Project persistence,
+catalog, or deduplication. These buttons are temporary; Command surfacing and
+Task Browser remain deferred. Native integration/validation status is recorded
+in [`overview.md`](overview.md#remaining-runtime-validation), not implied by this flow.
 
 ## 12.2 Create a Task
 
@@ -875,7 +917,7 @@ The child remains a Session, not a Task, and is not normally a peer in Task Brow
 | Semantic workbench surfaces | Core | Host composes global UI while placement evolves |
 | Commands / Command Palette / keybindings | Core | Cross-cutting controller/input infrastructure |
 | Settings | Core | Cross-cutting configuration infrastructure |
-| ProjectSelector | Core/public | Project is core; selection methods are interchangeable |
+| `ProjectSelectorContribution` | `adele_core_extensions` (B1 implemented) | Core-owned URI selection contract with no natural existing public domain package; lifecycle stays in core |
 | ModelProvider | Core/public capability | Provider-neutral kernel boundary |
 | EnvironmentProvider | Core/public | Task lifecycle needs interchangeable Environment implementations |
 | Environment filesystem/process APIs | Core/public | Tools/editors must be Environment-independent |
@@ -901,6 +943,7 @@ A plugin-defined interface can later move into core/public APIs when independent
 The stock installation should be coherent and useful, but ADELE should tolerate technically valid weak compositions:
 
 - Chat with no tools;
+- zero Project selectors (unavailable), or multiple independent selector actions;
 - strategy registered with no Agent Interaction UI consumer;
 - Diff with no source-display provider;
 - multiple Environment providers with one contextual default;

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted; generic registration/liveness, typed model tools, executable stock Chat, and instruction-only inference-context composition implemented, broader composition deferred
+Accepted; generic registration/liveness, typed model tools, executable stock Chat, instruction-only inference-context composition, and B1 Project selectors implemented, broader composition deferred
 
 ## Context
 
@@ -39,6 +39,9 @@ Only part of this model is currently implemented:
 - generated typed contract transport is implemented for the maintained supported shapes;
 - active one-to-many capability registration/resolution and exact generation bindings are implemented;
 - generic typed extension registration/discovery, activation-scoped retirement, exact `ExtensionBinding` liveness, and `StaleExtensionBinding` are implemented;
+- B1 adds tiny pure-Dart `adele_core_extensions`, importing only `adele_plugin_api`, with `ProjectSelectorContribution` containing only `String displayName` and `Future<Uri?> Function() selectProject`; the typed `projectSelectorContributions` point is `dev.adele.extension.project-selectors`;
+- Project selectors permit zero, one, or multiple independent contributions, presented in registry registration order without priorities, defaults, categories, applicability, or a chooser framework; `null` is cancellation, while selector/lifecycle failure is an inline app error with no fallback or change to the presented Project;
+- stock Local Directory Project Selector uses the existing in-process activation convention on the same `AdeleRuntime` registry, not a capability/default-provider route; native implementation details are recorded in `docs/architecture/stock-plugin-direction.md`;
 - public contextual model-tool contributions and internal materialization/provider-neutral agent execution semantics are implemented;
 - public `adele_orchestration` provides `OrchestrationStrategyContribution(strategyId, materialize)`, semantic-ID resolution over the existing registry, `OrchestrationStrategyHostContext(session, host)`, and `OrchestrationExecution(start/resolveApproval)`; missing/ambiguous IDs fail explicitly;
 - its narrow `OrchestrationExecutionHost` accepts `StrategyInferenceMaterial`, returns semantic model turns with opaque `StrategyToolSnapshot` handles, processes proposals through host-owned policy/execution, and resolves approvals to semantic continuation; minimal semantic DTOs are shared with the kernel, not duplicated or placed in another public package;
@@ -46,12 +49,27 @@ Only part of this model is currently implemented:
 - application Session-routed Run creation resolves and materializes one exact contribution; host operations, approval resume, and asynchronous settlement validate the retained binding, so stale active Runs fail without migration while later Runs may freshly resolve replacements under the same Session strategy ID;
 - `InferenceContextComposer` captures instruction-only `inferenceContextSources` over the same `ExtensionRegistry` into immutable `InferenceContextSnapshot` with typed groups, unchanged semantic input, and source results; orchestration's `renderInferenceInstructions` lowers at the current app adapter to the unchanged provider instructions string;
 - each new inference discovers sources; exact-binding capture aborts on required failure or omits an optional source with original diagnostics, distinct from successful empty output; there is no same-capture fallback, and safely captured data survives retirement without changing executable binding rules;
-- source freshness is source-owned without a generic refresh API; only development/self-hosting composition activates stock `agents_md_plugin`, which rereads root `AGENTS.md` through the Session-authorized `AuthorizedEnvironmentFileReadFacet` each snapshot; Chat activates no source and remains AGENTS-unaware;
+- source freshness is source-owned without a generic refresh API; shared `AdeleRuntime` composition activates stock `agents_md_plugin` in normal startup and development/self-hosting, rereading root `AGENTS.md` through the Session-authorized `AuthorizedEnvironmentFileReadFacet` each snapshot; Chat activates no source and remains AGENTS-unaware;
 - the AGENTS.md source treats `not_found` and blank files as successful empty output and other read/service/authority errors as required failure; exact nonblank text and its Environment revision form one material, separate from stable plugin-owned explicit-user-precedence semantics, without changing generic composition or assigning AGENTS.md ownership of Skills, roles, or maps;
 - nested/scoped AGENTS.md, aliases/overrides, global/home files, imports, AGENTS.md caching, other context sources, profile-aware preference, Chat UI/persistence, child Sessions, token budgets, and compaction remain deferred;
 - plugin-defined extension APIs, production UI composition, Commands/keybindings, generic Event subscription, broader Reference/Observation material, and provider-aware projection/cache planning remain future work.
 
 The execution facade does not expose kernel model ports/streams/collectors, tool catalogs, policy gates, `AgentRun`, or journal objects. The host accepts only unused proposals from its exact completed model turn and only the current host-supplied approval resolution for its retained invocation. This ADR accepts the broader architectural direction without claiming deferred mechanisms are implemented or live-service validation of Chat.
+
+`adele_core_extensions` is narrowly for core-owned extension contracts with no
+natural existing public domain package, not a catch-all. Generic registry
+mechanics stay in `adele_plugin_api`; values in `adele_product`; strategies/context
+in `adele_orchestration`; tools in `adele_model_tool`; Environment providers in
+`adele_environment`; and plugin-defined ecosystems with their public API owners.
+Product stays unchanged and independent. See `docs/architecture/dependency-rules.md`
+for package boundaries and ADR 0031 for B1's app-owned URI-to-Project lifecycle
+and window state.
+
+B1 uses the same runtime registry as other stock contributions and adds no
+production UI/Command framework. Its conditional Flutter-only picker import
+preserves the real plain-Dart self-hosting CLI graph: registration makes no OS
+call, and headless default picker invocation explicitly throws `UnsupportedError`.
+See `docs/architecture/overview.md` for native integration and validation status.
 
 ## Consequences
 

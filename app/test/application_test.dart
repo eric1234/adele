@@ -1,5 +1,6 @@
 import 'dart:ui' show AppExitResponse;
 
+import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/main.dart' as application;
@@ -7,6 +8,7 @@ import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -20,6 +22,7 @@ void main() {
 
     expect(find.text('ADELE'), findsOneWidget);
     expect(find.text('No Project is open'), findsOneWidget);
+    expect(find.text('Open Local Directory...'), findsOneWidget);
     expect(find.text('No workspace is open'), findsNothing);
     expect(find.text('No plugins are loaded'), findsNothing);
     expect(find.text('Phase 0'), findsNothing);
@@ -53,6 +56,11 @@ void main() {
     expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
     expect(runtime.extensions.discover(modelToolContributions), hasLength(3));
     expect(runtime.extensions.discover(inferenceContextSources), hasLength(1));
+    final ExtensionBinding<ProjectSelectorContribution> selector = runtime
+        .extensions
+        .discover(projectSelectorContributions)
+        .single;
+    expect(find.text(selector.value.displayName), findsOneWidget);
     expect(find.text('No Project is open'), findsOneWidget);
 
     await tester.pumpWidget(AdeleApplication(createRuntime: createRuntime));
@@ -67,6 +75,8 @@ void main() {
     );
     expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
     expect(runtime.extensions.discover(modelToolContributions), isEmpty);
+    expect(runtime.extensions.discover(projectSelectorContributions), isEmpty);
+    expect(selector.validate, throwsA(isA<StaleExtensionBinding>()));
   });
 
   testWidgets('graceful application exit awaits runtime retirement', (
@@ -85,6 +95,7 @@ void main() {
     );
     expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
     expect(runtime.extensions.discover(modelToolContributions), isEmpty);
+    expect(runtime.extensions.discover(projectSelectorContributions), isEmpty);
     await tester.pumpWidget(const SizedBox.shrink());
     expect(tester.takeException(), isNull);
   });
