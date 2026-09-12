@@ -22,7 +22,7 @@ const String developmentSelfHostingApiKeyProviderId =
     'dev.adele.openai.api-key';
 const String developmentSelfHostingChatGptProviderId =
     'dev.adele.openai.chatgpt-experimental';
-const String developmentSelfHostingChatGptDefaultModel = 'gpt-5.5';
+const String developmentSelfHostingChatGptDefaultModel = 'gpt-6-astra';
 
 const String _openAiPluginId = 'dev.adele.openai';
 const String _chatGptConfigurationContext = 'chatgpt-experimental';

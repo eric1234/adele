@@ -66,7 +66,7 @@ void main() {
 
       expect(fallback.providerId, developmentSelfHostingChatGptProviderId);
       expect(fallback.configuredContext, 'chatgpt-experimental');
-      expect(fallback.selectedModel, developmentSelfHostingChatGptDefaultModel);
+      expect(fallback.selectedModel, 'gpt-6-astra');
       expect(configured.selectedModel, 'configured-model');
     },
   );

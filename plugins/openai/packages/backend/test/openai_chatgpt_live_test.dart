@@ -5,7 +5,25 @@ import 'package:openai_model_provider_backend/openai_model_provider_backend.dart
 import 'package:openai_model_provider_backend/src/openai_chatgpt_auth.dart';
 import 'package:test/test.dart';
 
+import '../bin/openai_chatgpt_development.dart';
+
 void main() {
+  test('ChatGPT development model defaults to Astra when unset', () {
+    expect(
+      openAiChatGptDevelopmentModel(const <String, String>{}),
+      'gpt-6-astra',
+    );
+  });
+
+  test('ChatGPT development model preserves an explicit override', () {
+    expect(
+      openAiChatGptDevelopmentModel(const <String, String>{
+        'ADELE_OPENAI_CHATGPT_TEST_MODEL': 'configured-model',
+      }),
+      'configured-model',
+    );
+  });
+
   final bool enabled =
       Platform.environment['ADELE_OPENAI_CHATGPT_LIVE_TEST'] == '1';
   test(
@@ -46,8 +64,9 @@ void main() {
       );
       addTearDown(provider.close);
 
-      final String selectedModel =
-          Platform.environment['ADELE_OPENAI_CHATGPT_TEST_MODEL'] ?? 'gpt-5.5';
+      final String selectedModel = openAiChatGptDevelopmentModel(
+        Platform.environment,
+      );
       expect(selectedModel.trim(), isNotEmpty);
       const String toolResult = 'ADELE_TOOL_CONTINUATION_OK';
       final List<ModelProviderInput> input = <ModelProviderInput>[

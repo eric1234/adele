@@ -217,7 +217,7 @@ includes `run_command`.
 The default `chatgpt` profile requires
 `ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE`, honors the maintained optional ChatGPT
 configuration variables, uses `ADELE_OPENAI_CHATGPT_TEST_MODEL` when set, and
-otherwise selects the classic Responses fallback `gpt-5.5`. The optional
+otherwise selects the classic Responses fallback `gpt-6-astra`. The optional
 `--profile api-key` path requires `OPENAI_API_KEY` and
 `ADELE_OPENAI_TEST_MODEL` and retains the existing public Responses endpoint
 configuration.
@@ -355,7 +355,7 @@ subscription-route full-stack smoke with
 experimental ChatGPT source-edit and command-validation smoke with the same
 credential configuration. Both ChatGPT app smokes honor
 `ADELE_OPENAI_CHATGPT_TEST_MODEL` and otherwise use the maintained classic
-Responses fallback `gpt-5.5`. All five remain opt-in and are excluded from
+Responses fallback `gpt-6-astra`. All five remain opt-in and are excluded from
 normal CI.
 
 Recorded `ADELE_OPENAI_CHATGPT_TEST_MODEL=gpt-6-astra` evidence includes an
@@ -366,7 +366,7 @@ unchanged in the distinct Task worktree, Project source, and launching checkout.
 Every completed invocation in these proofs must contain the exact selected
 service-reported `effectiveModel`; missing or substituted model identity fails
 validation. The backend no longer falls back to the request when the service
-omits its model. The backend tool smoke also passes with the retained `gpt-5.5`
+omits its model. The backend tool smoke also passed with the previous `gpt-5.5`
 default. Deterministic tests validate the current Session-routed Chat path;
 paid live services have not been rerun against it.
 
