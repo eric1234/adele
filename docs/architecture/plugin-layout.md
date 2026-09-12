@@ -107,6 +107,40 @@ one runtime—for example Git may provide Environment behavior, review/SCM
 services, Commands, summary contributions, and model tools. Registration into
 multiple extension points does not imply multiple plugin runtimes.
 
+## Normal stock backend composition
+
+B2 uses the existing backend-only Git plugin from the normal application, without
+linking its implementation into Flutter. Provider-free `AdeleRuntime()` owns six
+in-process stock registrations and a pure-Dart `ApplicationPluginBootstrap` on
+its existing capability registry. `AdeleApplication` explicitly calls async
+`bootstrapStockBackendPlugins`, which supplies activation callbacks to that
+generic single-host owner. Future stock backends such as OpenAI can use the same
+host boundary; they are not activated by normal composition today.
+
+`app/lib/plugins/stock_git_environment.dart` centralizes stock Git plugin/provider
+IDs, display name, capability/service exposure, and default configuration-context
+registration for normal and self-hosting paths. It loads an artifact using host
+APIs and public Environment contracts, not backend implementation imports.
+Self-hosting retains its separate larger artifact/host topology.
+
+Normal Linux repository `run`/`build` prepare fresh host and Git AOT snapshots
+before the Flutter run/build invocation, using `plugin_builder.compileAotSnapshot`.
+Each invocation retains an isolated `.dart_tool/adele/desktop-backends/` directory and
+passes `ADELE_DARTAOTRUNTIME_EXECUTABLE`, `ADELE_BACKEND_HOST_ARTIFACT`, and
+`ADELE_GIT_ENVIRONMENT_ARTIFACT` as compile-time defines. The app consumes prepared
+locations only, not source paths or a compiler. Without configuration, Task
+Environment support is unavailable; startup failures clean up and remain visible
+without blocking Project opening.
+
+These absolute runtime/artifact paths are provisional source-checkout deployment
+inputs. A build is runnable only on that machine while the artifacts and matched
+SDK remain in place; moving/deleting them breaks backend startup. Fresh retained
+outputs are not a cache, plugin installation, portable/production packaging,
+discovery, or profiles. See [`app/README.md`](../../app/README.md#b2-backend-startup)
+for lifecycle ownership and bounded validation evidence: the maintained Linux
+profile build and focused bootstrap/real-Git/widget suites passed, and normal
+startup reached backend readiness under Xvfb without model credentials.
+
 ## Proven and deferred
 
 The `workspace_demo` fixture proves local AOT compilation, shared process-hosted

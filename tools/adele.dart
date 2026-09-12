@@ -2,6 +2,10 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
+// test-plan must remain runnable before pub workspace bootstrap.
+// ignore: avoid_relative_lib_imports
+import '../packages/plugin_builder/lib/plugin_builder.dart';
+import 'backend_artifacts.dart';
 import 'test_runner.dart';
 
 const int _maximumDefaultTestJobs = 2;
@@ -372,27 +376,32 @@ Future<void> main(List<String> arguments) async {
         await main(<String>['test']);
         return;
       case 'run':
-        final String device = arguments.length > 1
-            ? arguments[1]
-            : _defaultDesktopDevice();
-        final String mode = _mode(arguments);
-        await _run('adele_desktop', 'flutter', <String>[
-          'run',
-          '-d',
-          device,
-          '--$mode',
-        ], workingDirectory: 'app');
-        return;
       case 'build':
         final String target = arguments.length > 1
             ? arguments[1]
             : _defaultDesktopDevice();
         final String mode = _mode(arguments);
-        await _run('adele_desktop $target build', 'flutter', <String>[
-          'build',
-          target,
-          '--$mode',
-        ], workingDirectory: 'app');
+        final String flutter = target == 'linux'
+            ? _which('flutter')
+            : 'flutter';
+        final List<String> defines = target == 'linux'
+            ? await prepareDesktopBackendDefines(
+                repositoryRoot: Directory.current,
+                flutterExecutable: flutter,
+              )
+            : const <String>[];
+        await _run(
+          'adele_desktop $target ${arguments.first}',
+          flutter,
+          <String>[
+            arguments.first,
+            if (arguments.first == 'run') '-d',
+            target,
+            '--$mode',
+            ...defines,
+          ],
+          workingDirectory: 'app',
+        );
         return;
       case 'smoke':
         final String target = arguments.length > 1
@@ -439,6 +448,12 @@ Future<void> main(List<String> arguments) async {
       'FAILED: ${failure.label} exited with code ${failure.exitCode}.',
     );
     exitCode = failure.exitCode;
+  } on PluginBuildFailure catch (failure) {
+    stderr.writeln('FAILED: $failure');
+    final int? compilerExitCode = failure.diagnostic?.exitCode;
+    exitCode = compilerExitCode != null && compilerExitCode != 0
+        ? compilerExitCode
+        : 1;
   }
 }
 

@@ -268,17 +268,16 @@ final class DevelopmentPluginRuntime {
   }
 
   Future<void> _compileBackend(String entrypoint, File artifact) async {
-    final ProcessResult result = await Process.run(
-      configuration.dartExecutable,
-      <String>['compile', 'aot-snapshot', entrypoint, '-o', artifact.path],
-      workingDirectory: configuration.repositoryRoot.path,
+    await compileAotSnapshot(
+      dartExecutable: configuration.dartExecutable,
+      workingDirectory: configuration.repositoryRoot,
+      entrypoint: entrypoint,
+      artifact: artifact,
+      stage: 'resource-inspector compile',
+      onDiagnostic: (PluginBuildDiagnostic diagnostic) {
+        diagnostics.add('${diagnostic.stage}: exit ${diagnostic.exitCode}');
+      },
     );
-    diagnostics.add('resource-inspector compile: exit ${result.exitCode}');
-    if (result.exitCode != 0) {
-      throw StateError(
-        'Resource inspector compilation failed: ${result.stderr}',
-      );
-    }
   }
 
   Future<void> stop() async {

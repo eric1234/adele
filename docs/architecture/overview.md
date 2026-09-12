@@ -39,6 +39,16 @@ The following remain largely or entirely unimplemented:
 
 Public plugin-facing APIs remain experimental.
 
+B2 extends the normal shell from Project opening to title-only Task creation with
+a real Git primary Environment. Normal application bootstrap consumes prepared
+backend artifacts; it is separate from provider-free runtime construction.
+This adds no Session/Chat/model/Run product flow. The maintained Linux profile
+build, focused widget/runtime tests, and core bootstrap/real-Git integration
+suites passed. Normal `run linux --profile` reached backend readiness under Xvfb
+without model credentials. See
+[`app/README.md`](../../app/README.md#b2-validation-paths) for the bounded evidence
+and remaining test paths.
+
 ## System shape
 
 ADELE has one Flutter desktop application, `adele_desktop`, under `app/`. The application owns the current shell, theme, private widgets, desktop integration, and composition of host systems. It is a composition root rather than the primary home of core logic.
@@ -52,15 +62,36 @@ Filesystem Tools, Search Tools, Command Tools, and Local Directory Project
 Selector in process, all on the same extension registry. The selector is the
 sixth owned activation; the reduced composition omits only Command Tools. This
 is an implicit stock composition, not plugin discovery or a profile/configuration
-API.
+API. Construction is synchronous and provider-free. The runtime also owns
+pure-Dart `ApplicationPluginBootstrap` on that same `CapabilityRegistry`, without
+starting backend work in its constructor.
 
 The normal Stateful `AdeleApplication` constructs its runtime once synchronously
-in `initState`, not during rebuilds. It awaits close on desktop exit requests and
-initiates cleanup on detach/dispose, reporting failures through `FlutterError`.
-Runtime close shares one completion across callers and retires owned activations
-in reverse order. `app/lib/core/resource_cleanup.dart` supplies `closeResources`,
-shared with development teardown: every action is attempted before the first
-error is rethrown with its stack.
+in `initState`, not during rebuilds, then explicitly calls the async
+`bootstrapStockBackendPlugins`. Stock composition supplies activator callbacks to
+the generic bootstrap owner, which starts one `PluginBackendHost`. Its states are
+`unconfigured`, `starting`, `ready`, `failed`, `closing`, and `closed`. Startup
+failure cleans up acquired resources before reporting the original error. The
+app displays unavailable/failure state without preventing Project opening. A
+later OpenAI activation can use the same shared-host callback boundary; normal
+composition currently activates only the Git backend.
+
+`app/lib/plugins/stock_git_environment.dart` owns the stock plugin/provider IDs,
+display name, service exposure, and default configuration-context registration
+for both normal and self-hosting composition. It uses public Environment
+contracts and internal host APIs, not Git backend implementation imports.
+
+Application close marks the window closing immediately and drains in-flight Task
+establishment before `runtime.close`; establishment failure does not skip cleanup.
+Late UI updates are ignored. This avoids bounded host shutdown interrupting real
+worktree creation, without adding cancellation or rollback. Desktop exit awaits
+the complete close; detach/dispose initiate the same cleanup and report runtime
+cleanup failures through `FlutterError`. Runtime close shares one completion across
+callers: all backend capability registrations retire before their connections
+close, then the host closes, then in-process activations retire in reverse order.
+`app/lib/core/resource_cleanup.dart` supplies `closeResources`, shared with
+development teardown: every action is attempted before the first error is
+rethrown with its stack.
 
 The minimal themed shell retains its ADELE header. In B1, `AdeleApplication.build`
 discovers `projectSelectorContributions` and displays `No Project is open` with
@@ -68,19 +99,33 @@ one button per contribution in deterministic registry registration order. Zero
 selectors is an explicit unavailable state; one or multiple contributions are
 independent actions, not a chooser/default-provider framework.
 
-Normal startup does not launch providers or a backend host, compile AOT artifacts,
-load credentials, create a Project, Task, Environment, or Session, build a tool
-catalog, or start a Run. Explicit selection can now create only a Project, as
-described below. Normal provider/model configuration, Task/Environment
-establishment, Task Browser, Chat UI, and the Run product flow remain deferred.
+Normal stock bootstrap consumes only compile-time
+`ADELE_DARTAOTRUNTIME_EXECUTABLE`, `ADELE_BACKEND_HOST_ARTIFACT`, and
+`ADELE_GIT_ENVIRONMENT_ARTIFACT`. No configuration leaves Task Environment support
+unavailable. Normal bootstrap accepts no source paths and invokes no compiler.
+Normal Linux `run` and `build` in `tools/adele.dart` prepare fresh host/Git snapshots
+before the Flutter run/build invocation, using `prepareDesktopBackendDefines` in
+`tools/backend_artifacts.dart` and `compileAotSnapshot` in `plugin_builder`.
+Each invocation retains an isolated
+directory under `.dart_tool/adele/desktop-backends/`; compiler/runtime come from
+the launching Flutter SDK. Embedded absolute artifact/runtime paths work only on
+that source-checkout machine while artifacts and SDK remain in place. This is
+not caching, installation, portable/production packaging, discovery, or profiles.
+
+Startup loads no model credentials, creates no Project, Task, Environment, or
+Session, builds no tool catalog, and starts no Run. Project selection and Task
+submission explicitly enter lifecycle as described below. General provider/model
+configuration, Task Browser, Session creation UI, Chat UI, and the Run product
+flow remain deferred.
 
 Development/self-hosting owns an `AdeleRuntime` instance instead of duplicating
 these registries, lifecycle, composer, Chat, and activations. Its surrounding
-topology/runner retains AOT compilation and host ownership, provider activation,
-isolated Git source, Project/Task/Environment/Session establishment, tool catalog,
-model selection, development IDs, execution, and evidence. The model capability
+topology/runner retains its independent AOT artifacts and host ownership, provider
+activation, isolated Git source, Project/Task/Environment/Session establishment,
+tool catalog, model selection, development IDs, execution, and evidence. The model capability
 adapter remains under `app/lib/development/agent`; normal composition has no
-dependency on development code.
+dependency on development code. Self-hosting reuses stock Git exposure code but
+does not consume normal bootstrap configuration or start its backend owner.
 
 The selector's native picker uses a conditional Flutter-only import so shared
 runtime composition preserves the real plain-Dart self-hosting CLI import graph.
@@ -197,16 +242,33 @@ retained binding after asynchronous selection and before creation; late results
 after disposal/exit are ignored.
 
 The opened shell derives a leaf name from the URI, falling back to host or URI,
-and shows the source URI, `Project is open`, and `No Tasks yet`. No derived
-metadata is added to Project; `adele_product` stays unchanged and independent.
-Opening adds no Task, Environment, Session, provider/model/Git startup, tool
-catalog, or Run. Project persistence, catalogs, deduplication, and GitHub/cloud
+and shows the source URI, `Project is open`, and initially `No Tasks yet`. No
+derived metadata is added to Project; `adele_product` stays unchanged and
+independent.
+Opening adds no Task, Environment, Session, model, tool catalog, or Run and does
+not trigger backend activation, which belongs to async application bootstrap.
+Project persistence, catalogs, deduplication, and GitHub/cloud
 or other selectors are not implemented. Command surfacing and Task Browser remain
 deferred; the buttons are temporary presentation, not a plugin-facing UI framework.
 
 ### Task
 
 Task is the durable ADELE-owned unit of user intent. Plugins may attach state and behavior without owning Task identity. Task workflow category/status remains user/domain-owned rather than being inferred automatically from execution success.
+
+B2 adds private title-only inline presentation with `New Task`, Cancel/Create,
+pending duplicate-submit protection, and inline error/retry handling. The app
+trims/rejects blank titles and calls `runtime.lifecycle.createTask(projectId: ...,
+title: ...)` with no provider ID. Resolution keeps the current capability
+registry's descending-rank/ascending-identity default semantics, not a new
+multiple-provider ambiguity rule or Git-specific UI route. The selected provider
+owns source validation, including non-Git rejection; Project opening remains
+provider-independent.
+
+Only successful lifecycle completion presents the new canonical Task and primary
+Environment, kept with Project in window-local app State. Pending work and errors
+do not optimistically replace those values; disposal/exit prevents late UI
+updates. This is not a Task Browser, provider chooser, Command surface, Session
+creation, or Chat/model/catalog/Run flow.
 
 ### Environment
 
@@ -215,6 +277,14 @@ Environment is initially the practical filesystem/source + process context used 
 A separate first-class Workspace concept is not currently required architecture. It may return later if concrete requirements demonstrate an independent semantic identity.
 
 A Task normally has one primary Environment and may own additional Environments for delegated child Session work.
+
+The existing lifecycle publishes Task and finalized primary Environment together
+only after provider establishment succeeds and records the exact establishment
+materialization. Successful provider state is intentionally retained even if the
+generation retires immediately afterward; B2 does not change that publication
+rule. The shell displays Environment identity and checks live exact-binding
+readiness without parsing opaque `providerState` or silently restoring/migrating
+to another generation. Retained product state and live readiness are distinct.
 
 ### Session and Run
 
@@ -256,8 +326,8 @@ Immutable snapshots contain `ChatEntry` values (`ChatUserMessage` and
 reused across Runs. Intermediate model/native output, proposals, and tool
 results are Run-local replay. Instructions and a positive invocation budget are
 Chat-owned configuration snapshotted per materialized Run, not product Session
-fields. Chat UI/persistence, strategy defaults/profiles, and Task/Session lifecycle
-UI remain deferred.
+fields. Chat UI/persistence, strategy defaults/profiles, and Session lifecycle
+UI remain deferred; B2 exposes only Task establishment and Environment status.
 
 The accepted direction allows child Sessions for delegated work. They may share an Environment or use another Task-associated Environment and are primarily surfaced through the parent Session/orchestration experience. Child Session lifecycle remains deferred.
 
@@ -386,14 +456,15 @@ The default development UX is expected to be produced by a stock plugin/configur
 The detailed, deliberately speculative decomposition is in [`stock-plugin-direction.md`](stock-plugin-direction.md). The UX manifestation is in [`../mockups/README.md`](../mockups/README.md).
 
 Only the explicitly identified slices are implementation claims. The current app
-shell remains minimal, with B1 Project opening rather than the mockup Task Browser,
-and most listed plugins do not exist yet.
+shell remains minimal, with B1 Project opening and B2 Task/primary Environment
+creation rather than the mockup Task Browser, and most listed plugins do not
+exist yet.
 
 ## Profiles, configuration, commands, and workbench state
 
 Profiles are accepted as sparse named composition layers. One context may eventually use an ordered stack such as `Developer + Work`. They may contribute activation decisions, ordinary configuration overrides, provider availability, and provider preferences.
 
-Normal startup and development/self-hosting reuse one implicit static stock composition, not a profile API. General profile/configuration persistence, UI, and provider preference resolution are not implemented.
+Normal startup and development/self-hosting reuse the implicit in-process stock composition and stock Git exposure helper, while owning separate backend topologies. Normal artifact-location defines are deployment inputs, not a profile API. General profile/configuration persistence, UI, and provider preference resolution are not implemented.
 
 Activation, ordinary configuration, provider preference, security/policy, workbench state, configured capability instances, and runtime state remain distinct domains.
 
@@ -448,11 +519,12 @@ self-hosting.
 | Model-to-source continuation | Read/search is proven through deterministic OpenAI integration and opt-in live API-key/experimental ChatGPT evidence. Deterministic integration and opt-in API-key plus experimental ChatGPT validation smokes prove model-visible `read_file` opaque-revision-to-`apply_patch` continuation for conditional existing-file mutation in the Task worktree, direct-argv `run_command` validation, continuation from its model-visible exit result, and Task/Project/checkout isolation. Deterministic integration also proves model-visible create/read/delete revision flow and final filesystem isolation. Broader filesystem administration remains unproven. |
 | Rebuild/reload | Proven for three cycles without orphan host processes. |
 | General recursive extension system | Accepted architecture; not implemented. |
-| B1 Project opening/native picker | Typed selector composition, cancellation/failure handling, canonical Project opening, and window lifetime are tested. Native picker adapters use fakes in CI. Linux profile build passes with generated native registration; the minimum macOS `com.apple.security.files.user-selected.read-only` entitlement is present. Interactive OS picking and macOS/Windows builds remain unvalidated. The maintained tooling target guards the plain-Dart self-hosting import graph with CLI `--help`, without provider calls. |
+| B1 Project opening/native picker | Typed selector composition, cancellation/failure handling, canonical Project opening, and window lifetime are tested. Native picker adapters use fakes in CI. The recorded B1 Linux profile build passed with generated native registration; the minimum macOS `com.apple.security.files.user-selected.read-only` entitlement is present. Interactive OS picking and macOS/Windows builds remain unvalidated. The maintained tooling target guards the plain-Dart self-hosting import graph with CLI `--help`, without provider calls. |
+| B2 normal backend bootstrap and Task creation | The maintained Linux profile build passed with actual host/Git compilation before Flutter build. Focused widget/B1/runtime and bootstrap/real-Git suites passed, including pending Task draining on exit/disposal without late presentation changes. Normal `run linux --profile` reached backend readiness under Xvfb without model credentials. Interactive native picking/Task entry was not automated; see `app/README.md` for bounded evidence and source-checkout-only artifact limitations. |
 | Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, Session-authorized read/mutation/process facets, bounded create/patch/delete text-file mutation, and generated foreground process streaming through the Git provider are proven; persistence and complete lifecycle remain unimplemented. |
 | Session-bound strategy execution | Canonical immutable Session creation, atomic publication with separate Environment authority, executable contributions, explicit unavailable/ambiguous resolution, and exact binding validation across Run operations/resume/settlement are implemented and deterministically validated. Headless Chat uses the public facade with validated state, sequencing, and application integration. Persistent strategy state, child Sessions, and disk persistence remain deferred. |
 | Inference context | Instruction-only source discovery, exact-binding capture, immutable snapshots, current adapter rendering, and the stock root AGENTS.md source activated by the shared runtime are implemented; other sources, broader material, provider-aware projection/cache planning, budgets, and compaction remain deferred. |
-| Production orchestration/UI/Commands | Headless stock Chat and minimal B1 Project presentation are implemented; Task Browser, production orchestration UI, Commands, and plugin discovery remain directional. |
+| Production orchestration/UI/Commands | Headless stock Chat, minimal B1 Project presentation, and B2 Task/primary Environment creation are implemented; Task Browser, Session/Chat/Run UI, Commands, and plugin discovery remain directional. |
 | Cross-platform/release | Unproven on Windows, macOS, and release mode. |
 | Packaging/sandboxing | Unproven; process isolation is not a sandbox. |
 
