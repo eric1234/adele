@@ -15,6 +15,17 @@ means one button per contribution in registry registration order. They have no
 priorities, defaults, categories, or applicability rules. Cancellation is a
 successful `null` result, distinct from selector or lifecycle failure.
 
+B2 adds normal title-only Task creation with a real Git primary Environment,
+using existing capability routing and product lifecycle rather than a new
+extension point or Task Browser API. Provider-free `AdeleRuntime()` owns the six
+in-process registrations and pure-Dart `ApplicationPluginBootstrap` on its same
+capability registry. Normal `AdeleApplication` explicitly calls async stock
+bootstrap to load prepared artifacts into one backend host. Stock Git exposure
+metadata is shared with self-hosting; the generic owner has no Git-specific
+selection logic. See [`app/README.md`](../../app/README.md#b2-backend-startup) for
+the three deployment defines, teardown, source-checkout limitations, and
+validation paths. This does not add profiles, discovery, or production packaging.
+
 See also:
 
 - [`contracts-and-capabilities.md`](contracts-and-capabilities.md) for implemented contract and capability boundaries;
@@ -290,6 +301,22 @@ URI. Lifecycle publishes and returns the canonical Project; `_project` in app
 State is window-local presentation, not `runtime.currentProject`. No selector
 owns product creation, derived Project metadata, persistence, or deduplication.
 
+## 5.4 B2 Task and Environment boundary
+
+Private host-rendered Task presentation gathers only a title with inline
+Cancel/Create controls. It calls `runtime.lifecycle.createTask(projectId: ...,
+title: ...)` without a provider ID. The existing capability registry resolves the
+Environment provider; stock Git is supplied by composition, not selected by
+widget logic. Providers own source validation, including non-Git rejection, while
+Project selection/opening remains independent of backend readiness or failure.
+
+Pending submission guards duplicates; inline errors retain input for retry and
+do not replace the prior presented values. Only lifecycle success presents the
+new canonical Task and primary Environment in window-local app State. The shell
+shows title, Environment identity, and live exact-binding readiness rather than
+interpreting opaque `providerState`. This is not Session creation, Chat UI, a
+model/tool catalog or Run flow, a Task Browser, or a public UI/Command API.
+
 ---
 
 # 6. Composition is live; resolved operations remain stable
@@ -335,6 +362,17 @@ after disposal/exit and never tries a replacement contribution. Buttons are
 disabled while selection is pending; cancellation is a no-op, and selector or
 lifecycle failure stays inline without changing the presented Project.
 
+B2 does not change Task establishment settlement: provider success publishes the
+Task and finalized primary Environment and records the exact materialization.
+Successful provider state is intentionally retained even if its generation
+retires immediately afterward; unavailable live readiness does not roll back that
+state. Presentation never migrates the old binding or parses provider-owned state
+to manufacture readiness, and ignores late UI completion after disposal/exit.
+Application close marks the window closing immediately, drains any pending Task
+establishment to success or failure, then closes the runtime. Failure cannot skip
+cleanup. Draining keeps bounded backend shutdown from interrupting establishment;
+it does not cancel or roll back provider work.
+
 ---
 
 # 7. Host-owned contextual defaults
@@ -363,6 +401,11 @@ Provider default selection is distinct from extension ordering. An ordered list 
 
 This direction does not add default routing to B1 Project selectors. Each
 contribution is an explicitly invoked action, not a default/alternate provider.
+
+B2 Task creation does use the existing callable capability default: descending
+provider rank, then ascending provider identity. It does not introduce an
+ambiguous-multiple-provider rule, applicability matching, or a profile preference
+resolver. Session strategy resolution's exactly-one semantics are distinct.
 
 ---
 
@@ -528,6 +571,7 @@ Examples:
 - A mandatory security/policy participant failing may make it unsafe to continue.
 - Implemented inference-context sources explicitly declare required or optional failure behavior: required failure aborts preparation, optional failure omits the whole source with diagnostics, and successful empty output remains distinct.
 - B1 Project selectors return `null` for cancellation; selector/lifecycle failure is an inline app error with no fallback or change to the presented Project.
+- B2 backend startup failure cleans up acquired resources and leaves Task support visibly unavailable without blocking Project opening; Task establishment failure stays inline for retry without publishing a new Task/Environment or substituting another provider.
 
 Each Extension Point must define failure semantics appropriate to its role.
 
@@ -583,9 +627,10 @@ Application Commands are distinct from the model-callable Command Tool that exec
 
 B1's host-rendered selector buttons are temporary presentation over the typed
 callback and core Project lifecycle, not Command registration or a chooser
-framework. Command surfacing and Task Browser remain deferred; the minimal
-opened-Project view and remaining scope are described in
-[`overview.md`](overview.md#project).
+framework. B2's title-only form similarly invokes core Task lifecycle, not Git
+directly. Command surfacing and Task Browser remain deferred; the minimal
+Project/Task/Environment view and remaining scope are described in
+[`overview.md`](overview.md#core-product-domain-direction).
 
 ---
 

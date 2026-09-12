@@ -7,12 +7,14 @@ import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/resource_cleanup.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
+import 'package:adele_desktop/plugins/stock_git_environment.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
+import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 const String developmentSelfHostingApiKeyProviderId =
@@ -23,8 +25,6 @@ const String developmentSelfHostingChatGptDefaultModel = 'gpt-6-astra';
 
 const String _openAiPluginId = 'dev.adele.openai';
 const String _chatGptConfigurationContext = 'chatgpt-experimental';
-const String _gitEnvironmentPluginId = 'dev.adele.plugin.git-environment';
-const String _gitEnvironmentProviderId = 'dev.adele.environment.git-worktree';
 
 typedef DevelopmentSelfHostingLog = void Function(String message);
 
@@ -285,14 +285,11 @@ final class DevelopmentSelfHostingTopology {
       final CapabilityRegistry registry = runtime.registry;
       final InMemoryProductStore store = runtime.store;
       final ProductLifecycleCoordinator lifecycle = runtime.lifecycle;
-      final ProviderId environmentProviderId = ProviderId(
-        _gitEnvironmentProviderId,
-      );
-      environmentActivation = await _startEnvironmentProvider(
+      final ProviderId environmentProviderId = stockGitEnvironmentProviderId;
+      environmentActivation = await activateStockGitEnvironment(
         host: host,
         registry: registry,
-        artifact: artifacts.gitEnvironmentArtifact,
-        providerId: environmentProviderId,
+        artifactUri: artifacts.gitEnvironmentArtifact.uri,
       );
       final ProviderBinding environmentBinding = registry.resolve(
         environmentProviderCapability,
@@ -597,34 +594,6 @@ String? _optionalEnvironment(Map<String, String> environment, String name) {
   return value == null || value.trim().isEmpty ? null : value;
 }
 
-Future<PluginCapabilityActivation> _startEnvironmentProvider({
-  required PluginBackendHost host,
-  required CapabilityRegistry registry,
-  required File artifact,
-  required ProviderId providerId,
-}) async {
-  final PluginBackendConnection connection = await host.startPlugin(
-    pluginId: _gitEnvironmentPluginId,
-    artifactUri: artifact.uri,
-  );
-  return PluginCapabilityActivation.register(
-    connection: connection,
-    registry: registry,
-    exposures: <PluginCapabilityExposure>[
-      PluginCapabilityExposure(
-        provider: ProviderDescriptor(
-          id: providerId,
-          capability: environmentProviderCapability,
-          pluginId: connection.pluginId,
-          displayName: 'Git Worktree Environment',
-          serviceId: environmentProviderServiceId,
-        ),
-        configurationContext: connection.defaultConfigurationContext,
-      ),
-    ],
-  );
-}
-
 Future<void> _compileAot({
   required String dart,
   required Directory repository,
@@ -633,11 +602,18 @@ Future<void> _compileAot({
   DevelopmentSelfHostingLog? log,
 }) async {
   log?.call('Compiling $entrypoint.');
-  await _runChecked(
-    dart,
-    <String>['compile', 'aot-snapshot', entrypoint, '-o', output.path],
-    workingDirectory: repository.path,
-    log: log,
+  await compileAotSnapshot(
+    dartExecutable: dart,
+    workingDirectory: repository,
+    entrypoint: entrypoint,
+    artifact: output,
+    stage: 'self-hosting compilation: $entrypoint',
+    onDiagnostic: (PluginBuildDiagnostic diagnostic) {
+      final String stdoutText = diagnostic.stdoutText.trim();
+      final String stderrText = diagnostic.stderrText.trim();
+      if (stdoutText.isNotEmpty) log?.call(stdoutText);
+      if (stderrText.isNotEmpty) log?.call(stderrText);
+    },
   );
 }
 

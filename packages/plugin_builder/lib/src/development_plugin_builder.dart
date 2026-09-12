@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -55,6 +56,40 @@ final class PluginBuildFailure implements Exception {
   String toString() => 'PluginBuildFailure: $message';
 }
 
+/// Compiles one snapshot, leaving source/toolchain selection and artifact
+/// lifetime to the caller. Diagnostics are delivered even on compiler failure.
+Future<PluginBuildDiagnostic> compileAotSnapshot({
+  required String dartExecutable,
+  required Directory workingDirectory,
+  required String entrypoint,
+  required File artifact,
+  required String stage,
+  FutureOr<void> Function(PluginBuildDiagnostic diagnostic)? onDiagnostic,
+}) async {
+  await artifact.parent.create(recursive: true);
+  final PluginBuildDiagnostic diagnostic;
+  try {
+    diagnostic = await _run(stage, dartExecutable, <String>[
+      'compile',
+      'aot-snapshot',
+      entrypoint,
+      '-o',
+      artifact.absolute.path,
+    ], workingDirectory.path);
+  } on ProcessException catch (error) {
+    throw PluginBuildFailure('$stage could not start: $error');
+  }
+  await onDiagnostic?.call(diagnostic);
+  _requireSuccess(diagnostic);
+  if (!await artifact.exists()) {
+    throw PluginBuildFailure(
+      '$stage produced no artifact: ${artifact.path}',
+      diagnostic: diagnostic,
+    );
+  }
+  return diagnostic;
+}
+
 final class DevelopmentPluginBuilder {
   const DevelopmentPluginBuilder();
 
@@ -71,13 +106,13 @@ final class DevelopmentPluginBuilder {
     );
     final String entrypoint =
         '${repositoryRoot.path}${Platform.pathSeparator}packages${Platform.pathSeparator}plugin_backend_host${Platform.pathSeparator}bin${Platform.pathSeparator}adele_backend_host.dart';
-    final PluginBuildDiagnostic diagnostic = await _run(
-      'backend-host-compilation',
-      dartExecutable,
-      <String>['compile', 'aot-snapshot', entrypoint, '-o', artifact.path],
-      repositoryRoot.path,
+    final PluginBuildDiagnostic diagnostic = await compileAotSnapshot(
+      stage: 'backend-host-compilation',
+      dartExecutable: dartExecutable,
+      entrypoint: entrypoint,
+      artifact: artifact,
+      workingDirectory: repositoryRoot,
     );
-    _requireSuccess(diagnostic);
     return BackendHostBuildResult(artifact: artifact, diagnostic: diagnostic);
   }
 
@@ -200,26 +235,22 @@ final class DevelopmentPluginBuilder {
         'Backend entrypoint does not exist: $entrypoint',
       );
     }
-    final PluginBuildDiagnostic compilation = await _run(
-      'backend-compilation',
-      dartExecutable,
-      <String>[
-        'compile',
-        'aot-snapshot',
-        entrypoint,
-        '-o',
-        backendArtifact.path,
-      ],
-      backendDirectory.path,
+    await compileAotSnapshot(
+      stage: 'backend-compilation',
+      dartExecutable: dartExecutable,
+      entrypoint: entrypoint,
+      artifact: backendArtifact,
+      workingDirectory: backendDirectory,
+      onDiagnostic: (PluginBuildDiagnostic compilation) async {
+        diagnostics.add(compilation);
+        await File(
+          '${buildDirectory.path}${Platform.pathSeparator}backend.stdout.txt',
+        ).writeAsString(compilation.stdoutText);
+        await File(
+          '${buildDirectory.path}${Platform.pathSeparator}backend.stderr.txt',
+        ).writeAsString(compilation.stderrText);
+      },
     );
-    diagnostics.add(compilation);
-    await File(
-      '${buildDirectory.path}${Platform.pathSeparator}backend.stdout.txt',
-    ).writeAsString(compilation.stdoutText);
-    await File(
-      '${buildDirectory.path}${Platform.pathSeparator}backend.stderr.txt',
-    ).writeAsString(compilation.stderrText);
-    _requireSuccess(compilation);
     return PluginBuildResult(
       buildId: buildId,
       buildDirectory: buildDirectory,

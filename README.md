@@ -14,6 +14,7 @@ Session-bound executable strategies and headless stock Chat
 Per-inference instruction-source capture and immutable context snapshots
 Shared application runtime and static stock plugin composition
 Typed Project selectors and minimal local-directory Project opening
+Normal title-only Task creation with a real Git primary Environment
 Stock root-level AGENTS.md instructions
 Session-authorized Environment read/search and bounded text-file mutation
 Foreground process execution and model-facing command validation
@@ -31,19 +32,33 @@ Plugin installation/discovery, general production plugin activation, packaging,
 permissions, sandboxing, and general third-party extension APIs are not yet
 implemented.
 
-Normal desktop startup synchronously constructs one application-owned
-`AdeleRuntime` in `app/lib/core/adele_runtime.dart`. It owns the capability and
+`AdeleRuntime()` in `app/lib/core/adele_runtime.dart` synchronously constructs a
+provider-free application host graph. It owns the capability and
 extension registries, in-memory product store, generated lifecycle coordinator,
 inference context composer, retained Chat plugin, and six static in-process
 activations: Chat, AGENTS.md, Filesystem Tools, Search Tools, Command Tools, and
 Local Directory Project Selector. The reduced smoke composition omits only
-Command Tools. The shell initially displays `No Project is open`. Startup does
-not launch providers, compile AOT artifacts, load credentials, create a Project, Task,
-Environment, or Session, build a tool catalog, or start a Run. Desktop exit awaits
-runtime close; detach/dispose initiate cleanup and failures are reported. Owned
-activations close in reverse order, attempting all before reporting the first
-failure. Self-hosting owns an instance of this same runtime and adds its explicit
-provider, product lifecycle, and Run setup rather than duplicating the host graph.
+Command Tools. It also owns pure-Dart `ApplicationPluginBootstrap` on the same
+capability registry, without starting it from the constructor.
+
+Normal `AdeleApplication` explicitly calls `bootstrapStockBackendPlugins`
+asynchronously. Prepared runtime/host/Git artifact locations let the generic owner
+start one `PluginBackendHost` and invoke stock activation callbacks. No app
+startup code compiles source or loads model credentials. Missing configuration
+leaves Task Environment support unavailable; startup failure cleans up acquired
+resources and is shown without preventing Project opening. Startup creates no
+Project, Task, Environment, Session, tool catalog, or Run.
+
+Application close immediately marks the window closing and drains any in-flight
+Task establishment before calling `runtime.close`, even when establishment fails.
+Late UI updates remain ignored; this is settlement draining, not cancellation or
+rollback. Desktop exit awaits that close; detach/dispose initiate the same cleanup
+and report failures. Backend capability registrations retire before connections
+close, then the shared host closes, then the runtime's in-process activations
+retire in reverse order. Cleanup attempts every action before reporting its first
+failure. Self-hosting reuses the runtime and shared stock Git registration code,
+but owns its larger artifact/host/provider and product/Run topology independently
+of normal startup configuration.
 
 B1 adds `ProjectSelectorContribution` in tiny pure-Dart `adele_core_extensions`,
 whose only package dependency is `adele_plugin_api`. The typed
@@ -62,12 +77,22 @@ without fallback or changing the presented Project, and stale/late results canno
 open a Project after selector retirement or window disposal/exit.
 
 After opening, the shell shows a URI-derived leaf name (falling back to host or
-URI), source URI, `Project is open`, and `No Tasks yet`. No display metadata is
-added to `adele_product`, which remains unchanged and independent. This is not a
-Task Browser, Command surface, Project catalog, persistence, or deduplication
-system, and opening starts no Task, Environment, Session, provider, model, Git,
-tool catalog, or Run work. See `app/README.md` for URI normalization, exact-binding
-validation, the headless import boundary, and native validation status.
+URI), source URI, `Project is open`, and initially `No Tasks yet`. Opening itself
+starts no Task, Environment, Session, model, tool catalog, or Run and does not
+trigger backend activation. B2 adds a title-only inline `New Task` form with
+Cancel/Create controls, pending duplicate-submit protection, and inline errors
+with retry. The app calls `runtime.lifecycle.createTask(projectId: ..., title: ...)`
+without a provider ID. Existing deterministic rank/identity default resolution
+is unchanged; stock composition supplies Git, not Git-specific UI routing.
+
+Only successful lifecycle completion presents the new canonical Task and primary
+Environment. The shell shows the Task title, Environment ID, and readiness from
+the live exact materialization binding, never by parsing opaque `providerState`.
+Project/Task/Environment presentation remains window-local. Non-Git source
+validation belongs to the selected provider, not Project selection or the form.
+This is not a Task Browser, Command surface, catalog, persistence, or deduplication
+system and creates no Session or Chat/model/Run flow. See `app/README.md` for
+bootstrap ownership, lifecycle settlement, and validation paths.
 
 ADELE separates provider-neutral Run/model/tool/policy/approval mechanics from
 strategy-owned Session meaning. `adele_product` owns the final immutable
@@ -326,6 +351,27 @@ dart tools/adele.dart check
 dart tools/adele.dart build linux
 ```
 
+Normal Linux `run` and `build` prepare fresh shared-host and Git backend AOT
+snapshots before the Flutter run/build invocation, using `compileAotSnapshot` from
+`plugin_builder`. `tools/backend_artifacts.dart` selects the Dart compiler and
+`dartaotruntime` from the launching Flutter SDK, retains a fresh isolated directory
+under `.dart_tool/adele/desktop-backends/` for each invocation, and passes three
+compile-time defines: `ADELE_DARTAOTRUNTIME_EXECUTABLE`,
+`ADELE_BACKEND_HOST_ARTIFACT`, and `ADELE_GIT_ENVIRONMENT_ARTIFACT`. The app consumes
+only these prepared locations, not source paths or a compiler.
+
+These provisional absolute paths make the built app runnable only on the
+source-checkout machine while those artifacts and that SDK remain in place.
+Moving or deleting them breaks backend startup. This is not artifact caching,
+installation, portable/production packaging, discovery, or profiles; invoking
+Flutter directly without the defines leaves Task Environment support unavailable.
+
+The maintained Linux profile build passed with real host/Git compilation before
+Flutter build. Focused widget/runtime/bootstrap, real-host/Git, and tooling tests
+also passed. Normal `run linux --profile` reached backend readiness under Xvfb
+without model credentials. See `app/README.md` for bounded validation evidence
+and source-checkout limitations.
+
 The internal Linux profile smoke is explicit and does not alter normal app
 startup:
 
@@ -444,7 +490,9 @@ preferences. A future window/context may use an ordered stack such as
 arbitrary small stack limit.
 
 Profiles are not implemented. Normal startup and development/self-hosting reuse
-the implicit static stock composition, not a profile API.
+the implicit in-process stock composition and stock Git exposure helper, while
+owning separate backend topologies. The three normal artifact-location defines
+are deployment inputs, not a profile or general configuration API.
 
 Activation, ordinary configuration, provider selection, configured capability
 instances, product/runtime state, security/policy, and workbench state remain
@@ -472,11 +520,11 @@ are not included and remain independent plugin concerns.
 Broader Reference/Observation material remains directional, without placeholder
 public APIs. Provider-aware projection and cache planning, token budgets,
 compaction, and context preview remain deferred.
-Normal provider/model configuration, Task/Environment establishment, Task Browser,
-Chat UI, and the Run product flow remain deferred despite B1 Project opening,
-shared runtime composition, and the headless self-hosting path. GitHub, cloud,
-recent-project/catalog selectors, persistence, and deduplication are not
-implemented; application Command surfacing remains deferred.
+General provider/model configuration, Task Browser, Session creation UI, Chat UI,
+and the Run product flow remain deferred despite B1 Project opening, B2 normal
+Task/primary Environment establishment, and the headless self-hosting path.
+GitHub, cloud, recent-project/catalog selectors, persistence, and deduplication
+are not implemented; application Command surfacing remains deferred.
 Chat persistence, profiles, child Session lifecycle, strategy defaults,
 SCM/review integration, general whole-file overwrite, and directory/move/copy/
 binary operations also remain unimplemented.
