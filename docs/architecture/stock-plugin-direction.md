@@ -15,19 +15,15 @@ The expected stock composition should be read alongside:
 - [`agent-tooling-direction.md`](agent-tooling-direction.md), which describes model tools and execution presentation;
 - [`../mockups/README.md`](../mockups/README.md), which shows the default development UX produced by a stock plugin/configuration set.
 
-The maintained codebase implements only a small subset of this topology: source-plugin runtime/build infrastructure, generated contracts, active capability routing, the common ModelProvider and OpenAI provider, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, a Git Worktree Environment provider, generic model-tool registration, stock Filesystem Tools, Search Tools, and Command Tools, headless stock Chat, the root-level AGENTS.md source, B1 Local Directory Project Selector with minimal Project opening, and B2 normal Task/primary Environment creation. Public `adele_orchestration` provides executable strategy contributions, the narrow execution facade, and instruction-only inference-context composition over the same extension registry; application Session-routed hosting materializes the exact strategy contribution rather than constructing a loop directly. Chat owns in-memory state and sequencing, not context sources, UI, or persistence. Shared `AdeleRuntime` composition activates `agents_md_plugin` and Local Directory Project Selector in normal startup and development/self-hosting; Chat itself activates no source and remains AGENTS-unaware. Most stock plugins below do not yet exist.
+The maintained codebase implements only a small subset of this topology: source-plugin runtime/build infrastructure, generated contracts, active capability routing, the common ModelProvider and OpenAI provider, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, a Git Worktree Environment provider, generic model-tool registration, stock Filesystem Tools, Search Tools, and Command Tools, headless stock Chat, the root-level AGENTS.md source, B1 Local Directory Project Selector with minimal Project opening, and normal Task/primary Environment creation. Public `adele_orchestration` provides executable strategy contributions, the narrow execution facade, and instruction-only inference-context composition over the same extension registry; application Session-routed hosting materializes the exact strategy contribution rather than constructing a loop directly. Chat owns in-memory state and sequencing, not context sources, UI, or persistence. Shared `AdeleRuntime` composition activates `agents_md_plugin` and Local Directory Project Selector in normal startup and development/self-hosting; Chat itself activates no source and remains AGENTS-unaware. Most stock plugins below do not yet exist.
 
-`AdeleRuntime()` remains synchronous and provider-free, with six in-process
-registrations and a pure-Dart `ApplicationPluginBootstrap` owner on the same
-capability registry. Normal `AdeleApplication` explicitly invokes async stock
-bootstrap using prepared runtime/host/Git artifacts. The generic owner starts one
-backend host and activation callbacks, a boundary usable by later OpenAI stock
-composition without a second host mechanism. Missing configuration or startup
-failure makes Task support unavailable, not Project opening. Normal startup
-creates no product values, Session, tool catalog, or Run. See
-[`app/README.md`](../../app/README.md#b2-backend-startup) for the three defines,
-cleanup ordering, provisional source-checkout build limitations, and validation
-paths. This is not profiles, discovery, or production packaging.
+`AdeleRuntime()` remains synchronous and provider-free. Its pure-Dart
+`ApplicationPluginBootstrap` owns application-lifetime backend resources on the
+same capability registry. Normal `AdeleApplication` explicitly invokes async stock
+composition, which supplies prepared artifacts and activation callbacks for one
+shared backend host. Missing configuration or startup failure makes Task support
+unavailable, not Project opening. Startup creates no product values, tool catalog,
+or Run. Profiles, discovery, and production packaging remain deferred.
 
 Future discovery/profile activation should replace hard-coded stock selection at
 this composition edge, starting plugin runtimes and registering contributions
@@ -259,9 +255,8 @@ Project selectors are possible, not implemented.
 
 **Role:** Project/Task/Session selection and management experience represented by the stock mockups.
 
-Task Browser remains deferred. B1 introduced the minimal `Project is open` /
-`No Tasks yet` presentation; B2 adds a private title-only Task form and primary
-Environment status, not the mockup browsing/summary/navigation flow.
+Task Browser remains deferred. The shell supports only Project opening, title-only
+Task creation, and primary Environment status, not the mockup browsing flow.
 
 The Task Browser is not assumed to be a `MainContentView`. Before a Task/Session is selected there may be no normal active-session workbench. The plugin may own a dedicated Project-level screen/window/shell, similar to a selector launching an OS-native picker. A future UI could embed the same experience in the normal workbench without changing semantic contracts.
 
@@ -302,20 +297,20 @@ One Git plugin may legitimately provide several independent extensions.
 
 ### Git Worktree Environment provider
 
-Normal B2 stock composition activates the Git backend as an `EnvironmentProvider`.
+Normal stock composition activates the Git backend as an `EnvironmentProvider`.
 `app/lib/plugins/stock_git_environment.dart` owns the stock plugin/provider IDs,
 display name, capability/service exposure, and default configuration-context
 registration for both normal and self-hosting callers. It imports public
 Environment contracts and host activation APIs, not the backend implementation.
-Self-hosting retains its own larger artifact/host topology independently of the
-normal three-define configuration.
+Both paths register on their runtime's existing capability registry; self-hosting
+retains its independent artifact/host topology.
 
 Core Task creation resolves the current capability default without a UI-supplied
-provider ID: descending rank, then ascending provider identity. B2 leaves that
-deterministic rule unchanged; it adds no applicability/ambiguity/preference
-framework. Git is the normal stock default because of composition, not a Task
-identity rule. The selected provider owns source validation, including rejecting
-a non-Git directory after it has legitimately been opened as a Project.
+provider ID: descending rank, then ascending provider identity, without an
+applicability/ambiguity/preference framework. Git is the stock default because of
+composition, not a Task identity rule. The selected provider owns source
+validation, including rejecting a non-Git directory after it has legitimately
+been opened as a Project.
 
 The provider approximately:
 
@@ -764,11 +759,10 @@ settlement. If A retires, its active Run fails without migrating; a later Run in
 the same Session may freshly resolve B under the unchanged semantic ID. The
 self-hosting topology uses this path, not direct loop construction.
 
-Project opening in section 12.1 is the implemented B1 slice; section 12.2 describes
-the bounded B2 normal Task flow. The richer flows in sections 12.3 onward remain
-directional, including UI, effective Agent binding, inference composition beyond
-instruction sources, persistence, and child-Session steps that headless Chat does
-not implement.
+Project opening and Task creation in sections 12.1 and 12.2 are implemented. The
+richer flows in sections 12.3 onward remain directional, including UI, effective
+Agent binding, inference composition beyond instruction sources, persistence,
+and child-Session steps that headless Chat does not implement.
 
 ## 12.1 Select a Project
 
@@ -803,11 +797,10 @@ in [`overview.md`](overview.md#remaining-runtime-validation), not implied by thi
 
 ## 12.2 Create a Task
 
-The implemented B2 normal flow is deliberately smaller than Task Browser:
+The implemented flow uses core lifecycle, not Task Browser:
 
 ```text
-opened Project: New Task
-    -> inline title-only form with Cancel / Create Task
+opened Project: Task title
     -> app calls runtime.lifecycle.createTask(projectId: ..., title: ...)
     -> core resolves one exact EnvironmentProvider using current default rules
     -> core allocates Task and provisional primary Environment identities
@@ -817,24 +810,20 @@ opened Project: New Task
     -> lifecycle returns canonical values; app presents them in window-local State
 ```
 
-The form trims/rejects blank titles, disables controls while pending, guards
-duplicate submission, and keeps errors inline with input retained for retry.
-Cancel creates nothing. Pending/failing creation does not replace the presented
-Project or prior Task, and late UI completion after disposal/exit is ignored.
-No provider ID, Git call, or provider-state parsing belongs in the form.
+Presentation supplies no provider ID, calls no Git API, and never parses opaque
+`providerState`. Project/Task/Environment selection is window-local; failure does
+not replace presented values and disposal/exit prevents late updates.
 
-Application close marks the window closing immediately, then drains pending Task
-establishment before runtime/provider teardown. Success or failure settles before
-bounded host shutdown; failure does not bypass cleanup. This protects real
-worktree creation from shutdown interruption without cancellation or rollback,
-and does not re-enable late UI updates.
+Application close drains pending Task establishment before runtime/provider
+cleanup, even on failure. Draining avoids interrupting establishment without
+cancelling or rolling back provider work.
 
-The shell shows Task title, Environment ID, and readiness from the live exact
-materialization binding. Successful provider state remains retained if its
-generation retires immediately after establishment, but the old binding is
-unavailable; this existing lifecycle rule is unchanged, not a rollback or silent
-migration. Missing backend configuration/startup failure leaves creation visibly
-unavailable while Project opening remains usable.
+Readiness comes from the live exact materialization binding. Successful provider
+state remains retained if its generation retires immediately after establishment,
+but the old binding is unavailable, without rollback or silent migration. These
+lifecycle/generation semantics are unchanged. Missing configuration or startup
+failure leaves Task creation visibly unavailable while Project opening remains
+usable.
 
 This creates no Session, Chat state, model invocation, tool catalog, or Run, and
 adds no persistence, Task Browser, Command API, or provider chooser. Future Task

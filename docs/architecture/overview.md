@@ -39,15 +39,8 @@ The following remain largely or entirely unimplemented:
 
 Public plugin-facing APIs remain experimental.
 
-B2 extends the normal shell from Project opening to title-only Task creation with
-a real Git primary Environment. Normal application bootstrap consumes prepared
-backend artifacts; it is separate from provider-free runtime construction.
-This adds no Session/Chat/model/Run product flow. The maintained Linux profile
-build, focused widget/runtime tests, and core bootstrap/real-Git integration
-suites passed. Normal `run linux --profile` reached backend readiness under Xvfb
-without model credentials. See
-[`app/README.md`](../../app/README.md#b2-validation-paths) for the bounded evidence
-and remaining test paths.
+The normal shell supports Project opening and title-only Task creation with a
+real Git primary Environment, not a Session/Chat/model/Run product flow.
 
 ## System shape
 
@@ -69,24 +62,22 @@ starting backend work in its constructor.
 The normal Stateful `AdeleApplication` constructs its runtime once synchronously
 in `initState`, not during rebuilds, then explicitly calls the async
 `bootstrapStockBackendPlugins`. Stock composition supplies activator callbacks to
-the generic bootstrap owner, which starts one `PluginBackendHost`. Its states are
-`unconfigured`, `starting`, `ready`, `failed`, `closing`, and `closed`. Startup
-failure cleans up acquired resources before reporting the original error. The
-app displays unavailable/failure state without preventing Project opening. A
-later OpenAI activation can use the same shared-host callback boundary; normal
-composition currently activates only the Git backend.
+the generic application-lifetime bootstrap owner, which starts one shared
+`PluginBackendHost`. Startup failure cleans up acquired resources before reporting
+the original error and leaves Task support unavailable without preventing Project
+opening. Normal composition currently activates only the Git backend; additional
+backends can use the same callback boundary.
 
 `app/lib/plugins/stock_git_environment.dart` owns the stock plugin/provider IDs,
 display name, service exposure, and default configuration-context registration
 for both normal and self-hosting composition. It uses public Environment
 contracts and internal host APIs, not Git backend implementation imports.
 
-Application close marks the window closing immediately and drains in-flight Task
-establishment before `runtime.close`; establishment failure does not skip cleanup.
-Late UI updates are ignored. This avoids bounded host shutdown interrupting real
-worktree creation, without adding cancellation or rollback. Desktop exit awaits
-the complete close; detach/dispose initiate the same cleanup and report runtime
-cleanup failures through `FlutterError`. Runtime close shares one completion across
+Application close blocks further window-local updates and drains in-flight Task
+establishment before `runtime.close`, even if establishment fails. Draining avoids
+interrupting establishment; it is not cancellation or rollback. Desktop exit
+awaits the complete close; detach/dispose initiate the same cleanup and report
+runtime cleanup failures through `FlutterError`. Runtime close shares one completion across
 callers: all backend capability registrations retire before their connections
 close, then the host closes, then in-process activations retire in reverse order.
 `app/lib/core/resource_cleanup.dart` supplies `closeResources`, shared with
@@ -99,18 +90,13 @@ one button per contribution in deterministic registry registration order. Zero
 selectors is an explicit unavailable state; one or multiple contributions are
 independent actions, not a chooser/default-provider framework.
 
-Normal stock bootstrap consumes only compile-time
-`ADELE_DARTAOTRUNTIME_EXECUTABLE`, `ADELE_BACKEND_HOST_ARTIFACT`, and
-`ADELE_GIT_ENVIRONMENT_ARTIFACT`. No configuration leaves Task Environment support
-unavailable. Normal bootstrap accepts no source paths and invokes no compiler.
-Normal Linux `run` and `build` in `tools/adele.dart` prepare fresh host/Git snapshots
-before the Flutter run/build invocation, using `prepareDesktopBackendDefines` in
-`tools/backend_artifacts.dart` and `compileAotSnapshot` in `plugin_builder`.
-Each invocation retains an isolated
-directory under `.dart_tool/adele/desktop-backends/`; compiler/runtime come from
-the launching Flutter SDK. Embedded absolute artifact/runtime paths work only on
-that source-checkout machine while artifacts and SDK remain in place. This is
-not caching, installation, portable/production packaging, discovery, or profiles.
+Normal stock bootstrap consumes prepared runtime/backend artifacts, not source
+paths or a compiler. Missing configuration leaves Task Environment support
+unavailable. Artifact preparation belongs to repository tooling, not app startup;
+deployment inputs and source-checkout limitations are documented in
+[`app/README.md`](../../app/README.md#b2-backend-startup) and the
+[`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
+Production packaging, discovery, and profiles remain deferred.
 
 Startup loads no model credentials, creates no Project, Task, Environment, or
 Session, builds no tool catalog, and starts no Run. Project selection and Task
@@ -255,20 +241,17 @@ deferred; the buttons are temporary presentation, not a plugin-facing UI framewo
 
 Task is the durable ADELE-owned unit of user intent. Plugins may attach state and behavior without owning Task identity. Task workflow category/status remains user/domain-owned rather than being inferred automatically from execution success.
 
-B2 adds private title-only inline presentation with `New Task`, Cancel/Create,
-pending duplicate-submit protection, and inline error/retry handling. The app
-trims/rejects blank titles and calls `runtime.lifecycle.createTask(projectId: ...,
-title: ...)` with no provider ID. Resolution keeps the current capability
-registry's descending-rank/ascending-identity default semantics, not a new
-multiple-provider ambiguity rule or Git-specific UI route. The selected provider
-owns source validation, including non-Git rejection; Project opening remains
-provider-independent.
+Task presentation submits a title through
+`runtime.lifecycle.createTask(projectId: ..., title: ...)` without a provider ID.
+Resolution retains the capability registry's descending-rank/ascending-identity
+default, not a Git-specific route or multiple-provider ambiguity rule. The
+selected provider owns source validation, including non-Git rejection; Project
+opening remains provider-independent.
 
 Only successful lifecycle completion presents the new canonical Task and primary
-Environment, kept with Project in window-local app State. Pending work and errors
-do not optimistically replace those values; disposal/exit prevents late UI
-updates. This is not a Task Browser, provider chooser, Command surface, Session
-creation, or Chat/model/catalog/Run flow.
+Environment. Selection remains window-local, with no replacement on failure and
+no late updates after disposal/exit. Task Browser, a provider chooser, Commands, and
+Session/Chat/Run UI remain deferred.
 
 ### Environment
 
@@ -278,13 +261,13 @@ A separate first-class Workspace concept is not currently required architecture.
 
 A Task normally has one primary Environment and may own additional Environments for delegated child Session work.
 
-The existing lifecycle publishes Task and finalized primary Environment together
+Lifecycle publishes Task and finalized primary Environment together
 only after provider establishment succeeds and records the exact establishment
 materialization. Successful provider state is intentionally retained even if the
-generation retires immediately afterward; B2 does not change that publication
-rule. The shell displays Environment identity and checks live exact-binding
-readiness without parsing opaque `providerState` or silently restoring/migrating
-to another generation. Retained product state and live readiness are distinct.
+generation retires immediately afterward. Presentation checks live exact-binding
+readiness without parsing opaque `providerState` or restoring/migrating to another
+generation. Retained product state and live readiness are distinct; exposing them
+does not change lifecycle settlement or generation semantics.
 
 ### Session and Run
 
@@ -327,7 +310,8 @@ reused across Runs. Intermediate model/native output, proposals, and tool
 results are Run-local replay. Instructions and a positive invocation budget are
 Chat-owned configuration snapshotted per materialized Run, not product Session
 fields. Chat UI/persistence, strategy defaults/profiles, and Session lifecycle
-UI remain deferred; B2 exposes only Task establishment and Environment status.
+UI remain deferred; beyond Project opening, the shell exposes only Task
+establishment and Environment status.
 
 The accepted direction allows child Sessions for delegated work. They may share an Environment or use another Task-associated Environment and are primarily surfaced through the parent Session/orchestration experience. Child Session lifecycle remains deferred.
 
@@ -456,7 +440,7 @@ The default development UX is expected to be produced by a stock plugin/configur
 The detailed, deliberately speculative decomposition is in [`stock-plugin-direction.md`](stock-plugin-direction.md). The UX manifestation is in [`../mockups/README.md`](../mockups/README.md).
 
 Only the explicitly identified slices are implementation claims. The current app
-shell remains minimal, with B1 Project opening and B2 Task/primary Environment
+shell remains minimal, with Project opening and Task/primary Environment
 creation rather than the mockup Task Browser, and most listed plugins do not
 exist yet.
 
@@ -464,7 +448,7 @@ exist yet.
 
 Profiles are accepted as sparse named composition layers. One context may eventually use an ordered stack such as `Developer + Work`. They may contribute activation decisions, ordinary configuration overrides, provider availability, and provider preferences.
 
-Normal startup and development/self-hosting reuse the implicit in-process stock composition and stock Git exposure helper, while owning separate backend topologies. Normal artifact-location defines are deployment inputs, not a profile API. General profile/configuration persistence, UI, and provider preference resolution are not implemented.
+Normal startup and development/self-hosting reuse the implicit in-process stock composition and stock Git activation helper, while owning separate backend topologies. Prepared artifact locations are deployment inputs, not a profile API. General profile/configuration persistence, UI, and provider preference resolution are not implemented.
 
 Activation, ordinary configuration, provider preference, security/policy, workbench state, configured capability instances, and runtime state remain distinct domains.
 
@@ -520,11 +504,11 @@ self-hosting.
 | Rebuild/reload | Proven for three cycles without orphan host processes. |
 | General recursive extension system | Accepted architecture; not implemented. |
 | B1 Project opening/native picker | Typed selector composition, cancellation/failure handling, canonical Project opening, and window lifetime are tested. Native picker adapters use fakes in CI. The recorded B1 Linux profile build passed with generated native registration; the minimum macOS `com.apple.security.files.user-selected.read-only` entitlement is present. Interactive OS picking and macOS/Windows builds remain unvalidated. The maintained tooling target guards the plain-Dart self-hosting import graph with CLI `--help`, without provider calls. |
-| B2 normal backend bootstrap and Task creation | The maintained Linux profile build passed with actual host/Git compilation before Flutter build. Focused widget/B1/runtime and bootstrap/real-Git suites passed, including pending Task draining on exit/disposal without late presentation changes. Normal `run linux --profile` reached backend readiness under Xvfb without model credentials. Interactive native picking/Task entry was not automated; see `app/README.md` for bounded evidence and source-checkout-only artifact limitations. |
+| Normal backend bootstrap and Task creation | Implemented through generic bootstrap and Task lifecycle; operational setup and validation scope are maintained in [`app/README.md`](../../app/README.md#b2-validation-paths). |
 | Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, Session-authorized read/mutation/process facets, bounded create/patch/delete text-file mutation, and generated foreground process streaming through the Git provider are proven; persistence and complete lifecycle remain unimplemented. |
 | Session-bound strategy execution | Canonical immutable Session creation, atomic publication with separate Environment authority, executable contributions, explicit unavailable/ambiguous resolution, and exact binding validation across Run operations/resume/settlement are implemented and deterministically validated. Headless Chat uses the public facade with validated state, sequencing, and application integration. Persistent strategy state, child Sessions, and disk persistence remain deferred. |
 | Inference context | Instruction-only source discovery, exact-binding capture, immutable snapshots, current adapter rendering, and the stock root AGENTS.md source activated by the shared runtime are implemented; other sources, broader material, provider-aware projection/cache planning, budgets, and compaction remain deferred. |
-| Production orchestration/UI/Commands | Headless stock Chat, minimal B1 Project presentation, and B2 Task/primary Environment creation are implemented; Task Browser, Session/Chat/Run UI, Commands, and plugin discovery remain directional. |
+| Production orchestration/UI/Commands | Headless stock Chat, minimal Project presentation, and Task/primary Environment creation are implemented; Task Browser, Session/Chat/Run UI, Commands, and plugin discovery remain directional. |
 | Cross-platform/release | Unproven on Windows, macOS, and release mode. |
 | Packaging/sandboxing | Unproven; process isolation is not a sandbox. |
 

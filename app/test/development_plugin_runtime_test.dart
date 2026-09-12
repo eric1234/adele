@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:adele_desktop/development/development_plugin_runtime.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 void main() {
@@ -21,6 +22,85 @@ void main() {
         );
     expect(configuration.validate, throwsStateError);
   });
+
+  for (final scenario in [
+    (backend: 'basic', exitCode: 7),
+    (backend: 'alternate', exitCode: 9),
+    (backend: 'basic', exitCode: 0),
+  ]) {
+    test(
+      '${scenario.backend} compiler exit ${scenario.exitCode} preserves failure output without noisy success',
+      () async {
+        final Directory root = await Directory.systemTemp.createTemp(
+          'adele development compiler ',
+        );
+        addTearDown(() => root.delete(recursive: true));
+        final File compiler = File('${root.path}/fake-dart');
+        await compiler.writeAsString('''#!/bin/sh
+test "\$1" = compile && test "\$2" = aot-snapshot && test "\$4" = -o || exit 99
+printf 'compiler stdout sentinel\\n'
+printf 'compiler stderr sentinel\\n' >&2
+if [ ${scenario.exitCode} = 0 ]; then
+  printf snapshot > "\$5"
+fi
+exit ${scenario.exitCode}
+''');
+        final ProcessResult chmod = await Process.run('chmod', [
+          '+x',
+          compiler.path,
+        ]);
+        expect(chmod.exitCode, 0);
+        final DevelopmentPluginRuntime runtime = DevelopmentPluginRuntime(
+          DevelopmentRuntimeConfiguration(
+            repositoryRoot: root,
+            pluginDirectory: root,
+            developmentDirectory: root,
+            dartExecutable: compiler.path,
+            dartAotRuntimeExecutable: Platform.resolvedExecutable,
+            flutterExecutable: Platform.resolvedExecutable,
+          ),
+        );
+        addTearDown(runtime.stop);
+        final File artifact = File('${root.path}/output/backend.aot');
+        final Future<void> compiling = runtime.compileResourceInspectorBackend(
+          '${root.path}/resource_inspector_${scenario.backend}_backend.dart',
+          artifact,
+        );
+        if (scenario.exitCode == 0) {
+          await compiling;
+          expect(await artifact.readAsString(), 'snapshot');
+        } else {
+          await expectLater(
+            compiling,
+            throwsA(
+              isA<PluginBuildFailure>()
+                  .having(
+                    (error) => error.toString(),
+                    'displayed failure',
+                    allOf(
+                      contains('resource-inspector compile'),
+                      contains('exit code ${scenario.exitCode}'),
+                      contains('stdout:\ncompiler stdout sentinel'),
+                      contains('stderr:\ncompiler stderr sentinel'),
+                    ),
+                  )
+                  .having(
+                    (error) => error.diagnostic?.exitCode,
+                    'compiler exit',
+                    scenario.exitCode,
+                  ),
+            ),
+          );
+          expect(await artifact.exists(), isFalse);
+        }
+        expect(runtime.diagnostics, [
+          'resource-inspector compile: exit ${scenario.exitCode}',
+        ]);
+        expect(runtime.hostProcessId, isNull);
+      },
+      skip: Platform.isWindows ? 'POSIX fake compiler fixture' : false,
+    );
+  }
 
   test('forces host cleanup when connection close fails', () async {
     final List<String> calls = <String>[];
