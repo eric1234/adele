@@ -12,7 +12,8 @@ Active capability registry and exact-generation routing
 Provider-neutral Run/model/tool/policy/approval mechanics
 Session-bound executable strategies and headless stock Chat
 Per-inference instruction-source capture and immutable context snapshots
-Stock root-level AGENTS.md instructions in development/self-hosting composition
+Shared application runtime and static stock plugin composition
+Stock root-level AGENTS.md instructions
 Session-authorized Environment read/search and bounded text-file mutation
 Foreground process execution and model-facing command validation
 ```
@@ -25,9 +26,22 @@ multi-provider capability fixture, and `scripted_model` remains deterministic
 model-provider/transport regression infrastructure. These are internal
 reference fixtures, not product UI or product-domain definitions.
 
-Plugin installation/discovery, production product plugin activation, packaging,
+Plugin installation/discovery, general production plugin activation, packaging,
 permissions, sandboxing, and general third-party extension APIs are not yet
 implemented.
+
+Normal desktop startup synchronously constructs one application-owned
+`AdeleRuntime` in `app/lib/core/adele_runtime.dart`. It owns the capability and
+extension registries, in-memory product store, generated lifecycle coordinator,
+inference context composer, retained Chat plugin, and static in-process Chat,
+AGENTS.md, Filesystem Tools, Search Tools, and Command Tools activations.
+The shell displays `No Project is open`. Startup does not launch
+providers, compile AOT artifacts, load credentials, create a Project, Task,
+Environment, or Session, build a tool catalog, or start a Run. Desktop exit awaits
+runtime close; detach/dispose initiate cleanup and failures are reported. Owned
+activations close in reverse order, attempting all before reporting the first
+failure. Self-hosting owns an instance of this same runtime and adds its explicit
+provider, product lifecycle, and Run setup rather than duplicating the host graph.
 
 ADELE separates provider-neutral Run/model/tool/policy/approval mechanics from
 strategy-owned Session meaning. `adele_product` owns the final immutable
@@ -88,9 +102,10 @@ A batch emitted in the final allowed model-invocation slot fails before any
 proposal is prepared or executed because no continuation slot remains.
 
 `ChatStrategyPlugin.activate` follows the existing in-process stock-tools
-conventions. Development/self-hosting composition activates Chat, obtains its
-retained Session state, appends the prompt, and routes `SessionId` through core
-lifecycle and orchestration hosting rather than constructing a loop directly.
+conventions. `AdeleRuntime` activates and retains Chat in normal startup and
+development/self-hosting. Self-hosting obtains its retained Session state, appends
+the prompt, and routes `SessionId` through core lifecycle and orchestration
+hosting rather than constructing a loop directly.
 This is executable plugin composition, not production plugin discovery or Chat UI.
 
 Chat supplies `StrategyInferenceMaterial` containing instructions and ordered
@@ -113,8 +128,9 @@ generic refresh API. Chat activates no context source and remains AGENTS-unaware
 tools, policy, model controls, and Environment authority retain their existing
 owners. See `packages/orchestration/README.md` for capture and rendering semantics.
 
-The stock `agents_md_plugin` under `plugins/agents_md` is activated only in the
-development/self-hosting composition. Each snapshot rereads root `AGENTS.md` in
+The stock `agents_md_plugin` under `plugins/agents_md` is activated by
+`AdeleRuntime` in normal startup and development/self-hosting. Activation alone
+does not read a file. Each snapshot rereads root `AGENTS.md` in
 the Session-authorized Environment through `AuthorizedEnvironmentFileReadFacet`.
 `not_found` or blank/whitespace-only text produces successful empty output; other
 read/service/authority errors fail composition as a required source. Exact nonblank
@@ -392,8 +408,8 @@ preferences. A future window/context may use an ordered stack such as
 `Developer + Work` or `Developer + Personal`; the architecture imposes no
 arbitrary small stack limit.
 
-Profiles are not implemented, and the development runtime still uses one
-implicit default development profile.
+Profiles are not implemented. Normal startup and development/self-hosting reuse
+the implicit static stock composition, not a profile API.
 
 Activation, ordinary configuration, provider selection, configured capability
 instances, product/runtime state, security/policy, and workbench state remain
@@ -421,7 +437,10 @@ are not included and remain independent plugin concerns.
 Broader Reference/Observation material remains directional, without placeholder
 public APIs. Provider-aware projection and cache planning, token budgets,
 compaction, and context preview remain deferred.
-Chat UI/persistence, profiles, child Session lifecycle, strategy defaults,
+Normal provider/model configuration, Project selection, Task/Environment
+establishment, Chat UI, and the Run product flow remain deferred despite the
+shared runtime composition and headless self-hosting path.
+Chat persistence, profiles, child Session lifecycle, strategy defaults,
 SCM/review integration, general whole-file overwrite, and directory/move/copy/
 binary operations also remain unimplemented.
 

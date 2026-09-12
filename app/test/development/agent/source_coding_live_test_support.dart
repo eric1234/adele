@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_desktop/core/resource_cleanup.dart';
 import 'package:adele_desktop/development/agent/agent_capability_adapters.dart';
 import 'package:adele_desktop/development/agent/development_self_hosting.dart';
 import 'package:adele_environment/adele_environment.dart';
@@ -152,7 +153,7 @@ final class SourceCodingLiveHarness {
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
-    await closeDevelopmentSelfHostingResources(<Future<void> Function()>[
+    await closeResources(<Future<void> Function()>[
       _topology.close,
       if (await _container.exists()) () => _container.delete(recursive: true),
     ]);

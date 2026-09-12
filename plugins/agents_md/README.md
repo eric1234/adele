@@ -1,8 +1,10 @@
 # AGENTS.md stock plugin
 
 `agents_md_plugin` registers `AgentsMdPlugin` at the existing
-`inferenceContextSources` extension point. The maintained development/self-hosting
-composition activates it automatically and closes its registration on teardown.
+`inferenceContextSources` extension point. Shared `AdeleRuntime` composition
+activates it in normal application startup and development/self-hosting and owns
+closing its registration on teardown. Activation alone does not read a file or
+require a Project or Session.
 
 This is the initial **root-level AGENTS.md implementation**, not complete
 AGENTS.md-standard compatibility or a generic repository-instructions framework.

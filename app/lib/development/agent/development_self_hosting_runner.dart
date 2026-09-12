@@ -3,6 +3,7 @@ import 'dart:ffi';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_desktop/core/resource_cleanup.dart';
 import 'package:adele_desktop/development/agent/agent_capability_adapters.dart';
 import 'package:adele_desktop/development/agent/development_self_hosting.dart';
 import 'package:adele_desktop/development/agent/development_self_hosting_report.dart';
@@ -489,7 +490,7 @@ final class DevelopmentSelfHostingRunner {
     } finally {
       try {
         await timings.measure('teardown', () async {
-          await closeDevelopmentSelfHostingResources(<Future<void> Function()>[
+          await closeResources(<Future<void> Function()>[
             if (providerActivation != null) providerActivation.close,
             if (topology != null) topology.close,
             if (await transientArtifacts.exists())

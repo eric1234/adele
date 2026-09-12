@@ -43,6 +43,36 @@ Public plugin-facing APIs remain experimental.
 
 ADELE has one Flutter desktop application, `adele_desktop`, under `app/`. The application owns the current shell, theme, private widgets, desktop integration, and composition of host systems. It is a composition root rather than the primary home of core logic.
 
+`app/lib/core/adele_runtime.dart` defines the application-lifetime `AdeleRuntime`.
+It owns one `CapabilityRegistry`, `ExtensionRegistry`, `InMemoryProductStore`,
+`ProductLifecycleCoordinator.generated` wired to those same registries and store,
+`InferenceContextComposer` over the same extension registry, and retained
+`ChatStrategyPlugin`. By default it statically activates Chat, root-level AGENTS.md,
+Filesystem Tools, Search Tools, and Command Tools in process. This is an implicit
+stock composition, not plugin discovery or a profile/configuration API.
+
+The normal Stateful `AdeleApplication` constructs its runtime once synchronously
+in `initState`, not during rebuilds. It awaits close on desktop exit requests and
+initiates cleanup on detach/dispose, reporting failures through `FlutterError`.
+Runtime close shares one completion across callers and retires owned activations
+in reverse order. `app/lib/core/resource_cleanup.dart` supplies `closeResources`,
+shared with development teardown: every action is attempted before the first
+error is rethrown with its stack.
+
+The shell displays `No Project is open`. Normal startup does not launch providers
+or a backend host, compile AOT artifacts, load credentials, create a Project,
+Task, Environment, or Session, build a tool catalog, or start a Run. Normal
+provider/model configuration, Project selection, Task/Environment establishment,
+Chat UI, and the Run product flow remain deferred.
+
+Development/self-hosting owns an `AdeleRuntime` instance instead of duplicating
+these registries, lifecycle, composer, Chat, and activations. Its surrounding
+topology/runner retains AOT compilation and host ownership, provider activation,
+isolated Git source, Project/Task/Environment/Session establishment, tool catalog,
+model selection, development IDs, execution, and evidence. The model capability
+adapter remains under `app/lib/development/agent`; normal composition has no
+dependency on development code.
+
 Host implementations are split into small pure-Dart packages where Flutter is not required:
 
 | Package | Maintained/planned responsibility |
@@ -227,9 +257,10 @@ public package nor Chat depends on the kernel. The kernel has no Chat history
 port or generic `ContextAssembler`; the Session/context types in ADR 0022 are
 historical proof details, not current kernel APIs.
 
-Self-hosting activates Chat, obtains retained state and appends the prompt, then
-routes `SessionId` through lifecycle and the core host. The app no longer has
-`simple_tool_loop_strategy.dart` or `development_strategy_registration.dart`;
+Self-hosting uses its `AdeleRuntime`'s retained Chat, obtains Session state and
+appends the prompt, then routes `SessionId` through lifecycle and the core host.
+The app no longer has `simple_tool_loop_strategy.dart` or
+`development_strategy_registration.dart`;
 `development_agent_support.dart` contains only policy.
 
 The kernel model boundary is streaming-shaped. The common ModelProvider transport supports generated streaming/cancellation, ordered semantic input/output, live observations, terminal settlement, and provider-native item metadata. Materialized model/tool bindings remain exact-generation bound.
@@ -262,8 +293,9 @@ The current `ModelProviderCapabilityAdapter` calls orchestration's
 string, preserving zero-source bytes. Model/tool/policy and Environment selection
 are unchanged; Chat activates no source and remains AGENTS-unaware.
 
-Only development/self-hosting composition activates the first stock source,
-`agents_md_plugin` under `plugins/agents_md`. Each snapshot rereads root `AGENTS.md`
+`AdeleRuntime` activates the first stock source, `agents_md_plugin` under
+`plugins/agents_md`, in normal startup and development/self-hosting. Activation
+alone does not read a file. Each snapshot rereads root `AGENTS.md`
 through `AuthorizedEnvironmentFileReadFacet` in the Session-authorized Environment.
 Missing (`not_found`) and blank files are successful empty results; other
 read/service/authority errors abort the required source. Nonblank exact text and
@@ -294,7 +326,7 @@ The default development UX is expected to be produced by a stock plugin/configur
 - Agent Configuration/Policy;
 - Model Routing/Control;
 - Context Monitoring/Compaction;
-- AGENTS.md instruction source (root-only in development/self-hosting today);
+- AGENTS.md instruction source (root-only, activated by the shared runtime today);
 - Accounting/Usage/Quota;
 - Filesystem/Search/Command/TODO/Plan tools;
 - Diff/Review;
@@ -310,7 +342,7 @@ These documents are not implementation claims. The current app shell remains min
 
 Profiles are accepted as sparse named composition layers. One context may eventually use an ordered stack such as `Developer + Work`. They may contribute activation decisions, ordinary configuration overrides, provider availability, and provider preferences.
 
-The maintained runtime still uses one implicit development profile. General profile/configuration persistence, UI, and provider preference resolution are not implemented.
+Normal startup and development/self-hosting reuse one implicit static stock composition, not a profile API. General profile/configuration persistence, UI, and provider preference resolution are not implemented.
 
 Activation, ordinary configuration, provider preference, security/policy, workbench state, configured capability instances, and runtime state remain distinct domains.
 
@@ -367,7 +399,7 @@ self-hosting.
 | General recursive extension system | Accepted architecture; not implemented. |
 | Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, Session-authorized read/mutation/process facets, bounded create/patch/delete text-file mutation, and generated foreground process streaming through the Git provider are proven; persistence and complete lifecycle remain unimplemented. |
 | Session-bound strategy execution | Canonical immutable Session creation, atomic publication with separate Environment authority, executable contributions, explicit unavailable/ambiguous resolution, and exact binding validation across Run operations/resume/settlement are implemented and deterministically validated. Headless Chat uses the public facade with validated state, sequencing, and application integration. Persistent strategy state, child Sessions, and disk persistence remain deferred. |
-| Inference context | Instruction-only source discovery, exact-binding capture, immutable snapshots, current adapter rendering, and the stock root AGENTS.md source in development/self-hosting are implemented; other sources, broader material, provider-aware projection/cache planning, budgets, and compaction remain deferred. |
+| Inference context | Instruction-only source discovery, exact-binding capture, immutable snapshots, current adapter rendering, and the stock root AGENTS.md source activated by the shared runtime are implemented; other sources, broader material, provider-aware projection/cache planning, budgets, and compaction remain deferred. |
 | Production orchestration/UI/Commands | Headless stock Chat is implemented; production UI, Commands, and discovery remain directional. |
 | Cross-platform/release | Unproven on Windows, macOS, and release mode. |
 | Packaging/sandboxing | Unproven; process isolation is not a sandbox. |
