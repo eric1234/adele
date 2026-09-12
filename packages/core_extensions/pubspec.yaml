@@ -1,0 +1,15 @@
+name: adele_core_extensions
+description: Narrow public ADELE core-owned extension contracts.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+
+resolution: workspace
+
+dependencies:
+  adele_plugin_api: ^0.1.0
+
+dev_dependencies:
+  test: ^1.26.3

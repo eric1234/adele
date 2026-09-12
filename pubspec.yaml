@@ -12,6 +12,7 @@ workspace:
   - packages/capabilities
   - packages/contract
   - packages/contract_codegen
+  - packages/core_extensions
   - packages/environment
   - packages/model_tool
   - packages/model_provider
@@ -30,6 +31,7 @@ workspace:
   - plugins/command_tools
   - plugins/agents_md
   - plugins/chat_strategy
+  - plugins/local_directory_project_selector
   - plugins/git_environment
 
 dev_dependencies:

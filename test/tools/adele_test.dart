@@ -255,6 +255,38 @@ void main() {
       },
     );
 
+    test('discovers core extensions with the pure-Dart runner policy', () {
+      final TestOptions options = parseTestOptions(<String>[
+        '--target',
+        'adele_core_extensions',
+        '--ci',
+      ]);
+      final TestTarget target = lookupTestTarget(options.target!);
+
+      expect(target.path, 'packages/core_extensions');
+      expect(target.executable, 'dart');
+      expect(target.argumentsFor(), <String>['test']);
+      expect(target.argumentsFor(ci: options.ci), <String>['test']);
+      expect(target.linuxDesktopDeps, isFalse);
+      expect(target.ciTestConcurrency, isNull);
+    });
+
+    test('discovers the local selector without Linux desktop dependencies', () {
+      final TestOptions options = parseTestOptions(<String>[
+        '--target',
+        'local_directory_project_selector_plugin',
+        '--ci',
+      ]);
+      final TestTarget target = lookupTestTarget(options.target!);
+
+      expect(target.path, 'plugins/local_directory_project_selector');
+      expect(target.executable, 'flutter');
+      expect(target.argumentsFor(), <String>['test']);
+      expect(target.argumentsFor(ci: options.ci), <String>['test']);
+      expect(target.linuxDesktopDeps, isFalse);
+      expect(target.ciTestConcurrency, isNull);
+    });
+
     test('rejects an unknown target', () {
       expect(
         () => lookupTestTarget('missing'),
@@ -282,6 +314,7 @@ void main() {
         'contract_codegen|dart|packages/contract_codegen|test --concurrency 2',
         'adele_plugin_api|dart|packages/plugin_api|test',
         'adele_product|dart|packages/product|test',
+        'adele_core_extensions|dart|packages/core_extensions|test',
         'adele_orchestration|dart|packages/orchestration|test',
         'adele_environment|dart|packages/environment|test',
         'adele_model_tool|dart|packages/model_tool|test',
@@ -298,6 +331,7 @@ void main() {
         'command_tools_plugin|dart|plugins/command_tools|test',
         'agents_md_plugin|dart|plugins/agents_md|test',
         'chat_strategy_plugin|dart|plugins/chat_strategy|test',
+        'local_directory_project_selector_plugin|flutter|plugins/local_directory_project_selector|test',
         'scripted_model_contract|dart|plugins/scripted_model/packages/contract|test --timeout 4m',
         'scripted_model_backend|dart|plugins/scripted_model/packages/backend|test',
         'openai_model_provider_backend|dart|plugins/openai/packages/backend|test --timeout 4m',

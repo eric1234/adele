@@ -48,8 +48,11 @@ It owns one `CapabilityRegistry`, `ExtensionRegistry`, `InMemoryProductStore`,
 `ProductLifecycleCoordinator.generated` wired to those same registries and store,
 `InferenceContextComposer` over the same extension registry, and retained
 `ChatStrategyPlugin`. By default it statically activates Chat, root-level AGENTS.md,
-Filesystem Tools, Search Tools, and Command Tools in process. This is an implicit
-stock composition, not plugin discovery or a profile/configuration API.
+Filesystem Tools, Search Tools, Command Tools, and Local Directory Project
+Selector in process, all on the same extension registry. The selector is the
+sixth owned activation; the reduced composition omits only Command Tools. This
+is an implicit stock composition, not plugin discovery or a profile/configuration
+API.
 
 The normal Stateful `AdeleApplication` constructs its runtime once synchronously
 in `initState`, not during rebuilds. It awaits close on desktop exit requests and
@@ -59,11 +62,17 @@ in reverse order. `app/lib/core/resource_cleanup.dart` supplies `closeResources`
 shared with development teardown: every action is attempted before the first
 error is rethrown with its stack.
 
-The shell displays `No Project is open`. Normal startup does not launch providers
-or a backend host, compile AOT artifacts, load credentials, create a Project,
-Task, Environment, or Session, build a tool catalog, or start a Run. Normal
-provider/model configuration, Project selection, Task/Environment establishment,
-Chat UI, and the Run product flow remain deferred.
+The minimal themed shell retains its ADELE header. In B1, `AdeleApplication.build`
+discovers `projectSelectorContributions` and displays `No Project is open` with
+one button per contribution in deterministic registry registration order. Zero
+selectors is an explicit unavailable state; one or multiple contributions are
+independent actions, not a chooser/default-provider framework.
+
+Normal startup does not launch providers or a backend host, compile AOT artifacts,
+load credentials, create a Project, Task, Environment, or Session, build a tool
+catalog, or start a Run. Explicit selection can now create only a Project, as
+described below. Normal provider/model configuration, Task/Environment
+establishment, Task Browser, Chat UI, and the Run product flow remain deferred.
 
 Development/self-hosting owns an `AdeleRuntime` instance instead of duplicating
 these registries, lifecycle, composer, Chat, and activations. Its surrounding
@@ -72,6 +81,11 @@ isolated Git source, Project/Task/Environment/Session establishment, tool catalo
 model selection, development IDs, execution, and evidence. The model capability
 adapter remains under `app/lib/development/agent`; normal composition has no
 dependency on development code.
+
+The selector's native picker uses a conditional Flutter-only import so shared
+runtime composition preserves the real plain-Dart self-hosting CLI import graph.
+Registration makes no OS call; invoking the default picker headlessly throws
+`UnsupportedError`, not cancellation or a fallback.
 
 Host implementations are split into small pure-Dart packages where Flutter is not required:
 
@@ -122,7 +136,13 @@ Runtime composition should prefer typed interface discovery over hidden activati
 
 Capabilities remain the implemented callable-provider mechanism for Actions and Services. Events are read-only fact notifications. Other extension points may collect UI fragments or structured operation contributions without being callable capabilities.
 
-The generic `ExtensionRegistry` supports typed registration/discovery, retirement, and exact binding liveness. Current model-tool, orchestration-strategy, and inference-context-source points reuse it with their own composition semantics; already-resolved bindings do not migrate to replacement generations. Instruction-source data becomes independent of binding liveness after safe capture, unlike executable work.
+The generic `ExtensionRegistry` supports typed registration/discovery, retirement, and exact binding liveness. Current model-tool, orchestration-strategy, inference-context-source, and Project selector points reuse it with their own composition semantics; already-resolved bindings do not migrate to replacement generations. Instruction-source data becomes independent of binding liveness after safe capture, unlike executable work.
+
+Tiny pure-Dart `adele_core_extensions` imports only `adele_plugin_api` and owns
+core extension contracts with no natural existing public domain package, not all
+extension APIs. Product values, orchestration strategies/context, model tools,
+Environment providers, generic registry mechanics, and plugin-defined ecosystems
+keep their existing owners; see [`dependency-rules.md`](dependency-rules.md).
 
 Broader recursive composition, plugin-defined UI extension APIs, generic Event subscription, Commands/keybindings, and inference composition beyond instruction material remain direction rather than implemented production systems.
 
@@ -153,7 +173,36 @@ Project
 
 ### Project
 
-Project is an abstract core identity/lifecycle concept, not intrinsically a local directory. The expected stock development composition uses a local-directory `ProjectSelector`; future selectors may use recent projects, databases/catalogs, or remote/cloud systems.
+Project is an abstract core identity/lifecycle concept, not intrinsically a local
+directory. B1 implements `ProjectSelectorContribution` in
+`packages/core_extensions` (`adele_core_extensions`) with only
+`String displayName` and `Future<Uri?> Function() selectProject`. The typed
+`projectSelectorContributions` point has ID `dev.adele.extension.project-selectors`
+and permits zero, one, or multiple independent contributions, without priorities,
+defaults, categories, or applicability rules.
+
+Stock `local_directory_project_selector_plugin` provides `Open Local Directory...`
+through an injected narrow native picker using `file_selector ^1.1.0`. It returns
+an absolute `file:` directory URI with lexical dot normalization, without
+Git/filesystem validation or symlink resolution. The registration boundary is
+recorded in [`stock-plugin-direction.md`](stock-plugin-direction.md#31-local-directory-project-selector).
+
+Only the app invokes the contribution and passes a selected URI to
+`runtime.lifecycle.createProject`, which publishes and returns the canonical
+Project. `_project` in application State is window-local presentation, never
+`runtime.currentProject`. Buttons are disabled during selection. `null` is
+cancellation and creates nothing; selector/lifecycle failure is an inline error
+without fallback or changing the presented Project. The app validates the exact
+retained binding after asynchronous selection and before creation; late results
+after disposal/exit are ignored.
+
+The opened shell derives a leaf name from the URI, falling back to host or URI,
+and shows the source URI, `Project is open`, and `No Tasks yet`. No derived
+metadata is added to Project; `adele_product` stays unchanged and independent.
+Opening adds no Task, Environment, Session, provider/model/Git startup, tool
+catalog, or Run. Project persistence, catalogs, deduplication, and GitHub/cloud
+or other selectors are not implemented. Command surfacing and Task Browser remain
+deferred; the buttons are temporary presentation, not a plugin-facing UI framework.
 
 ### Task
 
@@ -207,8 +256,8 @@ Immutable snapshots contain `ChatEntry` values (`ChatUserMessage` and
 reused across Runs. Intermediate model/native output, proposals, and tool
 results are Run-local replay. Instructions and a positive invocation budget are
 Chat-owned configuration snapshotted per materialized Run, not product Session
-fields. Chat UI/persistence, strategy defaults/profiles, and lifecycle UI remain
-deferred.
+fields. Chat UI/persistence, strategy defaults/profiles, and Task/Session lifecycle
+UI remain deferred.
 
 The accepted direction allows child Sessions for delegated work. They may share an Environment or use another Task-associated Environment and are primarily surfaced through the parent Session/orchestration experience. Child Session lifecycle remains deferred.
 
@@ -319,7 +368,7 @@ See [`agent-kernel-semantic-model.md`](agent-kernel-semantic-model.md).
 
 The default development UX is expected to be produced by a stock plugin/configuration set rather than by hard-coded ADELE core behavior. Directional stock responsibilities include:
 
-- Local Directory Project Selector;
+- Local Directory Project Selector (B1 native picker and minimal Project opening);
 - Task Browser;
 - Git/Worktree Environment provider;
 - Agent Interaction + Chat strategy;
@@ -336,7 +385,9 @@ The default development UX is expected to be produced by a stock plugin/configur
 
 The detailed, deliberately speculative decomposition is in [`stock-plugin-direction.md`](stock-plugin-direction.md). The UX manifestation is in [`../mockups/README.md`](../mockups/README.md).
 
-These documents are not implementation claims. The current app shell remains minimal and most listed plugins do not exist yet.
+Only the explicitly identified slices are implementation claims. The current app
+shell remains minimal, with B1 Project opening rather than the mockup Task Browser,
+and most listed plugins do not exist yet.
 
 ## Profiles, configuration, commands, and workbench state
 
@@ -397,10 +448,11 @@ self-hosting.
 | Model-to-source continuation | Read/search is proven through deterministic OpenAI integration and opt-in live API-key/experimental ChatGPT evidence. Deterministic integration and opt-in API-key plus experimental ChatGPT validation smokes prove model-visible `read_file` opaque-revision-to-`apply_patch` continuation for conditional existing-file mutation in the Task worktree, direct-argv `run_command` validation, continuation from its model-visible exit result, and Task/Project/checkout isolation. Deterministic integration also proves model-visible create/read/delete revision flow and final filesystem isolation. Broader filesystem administration remains unproven. |
 | Rebuild/reload | Proven for three cycles without orphan host processes. |
 | General recursive extension system | Accepted architecture; not implemented. |
+| B1 Project opening/native picker | Typed selector composition, cancellation/failure handling, canonical Project opening, and window lifetime are tested. Native picker adapters use fakes in CI. Linux profile build passes with generated native registration; the minimum macOS `com.apple.security.files.user-selected.read-only` entitlement is present. Interactive OS picking and macOS/Windows builds remain unvalidated. The maintained tooling target guards the plain-Dart self-hosting import graph with CLI `--help`, without provider calls. |
 | Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, Session-authorized read/mutation/process facets, bounded create/patch/delete text-file mutation, and generated foreground process streaming through the Git provider are proven; persistence and complete lifecycle remain unimplemented. |
 | Session-bound strategy execution | Canonical immutable Session creation, atomic publication with separate Environment authority, executable contributions, explicit unavailable/ambiguous resolution, and exact binding validation across Run operations/resume/settlement are implemented and deterministically validated. Headless Chat uses the public facade with validated state, sequencing, and application integration. Persistent strategy state, child Sessions, and disk persistence remain deferred. |
 | Inference context | Instruction-only source discovery, exact-binding capture, immutable snapshots, current adapter rendering, and the stock root AGENTS.md source activated by the shared runtime are implemented; other sources, broader material, provider-aware projection/cache planning, budgets, and compaction remain deferred. |
-| Production orchestration/UI/Commands | Headless stock Chat is implemented; production UI, Commands, and discovery remain directional. |
+| Production orchestration/UI/Commands | Headless stock Chat and minimal B1 Project presentation are implemented; Task Browser, production orchestration UI, Commands, and plugin discovery remain directional. |
 | Cross-platform/release | Unproven on Windows, macOS, and release mode. |
 | Packaging/sandboxing | Unproven; process isolation is not a sandbox. |
 

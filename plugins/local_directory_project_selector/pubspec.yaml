@@ -1,0 +1,23 @@
+name: local_directory_project_selector_plugin
+description: Stock ADELE local directory project selector.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+  flutter: ">=3.38.10"
+
+resolution: workspace
+
+dependencies:
+  adele_core_extensions: ^0.1.0
+  adele_plugin_api: ^0.1.0
+  file_selector: ^1.1.0
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  file_selector_platform_interface: ^2.7.0
+  flutter_test:
+    sdk: flutter
+  test: ^1.26.3

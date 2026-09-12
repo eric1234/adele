@@ -13,6 +13,7 @@ Provider-neutral Run/model/tool/policy/approval mechanics
 Session-bound executable strategies and headless stock Chat
 Per-inference instruction-source capture and immutable context snapshots
 Shared application runtime and static stock plugin composition
+Typed Project selectors and minimal local-directory Project opening
 Stock root-level AGENTS.md instructions
 Session-authorized Environment read/search and bounded text-file mutation
 Foreground process execution and model-facing command validation
@@ -33,15 +34,40 @@ implemented.
 Normal desktop startup synchronously constructs one application-owned
 `AdeleRuntime` in `app/lib/core/adele_runtime.dart`. It owns the capability and
 extension registries, in-memory product store, generated lifecycle coordinator,
-inference context composer, retained Chat plugin, and static in-process Chat,
-AGENTS.md, Filesystem Tools, Search Tools, and Command Tools activations.
-The shell displays `No Project is open`. Startup does not launch
-providers, compile AOT artifacts, load credentials, create a Project, Task,
+inference context composer, retained Chat plugin, and six static in-process
+activations: Chat, AGENTS.md, Filesystem Tools, Search Tools, Command Tools, and
+Local Directory Project Selector. The reduced smoke composition omits only
+Command Tools. The shell initially displays `No Project is open`. Startup does
+not launch providers, compile AOT artifacts, load credentials, create a Project, Task,
 Environment, or Session, build a tool catalog, or start a Run. Desktop exit awaits
 runtime close; detach/dispose initiate cleanup and failures are reported. Owned
 activations close in reverse order, attempting all before reporting the first
 failure. Self-hosting owns an instance of this same runtime and adds its explicit
 provider, product lifecycle, and Run setup rather than duplicating the host graph.
+
+B1 adds `ProjectSelectorContribution` in tiny pure-Dart `adele_core_extensions`,
+whose only package dependency is `adele_plugin_api`. The typed
+`projectSelectorContributions` point accepts zero, one, or multiple independent
+selectors, with no priority, default, category, or applicability machinery.
+`AdeleApplication` discovers the shared registry in `build`; the existing themed
+shell keeps its ADELE header and shows one button per contribution in registry
+registration order, or an explicit unavailable state when none exist.
+
+Stock `local_directory_project_selector_plugin` supplies `Open Local Directory...`
+using a native directory picker. Only the app passes its URI to
+`runtime.lifecycle.createProject`, which publishes and returns the canonical
+Project. Presentation is window-local app State, not `runtime.currentProject`.
+Buttons are disabled during selection; `null` is cancellation, errors stay inline
+without fallback or changing the presented Project, and stale/late results cannot
+open a Project after selector retirement or window disposal/exit.
+
+After opening, the shell shows a URI-derived leaf name (falling back to host or
+URI), source URI, `Project is open`, and `No Tasks yet`. No display metadata is
+added to `adele_product`, which remains unchanged and independent. This is not a
+Task Browser, Command surface, Project catalog, persistence, or deduplication
+system, and opening starts no Task, Environment, Session, provider, model, Git,
+tool catalog, or Run work. See `app/README.md` for URI normalization, exact-binding
+validation, the headless import boundary, and native validation status.
 
 ADELE separates provider-neutral Run/model/tool/policy/approval mechanics from
 strategy-owned Session meaning. `adele_product` owns the final immutable
@@ -236,8 +262,10 @@ runtime discovery rather than dependencies on specific implementation plugins.
 Capabilities remain the callable Action/Service provider mechanism; Events are
 read-only fact notifications; UI/composition extension points may use different
 zero/one/many and merge/failure semantics. Generic registration/liveness and
-typed model-tool, orchestration-strategy, and inference-context-source points are
-implemented; broader recursive composition and plugin-facing UI APIs remain deferred.
+typed model-tool, orchestration-strategy, inference-context-source, and Project
+selector points are implemented; broader recursive composition and plugin-facing
+UI APIs remain deferred. The Project buttons are temporary host presentation,
+not a chooser framework or application Commands.
 
 ADR 0031 accepts these shared product-domain identities:
 
@@ -332,6 +360,7 @@ extension architecture.
 ```text
 app/                         single Flutter desktop application
 packages/plugin_api/         adele_plugin_api (experimental public)
+packages/core_extensions/    adele_core_extensions narrow core-owned contracts
 packages/contract/           adele_contract (experimental public)
 packages/contract_codegen/   contract_codegen (internal, pure Dart)
 packages/model_provider/     adele_model_provider (experimental public)
@@ -353,6 +382,7 @@ plugins/search_tools/        stock Session-authorized literal Search tool
 plugins/command_tools/       stock Session-authorized foreground Command tool
 plugins/chat_strategy/       stock headless Chat strategy and in-memory history
 plugins/agents_md/           stock root-level AGENTS.md instruction source
+plugins/local_directory_project_selector/ stock native directory Project selector
 plugins/git_environment/     Git worktree Environment provider
 docs/architecture/           architecture boundaries/directional models
 docs/adr/                    architectural decision records
@@ -383,6 +413,11 @@ the `adele_` prefix. Internal implementation packages use concise unprefixed
 names. Every package is unpublished (`publish_to: none`). Public packages never
 depend on internal host packages; pure-Dart packages never depend on Flutter.
 The application is the composition root.
+
+`adele_core_extensions` is only for core-owned extension contracts with no natural
+existing public domain package, not a catch-all API package. Existing registry,
+product, orchestration, tool, Environment, and plugin-ecosystem ownership remains
+as defined in `docs/architecture/dependency-rules.md`.
 
 Plugins may eventually depend on deliberately public extension API packages
 defined by core or another plugin/component. They must not import another
@@ -437,9 +472,11 @@ are not included and remain independent plugin concerns.
 Broader Reference/Observation material remains directional, without placeholder
 public APIs. Provider-aware projection and cache planning, token budgets,
 compaction, and context preview remain deferred.
-Normal provider/model configuration, Project selection, Task/Environment
-establishment, Chat UI, and the Run product flow remain deferred despite the
-shared runtime composition and headless self-hosting path.
+Normal provider/model configuration, Task/Environment establishment, Task Browser,
+Chat UI, and the Run product flow remain deferred despite B1 Project opening,
+shared runtime composition, and the headless self-hosting path. GitHub, cloud,
+recent-project/catalog selectors, persistence, and deduplication are not
+implemented; application Command surfacing remains deferred.
 Chat persistence, profiles, child Session lifecycle, strategy defaults,
 SCM/review integration, general whole-file overwrite, and directory/move/copy/
 binary operations also remain unimplemented.

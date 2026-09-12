@@ -40,6 +40,12 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
+    name: 'adele_core_extensions',
+    path: 'packages/core_extensions',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
     name: 'adele_orchestration',
     path: 'packages/orchestration',
     executable: 'dart',
@@ -137,6 +143,12 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
+    name: 'local_directory_project_selector_plugin',
+    path: 'plugins/local_directory_project_selector',
+    executable: 'flutter',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
     name: 'scripted_model_contract',
     path: 'plugins/scripted_model/packages/contract',
     executable: 'dart',
@@ -180,6 +192,11 @@ _packages = <({String name, String path, bool flutter})>[
   (name: 'adele_desktop', path: 'app', flutter: true),
   (name: 'adele_plugin_api', path: 'packages/plugin_api', flutter: false),
   (name: 'adele_product', path: 'packages/product', flutter: false),
+  (
+    name: 'adele_core_extensions',
+    path: 'packages/core_extensions',
+    flutter: false,
+  ),
   (name: 'adele_orchestration', path: 'packages/orchestration', flutter: false),
   (name: 'adele_environment', path: 'packages/environment', flutter: false),
   (name: 'adele_model_tool', path: 'packages/model_tool', flutter: false),
@@ -211,6 +228,11 @@ _packages = <({String name, String path, bool flutter})>[
   (name: 'command_tools_plugin', path: 'plugins/command_tools', flutter: false),
   (name: 'agents_md_plugin', path: 'plugins/agents_md', flutter: false),
   (name: 'chat_strategy_plugin', path: 'plugins/chat_strategy', flutter: false),
+  (
+    name: 'local_directory_project_selector_plugin',
+    path: 'plugins/local_directory_project_selector',
+    flutter: true,
+  ),
   (
     name: 'git_environment_backend',
     path: 'plugins/git_environment/packages/backend',
