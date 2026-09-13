@@ -218,6 +218,14 @@ The same host-owned default-selection concept may eventually apply to interchang
 
 Credentials/secrets are not ordinary configuration values. Ordinary configuration should reference a managed credential/configured instance rather than serialize the secret itself. Exact secure storage remains deferred.
 
+Normal stock composition provisionally uses experimental ChatGPT with the existing
+OpenAI credential store. Application-local configuration selects a model and passes
+only the store path and public OAuth configuration to the OpenAI plugin generation.
+Artifact defines contain deployment locations, not credentials or model selection.
+No profile, settings, or provider preference system is implied. Each new normal Run
+resolves its provider/tools and snapshots read-only policy; Session validity does
+not depend on model availability.
+
 ## Persistence, portability, and schema evolution
 
 Shareable or Project-version-controlled configuration should have a stable human-readable representation and remain editable through ADELE APIs/UI and ordinary tooling. This does not require every class of persistence to use the same textual storage mechanism.

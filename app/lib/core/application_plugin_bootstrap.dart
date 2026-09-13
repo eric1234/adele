@@ -14,6 +14,7 @@ enum ApplicationPluginState {
   closed,
 }
 
+/// Transfers ownership on success; cleans up its own partial work on failure.
 typedef BackendPluginActivator =
     Future<PluginCapabilityActivation> Function(
       PluginBackendHost host,
@@ -28,6 +29,8 @@ final class ApplicationPluginBootstrap {
   final StreamController<ApplicationPluginState> _changes =
       StreamController<ApplicationPluginState>.broadcast();
   final List<PluginCapabilityActivation> _activations = [];
+  final List<Future<void>> _pendingActivations = [];
+  final Map<PluginCapabilityActivation, Future<void>> _retiring = {};
   PluginBackendHost? _host;
   ApplicationPluginState _state = ApplicationPluginState.unconfigured;
   Object? _failure;
@@ -74,7 +77,9 @@ final class ApplicationPluginBootstrap {
           registry,
         );
         _activations.add(activation);
-        unawaited(activation.connection.terminated.then(_terminated));
+        unawaited(
+          activation.connection.terminated.then((error) => _terminated(error)),
+        );
         if (activation.connection.isClosed) {
           throw StateError('A backend plugin terminated during activation.');
         }
@@ -99,8 +104,60 @@ final class ApplicationPluginBootstrap {
     }
   }
 
-  void _terminated(Object error) {
+  /// Activates an independent backend on the ready host, without making its
+  /// availability a requirement of the original atomic startup.
+  Future<void> activateAdditional(BackendPluginActivator activate) {
+    if (_state != ApplicationPluginState.ready) {
+      throw StateError('Additional plugins require a ready backend host.');
+    }
+    final Future<void> activating = _activateAdditional(activate);
+    // Retain settlement, not activation errors, for global teardown to drain.
+    _pendingActivations.add(
+      activating.then<void>((_) {}, onError: (Object _) {}),
+    );
+    return activating;
+  }
+
+  Future<void> _activateAdditional(BackendPluginActivator activate) async {
+    try {
+      final PluginCapabilityActivation activation = await activate(
+        _host!,
+        registry,
+      );
+      _activations.add(activation);
+      unawaited(
+        activation.connection.terminated.then(
+          (error) => _terminated(error, additional: activation),
+        ),
+      );
+      if (activation.connection.isClosed) {
+        throw StateError('An additional backend terminated during activation.');
+      }
+      if (_failure != null) {
+        throw StateError('Application plugins failed during activation.');
+      }
+      if (_state == ApplicationPluginState.ready) _changes.add(_state);
+    } on Object catch (error) {
+      if (_host!.isClosed) _terminated(error);
+      rethrow;
+    }
+  }
+
+  void _terminated(Object error, {PluginCapabilityActivation? additional}) {
     if (_state != ApplicationPluginState.ready) return;
+    if (additional != null && !_host!.isClosed) {
+      final Future<void> retiring = _retiring[additional] ??= closeResources([
+        additional.retire,
+        additional.connection.close,
+      ]);
+      unawaited(
+        retiring.catchError((Object _) {}).then((_) {
+          // Availability changed even though required backend support is ready.
+          if (_state == ApplicationPluginState.ready) _changes.add(_state);
+        }),
+      );
+      return;
+    }
     _failure = error;
     _setState(ApplicationPluginState.failed);
     // Teardown is retained and awaited by close, including any cleanup failure.
@@ -127,12 +184,20 @@ final class ApplicationPluginBootstrap {
     }
   }
 
-  Future<void> _closeResources() => _cleanup ??= closeResources([
-    // Retire every capability before stopping any plugin generation.
-    for (final activation in _activations.reversed) activation.retire,
-    for (final activation in _activations.reversed) activation.connection.close,
-    if (_host case final PluginBackendHost host) () => host.close(),
-  ]);
+  Future<void> _closeResources() => _cleanup ??= _disposeResources();
+
+  Future<void> _disposeResources() async {
+    // A termination may trigger teardown while an activator still owns resources.
+    // Wait for ownership transfer before taking the cleanup snapshot.
+    await Future.wait(_pendingActivations);
+    await closeResources([
+      // Retire every capability before stopping any plugin generation.
+      for (final activation in _activations.reversed) activation.retire,
+      for (final activation in _activations.reversed)
+        () => _retiring[activation] ?? activation.connection.close(),
+      if (_host case final PluginBackendHost host) () => host.close(),
+    ]);
+  }
 
   void _setState(ApplicationPluginState value) {
     _state = value;

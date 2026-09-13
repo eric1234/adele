@@ -26,7 +26,7 @@ The Environment mutation facet and generated transport also support create-new a
 The following remain largely or entirely unimplemented:
 
 - Project/Task/Session/Environment disk persistence and complete lifecycle;
-- Chat UI and persistent strategy-specific state;
+- rich Chat/workbench UI and persistent strategy-specific state;
 - context sources beyond root AGENTS.md, broader Reference/Observation material, provider-aware projection/cache planning, compaction, and token budgets;
 - parent/child Session lifecycle;
 - plugin-defined extension ecosystems beyond registration, model tools, executable strategies, and instruction-context composition;
@@ -39,8 +39,9 @@ The following remain largely or entirely unimplemented:
 
 Public plugin-facing APIs remain experimental.
 
-The normal shell supports Project opening and title-only Task creation with a
-real Git primary Environment, not a Session/Chat/model/Run product flow.
+The normal shell supports Project opening, title-only Task creation with a real
+Git primary Environment, and one stock Chat Session with sequential read-only
+Runs through the experimental ChatGPT subscription-backed ModelProvider.
 
 ## System shape
 
@@ -63,19 +64,28 @@ The normal Stateful `AdeleApplication` constructs its runtime once synchronously
 in `initState`, not during rebuilds, then explicitly calls the async
 `bootstrapStockBackendPlugins`. Stock composition supplies activator callbacks to
 the generic application-lifetime bootstrap owner, which starts one shared
-`PluginBackendHost`. Startup failure cleans up acquired resources before reporting
-the original error and leaves Task support unavailable without preventing Project
-opening. Normal composition currently activates only the Git backend; additional
-backends can use the same callback boundary.
+`PluginBackendHost`. Required startup failure cleans up acquired resources before
+reporting the original error and leaves Task support unavailable without preventing
+Project opening. After required Git startup, the same owner accepts independently
+failing additional activations. OpenAI activation failure or plugin termination
+retires only its own contribution; shared-host failure invalidates all backends.
 
 `app/lib/plugins/stock_git_environment.dart` owns the stock plugin/provider IDs,
 display name, service exposure, and default configuration-context registration
 for both normal and self-hosting composition. It uses public Environment
 contracts and internal host APIs, not Git backend implementation imports.
 
+`app/lib/plugins/stock_openai.dart` similarly owns provisional ChatGPT provider
+identity, exposure, model selection, and plugin-local startup configuration. Normal
+composition exposes only the experimental subscription-backed context, not the
+maintained API-key context. The generic backend owner remains OpenAI-neutral;
+provider resolution still uses the capability registry. Configuration references
+the existing OpenAI-owned credential store, never token contents in deployment
+defines or startup arguments. This is ownership separation, not process sandboxing.
+
 Application close blocks further window-local updates and drains in-flight Task
-establishment before `runtime.close`, even if establishment fails. Draining avoids
-interrupting establishment; it is not cancellation or rollback. Desktop exit
+establishment and active Run settlement before `runtime.close`, even on failure.
+Draining is not cancellation or rollback. Desktop exit
 awaits the complete close; detach/dispose initiate the same cleanup and report
 runtime cleanup failures through `FlutterError`. Runtime close shares one completion across
 callers: all backend capability registrations retire before their connections
@@ -91,27 +101,28 @@ selectors is an explicit unavailable state; one or multiple contributions are
 independent actions, not a chooser/default-provider framework.
 
 Normal stock bootstrap consumes prepared runtime/backend artifacts, not source
-paths or a compiler. Missing configuration leaves Task Environment support
+paths or a compiler. Missing required artifact configuration leaves Task Environment support
 unavailable. Artifact preparation belongs to repository tooling, not app startup;
 deployment inputs and source-checkout limitations are documented in
-[`app/README.md`](../../app/README.md#b2-backend-startup) and the
+[`app/README.md`](../../app/README.md#normal-backend-startup) and the
 [`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
 Production packaging, discovery, and profiles remain deferred.
 
-Startup loads no model credentials, creates no Project, Task, Environment, or
-Session, builds no tool catalog, and starts no Run. Project selection and Task
-submission explicitly enter lifecycle as described below. General provider/model
-configuration, Task Browser, Session creation UI, Chat UI, and the Run product
-flow remain deferred.
+Flutter startup reads only stock configuration references; credential loading
+belongs to the OpenAI backend. Startup creates no Project, Task, Environment, or
+Session, builds no tool catalog, and starts no Run. Explicit user actions enter
+product lifecycle and Run composition. General provider/model configuration,
+Task Browser, persistence, and richer workbench UI remain deferred.
 
 Development/self-hosting owns an `AdeleRuntime` instance instead of duplicating
 these registries, lifecycle, composer, Chat, and activations. Its surrounding
 topology/runner retains its independent AOT artifacts and host ownership, provider
 activation, isolated Git source, Project/Task/Environment/Session establishment,
-tool catalog, model selection, development IDs, execution, and evidence. The model capability
-adapter remains under `app/lib/development/agent`; normal composition has no
-dependency on development code. Self-hosting reuses stock Git exposure code but
-does not consume normal bootstrap configuration or start its backend owner.
+tool catalog, model selection, development IDs, execution, and evidence. The generic
+model capability adapter lives in `app/lib/core/model_provider_host.dart`; normal
+composition has no dependency on development code. Self-hosting reuses stock Git
+and OpenAI exposure code but does not consume normal bootstrap configuration or
+start its backend owner.
 
 The selector's native picker uses a conditional Flutter-only import so shared
 runtime composition preserves the real plain-Dart self-hosting CLI import graph.
@@ -250,8 +261,8 @@ opening remains provider-independent.
 
 Only successful lifecycle completion presents the new canonical Task and primary
 Environment. Selection remains window-local, with no replacement on failure and
-no late updates after disposal/exit. Task Browser, a provider chooser, Commands, and
-Session/Chat/Run UI remain deferred.
+no late updates after disposal/exit. Task Browser, a provider chooser, and Commands
+remain deferred.
 
 ### Environment
 
@@ -309,9 +320,19 @@ Immutable snapshots contain `ChatEntry` values (`ChatUserMessage` and
 reused across Runs. Intermediate model/native output, proposals, and tool
 results are Run-local replay. Instructions and a positive invocation budget are
 Chat-owned configuration snapshotted per materialized Run, not product Session
-fields. Chat UI/persistence, strategy defaults/profiles, and Session lifecycle
-UI remain deferred; beyond Project opening, the shell exposes only Task
-establishment and Environment status.
+fields. Normal stock presentation explicitly creates Chat through canonical
+lifecycle with `chatStrategyId`; it introduces no universal default strategy.
+Session validity is independent of model availability. The current Session and
+its presentation controller remain window-local, never runtime navigation state.
+
+Each accepted prompt appends a canonical user entry and allocates a fresh Run ID.
+The application freshly resolves the exact selected ModelProvider and constructs
+its adapter, builds the Session-authorized tool catalog, and snapshots the normal
+read-only policy for that Run. Existing per-inference context composition supplies
+root AGENTS.md instructions from the Task Environment. Chat appends only the final
+assistant entry; failures preserve accepted user/history state separately from
+Run failure. A later prompt starts a new Run, not a reused execution object.
+Persistence, strategy defaults/profiles, and multi-Session navigation remain deferred.
 
 The accepted direction allows child Sessions for delegated work. They may share an Environment or use another Task-associated Environment and are primarily surfaced through the parent Session/orchestration experience. Child Session lifecycle remains deferred.
 
@@ -369,6 +390,12 @@ The app no longer has `simple_tool_loop_strategy.dart` or
 The kernel model boundary is streaming-shaped. The common ModelProvider transport supports generated streaming/cancellation, ordered semantic input/output, live observations, terminal settlement, and provider-native item metadata. Materialized model/tool bindings remain exact-generation bound.
 
 Tool availability, materialization, policy, optional approval interruption, execution, progress, structured outcome, and effect certainty remain distinct.
+
+The normal product policy permits only pure source-read effects and conservatively
+denies mutation, process execution, mixed, unknown, or other effects. Denial uses
+existing model-visible tool outcomes and does not request approval. The catalog
+may still advertise forbidden operations; policy, not aliases or presentation,
+is the authorization boundary. Development/self-hosting policy remains separate.
 
 The implemented inference path starts with `StrategyInferenceMaterial`, containing
 instructions and ordered `SemanticModelInputItem` values from Chat history
@@ -448,7 +475,7 @@ exist yet.
 
 Profiles are accepted as sparse named composition layers. One context may eventually use an ordered stack such as `Developer + Work`. They may contribute activation decisions, ordinary configuration overrides, provider availability, and provider preferences.
 
-Normal startup and development/self-hosting reuse the implicit in-process stock composition and stock Git activation helper, while owning separate backend topologies. Prepared artifact locations are deployment inputs, not a profile API. General profile/configuration persistence, UI, and provider preference resolution are not implemented.
+Normal startup and development/self-hosting reuse the implicit in-process stock composition and stock Git/OpenAI activation metadata, while owning separate backend topologies. Prepared artifact locations are deployment inputs, not a profile API. ChatGPT is provisional normal stock ModelProvider composition; general profile/configuration persistence, UI, and provider preference resolution are not implemented.
 
 Activation, ordinary configuration, provider preference, security/policy, workbench state, configured capability instances, and runtime state remain distinct domains.
 
@@ -508,7 +535,7 @@ self-hosting.
 | Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, Session-authorized read/mutation/process facets, bounded create/patch/delete text-file mutation, and generated foreground process streaming through the Git provider are proven; persistence and complete lifecycle remain unimplemented. |
 | Session-bound strategy execution | Canonical immutable Session creation, atomic publication with separate Environment authority, executable contributions, explicit unavailable/ambiguous resolution, and exact binding validation across Run operations/resume/settlement are implemented and deterministically validated. Headless Chat uses the public facade with validated state, sequencing, and application integration. Persistent strategy state, child Sessions, and disk persistence remain deferred. |
 | Inference context | Instruction-only source discovery, exact-binding capture, immutable snapshots, current adapter rendering, and the stock root AGENTS.md source activated by the shared runtime are implemented; other sources, broader material, provider-aware projection/cache planning, budgets, and compaction remain deferred. |
-| Production orchestration/UI/Commands | Headless stock Chat, minimal Project presentation, and Task/primary Environment creation are implemented; Task Browser, Session/Chat/Run UI, Commands, and plugin discovery remain directional. |
+| Production orchestration/UI/Commands | Stock Chat, minimal Project/Task/Environment presentation, and a single normal Chat Session with read-only Runs are implemented; Task Browser, rich workbench UI, Commands, and plugin discovery remain directional. |
 | Cross-platform/release | Unproven on Windows, macOS, and release mode. |
 | Packaging/sandboxing | Unproven; process isolation is not a sandbox. |
 

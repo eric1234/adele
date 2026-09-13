@@ -8,6 +8,7 @@ import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/resource_cleanup.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
 import 'package:adele_desktop/plugins/stock_git_environment.dart';
+import 'package:adele_desktop/plugins/stock_openai.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
@@ -20,11 +21,9 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 const String developmentSelfHostingApiKeyProviderId =
     'dev.adele.openai.api-key';
 const String developmentSelfHostingChatGptProviderId =
-    'dev.adele.openai.chatgpt-experimental';
-const String developmentSelfHostingChatGptDefaultModel = 'gpt-6-astra';
-
-const String _openAiPluginId = 'dev.adele.openai';
-const String _chatGptConfigurationContext = 'chatgpt-experimental';
+    stockChatGptProviderIdValue;
+const String developmentSelfHostingChatGptDefaultModel =
+    stockChatGptDefaultModel;
 
 typedef DevelopmentSelfHostingLog = void Function(String message);
 
@@ -56,7 +55,7 @@ extension DevelopmentSelfHostingProfileName on DevelopmentSelfHostingProfile {
   };
 
   String get configuredContext => switch (this) {
-    DevelopmentSelfHostingProfile.chatgpt => _chatGptConfigurationContext,
+    DevelopmentSelfHostingProfile.chatgpt => stockChatGptConfigurationContext,
     DevelopmentSelfHostingProfile.apiKey => 'default',
   };
 }
@@ -444,34 +443,30 @@ activateDevelopmentSelfHostingModelProvider({
   required DevelopmentSelfHostingProfile profile,
 }) async {
   final PluginBackendConnection connection = await host.startPlugin(
-    pluginId: _openAiPluginId,
+    pluginId: stockOpenAiPluginId,
     artifactUri: artifact.uri,
   );
   try {
-    final ProviderDescriptor descriptor = ProviderDescriptor(
-      id: ProviderId(profile.providerId),
-      capability: modelProviderCapability,
-      pluginId: _openAiPluginId,
-      displayName: switch (profile) {
-        DevelopmentSelfHostingProfile.chatgpt => 'Experimental ChatGPT',
-        DevelopmentSelfHostingProfile.apiKey => 'OpenAI API Key',
-      },
-      serviceId: modelProviderServiceId,
-    );
     final PluginCapabilityActivation activation =
         await PluginCapabilityActivation.register(
           connection: connection,
           registry: registry,
           exposures: <PluginCapabilityExposure>[
-            PluginCapabilityExposure(
-              provider: descriptor,
-              configurationContext: switch (profile) {
-                DevelopmentSelfHostingProfile.chatgpt =>
-                  connection.configurationContext(_chatGptConfigurationContext),
-                DevelopmentSelfHostingProfile.apiKey =>
-                  connection.defaultConfigurationContext,
-              },
-            ),
+            switch (profile) {
+              DevelopmentSelfHostingProfile.chatgpt => stockChatGptExposure(
+                connection,
+              ),
+              DevelopmentSelfHostingProfile.apiKey => PluginCapabilityExposure(
+                provider: ProviderDescriptor(
+                  id: ProviderId(developmentSelfHostingApiKeyProviderId),
+                  capability: modelProviderCapability,
+                  pluginId: stockOpenAiPluginId,
+                  displayName: 'OpenAI API Key',
+                  serviceId: modelProviderServiceId,
+                ),
+                configurationContext: connection.defaultConfigurationContext,
+              ),
+            },
           ],
         );
     return DevelopmentSelfHostingProviderActivation(activation);
@@ -558,8 +553,8 @@ Future<DevelopmentSelfHostingRunResult> executeDevelopmentSelfHostingRun({
 
 Map<String, String> _chatGptHostEnvironment(Map<String, String> source) {
   final Map<String, String> environment = <String, String>{
-    // The backend currently also establishes its default API-key context.
-    'OPENAI_API_KEY': 'unused-development-self-hosting-key',
+    // Mask any inherited API key; this topology selects only ChatGPT.
+    'OPENAI_API_KEY': '',
     'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE': _requiredEnvironment(
       source,
       'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE',

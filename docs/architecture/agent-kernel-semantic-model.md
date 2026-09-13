@@ -227,8 +227,13 @@ This is distinct from the retained invocation's exact executable-generation chec
 Self-hosting activates Chat, obtains retained state, sets Chat configuration,
 appends the prompt, and routes `SessionId` through lifecycle resolution and this
 host. It does not construct a development loop or kernel history adapter.
-Chat UI/persistence, child Sessions, strategy defaults/profiles, lifecycle UI,
-and disk persistence remain deferred.
+Normal application presentation uses the same execution path for a canonical Chat
+Session. Session creation does not require a model; each submitted prompt selects
+a fresh exact provider binding, Session-authorized tool catalog, and immutable
+read-only policy for a new Run. The normal policy denies mutation/process and
+unknown or mixed effects through model-visible policy-denied outcomes, never an
+approval interruption. Development policy is separate. Rich Chat UI/persistence,
+child Sessions, strategy defaults/profiles, and disk persistence remain deferred.
 
 # Strategy state and context assembly
 
@@ -313,8 +318,8 @@ After safe capture, source material is immutable data independent of the live
 binding. Retirement during the provider call does not invalidate the captured
 request; the next inference discovers any replacement. Executable strategy/tool
 bindings still require their existing exact-generation checks and never migrate.
-Chat activates no source and remains AGENTS-unaware. Only development/self-hosting
-composition activates stock `agents_md_plugin`: each snapshot rereads root
+Chat activates no source and remains AGENTS-unaware. Shared normal and
+development/self-hosting composition activates stock `agents_md_plugin`: each snapshot rereads root
 `AGENTS.md` through `AuthorizedEnvironmentFileReadFacet` in the Session-authorized
 Environment. `not_found` and blank files succeed empty; other read/service/authority
 errors fail the required source. Nonblank exact text and its Environment revision
@@ -772,7 +777,7 @@ The current implementation supplies:
 - headless Chat with in-memory canonical user/final assistant history;
 - `StrategyInferenceMaterial` before host request construction;
 - per-inference instruction-source discovery/capture and immutable `InferenceContextSnapshot`;
-- stock root-level AGENTS.md instructions in development/self-hosting composition, outside the kernel;
+- stock root-level AGENTS.md instructions in normal and development/self-hosting composition, outside the kernel;
 - Run lifecycle;
 - workflow/strategy separation;
 - streaming-capable model invocation semantics;

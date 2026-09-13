@@ -50,6 +50,7 @@ Future<List<String>> prepareDesktopBackendDefines({
   final Directory output = await parent.createTemp('build-');
   final File host = File.fromUri(output.uri.resolve('host.aot'));
   final File git = File.fromUri(output.uri.resolve('git-environment.aot'));
+  final File openai = File.fromUri(output.uri.resolve('openai.aot'));
   for (final ({String entrypoint, File artifact, String stage}) target
       in <({String entrypoint, File artifact, String stage})>[
         (
@@ -63,6 +64,12 @@ Future<List<String>> prepareDesktopBackendDefines({
               'plugins/git_environment/packages/backend/bin/git_environment_backend.dart',
           artifact: git,
           stage: 'git-environment-compilation',
+        ),
+        (
+          entrypoint:
+              'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart',
+          artifact: openai,
+          stage: 'openai-compilation',
         ),
       ]) {
     stdout.writeln('==> ${target.stage}');
@@ -82,5 +89,6 @@ Future<List<String>> prepareDesktopBackendDefines({
     '--dart-define=ADELE_DARTAOTRUNTIME_EXECUTABLE=${runtime.path}',
     '--dart-define=ADELE_BACKEND_HOST_ARTIFACT=${host.path}',
     '--dart-define=ADELE_GIT_ENVIRONMENT_ARTIFACT=${git.path}',
+    '--dart-define=ADELE_OPENAI_ARTIFACT=${openai.path}',
   ];
 }

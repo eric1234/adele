@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_desktop/core/model_provider_host.dart';
 import 'package:adele_desktop/development/agent/agent_capability_adapters.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
@@ -13,6 +14,59 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:resource_inspector_contract/resource_inspector_contract.dart';
 
 void main() {
+  test(
+    'policy denial lowers to a correlated model-visible rejected outcome',
+    () async {
+      final _ProviderChannel channel = _ProviderChannel(
+        events: Stream<ModelProviderEvent>.value(_terminal()),
+      );
+      final SemanticModelRequest request = SemanticModelRequest(
+        invocationId: ModelInvocationId('denied-continuation'),
+        context: InferenceContextSnapshot.fromStrategy(
+          StrategyInferenceMaterial(
+            input: <SemanticModelInputItem>[
+              SemanticToolOutcomeInput(
+                providerCallId: 'denied-call',
+                outcome: ToolOutcome(
+                  disposition: ToolOutcomeDisposition.policyDenied,
+                  effectCertainty: EffectCertainty.knownNotOccurred,
+                  modelContent: 'Tool invocation denied by policy.',
+                  hostData: const <String, Object?>{'private': 'host-only'},
+                ),
+              ),
+            ],
+          ),
+        ),
+        tools: MaterializedToolSet(const <MaterializedTool>[]),
+      );
+
+      final List<ModelEvent> events = await ModelProviderCapabilityAdapter(
+        _binding(channel),
+        selectedModel: 'scripted-v1',
+      ).invoke(request).toList();
+
+      expect(events.single, isA<ModelInvocationSettledEvent>());
+      final Map<Object?, Object?> encoded =
+          channel.lastPayload!['request']! as Map<Object?, Object?>;
+      expect(encoded['input'], <Object?>[
+        <String, Object?>{
+          'kind': 'toolOutcome',
+          'itemId': null,
+          'message': null,
+          'toolProposal': null,
+          'toolOutcome': <String, Object?>{
+            'callId': 'denied-call',
+            'status': 'rejected',
+            'content': 'Tool invocation denied by policy.',
+          },
+          'nativeMetadata': null,
+        },
+      ]);
+      expect(channel.streamCount, 1);
+      expect(channel.requestCount, 0);
+    },
+  );
+
   test('structured context flattens only text into the exact provider contract '
       'and remains captured across local retry', () async {
     final ExtensionRegistry registry = ExtensionRegistry();

@@ -106,6 +106,12 @@ void main() {
     expect(runtime.plugins.state, ApplicationPluginState.failed);
     expect(runtime.plugins.failure, isA<ProcessException>());
     expect(
+      () => runtime.plugins.activateAdditional((_, _) async {
+        fail('Must not activate after required startup failure.');
+      }),
+      throwsStateError,
+    );
+    expect(
       runtime.registry.providersFor(environmentProviderCapability),
       isEmpty,
     );
@@ -151,12 +157,24 @@ void main() {
       final ApplicationPluginBootstrap plugins = ApplicationPluginBootstrap(
         CapabilityRegistry(),
       );
+      expect(
+        () => plugins.activateAdditional((_, _) async {
+          fail('Must not activate before startup.');
+        }),
+        throwsStateError,
+      );
       final Future<void> closing = plugins.close();
       expect(plugins.close(), same(closing));
       await closing;
       expect(plugins.close(), same(closing));
       expect(plugins.state, ApplicationPluginState.closed);
       expect(plugins.failure, isNull);
+      expect(
+        () => plugins.activateAdditional((_, _) async {
+          fail('Must not activate after close.');
+        }),
+        throwsStateError,
+      );
       expect(
         () => plugins.start(
           dartaotruntimeExecutable: '',

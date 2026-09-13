@@ -26,7 +26,7 @@ compiler share this primitive.
 ## Desktop Tooling
 
 Normal `dart tools/adele.dart run linux` and `build linux --profile` prepare the
-shared host and Git Environment backend AOT snapshots outside Flutter, before
+shared host, Git Environment, and OpenAI backend AOT snapshots outside Flutter, before
 launching the Flutter run/build command. This also applies to explicit Linux
 debug/release modes; non-Linux commands and the explicit development smoke entry
 remain unchanged. `tools/backend_artifacts.dart` owns the repository source paths,
@@ -34,11 +34,17 @@ not the app or the snapshot primitive.
 
 The launcher inspects its selected Flutter executable and uses that SDK's bundled
 `dart` and sibling `dartaotruntime`, not a potentially unrelated `dart` on PATH.
-It compiles the host first, then Git, and only after both succeed passes exactly:
+It compiles the host first, then Git and OpenAI, and only after all succeed passes:
 
 - `ADELE_DARTAOTRUNTIME_EXECUTABLE`: absolute matched runtime path.
 - `ADELE_BACKEND_HOST_ARTIFACT`: absolute shared host `.aot` path.
 - `ADELE_GIT_ENVIRONMENT_ARTIFACT`: absolute Git backend `.aot` path.
+- `ADELE_OPENAI_ARTIFACT`: absolute OpenAI backend `.aot` path.
+
+These are deployment inputs only. ChatGPT credential-store paths, OAuth
+configuration, and model selection remain runtime stock configuration described
+in [`app/README.md`](../../app/README.md#chatgpt-source-checkout-configuration),
+not compiler defines or shared-host configuration.
 
 Each invocation gets a fresh `.dart_tool/adele/desktop-backends/build-*` directory.
 Outputs are retained, including partial failed builds, so later invocations do not

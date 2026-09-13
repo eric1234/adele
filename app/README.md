@@ -8,8 +8,9 @@ root. It is an internal application, not a plugin-facing package.
 The app owns its minimal shell, theme, and private widgets. It retains the ADELE
 header and initially displays `No Project is open` with B1 Project selector
 buttons. After opening, it shows the Project source and initially `No Tasks yet`.
-B2 adds title-only Task creation and primary Environment status, not a Task
-Browser or active-Session workbench.
+B2 adds title-only Task creation and primary Environment status. C1 adds one
+canonical stock Chat Session and sequential read-only ChatGPT-backed Runs, not a
+Task Browser or complete active-Session workbench.
 
 The Stateful `AdeleApplication` constructs one `AdeleRuntime` synchronously in
 `initState` and retains it across rebuilds. `lib/core/adele_runtime.dart` owns one
@@ -28,8 +29,8 @@ pure-Dart `ApplicationPluginBootstrap` in `lib/core/application_plugin_bootstrap
 using the exact same `CapabilityRegistry` as lifecycle resolution.
 
 Application close immediately marks the window closing, blocking new work and
-late UI updates, then awaits any retained in-flight Task establishment future
-before calling `runtime.close`. Establishment failure does not bypass cleanup.
+late UI updates, then awaits retained in-flight Task establishment and active Run
+futures before calling `runtime.close`. Either failure does not bypass cleanup.
 This lets real worktree creation settle before the host's bounded two-second
 shutdown can force termination; it adds no cancellation or rollback machinery.
 Desktop exit requests await this complete close. Detach/dispose initiate the same
@@ -42,30 +43,34 @@ activations in reverse activation order. The `closeResources` helper in
 `lib/core/resource_cleanup.dart`, shared with development teardown, attempts every
 action before rethrowing the first error with its stack.
 
-### B2 backend startup
+### Normal backend startup
 
 After synchronous runtime construction, `AdeleApplication` explicitly starts the
 async `bootstrapStockBackendPlugins` operation from
 `lib/plugins/stock_backend_plugins.dart`. The generic `ApplicationPluginBootstrap`
 owns one `PluginBackendHost` and activations returned by callbacks supplied by
-composition. It knows no stock plugin identities or source layout. A later OpenAI
-activation can use this same shared-host callback boundary; normal startup does
-not activate OpenAI today.
+composition. It knows no stock plugin identities or source layout. Required Git
+startup keeps its atomic cleanup semantics. An additional OpenAI activation is
+owned by the same bootstrap but fails independently: missing configuration,
+activation failure, or OpenAI termination leaves Git and Task creation available.
+Shared-host process failure still invalidates both plugins globally.
 
 The owner exposes `unconfigured`, `starting`, `ready`, `failed`, `closing`, and
 `closed` states. Startup failure cleans up acquired activations/connections/host
 before reporting the original startup error. The app renders unavailable/failure
 state rather than failing the whole application; Project selection/opening is
-independent and remains usable. Backend termination also makes support unavailable.
+independent and remains usable. Required Git or host termination also makes Task
+support unavailable; additional OpenAI termination affects model availability only.
 Close waits for in-progress startup and retains cleanup failures for reporting.
 
-Stock composition consumes three compile-time artifact-location inputs:
+Stock composition consumes four compile-time artifact-location inputs:
 
 | Define | Prepared deployment input |
 | --- | --- |
 | `ADELE_DARTAOTRUNTIME_EXECUTABLE` | Executable from the matched Flutter/Dart SDK |
 | `ADELE_BACKEND_HOST_ARTIFACT` | Shared backend-host AOT snapshot |
 | `ADELE_GIT_ENVIRONMENT_ARTIFACT` | Git Environment backend AOT snapshot |
+| `ADELE_OPENAI_ARTIFACT` | OpenAI ModelProvider backend AOT snapshot |
 
 With no inputs, bootstrap remains `unconfigured` and the shell reports Task
 Environment support unavailable. Configured startup failures are visible; there
@@ -78,8 +83,9 @@ loads a prepared artifact and registers through `PluginCapabilityActivation`
 using public `adele_environment` contracts and internal host APIs. It imports no
 Git backend implementation. Task UI and lifecycle contain no stock Git IDs.
 
-Normal Linux `dart tools/adele.dart run linux` and `build linux` prepare the host
-and Git snapshots before the Flutter run/build invocation. The launcher helper
+Normal Linux `dart tools/adele.dart run linux` and `build linux` prepare the host,
+Git, and OpenAI snapshots before the Flutter run/build invocation. The launcher
+helper
 `prepareDesktopBackendDefines` in `tools/backend_artifacts.dart` uses
 `plugin_builder.compileAotSnapshot`, selects compiler/runtime from the launching
 Flutter SDK, and retains fresh isolated artifacts below
@@ -91,7 +97,7 @@ The built app embeds provisional absolute artifact/runtime paths. It is runnable
 only on the source-checkout machine while that SDK and those artifacts remain in
 place; moving/deleting them breaks backend startup. This is not a cache,
 installation, portable/production packaging, discovery, or profile system. Direct
-Flutter startup without the three defines leaves support unavailable.
+Flutter startup without the artifact defines leaves support unavailable.
 
 Future installed-plugin discovery and profile activation should replace the
 hard-coded artifact/stock callback selection, then start runtimes and register
@@ -101,10 +107,103 @@ Normal backend provisioning is currently limited to the Linux launcher; other
 desktop targets retain their existing launch behavior without these defines.
 
 Normal startup creates no Project, Task, Environment, Session, tool catalog, or
-Run and loads no model credentials. Explicit Project selection and Task submission
-are separate operations. General provider/model configuration, Session creation
-UI, Chat UI, and the Run product flow remain deferred. The shared runtime has no
-dependency on development composition or its model capability adapter.
+Run. Flutter reads stock configuration references, while the OpenAI backend owns
+credential loading. Explicit Project, Task, Session, and prompt actions are separate
+operations. The shared runtime has no dependency on development composition.
+
+### ChatGPT source-checkout configuration
+
+Normal C1 composition uses only `dev.adele.openai.chatgpt-experimental`, backed by
+the existing experimental ChatGPT subscription route, OAuth implementation, and
+credential store. It does not expose the API-key provider in the normal UI.
+ChatGPT-only backend startup requires no `OPENAI_API_KEY` or dummy value. The
+API-key provider remains supported for other consumers, including self-hosting's
+explicit API-key profile, and both contexts may coexist outside normal activation.
+
+Set runtime environment variables before launching the normal application:
+
+| Variable | Purpose |
+| --- | --- |
+| `ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE` | Existing OpenAI credential-store file; required for normal model activation |
+| `ADELE_OPENAI_CHATGPT_MODEL` | Optional selected model; defaults to `gpt-6-astra` |
+| `ADELE_OPENAI_CHATGPT_CLIENT_ID` | Optional explicit public OAuth client ID |
+| `ADELE_OPENAI_CHATGPT_INSTANCE_ID` | Optional existing configured credential instance identity |
+| `ADELE_OPENAI_CHATGPT_OAUTH_ISSUER` | Optional OAuth issuer override |
+| `ADELE_OPENAI_CHATGPT_REDIRECT_URI` | Optional OAuth redirect override |
+| `ADELE_OPENAI_CHATGPT_ENDPOINT` | Optional experimental Responses endpoint override |
+
+Without an explicit client ID, the maintained experimental source-visible Codex
+OAuth client opt-in behavior is retained. Existing credentials can be reused;
+explicit manual login remains available through
+`dart run plugins/openai/packages/backend/bin/openai_chatgpt_development.dart login`
+from the repository root, with the same credential-file and optional OAuth variables.
+Use an absolute credential-file path. The existing file store is provisional local
+development storage, not a new secure-storage claim. See
+[ADR 0028](../docs/adr/0028-experimental-chatgpt-openai-configured-instance.md)
+for the route's experimental support limitations.
+C1 adds no login/account UI and does not perform browser OAuth during normal
+startup or automated tests. Missing or invalid credentials fail model execution
+without invalidating the Session, Task, Project, or Git Environment.
+
+`lib/plugins/stock_openai.dart` resolves these provisional stock inputs once for
+the window. It owns provider identity/exposure and builds OpenAI-specific startup
+arguments for `PluginBackendHost.startPlugin`. Only the credential-file path and
+public OAuth configuration enter those arguments; token contents stay in the
+credential store. Model selection is consumed when constructing a fresh Run
+adapter, not passed as an artifact-location define. Explicit normal activation
+does not activate API-key context even if the host inherits `OPENAI_API_KEY`.
+Environment-based backend configuration remains compatible for existing consumers.
+The shared host stays OpenAI-neutral, but remains privileged shared-process
+infrastructure, not a credential or filesystem sandbox.
+
+The narrow OpenAI startup format is `--chatgpt-only` followed by one JSON object
+requiring `credentialFile` and either a nonblank `clientId` or
+`experimentalCodexClient: true`. `instanceId`, `issuer`, `redirectUri`, and `endpoint`
+are optional. Unknown fields and malformed values fail without echoing
+configuration contents. Supplying this mode disables
+inherited configuration fallback, including API keys. Existing backend callers
+without startup arguments retain environment-based configuration.
+
+### Normal Chat interaction
+
+After creating a Task, `New Session` calls canonical lifecycle with the explicit
+stock `chatStrategyId`. Lifecycle chooses the Task's primary Environment; model
+availability is not a Session creation requirement. One currently presented
+Session is retained in window-local state, with no list, naming, persistence, or
+strategy picker. Once the Session is presented, the temporary UI does not create
+additional Tasks/Sessions that it cannot navigate back to.
+
+`lib/ui/chat/chat_controller.dart` obtains `runtime.chat.sessions.obtain(session.id)`
+and presents immutable snapshots of canonical user/final assistant entries.
+Each nonblank accepted prompt appends one user message, allocates a fresh ID through
+injectable `RunIdSource`, resolves the selected capability binding exactly, creates
+a new `ModelProviderCapabilityAdapter`, and builds tools through
+`buildModelToolCatalogForSession`. A new `SessionOrchestrationRun` uses the existing
+Chat strategy and per-inference AGENTS.md context composition. The second prompt
+reuses canonical Chat history, not a Run, model binding, or materialized tool set.
+
+`ReadOnlyToolPolicy` allows only nonempty pure source-read effect descriptions with
+no uncertainty. Mutation, process execution, mixed, unknown, and other effects are
+denied. Tool aliases do not determine safety; advertised mutating/command tools may
+still be proposed, but denial becomes the existing model-visible continuation, not
+an approval interruption. The provisional Chat instruction reinforces read-only
+behavior but does not replace policy authority.
+
+The minimal surface shows conversation, prompt, Send, `Running...`, and separate
+model/Run failure reasons. Active work blocks duplicate prompts. A failed Run
+preserves the accepted user message and prior canonical history without fabricating
+an assistant error entry; another prompt may run after settlement. Close blocks
+new work and late presentation updates immediately and drains the retained active
+future before backend/runtime cleanup. This adds no steering, cancellation,
+streaming-delta UI, approval UI, tool activity feed, or Run history browser.
+
+Focused deterministic coverage lives in `test/chat_session_test.dart`,
+`test/core/read_only_tool_policy_test.dart`, `test/core/run_id_source_test.dart`,
+and `test/plugins/stock_openai_test.dart`. The separate
+`test/core/normal_chatgpt_run_integration_test.dart` compiles real host/Git/OpenAI
+artifacts and drives the normal controller through a local fake ChatGPT SSE
+endpoint with temporary fake credentials. It requires no account or API key and
+performs no live model request.
 
 ### B1 Project opening
 
@@ -188,8 +287,8 @@ filesystems. This policy applies both to recursive traversal and explicit scope
 segments; explicit excluded scopes fail before provider reads. It does not change
 case-sensitive query matching or the spelling of canonical paths.
 Use `read_file` to retrieve an exact known file's contents and revision.
-The B2 UI uses only Task establishment and primary Environment readiness; Session
-lifecycle UI and the broader workbench remain deferred.
+The normal UI also creates a stock Chat Session and read-only Runs through these
+same boundaries; the broader workbench remains deferred.
 
 The normal application does not display the `workspace_demo` reference plugin.
 The maintained `lib/development_smoke.dart` entrypoint exercises the plugin
@@ -389,7 +488,7 @@ returns current material according to those semantics. Logical source-local keys
 remain stable across captures. There is no generic refresh API.
 
 The current `ModelProviderCapabilityAdapter` in
-`lib/development/agent/agent_capability_adapters.dart` calls orchestration's
+`lib/core/model_provider_host.dart` calls orchestration's
 `renderInferenceInstructions` at lowering. The common capability still receives
 one `ModelProviderRequest.instructions` string: strategy first, then sources in
 lexicographic `ExtensionId` order, preserving each source's local order and exact
@@ -409,7 +508,7 @@ material, separate from stable plugin-owned explicit-user-precedence semantics.
 The app has no `simple_tool_loop_strategy.dart` or
 `development_strategy_registration.dart`; `development_agent_support.dart`
 contains only development policy. The private Chat loop lives in the plugin.
-Chat UI, persistence, profiles, child Sessions, strategy defaults, and general
+Rich Chat UI, persistence, profiles, child Sessions, strategy defaults, and general
 context material beyond instructions, provider-aware projection/cache planning,
 token budgets, and compaction remain deferred.
 
@@ -482,15 +581,16 @@ remained clean. This is source-layout isolation, not a command sandbox.
 
 `DevelopmentSelfHostingTopology` owns an `AdeleRuntime` instance rather than
 duplicating its registries, store, lifecycle coordinator, context composer,
-Chat plugin, and stock activations. It reuses `activateStockGitEnvironment` for
-the same stock exposure metadata, but does not call normal stock bootstrap or
-consume its three defines. The topology/runner still owns its independent shared
+Chat plugin, and stock activations. It reuses stock Git and OpenAI exposure
+metadata, but does not call normal stock bootstrap or consume its artifact defines.
+The topology/runner still owns its independent shared
 backend host and AOT artifacts, isolated Git source and provider activations,
 Project/Task/Environment/Session establishment, tool catalog, model selection,
-development IDs, Run execution, and evidence. The model capability adapter stays
-in `lib/development/agent/agent_capability_adapters.dart`; it is not a structural
-dependency of normal runtime composition. Topology teardown closes its runtime,
-then its Environment activation and host, attempting every cleanup action.
+development IDs, Run execution, and evidence. The generic model capability adapter
+is shared from `lib/core/model_provider_host.dart`; resource-inspector adapters
+remain development-only. ChatGPT setup no longer injects an unused API key.
+Topology teardown closes its runtime, then its Environment activation and host,
+attempting every cleanup action.
 
 The runtime activates Chat and the independent root-level AGENTS.md source
 before the topology creates the canonical Session. Execution obtains that
@@ -535,17 +635,18 @@ automatic cleanup, validation planning, commit, push, or PR workflow.
 
 ## Deferred
 
-General provider/model configuration, Task Browser, Session creation UI,
-Chat UI and the Run product flow, Project catalog/persistence/deduplication,
+General provider/model configuration, Task Browser, rich Session/Chat/Run UI,
+Project catalog/persistence/deduplication,
 additional selectors, Session/Chat persistence and child lifecycle,
 context sources beyond root AGENTS.md, nested/scoped AGENTS.md, aliases/overrides,
 global/home files, imports, AGENTS.md caching, broader Reference/Observation material,
 provider-aware projection/cache planning, token budgets and compaction, additional
 Environment-backed mutation tools, profiles, product
 plugin discovery and configurable activation, production Agent UI, application
-Commands/keybindings, and plugin-facing UI extension APIs remain deferred. B2
-normal UI now reaches the stock Git worktree Environment provider through generic
-Task lifecycle and the shared-host AOT path; it adds no Session or execution UI.
+Commands/keybindings, and plugin-facing UI extension APIs remain deferred. C1
+normal UI reaches a canonical Chat Session and read-only Runs over the Task's real
+Git worktree; source mutation, command execution, and approval UI remain excluded
+from this product path.
 
 The application composition root contains the model adapters, core orchestration
 host, Session-scoped model-tool and inference-source host contexts, and AOT

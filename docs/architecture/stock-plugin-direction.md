@@ -21,9 +21,17 @@ The maintained codebase implements only a small subset of this topology: source-
 `ApplicationPluginBootstrap` owns application-lifetime backend resources on the
 same capability registry. Normal `AdeleApplication` explicitly invokes async stock
 composition, which supplies prepared artifacts and activation callbacks for one
-shared backend host. Missing configuration or startup failure makes Task support
-unavailable, not Project opening. Startup creates no product values, tool catalog,
+shared backend host. Missing required host/Git configuration or failed required
+startup makes Task support unavailable, not Project opening. Startup creates no product values, tool catalog,
 or Run. Profiles, discovery, and production packaging remain deferred.
+
+Normal composition now activates Git as required backend support and experimental
+ChatGPT as an independently failing additional ModelProvider on the same host.
+Stock OpenAI configuration/exposure belongs at the application composition edge,
+not in the generic host. Normal presentation supports one canonical stock Chat
+Session, independent of model readiness, and fresh read-only Runs per prompt.
+Model binding, tools, and policy are Run-level choices. This is provisional stock
+composition, not Agent Interaction, Settings, or a profile/provider preference API.
 
 Future discovery/profile activation should replace hard-coded stock selection at
 this composition edge, starting plugin runtimes and registering contributions
@@ -256,7 +264,8 @@ Project selectors are possible, not implemented.
 **Role:** Project/Task/Session selection and management experience represented by the stock mockups.
 
 Task Browser remains deferred. The shell supports only Project opening, title-only
-Task creation, and primary Environment status, not the mockup browsing flow.
+Task creation, primary Environment status, and one Chat Session, not the mockup
+browsing flow.
 
 The Task Browser is not assumed to be a `MainContentView`. Before a Task/Session is selected there may be no normal active-session workbench. The plugin may own a dedicated Project-level screen/window/shell, similar to a selector launching an OS-native picker. A future UI could embed the same experience in the normal workbench without changing semantic contracts.
 
@@ -441,7 +450,7 @@ ChatTurnAction
 ChatTimelineDecoration / ChatOperationPresentation
 ```
 
-Chat currently consumes the public execution facade and opaque tool snapshots, not kernel catalogs. Future UI and state features may consume structured inference composition, Session persistence, child-Session query/creation, common timeline/composer components, and optional tool/review presentation interfaces. Profiles, child Sessions, persistence, and Chat UI are not part of the implemented headless strategy.
+Chat currently consumes the public execution facade and opaque tool snapshots, not kernel catalogs. The normal app supplies temporary Chat-specific presentation over its canonical history. Future UI and state features may consume structured inference composition, Session persistence, child-Session query/creation, common timeline/composer components, and optional tool/review presentation interfaces. Profiles, child Sessions, persistence, and plugin-owned rich Chat UI are not part of the implemented strategy.
 
 Expected stock integrations:
 
@@ -734,7 +743,14 @@ Likely provides:
 
 It does not own semantic `Fast`/`Powerful` model types, global model preference policy, Agent definitions, or Chat orchestration.
 
-The maintained repository already implements substantial OpenAI provider functionality; some stock integrations above remain future work.
+The maintained repository implements the API-key Responses provider and an
+experimental ChatGPT subscription-backed configured context in the same backend.
+Normal composition selects only ChatGPT; the API-key route remains maintained for
+other consumers. ChatGPT-only backend startup requires no API key. Credential-store
+references and public OAuth configuration pass to the OpenAI plugin generation,
+while the shared backend owner stays provider-neutral. Missing/failed OpenAI does
+not invalidate Sessions or Git Environments; it affects model execution only.
+The account/settings/catalog UI integrations above remain future work.
 
 ---
 
@@ -759,8 +775,8 @@ settlement. If A retires, its active Run fails without migrating; a later Run in
 the same Session may freshly resolve B under the unchanged semantic ID. The
 self-hosting topology uses this path, not direct loop construction.
 
-Project opening and Task creation in sections 12.1 and 12.2 are implemented. The
-richer flows in sections 12.3 onward remain directional, including UI, effective
+Project opening, Task creation, and a minimal single-Session read-only Chat flow
+are implemented. The richer flows below remain directional, including effective
 Agent binding, inference composition beyond instruction sources, persistence,
 and child-Session steps that headless Chat does not implement.
 
@@ -814,16 +830,16 @@ Presentation supplies no provider ID, calls no Git API, and never parses opaque
 `providerState`. Project/Task/Environment selection is window-local; failure does
 not replace presented values and disposal/exit prevents late updates.
 
-Application close drains pending Task establishment before runtime/provider
-cleanup, even on failure. Draining avoids interrupting establishment without
+Application close drains pending Task establishment and active Runs before
+runtime/provider cleanup, even on failure. Draining avoids interrupting establishment without
 cancelling or rolling back provider work.
 
 Readiness comes from the live exact materialization binding. Successful provider
 state remains retained if its generation retires immediately after establishment,
 but the old binding is unavailable, without rollback or silent migration. These
-lifecycle/generation semantics are unchanged. Missing configuration or startup
-failure leaves Task creation visibly unavailable while Project opening remains
-usable.
+lifecycle/generation semantics are unchanged. Missing required host/Git configuration
+or failed required startup leaves Task creation visibly unavailable while Project
+opening remains usable. Optional OpenAI failure does not disable Task creation.
 
 This creates no Session, Chat state, model invocation, tool catalog, or Run, and
 adds no persistence, Task Browser, Command API, or provider chooser. Future Task
