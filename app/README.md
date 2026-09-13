@@ -156,6 +156,16 @@ Environment-based backend configuration remains compatible for existing consumer
 The shared host stays OpenAI-neutral, but remains privileged shared-process
 infrastructure, not a credential or filesystem sandbox.
 
+`stock_openai.dart` is provisional hard-coded composition, not a durable OpenAI API.
+Its identity/context literals intentionally mirror the current backend contract.
+Future installed-plugin discovery/profile activation should supply plugin-owned
+identities, artifact locations, and exposure metadata, with runtime registration
+replacing this entire stock-selection boundary. That metadata is the intended
+singular source; a new permanent constants package would formalize temporary app
+knowledge instead. The deterministic real-AOT C1 integration starts the actual
+OpenAI backend through `stock_openai.dart` and exercises its configured context,
+protecting this transitional pairing against silent divergence.
+
 The narrow OpenAI startup format is `--chatgpt-only` followed by one JSON object
 requiring `credentialFile` and either a nonblank `clientId` or
 `experimentalCodexClient: true`. `instanceId`, `issuer`, `redirectUri`, and `endpoint`

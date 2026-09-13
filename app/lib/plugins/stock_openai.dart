@@ -5,7 +5,12 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
-// Provisional stock exposure metadata until plugin activation advertises it.
+// Transitional stock bootstrap metadata, intentionally mirroring the OpenAI
+// backend contract while application composition is hard-coded. Future plugin
+// discovery/profile activation should supply plugin-owned identities and exposure
+// metadata, replacing this boundary rather than adding a permanent constants API.
+// Generic application/runtime infrastructure must remain OpenAI-unaware. The
+// real-AOT normal ChatGPT integration validates this temporary pairing.
 const String stockOpenAiPluginId = 'dev.adele.openai';
 const String stockChatGptConfigurationContext = 'chatgpt-experimental';
 const String stockChatGptDefaultModel = 'gpt-6-astra';

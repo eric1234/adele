@@ -7,6 +7,8 @@ import 'package:adele_model_provider/adele_model_provider.dart';
 
 import 'src/openai_chatgpt_auth.dart';
 
+// Plugin-owned runtime identities, temporarily mirrored by stock app bootstrap.
+// Future discovery/activation metadata should replace that hard-coded app knowledge.
 const String openAiPluginId = 'dev.adele.openai';
 const String openAiApiKeyProviderId = 'dev.adele.openai.api-key';
 const String openAiChatGptProviderId = 'dev.adele.openai.chatgpt-experimental';
