@@ -58,7 +58,15 @@ final class _ChatViewState extends State<ChatView> {
               ),
             ),
           ),
-        if (controller.isRunning)
+        if (controller.pendingApproval case final PendingToolApproval approval)
+          _ToolApprovalCard(
+            key: ObjectKey(approval),
+            approval: approval,
+            enabled: !controller.isAdvancing && !controller.isClosed,
+            onDecision: (approved) =>
+                controller.resolveApproval(approval, approved: approved),
+          ),
+        if (controller.isAdvancing)
           Semantics(liveRegion: true, child: const Text('Running...')),
         if (controller.failureMessage case final String failure)
           Semantics(
@@ -73,7 +81,7 @@ final class _ChatViewState extends State<ChatView> {
           enabled: enabled,
           minLines: 1,
           maxLines: 5,
-          decoration: const InputDecoration(labelText: 'Ask about the code...'),
+          decoration: const InputDecoration(labelText: 'Ask ADELE...'),
         ),
         const SizedBox(height: 12),
         Align(
@@ -84,6 +92,98 @@ final class _ChatViewState extends State<ChatView> {
           ),
         ),
       ],
+    );
+  }
+}
+
+final class _ToolApprovalCard extends StatelessWidget {
+  const _ToolApprovalCard({
+    super.key,
+    required this.approval,
+    required this.enabled,
+    required this.onDecision,
+  });
+
+  final PendingToolApproval approval;
+  final bool enabled;
+  final ValueChanged<bool> onDecision;
+
+  @override
+  Widget build(BuildContext context) {
+    final TextTheme textTheme = Theme.of(context).textTheme;
+    return Card.outlined(
+      margin: const EdgeInsets.symmetric(vertical: 12),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Semantics(
+              liveRegion: true,
+              child: Text('Approval required', style: textTheme.titleMedium),
+            ),
+            const SizedBox(height: 8),
+            Text(approval.effectLabel, style: textTheme.titleSmall),
+            const SizedBox(height: 8),
+            SelectableText(approval.summary),
+            if (approval.hasUnsafeAuthorityText) ...[
+              const SizedBox(height: 8),
+              const Text(
+                'Allow once is unavailable: tool identity, summary, or targets '
+                'contain unsafe display controls or cannot be displayed reliably. '
+                'Review the escaped details and choose Deny.',
+              ),
+            ],
+            if (approval.isUncertain) ...[
+              const SizedBox(height: 8),
+              const Text('Effects may extend beyond the listed target.'),
+            ],
+            const SizedBox(height: 8),
+            SelectableText('Tool: ${approval.toolAlias}'),
+            ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              title: const Text('Details'),
+              children: [
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: SelectableText(
+                    'Tool ID: ${approval.toolId}\n'
+                    'Effects: ${approval.effectNames.join(', ')}\n'
+                    'Uncertainty: ${approval.uncertainty.name}\n'
+                    '${approval.targets.map((uri) => 'Target: $uri').join('\n')}',
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: SelectableText(
+                    approval.canonicalArgumentsJson,
+                    style: const TextStyle(fontFamily: 'monospace'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              alignment: WrapAlignment.end,
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                OutlinedButton(
+                  onPressed: enabled ? () => onDecision(false) : null,
+                  child: const Text('Deny'),
+                ),
+                FilledButton(
+                  onPressed: enabled && !approval.hasUnsafeAuthorityText
+                      ? () => onDecision(true)
+                      : null,
+                  child: const Text('Allow once'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

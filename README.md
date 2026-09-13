@@ -15,7 +15,7 @@ Per-inference instruction-source capture and immutable context snapshots
 Shared application runtime and static stock plugin composition
 Typed Project selectors and minimal local-directory Project opening
 Normal title-only Task creation with a real Git primary Environment
-Normal stock Chat Sessions with sequential read-only ChatGPT-backed Runs
+Normal stock Chat Sessions with approval-gated ChatGPT-backed Runs
 Stock root-level AGENTS.md instructions
 Session-authorized Environment read/search and bounded text-file mutation
 Foreground process execution and model-facing command validation
@@ -30,8 +30,8 @@ model-provider/transport regression infrastructure. These are internal
 reference fixtures, not product UI or product-domain definitions.
 
 Plugin installation/discovery, general production plugin activation, packaging,
-permissions, sandboxing, and general third-party extension APIs are not yet
-implemented.
+configurable permissions, sandboxing, and general third-party extension APIs are
+not yet implemented.
 
 `AdeleRuntime()` in `app/lib/core/adele_runtime.dart` synchronously constructs a
 provider-free application host graph. It owns the capability and
@@ -52,15 +52,17 @@ arguments containing a credential-store path and public OAuth configuration,
 never token contents. The backend loads credentials, not Flutter. Startup compiles
 no source and creates no Project, Task, Environment, Session, tool catalog, or Run.
 
-Application close immediately marks the window closing and drains any in-flight
-Task establishment and active Run before calling `runtime.close`, even when either
-fails.
-Late UI updates remain ignored; this is settlement draining, not cancellation or
-rollback. Desktop exit awaits that close; detach/dispose initiate the same cleanup
-and report failures. Backend capability registrations retire before connections
-close, then the shared host closes, then the runtime's in-process activations
-retire in reverse order. Cleanup attempts every action before reporting its first
-failure. Self-hosting reuses the runtime and stock Git/OpenAI exposure code, but
+Application close immediately blocks window actions and notifications and drains
+any in-flight Task establishment and currently advancing Run start/resume before
+calling `runtime.close`, even when either fails. A quiescent waiting Run is
+abandoned with runtime teardown without resolving or executing its pending
+invocation or waiting indefinitely for approval. This is settlement draining, not
+cancellation or rollback. Desktop exit awaits that close; detach/dispose initiate
+the same cleanup and report failures. Backend capability registrations retire
+before connections close, then the shared host closes, then the runtime's
+in-process activations retire in reverse order. Cleanup attempts every action
+before reporting its first failure. Self-hosting reuses the runtime and stock
+Git/OpenAI exposure code, but
 owns its larger artifact/host/provider and product/Run topology independently of
 normal startup configuration.
 
@@ -95,12 +97,15 @@ the live exact materialization binding, never by parsing opaque `providerState`.
 Project/Task/Environment presentation remains window-local. Non-Git source
 validation belongs to the selected provider, not Project selection or the form.
 This is not a Task Browser, Command surface, catalog, persistence, or deduplication
-system. C1 adds one window-local canonical stock Chat Session, independent of
-model availability, and a minimal conversation/prompt surface. Each accepted
-prompt creates a fresh Run with an exact newly resolved ChatGPT provider binding,
-fresh Session-authorized tools, and a read-only policy. Only source-read effects
-are allowed; mutation, command execution, mixed, and unknown effects are denied
-through normal model-visible tool outcomes, without approval interruptions.
+system. Normal presentation supplies one window-local canonical stock Chat Session,
+independent of model availability, and a minimal conversation/prompt surface. Each
+accepted prompt creates a fresh Run with an exact newly resolved ChatGPT provider
+binding, fresh Session-authorized tools, and `ApprovalGatedToolPolicy`. Certain
+source reads are allowed; eligible source mutations and commands require
+per-invocation approval,
+while other effects are denied through model-visible tool outcomes. Window-local
+approval cards resume the same Run through the existing interruption boundary;
+they do not enter canonical Chat history or bypass revision and binding checks.
 See `app/README.md` for bootstrap ownership, lifecycle settlement, and validation
 paths.
 
@@ -533,11 +538,12 @@ Broader Reference/Observation material remains directional, without placeholder
 public APIs. Provider-aware projection and cache planning, token budgets,
 compaction, and context preview remain deferred.
 General provider/model configuration, Task Browser, and richer Session/Run UI
-remain deferred. The normal product path now reaches one stock Chat Session with
-sequential read-only Runs through experimental ChatGPT subscription auth.
+remain deferred. The normal product path reaches one stock Chat Session with
+sequential, approval-gated Runs through experimental ChatGPT subscription auth.
 GitHub, cloud, recent-project/catalog selectors, persistence, and deduplication
 are not implemented; application Command surfacing remains deferred.
-Chat persistence, profiles, child Session lifecycle, strategy defaults,
+Chat persistence, configurable permissions/profiles, steering, richer activity and
+console presentation, child Session lifecycle, strategy defaults,
 SCM/review integration, general whole-file overwrite, and directory/move/copy/
 binary operations also remain unimplemented.
 

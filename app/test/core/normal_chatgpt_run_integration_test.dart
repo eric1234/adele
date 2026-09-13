@@ -23,15 +23,23 @@ import 'package:plugin_builder/plugin_builder.dart';
 
 const String _sourcePath = 'lib/task_answer.dart';
 const String _taskText = 'const taskAnswer = "task-worktree-only";\n';
+const String _patchedText = 'const taskAnswer = "approved-task-value";\n';
 const String _agentsText =
-    'C1 Task guidance: report the inspected value and never change source.\n';
-const String _projectText = 'const projectAnswer = "project-source-only";\n';
+    'C2 Task guidance: inspect source before proposing an edit and validation.\n';
+const String _projectText = 'const projectAnswer = "project-source-only"; \t\n';
 const String _projectAgentsText = 'Project-only guidance must not be used.\n';
 const String _prompt =
-    'Find taskAnswer using search, read the discovered file, and report its value.';
+    'Read lib/task_answer.dart, change taskAnswer to "approved-task-value", '
+    'and validate with git diff --check after each operation is approved.';
 const String _answer =
-    'lib/task_answer.dart declares taskAnswer as "task-worktree-only". '
-    'The proposed mutation and command were denied; no source was changed.';
+    'Patched lib/task_answer.dart to declare taskAnswer as "approved-task-value". '
+    'The separately approved git diff --check exited with code 0 in the Task.';
+const Map<String, Object?> _commandArguments = {
+  'program': 'git',
+  'arguments': ['diff', '--check'],
+  'workingDirectory': '',
+  'timeoutSeconds': 5,
+};
 
 void main() {
   late Directory artifacts;
@@ -86,7 +94,7 @@ void main() {
   });
 
   test(
-    'normal ChatGPT Run reads its Task, denies writes and commands, and retains Chat',
+    'normal ChatGPT Run separately approves a patch and command batch in its Task',
     () async {
       final Directory container = await Directory.systemTemp.createTemp(
         'adele-normal-chatgpt-run-',
@@ -109,10 +117,10 @@ void main() {
           'fixture': {
             'revision': 1,
             'credential': {
-              'idToken': _idToken('c1-fixture-account'),
-              'accessToken': 'c1-fixture-chatgpt-access-token',
-              'refreshToken': 'c1-fixture-refresh-never-used',
-              'accountId': 'c1-fixture-account',
+              'idToken': _idToken('c2-fixture-account'),
+              'accessToken': 'c2-fixture-chatgpt-access-token',
+              'refreshToken': 'c2-fixture-refresh-never-used',
+              'accountId': 'c2-fixture-account',
               'fedRamp': false,
             },
           },
@@ -122,8 +130,10 @@ void main() {
 
       final List<Map<String, Object?>> outbound = [];
       final List<(Object, StackTrace)> endpointFailures = [];
-      String? discoveredPath;
+      String? observedPath;
       String? observedRevision;
+      String? patchedRevision;
+      late final Map<String, Object?> patchArguments;
       final HttpServer responses = await HttpServer.bind(
         InternetAddress.loopbackIPv4,
         0,
@@ -137,11 +147,11 @@ void main() {
             expect(request.uri.path, '/backend-api/codex/responses');
             expect(
               request.headers.value(HttpHeaders.authorizationHeader),
-              'Bearer c1-fixture-chatgpt-access-token',
+              'Bearer c2-fixture-chatgpt-access-token',
             );
             expect(
               request.headers.value('ChatGPT-Account-ID'),
-              'c1-fixture-account',
+              'c2-fixture-account',
             );
             expect(request.headers.value('X-OpenAI-Fedramp'), isNull);
             expect(
@@ -200,75 +210,81 @@ void main() {
                 ]);
                 _output(
                   request.response,
-                  _call('search', 'search', {'query': 'const taskAnswer'}),
+                  _call('read', 'read_file', {'relativePath': _sourcePath}),
                 );
               case 2:
-                final String searchOutput = _toolOutput(body, 'search');
-                final Map<String, Object?> match =
-                    jsonDecode(
-                          searchOutput
-                              .split('\n')
-                              .singleWhere((line) => line.startsWith('{')),
-                        )
-                        as Map<String, Object?>;
-                discoveredPath = match['relativePath']! as String;
-                expect(discoveredPath, _sourcePath);
-                expect(searchOutput, contains('task-worktree-only'));
-                expect(searchOutput, isNot(contains('project-source-only')));
-                _output(
-                  request.response,
-                  _call('read', 'read_file', {'relativePath': discoveredPath}),
-                );
-              case 3:
                 final String readOutput = _toolOutput(body, 'read');
                 expect(
                   readOutput,
                   startsWith('File: ${jsonEncode(_sourcePath)}'),
                 );
-                expect(readOutput, contains(_taskText));
-                expect(readOutput, isNot(contains('project-source-only')));
-                observedRevision =
+                observedPath =
                     jsonDecode(
                           readOutput
                               .split('\n')
-                              .singleWhere(
-                                (line) => line.startsWith('Revision: '),
-                              )
-                              .substring('Revision: '.length),
+                              .first
+                              .substring('File: '.length),
                         )
                         as String;
+                expect(readOutput, contains(_taskText));
+                expect(readOutput, isNot(contains('project-source-only')));
+                observedRevision = _revision(readOutput);
                 expect(observedRevision, isNotEmpty);
-                // Both proposals are valid; denial must come from normal policy,
-                // not malformed arguments, missing tools, or failed execution.
+                final String observedLine = readOutput
+                    .split('\n')
+                    .singleWhere(
+                      (line) => line.startsWith('const taskAnswer = '),
+                    );
+                patchArguments = {
+                  'relativePath': observedPath,
+                  'expectedRevision': observedRevision,
+                  'edits': [
+                    {
+                      'search': observedLine,
+                      'replace': observedLine.replaceFirst(
+                        'task-worktree-only',
+                        'approved-task-value',
+                      ),
+                    },
+                  ],
+                };
+                // One completed model turn proposes both operations. Each must
+                // wait for its own approval before the next inference occurs.
                 _output(
                   request.response,
-                  _call('patch', 'apply_patch', {
-                    'relativePath': discoveredPath,
-                    'expectedRevision': observedRevision,
-                    'edits': [
-                      {
-                        'search': 'task-worktree-only',
-                        'replace': 'must-not-change',
-                      },
-                    ],
-                  }),
+                  _call('patch', 'apply_patch', patchArguments),
                 );
                 _output(
                   request.response,
-                  _call('command', 'run_command', {
-                    'program': 'touch',
-                    'arguments': ['run-command-marker'],
-                    'timeoutSeconds': 5,
-                  }),
+                  _call('command', 'run_command', _commandArguments),
                 );
-              case 4:
+              case 3:
+                final String patchOutput = _toolOutput(body, 'patch');
+                patchedRevision = _revision(patchOutput);
+                expect(patchedRevision, isNotEmpty);
+                expect(patchedRevision, isNot(observedRevision));
                 expect(
-                  _toolOutput(body, 'patch').toLowerCase(),
-                  contains('denied'),
+                  patchOutput,
+                  'Patched: ${jsonEncode(observedPath)}\n'
+                  'Edits applied: 1\n'
+                  'Revision: ${jsonEncode(patchedRevision)}',
+                );
+                final String commandOutput = _toolOutput(body, 'command');
+                expect(
+                  commandOutput,
+                  allOf(
+                    contains('Program: "git"'),
+                    contains('Arguments: ["diff","--check"]'),
+                    contains('Termination: exited'),
+                    contains('Exit code: 0'),
+                  ),
                 );
                 expect(
-                  _toolOutput(body, 'command').toLowerCase(),
-                  contains('denied'),
+                  (body['input']! as List<Object?>)
+                      .cast<Map<String, Object?>>()
+                      .where((item) => item['type'] == 'function_call_output')
+                      .map((item) => item['call_id']),
+                  ['read', 'patch', 'command'],
                 );
                 _output(request.response, {
                   'type': 'message',
@@ -306,7 +322,7 @@ void main() {
       });
 
       final AdeleRuntime runtime = AdeleRuntime(
-        ids: MonotonicProductIdSource(seed: 'c1-fixture'),
+        ids: MonotonicProductIdSource(seed: 'c2-fixture'),
       );
       addTearDown(runtime.close);
       await bootstrapStockBackendPlugins(
@@ -344,7 +360,7 @@ void main() {
       final Project project = runtime.lifecycle.createProject(source.uri);
       final TaskCreationResult created = await runtime.lifecycle.createTask(
         projectId: project.id,
-        title: 'Inspect the Task without mutation',
+        title: 'Approve a Task source edit and validation',
       );
       expect(runtime.store.project(project.id), same(project));
       expect(runtime.store.task(created.task.id), same(created.task));
@@ -393,37 +409,205 @@ void main() {
       expect(projectBefore['status'], isNotEmpty);
       expect(projectBefore['staged'], isNotEmpty);
       expect(taskBefore['status'], isNotEmpty);
+      // A successful check cannot come from accidentally validating the Project:
+      // its deliberately dirty source contains a whitespace error absent in Task.
+      final ProcessResult projectCheck = await Process.run('git', [
+        'diff',
+        '--check',
+      ], workingDirectory: source.path);
+      expect(projectCheck.exitCode, isNot(0));
+      expect(projectCheck.stdout, contains(_sourcePath));
 
       final ChatController controller = ChatController(
         runtime: runtime,
         session: session,
         providerId: stockChatGptProviderId,
         model: 'gpt-6-astra',
-        runIds: MonotonicRunIdSource(seed: 'c1-fixture'),
+        runIds: MonotonicRunIdSource(seed: 'c2-fixture'),
       );
       addTearDown(controller.close);
       expect(controller.snapshot.entries, isEmpty);
       expect(controller.currentRun, isNull);
       expect(controller.activeRunFuture, isNull);
+      expect(controller.pendingApproval, isNull);
       expect(controller.submit(_prompt), isTrue);
       final Future<void>? running = controller.activeRunFuture;
       expect(running, isNotNull);
+      expect(controller.isAdvancing, isTrue);
       expect(controller.submit('Duplicate must not enter history.'), isFalse);
       await running!;
+
+      expect(endpointFailures, isEmpty);
+      expect(controller.failure, isNull);
+      expect(controller.activeRunFuture, isNull);
+      expect(controller.isAdvancing, isFalse);
+      expect(controller.isRunning, isTrue);
+      final execution = controller.currentRun!;
+      final AgentRun run = execution.run;
+      expect(run.id, RunId('run-c2-fixture-1'));
+      expect(run.sessionId, session.id);
+      expect(run.state, RunState.waiting);
+      expect(outbound, hasLength(2));
+      expect(controller.snapshot.entries.single.content, _prompt);
+      final PendingToolApproval patchApproval = controller.pendingApproval!;
+      final ToolApprovalInterruption patchInterruption =
+          run.interruptions.values.single as ToolApprovalInterruption;
+      expect(patchApproval.toolAlias, 'apply_patch');
+      expect(patchApproval.effects, {ToolEffect.sourceMutation});
+      expect(patchApproval.uncertainty, EffectUncertainty.none);
+      expect(patchApproval.targets, [
+        'adele-environment:/${authority.environmentId.value}/$_sourcePath',
+      ]);
+      expect(jsonDecode(patchApproval.canonicalArgumentsJson), patchArguments);
+      expect(
+        patchInterruption.toolInvocationId,
+        ToolInvocationId('${run.id.value}-tool-2'),
+      );
+      expect(patchInterruption.invocation.proposal.providerCallId, 'patch');
+      final beforePatch = run.journal.records
+          .map((record) => record.event)
+          .toList();
+      final readInvocation = beforePatch
+          .whereType<ToolInvocationPrepared>()
+          .first
+          .invocation;
+      expect(readInvocation.id, ToolInvocationId('${run.id.value}-tool-1'));
+      expect(beforePatch.whereType<ToolInvocationPrepared>(), hasLength(2));
+      expect(
+        beforePatch.whereType<ToolInvocationPrepared>().last.invocation,
+        same(patchInterruption.invocation),
+      );
+      expect(
+        beforePatch.whereType<ToolExecutionStarted>().map(
+          (event) => event.invocationId,
+        ),
+        [readInvocation.id],
+      );
+      expect(
+        beforePatch.whereType<ToolExecutionCompleted>().map(
+          (event) => event.invocationId,
+        ),
+        [readInvocation.id],
+      );
+      expect(beforePatch.whereType<RunInterruptionResolved>(), isEmpty);
+      expect(await _sourceSnapshot(source), projectBefore);
+      expect(await _sourceSnapshot(worktree), taskBefore);
+
+      expect(controller.resolveApproval(patchApproval, approved: true), isTrue);
+      final Future<void>? patching = controller.activeRunFuture;
+      expect(patching, isNotNull);
+      expect(controller.isAdvancing, isTrue);
+      await patching!;
+
+      expect(endpointFailures, isEmpty);
+      expect(controller.failure, isNull);
+      expect(controller.currentRun, same(execution));
+      expect(controller.activeRunFuture, isNull);
+      expect(controller.isAdvancing, isFalse);
+      expect(controller.isRunning, isTrue);
+      expect(run.state, RunState.waiting);
+      expect(outbound, hasLength(2));
+      expect(controller.snapshot.entries.single.content, _prompt);
+      final PendingToolApproval commandApproval = controller.pendingApproval!;
+      final ToolApprovalInterruption commandInterruption =
+          run.interruptions.values.single as ToolApprovalInterruption;
+      expect(commandApproval, isNot(same(patchApproval)));
+      expect(commandApproval.toolAlias, 'run_command');
+      expect(commandApproval.effects, {ToolEffect.processExecution});
+      expect(commandApproval.uncertainty, EffectUncertainty.uncertain);
+      expect(commandApproval.targets, [
+        'adele-environment:/${authority.environmentId.value}/',
+      ]);
+      expect(
+        jsonDecode(commandApproval.canonicalArgumentsJson),
+        _commandArguments,
+      );
+      expect(
+        commandInterruption.toolInvocationId,
+        ToolInvocationId('${run.id.value}-tool-3'),
+      );
+      expect(commandInterruption.invocation.proposal.providerCallId, 'command');
+      expect(commandInterruption.id, isNot(patchInterruption.id));
+      final beforeCommand = run.journal.records
+          .map((record) => record.event)
+          .toList();
+      expect(beforeCommand.whereType<ModelInvocationStarted>(), hasLength(2));
+      expect(beforeCommand.whereType<ToolInvocationPrepared>(), hasLength(3));
+      expect(
+        beforeCommand.whereType<ToolInvocationPrepared>().last.invocation,
+        same(commandInterruption.invocation),
+      );
+      expect(
+        beforeCommand.whereType<ToolExecutionStarted>().map(
+          (event) => event.invocationId,
+        ),
+        [readInvocation.id, patchInterruption.toolInvocationId],
+      );
+      expect(
+        beforeCommand.whereType<ToolExecutionCompleted>().map(
+          (event) => event.invocationId,
+        ),
+        [readInvocation.id, patchInterruption.toolInvocationId],
+      );
+      expect(
+        beforeCommand.whereType<RunInterruptionResolved>().single.interruption,
+        same(patchInterruption),
+      );
+      for (final (approval, interruption) in [
+        (patchApproval, patchInterruption),
+        (commandApproval, commandInterruption),
+      ]) {
+        expect(approval.toolId, interruption.toolId.value);
+        expect(approval.hasUnsafeAuthorityText, isFalse);
+        expect(approval.summary, interruption.effects.summary);
+        expect(approval.summary, isNotEmpty);
+        expect(approval.effects, interruption.effects.effects);
+        expect(approval.uncertainty, interruption.effects.uncertainty);
+        expect(
+          approval.targets,
+          interruption.effects.targets.map((target) => target.uri.toString()),
+        );
+        expect(
+          jsonDecode(approval.canonicalArgumentsJson),
+          interruption.canonicalArguments,
+        );
+      }
+      final Map<String, Object?> taskAfterPatch = await _sourceSnapshot(
+        worktree,
+      );
+      expect(taskAfterPatch['files'], {
+        ...taskBefore['files']! as Map<String, Object?>,
+        _sourcePath: utf8.encode(_patchedText),
+      });
+      for (final String key in ['head', 'branch', 'staged']) {
+        expect(taskAfterPatch[key], taskBefore[key], reason: key);
+      }
+      expect(await _git(worktree, ['diff', '--name-only']), '$_sourcePath\n');
+      expect(await _sourceSnapshot(source), projectBefore);
+
+      expect(
+        controller.resolveApproval(commandApproval, approved: true),
+        isTrue,
+      );
+      final Future<void>? validating = controller.activeRunFuture;
+      expect(validating, isNotNull);
+      expect(controller.isAdvancing, isTrue);
+      await validating!;
       if (endpointFailures.isNotEmpty) {
         final (error, stack) = endpointFailures.first;
         Error.throwWithStackTrace(error, stack);
       }
 
       expect(controller.failure, isNull);
+      expect(controller.currentRun, same(execution));
       expect(controller.activeRunFuture, isNull);
-      final AgentRun run = controller.currentRun!.run;
-      expect(run.id, RunId('run-c1-fixture-1'));
-      expect(run.sessionId, session.id);
+      expect(controller.pendingApproval, isNull);
+      expect(controller.isAdvancing, isFalse);
+      expect(controller.isRunning, isFalse);
       expect(run.state, RunState.completed);
       expect(run.failure, isNull);
       expect(run.interruptions, isEmpty);
-      expect(outbound, hasLength(4));
+      expect(outbound, hasLength(3));
       final ChatSessionSnapshot snapshot = controller.snapshot;
       expect(snapshot.id, session.id);
       expect(snapshot.entries, [
@@ -439,9 +623,9 @@ void main() {
         snapshot.entries,
       );
       final events = run.journal.records.map((record) => record.event).toList();
-      expect(events.whereType<ModelInvocationStarted>(), hasLength(4));
+      expect(events.whereType<ModelInvocationStarted>(), hasLength(3));
       final settlements = events.whereType<ModelInvocationSettled>().toList();
-      expect(settlements, hasLength(4));
+      expect(settlements, hasLength(3));
       for (final settlement in settlements) {
         expect(settlement.settlement, ModelSettlement.completed);
         expect(settlement.metadata.effectiveModel, 'gpt-6-astra');
@@ -449,15 +633,27 @@ void main() {
       final prepared = events.whereType<ToolInvocationPrepared>().toList();
       expect(
         prepared.map((event) => event.invocation.tool.modelDefinition.alias),
-        ['search', 'read_file', 'apply_patch', 'run_command'],
+        ['read_file', 'apply_patch', 'run_command'],
       );
       expect(
-        prepared[1].invocation.canonicalArguments['relativePath'],
-        discoveredPath,
+        prepared.first.invocation.canonicalArguments['relativePath'],
+        observedPath,
       );
+      expect(prepared[1].invocation.canonicalArguments, patchArguments);
+      expect(prepared.last.invocation.canonicalArguments, _commandArguments);
+      final proposals = events
+          .whereType<ModelOutputObserved>()
+          .where((event) => event.item is ModelToolProposalOutput)
+          .toList();
+      expect(proposals, hasLength(3));
+      expect(proposals[1].invocationId, proposals[2].invocationId);
+      expect(proposals[1].invocationId, settlements[1].invocationId);
       expect(
-        prepared[2].invocation.canonicalArguments['expectedRevision'],
-        observedRevision,
+        proposals.map(
+          (event) =>
+              (event.item as ModelToolProposalOutput).proposal.providerCallId,
+        ),
+        ['read', 'patch', 'command'],
       );
       final policies = events.whereType<ToolPolicyEvaluated>().toList();
       expect(
@@ -466,20 +662,19 @@ void main() {
       );
       expect(policies.map((event) => event.decision), [
         ToolPolicyDecision.allow,
-        ToolPolicyDecision.allow,
-        ToolPolicyDecision.deny,
-        ToolPolicyDecision.deny,
+        ToolPolicyDecision.ask,
+        ToolPolicyDecision.ask,
       ]);
       final completed = events.whereType<ToolExecutionCompleted>().toList();
       expect(
         completed.map((event) => event.invocationId),
-        prepared.take(2).map((event) => event.invocation.id),
+        prepared.map((event) => event.invocation.id),
       );
       expect(
         events.whereType<ToolExecutionStarted>().map(
           (event) => event.invocationId,
         ),
-        prepared.take(2).map((event) => event.invocation.id),
+        prepared.map((event) => event.invocation.id),
       );
       for (final completion in completed) {
         expect(completion.outcome.disposition, ToolOutcomeDisposition.success);
@@ -488,24 +683,85 @@ void main() {
           authority.environmentId.value,
         );
       }
-      expect(completed[1].outcome.hostData['relativePath'], _sourcePath);
-      expect(completed[1].outcome.hostData['text'], _taskText);
-      expect(completed[1].outcome.hostData['revision'], observedRevision);
-      final denied = events.whereType<ToolInvocationCompleted>().toList();
+      expect(completed.first.outcome.hostData['relativePath'], _sourcePath);
+      expect(completed.first.outcome.hostData['text'], _taskText);
+      expect(completed.first.outcome.hostData['revision'], observedRevision);
+      expect(completed[1].outcome.hostData, {
+        'environmentId': authority.environmentId.value,
+        'relativePath': _sourcePath,
+        'editCount': 1,
+        'newRevision': patchedRevision,
+      });
       expect(
-        denied.map((event) => event.invocationId),
-        prepared.skip(2).map((event) => event.invocation.id),
+        completed[1].outcome.effectCertainty,
+        EffectCertainty.knownOccurred,
       );
-      for (final terminal in denied) {
-        expect(
-          terminal.outcome.disposition,
-          ToolOutcomeDisposition.policyDenied,
+      final ToolOutcome commandOutcome = completed.last.outcome;
+      expect(commandOutcome.effectCertainty, EffectCertainty.knownOccurred);
+      expect(commandOutcome.hostData, {
+        'environmentId': authority.environmentId.value,
+        ..._commandArguments,
+        'termination': 'exited',
+        'exitCode': 0,
+        'stdout': '',
+        'stderr': '',
+        'stdoutTruncated': false,
+        'stderrTruncated': false,
+      });
+      expect(
+        commandOutcome.modelContent,
+        _toolOutput(outbound.last, 'command'),
+      );
+      expect(
+        completed[1].outcome.modelContent,
+        _toolOutput(outbound.last, 'patch'),
+      );
+      expect(events.whereType<ToolInvocationCompleted>(), isEmpty);
+      expect(
+        events.whereType<RunInterrupted>().map((event) => event.interruption),
+        [patchInterruption, commandInterruption],
+      );
+      final resolutions = events.whereType<RunInterruptionResolved>().toList();
+      expect(resolutions.map((event) => event.interruption), [
+        patchInterruption,
+        commandInterruption,
+      ]);
+      for (final resolved in resolutions) {
+        final ToolApprovalInterruption interruption =
+            resolved.interruption as ToolApprovalInterruption;
+        final ToolApprovalResolution resolution =
+            resolved.resolution as ToolApprovalResolution;
+        expect(resolution.interruptionId, interruption.id);
+        expect(resolution.toolInvocationId, interruption.toolInvocationId);
+        expect(resolution.approved, isTrue);
+        final int resolvedIndex = events.indexOf(resolved);
+        final int startedIndex = events.indexWhere(
+          (event) =>
+              event is ToolExecutionStarted &&
+              event.invocationId == interruption.toolInvocationId,
         );
+        final int completedIndex = events.indexWhere(
+          (event) =>
+              event is ToolExecutionCompleted &&
+              event.invocationId == interruption.toolInvocationId,
+        );
+        expect(resolvedIndex, lessThan(startedIndex));
+        expect(startedIndex, lessThan(completedIndex));
         expect(
-          terminal.outcome.effectCertainty,
-          EffectCertainty.knownNotOccurred,
+          completedIndex,
+          lessThan(
+            events.lastIndexWhere((event) => event is ModelInvocationStarted),
+          ),
         );
       }
+      final EnvironmentTextFile resultingFile = await runtime
+          .lifecycle
+          .environmentRuntime
+          .currentMaterialization(authority.environmentId)!
+          .provider
+          .readFile(authority.environmentId, _sourcePath);
+      expect(resultingFile.text, _patchedText);
+      expect(resultingFile.revision, patchedRevision);
 
       await controller.close();
       await runtime.close();
@@ -516,12 +772,7 @@ void main() {
         isEmpty,
       );
       expect(await _sourceSnapshot(source), projectBefore);
-      expect(await _sourceSnapshot(worktree), taskBefore);
-      expect(await File('${source.path}/run-command-marker').exists(), isFalse);
-      expect(
-        await File('${worktree.path}/run-command-marker').exists(),
-        isFalse,
-      );
+      expect(await _sourceSnapshot(worktree), taskAfterPatch);
       expect(await credentials.readAsString(), credentialText);
       expect(
         runtime.store.requireSessionAuthority(session.id),
@@ -531,6 +782,15 @@ void main() {
     timeout: const Timeout(Duration(seconds: 45)),
   );
 }
+
+String _revision(String output) =>
+    jsonDecode(
+          output
+              .split('\n')
+              .singleWhere((line) => line.startsWith('Revision: '))
+              .substring('Revision: '.length),
+        )
+        as String;
 
 String _toolOutput(Map<String, Object?> body, String callId) =>
     (body['input']! as List<Object?>).cast<Map<String, Object?>>().singleWhere(

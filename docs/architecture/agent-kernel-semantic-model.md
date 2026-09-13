@@ -230,10 +230,18 @@ host. It does not construct a development loop or kernel history adapter.
 Normal application presentation uses the same execution path for a canonical Chat
 Session. Session creation does not require a model; each submitted prompt selects
 a fresh exact provider binding, Session-authorized tool catalog, and immutable
-read-only policy for a new Run. The normal policy denies mutation/process and
-unknown or mixed effects through model-visible policy-denied outcomes, never an
-approval interruption. Development policy is separate. Rich Chat UI/persistence,
-child Sessions, strategy defaults/profiles, and disk persistence remain deferred.
+`ApprovalGatedToolPolicy` for a new Run. The normal effect-based policy is described
+in [the architecture overview](overview.md#agent-execution); development policy is
+separate. Window-local immutable approval presentation derives from the retained
+invocation and effect description, not proposed model arguments. `Allow once` and
+`Deny` use the existing exact resolution authority, including stale-callback
+protection. Approvals are Run interruptions, never canonical Chat entries.
+Sequential approvals retain one Run and batch; rejection supplies `userRejected`
+continuation without execution. Approval neither overrides revision/binding checks
+nor provides a sandbox. Window close drains current advancement but does not
+resolve a quiescent waiting Run. Rich activity/console and diff/review presentation,
+configurable permissions/profiles, steering, child Sessions, and persistence remain
+deferred.
 
 # Strategy state and context assembly
 

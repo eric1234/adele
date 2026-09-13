@@ -223,8 +223,9 @@ OpenAI credential store. Application-local configuration selects a model and pas
 only the store path and public OAuth configuration to the OpenAI plugin generation.
 Artifact defines contain deployment locations, not credentials or model selection.
 No profile, settings, or provider preference system is implied. Each new normal Run
-resolves its provider/tools and snapshots read-only policy; Session validity does
-not depend on model availability.
+resolves its provider/tools and uses the narrow approval-gated policy; per-invocation
+approval is not persisted permission configuration. Session validity does not
+depend on model availability.
 
 ## Persistence, portability, and schema evolution
 

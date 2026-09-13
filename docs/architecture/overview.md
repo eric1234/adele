@@ -40,7 +40,7 @@ The following remain largely or entirely unimplemented:
 Public plugin-facing APIs remain experimental.
 
 The normal shell supports Project opening, title-only Task creation with a real
-Git primary Environment, and one stock Chat Session with sequential read-only
+Git primary Environment, and one stock Chat Session with sequential approval-gated
 Runs through the experimental ChatGPT subscription-backed ModelProvider.
 
 ## System shape
@@ -83,9 +83,11 @@ provider resolution still uses the capability registry. Configuration references
 the existing OpenAI-owned credential store, never token contents in deployment
 defines or startup arguments. This is ownership separation, not process sandboxing.
 
-Application close blocks further window-local updates and drains in-flight Task
-establishment and active Run settlement before `runtime.close`, even on failure.
-Draining is not cancellation or rollback. Desktop exit
+Application close synchronously blocks window actions and notifications and drains
+in-flight Task establishment and only the currently advancing Run start/resume
+before `runtime.close`, even on failure. A quiescent waiting Run is abandoned with
+runtime teardown, without resolving or executing its pending invocation or waiting
+indefinitely for approval. Draining is not cancellation or rollback. Desktop exit
 awaits the complete close; detach/dispose initiate the same cleanup and report
 runtime cleanup failures through `FlutterError`. Runtime close shares one completion across
 callers: all backend capability registrations retire before their connections
@@ -328,8 +330,8 @@ its presentation controller remain window-local, never runtime navigation state.
 Each accepted prompt appends a canonical user entry and allocates a fresh Run ID.
 The application freshly resolves the exact selected ModelProvider and constructs
 its adapter, builds the Session-authorized tool catalog, and snapshots the normal
-read-only policy for that Run. Existing per-inference context composition supplies
-root AGENTS.md instructions from the Task Environment. Chat appends only the final
+approval-gated policy for that Run. Existing per-inference context composition
+supplies root AGENTS.md instructions from the Task Environment. Chat appends only the final
 assistant entry; failures preserve accepted user/history state separately from
 Run failure. A later prompt starts a new Run, not a reused execution object.
 Persistence, strategy defaults/profiles, and multi-Session navigation remain deferred.
@@ -391,11 +393,21 @@ The kernel model boundary is streaming-shaped. The common ModelProvider transpor
 
 Tool availability, materialization, policy, optional approval interruption, execution, progress, structured outcome, and effect certainty remain distinct.
 
-The normal product policy permits only pure source-read effects and conservatively
-denies mutation, process execution, mixed, unknown, or other effects. Denial uses
-existing model-visible tool outcomes and does not request approval. The catalog
-may still advertise forbidden operations; policy, not aliases or presentation,
-is the authorization boundary. Development/self-hosting policy remains separate.
+Normal `ApprovalGatedToolPolicy` allows singleton certain source reads and asks for
+singleton certain source mutations. Singleton process execution requires approval
+regardless of uncertainty; all other descriptions are denied. Policy, not aliases or
+presentation, is the authorization boundary. Development/self-hosting policy
+remains separate.
+
+Window-local cards project immutable effect summaries, uncertainty, identity,
+targets, and canonical arguments from the retained Run interruption. `Allow once`
+resolves that exact interruption; object-identity checks reject stale callbacks.
+User denial produces `userRejected` continuation without execution. Sequential
+approvals resume the same Run, with no inference between same-batch proposals.
+Cards are not canonical Chat entries. Approval preserves revision checks and
+exact-generation authority and is not sandboxing. Tool execution and Environment
+authority remain outside presentation. Configurable permissions, richer
+activity/console, diff/review, and steering remain deferred.
 
 The implemented inference path starts with `StrategyInferenceMaterial`, containing
 instructions and ordered `SemanticModelInputItem` values from Chat history
@@ -535,7 +547,7 @@ self-hosting.
 | Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, Session-authorized read/mutation/process facets, bounded create/patch/delete text-file mutation, and generated foreground process streaming through the Git provider are proven; persistence and complete lifecycle remain unimplemented. |
 | Session-bound strategy execution | Canonical immutable Session creation, atomic publication with separate Environment authority, executable contributions, explicit unavailable/ambiguous resolution, and exact binding validation across Run operations/resume/settlement are implemented and deterministically validated. Headless Chat uses the public facade with validated state, sequencing, and application integration. Persistent strategy state, child Sessions, and disk persistence remain deferred. |
 | Inference context | Instruction-only source discovery, exact-binding capture, immutable snapshots, current adapter rendering, and the stock root AGENTS.md source activated by the shared runtime are implemented; other sources, broader material, provider-aware projection/cache planning, budgets, and compaction remain deferred. |
-| Production orchestration/UI/Commands | Stock Chat, minimal Project/Task/Environment presentation, and a single normal Chat Session with read-only Runs are implemented; Task Browser, rich workbench UI, Commands, and plugin discovery remain directional. |
+| Production orchestration/UI/Commands | Stock Chat, minimal Project/Task/Environment presentation, and a single normal Chat Session with approval-gated Runs are implemented; configurable permissions, Task Browser, rich workbench UI, Commands, and plugin discovery remain directional. |
 | Cross-platform/release | Unproven on Windows, macOS, and release mode. |
 | Packaging/sandboxing | Unproven; process isolation is not a sandbox. |
 

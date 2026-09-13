@@ -1,15 +1,66 @@
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
+import 'package:adele_desktop/core/approval_gated_tool_policy.dart';
 import 'package:adele_desktop/core/model_provider_host.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
-import 'package:adele_desktop/core/read_only_tool_policy.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_product/adele_product.dart' show Session;
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
+
+import 'approval_display.dart';
+
+/// Immutable window-local presentation and identity token, not execution authority.
+final class PendingToolApproval {
+  PendingToolApproval._(ToolApprovalInterruption interruption)
+    : toolAlias = approvalDisplayText(
+        interruption.invocation.tool.modelDefinition.alias,
+      ),
+      toolId = approvalDisplayText(interruption.toolId.value),
+      effects = interruption.effects.effects,
+      summary = approvalDisplayText(interruption.effects.summary),
+      uncertainty = interruption.effects.uncertainty,
+      targets = List<String>.unmodifiable(
+        interruption.effects.targets.map(
+          (target) => approvalDisplayText(target.uri.toString()),
+        ),
+      ),
+      canonicalArgumentsJson = approvalDisplayJson(
+        interruption.canonicalArguments,
+      ),
+      hasUnsafeAuthorityText =
+          <String>[
+            interruption.invocation.tool.modelDefinition.alias,
+            interruption.toolId.value,
+            interruption.effects.summary,
+          ].any(hasUnsafeApprovalControls) ||
+          interruption.effects.targets.any(
+            (target) => hasUnsafeApprovalTarget(target.uri),
+          );
+
+  final String toolAlias;
+  final String toolId;
+  final Set<ToolEffect> effects;
+  final String summary;
+  final EffectUncertainty uncertainty;
+  final List<String> targets;
+  final String canonicalArgumentsJson;
+
+  /// Only raw identity/summary and decoded URI targets block approval. Canonical
+  /// payloads may contain arbitrary source text: escape them, do not reject them.
+  final bool hasUnsafeAuthorityText;
+
+  bool get isUncertain => uncertainty != EffectUncertainty.none;
+  Iterable<String> get effectNames => effects.map((effect) => effect.name);
+  String get effectLabel => switch (effects.toList()) {
+    [ToolEffect.sourceMutation] => 'Modify source',
+    [ToolEffect.processExecution] => 'Run command',
+    _ => 'Tool effects',
+  };
+}
 
 /// Window-local stock Chat interaction, not shared Session lifecycle authority.
 final class ChatController {
@@ -31,8 +82,9 @@ final class ChatController {
     }
     _chat = runtime.chat.sessions.obtain(session.id);
     _chat.instructions =
-        'This interaction is read-only. Inspect source with read/search tools; '
-        'do not modify files or execute commands.';
+        'Inspect source with read/search tools as needed. Source mutations and '
+        'commands may be proposed when needed, but they require explicit user '
+        'approval before execution.';
     _snapshot = _chat.snapshot();
   }
 
@@ -50,12 +102,22 @@ final class ChatController {
   Future<void>? _closing;
   bool _closed = false;
   bool _running = false;
+  bool _advancing = false;
+  PendingToolApproval? _pendingApproval;
+  ToolApprovalInterruption? _pendingInterruption;
   Object? _failure;
 
   ChatSessionSnapshot get snapshot => _snapshot;
   SessionOrchestrationRun? get currentRun => _currentRun;
+
+  /// Current start/resume operation, not the lifetime of a waiting Run.
   Future<void>? get activeRunFuture => _activeRunFuture;
+
+  /// Blocks new prompts through both advancement and approval waits.
   bool get isRunning => _running;
+  bool get isAdvancing => _advancing;
+  bool get isClosed => _closed;
+  PendingToolApproval? get pendingApproval => _pendingApproval;
   Object? get failure => _failure;
 
   String? get unavailableReason {
@@ -81,6 +143,7 @@ final class ChatController {
   String? get failureMessage => switch (_failure) {
     null => null,
     ModelFailure(:final kind) => 'Run failed: model ${kind.name}.',
+    InvalidRunOperation(:final message) => 'Run failed: $message',
     ProviderUnavailable() || ProviderEndpointUnavailable() =>
       'Run failed: the selected model provider is unavailable.',
     _ => 'Run failed. Check model and Task Environment availability.',
@@ -98,52 +161,125 @@ final class ChatController {
     _failure = null;
     _currentRun = null;
     _running = true;
-    _activeRunFuture = _executePrompt();
+    _advancing = true;
+    // Publish the drain future before preparation can fail synchronously.
+    _activeRunFuture = Future<void>.microtask(_advance);
     onChanged?.call();
     return true;
   }
 
-  Future<void> _executePrompt() async {
+  /// Accepts only this window's exact current card, once, before async work starts.
+  bool resolveApproval(PendingToolApproval approval, {required bool approved}) {
+    final ToolApprovalInterruption? interruption = _pendingInterruption;
+    if (_closed ||
+        _advancing ||
+        !_running ||
+        !identical(approval, _pendingApproval) ||
+        interruption == null ||
+        (approved && approval.hasUnsafeAuthorityText)) {
+      return false;
+    }
+    _advancing = true;
+    _activeRunFuture = Future<void>.microtask(
+      () => _advance(
+        resolution: ToolApprovalResolution(
+          interruptionId: interruption.id,
+          toolInvocationId: interruption.toolInvocationId,
+          approved: approved,
+        ),
+      ),
+    );
+    onChanged?.call();
+    return true;
+  }
+
+  Future<void> _advance({ToolApprovalResolution? resolution}) async {
+    SessionOrchestrationRun? execution;
     try {
-      final RunId runId = _runIds.nextRunId();
-      final ProviderBinding binding = _runtime.registry.resolve(
-        modelProviderCapability,
-        providerId: providerId,
-      );
-      final ModelProviderCapabilityAdapter adapter =
-          ModelProviderCapabilityAdapter(binding, selectedModel: model!);
-      final ToolCatalog tools = await buildModelToolCatalogForSession(
-        sessionId: session.id,
-        environmentRuntime: _runtime.lifecycle.environmentRuntime,
-        extensions: _runtime.extensions,
-      );
-      final ReadOnlyToolPolicy policy = const ReadOnlyToolPolicy();
-      final SessionOrchestrationRun execution = createSessionOrchestrationRun(
-        lifecycle: _runtime.lifecycle,
-        sessionId: session.id,
-        runId: runId,
-        contextComposer: _runtime.contextComposer,
-        model: adapter,
-        toolCatalog: tools,
-        policy: policy,
-      );
-      // Accepted work still settles on close, but must not update presentation.
-      if (!_closed) _currentRun = execution;
-      await execution.start();
-      if (!_closed) _failure = execution.run.failure;
+      if (resolution == null) {
+        final RunId runId = _runIds.nextRunId();
+        final ProviderBinding binding = _runtime.registry.resolve(
+          modelProviderCapability,
+          providerId: providerId,
+        );
+        final ModelProviderCapabilityAdapter adapter =
+            ModelProviderCapabilityAdapter(binding, selectedModel: model!);
+        final ToolCatalog tools = await buildModelToolCatalogForSession(
+          sessionId: session.id,
+          environmentRuntime: _runtime.lifecycle.environmentRuntime,
+          extensions: _runtime.extensions,
+        );
+        execution = createSessionOrchestrationRun(
+          lifecycle: _runtime.lifecycle,
+          sessionId: session.id,
+          runId: runId,
+          contextComposer: _runtime.contextComposer,
+          model: adapter,
+          toolCatalog: tools,
+          policy: const ApprovalGatedToolPolicy(),
+        );
+        // Accepted work settles on close, without late presentation updates.
+        if (!_closed) _currentRun = execution;
+        await execution.start();
+      } else {
+        execution = _currentRun!;
+        await execution.resolveApproval(resolution);
+      }
+      if (!_closed) _inspectRun(execution.run);
     } on Object catch (error) {
-      if (!_closed) _failure = error;
+      if (!_closed) {
+        // An unsupported settled shape must not leave invisible actionable work.
+        final AgentRun? run = execution?.run;
+        if (run?.state == RunState.running || run?.state == RunState.waiting) {
+          run!.fail(error);
+        }
+        _failure = error;
+        _pendingApproval = null;
+        _pendingInterruption = null;
+        _running = false;
+      }
     } finally {
+      _activeRunFuture = null;
       if (!_closed) {
         _snapshot = _chat.snapshot();
-        _running = false;
-        _activeRunFuture = null;
+        _advancing = false;
         onChanged?.call();
       }
     }
   }
 
-  /// Blocks acceptance and presentation immediately, then drains accepted work.
+  void _inspectRun(AgentRun run) {
+    _pendingApproval = null;
+    _pendingInterruption = null;
+    switch (run.state) {
+      case RunState.waiting:
+        final List<RunInterruption> interruptions = run.interruptions.values
+            .toList();
+        if (interruptions case [final ToolApprovalInterruption interruption]) {
+          _pendingInterruption = interruption;
+          _pendingApproval = PendingToolApproval._(interruption);
+        } else {
+          throw const InvalidRunOperation(
+            'Expected exactly one tool approval while Chat is waiting.',
+          );
+        }
+      case RunState.completed:
+      case RunState.failed:
+        _failure = run.failure;
+        _running = false;
+      case RunState.cancelled:
+        _failure = const InvalidRunOperation('The Run was cancelled.');
+        _running = false;
+      case RunState.created:
+      case RunState.running:
+        throw InvalidRunOperation(
+          'Chat stopped advancing in unexpected state ${run.state.name}.',
+        );
+    }
+  }
+
+  /// Drains only in-flight advancement. A quiescent waiting Run is abandoned with
+  /// the window/runtime, without resolving or executing its pending invocation.
   Future<void> close() {
     _closed = true;
     return _closing ??= () async {

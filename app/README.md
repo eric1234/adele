@@ -8,9 +8,9 @@ root. It is an internal application, not a plugin-facing package.
 The app owns its minimal shell, theme, and private widgets. It retains the ADELE
 header and initially displays `No Project is open` with B1 Project selector
 buttons. After opening, it shows the Project source and initially `No Tasks yet`.
-B2 adds title-only Task creation and primary Environment status. C1 adds one
-canonical stock Chat Session and sequential read-only ChatGPT-backed Runs, not a
-Task Browser or complete active-Session workbench.
+B2 adds title-only Task creation and primary Environment status. Normal interaction
+supports one canonical stock Chat Session and approval-gated ChatGPT-backed Runs,
+not a Task Browser or complete active-Session workbench.
 
 The Stateful `AdeleApplication` constructs one `AdeleRuntime` synchronously in
 `initState` and retains it across rebuilds. `lib/core/adele_runtime.dart` owns one
@@ -28,9 +28,11 @@ or compiler, loads no credentials, and performs no product operation. It also ow
 pure-Dart `ApplicationPluginBootstrap` in `lib/core/application_plugin_bootstrap.dart`,
 using the exact same `CapabilityRegistry` as lifecycle resolution.
 
-Application close immediately marks the window closing, blocking new work and
-late UI updates, then awaits retained in-flight Task establishment and active Run
-futures before calling `runtime.close`. Either failure does not bypass cleanup.
+Application close synchronously blocks actions and notifications, then awaits
+retained in-flight Task establishment and only the currently advancing Run
+start/resume before calling `runtime.close`. A quiescent waiting Run is abandoned
+with teardown without resolving or executing its pending invocation or waiting
+indefinitely for approval. Either failure does not bypass cleanup.
 This lets real worktree creation settle before the host's bounded two-second
 shutdown can force termination; it adds no cancellation or rollback machinery.
 Desktop exit requests await this complete close. Detach/dispose initiate the same
@@ -113,7 +115,7 @@ operations. The shared runtime has no dependency on development composition.
 
 ### ChatGPT source-checkout configuration
 
-Normal C1 composition uses only `dev.adele.openai.chatgpt-experimental`, backed by
+Normal composition uses only `dev.adele.openai.chatgpt-experimental`, backed by
 the existing experimental ChatGPT subscription route, OAuth implementation, and
 credential store. It does not expose the API-key provider in the normal UI.
 ChatGPT-only backend startup requires no `OPENAI_API_KEY` or dummy value. The
@@ -141,9 +143,9 @@ Use an absolute credential-file path. The existing file store is provisional loc
 development storage, not a new secure-storage claim. See
 [ADR 0028](../docs/adr/0028-experimental-chatgpt-openai-configured-instance.md)
 for the route's experimental support limitations.
-C1 adds no login/account UI and does not perform browser OAuth during normal
-startup or automated tests. Missing or invalid credentials fail model execution
-without invalidating the Session, Task, Project, or Git Environment.
+Normal composition adds no login/account UI and does not perform browser OAuth
+during normal startup or automated tests. Missing or invalid credentials fail
+model execution without invalidating the Session, Task, Project, or Git Environment.
 
 `lib/plugins/stock_openai.dart` resolves these provisional stock inputs once for
 the window. It owns provider identity/exposure and builds OpenAI-specific startup
@@ -162,9 +164,9 @@ Future installed-plugin discovery/profile activation should supply plugin-owned
 identities, artifact locations, and exposure metadata, with runtime registration
 replacing this entire stock-selection boundary. That metadata is the intended
 singular source; a new permanent constants package would formalize temporary app
-knowledge instead. The deterministic real-AOT C1 integration starts the actual
-OpenAI backend through `stock_openai.dart` and exercises its configured context,
-protecting this transitional pairing against silent divergence.
+knowledge instead. The deterministic real-AOT normal Chat integration starts the
+actual OpenAI backend through `stock_openai.dart` and exercises its configured
+context, protecting this transitional pairing against silent divergence.
 
 The narrow OpenAI startup format is `--chatgpt-only` followed by one JSON object
 requiring `credentialFile` and either a nonblank `clientId` or
@@ -192,28 +194,67 @@ a new `ModelProviderCapabilityAdapter`, and builds tools through
 Chat strategy and per-inference AGENTS.md context composition. The second prompt
 reuses canonical Chat history, not a Run, model binding, or materialized tool set.
 
-`ReadOnlyToolPolicy` allows only nonempty pure source-read effect descriptions with
-no uncertainty. Mutation, process execution, mixed, unknown, and other effects are
-denied. Tool aliases do not determine safety; advertised mutating/command tools may
-still be proposed, but denial becomes the existing model-visible continuation, not
-an approval interruption. The provisional Chat instruction reinforces read-only
-behavior but does not replace policy authority.
+`ApprovalGatedToolPolicy` allows a singleton certain `sourceRead` effect, asks for
+a singleton certain `sourceMutation`, and asks for a singleton `processExecution`
+regardless of uncertainty. It denies everything else, including empty effects,
+`resourceInspection`, mixed effects, and uncertain reads or mutations. Tool aliases
+and instruction prose do not determine authorization. Policy denial remains a
+model-visible `policyDenied` outcome without execution or an interruption.
 
-The minimal surface shows conversation, prompt, Send, `Running...`, and separate
-model/Run failure reasons. Active work blocks duplicate prompts. A failed Run
-preserves the accepted user message and prior canonical history without fabricating
-an assistant error entry; another prompt may run after settlement. Close blocks
-new work and late presentation updates immediately and drains the retained active
-future before backend/runtime cleanup. This adds no steering, cancellation,
-streaming-delta UI, approval UI, tool activity feed, or Run history browser.
+The minimal surface shows conversation, prompt, Send, advancing/waiting state,
+and separate model/Run failure reasons. A waiting approval card is a window-local
+projection of the retained Run interruption, not a canonical Chat entry. It
+presents immutable summary, effect classes and uncertainty, tool identity, targets,
+and canonical arguments. `Allow once` or `Deny` resolves that exact retained
+interruption through `SessionOrchestrationRun.resolveApproval`; object-identity
+checks reject stale card callbacks, and synchronous acceptance blocks duplicate
+decisions. Denial produces `userRejected` continuation without execution.
+
+Approval presentation visibly escapes control, bidi, and related invisible format
+characters and malformed UTF-16 without changing the exact invocation or canonical
+payload. Literal backslashes in plain-text fields are distinguished from escape
+notation; JSON details retain only trusted formatting newlines. Unsafe raw tool
+identity/summary or one decoded layer of target URI text disables `Allow once`,
+enforced by the controller as well as the card. Undecodable target URI escapes
+also fail closed.
+`Deny` remains available without automatic resolution. Canonical source payload
+content is safely rendered, not blanket-rejected; ordinary Unicode is preserved.
+
+One Run may require multiple sequential approvals. Each decision resumes the same
+Run and exact tool materialization; no inference occurs between proposals in the
+same batch. Only after all results does Chat continue the model. Advancing and
+waiting both block new prompts. Canonical Chat remains user/final assistant only.
+A failed Run preserves the accepted user message and prior canonical history
+without fabricating an assistant error entry; another prompt may run after terminal
+settlement. Close drains only an already advancing start/resume, including when it reaches another
+approval after closing; it never resolves a waiting approval to force completion.
+
+Approval authorizes an invocation; it does not override revisions or provide a
+sandbox. Existing revision checks and exact-generation binding validation still
+apply. Command execution retains direct argv, bounded output and timeout,
+process-group lifecycle, and filtered child environment; it is not sandboxed.
+This presentation changes no kernel/public APIs, Chat sequencing, or Environment
+contracts. Configurable permissions/profiles, steering, cancellation controls,
+streaming-delta UI, richer tool activity/console, diff/review, and a Run history
+browser remain deferred.
 
 Focused deterministic coverage lives in `test/chat_session_test.dart`,
-`test/core/read_only_tool_policy_test.dart`, `test/core/run_id_source_test.dart`,
+`test/core/approval_gated_tool_policy_test.dart`, `test/core/run_id_source_test.dart`,
 and `test/plugins/stock_openai_test.dart`. The separate
 `test/core/normal_chatgpt_run_integration_test.dart` compiles real host/Git/OpenAI
 artifacts and drives the normal controller through a local fake ChatGPT SSE
-endpoint with temporary fake credentials. It requires no account or API key and
-performs no live model request.
+endpoint with temporary fake credentials. Coverage follows a revision-bearing
+read into a patch-and-command proposal batch, separate approvals, direct-argv
+`git diff --check`, and model continuation, checking Task-worktree-only mutation
+and Project/checkout isolation. It requires no account or API key and performs no
+live model request.
+
+From `app/`, focused validation uses:
+
+```sh
+flutter test --no-pub test/chat_session_test.dart test/core/approval_gated_tool_policy_test.dart test/core/orchestration_host_test.dart test/core/orchestration_authority_test.dart test/core/model_tool_host_test.dart
+flutter test --no-pub test/core/normal_chatgpt_run_integration_test.dart
+```
 
 ### B1 Project opening
 
@@ -297,7 +338,7 @@ filesystems. This policy applies both to recursive traversal and explicit scope
 segments; explicit excluded scopes fail before provider reads. It does not change
 case-sensitive query matching or the spelling of canonical paths.
 Use `read_file` to retrieve an exact known file's contents and revision.
-The normal UI also creates a stock Chat Session and read-only Runs through these
+The normal UI also creates a stock Chat Session and approval-gated Runs through these
 same boundaries; the broader workbench remains deferred.
 
 The normal application does not display the `workspace_demo` reference plugin.
@@ -651,12 +692,14 @@ additional selectors, Session/Chat persistence and child lifecycle,
 context sources beyond root AGENTS.md, nested/scoped AGENTS.md, aliases/overrides,
 global/home files, imports, AGENTS.md caching, broader Reference/Observation material,
 provider-aware projection/cache planning, token budgets and compaction, additional
-Environment-backed mutation tools, profiles, product
+Environment-backed mutation tools, configurable permissions/profiles, steering,
+richer activity/console and diff/review presentation, product
 plugin discovery and configurable activation, production Agent UI, application
-Commands/keybindings, and plugin-facing UI extension APIs remain deferred. C1
-normal UI reaches a canonical Chat Session and read-only Runs over the Task's real
-Git worktree; source mutation, command execution, and approval UI remain excluded
-from this product path.
+Commands/keybindings, and plugin-facing UI extension APIs remain deferred. Normal
+UI reaches a canonical Chat Session with read/search and per-invocation approvals
+for eligible source mutation and command execution over the Task's real Git
+worktree. These window-local controls are not a general permission configuration
+or workbench presentation API.
 
 The application composition root contains the model adapters, core orchestration
 host, Session-scoped model-tool and inference-source host contexts, and AOT
