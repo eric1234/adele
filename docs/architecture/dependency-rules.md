@@ -113,7 +113,11 @@ not retire Git; shared-host failure remains global. The normal model adapter liv
 in `app/lib/core/model_provider_host.dart`, separate from development-only resource
 adapters. Session lifecycle remains strategy-neutral and Run hosting remains
 provider-neutral; normal Chat presentation composes each Run's model, tools, and
-read-only policy without adding plugin-specific behavior to those generic owners.
+approval-gated policy without adding plugin-specific behavior to those generic
+owners. Approval cards are window-local presentation over existing Run
+interruptions, not new public APIs or Chat-owned canonical history. Policy and
+exact-invocation authorization remain host-owned; tools and Environment providers
+retain their execution and revision guarantees.
 
 ## Plugin dependencies
 

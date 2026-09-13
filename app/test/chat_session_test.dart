@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:ui' show AppExitResponse;
 
 import 'package:adele_capabilities/adele_capabilities.dart';
@@ -28,6 +29,22 @@ const StockChatGptConfiguration _configuration = StockChatGptConfiguration(
   credentialFile: 'fake-unused',
   model: 'gpt-6-astra',
 );
+
+const Map<String, Object?> _patchArguments = <String, Object?>{
+  'relativePath': './lib//example.dart',
+  'expectedRevision': 'source-revision-0',
+  'edits': <Object?>[
+    <String, Object?>{'search': 'before', 'replace': 'after'},
+  ],
+};
+
+const Map<String, Object?> _commandArguments = <String, Object?>{
+  'program': 'git',
+  'arguments': <String>['diff', '--check'],
+};
+
+Iterable<ExecutionEvent> _events(AgentRun run) =>
+    run.journal.records.map((record) => record.event);
 
 void main() {
   late _Fixture fixture;
@@ -448,9 +465,19 @@ void main() {
   });
 
   for (final bool exit in <bool>[false, true]) {
-    for (final bool fails in <bool>[false, true]) {
+    for (final RunState settlement in <RunState>[
+      RunState.completed,
+      RunState.failed,
+      RunState.waiting,
+    ]) {
+      final bool fails = settlement == RunState.failed;
+      final bool waits = settlement == RunState.waiting;
       testWidgets(
-        '${exit ? 'exit' : 'disposal'} freezes Chat and drains Run ${fails ? 'failure' : 'success'} before runtime close',
+        '${exit ? 'exit' : 'disposal'} freezes Chat and drains Run ${waits
+            ? 'late first approval'
+            : fails
+            ? 'failure'
+            : 'success'} before runtime close',
         (tester) async {
           final _ModelChannel model = fixture.registerModel();
           await openChat(tester);
@@ -499,11 +526,18 @@ void main() {
           expect(fixture.runIds.values, hasLength(1));
           expect(model.calls, hasLength(1));
           model.calls.single.output('Late answer.');
+          if (waits) {
+            model.calls.single.propose(
+              'late-first-patch',
+              'apply_patch',
+              _patchArguments,
+            );
+          }
           model.calls.single.settle(fails: fails);
           await tester.pumpAndSettle();
           await active;
           if (exiting != null) expect(await exiting, AppExitResponse.exit);
-          expect(run.state, fails ? RunState.failed : RunState.completed);
+          expect(run.state, settlement);
           expect(backendClosingStates, <RunState>[run.state]);
           expect(fixture.runtime.plugins.state, ApplicationPluginState.closed);
           expect(strategy.validate, throwsA(isA<StaleExtensionBinding>()));
@@ -520,8 +554,24 @@ void main() {
               .obtain(controller.session.id)
               .snapshot()
               .entries;
-          expect(canonical, hasLength(fails ? 1 : 2));
-          if (!fails) expect(canonical.last.content, 'Late answer.');
+          expect(canonical, hasLength(fails || waits ? 1 : 2));
+          if (!fails && !waits) expect(canonical.last.content, 'Late answer.');
+          if (waits) {
+            expect(
+              run.interruptions.values.single,
+              isA<ToolApprovalInterruption>(),
+            );
+            expect(controller.pendingApproval, isNull);
+            expect(controller.activeRunFuture, isNull);
+            expect(_events(run).whereType<ToolExecutionStarted>(), isEmpty);
+            expect(_events(run).whereType<RunInterruptionResolved>(), isEmpty);
+            expect(fixture.environment.replacements, isEmpty);
+            expect(
+              fixture.environment.sourceText,
+              _EnvironmentChannel.initialText,
+            );
+            expect(find.text('Approval required'), findsNothing);
+          }
           if (exit) {
             expect(shell(tester).task, same(task));
             expect(shell(tester).environment, same(environment));
@@ -536,6 +586,106 @@ void main() {
         },
       );
     }
+
+    testWidgets(
+      '${exit ? 'exit' : 'disposal'} closes the application with an unresolved waiting approval',
+      (tester) async {
+        final _ModelChannel model = fixture.registerModel();
+        await openChat(tester);
+        final ChatController controller = chat(tester);
+        await send(tester, 'Leave this approval unresolved on close');
+        final Future<void> starting = controller.activeRunFuture!;
+        model.calls.single.propose(
+          'waiting-patch',
+          'apply_patch',
+          _patchArguments,
+        );
+        model.calls.single.settle();
+        await tester.pumpAndSettle();
+        await starting;
+        final AgentRun run = controller.currentRun!.run;
+        final PendingToolApproval approval = controller.pendingApproval!;
+        final ChatSessionSnapshot frozen = controller.snapshot;
+        final List<ExecutionEventRecord> journal = run.journal.records;
+        final VoidCallback retainedAllow = button(
+          tester,
+          'Allow once',
+        ).onPressed!;
+        final VoidCallback retainedDeny = tester
+            .widget<OutlinedButton>(find.widgetWithText(OutlinedButton, 'Deny'))
+            .onPressed!;
+        expect(run.state, RunState.waiting);
+        expect(controller.isAdvancing, isFalse);
+        expect(controller.activeRunFuture, isNull);
+        expect(find.text(approval.summary), findsOneWidget);
+        final strategy = fixture.runtime.extensions
+            .discover(orchestrationStrategyContributions)
+            .single;
+        final List<RunState> backendClosingStates = <RunState>[];
+        final subscription = fixture.runtime.plugins.changes.listen((state) {
+          if (state == ApplicationPluginState.closing) {
+            backendClosingStates.add(run.state);
+          }
+        });
+        addTearDown(subscription.cancel);
+
+        Future<AppExitResponse>? exiting;
+        if (exit) {
+          exiting = tester.binding.handleRequestAppExit();
+          // Flutter dispatches the lifecycle request asynchronously.
+          await tester.pump();
+        } else {
+          await tester.pumpWidget(const SizedBox.shrink());
+        }
+        expect(controller.isClosed, isTrue);
+        retainedAllow();
+        retainedDeny();
+        expect(controller.resolveApproval(approval, approved: true), isFalse);
+        expect(controller.resolveApproval(approval, approved: false), isFalse);
+        expect(
+          controller.submit('Cannot submit after application close'),
+          isFalse,
+        );
+        await tester.pumpAndSettle();
+        // Assert application-owned shutdown before any fixture cleanup can close it.
+        expect(fixture.runtime.plugins.state, ApplicationPluginState.closed);
+        if (exiting != null) expect(await exiting, AppExitResponse.exit);
+        expect(backendClosingStates, <RunState>[RunState.waiting]);
+        expect(strategy.validate, throwsA(isA<StaleExtensionBinding>()));
+        retainedAllow();
+        retainedDeny();
+        await tester.pump();
+        expect(run.state, RunState.waiting);
+        expect(run.journal.records, journal);
+        expect(_events(run).whereType<ToolExecutionStarted>(), isEmpty);
+        expect(_events(run).whereType<RunInterruptionResolved>(), isEmpty);
+        expect(fixture.environment.replacements, isEmpty);
+        expect(fixture.environment.processes, isEmpty);
+        expect(fixture.environment.writeCount, 0);
+        expect(fixture.environment.sourceText, _EnvironmentChannel.initialText);
+        expect(model.calls, hasLength(1));
+        expect(controller.snapshot, same(frozen));
+        expect(controller.pendingApproval, same(approval));
+        expect(controller.activeRunFuture, isNull);
+        expect(controller.failure, isNull);
+        expect(
+          fixture.runtime.chat.sessions
+              .obtain(controller.session.id)
+              .snapshot()
+              .entries,
+          frozen.entries,
+        );
+        if (exit) {
+          expect(chat(tester), same(controller));
+          expect(find.text(approval.summary), findsOneWidget);
+          expect(find.text('Approval required'), findsOneWidget);
+        } else {
+          expect(find.byType(ChatView), findsNothing);
+        }
+        expect(find.textContaining('Run failed:'), findsNothing);
+        await disposeApplication(tester);
+      },
+    );
   }
 
   testWidgets('narrow layout supports prompt, pending and final Chat', (
@@ -559,6 +709,781 @@ void main() {
     expect(tester.takeException(), isNull);
     await disposeApplication(tester);
   });
+
+  testWidgets('stock read and search continue automatically without approval', (
+    tester,
+  ) async {
+    final _ModelChannel model = fixture.registerModel();
+    await openChat(tester);
+    final ChatController controller = chat(tester);
+    await send(tester, 'Read and search the source');
+    final AgentRun run = controller.currentRun!.run;
+    final Future<void> active = controller.activeRunFuture!;
+    model.calls.single.propose('read-1', 'read_file', <String, Object?>{
+      'relativePath': _EnvironmentChannel.sourcePath,
+    });
+    model.calls.single.propose('search-1', 'search', <String, Object?>{
+      'query': 'before',
+      'path': 'lib',
+    });
+    model.calls.single.settle();
+    await tester.pumpAndSettle();
+
+    expect(model.calls, hasLength(2));
+    expect(controller.isRunning, isTrue);
+    expect(controller.isAdvancing, isTrue);
+    expect(controller.activeRunFuture, same(active));
+    expect(controller.pendingApproval, isNull);
+    expect(find.text('Approval required'), findsNothing);
+    expect(_events(run).whereType<RunInterrupted>(), isEmpty);
+    expect(
+      _events(
+        run,
+      ).whereType<ToolPolicyEvaluated>().map((event) => event.decision),
+      <ToolPolicyDecision>[ToolPolicyDecision.allow, ToolPolicyDecision.allow],
+    );
+    expect(fixture.environment.directories.single['relativePath'], 'lib');
+    expect(
+      fixture.environment.reads.where(
+        (read) => read['relativePath'] == _EnvironmentChannel.sourcePath,
+      ),
+      hasLength(2),
+    );
+    expect(fixture.environment.replacements, isEmpty);
+    expect(fixture.environment.processes, isEmpty);
+    expect(
+      model.calls.last.outcomes.map(
+        (outcome) => (outcome['callId'], outcome['status']),
+      ),
+      <(String, String)>[('read-1', 'success'), ('search-1', 'success')],
+    );
+    expect(
+      model.calls.last.outcomes.first['content'],
+      contains('source-revision-0'),
+    );
+    expect(model.calls.last.outcomes.last['content'], contains('before'));
+    expect(
+      controller.snapshot.entries.single.content,
+      'Read and search the source',
+    );
+    model.calls.last.output('Read and search complete.');
+    model.calls.last.settle();
+    await tester.pumpAndSettle();
+    await active;
+    expect(run.state, RunState.completed);
+    expect(controller.isRunning, isFalse);
+    expect(controller.isAdvancing, isFalse);
+    expect(controller.activeRunFuture, isNull);
+    expect(controller.failure, isNull);
+    expect(controller.snapshot.entries.map((entry) => entry.content), <String>[
+      'Read and search the source',
+      'Read and search complete.',
+    ]);
+    await disposeApplication(tester);
+  });
+
+  testWidgets(
+    'narrow approval cards gate an ordered patch and command batch exactly once',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(360, 640));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final _ModelChannel model = fixture.registerModel();
+      fixture.environment.replaceGate = Completer<void>();
+      fixture.environment.processGate = Completer<void>();
+      await openChat(tester);
+      final ChatController controller = chat(tester);
+      await send(tester, 'Patch the source, then check the diff');
+      final AgentRun run = controller.currentRun!.run;
+      final Future<void> starting = controller.activeRunFuture!;
+      model.calls.single.output('Intermediate proposal text stays Run-local.');
+      model.calls.single.propose('patch-A', 'apply_patch', _patchArguments);
+      model.calls.single.propose('command-B', 'run_command', _commandArguments);
+      model.calls.single.settle();
+      await tester.pumpAndSettle();
+      await starting;
+
+      final PendingToolApproval patch = controller.pendingApproval!;
+      expect(run.state, RunState.waiting);
+      expect(controller.isRunning, isTrue);
+      expect(controller.isAdvancing, isFalse);
+      expect(controller.activeRunFuture, isNull);
+      expect(controller.submit('Cannot skip this approval'), isFalse);
+      expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
+      expect(button(tester, 'Send').onPressed, isNull);
+      expect(patch.toolAlias, 'apply_patch');
+      expect(patch.toolId, 'dev.adele.plugin.filesystem-tools.apply-patch');
+      expect(patch.effects, <ToolEffect>{ToolEffect.sourceMutation});
+      expect(patch.uncertainty, EffectUncertainty.none);
+      expect(
+        patch.summary,
+        'Apply 1 exact edit to Environment file lib/example.dart.',
+      );
+      expect(patch.targets, <Uri>[
+        Uri.parse('adele-environment:/environment-1/lib/example.dart'),
+      ]);
+      expect(
+        () => patch.targets.add(Uri.parse('file:///other')),
+        throwsUnsupportedError,
+      );
+      expect(
+        () => patch.effects.add(ToolEffect.processExecution),
+        throwsUnsupportedError,
+      );
+      expect(jsonDecode(patch.canonicalArgumentsJson), <String, Object?>{
+        ..._patchArguments,
+        'relativePath': _EnvironmentChannel.sourcePath,
+      });
+      expect(fixture.environment.sourceText, _EnvironmentChannel.initialText);
+      expect(fixture.environment.replacements, isEmpty);
+      expect(fixture.environment.processes, isEmpty);
+      expect(fixture.environment.reads.single['relativePath'], 'AGENTS.md');
+      expect(model.calls, hasLength(1));
+      expect(find.text('Approval required'), findsOneWidget);
+      expect(find.text('Modify source'), findsOneWidget);
+      expect(find.text(patch.summary), findsOneWidget);
+      expect(find.text('Tool: apply_patch'), findsOneWidget);
+      expect(
+        find.text('Effects may extend beyond the listed target.'),
+        findsNothing,
+      );
+      expect(
+        find.text('Intermediate proposal text stays Run-local.'),
+        findsNothing,
+      );
+
+      await tester.ensureVisible(find.text('Details'));
+      await tester.tap(find.text('Details'));
+      await tester.pumpAndSettle();
+      expect(find.text(patch.canonicalArgumentsJson), findsOneWidget);
+      expect(
+        find.text(
+          'Tool ID: ${patch.toolId}\nEffects: sourceMutation\n'
+          'Uncertainty: none\nTarget: ${patch.targets.single}',
+        ),
+        findsOneWidget,
+      );
+      await tester.ensureVisible(find.text(patch.canonicalArgumentsJson));
+      expect(tester.takeException(), isNull);
+
+      final VoidCallback retainedAllow = button(
+        tester,
+        'Allow once',
+      ).onPressed!;
+      final VoidCallback retainedDeny = tester
+          .widget<OutlinedButton>(find.widgetWithText(OutlinedButton, 'Deny'))
+          .onPressed!;
+      retainedAllow();
+      final Future<void> patchResume = controller.activeRunFuture!;
+      expect(controller.isAdvancing, isTrue);
+      expect(controller.isRunning, isTrue);
+      expect(controller.pendingApproval, same(patch));
+      expect(controller.resolveApproval(patch, approved: true), isFalse);
+      expect(controller.resolveApproval(patch, approved: false), isFalse);
+      retainedAllow();
+      retainedDeny();
+      await tester.pump();
+      expect(button(tester, 'Allow once').onPressed, isNull);
+      expect(
+        tester
+            .widget<OutlinedButton>(find.widgetWithText(OutlinedButton, 'Deny'))
+            .onPressed,
+        isNull,
+      );
+      expect(find.text(patch.summary), findsOneWidget);
+      expect(find.text(patch.canonicalArgumentsJson), findsOneWidget);
+      expect(fixture.environment.replacements, hasLength(1));
+      expect(fixture.environment.writeCount, 0);
+      expect(fixture.environment.sourceText, _EnvironmentChannel.initialText);
+      expect(model.calls, hasLength(1));
+
+      fixture.environment.replaceGate!.complete();
+      await tester.pumpAndSettle();
+      await patchResume;
+      final PendingToolApproval command = controller.pendingApproval!;
+      expect(command, isNot(same(patch)));
+      expect(run.state, RunState.waiting);
+      expect(controller.isRunning, isTrue);
+      expect(controller.isAdvancing, isFalse);
+      expect(controller.activeRunFuture, isNull);
+      expect(fixture.environment.writeCount, 1);
+      expect(fixture.environment.sourceText, 'final value = "after";\n');
+      expect(fixture.environment.replacements.single, <String, Object?>{
+        'environmentId': 'environment-1',
+        'relativePath': _EnvironmentChannel.sourcePath,
+        'expectedRevision': 'source-revision-0',
+        'replacementText': 'final value = "after";\n',
+      });
+      expect(fixture.environment.processes, isEmpty);
+      expect(model.calls, hasLength(1));
+      expect(find.text(patch.summary), findsNothing);
+      expect(find.text(patch.canonicalArgumentsJson), findsNothing);
+      expect(find.text('Approval required'), findsOneWidget);
+      expect(find.text('Run command'), findsOneWidget);
+      expect(command.toolAlias, 'run_command');
+      expect(command.toolId, 'dev.adele.plugin.command-tools.run-command');
+      expect(command.effects, <ToolEffect>{ToolEffect.processExecution});
+      expect(command.uncertainty, EffectUncertainty.uncertain);
+      expect(
+        command.summary,
+        'Run program "git" with arguments ["diff","--check"] '
+        'from Environment root with a 120-second timeout.',
+      );
+      expect(find.text(command.summary), findsOneWidget);
+      expect(
+        find.text('Effects may extend beyond the listed target.'),
+        findsOneWidget,
+      );
+      expect(jsonDecode(command.canonicalArgumentsJson), <String, Object?>{
+        ..._commandArguments,
+        'workingDirectory': '',
+        'timeoutSeconds': 120,
+      });
+      expect(find.text(command.canonicalArgumentsJson), findsNothing);
+      await tester.ensureVisible(find.text('Details'));
+      await tester.tap(find.text('Details'));
+      await tester.pumpAndSettle();
+      expect(find.text(command.canonicalArgumentsJson), findsOneWidget);
+      expect(
+        find.text(
+          'Tool ID: ${command.toolId}\nEffects: processExecution\n'
+          'Uncertainty: uncertain\nTarget: adele-environment:/environment-1/',
+        ),
+        findsOneWidget,
+      );
+      await tester.ensureVisible(find.text(command.canonicalArgumentsJson));
+      expect(tester.takeException(), isNull);
+
+      // The old card's closures cannot authorize the next invocation.
+      retainedAllow();
+      retainedDeny();
+      expect(controller.resolveApproval(patch, approved: true), isFalse);
+      expect(controller.pendingApproval, same(command));
+      expect(controller.activeRunFuture, isNull);
+      expect(_events(run).whereType<RunInterruptionResolved>(), hasLength(1));
+      await tap(tester, 'Allow once');
+      final Future<void> commandResume = controller.activeRunFuture!;
+      expect(controller.pendingApproval, same(command));
+      expect(button(tester, 'Allow once').onPressed, isNull);
+      expect(fixture.environment.processes.single, <String, Object?>{
+        'environmentId': 'environment-1',
+        'request': <String, Object?>{
+          'program': 'git',
+          'arguments': <String>['diff', '--check'],
+          'relativeWorkingDirectory': '',
+          'timeoutSeconds': 120,
+        },
+      });
+      expect(model.calls, hasLength(1));
+      fixture.environment.processGate!.complete();
+      await tester.pumpAndSettle();
+      expect(model.calls, hasLength(2));
+      expect(controller.pendingApproval, same(command));
+      expect(controller.isAdvancing, isTrue);
+      expect(controller.activeRunFuture, same(commandResume));
+      expect(button(tester, 'Allow once').onPressed, isNull);
+      final List<Map<String, Object?>> outcomes = model.calls.last.outcomes;
+      expect(
+        outcomes.map((outcome) => (outcome['callId'], outcome['status'])),
+        <(String, String)>[('patch-A', 'success'), ('command-B', 'success')],
+      );
+      expect(outcomes.first['content'], contains('source-revision-1'));
+      expect(
+        outcomes.last['content'],
+        contains(_EnvironmentChannel.commandStdout),
+      );
+      expect(
+        outcomes.last['content'],
+        contains(_EnvironmentChannel.commandStderr),
+      );
+      expect(
+        _events(run).whereType<ToolProgressObserved>().map(
+          (event) => (
+            event.invocationId.value,
+            event.progress.kind,
+            event.progress.content,
+          ),
+        ),
+        <(String, ToolProgressKind, String)>[
+          (
+            'run-test-1-tool-2',
+            ToolProgressKind.stdout,
+            _EnvironmentChannel.commandStdout,
+          ),
+          (
+            'run-test-1-tool-2',
+            ToolProgressKind.stderr,
+            _EnvironmentChannel.commandStderr,
+          ),
+        ],
+      );
+      expect(controller.snapshot.entries.single, isA<ChatUserMessage>());
+      expect(find.text(_EnvironmentChannel.commandStdout), findsNothing);
+      model.calls.last.output('Patched and checked.');
+      model.calls.last.settle();
+      await tester.pumpAndSettle();
+      await commandResume;
+      expect(run.state, RunState.completed);
+      expect(controller.isRunning, isFalse);
+      expect(controller.isAdvancing, isFalse);
+      expect(controller.activeRunFuture, isNull);
+      expect(controller.pendingApproval, isNull);
+      expect(controller.failure, isNull);
+      expect(find.text('Approval required'), findsNothing);
+      expect(find.text('Allow once'), findsNothing);
+      expect(find.text('Deny'), findsNothing);
+      expect(find.text(command.canonicalArgumentsJson), findsNothing);
+      expect(button(tester, 'Send').onPressed, isNotNull);
+      expect(
+        controller.snapshot.entries.map((entry) => entry.runtimeType),
+        <Type>[ChatUserMessage, ChatAssistantMessage],
+      );
+      expect(
+        controller.snapshot.entries.map((entry) => entry.content),
+        <String>[
+          'Patch the source, then check the diff',
+          'Patched and checked.',
+        ],
+      );
+      expect(fixture.environment.writeCount, 1);
+      expect(fixture.environment.replacements, hasLength(1));
+      expect(fixture.environment.processes, hasLength(1));
+      expect(
+        _events(run).whereType<ToolInvocationPrepared>().map(
+          (event) => (
+            event.invocation.id.value,
+            event.invocation.proposal.providerCallId,
+          ),
+        ),
+        <(String, String)>[
+          ('run-test-1-tool-1', 'patch-A'),
+          ('run-test-1-tool-2', 'command-B'),
+        ],
+      );
+      expect(
+        _events(run).whereType<RunInterruptionResolved>().map((event) {
+          final resolution = event.resolution as ToolApprovalResolution;
+          expect(resolution.interruptionId, event.interruption.id);
+          return (resolution.toolInvocationId.value, resolution.approved);
+        }),
+        <(String, bool)>[
+          ('run-test-1-tool-1', true),
+          ('run-test-1-tool-2', true),
+        ],
+      );
+      expect(
+        _events(run).whereType<ToolExecutionStarted>().map(
+          (event) => event.invocationId.value,
+        ),
+        <String>['run-test-1-tool-1', 'run-test-1-tool-2'],
+      );
+      expect(
+        _events(run).whereType<ToolExecutionCompleted>().map(
+          (event) => (event.invocationId.value, event.outcome.disposition),
+        ),
+        <(String, ToolOutcomeDisposition)>[
+          ('run-test-1-tool-1', ToolOutcomeDisposition.success),
+          ('run-test-1-tool-2', ToolOutcomeDisposition.success),
+        ],
+      );
+      expect(tester.takeException(), isNull);
+      await disposeApplication(tester);
+    },
+  );
+
+  for (final bool command in <bool>[false, true]) {
+    testWidgets(
+      '${command ? 'command' : 'patch'} denial reaches the model without effects or Run failure',
+      (tester) async {
+        final _ModelChannel model = fixture.registerModel();
+        await openChat(tester);
+        final ChatController controller = chat(tester);
+        await send(tester, 'Propose work for rejection');
+        final AgentRun run = controller.currentRun!.run;
+        model.calls.single.propose(
+          'denied-1',
+          command ? 'run_command' : 'apply_patch',
+          command ? _commandArguments : _patchArguments,
+        );
+        model.calls.single.settle();
+        await tester.pumpAndSettle();
+        final PendingToolApproval approval = controller.pendingApproval!;
+        expect(run.state, RunState.waiting);
+        expect(controller.isRunning, isTrue);
+        expect(controller.isAdvancing, isFalse);
+        expect(controller.activeRunFuture, isNull);
+        expect(find.text(approval.summary), findsOneWidget);
+        expect(
+          find.text('Effects may extend beyond the listed target.'),
+          command ? findsOneWidget : findsNothing,
+        );
+        expect(button(tester, 'Allow once').onPressed, isNotNull);
+        final Finder deny = find.widgetWithText(OutlinedButton, 'Deny');
+        await tester.ensureVisible(deny);
+        await tester.tap(deny);
+        final Future<void> active = controller.activeRunFuture!;
+        expect(controller.resolveApproval(approval, approved: true), isFalse);
+        await tester.pumpAndSettle();
+        expect(model.calls, hasLength(2));
+        expect(model.calls.last.outcomes.single, <String, Object?>{
+          'callId': 'denied-1',
+          'status': 'rejected',
+          'content': 'The user rejected this tool invocation.',
+        });
+        expect(run.state, RunState.running);
+        expect(controller.failure, isNull);
+        expect(controller.pendingApproval, same(approval));
+        expect(button(tester, 'Allow once').onPressed, isNull);
+        expect(tester.widget<OutlinedButton>(deny).onPressed, isNull);
+        final ToolInvocationCompleted rejected = _events(
+          run,
+        ).whereType<ToolInvocationCompleted>().single;
+        expect(rejected.invocationId, ToolInvocationId('run-test-1-tool-1'));
+        expect(
+          rejected.outcome.disposition,
+          ToolOutcomeDisposition.userRejected,
+        );
+        expect(
+          rejected.outcome.effectCertainty,
+          EffectCertainty.knownNotOccurred,
+        );
+        expect(_events(run).whereType<ToolExecutionStarted>(), isEmpty);
+        expect(_events(run).whereType<RunFailed>(), isEmpty);
+        expect(fixture.environment.replacements, isEmpty);
+        expect(fixture.environment.processes, isEmpty);
+        expect(fixture.environment.sourceText, _EnvironmentChannel.initialText);
+        expect(
+          fixture.environment.reads.every(
+            (read) => read['relativePath'] == 'AGENTS.md',
+          ),
+          isTrue,
+        );
+        model.calls.last.output('The rejected work was not performed.');
+        model.calls.last.settle();
+        await tester.pumpAndSettle();
+        await active;
+        expect(run.state, RunState.completed);
+        expect(controller.failure, isNull);
+        expect(controller.isRunning, isFalse);
+        expect(controller.isAdvancing, isFalse);
+        expect(controller.activeRunFuture, isNull);
+        expect(controller.pendingApproval, isNull);
+        expect(find.text('Approval required'), findsNothing);
+        expect(
+          controller.snapshot.entries.map((entry) => entry.content),
+          <String>[
+            'Propose work for rejection',
+            'The rejected work was not performed.',
+          ],
+        );
+        expect(controller.resolveApproval(approval, approved: false), isFalse);
+        await disposeApplication(tester);
+      },
+    );
+  }
+
+  test(
+    'approval cannot override a revision change while the patch is waiting',
+    () async {
+      final _ModelChannel model = fixture.registerModel();
+      final ChatController controller = await fixture.createController();
+      expect(controller.submit('Patch only the observed revision'), isTrue);
+      final Future<void> starting = controller.activeRunFuture!;
+      final _ModelCall proposal = await model.callAt(0);
+      proposal.propose(
+        'revision-guarded-patch',
+        'apply_patch',
+        _patchArguments,
+      );
+      proposal.settle();
+      await starting;
+      final AgentRun run = controller.currentRun!.run;
+      final PendingToolApproval approval = controller.pendingApproval!;
+      expect(run.state, RunState.waiting);
+      expect(controller.activeRunFuture, isNull);
+      expect(
+        (jsonDecode(approval.canonicalArgumentsJson)
+            as Map<String, Object?>)['expectedRevision'],
+        fixture.environment.sourceRevision,
+      );
+      expect(fixture.environment.replacements, isEmpty);
+
+      // Preserve the unique search text so only the revision guard prevents a write.
+      final String externalText =
+          '// External edit\n${_EnvironmentChannel.initialText}';
+      fixture.environment.sourceText = externalText;
+      fixture.environment.sourceRevision = 'external-revision-1';
+      expect(controller.resolveApproval(approval, approved: true), isTrue);
+      final Future<void> resuming = controller.activeRunFuture!;
+      final _ModelCall continuation = await model.callAt(1);
+      final ToolExecutionCompleted result = _events(
+        run,
+      ).whereType<ToolExecutionCompleted>().single;
+      expect(result.invocationId, ToolInvocationId('run-test-1-tool-1'));
+      expect(result.outcome.disposition, ToolOutcomeDisposition.failure);
+      expect(result.outcome.failureKind, ToolFailureKind.domain);
+      expect(result.outcome.effectCertainty, EffectCertainty.knownNotOccurred);
+      expect(result.outcome.hostData['code'], environmentRevisionConflictCode);
+      expect(continuation.outcomes.single, <String, Object?>{
+        'callId': 'revision-guarded-patch',
+        'status': 'failed',
+        'content': result.outcome.modelContent,
+      });
+      expect(
+        result.outcome.modelContent,
+        contains('No stale ADELE write was performed.'),
+      );
+      expect(
+        _events(run)
+            .whereType<ToolInvocationPrepared>()
+            .single
+            .invocation
+            .canonicalArguments['expectedRevision'],
+        'source-revision-0',
+      );
+      expect(fixture.environment.replacements, isEmpty);
+      expect(fixture.environment.writeCount, 0);
+      expect(fixture.environment.sourceText, externalText);
+      expect(fixture.environment.sourceRevision, 'external-revision-1');
+      expect(controller.failure, isNull);
+      expect(run.state, RunState.running);
+      continuation.output('The file changed; the stale patch was not applied.');
+      continuation.settle();
+      await resuming;
+      expect(run.state, RunState.completed);
+      expect(_events(run).whereType<RunFailed>(), isEmpty);
+      expect(controller.failure, isNull);
+      expect(controller.pendingApproval, isNull);
+      expect(controller.isRunning, isFalse);
+      expect(controller.activeRunFuture, isNull);
+      expect(
+        controller.snapshot.entries.map((entry) => entry.content),
+        <String>[
+          'Patch only the observed revision',
+          'The file changed; the stale patch was not applied.',
+        ],
+      );
+      await controller.close();
+    },
+  );
+
+  test(
+    'Allow once never authorizes an identical later command invocation',
+    () async {
+      final _ModelChannel model = fixture.registerModel();
+      final ChatController controller = await fixture.createController();
+      expect(controller.submit('Run the check twice'), isTrue);
+      final Future<void> starting = controller.activeRunFuture!;
+      final _ModelCall first = await model.callAt(0);
+      first.propose('command-1', 'run_command', _commandArguments);
+      first.settle();
+      await starting;
+      final PendingToolApproval original = controller.pendingApproval!;
+      expect(controller.resolveApproval(original, approved: true), isTrue);
+      final Future<void> resuming = controller.activeRunFuture!;
+      final _ModelCall second = await model.callAt(1);
+      expect(fixture.environment.processes, hasLength(1));
+      second.propose('command-2', 'run_command', _commandArguments);
+      second.settle();
+      await resuming;
+      final PendingToolApproval repeated = controller.pendingApproval!;
+      final AgentRun run = controller.currentRun!.run;
+      expect(repeated, isNot(same(original)));
+      expect(repeated.canonicalArgumentsJson, original.canonicalArgumentsJson);
+      expect(repeated.toolId, original.toolId);
+      expect(repeated.summary, original.summary);
+      expect(run.state, RunState.waiting);
+      expect(controller.isRunning, isTrue);
+      expect(controller.isAdvancing, isFalse);
+      expect(controller.activeRunFuture, isNull);
+      expect(fixture.environment.processes, hasLength(1));
+      expect(controller.resolveApproval(original, approved: true), isFalse);
+      expect(controller.resolveApproval(repeated, approved: false), isTrue);
+      final Future<void> denying = controller.activeRunFuture!;
+      final _ModelCall finalCall = await model.callAt(2);
+      expect(
+        finalCall.outcomes.map(
+          (outcome) => (outcome['callId'], outcome['status']),
+        ),
+        <(String, String)>[('command-1', 'success'), ('command-2', 'rejected')],
+      );
+      finalCall.output('Checked once; repeat declined.');
+      finalCall.settle();
+      await denying;
+      expect(run.state, RunState.completed);
+      expect(_events(run).whereType<RunInterrupted>(), hasLength(2));
+      expect(fixture.environment.processes, hasLength(1));
+      expect(controller.pendingApproval, isNull);
+      await controller.close();
+    },
+  );
+
+  test(
+    'close abandons quiescent approval without resolution or presentation changes',
+    () async {
+      final _ModelChannel model = fixture.registerModel();
+      int notifications = 0;
+      final ChatController controller = await fixture.createController(
+        onChanged: () => notifications++,
+      );
+      expect(controller.submit('Leave this patch pending'), isTrue);
+      final Future<void> starting = controller.activeRunFuture!;
+      final _ModelCall call = await model.callAt(0);
+      call.propose('abandoned-patch', 'apply_patch', _patchArguments);
+      call.settle();
+      await starting;
+      final AgentRun run = controller.currentRun!.run;
+      final PendingToolApproval approval = controller.pendingApproval!;
+      final ChatSessionSnapshot frozen = controller.snapshot;
+      final int beforeClose = notifications;
+      final List<ExecutionEventRecord> journal = run.journal.records;
+      expect(controller.activeRunFuture, isNull);
+      final Future<void> closing = controller.close();
+      expect(controller.close(), same(closing));
+      expect(controller.isClosed, isTrue);
+      expect(controller.resolveApproval(approval, approved: true), isFalse);
+      expect(controller.resolveApproval(approval, approved: false), isFalse);
+      expect(controller.submit('Closing cannot start work'), isFalse);
+      await closing;
+      expect(run.state, RunState.waiting);
+      expect(run.journal.records, journal);
+      expect(_events(run).whereType<RunInterruptionResolved>(), isEmpty);
+      expect(_events(run).whereType<ToolExecutionStarted>(), isEmpty);
+      expect(controller.pendingApproval, same(approval));
+      expect(controller.snapshot, same(frozen));
+      expect(controller.failure, isNull);
+      expect(controller.activeRunFuture, isNull);
+      expect(notifications, beforeClose);
+      expect(model.calls, hasLength(1));
+      expect(fixture.environment.replacements, isEmpty);
+      expect(fixture.environment.processes, isEmpty);
+      expect(fixture.environment.sourceText, _EnvironmentChannel.initialText);
+    },
+  );
+
+  for (final bool nextApproval in <bool>[false, true]) {
+    test(
+      'close drains an accepted patch through ${nextApproval ? 'a late next approval' : 'model settlement'} without UI updates',
+      () async {
+        final _ModelChannel model = fixture.registerModel();
+        fixture.environment.replaceGate = Completer<void>();
+        int notifications = 0;
+        final ChatController controller = await fixture.createController(
+          onChanged: () => notifications++,
+        );
+        expect(controller.submit('Drain this approved patch'), isTrue);
+        final Future<void> starting = controller.activeRunFuture!;
+        final _ModelCall call = await model.callAt(0);
+        call.propose('drained-patch', 'apply_patch', _patchArguments);
+        if (nextApproval) {
+          call.propose('late-command', 'run_command', _commandArguments);
+        }
+        call.settle();
+        await starting;
+        final AgentRun run = controller.currentRun!.run;
+        final PendingToolApproval approval = controller.pendingApproval!;
+        expect(controller.resolveApproval(approval, approved: true), isTrue);
+        final Future<void> active = controller.activeRunFuture!;
+        await fixture.environment.replacementStarted.future;
+        final ChatSessionSnapshot frozen = controller.snapshot;
+        final int beforeClose = notifications;
+        bool closed = false;
+        final Future<void> closing = controller.close();
+        unawaited(closing.then((_) => closed = true));
+        expect(controller.close(), same(closing));
+        expect(controller.resolveApproval(approval, approved: false), isFalse);
+        expect(controller.resolveApproval(approval, approved: true), isFalse);
+        expect(controller.submit('Closing cannot submit'), isFalse);
+        expect(closed, isFalse);
+        expect(fixture.environment.writeCount, 0);
+        expect(controller.activeRunFuture, same(active));
+        fixture.environment.replaceGate!.complete();
+        if (!nextApproval) {
+          final _ModelCall continuation = await model.callAt(1);
+          expect(closed, isFalse);
+          expect(fixture.environment.writeCount, 1);
+          expect(continuation.outcomes.single['status'], 'success');
+          continuation.output('Late approved patch answer.');
+          continuation.settle();
+        }
+        await active;
+        await closing;
+        expect(closed, isTrue);
+        expect(run.state, nextApproval ? RunState.waiting : RunState.completed);
+        expect(fixture.environment.writeCount, 1);
+        expect(fixture.environment.replacements, hasLength(1));
+        expect(fixture.environment.processes, isEmpty);
+        expect(controller.pendingApproval, same(approval));
+        expect(controller.snapshot, same(frozen));
+        expect(controller.failure, isNull);
+        expect(controller.activeRunFuture, isNull);
+        expect(notifications, beforeClose);
+        expect(_events(run).whereType<RunInterruptionResolved>(), hasLength(1));
+        expect(_events(run).whereType<ToolExecutionStarted>(), hasLength(1));
+        if (nextApproval) {
+          expect(model.calls, hasLength(1));
+          expect(
+            (run.interruptions.values.single as ToolApprovalInterruption)
+                .invocation
+                .proposal
+                .providerCallId,
+            'late-command',
+          );
+          expect(controller.resolveApproval(approval, approved: true), isFalse);
+        }
+        final ChatSessionSnapshot canonical = fixture.runtime.chat.sessions
+            .obtain(controller.session.id)
+            .snapshot();
+        expect(canonical.entries, hasLength(nextApproval ? 1 : 2));
+        if (!nextApproval) {
+          expect(canonical.entries.last.content, 'Late approved patch answer.');
+        }
+      },
+    );
+  }
+
+  test(
+    'approval retains its exact retired Environment binding, never its replacement',
+    () async {
+      final _ModelChannel model = fixture.registerModel();
+      final ChatController controller = await fixture.createController();
+      expect(controller.submit('Do not migrate this pending patch'), isTrue);
+      final Future<void> starting = controller.activeRunFuture!;
+      final _ModelCall call = await model.callAt(0);
+      call.propose('stale-patch', 'apply_patch', _patchArguments);
+      call.settle();
+      await starting;
+      final AgentRun run = controller.currentRun!.run;
+      final PendingToolApproval approval = controller.pendingApproval!;
+      await fixture.environment.registration.close();
+      final _EnvironmentChannel replacement = _EnvironmentChannel();
+      fixture.registerEnvironment(replacement);
+      expect(controller.resolveApproval(approval, approved: true), isTrue);
+      await controller.activeRunFuture!;
+      final ToolInvocationCompleted result = _events(
+        run,
+      ).whereType<ToolInvocationCompleted>().single;
+      expect(result.invocationId, ToolInvocationId('run-test-1-tool-1'));
+      expect(result.outcome.disposition, ToolOutcomeDisposition.failure);
+      expect(result.outcome.failureKind, ToolFailureKind.staleBinding);
+      expect(result.outcome.effectCertainty, EffectCertainty.knownNotOccurred);
+      expect(_events(run).whereType<ToolExecutionStarted>(), isEmpty);
+      expect(fixture.environment.replacements, isEmpty);
+      expect(fixture.environment.sourceText, _EnvironmentChannel.initialText);
+      expect(replacement.establishments, isEmpty);
+      expect(replacement.reads, isEmpty);
+      expect(replacement.replacements, isEmpty);
+      expect(replacement.processes, isEmpty);
+      // Fresh continuation context must also reject the retired materialization.
+      expect(model.calls, hasLength(1));
+      expect(run.state, RunState.failed);
+      expect(controller.failure, isNotNull);
+      expect(controller.pendingApproval, isNull);
+      expect(controller.isRunning, isFalse);
+      expect(controller.isAdvancing, isFalse);
+      expect(controller.activeRunFuture, isNull);
+      await controller.close();
+    },
+  );
 
   for (final String? modelName in <String?>[null, ' \t ']) {
     test(
@@ -630,7 +1555,7 @@ void main() {
           expect(notifications, frozenNotifications);
           expect(controller.snapshot, same(frozen));
           expect(controller.currentRun, same(execution));
-          expect(controller.activeRunFuture, same(active));
+          expect(controller.activeRunFuture, isNull);
           expect(controller.failure, isNull);
           expect(controller.submit('After settlement'), isFalse);
           expect(fixture.runIds.values, hasLength(1));
@@ -658,7 +1583,23 @@ final class _Fixture {
         selectProject: () async => Uri.parse('file:///chat-test/source/'),
       ),
     );
-    _environmentRegistration = runtime.registry.register(
+    registerEnvironment(environment);
+  }
+
+  final _ProductIds ids = _ProductIds();
+  final _RunIds runIds = _RunIds();
+  final _EnvironmentChannel environment = _EnvironmentChannel();
+  final List<_EnvironmentChannel> environments = <_EnvironmentChannel>[];
+  final List<_ModelChannel> models = <_ModelChannel>[];
+  late final AdeleRuntime runtime;
+  late final ExtensionRegistration _selector;
+  int runtimeCreations = 0;
+  int bootstraps = 0;
+  int configurationReads = 0;
+  bool _closed = false;
+
+  void registerEnvironment(_EnvironmentChannel channel) {
+    channel.registration = runtime.registry.register(
       provider: ProviderDescriptor(
         id: ProviderId('dev.adele.test.chat-environment'),
         capability: environmentProviderCapability,
@@ -667,24 +1608,13 @@ final class _Fixture {
         serviceId: environmentProviderServiceId,
       ),
       endpoint: AdeleRequestChannelEndpoint(
-        channel: environment,
+        channel: channel,
         serviceId: environmentProviderServiceId,
         isAvailable: () => true,
       ),
     );
+    environments.add(channel);
   }
-
-  final _ProductIds ids = _ProductIds();
-  final _RunIds runIds = _RunIds();
-  final _EnvironmentChannel environment = _EnvironmentChannel();
-  final List<_ModelChannel> models = <_ModelChannel>[];
-  late final AdeleRuntime runtime;
-  late final ExtensionRegistration _selector;
-  late final CapabilityRegistration _environmentRegistration;
-  int runtimeCreations = 0;
-  int bootstraps = 0;
-  int configurationReads = 0;
-  bool _closed = false;
 
   AdeleApplication application({
     StockChatGptConfiguration? configuration = _configuration,
@@ -739,11 +1669,27 @@ final class _Fixture {
     );
   }
 
+  Future<ChatController> createController({VoidCallback? onChanged}) async =>
+      ChatController(
+        runtime: runtime,
+        session: await createSession(),
+        providerId: stockChatGptProviderId,
+        model: _configuration.model,
+        runIds: runIds,
+        onChanged: onChanged,
+      );
+
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
-    if (environment.readGate case final gate? when !gate.isCompleted) {
-      gate.complete();
+    for (final environment in environments) {
+      for (final gate in <Completer<void>?>[
+        environment.readGate,
+        environment.replaceGate,
+        environment.processGate,
+      ]) {
+        if (gate != null && !gate.isCompleted) gate.complete();
+      }
     }
     for (final model in models) {
       for (final call in model.calls) {
@@ -751,7 +1697,9 @@ final class _Fixture {
       }
       await model.registration.close();
     }
-    await _environmentRegistration.close();
+    for (final environment in environments) {
+      await environment.registration.close();
+    }
     await _selector.close();
     await runtime.close();
   }
@@ -786,11 +1734,25 @@ final class _RunIds implements RunIdSource {
   }
 }
 
-final class _EnvironmentChannel implements AdeleRequestChannel {
+final class _EnvironmentChannel implements AdeleStreamChannel {
   static const String instructions = 'Use the deterministic Chat fixture only.';
+  static const String sourcePath = 'lib/example.dart';
+  static const String initialText = 'final value = "before";\n';
+  static const String commandStdout = 'Checked the approved source.\n';
+  static const String commandStderr = 'Fixture diagnostic.\n';
+  late final CapabilityRegistration registration;
   final List<Map<String, Object?>> establishments = <Map<String, Object?>>[];
   final List<Map<String, Object?>> reads = <Map<String, Object?>>[];
+  final List<Map<String, Object?>> directories = <Map<String, Object?>>[];
+  final List<Map<String, Object?>> replacements = <Map<String, Object?>>[];
+  final List<Map<String, Object?>> processes = <Map<String, Object?>>[];
+  final Completer<void> replacementStarted = Completer<void>();
   Completer<void>? readGate;
+  Completer<void>? replaceGate;
+  Completer<void>? processGate;
+  String sourceText = initialText;
+  String sourceRevision = 'source-revision-0';
+  int writeCount = 0;
 
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) async {
@@ -800,23 +1762,99 @@ final class _EnvironmentChannel implements AdeleRequestChannel {
         'providerState': <String, Object?>{'fixture': 'chat-session'},
       };
     }
-    expectSync(method, environmentProviderServiceReadFileId);
-    expectSync(payload['relativePath'], 'AGENTS.md');
-    reads.add(payload);
-    await readGate?.future;
-    return <String, Object?>{
-      'relativePath': 'AGENTS.md',
-      'text': instructions,
-      'sizeBytes': instructions.length,
-      'revision': 'agents-test-revision',
-    };
+    expectSync(payload['environmentId'], 'environment-1');
+    switch (method) {
+      case environmentProviderServiceReadFileId:
+        final String path = payload['relativePath']! as String;
+        expectSync(path, isIn(<String>['AGENTS.md', sourcePath]));
+        reads.add(payload);
+        await readGate?.future;
+        final String text = path == 'AGENTS.md' ? instructions : sourceText;
+        return <String, Object?>{
+          'relativePath': path,
+          'text': text,
+          'sizeBytes': utf8.encode(text).length,
+          'revision': path == 'AGENTS.md'
+              ? 'agents-test-revision'
+              : sourceRevision,
+        };
+      case environmentProviderServiceReadDirectoryId:
+        expectSync(payload['relativePath'], 'lib');
+        directories.add(payload);
+        return <String, Object?>{
+          'relativePath': 'lib',
+          'entries': <Object?>[
+            <String, Object?>{
+              'kind': 'file',
+              'name': 'example.dart',
+              'relativePath': sourcePath,
+            },
+          ],
+        };
+      case environmentProviderServiceReplaceExistingTextFileId:
+        expectSync(payload['relativePath'], sourcePath);
+        expectSync(payload['expectedRevision'], sourceRevision);
+        replacements.add(payload);
+        if (!replacementStarted.isCompleted) replacementStarted.complete();
+        await replaceGate?.future;
+        sourceText = payload['replacementText']! as String;
+        writeCount++;
+        sourceRevision = 'source-revision-$writeCount';
+        return <String, Object?>{'revision': sourceRevision};
+      default:
+        throw StateError('Unexpected Environment request: $method');
+    }
+  }
+
+  @override
+  Stream<Object?> stream(String method, Map<String, Object?> payload) {
+    expectSync(method, environmentProviderServiceRunForegroundProcessId);
+    expectSync(payload['environmentId'], 'environment-1');
+    processes.add(payload);
+    final StreamController<Object?> events = StreamController<Object?>(
+      // Keep cancellation settlement in this test's async zone.
+      onCancel: () async {},
+    );
+    unawaited(() async {
+      await processGate?.future;
+      for (final (String stream, String text) in <(String, String)>[
+        ('stdout', commandStdout),
+        ('stderr', commandStderr),
+      ]) {
+        events.add(<String, Object?>{
+          'kind': 'output',
+          'output': <String, Object?>{'stream': stream, 'text': text},
+          'completed': null,
+        });
+      }
+      events.add(<String, Object?>{
+        'kind': 'completed',
+        'output': null,
+        'completed': <String, Object?>{
+          'termination': 'exited',
+          'exitCode': 0,
+          'stdoutTruncated': false,
+          'stderrTruncated': false,
+        },
+      });
+      await events.close();
+    }());
+    return events.stream;
   }
 }
 
 final class _ModelChannel implements AdeleStreamChannel {
   final List<_ModelCall> calls = <_ModelCall>[];
   final Completer<void> started = Completer<void>();
+  Completer<void> _changed = Completer<void>();
   late final CapabilityRegistration registration;
+
+  Future<_ModelCall> callAt(int index) async {
+    while (calls.length <= index) {
+      await _changed.future;
+    }
+    return calls[index];
+  }
 
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) =>
@@ -830,6 +1868,8 @@ final class _ModelChannel implements AdeleStreamChannel {
       payload['request']! as Map<String, Object?>,
     );
     calls.add(call);
+    _changed.complete();
+    _changed = Completer<void>();
     if (!started.isCompleted) started.complete();
     return call.events.stream;
   }
@@ -840,6 +1880,13 @@ final class _ModelCall {
 
   final Map<String, Object?> request;
   final StreamController<Object?> events = StreamController<Object?>();
+
+  List<Map<String, Object?>> get outcomes => <Map<String, Object?>>[
+    for (final item
+        in (request['input']! as List<Object?>).cast<Map<String, Object?>>())
+      if (item['kind'] == 'toolOutcome')
+        item['toolOutcome']! as Map<String, Object?>,
+  ];
 
   List<(String, String)> get messages => <(String, String)>[
     for (final item in request['input']! as List<Object?>)
@@ -854,7 +1901,25 @@ final class _ModelCall {
       })(),
   ];
 
-  // Generated value codecs are library-private; keep only these two wire shapes.
+  // Generated value codecs are library-private; retain only the tested shapes.
+  void propose(String callId, String alias, Map<String, Object?> arguments) =>
+      events.add(<String, Object?>{
+        'kind': 'output',
+        'observation': null,
+        'output': <String, Object?>{
+          'kind': 'toolProposal',
+          'text': null,
+          'toolProposal': <String, Object?>{
+            'callId': callId,
+            'name': alias,
+            'arguments': arguments,
+          },
+          'itemId': callId,
+          'nativeMetadata': null,
+        },
+        'terminal': null,
+      });
+
   void output(String text) => events.add(<String, Object?>{
     'kind': 'output',
     'observation': null,

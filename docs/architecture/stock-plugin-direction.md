@@ -29,9 +29,12 @@ Normal composition now activates Git as required backend support and experimenta
 ChatGPT as an independently failing additional ModelProvider on the same host.
 Stock OpenAI configuration/exposure belongs at the application composition edge,
 not in the generic host. Normal presentation supports one canonical stock Chat
-Session, independent of model readiness, and fresh read-only Runs per prompt.
-Model binding, tools, and policy are Run-level choices. This is provisional stock
-composition, not Agent Interaction, Settings, or a profile/provider preference API.
+Session, independent of model readiness, and fresh approval-gated Runs per prompt.
+Model binding, tools, and policy are Run-level choices. Window-local cards resolve
+existing Run interruptions for eligible mutations and commands, without entering
+canonical Chat history or changing plugin sequencing. This is provisional stock
+composition, not Agent Interaction, Settings, configurable permissions, or a
+profile/provider preference API.
 
 Future discovery/profile activation should replace hard-coded stock selection at
 this composition edge, starting plugin runtimes and registering contributions
@@ -775,7 +778,7 @@ settlement. If A retires, its active Run fails without migrating; a later Run in
 the same Session may freshly resolve B under the unchanged semantic ID. The
 self-hosting topology uses this path, not direct loop construction.
 
-Project opening, Task creation, and a minimal single-Session read-only Chat flow
+Project opening, Task creation, and a minimal single-Session approval-gated Chat flow
 are implemented. The richer flows below remain directional, including effective
 Agent binding, inference composition beyond instruction sources, persistence,
 and child-Session steps that headless Chat does not implement.
@@ -830,9 +833,11 @@ Presentation supplies no provider ID, calls no Git API, and never parses opaque
 `providerState`. Project/Task/Environment selection is window-local; failure does
 not replace presented values and disposal/exit prevents late updates.
 
-Application close drains pending Task establishment and active Runs before
-runtime/provider cleanup, even on failure. Draining avoids interrupting establishment without
-cancelling or rolling back provider work.
+Application close synchronously blocks window actions and notifications and drains
+pending Task establishment and only the currently advancing Run start/resume
+before runtime/provider cleanup, even on failure. Quiescent waiting Runs are
+abandoned with teardown without resolving or executing their pending invocations
+or waiting indefinitely for approval. Draining adds no cancellation or rollback.
 
 Readiness comes from the live exact materialization binding. Successful provider
 state remains retained if its generation retires immediately after establishment,

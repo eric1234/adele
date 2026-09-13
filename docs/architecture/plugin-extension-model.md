@@ -314,8 +314,10 @@ Only lifecycle success presents the canonical Task and primary Environment;
 selection is window-local. Readiness comes from the live exact binding, not
 interpretation of opaque `providerState`. Normal Chat presentation separately
 creates its canonical Session through lifecycle, independent of model availability,
-and selects exact model/tools/read-only policy for each fresh Run. This adds no
-Task Browser or public UI/Command API.
+and selects exact model/tools/approval-gated policy for each fresh Run. Window-local
+approval cards resolve existing Run interruptions; they are neither canonical Chat
+entries nor a new extension point. This adds no Task Browser or public UI/Command
+API.
 
 ---
 
