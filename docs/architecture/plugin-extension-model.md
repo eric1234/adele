@@ -19,8 +19,10 @@ Normal Task/primary Environment creation uses existing capability routing and
 product lifecycle, not a new extension point or Task Browser API. Synchronous,
 provider-free `AdeleRuntime()` owns generic application-lifetime backend bootstrap
 on the same capability registry. Explicit async stock composition activates Git
-through one shared host, using activation code shared with self-hosting; the
-generic bootstrap owner remains Git-neutral. See
+and independently activates experimental ChatGPT through one shared host, using
+stock exposure code shared with self-hosting. The generic bootstrap owner remains
+plugin-neutral; additional activation failure retires only that plugin, while
+shared-host failure remains global. See
 [`dependency-rules.md`](dependency-rules.md#application-backend-composition) for
 ownership and replaceability; profiles, discovery, and production packaging remain
 deferred.
@@ -310,8 +312,10 @@ Project selection/opening remains independent of backend readiness or failure.
 
 Only lifecycle success presents the canonical Task and primary Environment;
 selection is window-local. Readiness comes from the live exact binding, not
-interpretation of opaque `providerState`. This adds no Session/Chat/Run flow,
-Task Browser, or public UI/Command API.
+interpretation of opaque `providerState`. Normal Chat presentation separately
+creates its canonical Session through lifecycle, independent of model availability,
+and selects exact model/tools/read-only policy for each fresh Run. This adds no
+Task Browser or public UI/Command API.
 
 ---
 
@@ -565,7 +569,7 @@ Examples:
 - A mandatory security/policy participant failing may make it unsafe to continue.
 - Implemented inference-context sources explicitly declare required or optional failure behavior: required failure aborts preparation, optional failure omits the whole source with diagnostics, and successful empty output remains distinct.
 - B1 Project selectors return `null` for cancellation; selector/lifecycle failure is an inline app error with no fallback or change to the presented Project.
-- Backend startup failure cleans up acquired resources and leaves Task support visibly unavailable without blocking Project opening; Task establishment failure publishes no new Task/Environment and substitutes no provider.
+- Required host/Git startup failure cleans up acquired resources and leaves Task support visibly unavailable without blocking Project opening; optional OpenAI activation failure affects model availability only. Task establishment failure publishes no new Task/Environment and substitutes no provider.
 
 Each Extension Point must define failure semantics appropriate to its role.
 
@@ -657,7 +661,9 @@ Current Chat state is in memory: `ChatSessionStore.obtain(SessionId)` retains
 assistant messages are canonical; intermediate native/model output, proposals,
 and tool results remain Run-local. Chat instructions and a positive invocation
 budget are snapshotted per materialized Run. This does not implement the
-persistence facilities described below, Chat UI, profiles, or child Sessions.
+persistence facilities described below, rich plugin-facing Chat UI, profiles, or
+child Sessions. The normal app's minimal Chat surface consumes canonical snapshots
+without moving history into product Session values.
 
 ADELE should provide lifecycle-aware persistence facilities for plugin-owned state scoped to stable domain identities such as Project, Task, Session, or Environment where appropriate.
 

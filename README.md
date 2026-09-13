@@ -15,6 +15,7 @@ Per-inference instruction-source capture and immutable context snapshots
 Shared application runtime and static stock plugin composition
 Typed Project selectors and minimal local-directory Project opening
 Normal title-only Task creation with a real Git primary Environment
+Normal stock Chat Sessions with sequential read-only ChatGPT-backed Runs
 Stock root-level AGENTS.md instructions
 Session-authorized Environment read/search and bounded text-file mutation
 Foreground process execution and model-facing command validation
@@ -42,23 +43,26 @@ Command Tools. It also owns pure-Dart `ApplicationPluginBootstrap` on the same
 capability registry, without starting it from the constructor.
 
 Normal `AdeleApplication` explicitly calls `bootstrapStockBackendPlugins`
-asynchronously. Prepared runtime/host/Git artifact locations let the generic owner
-start one `PluginBackendHost` and invoke stock activation callbacks. No app
-startup code compiles source or loads model credentials. Missing configuration
-leaves Task Environment support unavailable; startup failure cleans up acquired
-resources and is shown without preventing Project opening. Startup creates no
-Project, Task, Environment, Session, tool catalog, or Run.
+asynchronously. Prepared runtime/host/Git/OpenAI artifact locations let the generic
+owner start one `PluginBackendHost` and invoke stock activation callbacks. Git is
+required for backend readiness; experimental ChatGPT activation is independent.
+Missing or failed OpenAI activation leaves Git and product lifecycle usable.
+ChatGPT configuration belongs to the OpenAI plugin generation, passed as startup
+arguments containing a credential-store path and public OAuth configuration,
+never token contents. The backend loads credentials, not Flutter. Startup compiles
+no source and creates no Project, Task, Environment, Session, tool catalog, or Run.
 
 Application close immediately marks the window closing and drains any in-flight
-Task establishment before calling `runtime.close`, even when establishment fails.
+Task establishment and active Run before calling `runtime.close`, even when either
+fails.
 Late UI updates remain ignored; this is settlement draining, not cancellation or
 rollback. Desktop exit awaits that close; detach/dispose initiate the same cleanup
 and report failures. Backend capability registrations retire before connections
 close, then the shared host closes, then the runtime's in-process activations
 retire in reverse order. Cleanup attempts every action before reporting its first
-failure. Self-hosting reuses the runtime and shared stock Git registration code,
-but owns its larger artifact/host/provider and product/Run topology independently
-of normal startup configuration.
+failure. Self-hosting reuses the runtime and stock Git/OpenAI exposure code, but
+owns its larger artifact/host/provider and product/Run topology independently of
+normal startup configuration.
 
 B1 adds `ProjectSelectorContribution` in tiny pure-Dart `adele_core_extensions`,
 whose only package dependency is `adele_plugin_api`. The typed
@@ -91,8 +95,14 @@ the live exact materialization binding, never by parsing opaque `providerState`.
 Project/Task/Environment presentation remains window-local. Non-Git source
 validation belongs to the selected provider, not Project selection or the form.
 This is not a Task Browser, Command surface, catalog, persistence, or deduplication
-system and creates no Session or Chat/model/Run flow. See `app/README.md` for
-bootstrap ownership, lifecycle settlement, and validation paths.
+system. C1 adds one window-local canonical stock Chat Session, independent of
+model availability, and a minimal conversation/prompt surface. Each accepted
+prompt creates a fresh Run with an exact newly resolved ChatGPT provider binding,
+fresh Session-authorized tools, and a read-only policy. Only source-read effects
+are allowed; mutation, command execution, mixed, and unknown effects are denied
+through normal model-visible tool outcomes, without approval interruptions.
+See `app/README.md` for bootstrap ownership, lifecycle settlement, and validation
+paths.
 
 ADELE separates provider-neutral Run/model/tool/policy/approval mechanics from
 strategy-owned Session meaning. `adele_product` owns the final immutable
@@ -103,7 +113,7 @@ requires an existing Task and one current matching strategy, validates the
 Task's primary or explicitly selected same-Task Environment, and atomically
 publishes the Session and separate Environment authority in memory.
 
-The first executable stock strategy is headless `chat_strategy_plugin` under
+The first executable stock strategy is `chat_strategy_plugin` under
 `plugins/chat_strategy`, registered as `dev.adele.strategy.chat` with separate
 plugin and extension identities. Chat owns retained in-memory canonical
 user/final assistant history, instructions, and a positive model-invocation
@@ -157,7 +167,8 @@ conventions. `AdeleRuntime` activates and retains Chat in normal startup and
 development/self-hosting. Self-hosting obtains its retained Session state, appends
 the prompt, and routes `SessionId` through core lifecycle and orchestration
 hosting rather than constructing a loop directly.
-This is executable plugin composition, not production plugin discovery or Chat UI.
+Normal presentation also consumes this retained Chat state. This remains stock
+application composition, not production plugin discovery or a plugin-facing UI API.
 
 Chat supplies `StrategyInferenceMaterial` containing instructions and ordered
 semantic input from history projection plus Run-local replay. Public
@@ -351,13 +362,14 @@ dart tools/adele.dart check
 dart tools/adele.dart build linux
 ```
 
-Normal Linux `run` and `build` prepare fresh shared-host and Git backend AOT
+Normal Linux `run` and `build` prepare fresh shared-host, Git, and OpenAI backend AOT
 snapshots before the Flutter run/build invocation, using `compileAotSnapshot` from
 `plugin_builder`. `tools/backend_artifacts.dart` selects the Dart compiler and
 `dartaotruntime` from the launching Flutter SDK, retains a fresh isolated directory
-under `.dart_tool/adele/desktop-backends/` for each invocation, and passes three
-compile-time defines: `ADELE_DARTAOTRUNTIME_EXECUTABLE`,
-`ADELE_BACKEND_HOST_ARTIFACT`, and `ADELE_GIT_ENVIRONMENT_ARTIFACT`. The app consumes
+under `.dart_tool/adele/desktop-backends/` for each invocation, and passes four
+compile-time artifact-location defines: `ADELE_DARTAOTRUNTIME_EXECUTABLE`,
+`ADELE_BACKEND_HOST_ARTIFACT`, `ADELE_GIT_ENVIRONMENT_ARTIFACT`, and
+`ADELE_OPENAI_ARTIFACT`. The app consumes
 only these prepared locations, not source paths or a compiler.
 
 These provisional absolute paths make the built app runnable only on the
@@ -490,8 +502,8 @@ preferences. A future window/context may use an ordered stack such as
 arbitrary small stack limit.
 
 Profiles are not implemented. Normal startup and development/self-hosting reuse
-the implicit in-process stock composition and stock Git exposure helper, while
-owning separate backend topologies. The three normal artifact-location defines
+the implicit in-process stock composition and stock Git/OpenAI exposure helpers,
+while owning separate backend topologies. The normal artifact-location defines
 are deployment inputs, not a profile or general configuration API.
 
 Activation, ordinary configuration, provider selection, configured capability
@@ -520,9 +532,9 @@ are not included and remain independent plugin concerns.
 Broader Reference/Observation material remains directional, without placeholder
 public APIs. Provider-aware projection and cache planning, token budgets,
 compaction, and context preview remain deferred.
-General provider/model configuration, Task Browser, Session creation UI, Chat UI,
-and the Run product flow remain deferred despite B1 Project opening, B2 normal
-Task/primary Environment establishment, and the headless self-hosting path.
+General provider/model configuration, Task Browser, and richer Session/Run UI
+remain deferred. The normal product path now reaches one stock Chat Session with
+sequential read-only Runs through experimental ChatGPT subscription auth.
 GitHub, cloud, recent-project/catalog selectors, persistence, and deduplication
 are not implemented; application Command surfacing remains deferred.
 Chat persistence, profiles, child Session lifecycle, strategy defaults,

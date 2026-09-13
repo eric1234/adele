@@ -10,7 +10,7 @@ import 'package:test/test.dart';
 
 void main() {
   test(
-    'AOT generation isolates API key and routes configured contexts',
+    'AOT configuration isolates API key, ChatGPT-only, and combined contexts',
     () async {
       final String repository =
           Directory.current.parent.parent.parent.parent.path;
@@ -122,6 +122,8 @@ void main() {
           'OPENAI_API_KEY': 'api-key-aot-only',
           'ADELE_OPENAI_ENDPOINT': '$origin/public/responses',
           'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE': credentials.path,
+          'ADELE_OPENAI_CHATGPT_CLIENT_ID': '',
+          'ADELE_OPENAI_CHATGPT_EXPERIMENTAL_CODEX_CLIENT': '',
         },
       );
       addTearDown(() async {
@@ -247,6 +249,175 @@ void main() {
 
       await activation.close();
       await host.close();
+
+      for (final mode in [
+        (startup: false, apiKey: '', experimental: false),
+        (startup: false, apiKey: '  ', experimental: true),
+        (startup: true, apiKey: '', experimental: false),
+        (startup: true, apiKey: 'inherited-api-key', experimental: true),
+      ]) {
+        final PluginBackendHost chatOnlyHost = await PluginBackendHost.start(
+          dartaotruntimeExecutable: runtime,
+          hostArtifactPath: hostArtifact.path,
+          environment: <String, String>{
+            'OPENAI_API_KEY': mode.apiKey,
+            'ADELE_OPENAI_ENDPOINT': 'invalid-inherited-api-endpoint',
+            'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE': credentials.path,
+            'ADELE_OPENAI_CHATGPT_CLIENT_ID': mode.experimental
+                ? ''
+                : 'authorized-aot-test-client',
+            'ADELE_OPENAI_CHATGPT_EXPERIMENTAL_CODEX_CLIENT':
+                mode.experimental && !mode.startup ? '1' : '',
+            'ADELE_OPENAI_CHATGPT_INSTANCE_ID': 'aot-chatgpt',
+            'ADELE_OPENAI_CHATGPT_ENDPOINT': mode.startup
+                ? 'invalid-inherited-chatgpt-endpoint'
+                : '$origin/chatgpt/responses',
+            'ADELE_OPENAI_CHATGPT_OAUTH_ISSUER': origin,
+            'ADELE_OPENAI_CHATGPT_REDIRECT_URI':
+                'http://127.0.0.1:1455/auth/callback',
+          },
+        );
+        addTearDown(chatOnlyHost.close);
+        final PluginBackendConnection chatOnly = await chatOnlyHost.startPlugin(
+          pluginId: openAiPluginId,
+          artifactUri: pluginArtifact.uri,
+          arguments: mode.startup
+              ? <String>[
+                  '--chatgpt-only',
+                  jsonEncode(<String, Object?>{
+                    'credentialFile': credentials.path,
+                    if (mode.experimental)
+                      'experimentalCodexClient': true
+                    else
+                      'clientId': 'authorized-aot-test-client',
+                    'instanceId': 'aot-chatgpt',
+                    'endpoint': '$origin/chatgpt/responses',
+                  }),
+                ]
+              : const <String>[],
+        );
+        await expectLater(
+          ModelProviderServiceClient(
+            chatOnly.channelFor(
+              chatOnly.defaultConfigurationContext,
+              modelProviderServiceId,
+            ),
+          ).invoke(_request('unavailable-api-key')).toList(),
+          throwsA(
+            isA<PluginRemoteFailure>().having(
+              (error) => error.code,
+              'code',
+              'configuration_context_unavailable',
+            ),
+          ),
+        );
+        final List<ModelProviderEvent> events =
+            await ModelProviderServiceClient(
+              chatOnly.channelFor(
+                chatOnly.configurationContext(
+                  openAiChatGptConfigurationContext,
+                ),
+                modelProviderServiceId,
+              ),
+            ).invoke(_request('gpt-6-astra')).toList();
+        expect(events.first.output?.text, '/chatgpt/responses');
+        expect(captured.last.authorization, 'Bearer oauth-aot-only');
+        expect(captured.last.accountId, 'account-aot');
+        expect(captured.last.model, 'gpt-6-astra');
+        await chatOnly.close();
+        await chatOnlyHost.close();
+      }
+
+      final List<String> diagnostics = <String>[];
+      final PluginBackendHost invalidHost = await PluginBackendHost.start(
+        dartaotruntimeExecutable: runtime,
+        hostArtifactPath: hostArtifact.path,
+        environment: const <String, String>{
+          'OPENAI_API_KEY': '',
+          'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE': '',
+          'ADELE_OPENAI_CHATGPT_CLIENT_ID': '',
+          'ADELE_OPENAI_CHATGPT_EXPERIMENTAL_CODEX_CLIENT': '',
+        },
+        onDiagnostic: diagnostics.add,
+      );
+      addTearDown(invalidHost.close);
+      await expectLater(
+        invalidHost.startPlugin(
+          pluginId: openAiPluginId,
+          artifactUri: pluginArtifact.uri,
+        ),
+        throwsA(
+          isA<PluginRemoteFailure>().having(
+            (error) => error.message,
+            'message',
+            contains('requires a nonblank OPENAI_API_KEY'),
+          ),
+        ),
+      );
+      const String secret = 'sensitive-configuration-canary';
+      final Map<String, Object?> valid = <String, Object?>{
+        'credentialFile': credentials.path,
+        'clientId': 'authorized-aot-test-client',
+      };
+      for (final List<String> arguments in <List<String>>[
+        <String>['--unknown', secret],
+        <String>['--chatgpt-only', '{"credentialFile":"$secret"'],
+        <String>[
+          '--chatgpt-only',
+          jsonEncode(<Object?>[secret]),
+        ],
+        for (final Map<String, Object?> configuration in [
+          <String, Object?>{},
+          <String, Object?>{'credentialFile': credentials.path},
+          <String, Object?>{...valid, 'accessToken': secret},
+          <String, Object?>{...valid, 'apiKey': secret},
+          <String, Object?>{
+            ...valid,
+            'credentialFile': <String>[secret],
+          },
+          <String, Object?>{...valid, 'credentialFile': ''},
+          <String, Object?>{...valid, 'experimentalCodexClient': secret},
+          <String, Object?>{...valid, 'clientId': '$secret\n'},
+          <String, Object?>{...valid, 'endpoint': 'https://[$secret'},
+          <String, Object?>{
+            ...valid,
+            'endpoint': 'http://example.test/$secret',
+          },
+          <String, Object?>{...valid, 'issuer': 'https://example.test/$secret'},
+          <String, Object?>{
+            ...valid,
+            'redirectUri': 'https://example.test/$secret',
+          },
+          <String, Object?>{
+            ...valid,
+            'endpoint': 'https://$secret@example.test',
+          },
+        ])
+          <String>['--chatgpt-only', jsonEncode(configuration)],
+      ]) {
+        await expectLater(
+          invalidHost.startPlugin(
+            pluginId: openAiPluginId,
+            artifactUri: pluginArtifact.uri,
+            arguments: arguments,
+          ),
+          throwsA(
+            isA<PluginRemoteFailure>()
+                .having(
+                  (error) => error.message,
+                  'message',
+                  contains('Invalid OpenAI'),
+                )
+                .having(
+                  (error) => error.toString(),
+                  'redacted',
+                  isNot(contains(secret)),
+                ),
+          ),
+        );
+      }
+      await invalidHost.close();
+      expect(diagnostics.join(), isNot(contains(secret)));
     },
     timeout: const Timeout(Duration(minutes: 3)),
   );

@@ -5,26 +5,35 @@ import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/plugins/stock_backend_plugins.dart';
+import 'package:adele_desktop/plugins/stock_openai.dart';
+import 'package:adele_desktop/ui/chat/chat_controller.dart';
+import 'package:adele_desktop/ui/chat/chat_view.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_desktop/ui/shell/task_title_form.dart';
 import 'package:adele_desktop/ui/theme/adele_theme.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter/material.dart';
 
 final class AdeleApplication extends StatefulWidget {
   const AdeleApplication({
     super.key,
     this.createRuntime = AdeleRuntime.new,
-    this.bootstrapPlugins = bootstrapStockBackendPlugins,
+    this.bootstrapPlugins,
+    this.readChatGptConfiguration = StockChatGptConfiguration.fromEnvironment,
+    this.runIds,
   });
 
   /// Called once when mounted; this application owns and closes the result.
   final AdeleRuntime Function() createRuntime;
 
-  final Future<void> Function(ApplicationPluginBootstrap) bootstrapPlugins;
+  final Future<void> Function(ApplicationPluginBootstrap)? bootstrapPlugins;
+  final StockChatGptConfiguration? Function() readChatGptConfiguration;
+  final RunIdSource? runIds;
 
   @override
   State<AdeleApplication> createState() => _AdeleApplicationState();
@@ -45,11 +54,20 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   bool _creatingTask = false;
   Future<TaskCreationResult>? _taskCreation;
   String? _taskError;
+  StockChatGptConfiguration? _chatGptConfiguration;
+  bool _modelConfigurationFailed = false;
+  ChatController? _chat;
+  String? _sessionError;
 
   @override
   void initState() {
     super.initState();
     _runtime = widget.createRuntime();
+    try {
+      _chatGptConfiguration = widget.readChatGptConfiguration();
+    } on Object {
+      _modelConfigurationFailed = true;
+    }
     _pluginSubscription = _runtime.plugins.changes.listen((state) {
       debugPrint('ADELE backend plugins: ${state.name}');
       if (mounted && _closing == null) setState(() {});
@@ -66,11 +84,61 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
 
   Future<void> _bootstrapPlugins() async {
     try {
-      await widget.bootstrapPlugins(_runtime.plugins);
+      if (widget.bootstrapPlugins case final bootstrap?) {
+        await bootstrap(_runtime.plugins);
+      } else {
+        await bootstrapStockBackendPlugins(
+          _runtime.plugins,
+          chatGptConfiguration: _chatGptConfiguration,
+        );
+      }
     } on Object catch (error) {
       if (mounted && _closing == null) _bootstrapError = error;
     } finally {
       if (mounted && _closing == null) setState(() {});
+    }
+  }
+
+  void _createSession() {
+    final Task? task = _task;
+    if (!mounted ||
+        _closing != null ||
+        task == null ||
+        _chat != null ||
+        _creatingTask ||
+        _editingTask) {
+      return;
+    }
+    try {
+      final Session session = _runtime.lifecycle.createSession(
+        taskId: task.id,
+        strategyId: chatStrategyId,
+      );
+      final StockChatGptConfiguration? configuration = _chatGptConfiguration;
+      final ChatController chat = ChatController(
+        runtime: _runtime,
+        session: session,
+        providerId: stockChatGptProviderId,
+        model: configuration?.model,
+        runIds: widget.runIds,
+        configurationUnavailableReason: _modelConfigurationFailed
+            ? 'ChatGPT configuration is invalid. Model execution is unavailable.'
+            : configuration == null
+            ? 'ChatGPT is not configured. Set '
+                  'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE before launching ADELE.'
+            : null,
+        onChanged: () {
+          if (mounted && _closing == null) setState(() {});
+        },
+      );
+      setState(() {
+        _chat = chat;
+        _sessionError = null;
+      });
+    } on Object {
+      setState(
+        () => _sessionError = 'Could not create the stock Chat Session.',
+      );
     }
   }
 
@@ -102,6 +170,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         project == null ||
         !_editingTask ||
         _creatingTask ||
+        _chat != null ||
         _closing != null) {
       return;
     }
@@ -158,6 +227,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   }
 
   Future<void> _closeRuntime() => _closing ??= () async {
+    final Future<void>? settlingRun = _chat?.close();
     try {
       try {
         // Establishment owns real external work. Let it settle before bounded
@@ -165,6 +235,11 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         await _taskCreation;
       } on Object {
         // Task failure does not prevent runtime/provider cleanup.
+      }
+      try {
+        await settlingRun;
+      } on Object {
+        // Run failure must not bypass backend/runtime cleanup.
       }
       await _runtime.close();
     } on Object catch (error, stackTrace) {
@@ -223,39 +298,62 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         task: _task,
         environment: _environment,
         environmentReady: _environmentReady,
-        taskControls: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (_taskUnavailableReason case final String reason) ...[
-              Semantics(liveRegion: true, child: Text(reason)),
-              const SizedBox(height: 16),
-            ],
-            if (_editingTask)
-              TaskTitleForm(
-                creating: _creatingTask,
-                enabled: _taskUnavailableReason == null,
-                error: _taskError,
-                onSubmit: _createTask,
-                onCancel: () {
-                  if (_closing != null || _creatingTask) return;
-                  setState(() {
-                    _editingTask = false;
-                    _taskError = null;
-                  });
-                },
-              )
-            else
-              FilledButton(
-                onPressed: _taskUnavailableReason == null
-                    ? () {
-                        if (!mounted || _closing != null) return;
-                        setState(() => _editingTask = true);
-                      }
-                    : null,
-                child: const Text('New Task'),
+        taskControls: _chat != null
+            ? null
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (_taskUnavailableReason case final String reason) ...[
+                    Semantics(liveRegion: true, child: Text(reason)),
+                    const SizedBox(height: 16),
+                  ],
+                  if (_editingTask)
+                    TaskTitleForm(
+                      creating: _creatingTask,
+                      enabled: _taskUnavailableReason == null,
+                      error: _taskError,
+                      onSubmit: _createTask,
+                      onCancel: () {
+                        if (_closing != null || _creatingTask) return;
+                        setState(() {
+                          _editingTask = false;
+                          _taskError = null;
+                        });
+                      },
+                    )
+                  else
+                    FilledButton(
+                      onPressed: _taskUnavailableReason == null
+                          ? () {
+                              if (!mounted ||
+                                  _closing != null ||
+                                  _chat != null) {
+                                return;
+                              }
+                              setState(() => _editingTask = true);
+                            }
+                          : null,
+                      child: const Text('New Task'),
+                    ),
+                ],
               ),
-          ],
-        ),
+        sessionControls: _chat != null
+            ? ChatView(controller: _chat!)
+            : _task != null && !_editingTask
+            ? Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (_sessionError case final String error)
+                    Semantics(liveRegion: true, child: Text(error)),
+                  FilledButton(
+                    onPressed: _closing == null && !_creatingTask
+                        ? _createSession
+                        : null,
+                    child: const Text('New Session'),
+                  ),
+                ],
+              )
+            : null,
         selectors: _runtime.extensions.discover(projectSelectorContributions),
         onSelectProject: _openProject,
         openingProject: _openingProject,

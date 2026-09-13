@@ -109,12 +109,13 @@ multiple extension points does not imply multiple plugin runtimes.
 
 ## Normal stock backend composition
 
-Normal composition uses the existing backend-only Git plugin without linking its
-implementation into Flutter. Synchronous, provider-free `AdeleRuntime()` owns
+Normal composition uses existing backend-only Git and OpenAI plugins without linking
+their implementations into Flutter. Synchronous, provider-free `AdeleRuntime()` owns
 in-process stock registrations and generic `ApplicationPluginBootstrap` on its
 existing capability registry. `AdeleApplication` explicitly invokes async stock
 composition, supplying activation callbacks to that application-lifetime owner
-of one shared backend host. Normal composition currently activates only Git.
+of one shared backend host. Git is required startup; OpenAI is an additional
+independently failing activation exposing only experimental ChatGPT in normal use.
 
 `app/lib/plugins/stock_git_environment.dart` centralizes stock Git plugin/provider
 IDs, display name, capability/service exposure, and default configuration-context
@@ -122,11 +123,17 @@ registration for normal and self-hosting paths. It loads an artifact using host
 APIs and public Environment contracts, not backend implementation imports.
 Self-hosting retains its separate larger artifact/host topology.
 
+`app/lib/plugins/stock_openai.dart` owns analogous ChatGPT identity/exposure and
+plugin-local startup arguments. They contain a credential-store path and public
+OAuth configuration, not tokens. API-key and ChatGPT contexts can coexist for other
+consumers, but neither context requires a dummy configuration for the other.
+
 The app consumes prepared artifacts; source discovery and compilation belong to
-tooling. Missing configuration or startup failure leaves Task support unavailable
-without blocking Project opening; failed startup cleans up acquired resources.
+tooling. Missing required host/Git configuration or failed required startup leaves
+Task support unavailable without blocking Project opening and cleans up acquired
+resources. Optional OpenAI activation failure affects only model availability.
 Deployment and build details are maintained in
-[`app/README.md`](../../app/README.md#b2-backend-startup) and the
+[`app/README.md`](../../app/README.md#normal-backend-startup) and the
 [`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
 This is not plugin installation, production packaging, discovery, or profiles.
 

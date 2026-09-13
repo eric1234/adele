@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 
@@ -21,77 +22,103 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   if (defaultConfigurationContext is! String) {
     throw ArgumentError.value(bootstrapMessage, 'bootstrapMessage');
   }
-  final String? apiKey = Platform.environment['OPENAI_API_KEY'];
-  if (apiKey == null || apiKey.trim().isEmpty) {
-    throw StateError('OPENAI_API_KEY is required by the OpenAI backend.');
+  final Map<String, String> environment = _configurationEnvironment(arguments);
+  String? configured(String name) {
+    final String? value = environment[name];
+    return value == null || value.trim().isEmpty ? null : value;
   }
-  final String? endpointValue = Platform.environment['ADELE_OPENAI_ENDPOINT'];
-  final OpenAiModelProvider apiKeyProvider = OpenAiModelProvider(
-    apiKey: apiKey,
-    endpoint: endpointValue == null ? null : Uri.parse(endpointValue),
+
+  Uri? configuredUri(String name) {
+    final String? value = configured(name);
+    if (value == null) return null;
+    final Uri uri = Uri.parse(value);
+    if (uri.host.isEmpty || uri.userInfo.isNotEmpty || uri.hasFragment) {
+      throw const FormatException('Invalid backend configuration URI.');
+    }
+    return uri;
+  }
+
+  final String? apiKey = configured('OPENAI_API_KEY');
+  final String? credentialFile = configured(
+    'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE',
   );
-  final String? credentialFile =
-      Platform.environment['ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE'];
-  final String? oauthClientId =
-      Platform.environment['ADELE_OPENAI_CHATGPT_CLIENT_ID'];
-  final bool experimentalCodexClientOptIn =
-      Platform.environment[openAiExperimentalCodexClientEnvironment] == '1';
-  final String? chatGptEndpointValue =
-      Platform.environment['ADELE_OPENAI_CHATGPT_ENDPOINT'];
-  final String? oauthIssuerValue =
-      Platform.environment['ADELE_OPENAI_CHATGPT_OAUTH_ISSUER'];
-  final String? redirectValue =
-      Platform.environment['ADELE_OPENAI_CHATGPT_REDIRECT_URI'];
+  final bool chatGptConfigured =
+      arguments.isNotEmpty ||
+      configured('ADELE_OPENAI_CHATGPT_CLIENT_ID') != null ||
+      environment[openAiExperimentalCodexClientEnvironment] == '1';
+  if (apiKey == null && !chatGptConfigured) {
+    throw StateError(
+      'The OpenAI backend requires a nonblank OPENAI_API_KEY or an experimental '
+      'ChatGPT credential file with an OAuth client ID or explicit Codex client '
+      'opt-in.',
+    );
+  }
   OpenAiOAuthClient? oauth;
+  OpenAiModelProvider? apiKeyProvider;
   OpenAiModelProvider? chatGptProvider;
-  if (oauthClientId != null || experimentalCodexClientOptIn) {
-    if (credentialFile == null || credentialFile.isEmpty) {
-      throw StateError(
-        'The experimental ChatGPT configuration requires a credential file.',
+  try {
+    if (apiKey != null) {
+      apiKeyProvider = OpenAiModelProvider(
+        apiKey: apiKey,
+        endpoint: configuredUri('ADELE_OPENAI_ENDPOINT'),
       );
     }
-    final OpenAiOAuthClientIdentity identity = openAiOAuthClientIdentity(
-      Platform.environment,
-      allowDevelopmentFallback: false,
-    );
-    if (identity.experimentalCodexClient) {
-      stderr.writeln(
-        'EXPERIMENTAL OPT-IN: using the source-visible Codex OAuth public '
-        'client. This identity is not an ADELE registration or documented '
-        'OpenAI third-party contract.',
+    if (chatGptConfigured) {
+      if (credentialFile == null || credentialFile.contains('\u0000')) {
+        throw const FormatException('A credential file path is required.');
+      }
+      final OpenAiOAuthClientIdentity identity = openAiOAuthClientIdentity(
+        environment,
+        allowDevelopmentFallback: false,
       );
-    }
-    oauth = OpenAiOAuthClient(
-      configuration: OpenAiOAuthConfiguration(
-        clientId: identity.clientId,
-        issuer: oauthIssuerValue == null ? null : Uri.parse(oauthIssuerValue),
-        redirectUri: Uri.parse(
-          redirectValue ?? 'http://localhost:1455/auth/callback',
+      if (identity.experimentalCodexClient) {
+        stderr.writeln(
+          'EXPERIMENTAL OPT-IN: using the source-visible Codex OAuth public '
+          'client. This identity is not an ADELE registration or documented '
+          'OpenAI third-party contract.',
+        );
+      }
+      oauth = OpenAiOAuthClient(
+        configuration: OpenAiOAuthConfiguration(
+          clientId: identity.clientId,
+          issuer: configuredUri('ADELE_OPENAI_CHATGPT_OAUTH_ISSUER'),
+          redirectUri:
+              configuredUri('ADELE_OPENAI_CHATGPT_REDIRECT_URI') ??
+              Uri.parse('http://localhost:1455/auth/callback'),
+          authorizationParameters: openAiChatGptAuthorizationParameters,
         ),
-        authorizationParameters: openAiChatGptAuthorizationParameters,
-      ),
-    );
-    final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
-      instanceId: openAiChatGptInstanceId(Platform.environment),
-      store: FileOpenAiCredentialStore(File(credentialFile)),
-      oauth: oauth,
-    );
-    chatGptProvider = OpenAiModelProvider.chatGpt(
-      auth: auth,
-      endpoint: chatGptEndpointValue == null
-          ? null
-          : Uri.parse(chatGptEndpointValue),
+      );
+      final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
+        instanceId: openAiChatGptInstanceId(environment),
+        store: FileOpenAiCredentialStore(File(credentialFile)),
+        oauth: oauth,
+      );
+      chatGptProvider = OpenAiModelProvider.chatGpt(
+        auth: auth,
+        endpoint: configuredUri('ADELE_OPENAI_CHATGPT_ENDPOINT'),
+      );
+    }
+  } on Object {
+    apiKeyProvider?.close();
+    chatGptProvider?.close();
+    oauth?.close();
+    // URI/argument exceptions may contain configuration values or credentials.
+    throw StateError(
+      'Invalid OpenAI backend configuration. Check the API key, ChatGPT '
+      'credential-file path, OAuth client ID or explicit Codex client opt-in, '
+      'and public OAuth/endpoint settings.',
     );
   }
   final ReceivePort requests = ReceivePort();
   final AdeleConfigurationContextRouter router =
       AdeleConfigurationContextRouter(
         contexts: <String, Map<String, AdeleBackendDispatcher>>{
-          defaultConfigurationContext: <String, AdeleBackendDispatcher>{
-            modelProviderServiceId: ModelProviderServiceDispatcher(
-              apiKeyProvider,
-            ),
-          },
+          if (apiKeyProvider != null)
+            defaultConfigurationContext: <String, AdeleBackendDispatcher>{
+              modelProviderServiceId: ModelProviderServiceDispatcher(
+                apiKeyProvider,
+              ),
+            },
           if (chatGptProvider != null)
             openAiChatGptConfigurationContext: <String, AdeleBackendDispatcher>{
               modelProviderServiceId: ModelProviderServiceDispatcher(
@@ -109,7 +136,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
     if (request is! Map) continue;
     if (request['method'] == 'shutdown' && request['requestId'] is int) {
       await router.close();
-      apiKeyProvider.close();
+      apiKeyProvider?.close();
       chatGptProvider?.close();
       oauth?.close();
       responsePort.send(<String, Object?>{
@@ -122,5 +149,54 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       continue;
     }
     unawaited(router.handle(request, responsePort.send));
+  }
+}
+
+Map<String, String> _configurationEnvironment(List<String> arguments) {
+  if (arguments.isEmpty) return Platform.environment;
+  try {
+    // Plugin-local startup contract: a file path and public configuration only.
+    // Supplying any arguments disables environment fallback, including API keys.
+    if (arguments.length != 2 || arguments.first != '--chatgpt-only') {
+      throw const FormatException();
+    }
+    final Object? decoded = jsonDecode(arguments[1]);
+    if (decoded is! Map<String, Object?>) throw const FormatException();
+    const Map<String, String> fields = <String, String>{
+      'credentialFile': 'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE',
+      'clientId': 'ADELE_OPENAI_CHATGPT_CLIENT_ID',
+      'instanceId': 'ADELE_OPENAI_CHATGPT_INSTANCE_ID',
+      'issuer': 'ADELE_OPENAI_CHATGPT_OAUTH_ISSUER',
+      'redirectUri': 'ADELE_OPENAI_CHATGPT_REDIRECT_URI',
+      'endpoint': 'ADELE_OPENAI_CHATGPT_ENDPOINT',
+    };
+    final Map<String, String> environment = <String, String>{};
+    for (final MapEntry<String, Object?> entry in decoded.entries) {
+      if (entry.key == 'experimentalCodexClient') {
+        if (entry.value is! bool) throw const FormatException();
+        environment[openAiExperimentalCodexClientEnvironment] =
+            entry.value == true ? '1' : '0';
+        continue;
+      }
+      final String? name = fields[entry.key];
+      final Object? value = entry.value;
+      if (name == null ||
+          value is! String ||
+          value.trim().isEmpty ||
+          RegExp(r'[\x00-\x1f\x7f]').hasMatch(value)) {
+        throw const FormatException();
+      }
+      environment[name] = value;
+    }
+    if (!environment.containsKey('ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE')) {
+      throw const FormatException();
+    }
+    return environment;
+  } on Object {
+    throw StateError(
+      'Invalid OpenAI backend startup arguments. Expected --chatgpt-only and '
+      'a JSON object containing a credential-file path and public ChatGPT '
+      'configuration only; inline credentials are not accepted.',
+    );
   }
 }

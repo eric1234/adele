@@ -15,6 +15,7 @@ final class AdeleShell extends StatelessWidget {
     this.environment,
     this.environmentReady = false,
     this.taskControls,
+    this.sessionControls,
   });
 
   final Project? project;
@@ -27,6 +28,7 @@ final class AdeleShell extends StatelessWidget {
   final Environment? environment;
   final bool environmentReady;
   final Widget? taskControls;
+  final Widget? sessionControls;
 
   @override
   Widget build(BuildContext context) {
@@ -94,6 +96,10 @@ final class AdeleShell extends StatelessWidget {
                                 style: textTheme.titleMedium,
                               ),
                             if (taskControls case final Widget controls) ...[
+                              const SizedBox(height: 24),
+                              controls,
+                            ],
+                            if (sessionControls case final Widget controls) ...[
                               const SizedBox(height: 24),
                               controls,
                             ],

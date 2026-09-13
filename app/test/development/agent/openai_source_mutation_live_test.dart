@@ -2,8 +2,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_desktop/core/model_provider_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
-import 'package:adele_desktop/development/agent/agent_capability_adapters.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:agent_kernel/agent_kernel.dart';

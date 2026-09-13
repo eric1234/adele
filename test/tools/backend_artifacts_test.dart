@@ -7,6 +7,8 @@ const String _hostEntrypoint =
     'packages/plugin_backend_host/bin/adele_backend_host.dart';
 const String _gitEntrypoint =
     'plugins/git_environment/packages/backend/bin/git_environment_backend.dart';
+const String _openaiEntrypoint =
+    'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart';
 
 void main() {
   late Directory root;
@@ -30,7 +32,11 @@ void main() {
       File(path).copySync(destination.path);
     }
     Directory('${root.path}/app').createSync();
-    for (final String entrypoint in <String>[_hostEntrypoint, _gitEntrypoint]) {
+    for (final String entrypoint in <String>[
+      _hostEntrypoint,
+      _gitEntrypoint,
+      _openaiEntrypoint,
+    ]) {
       final File source = File('${root.path}/$entrypoint');
       source.parent.createSync(recursive: true);
       source.writeAsStringSync('void main() {}');
@@ -113,6 +119,8 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           'compiled|$_hostEntrypoint',
           'compile|$_gitEntrypoint',
           'compiled|$_gitEntrypoint',
+          'compile|$_openaiEntrypoint',
+          'compiled|$_openaiEntrypoint',
           'flutter-launch',
         ]);
         final List<String> launched = launchArguments.readAsLinesSync();
@@ -132,13 +140,14 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             separator + 1,
           );
         }
-        expect(launched, hasLength(run ? 7 : 6));
+        expect(launched, hasLength(run ? 8 : 7));
         expect(
           defines.keys,
           unorderedEquals(<String>[
             'ADELE_DARTAOTRUNTIME_EXECUTABLE',
             'ADELE_BACKEND_HOST_ARTIFACT',
             'ADELE_GIT_ENVIRONMENT_ARTIFACT',
+            'ADELE_OPENAI_ARTIFACT',
           ]),
         );
         expect(
@@ -147,11 +156,15 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
         );
         final File host = File(defines['ADELE_BACKEND_HOST_ARTIFACT']!);
         final File git = File(defines['ADELE_GIT_ENVIRONMENT_ARTIFACT']!);
+        final File openai = File(defines['ADELE_OPENAI_ARTIFACT']!);
         expect(host.uri.isAbsolute, isTrue);
         expect(git.uri.isAbsolute, isTrue);
+        expect(openai.uri.isAbsolute, isTrue);
         expect(host.path, endsWith('/host.aot'));
         expect(git.path, endsWith('/git-environment.aot'));
+        expect(openai.path, endsWith('/openai.aot'));
         expect(host.parent.path, git.parent.path);
+        expect(host.parent.path, openai.parent.path);
         expect(
           host.parent.path,
           startsWith('${root.path}/.dart_tool/adele/desktop-backends/build-'),
@@ -159,8 +172,10 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
         expect(outputDirectories.add(host.parent.path), isTrue);
         expect(host.readAsStringSync(), 'snapshot $_hostEntrypoint\n');
         expect(git.readAsStringSync(), 'snapshot $_gitEntrypoint\n');
+        expect(openai.readAsStringSync(), 'snapshot $_openaiEntrypoint\n');
         retainedArtifacts[host.path] = host.readAsStringSync();
         retainedArtifacts[git.path] = git.readAsStringSync();
+        retainedArtifacts[openai.path] = openai.readAsStringSync();
         for (final MapEntry<String, String> artifact
             in retainedArtifacts.entries) {
           expect(File(artifact.key).readAsStringSync(), artifact.value);
@@ -173,6 +188,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
   for (final String failedEntrypoint in <String>[
     _hostEntrypoint,
     _gitEntrypoint,
+    _openaiEntrypoint,
   ]) {
     for (final String command in <String>['run', 'build']) {
       test('$command never launches after $failedEntrypoint fails', () async {
@@ -188,9 +204,13 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
         expect(commands.readAsLinesSync(), <String>[
           'inspect-sdk',
           'compile|$_hostEntrypoint',
-          if (failedEntrypoint == _gitEntrypoint) ...<String>[
+          if (failedEntrypoint != _hostEntrypoint) ...<String>[
             'compiled|$_hostEntrypoint',
             'compile|$_gitEntrypoint',
+          ],
+          if (failedEntrypoint == _openaiEntrypoint) ...<String>[
+            'compiled|$_gitEntrypoint',
+            'compile|$_openaiEntrypoint',
           ],
         ]);
         expect(launchArguments.existsSync(), isFalse);

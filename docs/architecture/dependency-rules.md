@@ -99,12 +99,21 @@ source validation.
 
 Normal bootstrap consumes prepared artifacts; source discovery and compilation
 belong to repository tooling and `plugin_builder`, outside the app startup import
-graph. Operational details live in [`app/README.md`](../../app/README.md#b2-backend-startup)
+graph. Operational details live in [`app/README.md`](../../app/README.md#normal-backend-startup)
 and the [`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
 Self-hosting shares stock Git activation code but retains its
 independent artifact/host topology and does not consume normal configuration.
 These boundaries add no public API package, profile system, plugin discovery, or
 production packaging mechanism.
+
+The same generic backend owner accepts independent additional activations after
+required startup. `app/lib/plugins/stock_openai.dart` owns provisional ChatGPT
+identity/exposure and plugin-local configuration references. OpenAI failure does
+not retire Git; shared-host failure remains global. The normal model adapter lives
+in `app/lib/core/model_provider_host.dart`, separate from development-only resource
+adapters. Session lifecycle remains strategy-neutral and Run hosting remains
+provider-neutral; normal Chat presentation composes each Run's model, tools, and
+read-only policy without adding plugin-specific behavior to those generic owners.
 
 ## Plugin dependencies
 
