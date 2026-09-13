@@ -126,6 +126,14 @@ final class _ToolApprovalCard extends StatelessWidget {
             Text(approval.effectLabel, style: textTheme.titleSmall),
             const SizedBox(height: 8),
             SelectableText(approval.summary),
+            if (approval.hasUnsafeAuthorityText) ...[
+              const SizedBox(height: 8),
+              const Text(
+                'Allow once is unavailable: tool identity, summary, or targets '
+                'contain unsafe display controls or cannot be displayed reliably. '
+                'Review the escaped details and choose Deny.',
+              ),
+            ],
             if (approval.isUncertain) ...[
               const SizedBox(height: 8),
               const Text('Effects may extend beyond the listed target.'),
@@ -166,7 +174,9 @@ final class _ToolApprovalCard extends StatelessWidget {
                   child: const Text('Deny'),
                 ),
                 FilledButton(
-                  onPressed: enabled ? () => onDecision(true) : null,
+                  onPressed: enabled && !approval.hasUnsafeAuthorityText
+                      ? () => onDecision(true)
+                      : null,
                   child: const Text('Allow once'),
                 ),
               ],

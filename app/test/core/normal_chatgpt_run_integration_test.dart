@@ -456,9 +456,7 @@ void main() {
       expect(patchApproval.effects, {ToolEffect.sourceMutation});
       expect(patchApproval.uncertainty, EffectUncertainty.none);
       expect(patchApproval.targets, [
-        Uri.parse(
-          'adele-environment:/${authority.environmentId.value}/$_sourcePath',
-        ),
+        'adele-environment:/${authority.environmentId.value}/$_sourcePath',
       ]);
       expect(jsonDecode(patchApproval.canonicalArgumentsJson), patchArguments);
       expect(
@@ -518,7 +516,7 @@ void main() {
       expect(commandApproval.effects, {ToolEffect.processExecution});
       expect(commandApproval.uncertainty, EffectUncertainty.uncertain);
       expect(commandApproval.targets, [
-        Uri.parse('adele-environment:/${authority.environmentId.value}/'),
+        'adele-environment:/${authority.environmentId.value}/',
       ]);
       expect(
         jsonDecode(commandApproval.canonicalArgumentsJson),
@@ -560,13 +558,14 @@ void main() {
         (commandApproval, commandInterruption),
       ]) {
         expect(approval.toolId, interruption.toolId.value);
+        expect(approval.hasUnsafeAuthorityText, isFalse);
         expect(approval.summary, interruption.effects.summary);
         expect(approval.summary, isNotEmpty);
         expect(approval.effects, interruption.effects.effects);
         expect(approval.uncertainty, interruption.effects.uncertainty);
         expect(
           approval.targets,
-          interruption.effects.targets.map((target) => target.uri),
+          interruption.effects.targets.map((target) => target.uri.toString()),
         );
         expect(
           jsonDecode(approval.canonicalArgumentsJson),

@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/approval_gated_tool_policy.dart';
@@ -13,28 +11,47 @@ import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import 'approval_display.dart';
+
 /// Immutable window-local presentation and identity token, not execution authority.
 final class PendingToolApproval {
   PendingToolApproval._(ToolApprovalInterruption interruption)
-    : toolAlias = interruption.invocation.tool.modelDefinition.alias,
-      toolId = interruption.toolId.value,
-      effects = interruption.effects.effects,
-      summary = interruption.effects.summary,
-      uncertainty = interruption.effects.uncertainty,
-      targets = List<Uri>.unmodifiable(
-        interruption.effects.targets.map((target) => target.uri),
+    : toolAlias = approvalDisplayText(
+        interruption.invocation.tool.modelDefinition.alias,
       ),
-      canonicalArgumentsJson = const JsonEncoder.withIndent(
-        '  ',
-      ).convert(interruption.canonicalArguments);
+      toolId = approvalDisplayText(interruption.toolId.value),
+      effects = interruption.effects.effects,
+      summary = approvalDisplayText(interruption.effects.summary),
+      uncertainty = interruption.effects.uncertainty,
+      targets = List<String>.unmodifiable(
+        interruption.effects.targets.map(
+          (target) => approvalDisplayText(target.uri.toString()),
+        ),
+      ),
+      canonicalArgumentsJson = approvalDisplayJson(
+        interruption.canonicalArguments,
+      ),
+      hasUnsafeAuthorityText =
+          <String>[
+            interruption.invocation.tool.modelDefinition.alias,
+            interruption.toolId.value,
+            interruption.effects.summary,
+          ].any(hasUnsafeApprovalControls) ||
+          interruption.effects.targets.any(
+            (target) => hasUnsafeApprovalTarget(target.uri),
+          );
 
   final String toolAlias;
   final String toolId;
   final Set<ToolEffect> effects;
   final String summary;
   final EffectUncertainty uncertainty;
-  final List<Uri> targets;
+  final List<String> targets;
   final String canonicalArgumentsJson;
+
+  /// Only raw identity/summary and decoded URI targets block approval. Canonical
+  /// payloads may contain arbitrary source text: escape them, do not reject them.
+  final bool hasUnsafeAuthorityText;
 
   bool get isUncertain => uncertainty != EffectUncertainty.none;
   Iterable<String> get effectNames => effects.map((effect) => effect.name);
@@ -158,7 +175,8 @@ final class ChatController {
         _advancing ||
         !_running ||
         !identical(approval, _pendingApproval) ||
-        interruption == null) {
+        interruption == null ||
+        (approved && approval.hasUnsafeAuthorityText)) {
       return false;
     }
     _advancing = true;

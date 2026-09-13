@@ -11,6 +11,7 @@ import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/plugins/stock_openai.dart';
+import 'package:adele_desktop/ui/chat/approval_display.dart';
 import 'package:adele_desktop/ui/chat/chat_controller.dart';
 import 'package:adele_desktop/ui/chat/chat_view.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
@@ -818,13 +819,10 @@ void main() {
         patch.summary,
         'Apply 1 exact edit to Environment file lib/example.dart.',
       );
-      expect(patch.targets, <Uri>[
-        Uri.parse('adele-environment:/environment-1/lib/example.dart'),
+      expect(patch.targets, <String>[
+        'adele-environment:/environment-1/lib/example.dart',
       ]);
-      expect(
-        () => patch.targets.add(Uri.parse('file:///other')),
-        throwsUnsupportedError,
-      );
+      expect(() => patch.targets.add('file:///other'), throwsUnsupportedError);
       expect(
         () => patch.effects.add(ToolEffect.processExecution),
         throwsUnsupportedError,
@@ -1180,6 +1178,384 @@ void main() {
       },
     );
   }
+
+  for (final (String name, String path, String escapedPath, String encodedPath)
+      in <(String, String, String, String)>[
+        (
+          'newline',
+          'lib/file\nAllow once.dart',
+          r'lib/file\nAllow once.dart',
+          'lib/file%0AAllow%20once.dart',
+        ),
+        (
+          'bidi',
+          'lib/file\u202E.dart',
+          r'lib/file\u202E.dart',
+          'lib/file%E2%80%AE.dart',
+        ),
+      ]) {
+    testWidgets('unsafe $name patch path is escaped and can only be denied', (
+      tester,
+    ) async {
+      final _ModelChannel model = fixture.registerModel();
+      await openChat(tester);
+      final ChatController controller = chat(tester);
+      await send(tester, 'Review an unsafe patch path');
+      final AgentRun run = controller.currentRun!.run;
+      final Map<String, Object?> arguments = <String, Object?>{
+        ..._patchArguments,
+        'relativePath': './$path',
+      };
+      final Map<String, Object?> canonical = <String, Object?>{
+        ...arguments,
+        'relativePath': path,
+      };
+      model.calls.single.propose('unsafe-patch', 'apply_patch', arguments);
+      model.calls.single.settle();
+      await tester.pumpAndSettle();
+
+      final PendingToolApproval approval = controller.pendingApproval!;
+      final ToolApprovalInterruption interruption =
+          run.interruptions.values.single as ToolApprovalInterruption;
+      final ToolInvocation prepared = _events(
+        run,
+      ).whereType<ToolInvocationPrepared>().single.invocation;
+      final String target = 'adele-environment:/environment-1/$encodedPath';
+      expect(interruption.invocation, same(prepared));
+      expect(prepared.proposal.arguments, arguments);
+      expect(interruption.canonicalArguments, canonical);
+      expect(interruption.effects.effects, <ToolEffect>{
+        ToolEffect.sourceMutation,
+      });
+      expect(interruption.effects.uncertainty, EffectUncertainty.none);
+      expect(
+        interruption.effects.summary,
+        'Apply 1 exact edit to Environment file $path.',
+      );
+      expect(interruption.effects.targets.single.uri.toString(), target);
+      expect(
+        Uri.decodeComponent(target),
+        'adele-environment:/environment-1/$path',
+      );
+      expect(approval.hasUnsafeAuthorityText, isTrue);
+      expect(approval.toolAlias, 'apply_patch');
+      expect(approval.toolId, 'dev.adele.plugin.filesystem-tools.apply-patch');
+      expect(approval.effects, same(interruption.effects.effects));
+      expect(approval.targets, <String>[target]);
+      expect(
+        approval.summary,
+        'Apply 1 exact edit to Environment file $escapedPath.',
+      );
+      expect(jsonDecode(approval.canonicalArgumentsJson), canonical);
+      expect(
+        approval.canonicalArgumentsJson,
+        contains('"relativePath": "$escapedPath"'),
+      );
+      expect(find.text(approval.summary), findsOneWidget);
+      expect(
+        find.text(
+          'Allow once is unavailable: tool identity, summary, or targets '
+          'contain unsafe display controls or cannot be displayed reliably. '
+          'Review the escaped details and choose Deny.',
+        ),
+        findsOneWidget,
+      );
+      expect(button(tester, 'Allow once').onPressed, isNull);
+      final Finder deny = find.widgetWithText(OutlinedButton, 'Deny');
+      expect(tester.widget<OutlinedButton>(deny).onPressed, isNotNull);
+
+      await tester.ensureVisible(find.text('Details'));
+      await tester.tap(find.text('Details'));
+      await tester.pumpAndSettle();
+      final String details =
+          'Tool ID: dev.adele.plugin.filesystem-tools.apply-patch\n'
+          'Effects: sourceMutation\nUncertainty: none\nTarget: $target';
+      expect(find.text(details), findsOneWidget);
+      expect(find.text(approval.canonicalArgumentsJson), findsOneWidget);
+      final Finder card = find.ancestor(
+        of: find.text('Approval required'),
+        matching: find.byType(Card),
+      );
+      expect(card, findsOneWidget);
+      final List<String> leaves = <String>[
+        for (final SelectableText text in tester.widgetList<SelectableText>(
+          find.descendant(of: card, matching: find.byType(SelectableText)),
+        ))
+          text.data ?? text.textSpan!.toPlainText(),
+        for (final Text text in tester.widgetList<Text>(
+          find.descendant(of: card, matching: find.byType(Text)),
+        ))
+          text.data ?? text.textSpan!.toPlainText(),
+      ];
+      for (final String leaf in leaves) {
+        // Only exact host layout and parseable pretty JSON may contain real LF.
+        final bool trustedNewlines =
+            leaf == details || leaf == approval.canonicalArgumentsJson;
+        expect(
+          hasUnsafeApprovalControls(
+            trustedNewlines ? leaf.replaceAll('\n', '') : leaf,
+          ),
+          isFalse,
+          reason: 'Approval card must not render active untrusted controls',
+        );
+      }
+
+      final ChatSessionSnapshot frozen = controller.snapshot;
+      final List<ExecutionEventRecord> journal = run.journal.records;
+      final List<Map<String, Object?>> reads = List.of(
+        fixture.environment.reads,
+      );
+      expect(controller.resolveApproval(approval, approved: true), isFalse);
+      await tester.pumpAndSettle();
+      expect(controller.currentRun!.run, same(run));
+      expect(run.state, RunState.waiting);
+      expect(controller.pendingApproval, same(approval));
+      expect(controller.snapshot, same(frozen));
+      expect(controller.isRunning, isTrue);
+      expect(controller.isAdvancing, isFalse);
+      expect(controller.activeRunFuture, isNull);
+      expect(controller.failure, isNull);
+      expect(run.journal.records, journal);
+      expect(run.interruptions.values.single, same(interruption));
+      expect(interruption.canonicalArguments, canonical);
+      expect(_events(run).whereType<RunInterruptionResolved>(), isEmpty);
+      expect(_events(run).whereType<ToolExecutionStarted>(), isEmpty);
+      expect(model.calls, hasLength(1));
+      expect(fixture.environment.reads, reads);
+      expect(fixture.environment.replacements, isEmpty);
+      expect(fixture.environment.processes, isEmpty);
+
+      await tester.ensureVisible(deny);
+      await tester.tap(deny);
+      final Future<void> resuming = controller.activeRunFuture!;
+      await tester.pumpAndSettle();
+      expect(model.calls, hasLength(2));
+      expect(model.calls.last.outcomes.single, <String, Object?>{
+        'callId': 'unsafe-patch',
+        'status': 'rejected',
+        'content': 'The user rejected this tool invocation.',
+      });
+      final RunInterruptionResolved resolved = _events(
+        run,
+      ).whereType<RunInterruptionResolved>().single;
+      final ToolApprovalResolution resolution =
+          resolved.resolution as ToolApprovalResolution;
+      expect(resolved.interruption, same(interruption));
+      expect(resolution.interruptionId, interruption.id);
+      expect(resolution.toolInvocationId, prepared.id);
+      expect(resolution.approved, isFalse);
+      final ToolInvocationCompleted rejected = _events(
+        run,
+      ).whereType<ToolInvocationCompleted>().single;
+      expect(rejected.invocationId, prepared.id);
+      expect(rejected.outcome.disposition, ToolOutcomeDisposition.userRejected);
+      expect(
+        rejected.outcome.effectCertainty,
+        EffectCertainty.knownNotOccurred,
+      );
+      expect(run.state, RunState.running);
+      model.calls.last.output('The unsafe patch was not performed.');
+      model.calls.last.settle();
+      await tester.pumpAndSettle();
+      await resuming;
+      expect(controller.currentRun!.run, same(run));
+      expect(fixture.runIds.values, <RunId>[run.id]);
+      expect(run.state, RunState.completed);
+      expect(controller.pendingApproval, isNull);
+      expect(controller.failure, isNull);
+      expect(controller.isRunning, isFalse);
+      expect(controller.isAdvancing, isFalse);
+      expect(controller.activeRunFuture, isNull);
+      expect(_events(run).whereType<ToolExecutionStarted>(), isEmpty);
+      expect(_events(run).whereType<RunFailed>(), isEmpty);
+      expect(
+        fixture.environment.reads.map((read) => read['relativePath']),
+        <String>['AGENTS.md', 'AGENTS.md'],
+      );
+      expect(fixture.environment.directories, isEmpty);
+      expect(fixture.environment.replacements, isEmpty);
+      expect(fixture.environment.processes, isEmpty);
+      expect(fixture.environment.writeCount, 0);
+      expect(fixture.environment.sourceText, _EnvironmentChannel.initialText);
+      expect(interruption.canonicalArguments, canonical);
+      expect(
+        interruption.effects.summary,
+        'Apply 1 exact edit to Environment file $path.',
+      );
+      expect(interruption.effects.targets.single.uri.toString(), target);
+      expect(find.text('Approval required'), findsNothing);
+      expect(
+        controller.snapshot.entries.map((entry) => entry.runtimeType),
+        <Type>[ChatUserMessage, ChatAssistantMessage],
+      );
+      expect(
+        controller.snapshot.entries.map((entry) => entry.content),
+        <String>[
+          'Review an unsafe patch path',
+          'The unsafe patch was not performed.',
+        ],
+      );
+      expect(
+        fixture.runtime.chat.sessions
+            .obtain(controller.session.id)
+            .snapshot()
+            .entries,
+        controller.snapshot.entries,
+      );
+      await disposeApplication(tester);
+    });
+  }
+
+  test(
+    'safe patch identity permits exact control-bearing source payload',
+    () async {
+      final _ModelChannel model = fixture.registerModel();
+      final ChatController controller = await fixture.createController();
+      const String replacement =
+          'line one\nline two\r\n\t\u0000\u0085\u202E\u200D\u{E0020}'
+          ' caf\u00E9 e\u0301 \u{1F680} '
+          r'\n\u202E';
+      fixture.environment.sourceRevision = 'payload-revision-0';
+      final Map<String, Object?> arguments = <String, Object?>{
+        ..._patchArguments,
+        'expectedRevision': fixture.environment.sourceRevision,
+        'edits': <Object?>[
+          <String, Object?>{'search': 'before', 'replace': replacement},
+        ],
+      };
+      expect(controller.submit('Apply exact source text'), isTrue);
+      final Future<void> starting = controller.activeRunFuture!;
+      final _ModelCall proposal = await model.callAt(0);
+      proposal.propose('payload-patch', 'apply_patch', arguments);
+      proposal.settle();
+      await starting;
+      final AgentRun run = controller.currentRun!.run;
+      final PendingToolApproval approval = controller.pendingApproval!;
+      final ToolApprovalInterruption interruption =
+          run.interruptions.values.single as ToolApprovalInterruption;
+      final Map<String, Object?> canonical = <String, Object?>{
+        ...arguments,
+        'relativePath': _EnvironmentChannel.sourcePath,
+      };
+      expect(run.state, RunState.waiting);
+      expect(approval.hasUnsafeAuthorityText, isFalse);
+      expect(
+        approval.summary,
+        'Apply 1 exact edit to Environment file lib/example.dart.',
+      );
+      expect(interruption.canonicalArguments, canonical);
+      expect(jsonDecode(approval.canonicalArgumentsJson), canonical);
+      expect(approval.canonicalArgumentsJson, contains(r'\u202E'));
+      expect(approval.canonicalArgumentsJson, contains(r'\\n\\u202E'));
+      expect(
+        hasUnsafeApprovalControls(
+          approval.canonicalArgumentsJson.replaceAll('\n', ''),
+        ),
+        isFalse,
+      );
+      expect(fixture.environment.replacements, isEmpty);
+      expect(controller.resolveApproval(approval, approved: true), isTrue);
+      final Future<void> resuming = controller.activeRunFuture!;
+      final _ModelCall continuation = await model.callAt(1);
+      final String expectedText = _EnvironmentChannel.initialText.replaceFirst(
+        'before',
+        replacement,
+      );
+      expect(fixture.environment.replacements.single, <String, Object?>{
+        'environmentId': 'environment-1',
+        'relativePath': _EnvironmentChannel.sourcePath,
+        'expectedRevision': 'payload-revision-0',
+        'replacementText': expectedText,
+      });
+      expect(fixture.environment.sourceText, expectedText);
+      expect(fixture.environment.writeCount, 1);
+      expect(interruption.canonicalArguments, canonical);
+      expect(_events(run).whereType<ToolExecutionStarted>(), hasLength(1));
+      expect(
+        _events(
+          run,
+        ).whereType<ToolExecutionCompleted>().single.outcome.disposition,
+        ToolOutcomeDisposition.success,
+      );
+      expect(continuation.outcomes.single['callId'], 'payload-patch');
+      expect(continuation.outcomes.single['status'], 'success');
+      continuation.output('Exact source text applied.');
+      continuation.settle();
+      await resuming;
+      expect(controller.currentRun!.run, same(run));
+      expect(run.state, RunState.completed);
+      expect(controller.pendingApproval, isNull);
+      expect(controller.failure, isNull);
+      expect(
+        controller.snapshot.entries.map((entry) => entry.content),
+        <String>['Apply exact source text', 'Exact source text applied.'],
+      );
+      await controller.close();
+    },
+  );
+
+  test(
+    'bidi command argument blocks approval through its raw summary',
+    () async {
+      final _ModelChannel model = fixture.registerModel();
+      int notifications = 0;
+      final ChatController controller = await fixture.createController(
+        onChanged: () => notifications++,
+      );
+      final Map<String, Object?> arguments = <String, Object?>{
+        ..._commandArguments,
+        'arguments': <String>['diff', '--check', 'file\u202E.dart'],
+      };
+      expect(controller.submit('Review a command'), isTrue);
+      final Future<void> starting = controller.activeRunFuture!;
+      final _ModelCall proposal = await model.callAt(0);
+      proposal.propose('bidi-command', 'run_command', arguments);
+      proposal.settle();
+      await starting;
+      final AgentRun run = controller.currentRun!.run;
+      final PendingToolApproval approval = controller.pendingApproval!;
+      final ToolApprovalInterruption interruption =
+          run.interruptions.values.single as ToolApprovalInterruption;
+      expect(interruption.effects.summary, contains('file\u202E.dart'));
+      expect(approval.summary, contains(r'file\u202E.dart'));
+      expect(hasUnsafeApprovalControls(approval.summary), isFalse);
+      expect(approval.targets, <String>['adele-environment:/environment-1/']);
+      expect(approval.hasUnsafeAuthorityText, isTrue);
+      expect(jsonDecode(approval.canonicalArgumentsJson), <String, Object?>{
+        ...arguments,
+        'workingDirectory': '',
+        'timeoutSeconds': 120,
+      });
+      final int beforeApproval = notifications;
+      final List<ExecutionEventRecord> journal = run.journal.records;
+      expect(controller.resolveApproval(approval, approved: true), isFalse);
+      expect(notifications, beforeApproval);
+      expect(controller.pendingApproval, same(approval));
+      expect(controller.activeRunFuture, isNull);
+      expect(controller.isAdvancing, isFalse);
+      expect(run.state, RunState.waiting);
+      expect(run.journal.records, journal);
+      expect(fixture.environment.processes, isEmpty);
+      expect(controller.resolveApproval(approval, approved: false), isTrue);
+      final Future<void> resuming = controller.activeRunFuture!;
+      final _ModelCall continuation = await model.callAt(1);
+      expect(continuation.outcomes.single['status'], 'rejected');
+      expect(
+        _events(
+          run,
+        ).whereType<ToolInvocationCompleted>().single.outcome.disposition,
+        ToolOutcomeDisposition.userRejected,
+      );
+      expect(_events(run).whereType<ToolExecutionStarted>(), isEmpty);
+      expect(fixture.environment.processes, isEmpty);
+      continuation.output('Command denied.');
+      continuation.settle();
+      await resuming;
+      expect(run.state, RunState.completed);
+      expect(controller.failure, isNull);
+      await controller.close();
+    },
+  );
 
   test(
     'approval cannot override a revision change while the patch is waiting',

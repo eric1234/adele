@@ -210,6 +210,16 @@ interruption through `SessionOrchestrationRun.resolveApproval`; object-identity
 checks reject stale card callbacks, and synchronous acceptance blocks duplicate
 decisions. Denial produces `userRejected` continuation without execution.
 
+Approval presentation visibly escapes control, bidi, and related invisible format
+characters and malformed UTF-16 without changing the exact invocation or canonical
+payload. Literal backslashes in plain-text fields are distinguished from escape
+notation; JSON details retain only trusted formatting newlines. Unsafe raw tool
+identity/summary or one decoded layer of target URI text disables `Allow once`,
+enforced by the controller as well as the card. Undecodable target URI escapes
+also fail closed.
+`Deny` remains available without automatic resolution. Canonical source payload
+content is safely rendered, not blanket-rejected; ordinary Unicode is preserved.
+
 One Run may require multiple sequential approvals. Each decision resumes the same
 Run and exact tool materialization; no inference occurs between proposals in the
 same batch. Only after all results does Chat continue the model. Advancing and
