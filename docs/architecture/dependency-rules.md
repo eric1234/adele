@@ -13,6 +13,7 @@ public contracts and plugin-facing APIs
   adele_model_tool
   adele_orchestration
   adele_environment
+  adele_ui (Flutter)
   future broader extension/UI APIs
   plugin-defined public extension APIs
             ^
@@ -31,9 +32,10 @@ The maintained code currently implements only part of this picture. Public
 `adele_orchestration` implements strategy registration/execution and instruction
 context composition, sharing semantic values with the internal kernel without
 depending on it. B1 adds tiny pure-Dart `adele_core_extensions` for the concrete
-Project selector contract, depending only on `adele_plugin_api`. Plugin-defined
-extension API packages and broader plugin-facing UI APIs remain architectural
-direction.
+Project selector contract, depending only on `adele_plugin_api`. Public Flutter
+`adele_ui` supplies the concrete Session presentation contract, depending on
+Flutter, `adele_plugin_api`, and `adele_product`. Plugin-defined extension API
+packages and broader workbench UI APIs remain architectural direction.
 
 ## Package boundaries
 
@@ -41,12 +43,13 @@ direction.
 | --- | --- | --- | --- |
 | `adele_contract` | Experimental plugin-facing | Dart SDK; other lightweight public packages only if a concrete need emerges | Flutter, internal host packages, application code, analyzer/compiler internals, `build_runner` |
 | `adele_capabilities` | Experimental plugin-facing | Dart SDK and lightweight public contract types when required | Flutter, internal host packages, application code |
-| `adele_plugin_api` | Experimental plugin-facing | Dart SDK and lightweight public packages when required | Flutter unless a future UI API explicitly establishes a boundary; internal host packages; application code |
+| `adele_plugin_api` | Experimental plugin-facing, pure Dart | Dart SDK and lightweight public packages when required | Flutter, internal host packages, application code |
 | `adele_core_extensions` | Experimental plugin-facing, pure Dart; narrow core-owned extension contracts | Dart SDK and `adele_plugin_api` | Flutter, internal host packages, application code, concrete plugins |
 | `adele_model_provider` | Experimental plugin-facing | Dart SDK, `adele_contract`, and `adele_capabilities` | Flutter, internal host packages, application code, concrete providers |
 | `adele_product` | Experimental plugin-facing, pure Dart | Dart SDK and `adele_capabilities` | Flutter, internal host packages, application code, `adele_orchestration`, `adele_plugin_api`, `adele_core_extensions` |
 | `adele_model_tool` | Experimental plugin-facing, pure Dart | Dart SDK, `adele_plugin_api`, and `adele_product` | Flutter, internal host packages, application code, concrete tools |
 | `adele_orchestration` | Experimental plugin-facing, pure Dart | Dart SDK, `adele_product`, `adele_plugin_api`, and `adele_model_tool` | Flutter, `agent_kernel`, other internal host packages, application code, concrete strategies or sources |
+| `adele_ui` | Experimental plugin-facing, Flutter; semantic Session presentation | Flutter, `adele_plugin_api`, and `adele_product` | Internal host packages, application code, concrete plugins |
 | future broader extension/UI APIs | Experimental plugin-facing | Only lightweight public dependencies required by concrete interfaces | Internal host packages, application code, concrete plugins |
 | plugin-defined public extension API | Experimental plugin-facing | Public/core APIs and other deliberately public interface packages needed by the concept | Another plugin's implementation packages, internal host packages, application code |
 | `plugin_runtime` | Internal, pure Dart | Dart SDK, public packages, and concrete acyclic internal dependencies | Flutter, application code, plugin implementations |
@@ -76,6 +79,7 @@ Existing ownership remains singular:
 - Strategy contracts, execution, and inference-context composition belong to `adele_orchestration`.
 - Model-tool contracts belong to `adele_model_tool`.
 - Environment provider contracts belong to `adele_environment`.
+- Flutter Session presentation contracts belong to `adele_ui`; neither product nor orchestration depends on UI.
 - Plugin-defined ecosystems keep their contracts with their deliberately public plugin/component API owners.
 
 ### Application backend composition
@@ -119,6 +123,44 @@ interruptions, not new public APIs or Chat-owned canonical history. Policy and
 exact-invocation authorization remain host-owned; tools and Environment providers
 retain their execution and revision guarantees.
 
+### Session presentation and frontend composition
+
+`packages/ui` (`adele_ui`) owns `SessionPresentationContribution` with
+`strategyId: OrchestrationStrategyId` and
+`createPresentation: Widget Function(Session)`, plus typed
+`sessionPresentationContributions`. It reuses `ExtensionRegistry`, not a second
+registry or Flutter additions to the pure-Dart registry/product packages. Exact
+strategy matching has explicit unavailable/one/ambiguous outcomes; there is no
+priority or fallback to another strategy.
+
+The generic `app/lib/ui/session/session_presentation_host.dart` consumes that
+public contract and existing registry liveness without knowing Chat identities,
+history, or controllers. It retains exact bindings and removes retired widgets
+so their resources dispose. Session lifecycle and backend validity do not depend
+on presentation availability or successful loading.
+
+`app/lib/frontend` owns generic prepared frontend generation/runtime hosting,
+not source discovery, compilation, stock selection, or Chat state.
+`app/lib/plugins/stock_chat_frontend.dart` is the provisional stock activation
+proxy/controller adapter. `ChatController` intentionally remains in
+`app/lib/ui/chat` as provisional composition. Common `RunExecutionStatus`,
+`PendingToolApproval`, and approval display safety belong in `app/lib/ui/execution`;
+the stock adapter connects the controller without making those components Chat
+APIs. Host policy and exact-invocation approval remain the security authority.
+
+The separate `chat_strategy_frontend` Flutter package renders history/composer
+from prepared EVC, without importing the headless Chat implementation, app, or
+kernel. Its eval bridge carries only immutable primitive entry role/text
+snapshots, composer-enabled state, and string submission returning synchronous
+boolean acceptance. No execution or approval objects cross it. The native
+Session presentation factory is distinct from this narrow eval bridge.
+
+Flutter build-time tooling compiles frontend source; normal runtime activation
+only consumes prepared artifacts. Checkout preparation is a stand-in for future
+installation/update compilation, not a cache or implemented plugin management
+system. Flutter/eval dependencies do not enter the shared headless runtime or
+the pure-Dart `plugin_builder` package.
+
 ## Plugin dependencies
 
 A plugin may depend on public surfaces as needed:
@@ -133,6 +175,7 @@ adele_product
 adele_model_tool
 adele_orchestration
 adele_environment
+adele_ui (Flutter frontends)
 future broader plugin-facing extension/UI APIs
 public extension API packages defined by other plugins/components
 ```
@@ -165,7 +208,7 @@ Within a source plugin, dependencies have this shape:
          backend            frontend
 ```
 
-The backend and frontend depend on shared contract/API packages as needed. They do not depend on one another. Transport contracts do not depend on Flutter. A frontend may depend on Flutter and future plugin-facing UI APIs. A backend may use full Dart capabilities in later phases, subject to the eventual runtime and security model.
+The backend and frontend depend on shared contract/API packages as needed. They do not depend on one another. Transport contracts do not depend on Flutter. A frontend may depend on Flutter and deliberately public UI APIs such as `adele_ui`. The same implementation split applies to the in-process headless `chat_strategy_plugin` and its separate Flutter frontend. A backend may use full Dart capabilities subject to the runtime and eventual security model.
 
 Plugin tests may use internal host packages as development-only dependencies to exercise integration boundaries. Those dependencies must remain under `dev_dependencies` and must not be imported by plugin production libraries or entrypoints. The `workspace_demo_backend` host integration test uses `plugin_runtime` on this basis; the backend's production dependency graph does not include it.
 

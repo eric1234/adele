@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:test/test.dart';
 
@@ -46,6 +48,111 @@ void main() {
     registry.register(point: point, id: id, value: const _Greeting('B'));
     expect(registry.discover(point).single.value.text, 'B');
     expect(() => bindingA.validate(), throwsA(isA<StaleExtensionBinding>()));
+  });
+
+  test(
+    'changes broadcast asynchronously after registration and retirement',
+    () async {
+      final ExtensionRegistry registry = ExtensionRegistry();
+      final List<int> first = <int>[];
+      final List<int> second = <int>[];
+      final StreamSubscription<void> firstSubscription = registry.changes
+          .listen((_) => first.add(registry.discover(point).length));
+      final StreamSubscription<void> secondSubscription = registry.changes
+          .listen((_) => second.add(registry.discover(point).length));
+      addTearDown(firstSubscription.cancel);
+      addTearDown(secondSubscription.cancel);
+
+      final ExtensionRegistration registration = registry.register(
+        point: point,
+        id: ExtensionId('dev.adele.test.notified-greeting'),
+        value: const _Greeting('one'),
+      );
+      final ExtensionBinding<_Greeting> binding = registry
+          .discover(point)
+          .single;
+      expect(first, isEmpty);
+      expect(second, isEmpty);
+      await Future<void>.delayed(Duration.zero);
+      expect(first, <int>[1]);
+      expect(second, <int>[1]);
+
+      final Future<void> closing = registration.close();
+      expect(() => binding.validate(), throwsA(isA<StaleExtensionBinding>()));
+      expect(first, <int>[1]);
+      expect(second, <int>[1]);
+      await closing;
+      await Future<void>.delayed(Duration.zero);
+      expect(first, <int>[1, 0]);
+      expect(second, <int>[1, 0]);
+    },
+  );
+
+  test(
+    'discovery, failed registration, and repeated close do not notify',
+    () async {
+      final ExtensionRegistry registry = ExtensionRegistry();
+      int changes = 0;
+      final StreamSubscription<void> subscription = registry.changes.listen(
+        (_) => changes++,
+      );
+      addTearDown(subscription.cancel);
+      final ExtensionId id = ExtensionId('dev.adele.test.notified-greeting');
+      registry.discover(point);
+      await Future<void>.delayed(Duration.zero);
+      expect(changes, 0);
+
+      final ExtensionRegistration registration = registry.register(
+        point: point,
+        id: id,
+        value: const _Greeting('one'),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(changes, 1);
+      expect(
+        () => registry.register(
+          point: point,
+          id: id,
+          value: const _Greeting('two'),
+        ),
+        throwsA(isA<ExtensionRegistrationException>()),
+      );
+      expect(
+        () => registry.register(
+          point: ExtensionPoint<String>(point.value),
+          id: ExtensionId('dev.adele.test.wrong-contract'),
+          value: 'wrong',
+        ),
+        throwsA(isA<ExtensionContractException>()),
+      );
+      registry.discover(point);
+      await Future<void>.delayed(Duration.zero);
+      expect(changes, 1);
+
+      await registration.close();
+      await registration.close();
+      await Future<void>.delayed(Duration.zero);
+      expect(changes, 2);
+    },
+  );
+
+  test('changes are not replayed and listeners can unsubscribe', () async {
+    final ExtensionRegistry registry = ExtensionRegistry();
+    final ExtensionRegistration registration = registry.register(
+      point: point,
+      id: ExtensionId('dev.adele.test.notified-greeting'),
+      value: const _Greeting('one'),
+    );
+    int changes = 0;
+    final StreamSubscription<void> subscription = registry.changes.listen(
+      (_) => changes++,
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(changes, 0);
+    await subscription.cancel();
+    await registration.close();
+    await Future<void>.delayed(Duration.zero);
+    expect(changes, 0);
   });
 
   test('ExtensionPoint equality uses exact invariant contribution type', () {

@@ -26,27 +26,40 @@ compiler share this primitive.
 ## Desktop Tooling
 
 Normal `dart tools/adele.dart run linux` and `build linux --profile` prepare the
-shared host, Git Environment, and OpenAI backend AOT snapshots outside Flutter, before
-launching the Flutter run/build command. This also applies to explicit Linux
-debug/release modes; non-Linux commands and the explicit development smoke entry
-remain unchanged. `tools/backend_artifacts.dart` owns the repository source paths,
-not the app or the snapshot primitive.
+shared host, Git Environment, and OpenAI backend AOT snapshots plus Chat frontend
+EVC before launching the Flutter run/build command. Backend compilation runs
+outside Flutter; frontend compilation uses Flutter build-time tooling. This also
+applies to explicit Linux debug/release modes; non-Linux commands and the explicit
+development smoke entry remain unchanged. `tools/backend_artifacts.dart` owns
+backend source paths, not the normal app runtime or the snapshot primitive.
 
 The launcher inspects its selected Flutter executable and uses that SDK's bundled
 `dart` and sibling `dartaotruntime`, not a potentially unrelated `dart` on PATH.
-It compiles the host first, then Git and OpenAI, and only after all succeed passes:
+It compiles the host first, then Git and OpenAI. `tools/frontend_artifacts.dart`
+then prepares Chat EVC with the selected Flutter SDK. Only after preparation
+succeeds does the launcher pass:
 
 - `ADELE_DARTAOTRUNTIME_EXECUTABLE`: absolute matched runtime path.
 - `ADELE_BACKEND_HOST_ARTIFACT`: absolute shared host `.aot` path.
 - `ADELE_GIT_ENVIRONMENT_ARTIFACT`: absolute Git backend `.aot` path.
 - `ADELE_OPENAI_ARTIFACT`: absolute OpenAI backend `.aot` path.
+- `ADELE_CHAT_FRONTEND_ARTIFACT`: absolute Chat frontend `.evc` path.
 
 These are deployment inputs only. ChatGPT credential-store paths, OAuth
 configuration, and model selection remain runtime stock configuration described
 in [`app/README.md`](../../app/README.md#chatgpt-source-checkout-configuration),
 not compiler defines or shared-host configuration.
 
-Each invocation gets a fresh `.dart_tool/adele/desktop-backends/build-*` directory.
+Frontend preparation invokes `app/tool/compile_chat_frontend.dart` from `app/`
+with `flutter test --no-pub --concurrency 1 tool/compile_chat_frontend.dart`.
+`ADELE_REPOSITORY_ROOT` and `ADELE_CHAT_FRONTEND_OUTPUT` are build-time environment
+inputs, not normal runtime source/compiler configuration. The test runner supplies
+the Flutter environment required by the eval compiler; this package remains pure
+Dart and does not gain Flutter/eval dependencies. See
+[`app/README.md`](../../app/README.md#prepared-chat-frontend) for standalone use.
+
+Each invocation gets fresh `.dart_tool/adele/desktop-backends/build-*` and
+`.dart_tool/adele/desktop-frontends/build-*` directories.
 Outputs are retained, including partial failed builds, so later invocations do not
 replace artifacts still used by an app or previously built bundle. This is local
 development provisioning, not portable distribution: bundles retain absolute paths,
@@ -70,10 +83,16 @@ context. Identical source and build context should allow reuse across ADELE
 profiles and across configured capability instances. Toolchain changes may
 invalidate those artifacts.
 
+Future installation/update should prepare artifacts independently of activation.
+Normal activation only consumes prepared artifacts and never compiles source.
+Current checkout tooling is a stand-in for that preparation, not implemented
+installation, update management, discovery, profiles, or caching.
+
 ## Current Scope
 
-Frontend EVC compilation remains in the Flutter application because this
-package stays pure Dart and must not depend on eval or Flutter. Production
+Frontend EVC compilation belongs to Flutter build-time tooling under `app/tool`,
+not the normal app runtime or generic prepared frontend host. This package stays
+pure Dart and must not depend on eval or Flutter. Production
 caching, installation, signing, and invalidation remain deferred. Generation is
 owned by `contract_codegen`; this package rejects stale generated files before
 compilation and never activates an incomplete build. Its tests create isolated

@@ -1,0 +1,14 @@
+name: chat_strategy_frontend
+description: Interpreted Flutter presentation for the stock Chat strategy.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+  flutter: ">=3.38.10"
+
+resolution: workspace
+
+dependencies:
+  flutter:
+    sdk: flutter

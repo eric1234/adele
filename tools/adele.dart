@@ -6,6 +6,7 @@ import 'dart:math' as math;
 // ignore: avoid_relative_lib_imports
 import '../packages/plugin_builder/lib/plugin_builder.dart';
 import 'backend_artifacts.dart';
+import 'frontend_artifacts.dart';
 import 'test_runner.dart';
 
 const int _maximumDefaultTestJobs = 2;
@@ -47,6 +48,12 @@ const List<TestTarget> testTargets = <TestTarget>[
     name: 'adele_core_extensions',
     path: 'packages/core_extensions',
     executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
+    name: 'adele_ui',
+    path: 'packages/ui',
+    executable: 'flutter',
     arguments: <String>['test'],
   ),
   TestTarget(
@@ -192,7 +199,7 @@ const List<TestTarget> testTargets = <TestTarget>[
 ];
 
 const List<({String name, String path, bool flutter})>
-_packages = <({String name, String path, bool flutter})>[
+analysisTargets = <({String name, String path, bool flutter})>[
   (name: 'adele_desktop', path: 'app', flutter: true),
   (name: 'adele_plugin_api', path: 'packages/plugin_api', flutter: false),
   (name: 'adele_product', path: 'packages/product', flutter: false),
@@ -201,6 +208,7 @@ _packages = <({String name, String path, bool flutter})>[
     path: 'packages/core_extensions',
     flutter: false,
   ),
+  (name: 'adele_ui', path: 'packages/ui', flutter: true),
   (name: 'adele_orchestration', path: 'packages/orchestration', flutter: false),
   (name: 'adele_environment', path: 'packages/environment', flutter: false),
   (name: 'adele_model_tool', path: 'packages/model_tool', flutter: false),
@@ -232,6 +240,11 @@ _packages = <({String name, String path, bool flutter})>[
   (name: 'command_tools_plugin', path: 'plugins/command_tools', flutter: false),
   (name: 'agents_md_plugin', path: 'plugins/agents_md', flutter: false),
   (name: 'chat_strategy_plugin', path: 'plugins/chat_strategy', flutter: false),
+  (
+    name: 'chat_strategy_frontend',
+    path: 'plugins/chat_strategy/packages/frontend',
+    flutter: true,
+  ),
   (
     name: 'local_directory_project_selector_plugin',
     path: 'plugins/local_directory_project_selector',
@@ -346,7 +359,7 @@ Future<void> main(List<String> arguments) async {
           '--fatal-infos',
           'test/tools',
         ]);
-        for (final package in _packages) {
+        for (final package in analysisTargets) {
           await _run(
             package.name,
             package.flutter ? 'flutter' : 'dart',
@@ -385,10 +398,16 @@ Future<void> main(List<String> arguments) async {
             ? _which('flutter')
             : 'flutter';
         final List<String> defines = target == 'linux'
-            ? await prepareDesktopBackendDefines(
-                repositoryRoot: Directory.current,
-                flutterExecutable: flutter,
-              )
+            ? <String>[
+                ...await prepareDesktopBackendDefines(
+                  repositoryRoot: Directory.current,
+                  flutterExecutable: flutter,
+                ),
+                ...await prepareDesktopFrontendDefines(
+                  repositoryRoot: Directory.current,
+                  flutterExecutable: flutter,
+                ),
+              ]
             : const <String>[];
         await _run(
           'adele_desktop $target ${arguments.first}',

@@ -7,9 +7,11 @@ import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/plugins/stock_backend_plugins.dart';
+import 'package:adele_desktop/plugins/stock_chat_execution_status.dart';
+import 'package:adele_desktop/plugins/stock_chat_frontend.dart';
 import 'package:adele_desktop/plugins/stock_openai.dart';
 import 'package:adele_desktop/ui/chat/chat_controller.dart';
-import 'package:adele_desktop/ui/chat/chat_view.dart';
+import 'package:adele_desktop/ui/session/session_presentation_host.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_desktop/ui/shell/task_title_form.dart';
 import 'package:adele_desktop/ui/theme/adele_theme.dart';
@@ -26,6 +28,9 @@ final class AdeleApplication extends StatefulWidget {
     this.bootstrapPlugins,
     this.readChatGptConfiguration = StockChatGptConfiguration.fromEnvironment,
     this.runIds,
+    this.chatFrontendArtifact = const String.fromEnvironment(
+      'ADELE_CHAT_FRONTEND_ARTIFACT',
+    ),
   });
 
   /// Called once when mounted; this application owns and closes the result.
@@ -34,6 +39,7 @@ final class AdeleApplication extends StatefulWidget {
   final Future<void> Function(ApplicationPluginBootstrap)? bootstrapPlugins;
   final StockChatGptConfiguration? Function() readChatGptConfiguration;
   final RunIdSource? runIds;
+  final String chatFrontendArtifact;
 
   @override
   State<AdeleApplication> createState() => _AdeleApplicationState();
@@ -57,6 +63,10 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   StockChatGptConfiguration? _chatGptConfiguration;
   bool _modelConfigurationFailed = false;
   ChatController? _chat;
+  Session? _session;
+  StockChatFrontend? _frontend;
+  Future<void>? _frontendActivation;
+  bool _frontendFailed = false;
   String? _sessionError;
 
   @override
@@ -70,9 +80,11 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     }
     _pluginSubscription = _runtime.plugins.changes.listen((state) {
       debugPrint('ADELE backend plugins: ${state.name}');
+      _frontend?.refresh();
       if (mounted && _closing == null) setState(() {});
     });
     unawaited(_bootstrapPlugins());
+    _frontendActivation = _activateFrontend();
     _lifecycleListener = AppLifecycleListener(
       onExitRequested: () async {
         await _closeRuntime();
@@ -80,6 +92,35 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       },
       onDetach: () => unawaited(_closeRuntime()),
     );
+  }
+
+  Future<void> _activateFrontend() async {
+    try {
+      final StockChatFrontend frontend = await StockChatFrontend.activate(
+        extensions: _runtime.extensions,
+        artifactPath: widget.chatFrontendArtifact,
+        controllerForSession: (session) {
+          final ChatController? controller = _chat;
+          if (controller == null || !identical(controller.session, session)) {
+            throw StateError(
+              'No stock interaction controller for this Session.',
+            );
+          }
+          return controller;
+        },
+      );
+      if (!mounted || _closing != null) {
+        await frontend.close();
+      } else {
+        _frontend = frontend;
+      }
+    } on Object {
+      // Presentation failure never tears down backend or canonical product state.
+      if (mounted && _closing == null) _frontendFailed = true;
+    } finally {
+      _frontendActivation = null;
+      if (mounted && _closing == null) setState(() {});
+    }
   }
 
   Future<void> _bootstrapPlugins() async {
@@ -95,6 +136,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     } on Object catch (error) {
       if (mounted && _closing == null) _bootstrapError = error;
     } finally {
+      _frontend?.refresh();
       if (mounted && _closing == null) setState(() {});
     }
   }
@@ -104,7 +146,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     if (!mounted ||
         _closing != null ||
         task == null ||
-        _chat != null ||
+        _session != null ||
         _creatingTask ||
         _editingTask) {
       return;
@@ -114,6 +156,8 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         taskId: task.id,
         strategyId: chatStrategyId,
       );
+      // Publication is independent of both presentation and controller setup.
+      _session = session;
       final StockChatGptConfiguration? configuration = _chatGptConfiguration;
       final ChatController chat = ChatController(
         runtime: _runtime,
@@ -128,6 +172,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
                   'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE before launching ADELE.'
             : null,
         onChanged: () {
+          _frontend?.refresh();
           if (mounted && _closing == null) setState(() {});
         },
       );
@@ -137,7 +182,9 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       });
     } on Object {
       setState(
-        () => _sessionError = 'Could not create the stock Chat Session.',
+        () => _sessionError = _session == null
+            ? 'Could not create the stock Chat Session.'
+            : 'Session exists, but stock execution setup is unavailable.',
       );
     }
   }
@@ -170,7 +217,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         project == null ||
         !_editingTask ||
         _creatingTask ||
-        _chat != null ||
+        _session != null ||
         _closing != null) {
       return;
     }
@@ -237,11 +284,22 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         // Task failure does not prevent runtime/provider cleanup.
       }
       try {
+        await _frontendActivation;
+      } on Object {
+        // A frontend cleanup failure cannot prevent backend/runtime cleanup.
+      }
+      try {
         await settlingRun;
       } on Object {
         // Run failure must not bypass backend/runtime cleanup.
       }
-      await _runtime.close();
+      try {
+        await _runtime.close();
+      } finally {
+        // Keep the inert input mounted while exit observers await Run settlement.
+        // Removing it earlier disposes Flutter lifecycle listeners mid-dispatch.
+        await _frontend?.close();
+      }
     } on Object catch (error, stackTrace) {
       FlutterError.reportError(
         FlutterErrorDetails(
@@ -281,6 +339,12 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   }
 
   @override
+  void didUpdateWidget(covariant AdeleApplication oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _frontend?.refresh();
+  }
+
+  @override
   void dispose() {
     _lifecycleListener.dispose();
     unawaited(_pluginSubscription.cancel());
@@ -298,7 +362,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         task: _task,
         environment: _environment,
         environmentReady: _environmentReady,
-        taskControls: _chat != null
+        taskControls: _session != null
             ? null
             : Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -327,7 +391,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
                           ? () {
                               if (!mounted ||
                                   _closing != null ||
-                                  _chat != null) {
+                                  _session != null) {
                                 return;
                               }
                               setState(() => _editingTask = true);
@@ -337,8 +401,24 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
                     ),
                 ],
               ),
-        sessionControls: _chat != null
-            ? ChatView(controller: _chat!)
+        sessionControls: _session != null
+            ? Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (_frontendFailed)
+                    const Text(
+                      'Session presentation unavailable: the prepared frontend '
+                      'could not be activated.',
+                    ),
+                  if (_sessionError case final String error) Text(error),
+                  SessionPresentationHost(
+                    session: _session!,
+                    extensions: _runtime.extensions,
+                  ),
+                  if (_chat case final ChatController controller)
+                    StockChatExecutionStatus(controller: controller),
+                ],
+              )
             : _task != null && !_editingTask
             ? Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,

@@ -1,8 +1,8 @@
 import 'dart:io';
 
 import 'package:adele_desktop/development/resource_inspector/resource_inspector_eval_bridge.dart';
+import 'package:adele_desktop/frontend/interpreted_widget.dart';
 import 'package:dart_eval/dart_eval.dart';
-import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 
@@ -36,22 +36,17 @@ final class ResourceInspectorEvalAdapter {
         'src/adele_eval_bridge.dart': _bridgeSource,
       },
     });
-    final Runtime runtime = Runtime(program.write().buffer.asByteData())
-      ..addPlugin(flutterEvalPlugin)
-      ..addPlugin(bridge);
-    final Object? pending = runtime.executeLib(
-      'package:resource_inspector_consumer/resource_inspector_consumer.dart',
-      'buildCapabilityDemo',
-    );
-    final Object? result = pending is Future<Object?> ? await pending : pending;
-    final Object? reified = result is $Value ? result.$reified : result;
-    if (reified is! Widget) {
-      throw StateError('Capability consumer did not return a Widget.');
-    }
-    return ResourceInspectorEvalAdapter._(
-      runtime: runtime,
+    final InterpretedWidget loaded = await loadInterpretedWidget(
+      bytes: program.write(),
       bridge: bridge,
-      widget: reified,
+      library:
+          'package:resource_inspector_consumer/resource_inspector_consumer.dart',
+      entrypoint: 'buildCapabilityDemo',
+    );
+    return ResourceInspectorEvalAdapter._(
+      runtime: loaded.runtime,
+      bridge: bridge,
+      widget: loaded.widget,
     );
   }
 

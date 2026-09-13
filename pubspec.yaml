@@ -22,6 +22,7 @@ workspace:
   - packages/plugin_builder
   - packages/plugin_runtime
   - packages/product
+  - packages/ui
   - plugins/workspace_demo
   - plugins/resource_inspector
   - plugins/scripted_model
@@ -31,6 +32,7 @@ workspace:
   - plugins/command_tools
   - plugins/agents_md
   - plugins/chat_strategy
+  - plugins/chat_strategy/packages/frontend
   - plugins/local_directory_project_selector
   - plugins/git_environment
 

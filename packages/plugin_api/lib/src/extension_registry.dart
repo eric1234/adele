@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'public_id.dart';
 
 /// Typed identity for one extension domain.
@@ -53,6 +55,11 @@ final class ExtensionId {
 final class ExtensionRegistry {
   final Map<String, _ExtensionBucket> _extensions =
       <String, _ExtensionBucket>{};
+  final StreamController<void> _changes = StreamController<void>.broadcast();
+
+  /// Asynchronous notifications after registration or retirement. Listeners
+  /// rediscover current bindings; past changes are not replayed to new listeners.
+  Stream<void> get changes => _changes.stream;
 
   ExtensionRegistration register<T extends Object>({
     required ExtensionPoint<T> point,
@@ -79,6 +86,7 @@ final class ExtensionRegistry {
       value: value,
     );
     registrations[id] = active;
+    _changes.add(null);
     return ExtensionRegistration._(this, active);
   }
 
@@ -102,6 +110,7 @@ final class ExtensionRegistry {
     if (identical(registrations?[active.id], active)) {
       registrations!.remove(active.id);
     }
+    _changes.add(null);
   }
 
   _ExtensionBucket _requireBucket<T extends Object>(ExtensionPoint<T> point) {

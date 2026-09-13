@@ -1,0 +1,20 @@
+name: adele_ui
+description: Public semantic ADELE Session presentation contracts.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+  flutter: ">=3.38.10"
+
+resolution: workspace
+
+dependencies:
+  adele_plugin_api: ^0.1.0
+  adele_product: ^0.1.0
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
