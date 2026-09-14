@@ -406,7 +406,7 @@ A strategy may register and execute through core facilities even if no Agent Int
 
 ## 5.2 Chat Strategy
 
-**Role:** implemented headless conversational model/tool/model strategy with a separate evaluated history/composer; a rich Chat Session surface remains future work.
+**Role:** implemented headless conversational model/tool/model strategy with a separate evaluated message/activity timeline and composer; a rich Chat Session surface remains future work.
 
 `plugins/chat_strategy` contains `chat_strategy_plugin`, the first executable
 stock strategy. `ChatStrategyPlugin.activate` follows the same in-process
@@ -449,16 +449,42 @@ authority retain their existing owners. The independent root AGENTS.md source
 described in section 2.4 is activated by shared `AdeleRuntime` composition,
 not Chat. Other context sources and context UI/persistence remain deferred.
 
+Chat automatically composes stable activity-narration guidance with its Session
+instructions for every inference, including continuation. It asks for one brief
+user-facing shared-purpose statement when proposing related tools, respects
+explicit user instructions, and adds no canonical history entry or context-source
+plugin. The model's explicit text accompanying a successfully completed proposal
+batch is preferred compact narration. Absent text produces a structural operation
+count without an extra inference; tool evidence, not prose, establishes effects.
+
+Normal Runs supply a read-only live activity projection through public
+`adele_orchestration`, with host translation from the internal journal. Chat uses
+the exact model invocation as its proposal-batch group identity. Four proposals
+from one invocation produce one summary; another proposal-containing invocation
+produces another. Proposal-free final text is still canonical assistant content.
+Ordered text/native/proposal evidence and stable resolved tool identities remain
+available underneath the summary. Native output is opaque, not automatically
+reasoning or user-presentable content. No hidden reasoning is recovered or shown.
+
 `plugins/chat_strategy/packages/frontend` (`chat_strategy_frontend`) owns the
 minimal history and prompt/Send composer as evaluated Flutter source. It imports
 neither the headless implementation nor app/kernel code. `ChatController` remains
 provisional in `app/lib/ui/chat`; `app/lib/plugins/stock_chat_frontend.dart` adapts it
-through only immutable primitive entry role/text snapshots, composer-enabled
+through only immutable primitive message/activity timeline snapshots, composer-enabled
 state, and string submission with synchronous boolean acceptance. No execution
 or approval objects or approval decisions cross that eval bridge. Common
 `RunExecutionStatus`, `PendingToolApproval`, and display safety remain host-owned
 under `app/lib/ui/execution`; policy and exact-invocation approval remain the
 security authority.
+
+The provisional controller retains completed activity snapshots separately from
+canonical Chat state for its current presentation lifetime. Follow-up prompts do
+not erase earlier summaries. Reopening/reconstructing a Session cannot restore
+historical activity until persistence exists. Summaries are lightweight,
+non-clickable interpreted text, not assistant messages or generic tool cards.
+Bespoke plugin-owned tool/provider compact UI, legitimate provider-exposed thought
+feedback, Inspection, and deeper Source/Diff/Stream navigation remain future E
+work. No tool-plugin frontend package is needed for the Chat-owned summary.
 
 Prepared frontend generations are distinct from individual presentation instances.
 View resources follow widget lifecycle and exact registration liveness; this does

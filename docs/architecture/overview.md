@@ -43,7 +43,10 @@ The normal shell supports Project opening, title-only Task creation with a real
 Git primary Environment, and one stock Chat Session with sequential approval-gated
 Runs through the experimental ChatGPT subscription-backed ModelProvider. A narrow
 public Flutter Session presentation contract hosts the stock Chat plugin's
-evaluated history/composer; common execution status and approvals remain host-owned.
+evaluated mixed message/activity timeline and composer; common execution status
+and approvals remain host-owned. The Phase D frontend-plugin vertical is current;
+live Run observation and compact Chat proposal-batch narration extend it without
+introducing a native Chat fallback or a general workbench UI framework.
 
 ## System shape
 
@@ -376,14 +379,15 @@ adapter to `ChatController`, intentionally retained in `app/lib/ui/chat`.
 Frontend activation generations and presentation instances are distinct; widget
 lifecycle does not define a permanent one-runtime-per-view architecture.
 
-The eval bridge carries only immutable primitive entry role/text snapshots,
+The eval bridge carries only immutable primitive message/activity timeline snapshots,
 composer-enabled state, and submission of a string returning synchronous boolean
 acceptance. Session, controller, execution, and approval objects do not cross it.
 Common `RunExecutionStatus`, `PendingToolApproval`, and display safety live under
 `app/lib/ui/execution`, with stock controller adaptation at the composition edge.
-Host policy and exact-invocation approval remain the security authority. A common
-execution timeline, richer workbench composition, and broad third-party UI APIs
-remain deferred.
+Host policy and exact-invocation approval remain the security authority. Activity
+summaries are lightweight interpreted Chat content, not actionable approval UI.
+Inspection, richer workbench composition, and broad third-party UI APIs remain
+deferred.
 
 ## Agent execution
 
@@ -406,6 +410,44 @@ materializes against `KernelOrchestrationHost` via
 `OrchestrationExecution` with `start` and `resolveApproval`.
 `SessionOrchestrationRun` retains that exact binding/execution and exposes
 internal Run/tool/journal evidence only to application callers.
+
+The same host exposes a separate read-only activity source whose immutable public
+values belong to pure-Dart `adele_orchestration`. The application projects internal
+journal evidence; neither the journal nor the Run/executable authority reaches
+public consumers. Asynchronous coalesced journal invalidation supports live reads
+during model/tool work, with initial and terminal snapshots and detachable
+subscriptions. This is in-memory observation, not persistence or a public copy of
+kernel execution events.
+
+Model invocations retain their exact `ModelInvocationId`, ordered output
+occurrences, settlement, and opaque native metadata. Each prepared tool retains
+its `ToolInvocationId` through policy, approval, execution, progress, and outcome,
+with explicit provenance to its originating model proposal. Arguments, effects,
+and structured outcome `hostData` remain data, without executable bindings,
+approval callbacks, or arbitrary exception objects. Evidence order follows the
+internal journal rather than reconstructed alias/provider-call matching.
+
+Chat projects one summary for each successfully completed model invocation with
+tool proposals, not one per Run or per tool. It joins that invocation's explicit
+user-facing `ModelTextOutput` as narration; proposal-free final text remains the
+canonical assistant response. Missing narration uses a modest operation count.
+Stable Chat-owned inference guidance requests one brief shared-purpose statement
+per related tool batch and defers to explicit user instructions. Session
+instructions and independently composed sources are preserved, and guidance is
+not itself history. Model narration is ordinary user-facing output, not hidden
+reasoning. Opaque `ModelNativeOutput` evidence is retained without generic parsing
+or reasoning labels.
+
+The provisional `ChatController` observes the active Run and retains immutable
+activity snapshots separately from canonical Chat state. Its mixed presentation
+inserts groups after the initiating user entry and before the final assistant
+entry, keeping completed groups through follow-up prompts for that controller's
+lifetime. Snapshots are built lazily from buffered evidence; controller captures
+and frontend notifications are coalesced post-frame, not repeated per progress
+chunk. It detaches observation on close. Reopening/reconstructing a Session cannot restore
+historical activity until persistence exists. Tool/provider-specific interpreted
+compact presentations and Inspection are future E work, not a generic host-owned
+tool-card schema.
 
 The public `OrchestrationExecutionHost` exposes lifecycle operations and binding
 validation, `invokeModel(StrategyInferenceMaterial)`, `processProposal` using an
@@ -595,7 +637,7 @@ self-hosting.
 | Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, Session-authorized read/mutation/process facets, bounded create/patch/delete text-file mutation, and generated foreground process streaming through the Git provider are proven; persistence and complete lifecycle remain unimplemented. |
 | Session-bound strategy execution | Canonical immutable Session creation, atomic publication with separate Environment authority, executable contributions, explicit unavailable/ambiguous resolution, and exact binding validation across Run operations/resume/settlement are implemented and deterministically validated. Headless Chat uses the public facade with validated state, sequencing, and application integration. Persistent strategy state, child Sessions, and disk persistence remain deferred. |
 | Inference context | Instruction-only source discovery, exact-binding capture, immutable snapshots, current adapter rendering, and the stock root AGENTS.md source activated by the shared runtime are implemented; other sources, broader material, provider-aware projection/cache planning, budgets, and compaction remain deferred. |
-| Production orchestration/UI/Commands | Stock Chat, minimal Project/Task/Environment presentation, typed Session presentation with prepared evaluated Chat history/composer, and host-owned approval-gated Runs are implemented; configurable permissions, a common execution timeline, Task Browser, rich workbench UI, Commands, and plugin discovery remain directional. |
+| Production orchestration/UI/Commands | Stock Chat, minimal Project/Task/Environment presentation, typed Session presentation with prepared evaluated mixed Chat timeline/composer, live compact proposal-batch narration, and host-owned approval-gated Runs are implemented; configurable permissions, Inspection, bespoke tool/provider activity presentation, Task Browser, rich workbench UI, Commands, and plugin discovery remain directional. |
 | Cross-platform/release | Unproven on Windows, macOS, and release mode. |
 | Packaging/sandboxing | Unproven; process isolation is not a sandbox. |
 

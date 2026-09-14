@@ -1,3 +1,21 @@
+final class ModelInvocationId {
+  ModelInvocationId(String value)
+    : value = _requireId(value, 'Model invocation ID');
+
+  final String value;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ModelInvocationId && other.value == value;
+
+  @override
+  int get hashCode => value.hashCode;
+
+  @override
+  String toString() => value;
+}
+
 final class ToolInvocationId {
   ToolInvocationId(String value)
     : value = _requireId(value, 'Tool invocation ID');

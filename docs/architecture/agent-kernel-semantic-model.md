@@ -679,6 +679,35 @@ Execution observations are **not** automatically the sole durable source of trut
 
 The deterministic in-memory journal is implemented without claiming durable storage, event-sourced crash recovery, or replay.
 
+Normal Runs expose a separate immutable read model in public pure-Dart
+`adele_orchestration`. The application orchestration host projects internal
+journal evidence into this data-only boundary; public consumers never receive
+`AgentRun`, `RunJournal`, `ExecutionEvent`, executable materializations, or
+approval-resolution authority. The journal emits asynchronous coalesced change
+notifications after deterministic recording. Observers can read an initial
+snapshot and observe changes during asynchronous model/tool advancement, detach
+without affecting execution, and inspect the retained terminal snapshot.
+
+Exact model invocation identities and Run-local output occurrence identities
+retain authoritative order, including opaque provider-native outputs and native
+terminal metadata. Prepared tool identities remain stable through policy,
+approval, execution, progress, and terminal outcome. Explicit proposal provenance
+correlates a resolved tool with its originating model/output occurrence rather
+than guessing from provider call IDs, aliases, or the latest model turn. The
+projection preserves canonical arguments, known effects, and structured outcome
+`hostData` while excluding arbitrary exception objects and executable authority.
+Opaque native and tool-owned payloads are evidence, not automatically rendered
+or classified as reasoning.
+
+Stock Chat uses this observation boundary for presentation-only proposal-batch
+summaries: one successfully completed proposal-containing model invocation is one
+group, regardless of tool count. Explicit user-facing model text is its preferred
+narration; absent narration uses a structural count. This is Chat presentation
+policy, not a kernel grouping invariant. Proposal-free final assistant text stays
+canonical Chat content, and completed groups are retained only for the current
+controller lifetime. Bespoke interpreted provider/tool presentations and
+Inspection remain future work.
+
 Public plugin Events are a broader extension concept defined outside the kernel. A kernel observation may later be projected into a public Event, but the internal Run journal and public Event system are not assumed to be identical.
 
 # Run lifecycle

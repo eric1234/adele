@@ -72,6 +72,151 @@ void main() {
   );
 
   test(
+    'Chat automatically supplies batch narration guidance, not history entries',
+    () async {
+      final _Fixture fixture = _Fixture(
+        turns: <StrategyModelTurn>[_finalTurn()],
+      );
+
+      await fixture.execution.start();
+
+      expect(
+        fixture.host.requests.single.instructions,
+        'When proposing one or more related tool operations, include one brief '
+        'user-facing statement describing their shared purpose. Prefer one concise '
+        'summary for the related batch rather than narrating each operation '
+        'individually. Explicit user instructions take precedence over this guidance.',
+      );
+      expect(
+        fixture.host.requests.single.instructions,
+        chatToolNarrationGuidance,
+      );
+      expect(fixture.state.instructions, isEmpty);
+      expect(fixture.registry.discover(inferenceContextSources), isEmpty);
+      expect(
+        fixture.host.requests.single.input.cast<SemanticMessageInput>().map(
+          (item) => item.content,
+        ),
+        <String>['Perform steps.'],
+      );
+      expect(
+        fixture.state.snapshot().entries.map((entry) => entry.content),
+        <String>['Perform steps.', 'Complete.'],
+      );
+    },
+  );
+
+  for (final String instructions in <String>[
+    ' \t\r\n',
+    '  Do not narrate tool operations. Give only the final answer.\r\n\t',
+  ]) {
+    test('${instructions.trim().isEmpty ? 'Whitespace-only' : 'Explicit'} '
+        'Session instructions retain exact bytes and the protocol', () async {
+      final _Fixture fixture = _Fixture(
+        instructions: instructions,
+        turns: <StrategyModelTurn>[_finalTurn()],
+      );
+
+      await fixture.execution.start();
+
+      final StrategyInferenceMaterial request = fixture.host.requests.single;
+      expect(
+        request.instructions,
+        '$chatToolNarrationGuidance\n\n$instructions',
+      );
+      expect(fixture.state.instructions, instructions);
+      expect(
+        renderInferenceInstructions(
+          InferenceContextSnapshot.fromStrategy(request),
+        ),
+        request.instructions,
+      );
+    });
+  }
+
+  test(
+    'narration and Session instructions compose normally with an independent source',
+    () async {
+      const String instructions = '  Use source tools before answering.\r\n';
+      final _Fixture fixture = _Fixture(instructions: instructions);
+      final ExtensionId sourceId = ExtensionId('fixture.independent-source');
+      int captures = 0;
+      final ExtensionRegistration source = fixture.registry.register(
+        point: inferenceContextSources,
+        id: sourceId,
+        value: InferenceContextSourceContribution(
+          failureMode: InferenceContextFailureMode.required,
+          snapshot: (context) async {
+            expect(context.session, same(fixture.session));
+            expect(context.runId, fixture.host.id);
+            captures++;
+            return <InferenceContextMaterial>[
+              InferenceInstructionMaterial(
+                key: 'independent',
+                text: '  Independent guidance $captures.\r\n',
+              ),
+            ];
+          },
+        ),
+      );
+      addTearDown(source.close);
+      final InferenceContextComposer composer = InferenceContextComposer(
+        fixture.registry,
+      );
+      final List<InferenceContextSnapshot> snapshots =
+          <InferenceContextSnapshot>[];
+      fixture.host.onModel = (material) async {
+        snapshots.add(
+          await composer.compose(
+            strategyMaterial: material,
+            sourceContext: _SourceContext(fixture.session, fixture.host.id),
+          ),
+        );
+        return fixture.host.turns[fixture.host.requests.length - 1];
+      };
+
+      await fixture.execution.start();
+
+      expect(fixture.host.state, RunState.completed);
+      expect(captures, 2);
+      expect(snapshots, hasLength(2));
+      for (int index = 0; index < snapshots.length; index++) {
+        final InferenceContextSnapshot snapshot = snapshots[index];
+        expect(snapshot.instructionGroups, hasLength(2));
+        expect(
+          snapshot.instructionGroups.first,
+          isA<StrategyInstructionGroup>().having(
+            (group) => group.instructions,
+            'instructions',
+            '$chatToolNarrationGuidance\n\n$instructions',
+          ),
+        );
+        final SourceInstructionGroup group =
+            snapshot.instructionGroups.last as SourceInstructionGroup;
+        expect(group.sourceId, sourceId);
+        expect(
+          group.materials.single.text,
+          '  Independent guidance ${index + 1}.\r\n',
+        );
+        expect(
+          renderInferenceInstructions(snapshot),
+          '$chatToolNarrationGuidance\n\n$instructions\n\n'
+          '  Independent guidance ${index + 1}.\r\n',
+        );
+        expect(
+          snapshot.input,
+          orderedEquals(fixture.host.requests[index].input),
+        );
+      }
+      expect(
+        snapshots.last.input.whereType<SemanticToolOutcomeInput>(),
+        hasLength(3),
+      );
+      expect(fixture.state.instructions, instructions);
+    },
+  );
+
+  test(
     'final text is concatenated in output order before host completion',
     () async {
       final _Fixture fixture = _Fixture(
@@ -294,6 +439,11 @@ void main() {
 
       final List<SemanticModelInputItem> replay =
           fixture.host.requests.last.input;
+      expect(fixture.host.requests, hasLength(2));
+      expect(
+        fixture.host.requests.map((request) => request.instructions),
+        everyElement(chatToolNarrationGuidance),
+      );
       expect(replay, hasLength(10));
       final List<ModelOutputItem> output = fixture.host.turns.first.output;
       for (int index = 0; index < output.length; index++) {
@@ -512,6 +662,10 @@ void main() {
         expect(fixture.host.proposals, hasLength(3));
         expect(fixture.host.requests, hasLength(2));
         expect(
+          fixture.host.requests.map((request) => request.instructions),
+          everyElement(chatToolNarrationGuidance),
+        );
+        expect(
           fixture.host.snapshots,
           everyElement(same(fixture.host.turns.first.tools)),
         );
@@ -709,7 +863,9 @@ void main() {
       expect(fixture.host.requests, hasLength(2));
       expect(
         fixture.host.requests.map((request) => request.instructions),
-        everyElement('Use source tools before answering.'),
+        everyElement(
+          '$chatToolNarrationGuidance\n\nUse source tools before answering.',
+        ),
       );
       expect(
         fixture.host.failure,
@@ -756,8 +912,12 @@ void main() {
       expect(secondHost.sessionId, fixture.host.sessionId);
       expect(secondHost.state, RunState.completed);
       expect(
-        secondHost.requests.first.instructions,
-        'Second Run instructions.',
+        fixture.host.requests.map((request) => request.instructions),
+        everyElement(chatToolNarrationGuidance),
+      );
+      expect(
+        secondHost.requests.map((request) => request.instructions),
+        everyElement('$chatToolNarrationGuidance\n\nSecond Run instructions.'),
       );
       final List<SemanticMessageInput> messages = secondHost
           .requests
@@ -782,6 +942,17 @@ void main() {
       expect(
         secondHost.requests.last.input.whereType<SemanticToolProposalInput>(),
         hasLength(1),
+      );
+      expect(
+        secondHost.requests.last.input.whereType<SemanticNativeInput>(),
+        hasLength(1),
+      );
+      expect(
+        secondHost.requests.last.input
+            .whereType<SemanticMessageInput>()
+            .where((item) => item.role == SemanticMessageRole.assistant)
+            .map((item) => item.content),
+        <String>['Complete.', 'Between proposals.'],
       );
       expect(afterFirst.entries.map((entry) => entry.content), <String>[
         'Perform steps.',
@@ -1171,6 +1342,19 @@ final class _Host implements OrchestrationExecutionHost {
 }
 
 final class _Tools implements StrategyToolSnapshot {}
+
+final class _SourceContext implements InferenceContextSourceContext {
+  _SourceContext(this.session, this.runId);
+
+  @override
+  final Session session;
+  @override
+  final RunId runId;
+
+  @override
+  Future<T> requireHostService<T extends Object>() async =>
+      throw UnsupportedError('No host service is available in this fixture.');
+}
 
 StrategyModelTurn _finalTurn({
   String text = 'Complete.',

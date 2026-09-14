@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/approval_gated_tool_policy.dart';
@@ -7,9 +9,10 @@ import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/ui/execution/pending_tool_approval.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
-import 'package:adele_product/adele_product.dart' show Session;
+import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 /// Window-local stock Chat interaction, not shared Session lifecycle authority.
@@ -31,10 +34,12 @@ final class ChatController {
       );
     }
     _chat = runtime.chat.sessions.obtain(session.id);
-    _chat.instructions =
-        'Inspect source with read/search tools as needed. Source mutations and '
-        'commands may be proposed when needed, but they require explicit user '
-        'approval before execution.';
+    if (_chat.instructions.isEmpty) {
+      _chat.instructions =
+          'Inspect source with read/search tools as needed. Source mutations and '
+          'commands may be proposed when needed, but they require explicit user '
+          'approval before execution.';
+    }
     _snapshot = _chat.snapshot();
   }
 
@@ -47,6 +52,12 @@ final class ChatController {
   final void Function()? onChanged;
   late final ChatSessionState _chat;
   late ChatSessionSnapshot _snapshot;
+  late ChatUserMessage _activeUserMessage;
+  final Map<ChatUserMessage, RunActivitySnapshot> _activity = {};
+  RunActivitySource? _activitySource;
+  StreamSubscription<void>? _activitySubscription;
+  bool _activityUpdateScheduled = false;
+  int _visibleActivityCount = 0;
   SessionOrchestrationRun? _currentRun;
   Future<void>? _activeRunFuture;
   Future<void>? _closing;
@@ -59,6 +70,18 @@ final class ChatController {
 
   ChatSessionSnapshot get snapshot => _snapshot;
   SessionOrchestrationRun? get currentRun => _currentRun;
+
+  /// Presentation-lifetime evidence only, never canonical Chat or Run authority.
+  List<RunActivitySnapshot> get activitySnapshots =>
+      List.unmodifiable(_activity.values);
+
+  List<ChatTimelineEntry> get timeline => List.unmodifiable([
+    for (final ChatEntry entry in _snapshot.entries) ...[
+      ChatTimelineMessage(entry),
+      if (_activity[entry] case final RunActivitySnapshot activity)
+        ..._summaries(activity),
+    ],
+  ]);
 
   /// Current start/resume operation, not the lifetime of a waiting Run.
   Future<void>? get activeRunFuture => _activeRunFuture;
@@ -106,7 +129,8 @@ final class ChatController {
       onChanged?.call();
       return false;
     }
-    _chat.append(ChatUserMessage(prompt));
+    _activeUserMessage = ChatUserMessage(prompt);
+    _chat.append(_activeUserMessage);
     _snapshot = _chat.snapshot();
     _failure = null;
     _currentRun = null;
@@ -169,7 +193,10 @@ final class ChatController {
           policy: const ApprovalGatedToolPolicy(),
         );
         // Accepted work settles on close, without late presentation updates.
-        if (!_closed) _currentRun = execution;
+        if (!_closed) {
+          _currentRun = execution;
+          _observeActivity(execution.activity, _activeUserMessage);
+        }
         await execution.start();
       } else {
         execution = _currentRun!;
@@ -191,11 +218,56 @@ final class ChatController {
     } finally {
       _activeRunFuture = null;
       if (!_closed) {
+        if (_activitySource case final RunActivitySource source) {
+          _captureActivity(source, _activeUserMessage, notify: false);
+        }
+        if (!_running) _detachActivity();
         _snapshot = _chat.snapshot();
         _advancing = false;
         onChanged?.call();
       }
     }
+  }
+
+  void _observeActivity(RunActivitySource source, ChatUserMessage user) {
+    _activitySource = source;
+    // Subscribe before the initial read so no recorded evidence can be missed.
+    _activitySubscription = source.changes.listen((_) {
+      if (_closed || !identical(_activitySource, source)) return;
+      if (_activityUpdateScheduled) return;
+      _activityUpdateScheduled = true;
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        _activityUpdateScheduled = false;
+        if (_closed) return;
+        if (_activitySource case final RunActivitySource current) {
+          _captureActivity(current, _activeUserMessage);
+        }
+      });
+      SchedulerBinding.instance.ensureVisualUpdate();
+    });
+    _captureActivity(source, user, notify: false);
+  }
+
+  void _captureActivity(
+    RunActivitySource source,
+    ChatUserMessage user, {
+    bool notify = true,
+  }) {
+    _activity[user] = source.snapshot;
+    final int count = timeline.whereType<ChatActivitySummary>().length;
+    final bool changed = count != _visibleActivityCount;
+    _visibleActivityCount = count;
+    // Tool progress stays inspectable without rebuilding compact UI per chunk.
+    if (notify && changed) onChanged?.call();
+  }
+
+  void _detachActivity() {
+    final StreamSubscription<void>? subscription = _activitySubscription;
+    _activitySource = null;
+    _activitySubscription = null;
+    // Listener removal is synchronous; this notification-only source owns no
+    // asynchronous execution cleanup to put ahead of the accepted Run drain.
+    unawaited(subscription?.cancel());
   }
 
   void _inspectRun(AgentRun run) {
@@ -232,8 +304,64 @@ final class ChatController {
   /// the window/runtime, without resolving or executing its pending invocation.
   Future<void> close() {
     _closed = true;
+    _detachActivity();
     return _closing ??= () async {
       await _activeRunFuture;
     }();
+  }
+}
+
+/// Stock Chat's mixed timeline is presentation, not a new ChatEntry variant.
+sealed class ChatTimelineEntry {
+  const ChatTimelineEntry();
+
+  String get content;
+}
+
+final class ChatTimelineMessage extends ChatTimelineEntry {
+  const ChatTimelineMessage(this.message);
+
+  final ChatEntry message;
+
+  @override
+  String get content => message.content;
+}
+
+final class ChatActivitySummary extends ChatTimelineEntry {
+  const ChatActivitySummary({
+    required this.runId,
+    required this.invocationId,
+    required this.content,
+  });
+
+  final RunId runId;
+  final ModelInvocationId invocationId;
+  @override
+  final String content;
+}
+
+Iterable<ChatActivitySummary> _summaries(RunActivitySnapshot activity) sync* {
+  for (final ModelInvocationActivity model in activity.models) {
+    if (model.settlement != ModelSettlement.completed ||
+        model.failure != null) {
+      continue;
+    }
+    final List<ModelOutputItem> output = [
+      for (final ModelOutputActivity item in model.outputs) item.item,
+    ];
+    final int count = output.whereType<ModelToolProposalOutput>().length;
+    if (count == 0) continue;
+    final String narration = output
+        .whereType<ModelTextOutput>()
+        .map((item) => item.content)
+        .join('\n')
+        .trim();
+    yield ChatActivitySummary(
+      runId: activity.runId,
+      invocationId: model.id,
+      content: narration.isNotEmpty
+          ? narration
+          : '$count tool ${count == 1 ? 'operation' : 'operations'}',
+    );
   }
 }

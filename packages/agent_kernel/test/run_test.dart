@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:adele_orchestration/adele_orchestration.dart' as orchestration;
 import 'package:adele_product/adele_product.dart' as product;
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:test/test.dart';
@@ -5,6 +8,76 @@ import 'package:test/test.dart';
 import 'support/fakes.dart';
 
 void main() {
+  test('model invocation identity is the public orchestration identity', () {
+    final orchestration.ModelInvocationId id = ModelInvocationId('model-1');
+    expect(id, orchestration.ModelInvocationId('model-1'));
+  });
+
+  test('journal invalidation is async, coalesced and detachable', () async {
+    final AgentRun run = AgentRun(id: RunId('live'), sessionId: SessionId('s'));
+    int notifications = 0;
+    final StreamSubscription<void> subscription = run.journal.changes.listen((
+      _,
+    ) {
+      notifications++;
+      expect(run.state, RunState.running);
+      expect(run.journal.lastSequence, 2);
+      expect(run.journal.recordsAfter(1).single.sequence, 2);
+    });
+    run.start();
+    final ExecutionEventRecord recorded = run.record(
+      ModelInvocationStarted(ModelInvocationId('m')),
+    );
+    expect(recorded.sequence, 2);
+    expect(run.journal.records.last, same(recorded));
+    expect(notifications, 0);
+    await Future<void>.delayed(Duration.zero);
+    expect(notifications, 1);
+    await subscription.cancel();
+    run.complete();
+    await Future<void>.delayed(Duration.zero);
+    expect(notifications, 1);
+    expect(run.journal.lastSequence, 3);
+    expect(run.journal.recordsAfter(2).single.event, isA<RunCompleted>());
+    expect(() => run.journal.recordsAfter(0).clear(), throwsUnsupportedError);
+  });
+
+  test(
+    'observer errors and reentrant reads never enter Run recording',
+    () async {
+      final AgentRun run = AgentRun(
+        id: RunId('observed'),
+        sessionId: SessionId('s'),
+      );
+      final Object observerError = StateError('observer only');
+      final List<Object> errors = [];
+      late StreamSubscription<void> broken;
+      runZonedGuarded(() {
+        broken = run.journal.changes.listen((_) {
+          expect(run.journal.records.last.event, isA<RunCompleted>());
+          throw observerError;
+        });
+      }, (Object error, StackTrace stack) => errors.add(error));
+      int healthy = 0;
+      final StreamSubscription<void> subscription = run.journal.changes.listen((
+        _,
+      ) {
+        healthy++;
+        expect(() => run.start(), throwsA(isA<InvalidRunOperation>()));
+      });
+      run.start();
+      run.complete();
+      await Future<void>.delayed(Duration.zero);
+      expect(errors, [same(observerError)]);
+      expect(healthy, 1);
+      expect(run.failure, isNull);
+      expect(run.state, RunState.completed);
+      expect(run.journal.records.map((r) => r.sequence), [1, 2]);
+      await broken.cancel();
+      await subscription.cancel();
+    },
+  );
+
   test('kernel re-exports the canonical product Session identity', () {
     final product.SessionId sessionId = SessionId('canonical-session');
 

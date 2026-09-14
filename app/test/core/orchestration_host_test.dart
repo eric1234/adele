@@ -13,6 +13,288 @@ import '../support/orchestration_test_lifecycle.dart';
 
 void main() {
   test(
+    'activity is live through held model, preflight, approval and tool progress',
+    () async {
+      final ToolProgress progress = ToolProgress(
+        kind: ToolProgressKind.stdout,
+        content: 'live output',
+      );
+      final _StrategyFixture fixture = await _fixture(
+        ToolPolicyDecision.ask,
+        progress: [progress],
+      );
+      final RunActivitySource source = fixture.strategy.activity;
+      final RunActivitySnapshot initial = source.snapshot;
+      expect(initial.runId, fixture.run.id);
+      expect(initial.sessionId, fixture.run.sessionId);
+      expect(initial.state, RunState.created);
+      expect(fixture.strategy.activity, same(source));
+      expect(source, isNot(isA<KernelOrchestrationHost>()));
+      expect(source, isNot(isA<SessionOrchestrationRun>()));
+      expect(source, isNot(isA<AgentRun>()));
+      expect(
+        () => (source as dynamic).fail(StateError('no authority')),
+        throwsNoSuchMethodError,
+      );
+      final Completer<void> modelHeld = Completer<void>();
+      final Completer<void> releaseModel = Completer<void>();
+      final Completer<void> preflightHeld = Completer<void>();
+      final Completer<void> releasePreflight = Completer<void>();
+      final Completer<void> toolHeld = Completer<void>();
+      final Completer<void> releaseTool = Completer<void>();
+      fixture.model.beforeSettlement = () async {
+        if (fixture.model.invocations == 1) {
+          modelHeld.complete();
+          await releaseModel.future;
+        }
+      };
+      fixture.executable.beforeDescribe = () async {
+        preflightHeld.complete();
+        await releasePreflight.future;
+      };
+      fixture.executable.beforeTerminal = () async {
+        toolHeld.complete();
+        await releaseTool.future;
+      };
+      final Map<String, Object?> hostData = {
+        'nested': <Object?>[
+          {'result': 'retained'},
+        ],
+      };
+      fixture.executable.outcome = ToolOutcome(
+        disposition: ToolOutcomeDisposition.success,
+        effectCertainty: EffectCertainty.knownOccurred,
+        modelContent: 'Inspected.',
+        hostData: hostData,
+        hostDiagnostic: 'private diagnostic',
+        cause: StateError('private cause'),
+      );
+      (hostData['nested']! as List<Object?>).clear();
+      int notifications = 0;
+      final List<Object> observerErrors = [];
+      late StreamSubscription<void> broken;
+      runZonedGuarded(() {
+        broken = source.changes.listen((_) => throw StateError('observer'));
+      }, (Object error, StackTrace stack) => observerErrors.add(error));
+      final StreamSubscription<void> healthy = source.changes.listen((_) {
+        notifications++;
+        expect(source.snapshot.runId, fixture.run.id);
+      });
+      final Future<void> starting = fixture.strategy.start();
+      await modelHeld.future;
+      final RunActivitySnapshot modelSnapshot = source.snapshot;
+      expect(
+        modelSnapshot.models.single.id,
+        same(fixture.model.requests.single.invocationId),
+      );
+      expect(modelSnapshot.models.single.startSequence, 2);
+      expect(modelSnapshot.models.single.outputs.single.sequence, 3);
+      expect(modelSnapshot.models.single.terminalSequence, isNull);
+      expect(modelSnapshot.tools, isEmpty);
+      await expectLater(
+        fixture.strategy.start(),
+        throwsA(isA<InvalidRunOperation>()),
+      );
+      releaseModel.complete();
+      await preflightHeld.future;
+      final RunActivitySnapshot prepared = source.snapshot;
+      expect(prepared.models.single.settlement, ModelSettlement.completed);
+      expect(
+        prepared.tools.single.id,
+        same(fixture.strategy.lastToolInvocation!.id),
+      );
+      expect(prepared.tools.single.effects, isNull);
+      expect(
+        prepared.tools.single.changes.single.kind,
+        ToolActivityKind.prepared,
+      );
+      releasePreflight.complete();
+      await starting;
+      final RunActivitySnapshot waiting = source.snapshot;
+      final ToolInvocationActivity pending = waiting.tools.single;
+      expect(waiting.state, RunState.waiting);
+      expect(pending.modelInvocationId, prepared.models.single.id);
+      expect(pending.proposalSequence, 3);
+      expect(pending.effects!.summary, 'Inspect.');
+      expect(pending.changes.map((c) => c.kind), [
+        ToolActivityKind.prepared,
+        ToolActivityKind.policyEvaluated,
+        ToolActivityKind.approvalRequested,
+      ]);
+      expect(pending.changes[1].policyDecision, ToolActivityPolicyDecision.ask);
+      expect(
+        pending.changes.last.interruptionId,
+        fixture.run.interruptions.keys.single,
+      );
+      expect(pending.outcome, isNull);
+      final Future<void> resuming = fixture.strategy.resolveApproval(
+        _approval(fixture.run),
+      );
+      await toolHeld.future;
+      final RunActivitySnapshot executing = source.snapshot;
+      final ToolInvocationActivity active = executing.tools.single;
+      expect(active.id, same(pending.id));
+      expect(active.preparedSequence, pending.preparedSequence);
+      expect(active.changes.map((c) => c.kind), [
+        ...pending.changes.map((c) => c.kind),
+        ToolActivityKind.approvalResolved,
+        ToolActivityKind.executionStarted,
+        ToolActivityKind.progress,
+      ]);
+      expect(active.changes[3].approved, isTrue);
+      expect(active.changes.last.progress, same(progress));
+      expect(active.outcome, isNull);
+      await Future<void>.delayed(Duration.zero);
+      expect(notifications, greaterThan(0));
+      expect(observerErrors, isNotEmpty);
+      await broken.cancel();
+      await healthy.cancel();
+      final int detachedNotifications = notifications;
+      releaseTool.complete();
+      await resuming;
+      await Future<void>.delayed(Duration.zero);
+      final RunActivitySnapshot finalSnapshot = source.snapshot;
+      final ToolInvocationActivity completed = finalSnapshot.tools.single;
+      expect(notifications, detachedNotifications);
+      expect(finalSnapshot.state, RunState.completed);
+      expect(finalSnapshot.failure, isNull);
+      expect(finalSnapshot.models, hasLength(2));
+      expect(
+        finalSnapshot.models.last.outputs.single.item,
+        isA<ModelTextOutput>(),
+      );
+      expect(completed.id, same(pending.id));
+      expect(completed.changes.last.outcome, same(completed.outcome));
+      expect(completed.outcome!.hostData['nested'], [
+        {'result': 'retained'},
+      ]);
+      expect(
+        () => (completed.outcome!.hostData['nested']! as List<Object?>).clear(),
+        throwsUnsupportedError,
+      );
+      expect(
+        () => completed.canonicalArguments.clear(),
+        throwsUnsupportedError,
+      );
+      expect(() => completed.effects!.targets.clear(), throwsUnsupportedError);
+      expect(
+        () => (completed.outcome as dynamic).hostDiagnostic,
+        throwsNoSuchMethodError,
+      );
+      expect(
+        () => (completed.outcome as dynamic).cause,
+        throwsNoSuchMethodError,
+      );
+      expect(finalSnapshot.lifecycle.map((e) => e.state), [
+        RunState.running,
+        RunState.waiting,
+        RunState.running,
+        RunState.completed,
+      ]);
+      expect(initial.models, isEmpty);
+      expect(modelSnapshot.models.single.terminalSequence, isNull);
+      expect(prepared.tools.single.effects, isNull);
+      expect(waiting.tools.single.changes, hasLength(3));
+      expect(executing.tools.single.outcome, isNull);
+      expect(source.snapshot, same(finalSnapshot));
+    },
+  );
+
+  test(
+    'two same-object proposals and another model preserve exact occurrence origins',
+    () async {
+      final _BatchFixture fixture = await _BatchFixture.create(
+        proposalCount: 2,
+      );
+      final ModelToolProposalOutput first =
+          fixture.model.output[1] as ModelToolProposalOutput;
+      // Even identical proposal objects and provider call IDs have distinct output occurrences.
+      fixture.model.output[3] = ModelToolProposalOutput(
+        first.proposal,
+        providerItemId: 'second-occurrence',
+      );
+      fixture.model.secondOutput = [
+        ModelToolProposalOutput(first.proposal, providerItemId: 'next-model'),
+      ];
+      await fixture.strategy.start();
+      final RunActivitySnapshot snapshot = fixture.strategy.activity.snapshot;
+      expect(snapshot.state, RunState.completed);
+      expect(snapshot.models, hasLength(3));
+      expect(snapshot.tools, hasLength(3));
+      final List<ExecutionEventRecord> records = fixture.run.journal.records;
+      final List<ExecutionEventRecord> proposals = records
+          .where(
+            (r) =>
+                r.event is ModelOutputObserved &&
+                (r.event as ModelOutputObserved).item
+                    is ModelToolProposalOutput,
+          )
+          .toList();
+      expect(proposals, hasLength(3));
+      for (int i = 0; i < snapshot.models.length; i++) {
+        final ModelInvocationActivity model = snapshot.models[i];
+        expect(model.id, same(fixture.model.requests[i].invocationId));
+        expect(
+          model.startSequence,
+          records
+              .singleWhere(
+                (r) =>
+                    r.event is ModelInvocationStarted &&
+                    (r.event as ModelInvocationStarted).invocationId ==
+                        model.id,
+              )
+              .sequence,
+        );
+        final List<ExecutionEventRecord> outputs = records
+            .where(
+              (r) =>
+                  r.event is ModelOutputObserved &&
+                  (r.event as ModelOutputObserved).invocationId == model.id,
+            )
+            .toList();
+        expect(
+          model.outputs.map((o) => o.sequence),
+          outputs.map((r) => r.sequence),
+        );
+        for (int j = 0; j < outputs.length; j++) {
+          expect(
+            model.outputs[j].item,
+            same((outputs[j].event as ModelOutputObserved).item),
+          );
+        }
+      }
+      for (int i = 0; i < snapshot.tools.length; i++) {
+        final ToolInvocationActivity tool = snapshot.tools[i];
+        expect(
+          tool.modelInvocationId,
+          same((proposals[i].event as ModelOutputObserved).invocationId),
+        );
+        expect(tool.proposalSequence, proposals[i].sequence);
+        expect(tool.providerCallId, first.proposal.providerCallId);
+        expect(
+          tool.id,
+          same(
+            records
+                .where((r) => r.event is ToolInvocationPrepared)
+                .map((r) => (r.event as ToolInvocationPrepared).invocation.id)
+                .elementAt(i),
+          ),
+        );
+      }
+      expect(
+        snapshot.tools.take(2).map((t) => t.modelInvocationId),
+        everyElement(snapshot.models.first.id),
+      );
+      expect(snapshot.tools.last.modelInvocationId, snapshot.models[1].id);
+      expect(snapshot.models.last.outputs.single.item, isA<ModelTextOutput>());
+      expect(
+        snapshot.models.first.outputs.first.item,
+        isA<ModelNativeOutput>(),
+      );
+    },
+  );
+
+  test(
     'allow executes without interruption and preserves proposal context',
     () async {
       final _StrategyFixture fixture = await _fixture(ToolPolicyDecision.allow);
@@ -72,6 +354,17 @@ void main() {
     expect(fixture.run.state, RunState.failed);
     expect(fixture.run.failure, isA<ModelInvocationIncomplete>());
     expect(fixture.executable.executions, 0);
+    final RunActivitySnapshot activity = fixture.strategy.activity.snapshot;
+    expect(activity.state, RunState.failed);
+    expect(activity.failure, isNotNull);
+    expect(activity.models.single.settlement, ModelSettlement.incomplete);
+    expect(
+      activity.models.single.incompleteReason,
+      ModelIncompleteReason.outputLimit,
+    );
+    expect(activity.models.single.metadata!.effectiveModel, 'fixture-v1');
+    expect(activity.models.single.outputs, hasLength(1));
+    expect(activity.tools, isEmpty);
     expect(
       fixture.run.journal.records
           .map((ExecutionEventRecord record) => record.event)
@@ -125,6 +418,15 @@ void main() {
       fixture.strategy.lastToolOutcome?.disposition,
       ToolOutcomeDisposition.policyDenied,
     );
+    final ToolInvocationActivity denied =
+        fixture.strategy.activity.snapshot.tools.single;
+    expect(denied.outcome!.disposition, ToolOutcomeDisposition.policyDenied);
+    expect(denied.changes.map((c) => c.kind), [
+      ToolActivityKind.prepared,
+      ToolActivityKind.policyEvaluated,
+      ToolActivityKind.completed,
+    ]);
+    expect(denied.changes[1].policyDecision, ToolActivityPolicyDecision.deny);
     expect(
       fixture.run.journal.records
           .map((ExecutionEventRecord record) => record.event)
@@ -305,6 +607,20 @@ void main() {
       expect(executable.executions, 1);
       expect(_events(firstRun).whereType<ToolExecutionStarted>(), hasLength(1));
       expect(_events(secondRun).whereType<ToolExecutionStarted>(), isEmpty);
+      final ToolInvocationActivity activity =
+          first.activity.snapshot.tools.single;
+      expect(activity.modelInvocationId, model.requests.first.invocationId);
+      expect(
+        activity.modelInvocationId,
+        isNot(model.requests.last.invocationId),
+      );
+      expect(
+        activity.proposalSequence,
+        first.activity.snapshot.models.first.outputs
+            .where((o) => o.item is ModelToolProposalOutput)
+            .single
+            .sequence,
+      );
     },
   );
 
@@ -409,7 +725,10 @@ void main() {
     );
     await fixture.strategy.start();
     final SemanticModelRequest request = fixture.model.requests.first;
-    expect(request.instructions, 'Use source tools before answering.');
+    expect(
+      request.instructions,
+      '$chatToolNarrationGuidance\n\nUse source tools before answering.',
+    );
     expect(fixture.model.requests.last.instructions, request.instructions);
     expect(request.input.single, isA<SemanticMessageInput>());
     expect(request.context.sourceResults, isEmpty);
@@ -533,7 +852,7 @@ void main() {
         expect(
           (snapshot.instructionGroups.first as StrategyInstructionGroup)
               .instructions,
-          instructions,
+          '$chatToolNarrationGuidance\n\n$instructions',
         );
         final List<SourceInstructionGroup> groups = snapshot.instructionGroups
             .whereType<SourceInstructionGroup>()
@@ -584,7 +903,7 @@ void main() {
         expect(request.instructions, renderInferenceInstructions(snapshot));
         expect(
           request.instructions,
-          '$instructions\n\nFirst source.\n\nLast source.',
+          '$chatToolNarrationGuidance\n\n$instructions\n\nFirst source.\n\nLast source.',
         );
         expect(request.instructions, contains('First source.'));
         expect(request.instructions, contains('Last source.'));
@@ -894,7 +1213,10 @@ void main() {
             frozen.instructionGroups.whereType<SourceInstructionGroup>(),
             isEmpty,
           );
-          expect(first.instructions, instructions);
+          expect(
+            first.instructions,
+            '$chatToolNarrationGuidance\n\n$instructions',
+          );
           expect(fixture.history.snapshot().entries.single, same(originalUser));
           releaseModel.complete();
           await finished;
@@ -919,10 +1241,16 @@ void main() {
             InferenceContextSourceStatus.contributed,
           );
           expect(next.context.sourceResults.single.failure, isNull);
-          expect(next.instructions, '$instructions\n\nFresh B.');
+          expect(
+            next.instructions,
+            '$chatToolNarrationGuidance\n\n$instructions\n\nFresh B.',
+          );
           expect(next.instructions, renderInferenceInstructions(next.context));
           expect(first.context, same(frozen));
-          expect(first.instructions, instructions);
+          expect(
+            first.instructions,
+            '$chatToolNarrationGuidance\n\n$instructions',
+          );
           expect(first.context.sourceResults.single, same(omitted));
           expect(next.input, same(next.context.input));
           expect(
@@ -1082,8 +1410,14 @@ void main() {
         expect(fixture.run.failure, isNull);
         expect(fixture.run.journal.records, orderedEquals(inFlight));
         expect(group.materials.single, same(material));
-        expect(request.instructions, 'Captured once.');
-        expect(renderInferenceInstructions(frozen), 'Captured once.');
+        expect(
+          request.instructions,
+          '$chatToolNarrationGuidance\n\nCaptured once.',
+        );
+        expect(
+          renderInferenceInstructions(frozen),
+          '$chatToolNarrationGuidance\n\nCaptured once.',
+        );
         expect(
           frozen.sourceResults.single.status,
           InferenceContextSourceStatus.contributed,
@@ -1098,7 +1432,10 @@ void main() {
         expect(replacementCaptures, 1);
         expect(fixture.model.requests, hasLength(2));
         expect(fixture.model.requests.first.context, same(frozen));
-        expect(request.instructions, 'Captured once.');
+        expect(
+          request.instructions,
+          '$chatToolNarrationGuidance\n\nCaptured once.',
+        );
         final InferenceContextSnapshot next =
             fixture.model.requests.last.context;
         final SourceInstructionGroup replacement = next.instructionGroups
@@ -1114,7 +1451,7 @@ void main() {
         );
         expect(
           fixture.model.requests.last.instructions,
-          'Replacement context.',
+          '$chatToolNarrationGuidance\n\nReplacement context.',
         );
         expect(fixture.model.sawCorrelatedContinuation, isTrue);
         expect(fixture.executable.executions, 1);
@@ -1378,6 +1715,35 @@ void main() {
             SemanticToolOutcomeInput,
           ],
         );
+        final RunActivitySnapshot activity = fixture.strategy.activity.snapshot;
+        final RejectedToolProposalActivity rejected =
+            activity.rejectedProposals.single;
+        final ModelOutputActivity origin = activity.models.first.outputs
+            .singleWhere(
+              (o) =>
+                  o.item is ModelToolProposalOutput &&
+                  (o.item as ModelToolProposalOutput).proposal.providerCallId ==
+                      'call-2',
+            );
+        expect(rejected.modelInvocationId, same(activity.models.first.id));
+        expect(rejected.proposalSequence, origin.sequence);
+        expect(
+          rejected.proposal,
+          same((origin.item as ModelToolProposalOutput).proposal),
+        );
+        expect(
+          rejected.kind,
+          unknownAlias
+              ? ToolProposalFailureKind.unknownAlias
+              : ToolProposalFailureKind.invalidArguments,
+        );
+        expect(rejected.message, isNotEmpty);
+        expect(activity.tools, hasLength(2));
+        expect(activity.tools.map((t) => t.providerCallId), [
+          'call-1',
+          'call-3',
+        ]);
+        expect(() => (rejected as dynamic).cause, throwsNoSuchMethodError);
         final ToolProposalFailure failure =
             (results[1] as SemanticToolProposalFailureInput).failure;
         expect(failure.providerCallId, 'call-2');
@@ -1505,6 +1871,27 @@ void main() {
         expect(
           fixture.strategy.lastToolInvocation?.proposal.providerCallId,
           'call-3',
+        );
+        final ToolInvocationActivity activity =
+            fixture.strategy.activity.snapshot.tools[1];
+        expect(
+          activity.changes
+              .where((c) => c.kind == ToolActivityKind.approvalResolved)
+              .single
+              .approved,
+          approved,
+        );
+        expect(
+          activity.changes.where(
+            (c) => c.kind == ToolActivityKind.executionStarted,
+          ),
+          hasLength(approved ? 1 : 0),
+        );
+        expect(
+          activity.outcome!.disposition,
+          approved
+              ? ToolOutcomeDisposition.success
+              : ToolOutcomeDisposition.userRejected,
         );
       },
     );
@@ -1672,6 +2059,23 @@ void main() {
         ],
       );
       final ToolOutcome outcome = fixture.outcomes[1].outcome;
+      final ToolInvocationActivity activity =
+          fixture.strategy.activity.snapshot.tools[1];
+      expect(activity.outcome!.disposition, ToolOutcomeDisposition.failure);
+      expect(activity.outcome!.failureKind, ToolFailureKind.infrastructure);
+      expect(
+        activity.effects == null,
+        failure == _InfrastructureFailure.effectDescription,
+      );
+      if (failure == _InfrastructureFailure.policyEvaluation) {
+        expect(activity.effects!.effects, contains(ToolEffect.sourceMutation));
+        expect(activity.changes.map((c) => c.kind), [
+          ToolActivityKind.prepared,
+          ToolActivityKind.policyFailed,
+          ToolActivityKind.completed,
+        ]);
+        expect(activity.changes[1].effects, same(activity.effects));
+      }
       expect(outcome.failureKind, ToolFailureKind.infrastructure);
       final bool executionStarted =
           failure == _InfrastructureFailure.execution ||
@@ -1938,7 +2342,10 @@ void main() {
       await runA.start();
       expect(runA.run.state, RunState.waiting);
       expect(modelA.invocations, 1);
-      expect(modelA.requests.single.instructions, 'Generation A');
+      expect(
+        modelA.requests.single.instructions,
+        '$chatToolNarrationGuidance\n\nGeneration A',
+      );
       expect(executable.executions, 0);
       final ToolApprovalResolution approval = _approval(runA.run);
       final ToolInvocation retainedInvocation = runA.lastToolInvocation!;
@@ -2042,7 +2449,10 @@ void main() {
       expect(runB.lastToolInvocation!.context.runId, runB.run.id);
       expect(runB.lastToolInvocation!.context.sessionId, session.id);
       expect(modelB.invocations, 2);
-      expect(modelB.requests.first.instructions, 'Generation B');
+      expect(
+        modelB.requests.first.instructions,
+        '$chatToolNarrationGuidance\n\nGeneration B',
+      );
       expect(modelB.sawCorrelatedContinuation, isTrue);
       expect(executable.executions, 1);
       expect(history.snapshot().entries.last, isA<ChatAssistantMessage>());
@@ -2162,6 +2572,25 @@ void main() {
               : isA<ToolExecutionCompleted>(),
         );
         expect(events.last, isA<RunFailed>());
+        final RunActivitySnapshot activity = execution.activity.snapshot;
+        expect(activity.state, RunState.failed);
+        expect(activity.failure, isNotNull);
+        expect(activity.models.single.settlement, ModelSettlement.completed);
+        expect(
+          activity.models.single.terminalSequence,
+          lessThan(activity.sequence),
+        );
+        expect(activity.models.single.outputs, hasLength(1));
+        if (!duringModel) {
+          expect(
+            activity.tools.single.outcome!.disposition,
+            ToolOutcomeDisposition.success,
+          );
+          expect(
+            activity.tools.single.changes.last.sequence,
+            lessThan(activity.sequence),
+          );
+        }
         expect(events.whereType<RunCancelled>(), isEmpty);
         expect(events.whereType<RunCompleted>(), isEmpty);
         if (duringModel) {
@@ -2535,6 +2964,7 @@ final class _BatchModel implements ModelPort {
 
   final _BatchExecutable executable;
   final List<ModelOutputItem> output;
+  List<ModelOutputItem>? secondOutput;
   final ModelSettlement settlement;
   final Object? failure;
   final List<SemanticModelRequest> requests = <SemanticModelRequest>[];
@@ -2547,6 +2977,8 @@ final class _BatchModel implements ModelPort {
     for (final ModelOutputItem item
         in requests.length == 1
             ? output
+            : requests.length == 2 && secondOutput != null
+            ? secondOutput!
             : <ModelOutputItem>[ModelTextOutput('Complete.')]) {
       yield ModelOutputItemCompleted(
         invocationId: request.invocationId,
@@ -2877,19 +3309,24 @@ final class _Executable implements ToolExecutable {
 
   final List<ToolProgress> progress;
   int executions = 0;
+  Future<void> Function()? beforeDescribe;
   Future<void> Function()? beforeTerminal;
+  ToolOutcome? outcome;
 
   @override
   Future<EffectDescription> describe(
     CanonicalToolArguments arguments,
     ToolExecutionContext context,
-  ) async => EffectDescription(
-    effects: const <ToolEffect>[ToolEffect.resourceInspection],
-    targets: <EffectTarget>[
-      EffectTarget(uri: Uri.parse(arguments.snapshot['uri']! as String)),
-    ],
-    summary: 'Inspect.',
-  );
+  ) async {
+    await beforeDescribe?.call();
+    return EffectDescription(
+      effects: const <ToolEffect>[ToolEffect.resourceInspection],
+      targets: <EffectTarget>[
+        EffectTarget(uri: Uri.parse(arguments.snapshot['uri']! as String)),
+      ],
+      summary: 'Inspect.',
+    );
+  }
 
   @override
   Stream<ToolExecutionEvent> execute(
@@ -2902,11 +3339,12 @@ final class _Executable implements ToolExecutable {
     }
     await beforeTerminal?.call();
     yield ToolExecutionTerminal(
-      ToolOutcome(
-        disposition: ToolOutcomeDisposition.success,
-        effectCertainty: EffectCertainty.knownOccurred,
-        modelContent: 'Inspected.',
-      ),
+      outcome ??
+          ToolOutcome(
+            disposition: ToolOutcomeDisposition.success,
+            effectCertainty: EffectCertainty.knownOccurred,
+            modelContent: 'Inspected.',
+          ),
     );
   }
 

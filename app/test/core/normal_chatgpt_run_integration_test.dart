@@ -19,6 +19,7 @@ import 'package:adele_desktop/ui/execution/pending_tool_approval.dart';
 import 'package:adele_desktop/ui/session/session_presentation_host.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
@@ -41,7 +42,8 @@ const String _prompt =
 const String _answer =
     'Patched lib/task_answer.dart to declare taskAnswer as "approved-task-value". '
     'The separately approved git diff --check exited with code 0 in the Task. '
-    'D1 real-EVC canonical final reply.';
+    'E1 real-EVC canonical final reply.';
+const String _narration = 'Updating the test file and validating the change.';
 const Map<String, Object?> _commandArguments = {
   'program': 'git',
   'arguments': ['diff', '--check'],
@@ -105,7 +107,7 @@ void main() {
   });
 
   testWidgets(
-    'normal real-EVC ChatGPT Run separately approves a patch and command in its Task',
+    'normal real-EVC Chat narrates one patch/command batch with separate approvals',
     (tester) => tester.runAsync(() async {
       final Directory container = await Directory.systemTemp.createTemp(
         'adele-normal-chatgpt-run-',
@@ -141,6 +143,11 @@ void main() {
 
       final List<Map<String, Object?>> outbound = [];
       final List<(Object, StackTrace)> endpointFailures = [];
+      final Completer<void> continuationArrived = Completer<void>();
+      final Completer<void> releaseFinal = Completer<void>();
+      addTearDown(() {
+        if (!releaseFinal.isCompleted) releaseFinal.complete();
+      });
       String? observedPath;
       String? observedRevision;
       String? patchedRevision;
@@ -181,6 +188,7 @@ void main() {
             expect(body, isNot(contains('max_output_tokens')));
             expect(body, isNot(contains('previous_response_id')));
             expect(body['instructions'], contains(_agentsText));
+            expect(body['instructions'], contains(chatToolNarrationGuidance));
             expect(body['instructions'], isNot(contains(_projectAgentsText)));
             final List<Map<String, Object?>> tools =
                 (body['tools']! as List<Object?>).cast<Map<String, Object?>>();
@@ -263,6 +271,10 @@ void main() {
                 // wait for its own approval before the next inference occurs.
                 _output(
                   request.response,
+                  _message('batch-purpose', _narration),
+                );
+                _output(
+                  request.response,
                   _call('patch', 'apply_patch', patchArguments),
                 );
                 _output(
@@ -297,19 +309,9 @@ void main() {
                       .map((item) => item['call_id']),
                   ['read', 'patch', 'command'],
                 );
-                _output(request.response, {
-                  'type': 'message',
-                  'id': 'message-final',
-                  'role': 'assistant',
-                  'status': 'completed',
-                  'content': [
-                    {
-                      'type': 'output_text',
-                      'text': _answer,
-                      'annotations': <Object?>[],
-                    },
-                  ],
-                });
+                continuationArrived.complete();
+                await releaseFinal.future;
+                _output(request.response, _message('message-final', _answer));
               default:
                 fail('Unexpected Responses invocation ${outbound.length}.');
             }
@@ -501,8 +503,7 @@ void main() {
       expect(controller.currentRun, isNull);
       expect(controller.activeRunFuture, isNull);
       expect(controller.pendingApproval, isNull);
-      // Keep process/socket work in real async, including the interpreted Send
-      // callback. Pump UI only after each start/resume operation has settled.
+      // Process/socket work, including interpreted submission, uses real async.
       await tester.enterText(promptField, _prompt);
       await tester.ensureVisible(send);
       await tester.tap(send);
@@ -521,6 +522,13 @@ void main() {
       expect(find.text('Tool: apply_patch'), findsOneWidget);
       expect(allowOnce, findsOneWidget);
 
+      expect(find.textContaining(_narration), findsOneWidget);
+      expect(find.textContaining('1 tool operation'), findsOneWidget);
+      expect(
+        find.descendant(of: sessionHost, matching: find.text('Allow once')),
+        findsNothing,
+      );
+
       expect(endpointFailures, isEmpty);
       expect(controller.failure, isNull);
       expect(controller.activeRunFuture, isNull);
@@ -533,6 +541,20 @@ void main() {
       expect(run.state, RunState.waiting);
       expect(outbound, hasLength(2));
       expect(controller.snapshot.entries.single.content, _prompt);
+      final ChatActivitySummary batch = controller.timeline
+          .whereType<ChatActivitySummary>()
+          .last;
+      expect(batch.content, _narration);
+      expect(
+        controller.timeline.whereType<ChatActivitySummary>(),
+        hasLength(2),
+      );
+      final RunActivitySnapshot waitingEvidence = execution.activity.snapshot;
+      expect(waitingEvidence.models.last.outputs.map((output) => output.item), [
+        isA<ModelTextOutput>(),
+        isA<ModelToolProposalOutput>(),
+        isA<ModelToolProposalOutput>(),
+      ]);
       final PendingToolApproval patchApproval = controller.pendingApproval!;
       final ToolApprovalInterruption patchInterruption =
           run.interruptions.values.single as ToolApprovalInterruption;
@@ -592,6 +614,7 @@ void main() {
       );
       expect(allowOnce, findsOneWidget);
       expect(tester.widget<TextField>(promptField).enabled, isFalse);
+      expect(find.textContaining(_narration), findsOneWidget);
 
       expect(endpointFailures, isEmpty);
       expect(controller.failure, isNull);
@@ -622,6 +645,29 @@ void main() {
       );
       expect(commandInterruption.invocation.proposal.providerCallId, 'command');
       expect(commandInterruption.id, isNot(patchInterruption.id));
+      final List<ToolInvocationActivity> batchTools = execution
+          .activity
+          .snapshot
+          .tools
+          .where((tool) => tool.modelInvocationId == batch.invocationId)
+          .toList();
+      expect(batchTools.map((tool) => tool.id), [
+        patchInterruption.toolInvocationId,
+        commandInterruption.toolInvocationId,
+      ]);
+      expect(
+        batchTools.first.outcome!.disposition,
+        ToolOutcomeDisposition.success,
+      );
+      expect(batchTools.last.outcome, isNull);
+      expect(
+        batchTools.last.changes.last.kind,
+        ToolActivityKind.approvalRequested,
+      );
+      expect(
+        controller.timeline.whereType<ChatActivitySummary>().last.invocationId,
+        batch.invocationId,
+      );
       final beforeCommand = run.journal.records
           .map((record) => record.event)
           .toList();
@@ -684,6 +730,15 @@ void main() {
       final Future<void>? validating = controller.activeRunFuture;
       expect(validating, isNotNull);
       expect(controller.isAdvancing, isTrue);
+      await continuationArrived.future;
+      await tester.pumpAndSettle();
+      expect(controller.isAdvancing, isTrue);
+      expect(controller.activeRunFuture, same(validating));
+      expect(find.textContaining(_narration), findsOneWidget);
+      expect(find.textContaining('1 tool operation'), findsOneWidget);
+      expect(find.text(_answer), findsNothing);
+      expect(controller.snapshot.entries, hasLength(1));
+      releaseFinal.complete();
       await validating!;
       await tester.pumpAndSettle();
       if (endpointFailures.isNotEmpty) {
@@ -703,6 +758,28 @@ void main() {
       expect(allowOnce, findsNothing);
       expect(find.text('Approval required'), findsNothing);
       expect(tester.takeException(), isNull);
+      final Finder narratedActivity = find.descendant(
+        of: sessionHost,
+        matching: find.textContaining(_narration),
+      );
+      final Finder fallbackActivity = find.descendant(
+        of: sessionHost,
+        matching: find.textContaining('1 tool operation'),
+      );
+      expect(narratedActivity, findsOneWidget);
+      expect(fallbackActivity, findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text(_prompt)).dy,
+        lessThan(tester.getTopLeft(fallbackActivity).dy),
+      );
+      expect(
+        tester.getTopLeft(fallbackActivity).dy,
+        lessThan(tester.getTopLeft(narratedActivity).dy),
+      );
+      expect(
+        tester.getTopLeft(narratedActivity).dy,
+        lessThan(tester.getTopLeft(find.text(_answer)).dy),
+      );
 
       expect(controller.failure, isNull);
       expect(controller.currentRun, same(execution));
@@ -714,6 +791,26 @@ void main() {
       expect(run.failure, isNull);
       expect(run.interruptions, isEmpty);
       expect(outbound, hasLength(3));
+      final RunActivitySnapshot activity = controller.activitySnapshots.single;
+      expect(activity.state, RunState.completed);
+      expect(activity.models, hasLength(3));
+      expect(activity.tools, hasLength(3));
+      expect(
+        activity.tools.where(
+          (tool) => tool.modelInvocationId == batch.invocationId,
+        ),
+        hasLength(2),
+      );
+      expect(
+        controller.timeline.whereType<ChatActivitySummary>(),
+        hasLength(2),
+      );
+      expect(controller.timeline.map((entry) => entry.content), [
+        _prompt,
+        '1 tool operation',
+        _narration,
+        _answer,
+      ]);
       final ChatSessionSnapshot snapshot = controller.snapshot;
       expect(snapshot.id, session.id);
       expect(snapshot.entries, [
@@ -920,6 +1017,16 @@ Map<String, Object?> _call(
   'name': name,
   'arguments': jsonEncode(arguments),
   'status': 'completed',
+};
+
+Map<String, Object?> _message(String id, String text) => {
+  'type': 'message',
+  'id': id,
+  'role': 'assistant',
+  'status': 'completed',
+  'content': [
+    {'type': 'output_text', 'text': text, 'annotations': <Object?>[]},
+  ],
 };
 
 void _output(HttpResponse response, Map<String, Object?> item) =>

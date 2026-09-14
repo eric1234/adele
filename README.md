@@ -12,6 +12,7 @@ Active capability registry and exact-generation routing
 Provider-neutral Run/model/tool/policy/approval mechanics
 Session-bound executable strategies and headless stock Chat
 Typed Session presentation and prepared interpreted stock Chat history/composer
+Read-only live Run activity and model-narrated Chat proposal-batch summaries
 Per-inference instruction-source capture and immutable context snapshots
 Shared application runtime and static stock plugin composition
 Typed Project selectors and minimal local-directory Project opening
@@ -189,8 +190,8 @@ fresh resolution may select a replacement. Missing or failed presentation does
 not invalidate the Session or backend execution.
 
 Normal Chat presentation loads prepared EVC bytecode rather than compiling source
-at runtime. Its narrow bridge carries immutable primitive role/text history
-snapshots, composer-enabled state, and prompt submission with synchronous boolean
+at runtime. Its narrow bridge carries immutable primitive mixed message/activity
+timeline snapshots, composer-enabled state, and prompt submission with synchronous boolean
 acceptance. Run status and approval cards remain host-owned under
 `app/lib/ui/execution`; execution objects and approval authority never cross that
 bridge. `ChatController` remains provisional in `app/lib/ui/chat`, while generic
@@ -198,6 +199,22 @@ prepared frontend hosting lives in `app/lib/frontend` and stock Chat activation
 and adaptation belong at `app/lib/plugins/stock_chat_frontend.dart`. This is a
 bounded Session presentation API, not production plugin discovery or a general
 workbench extension framework.
+
+Normal Runs expose immutable live activity through public pure-Dart
+`adele_orchestration`, projected by the application host from the internal journal.
+Observation grants no execution or approval authority. Ordered model text, opaque
+native outputs, proposals, and resolved tool evidence retain stable identities.
+Chat displays one lightweight summary per successfully completed,
+proposal-containing model invocation, preferring its explicit user-facing text.
+The Chat strategy automatically adds batch-narration guidance to its inference
+instructions while preserving Session instructions and independent context sources.
+Missing narration uses a structural tool-operation count, never an extra inference.
+Narration stays out of canonical Chat history; completed groups remain only for
+the current controller lifetime, including follow-up prompts. Reconstructing a
+Session cannot restore historical activity without future persistence. Native
+output is preserved opaquely, not generically interpreted or labeled reasoning.
+Bespoke tool/provider interpreted activity presentations and Inspection remain
+future work.
 
 Chat supplies `StrategyInferenceMaterial` containing instructions and ordered
 semantic input from history projection plus Run-local replay. Public
@@ -466,7 +483,7 @@ packages/model_provider/     adele_model_provider (experimental public)
 packages/model_tool/         adele_model_tool public contribution/execution API
 packages/capabilities/       adele_capabilities (experimental public)
 packages/product/            adele_product canonical product identities/values
-packages/orchestration/      adele_orchestration strategies/execution/context API
+packages/orchestration/      adele_orchestration strategies/execution/context/activity API
 packages/environment/        adele_environment provider/filesystem contract
 packages/plugin_runtime/     plugin_runtime (internal, pure Dart)
 packages/plugin_backend_host/ shared backend host (internal, pure Dart)
@@ -576,8 +593,9 @@ compaction, and context preview remain deferred.
 General provider/model configuration, Task Browser, and richer Session/Run UI
 remain deferred. The normal product path reaches one stock Chat Session with
 plugin-owned evaluated history/composer and sequential, approval-gated Runs through
-experimental ChatGPT subscription auth. A common execution timeline and broader
-presentation extension ecosystem remain deferred.
+experimental ChatGPT subscription auth. Live compact Chat activity groups are
+implemented; deeper Inspection and the broader presentation extension ecosystem
+remain deferred.
 GitHub, cloud, recent-project/catalog selectors, persistence, and deduplication
 are not implemented; application Command surfacing remains deferred.
 Chat persistence, configurable permissions/profiles, steering, richer activity and

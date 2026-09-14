@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
@@ -133,11 +134,22 @@ final class _ControllerSource extends ChangeNotifier
   @override
   ChatPresentationSnapshot get snapshot => ChatPresentationSnapshot(
     entries: [
-      for (final ChatEntry entry in _controller.snapshot.entries)
-        ChatPresentationEntry(
-          role: entry is ChatUserMessage ? 'user' : 'assistant',
-          content: entry.content,
-        ),
+      for (final ChatTimelineEntry entry in _controller.timeline)
+        switch (entry) {
+          ChatTimelineMessage(:final message) => ChatPresentationEntry(
+            role: message is ChatUserMessage ? 'user' : 'assistant',
+            content: message.content,
+          ),
+          ChatActivitySummary(
+            :final runId,
+            :final invocationId,
+            :final content,
+          ) =>
+            ChatPresentationEntry.activity(
+              id: jsonEncode([runId.value, invocationId.value]),
+              content: content,
+            ),
+        },
     ],
     canSubmit:
         !closed &&

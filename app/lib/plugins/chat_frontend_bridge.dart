@@ -4,9 +4,23 @@ import 'package:dart_eval/stdlib/core.dart';
 import 'package:flutter/widgets.dart';
 
 final class ChatPresentationEntry {
-  const ChatPresentationEntry({required this.role, required this.content});
+  const ChatPresentationEntry({
+    required String this.role,
+    required this.content,
+  }) : kind = 'message',
+       id = null;
 
-  final String role;
+  const ChatPresentationEntry.activity({
+    required String this.id,
+    required this.content,
+  }) : kind = 'activity',
+       role = null;
+
+  final String kind;
+
+  /// Opaque Run/model-invocation identity for an activity; null for a message.
+  final String? id;
+  final String? role;
   final String content;
 }
 
@@ -203,9 +217,25 @@ final class _ChatEntry implements $Instance {
     BridgeClassType($type),
     constructors: {},
     getters: {
-      'role': BridgeMethodDef(
+      'kind': BridgeMethodDef(
         BridgeFunctionDef(
           returns: BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.string)),
+        ),
+      ),
+      'id': BridgeMethodDef(
+        BridgeFunctionDef(
+          returns: BridgeTypeAnnotation(
+            BridgeTypeRef(CoreTypes.string),
+            nullable: true,
+          ),
+        ),
+      ),
+      'role': BridgeMethodDef(
+        BridgeFunctionDef(
+          returns: BridgeTypeAnnotation(
+            BridgeTypeRef(CoreTypes.string),
+            nullable: true,
+          ),
         ),
       ),
       'content': BridgeMethodDef(
@@ -228,7 +258,9 @@ final class _ChatEntry implements $Instance {
   @override
   $Value? $getProperty(Runtime runtime, String identifier) =>
       switch (identifier) {
-        'role' => $String(data.role),
+        'kind' => $String(data.kind),
+        'id' => data.id == null ? const $null() : $String(data.id!),
+        'role' => data.role == null ? const $null() : $String(data.role!),
         'content' => $String(data.content),
         _ => throw UnsupportedError(identifier),
       };

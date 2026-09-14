@@ -9,10 +9,22 @@ import 'src/run.dart';
 import 'src/tool.dart';
 
 export 'package:adele_model_tool/adele_model_tool.dart'
-    show ToolOutcome, ToolOutcomeDisposition, ToolFailureKind, EffectCertainty;
+    show
+        ToolOutcome,
+        ToolOutcomeDisposition,
+        ToolFailureKind,
+        EffectCertainty,
+        ToolId,
+        EffectDescription,
+        EffectTarget,
+        ToolEffect,
+        EffectUncertainty,
+        ToolProgress,
+        ToolProgressKind;
 export 'package:adele_product/adele_product.dart'
     show OrchestrationStrategyId, RunId, SessionId, Session;
 
+export 'src/activity.dart';
 export 'src/context.dart';
 export 'src/model.dart';
 export 'src/run.dart';
