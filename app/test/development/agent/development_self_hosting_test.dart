@@ -272,8 +272,8 @@ void main() {
       <String>['First request.', 'Complete.', 'Second request.', 'Complete.'],
     );
     expect(requests.map((request) => request.instructions), <String>[
-      'First instructions.',
-      'Second instructions.',
+      '$chatToolNarrationGuidance\n\nFirst instructions.',
+      '$chatToolNarrationGuidance\n\nSecond instructions.',
     ]);
     expect(
       requests.last.input.whereType<SemanticMessageInput>().map(
