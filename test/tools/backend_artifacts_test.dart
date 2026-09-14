@@ -10,6 +10,8 @@ const String _gitEntrypoint =
 const String _openaiEntrypoint =
     'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart';
 const String _frontendHarness = 'tool/compile_chat_frontend.dart';
+const String _toolFrontendHarness =
+    'tool/compile_tool_inspection_frontends.dart';
 
 void main() {
   late Directory root;
@@ -39,6 +41,9 @@ void main() {
     final File harness = File('${root.path}/app/$_frontendHarness');
     harness.parent.createSync();
     harness.writeAsStringSync('void main() {}');
+    File(
+      '${root.path}/app/$_toolFrontendHarness',
+    ).writeAsStringSync('void main() {}');
     for (final String entrypoint in <String>[
       _hostEntrypoint,
       _gitEntrypoint,
@@ -65,26 +70,42 @@ if [ "\$1" = "--version" ]; then
   printf '%s\n' '${jsonEncode(<String, String>{'flutterRoot': flutterRoot.path})}'
 elif [ "\$1" = test ]; then
   test "\$PWD" = '${root.path}/app' || exit 98
-  test "\$#" = 5 && test "\$2" = --no-pub && test "\$3" = --concurrency && test "\$4" = 1 && test "\$5" = '$_frontendHarness' || exit 97
+  test "\$#" = 5 && test "\$2" = --no-pub && test "\$3" = --concurrency && test "\$4" = 1 || exit 97
   test -f "\$5" || exit 96
   test "\$ADELE_REPOSITORY_ROOT" = '${root.path}' || exit 95
-  case "\$ADELE_CHAT_FRONTEND_OUTPUT" in /*) ;; *) exit 94 ;; esac
-  test ! -e "\$ADELE_CHAT_FRONTEND_OUTPUT" || exit 93
-  printf 'compile|$_frontendHarness\n' >> '${commands.path}'
-  printf '%s\n' "\$@" > '${frontendArguments.path}'
-  printf '%s\n' "\$ADELE_REPOSITORY_ROOT" "\$ADELE_CHAT_FRONTEND_OUTPUT" > '${frontendEnvironment.path}'
-  if [ "\$ADELE_TEST_FRONTEND_ARTIFACT" != missing ]; then
-    if [ "\$ADELE_TEST_FRONTEND_ARTIFACT" = empty ]; then
-      : > "\$ADELE_CHAT_FRONTEND_OUTPUT"
+  if [ "\$5" = '$_frontendHarness' ]; then
+    kind=chat
+    output="\$ADELE_CHAT_FRONTEND_OUTPUT"
+    label='$_frontendHarness'
+    printf '%s\n' "\$@" > '${frontendArguments.path}'
+    printf '%s\n' "\$ADELE_REPOSITORY_ROOT" "\$output" > '${frontendEnvironment.path}'
+  else
+    test "\$5" = '$_toolFrontendHarness' || exit 92
+    kind="\$ADELE_TOOL_INSPECTION_FRONTEND"
+    output="\$ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT"
+    label="$_toolFrontendHarness|\$kind"
+  fi
+  case "\$output" in /*) ;; *) exit 94 ;; esac
+  test ! -e "\$output" || exit 93
+  printf 'compile|%s\n' "\$label" >> '${commands.path}'
+  failure=''
+  fail_exit=''
+  if [ "\$kind" = "\${ADELE_TEST_FRONTEND_TARGET:-chat}" ]; then
+    failure="\$ADELE_TEST_FRONTEND_ARTIFACT"
+    fail_exit="\$ADELE_TEST_FAIL_FRONTEND"
+  fi
+  if [ "\$failure" != missing ]; then
+    if [ "\$failure" = empty ]; then
+      : > "\$output"
     else
-      printf 'frontend bytecode\n' > "\$ADELE_CHAT_FRONTEND_OUTPUT"
+      printf 'frontend bytecode\n' > "\$output"
     fi
   fi
-  if [ "\$ADELE_TEST_FAIL_FRONTEND" = 1 ]; then
+  if [ "\$fail_exit" = 1 ]; then
     printf 'frontend compiler failed' >&2
     exit 23
   fi
-  printf 'compiled|$_frontendHarness\n' >> '${commands.path}'
+  printf 'compiled|%s\n' "\$label" >> '${commands.path}'
   printf 'frontend compiler output\n'
 else
   test "\$PWD" = '${root.path}/app' || exit 98
@@ -147,6 +168,9 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
       // Preparation must replace inherited inputs with this checkout's paths.
       environment['ADELE_REPOSITORY_ROOT'] = '/wrong-repository';
       environment['ADELE_CHAT_FRONTEND_OUTPUT'] = '/wrong-output';
+      environment['ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT'] =
+          '/wrong-tool-output';
+      environment['ADELE_TOOL_INSPECTION_FRONTEND'] = 'wrong-tool';
       for (final List<String> arguments in <List<String>>[
         <String>['run', 'linux'],
         <String>['build', 'linux', '--profile'],
@@ -163,6 +187,10 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           'compiled|$_openaiEntrypoint',
           'compile|$_frontendHarness',
           'compiled|$_frontendHarness',
+          'compile|$_toolFrontendHarness|filesystem',
+          'compiled|$_toolFrontendHarness|filesystem',
+          'compile|$_toolFrontendHarness|command',
+          'compiled|$_toolFrontendHarness|command',
           'flutter-launch',
         ]);
         expect(result.stdout, contains('frontend compiler output'));
@@ -190,7 +218,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             separator + 1,
           );
         }
-        expect(launched, hasLength(run ? 9 : 8));
+        expect(launched, hasLength(run ? 11 : 10));
         expect(
           defines.keys,
           unorderedEquals(<String>[
@@ -199,6 +227,8 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             'ADELE_GIT_ENVIRONMENT_ARTIFACT',
             'ADELE_OPENAI_ARTIFACT',
             'ADELE_CHAT_FRONTEND_ARTIFACT',
+            'ADELE_FILESYSTEM_TOOLS_FRONTEND_ARTIFACT',
+            'ADELE_COMMAND_TOOLS_FRONTEND_ARTIFACT',
           ]),
         );
         expect(
@@ -241,6 +271,20 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
         retainedArtifacts[git.path] = git.readAsStringSync();
         retainedArtifacts[openai.path] = openai.readAsStringSync();
         retainedArtifacts[frontend.path] = frontend.readAsStringSync();
+        for (final tool in const [
+          (
+            name: 'filesystem',
+            define: 'ADELE_FILESYSTEM_TOOLS_FRONTEND_ARTIFACT',
+          ),
+          (name: 'command', define: 'ADELE_COMMAND_TOOLS_FRONTEND_ARTIFACT'),
+        ]) {
+          final File artifact = File(defines[tool.define]!);
+          expect(artifact.uri.isAbsolute, isTrue);
+          expect(artifact.path, endsWith('/${tool.name}.evc'));
+          expect(artifact.parent.path, frontend.parent.path);
+          expect(artifact.readAsStringSync(), 'frontend bytecode\n');
+          retainedArtifacts[artifact.path] = artifact.readAsStringSync();
+        }
         for (final MapEntry<String, String> artifact
             in retainedArtifacts.entries) {
           expect(File(artifact.key).readAsStringSync(), artifact.value);
@@ -284,43 +328,57 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
   }
 
   for (final String command in <String>['run', 'build']) {
-    for (final String failure in <String>['exit', 'missing', 'empty']) {
-      test('$command never launches after frontend $failure failure', () async {
-        if (failure == 'exit') {
-          environment['ADELE_TEST_FAIL_FRONTEND'] = '1';
-        } else {
-          environment['ADELE_TEST_FRONTEND_ARTIFACT'] = failure;
-        }
-        final ProcessResult result = await invoke(<String>[
-          command,
-          'linux',
-          '--profile',
-        ]);
-        expect(result.exitCode, failure == 'exit' ? 23 : 1);
-        expect(result.stderr, contains('chat-frontend-compilation'));
-        if (failure == 'exit') {
-          expect(result.stderr, contains('frontend compiler failed'));
-          expect(result.stderr, contains('failed with exit code 23'));
-          expect(
-            File(frontendEnvironment.readAsLinesSync()[1]).lengthSync(),
-            greaterThan(0),
-          );
-        } else {
-          expect(result.stderr, contains('produced no non-empty artifact'));
-        }
-        expect(commands.readAsLinesSync(), <String>[
-          'inspect-sdk',
-          'compile|$_hostEntrypoint',
-          'compiled|$_hostEntrypoint',
-          'compile|$_gitEntrypoint',
-          'compiled|$_gitEntrypoint',
-          'compile|$_openaiEntrypoint',
-          'compiled|$_openaiEntrypoint',
-          'compile|$_frontendHarness',
-          if (failure != 'exit') 'compiled|$_frontendHarness',
-        ]);
-        expect(launchArguments.existsSync(), isFalse);
-      });
+    for (final String kind in ['chat', 'filesystem', 'command']) {
+      for (final String failure in <String>['exit', 'missing', 'empty']) {
+        test(
+          '$command never launches after $kind frontend $failure failure',
+          () async {
+            environment['ADELE_TEST_FRONTEND_TARGET'] = kind;
+            if (failure == 'exit') {
+              environment['ADELE_TEST_FAIL_FRONTEND'] = '1';
+            } else {
+              environment['ADELE_TEST_FRONTEND_ARTIFACT'] = failure;
+            }
+            final ProcessResult result = await invoke(<String>[
+              command,
+              'linux',
+              '--profile',
+            ]);
+            expect(result.exitCode, failure == 'exit' ? 23 : 1);
+            expect(result.stderr, contains('$kind-frontend-compilation'));
+            if (failure == 'exit') {
+              expect(result.stderr, contains('frontend compiler failed'));
+              expect(result.stderr, contains('failed with exit code 23'));
+              expect(
+                File(frontendEnvironment.readAsLinesSync()[1]).lengthSync(),
+                greaterThan(0),
+              );
+            } else {
+              expect(result.stderr, contains('produced no non-empty artifact'));
+            }
+            expect(commands.readAsLinesSync(), <String>[
+              'inspect-sdk',
+              'compile|$_hostEntrypoint',
+              'compiled|$_hostEntrypoint',
+              'compile|$_gitEntrypoint',
+              'compiled|$_gitEntrypoint',
+              'compile|$_openaiEntrypoint',
+              'compiled|$_openaiEntrypoint',
+              'compile|$_frontendHarness',
+              if (kind != 'chat' || failure != 'exit')
+                'compiled|$_frontendHarness',
+              if (kind != 'chat') 'compile|$_toolFrontendHarness|filesystem',
+              if (kind == 'command' ||
+                  (kind == 'filesystem' && failure != 'exit'))
+                'compiled|$_toolFrontendHarness|filesystem',
+              if (kind == 'command') 'compile|$_toolFrontendHarness|command',
+              if (kind == 'command' && failure != 'exit')
+                'compiled|$_toolFrontendHarness|command',
+            ]);
+            expect(launchArguments.existsSync(), isFalse);
+          },
+        );
+      }
     }
   }
 

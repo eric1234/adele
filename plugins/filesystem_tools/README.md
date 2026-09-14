@@ -82,3 +82,25 @@ create-or-overwrite, directory mutation, move/copy, binary files, permissions,
 and host-filesystem fallback remain unsupported. Deterministic real-Git
 integration proves create -> read -> delete continuation; no paid create/delete
 model smoke is claimed.
+
+## Apply Patch Inspection
+
+The separate Flutter package `packages/frontend` (`filesystem_tools_frontend`)
+owns the interpreted `apply_patch` card. It reads immutable structured arguments
+and terminal outcome data to display relative path, edit count, common lifecycle,
+tool-result disposition, new revision, and failure details when present. Outcome
+text is a bounded preview; this is not a Diff viewer or source editor.
+
+The headless package exports `applyPatchToolId` for stock composition to register
+`adele_ui`'s `ToolActivityInspectionContribution`. The frontend depends only on
+Flutter and `adele_ui`, not the headless implementation, app, or kernel. Generic
+app hosting transports data without interpreting patch fields, composes proposals
+in model output order, and uses exact Tool ID/liveness resolution.
+
+Stock activation loads prepared EVC independently of tool execution through the
+existing `PreparedFrontend` lifecycle. Coalesced read-only snapshot updates retain
+the view/runtime; missing/corrupt or retired presentation stays unavailable with
+no backend failure or native card fallback. The card has no execution or approval
+controls: only common host approval UI supplies Allow/Deny. Source/Diff navigation
+and nested inspection remain deferred. Build-time preparation is documented in
+[`app/README.md`](../../app/README.md#prepared-chat-frontend).

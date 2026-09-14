@@ -28,8 +28,10 @@ workspace:
   - plugins/scripted_model
   - plugins/openai
   - plugins/filesystem_tools
+  - plugins/filesystem_tools/packages/frontend
   - plugins/search_tools
   - plugins/command_tools
+  - plugins/command_tools/packages/frontend
   - plugins/agents_md
   - plugins/chat_strategy
   - plugins/chat_strategy/packages/frontend

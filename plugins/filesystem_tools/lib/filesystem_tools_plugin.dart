@@ -11,6 +11,10 @@ final PluginId filesystemToolsPluginId = PluginId(
   'dev.adele.plugin.filesystem-tools',
 );
 
+final ToolId applyPatchToolId = ToolId(
+  'dev.adele.plugin.filesystem-tools.apply-patch',
+);
+
 final class FilesystemToolsPlugin {
   const FilesystemToolsPlugin();
 
@@ -334,16 +338,12 @@ final class _ReadFileExecutable implements ToolExecutable {
 final class _ApplyPatchExecutable implements ToolExecutable {
   const _ApplyPatchExecutable(this._read, this._mutation);
 
-  static final ToolId _toolId = ToolId(
-    'dev.adele.plugin.filesystem-tools.apply-patch',
-  );
-
   final AuthorizedEnvironmentFileReadFacet _read;
   final AuthorizedEnvironmentFileMutationFacet _mutation;
 
   ToolRegistration get registration => ToolRegistration(
     definition: ToolDefinition(
-      id: _toolId,
+      id: applyPatchToolId,
       description:
           'Patch one existing file in the current Session Environment.',
     ),

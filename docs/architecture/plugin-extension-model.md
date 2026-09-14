@@ -15,6 +15,13 @@ means one button per contribution in registry registration order. They have no
 priorities, defaults, categories, or applicability rules. Cancellation is a
 successful `null` result, distinct from selector or lifecycle failure.
 
+Public Flutter `adele_ui` supplies typed Session presentation and tool activity
+Inspection contributions on the same registry. Each resolves exactly one semantic
+strategy or Tool ID, with explicit unavailable/ambiguous states and no priority or
+fallback. Stock Chat activity opens common host-owned group Inspection containing
+plugin-owned interpreted Apply Patch and Run Command cards. This is a bounded
+presentation surface, not the general workbench extension system below.
+
 Normal Task/primary Environment creation uses existing capability routing and
 product lifecycle, not a new extension point or Task Browser API. Synchronous,
 provider-free `AdeleRuntime()` owns generic application-lifetime backend bootstrap
@@ -572,6 +579,7 @@ Examples:
 - Implemented inference-context sources explicitly declare required or optional failure behavior: required failure aborts preparation, optional failure omits the whole source with diagnostics, and successful empty output remains distinct.
 - B1 Project selectors return `null` for cancellation; selector/lifecycle failure is an inline app error with no fallback or change to the presented Project.
 - Required host/Git startup failure cleans up acquired resources and leaves Task support visibly unavailable without blocking Project opening; optional OpenAI activation failure affects model availability only. Task establishment failure publishes no new Task/Environment and substitutes no provider.
+- Missing, ambiguous, failed, or retired Session/tool presentation is visibly unavailable without invalidating headless execution. Independent prepared frontends do not substitute native views or compile source on failure.
 
 Each Extension Point must define failure semantics appropriate to its role.
 
@@ -604,6 +612,30 @@ Plugins can define further semantic regions inside their own UI. Chat can define
 Host rendering is desirable for small structural pieces where it improves compiled performance, consistency, accessibility, and reuse. Examples include Command entries, compact status fragments, separators, provider-selection controls, and common settings editors.
 
 Plugins may render bespoke UI when richer domain presentation is useful, including Chat, Diff, source editing, inspection bodies, plans/artifacts, and consoles.
+
+## 12.2 Implemented Session and tool Inspection boundaries
+
+`SessionPresentationContribution(strategyId, createPresentation)` supplies a
+`Widget Function(Session)` factory at typed `sessionPresentationContributions`.
+`ToolActivityInspectionContribution(toolId, createPresentation)` supplies a
+`Widget Function(ToolActivityInspectionSource)` factory at typed
+`toolActivityInspectionContributions`. The source is a read-only `Listenable`
+whose immutable `ToolInvocationActivity` snapshot belongs to public pure-Dart
+`adele_orchestration`. Flutter `adele_ui` depends on that public activity API and
+`adele_model_tool`, not kernel or application implementations.
+
+Both hosts use exact semantic identity matching and existing registry liveness.
+They retain presentation resources across updates, remove retired widgets, and
+select a replacement only through fresh resolution. Observation confers neither
+tool execution nor approval authority.
+
+The app owns window-local selection, group framing, and output-sequence proposal
+composition; tool frontends own field interpretation over immutable structured
+snapshot transport and reuse `PreparedFrontend`. Close removes only the view,
+changing the presented Session clears selection, and responsive placement is not
+public panel API semantics. Common host approval UI alone offers Allow/Deny;
+tool cards are read-only. Detailed boundaries and deferred scope are maintained
+in [`overview.md`](overview.md#activity-inspection).
 
 ---
 

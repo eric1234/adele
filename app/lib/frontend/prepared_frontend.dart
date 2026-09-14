@@ -12,6 +12,12 @@ abstract interface class PreparedFrontendBridge implements EvalPlugin {
   void invalidate();
 }
 
+/// Optional per-view failure notification, bound before runtime configuration.
+/// This callback belongs to the native owner and is never exposed to eval.
+abstract interface class PreparedFrontendFailureSource {
+  set onFailure(VoidCallback? callback);
+}
+
 /// One prepared artifact generation, independent of product or view identity.
 final class PreparedFrontend {
   PreparedFrontend._(this._bytes, this.failure);
@@ -97,6 +103,9 @@ class _PreparedPresentationState extends State<_PreparedPresentation> {
     try {
       final PreparedFrontendBridge bridge = widget.createBridge();
       _bridge = bridge;
+      if (bridge is PreparedFrontendFailureSource) {
+        (bridge as PreparedFrontendFailureSource).onFailure = _fail;
+      }
       // The pin retains eval globals and callbacks inside Runtime. Share bytes,
       // never a Runtime, across presentations (including simultaneous views).
       final FutureOr<InterpretedWidget> pending = loadInterpretedWidget(
@@ -104,21 +113,36 @@ class _PreparedPresentationState extends State<_PreparedPresentation> {
         bridge: bridge,
         library: widget.library,
         entrypoint: widget.entrypoint,
+        onFailure: _fail,
       );
       final InterpretedWidget loaded = pending is Future<InterpretedWidget>
           ? await pending
           : pending;
-      if (!mounted || !generation._active) return;
+      if (!mounted || !generation._active || _failed) return;
       setState(() => _loaded = loaded);
     } on Object {
-      _bridge?.invalidate();
-      if (mounted && generation._active) setState(() => _failed = true);
+      _fail();
     }
   }
 
-  void invalidate() {
-    _bridge?.invalidate();
+  void _fail() {
+    if (!mounted || _failed) return;
+    _failed = true;
+    invalidate();
+  }
+
+  void _release() {
+    final PreparedFrontendBridge? bridge = _bridge;
+    _bridge = null;
     _loaded = null;
+    if (bridge is PreparedFrontendFailureSource) {
+      (bridge as PreparedFrontendFailureSource).onFailure = null;
+    }
+    bridge?.invalidate();
+  }
+
+  void invalidate() {
+    _release();
     if (!mounted) return;
     if (SchedulerBinding.instance.schedulerPhase ==
         SchedulerPhase.persistentCallbacks) {
@@ -132,8 +156,7 @@ class _PreparedPresentationState extends State<_PreparedPresentation> {
 
   @override
   void dispose() {
-    _bridge?.invalidate();
-    _loaded = null;
+    _release();
     widget.generation._presentations.remove(this);
     super.dispose();
   }

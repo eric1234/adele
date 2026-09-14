@@ -13,6 +13,7 @@ Provider-neutral Run/model/tool/policy/approval mechanics
 Session-bound executable strategies and headless stock Chat
 Typed Session presentation and prepared interpreted stock Chat history/composer
 Read-only live Run activity and model-narrated Chat proposal-batch summaries
+Window-local activity Inspection with interpreted Apply Patch and Run Command cards
 Per-inference instruction-source capture and immutable context snapshots
 Shared application runtime and static stock plugin composition
 Typed Project selectors and minimal local-directory Project opening
@@ -191,8 +192,9 @@ not invalidate the Session or backend execution.
 
 Normal Chat presentation loads prepared EVC bytecode rather than compiling source
 at runtime. Its narrow bridge carries immutable primitive mixed message/activity
-timeline snapshots, composer-enabled state, and prompt submission with synchronous boolean
-acceptance. Run status and approval cards remain host-owned under
+timeline snapshots, composer-enabled state, prompt submission with synchronous
+boolean acceptance, and read-only Inspection requests using emitted opaque activity
+IDs. Run status and approval cards remain host-owned under
 `app/lib/ui/execution`; execution objects and approval authority never cross that
 bridge. `ChatController` remains provisional in `app/lib/ui/chat`, while generic
 prepared frontend hosting lives in `app/lib/frontend` and stock Chat activation
@@ -213,8 +215,16 @@ Narration stays out of canonical Chat history; completed groups remain only for
 the current controller lifetime, including follow-up prompts. Reconstructing a
 Session cannot restore historical activity without future persistence. Native
 output is preserved opaquely, not generically interpreted or labeled reasoning.
-Bespoke tool/provider interpreted activity presentations and Inspection remain
-future work.
+Clicking a group opens one window-local Inspection selected by exact Session,
+Run, and model-invocation identity. The common host composes proposals in output
+order, including unprepared/rejected placeholders. Filesystem Tools and Command
+Tools supply separate interpreted `apply_patch` and `run_command` cards through
+public `adele_ui` read-only tool Inspection contributions. The app transports
+immutable data without interpreting plugin fields; missing/failed presentation
+stays unavailable without failing execution or using native tool cards. Close
+removes only the view; changing the presented Session clears selection. Tool cards
+show status, never Allow/Deny controls. See `docs/architecture/overview.md` for
+exact Tool ID resolution, liveness, and deferred scope.
 
 Chat supplies `StrategyInferenceMaterial` containing instructions and ordered
 semantic input from history projection plus Run-local replay. Public
@@ -345,8 +355,8 @@ Capabilities remain the callable Action/Service provider mechanism; Events are
 read-only fact notifications; UI/composition extension points may use different
 zero/one/many and merge/failure semantics. Generic registration/liveness and
 typed model-tool, orchestration-strategy, inference-context-source, Project
-selector, and Session presentation points are implemented; broader recursive
-composition and workbench UI APIs remain deferred. The Project buttons are
+selector, Session presentation, and tool activity Inspection points are implemented;
+broader recursive composition and workbench UI APIs remain deferred. The Project buttons are
 temporary host presentation, not a chooser framework or application Commands.
 
 ADR 0031 accepts these shared product-domain identities:
@@ -409,25 +419,30 @@ dart tools/adele.dart build linux
 ```
 
 Normal Linux `run` and `build` prepare fresh shared-host, Git, and OpenAI backend AOT
-snapshots plus Chat frontend EVC before the Flutter run/build invocation.
+snapshots plus Chat, Filesystem Tools, and Command Tools frontend EVCs before the
+Flutter run/build invocation.
 `tools/backend_artifacts.dart` uses `compileAotSnapshot` from `plugin_builder` and
 selects the Dart compiler and `dartaotruntime` from the launching Flutter SDK.
-`tools/frontend_artifacts.dart` invokes the Flutter build-time entrypoint
-`app/tool/compile_chat_frontend.dart`. Fresh artifacts are retained under
+`tools/frontend_artifacts.dart` invokes the Flutter build-time entrypoints
+`app/tool/compile_chat_frontend.dart` and
+`app/tool/compile_tool_inspection_frontends.dart`. Fresh artifacts are retained under
 `.dart_tool/adele/desktop-backends/` and `.dart_tool/adele/desktop-frontends/`.
 The launcher passes `ADELE_DARTAOTRUNTIME_EXECUTABLE`,
 `ADELE_BACKEND_HOST_ARTIFACT`, `ADELE_GIT_ENVIRONMENT_ARTIFACT`,
-`ADELE_OPENAI_ARTIFACT`, and `ADELE_CHAT_FRONTEND_ARTIFACT` as compile-time
-artifact-location defines. The normal app consumes only prepared locations;
-runtime activation never compiles source. See `app/README.md` for frontend
-preparation inputs and the standalone build-time invocation.
+`ADELE_OPENAI_ARTIFACT`, `ADELE_CHAT_FRONTEND_ARTIFACT`,
+`ADELE_FILESYSTEM_TOOLS_FRONTEND_ARTIFACT`, and
+`ADELE_COMMAND_TOOLS_FRONTEND_ARTIFACT` as compile-time artifact-location defines.
+The normal app consumes only prepared locations; runtime activation never compiles
+source. See `app/README.md` for frontend
+preparation inputs and standalone build-time invocations.
 
 These provisional absolute paths make the built app runnable only on the
 source-checkout machine while those artifacts and that SDK remain in place.
 Moving or deleting them breaks the corresponding backend startup or frontend
 loading. This is not artifact caching, installation, portable/production
 packaging, discovery, or profiles. Invoking Flutter directly without the defines
-leaves Task Environment support and Chat presentation unavailable independently.
+leaves Task Environment support, Chat presentation, and stock tool Inspection
+presentation unavailable independently.
 Checkout tooling stands in for future installation/update-time compilation;
 activation consumes prepared artifacts rather than building them.
 
@@ -463,8 +478,9 @@ the CI matrix. Run their pure-Dart tests with
 `dart tools/adele.dart test --target agents_md_plugin`.
 
 `adele_ui` is a Flutter analysis/test target. The separate
-`chat_strategy_frontend` is also a Flutter workspace member and analysis target;
-its EVC preparation belongs to the app's build-time tooling.
+`chat_strategy_frontend`, `filesystem_tools_frontend`, and
+`command_tools_frontend` packages are Flutter workspace members and analysis
+targets; their EVC preparation belongs to the app's build-time tooling.
 
 The repository development command above is unrelated to ADELE's future
 application-level Command Palette/keybinding subsystem described by the
@@ -476,7 +492,7 @@ extension architecture.
 app/                         single Flutter desktop application
 packages/plugin_api/         adele_plugin_api (experimental public)
 packages/core_extensions/    adele_core_extensions narrow core-owned contracts
-packages/ui/                 adele_ui public Flutter Session presentation API
+packages/ui/                 adele_ui public Flutter Session/Tool Inspection APIs
 packages/contract/           adele_contract (experimental public)
 packages/contract_codegen/   contract_codegen (internal, pure Dart)
 packages/model_provider/     adele_model_provider (experimental public)
@@ -493,9 +509,9 @@ plugins/workspace_demo/      internal source-plugin reference fixture
 plugins/resource_inspector/  Phase III two-provider capability fixture
 plugins/scripted_model/      deterministic ModelProvider/transport fixture
 plugins/openai/              real OpenAI ModelProvider; ChatGPT route experimental
-plugins/filesystem_tools/    stock Session-authorized text-file tools
+plugins/filesystem_tools/    stock text-file tools plus evaluated Apply Patch Inspection
 plugins/search_tools/        stock Session-authorized literal Search tool
-plugins/command_tools/       stock Session-authorized foreground Command tool
+plugins/command_tools/       stock foreground Command tool plus evaluated Inspection
 plugins/chat_strategy/       headless Chat strategy plus separate evaluated frontend
 plugins/agents_md/           stock root-level AGENTS.md instruction source
 plugins/local_directory_project_selector/ stock native directory Project selector
@@ -593,9 +609,10 @@ compaction, and context preview remain deferred.
 General provider/model configuration, Task Browser, and richer Session/Run UI
 remain deferred. The normal product path reaches one stock Chat Session with
 plugin-owned evaluated history/composer and sequential, approval-gated Runs through
-experimental ChatGPT subscription auth. Live compact Chat activity groups are
-implemented; deeper Inspection and the broader presentation extension ecosystem
-remain deferred.
+experimental ChatGPT subscription auth. Live compact Chat activity groups open
+window-local Inspection with interpreted Apply Patch and Run Command cards.
+Nested inspection, provider reasoning, Source/Diff/Console navigation, and the
+broader presentation extension ecosystem remain deferred.
 GitHub, cloud, recent-project/catalog selectors, persistence, and deduplication
 are not implemented; application Command surfacing remains deferred.
 Chat persistence, configurable permissions/profiles, steering, richer activity and

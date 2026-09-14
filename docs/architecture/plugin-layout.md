@@ -78,6 +78,24 @@ authority stay outside the evaluated package. The narrow primitive bridge and
 host-owned execution presentation are described in
 [`overview.md`](overview.md#session-presentation).
 
+### Stock tool frontend split
+
+`plugins/filesystem_tools` and `plugins/command_tools` retain their pure-Dart
+headless packages at the plugin root. Each has a separate Flutter
+`packages/frontend`: `filesystem_tools_frontend` owns interpreted `apply_patch`
+Inspection and `command_tools_frontend` owns interpreted `run_command` Inspection.
+These frontends depend only on Flutter and public `adele_ui`, not their headless
+implementations, app, or kernel. They are root workspace members and maintained
+Flutter analysis targets, not additional AOT backends.
+
+`app/lib/plugins/stock_tool_inspection_frontends.dart` imports the public
+`applyPatchToolId` and `runCommandToolId` from the owning headless packages solely
+for stock contribution registration. The generic Inspection host matches exact
+`ToolId` through `adele_ui`, owns group framing/order, and knows no plugin-specific
+fields. The interpreted widgets own field interpretation over a read-only
+structured snapshot bridge. All three stock frontends reuse `PreparedFrontend`;
+there is no parallel tool-specific runtime/activation framework.
+
 ## Distinct identities
 
 The following are independent concepts and must not be inferred from one
@@ -126,8 +144,8 @@ isolation/concurrency models remain deferred.
 Temporary runtime resources are created/disposed during operation. They are not
 plugin instances and are not persistent provider configurations.
 
-Session presentation retains exact extension bindings. Retirement removes old
-widgets and their resources; only fresh resolution may select a replacement.
+Session and tool activity presentation retain exact extension bindings. Retirement
+removes old widgets and their resources; only fresh resolution may select a replacement.
 Missing or failed presentation does not invalidate the Session or headless/backend
 execution. Eval runtime allocation is an implementation detail of the pinned
 stack, not a permanent one-runtime-per-presentation contract.
@@ -167,11 +185,14 @@ Deployment and build details are maintained in
 [`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
 This is not plugin installation, production packaging, discovery, or profiles.
 
-Normal Chat activation separately consumes prepared EVC. Flutter build-time
-tooling prepares it before app launch/build, outside the normal runtime import
-graph. A missing or failed frontend does not retire backend support or trigger
-source compilation or a native Chat fallback. The SDK/eval pin remains bounded
-interoperability infrastructure; broad third-party interpreted UI support still
+Normal Chat, Filesystem Tools, and Command Tools frontend activations independently
+consume prepared EVCs. Flutter build-time tooling prepares all three before app
+launch/build, outside the normal runtime import graph. Tool Inspection retains
+the same view/runtime across coalesced snapshot updates rather than reloading
+bytecode for lifecycle changes. A missing, corrupt, or retired frontend does not
+retire backend support or trigger source compilation or a native Chat/tool-card
+fallback. The SDK/eval pin remains bounded interoperability infrastructure;
+broad third-party interpreted UI support still
 requires eval modernization.
 
 ## Proven and deferred

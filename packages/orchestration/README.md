@@ -136,8 +136,11 @@ Explicit user-facing model text accompanying proposals is preferred narration;
 missing text yields a structural count with no extra inference. Final text without
 proposals remains canonical Chat content. Activity is not canonical Chat history
 and is not persisted. Completed activity retained by a current presentation cannot
-be reconstructed after reopening until persistence exists. Bespoke plugin-owned
-activity UI and Inspection remain future work.
+be reconstructed after reopening until persistence exists. Chat groups can open
+window-owned Inspection, where public Flutter `adele_ui` selects read-only tool
+presenters by exact `ToolId`. Filesystem and Command supply the first interpreted
+presentations. This package remains Flutter-free and owns neither selection nor
+tool-specific UI; nested navigation and provider-native presentation remain deferred.
 
 ## Inference Context
 
@@ -269,8 +272,8 @@ that explicit user instructions and direct requests take precedence. This is
 plugin-owned guidance, not a generic precedence or repository-instructions API.
 
 There are no kernel, Flutter, app, or plugin-runtime imports. Scheduling,
-production discovery, rich Chat UI/Inspection, persistence, profiles, and child
-Sessions remain deferred. The generic context contract remains instruction-only. Nested/scoped
+production discovery, broader Chat UI and nested Inspection, persistence, profiles,
+and child Sessions remain deferred. The generic context contract remains instruction-only. Nested/scoped
 AGENTS.md, aliases/overrides, global/home files, imports, and AGENTS.md caching are
 deferred; time, Skills, roles, and repository maps remain independent, unimplemented
 source concerns. Broader Reference/Observation material is directional;

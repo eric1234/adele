@@ -1,5 +1,5 @@
 name: adele_ui
-description: Public semantic ADELE Session presentation contracts.
+description: Public semantic ADELE Session and Tool activity presentation contracts.
 publish_to: none
 version: 0.1.0
 
@@ -10,6 +10,8 @@ environment:
 resolution: workspace
 
 dependencies:
+  adele_model_tool: ^0.1.0
+  adele_orchestration: ^0.1.0
   adele_plugin_api: ^0.1.0
   adele_product: ^0.1.0
   flutter:

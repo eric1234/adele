@@ -30,7 +30,7 @@ The following remain largely or entirely unimplemented:
 - context sources beyond root AGENTS.md, broader Reference/Observation material, provider-aware projection/cache planning, compaction, and token budgets;
 - parent/child Session lifecycle;
 - plugin-defined extension ecosystems beyond registration, model tools, executable strategies, and instruction-context composition;
-- broader plugin-facing workbench UI composition beyond Session presentation;
+- broader plugin-facing workbench UI composition beyond Session presentation and tool activity Inspection;
 - application Command/Command Palette/keybinding infrastructure;
 - profile-aware provider preference and general configuration services;
 - additional Environment providers, process modes beyond the foreground surface, and broader mutable source tooling such as whole-file overwrite, directory/move/copy, and binary operations;
@@ -44,9 +44,11 @@ Git primary Environment, and one stock Chat Session with sequential approval-gat
 Runs through the experimental ChatGPT subscription-backed ModelProvider. A narrow
 public Flutter Session presentation contract hosts the stock Chat plugin's
 evaluated mixed message/activity timeline and composer; common execution status
-and approvals remain host-owned. The Phase D frontend-plugin vertical is current;
-live Run observation and compact Chat proposal-batch narration extend it without
-introducing a native Chat fallback or a general workbench UI framework.
+and approvals remain host-owned. Compact Chat proposal-batch summaries open one
+window-local Inspection, with common ordered group composition and separate
+interpreted Apply Patch and Run Command presentations. These reuse prepared
+frontend hosting without a native Chat/tool-card fallback or a general workbench
+UI framework.
 
 ## System shape
 
@@ -109,8 +111,8 @@ independent actions, not a chooser/default-provider framework.
 
 Normal stock activation consumes prepared backend and frontend artifacts, not
 source paths or a compiler. Missing required backend artifact configuration leaves
-Task Environment support unavailable; missing Chat EVC leaves presentation
-unavailable independently.
+Task Environment support unavailable; missing Chat, Filesystem Tools, or Command
+Tools EVC leaves the corresponding presentation unavailable independently.
 Artifact preparation belongs to repository/build-time tooling, not app startup;
 deployment inputs and source-checkout limitations are documented in
 [`app/README.md`](../../app/README.md#normal-backend-startup) and the
@@ -189,7 +191,7 @@ Runtime composition should prefer typed interface discovery over hidden activati
 
 Capabilities remain the implemented callable-provider mechanism for Actions and Services. Events are read-only fact notifications. Other extension points may collect UI fragments or structured operation contributions without being callable capabilities.
 
-The generic `ExtensionRegistry` supports typed registration/discovery, change notifications, retirement, and exact binding liveness. Current model-tool, orchestration-strategy, inference-context-source, Project selector, and Session presentation points reuse it with their own composition semantics; already-resolved bindings do not migrate to replacement generations. Instruction-source data becomes independent of binding liveness after safe capture, unlike executable work.
+The generic `ExtensionRegistry` supports typed registration/discovery, change notifications, retirement, and exact binding liveness. Current model-tool, orchestration-strategy, inference-context-source, Project selector, Session presentation, and tool activity Inspection points reuse it with their own composition semantics; already-resolved bindings do not migrate to replacement generations. Instruction-source data becomes independent of binding liveness after safe capture, unlike executable work.
 
 Tiny pure-Dart `adele_core_extensions` imports only `adele_plugin_api` and owns
 core extension contracts with no natural existing public domain package, not all
@@ -197,9 +199,10 @@ extension APIs. Product values, orchestration strategies/context, model tools,
 Environment providers, generic registry mechanics, and plugin-defined ecosystems
 keep their existing owners; see [`dependency-rules.md`](dependency-rules.md).
 
-Public Flutter `adele_ui` owns the concrete Session presentation contract without
-adding Flutter to product, orchestration, or the registry. Broader recursive
-composition, plugin-defined UI ecosystems, generic Event subscription,
+Public Flutter `adele_ui` owns the concrete Session presentation and tool activity
+Inspection contracts, depending on public `adele_orchestration` and
+`adele_model_tool` without adding Flutter to those packages, product, or the
+registry. Broader recursive composition, plugin-defined UI ecosystems, generic Event subscription,
 Commands/keybindings, and inference composition beyond instruction material remain
 direction rather than implemented production systems. Registry change
 notifications are not a general domain Event subscription system.
@@ -380,14 +383,68 @@ Frontend activation generations and presentation instances are distinct; widget
 lifecycle does not define a permanent one-runtime-per-view architecture.
 
 The eval bridge carries only immutable primitive message/activity timeline snapshots,
-composer-enabled state, and submission of a string returning synchronous boolean
-acceptance. Session, controller, execution, and approval objects do not cross it.
+composer-enabled state, submission of a string returning synchronous boolean
+acceptance, and read-only Inspection requests for emitted opaque activity IDs.
+Session, controller, execution, and approval objects do not cross it.
 Common `RunExecutionStatus`, `PendingToolApproval`, and display safety live under
 `app/lib/ui/execution`, with stock controller adaptation at the composition edge.
 Host policy and exact-invocation approval remain the security authority. Activity
 summaries are lightweight interpreted Chat content, not actionable approval UI.
-Inspection, richer workbench composition, and broad third-party UI APIs remain
-deferred.
+Richer workbench composition and broad third-party UI APIs remain deferred.
+
+### Activity Inspection
+
+One `WindowInspection` owned by application State retains only an optional
+`ActivityInspectionSelection(SessionId, RunId, ModelInvocationId)`. Changing the
+presented Session clears selection; Close removes the view, not retained activity,
+history, or execution. The stock Chat adapter resolves clicks only through opaque
+IDs it emitted for exact retained Run/model groups, with current-Session and
+lifetime validation. This grants no execution or approval authority.
+
+`app/lib/ui/inspection/inspection_host.dart` owns the common group header and
+composes proposals in model output-sequence order. Unprepared and rejected
+proposals retain explicit placeholders, including proposals left unprocessed at
+Run termination. Each prepared invocation has a read-only
+`ToolActivityInspectionSource`: a `Listenable` with an immutable
+`ToolInvocationActivity` snapshot and fixed invocation/tool identities.
+If a Run ends without a terminal result for a prepared invocation, the host
+explicitly labels its retained presentation as last-observed activity. It does
+not imply a current approval wait or manufacture a tool completion.
+
+Public Flutter `adele_ui` defines
+`ToolActivityInspectionContribution(toolId, createPresentation)` with a
+`Widget Function(ToolActivityInspectionSource)` factory and typed
+`toolActivityInspectionContributions`. Its resolver matches exact `ToolId`: zero
+is unavailable, one returns the existing registry binding, and multiple are
+ambiguous. The generic tool host retains the same source/view across updates,
+validates exact liveness, and removes retired widgets and resources. Only fresh
+resolution may select a replacement. Missing, failed, or retired presentation
+does not fail headless execution and has no native tool-card fallback.
+
+Filesystem Tools and Command Tools own separate interpreted frontend packages
+for `apply_patch` and `run_command`. Their widgets interpret plugin fields;
+`app/lib/frontend/tool_activity_inspection_bridge.dart` transports recursively
+immutable structured argument/terminal maps, latest non-progress common lifecycle,
+and outcome data, without tool-specific field switches or progress-history
+flattening. Coalesced snapshot notifications update the retained interpreted
+runtime/view. Command output previews are bounded terminal data, not a console.
+`app/lib/plugins/stock_tool_inspection_frontends.dart` supplies independent stock
+activation over the existing `PreparedFrontend` lifecycle.
+
+The prepared host contains decoding/entrypoint and Tool change-callback failures.
+Runtime-local guards also cover the current eval pin's interpreted `createState`,
+`initState`, `build`, and `dispose` calls, including native cast failures within
+those calls. A failure revokes observation and unmounts only that presentation;
+interpreted cleanup receives one attempt and native State disposal still completes.
+This is not a general Flutter error boundary: native Flutter errors outside those
+calls (including layout/paint) and arbitrary asynchronous callbacks are not
+intercepted. No global Flutter error handler is replaced.
+
+Inspection appears to the right on wide windows and below on narrow windows;
+placement is private app layout, not a public physical panel API. Tool cards show
+read-only status; only common host approval UI offers Allow/Deny for the exact
+interruption. Nested inspection, provider reasoning, Source/Diff/Console
+navigation, persistence, and discovery remain deferred.
 
 ## Agent execution
 
@@ -445,9 +502,9 @@ entry, keeping completed groups through follow-up prompts for that controller's
 lifetime. Snapshots are built lazily from buffered evidence; controller captures
 and frontend notifications are coalesced post-frame, not repeated per progress
 chunk. It detaches observation on close. Reopening/reconstructing a Session cannot restore
-historical activity until persistence exists. Tool/provider-specific interpreted
-compact presentations and Inspection are future E work, not a generic host-owned
-tool-card schema.
+historical activity until persistence exists. Inspection consumes this retained
+evidence separately from compact Chat narration; tool-specific fields belong to
+the interpreted tool frontend, not a generic host-owned tool-card schema.
 
 The public `OrchestrationExecutionHost` exposes lifecycle operations and binding
 validation, `invokeModel(StrategyInferenceMaterial)`, `processProposal` using an
@@ -637,7 +694,7 @@ self-hosting.
 | Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, Session-authorized read/mutation/process facets, bounded create/patch/delete text-file mutation, and generated foreground process streaming through the Git provider are proven; persistence and complete lifecycle remain unimplemented. |
 | Session-bound strategy execution | Canonical immutable Session creation, atomic publication with separate Environment authority, executable contributions, explicit unavailable/ambiguous resolution, and exact binding validation across Run operations/resume/settlement are implemented and deterministically validated. Headless Chat uses the public facade with validated state, sequencing, and application integration. Persistent strategy state, child Sessions, and disk persistence remain deferred. |
 | Inference context | Instruction-only source discovery, exact-binding capture, immutable snapshots, current adapter rendering, and the stock root AGENTS.md source activated by the shared runtime are implemented; other sources, broader material, provider-aware projection/cache planning, budgets, and compaction remain deferred. |
-| Production orchestration/UI/Commands | Stock Chat, minimal Project/Task/Environment presentation, typed Session presentation with prepared evaluated mixed Chat timeline/composer, live compact proposal-batch narration, and host-owned approval-gated Runs are implemented; configurable permissions, Inspection, bespoke tool/provider activity presentation, Task Browser, rich workbench UI, Commands, and plugin discovery remain directional. |
+| Production orchestration/UI/Commands | Stock Chat, minimal Project/Task/Environment presentation, prepared evaluated mixed Chat timeline/composer, clickable proposal-batch narration, window-local Inspection with interpreted Apply Patch and Run Command cards, and host-owned approval-gated Runs are implemented; configurable permissions, nested inspection, provider reasoning, Source/Diff/Console navigation, Task Browser, rich workbench UI, Commands, and plugin discovery remain directional. |
 | Cross-platform/release | Unproven on Windows, macOS, and release mode. |
 | Packaging/sandboxing | Unproven; process isolation is not a sandbox. |
 

@@ -14,9 +14,14 @@ import 'package:adele_desktop/plugins/stock_chat_execution_status.dart';
 import 'package:adele_desktop/plugins/stock_chat_frontend.dart';
 import 'package:adele_desktop/plugins/stock_git_environment.dart';
 import 'package:adele_desktop/plugins/stock_openai.dart';
+import 'package:adele_desktop/plugins/stock_tool_inspection_frontends.dart';
 import 'package:adele_desktop/ui/chat/chat_controller.dart';
 import 'package:adele_desktop/ui/execution/pending_tool_approval.dart';
+import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
+import 'package:adele_desktop/ui/inspection/inspection_host.dart';
+import 'package:adele_desktop/ui/inspection/tool_activity_inspection_host.dart';
 import 'package:adele_desktop/ui/session/session_presentation_host.dart';
+import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
@@ -24,10 +29,12 @@ import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_eval/widgets.dart' show $StatefulWidget$bridge;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 
 import '../../tool/chat_frontend_compiler.dart';
+import '../../tool/tool_inspection_frontend_compiler.dart';
 
 const String _sourcePath = 'lib/task_answer.dart';
 const String _taskText = 'const taskAnswer = "task-worktree-only";\n';
@@ -42,7 +49,7 @@ const String _prompt =
 const String _answer =
     'Patched lib/task_answer.dart to declare taskAnswer as "approved-task-value". '
     'The separately approved git diff --check exited with code 0 in the Task. '
-    'E1 real-EVC canonical final reply.';
+    'E2 real-EVC canonical final reply.';
 const String _narration = 'Updating the test file and validating the change.';
 const Map<String, Object?> _commandArguments = {
   'program': 'git',
@@ -58,6 +65,8 @@ void main() {
   late File gitArtifact;
   late File openAiArtifact;
   late File evc;
+  late File filesystemEvc;
+  late File commandEvc;
 
   setUpAll(() async {
     final Directory repository = Directory.current.parent;
@@ -75,7 +84,19 @@ void main() {
     gitArtifact = File('${artifacts.path}/git-environment.aot');
     openAiArtifact = File('${artifacts.path}/openai.aot');
     evc = File('${artifacts.path}/chat.evc');
+    filesystemEvc = File('${artifacts.path}/filesystem.evc');
+    commandEvc = File('${artifacts.path}/command.evc');
     await compileChatFrontend(repositoryRoot: repository, artifact: evc);
+    for (final target in [
+      (frontend: ToolInspectionFrontend.filesystem, artifact: filesystemEvc),
+      (frontend: ToolInspectionFrontend.command, artifact: commandEvc),
+    ]) {
+      await compileToolInspectionFrontend(
+        repositoryRoot: repository,
+        artifact: target.artifact,
+        frontend: target.frontend,
+      );
+    }
     // Use the normal artifact boundary, compiling each real backend just once.
     for (final target in [
       (
@@ -107,8 +128,10 @@ void main() {
   });
 
   testWidgets(
-    'normal real-EVC Chat narrates one patch/command batch with separate approvals',
+    'normal real-EVC Chat inspects one patch/command batch through separate approvals',
     (tester) => tester.runAsync(() async {
+      await tester.binding.setSurfaceSize(const Size(1400, 1100));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
       final Directory container = await Directory.systemTemp.createTemp(
         'adele-normal-chatgpt-run-',
       );
@@ -433,6 +456,24 @@ void main() {
 
       late final VoidCallback refreshFrontend;
       StateSetter? updatePresentation;
+      bool presentationScheduled = false;
+      void refreshPresentation() {
+        if (updatePresentation == null || presentationScheduled) return;
+        presentationScheduled = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          presentationScheduled = false;
+          updatePresentation?.call(() {});
+        });
+        WidgetsBinding.instance.ensureVisualUpdate();
+      }
+
+      final WindowInspection inspection = WindowInspection()
+        ..presentSession(session)
+        ..addListener(refreshPresentation);
+      addTearDown(() {
+        inspection.removeListener(refreshPresentation);
+        inspection.dispose();
+      });
       final ChatController controller = ChatController(
         runtime: runtime,
         session: session,
@@ -441,7 +482,10 @@ void main() {
         runIds: MonotonicRunIdSource(seed: 'c2-fixture'),
         onChanged: () {
           refreshFrontend();
-          updatePresentation?.call(() {});
+          refreshPresentation();
+        },
+        onActivityChanged: () {
+          if (inspection.selection != null) refreshPresentation();
         },
       );
       addTearDown(controller.close);
@@ -452,27 +496,84 @@ void main() {
           expect(presentedSession, same(session));
           return controller;
         },
+        inspectActivity: (presentedSession, runId, modelInvocationId) {
+          if (!identical(presentedSession, session) ||
+              controller.isClosed ||
+              controller.activitySummary(runId, modelInvocationId) == null) {
+            return false;
+          }
+          final RunActivitySnapshot? activity = controller.activityForRun(
+            runId,
+          );
+          if (activity == null) return false;
+          return inspection.inspectActivity(
+            session: presentedSession,
+            activity: activity,
+            modelInvocationId: modelInvocationId,
+          );
+        },
       );
       refreshFrontend = frontend.refresh;
       addTearDown(frontend.close);
+      final filesystemFrontend =
+          await StockToolInspectionFrontend.activateFilesystem(
+            extensions: runtime.extensions,
+            artifactPath: filesystemEvc.path,
+          );
+      addTearDown(filesystemFrontend.close);
+      final commandFrontend = await StockToolInspectionFrontend.activateCommand(
+        extensions: runtime.extensions,
+        artifactPath: commandEvc.path,
+      );
+      addTearDown(commandFrontend.close);
+      addTearDown(() async {
+        updatePresentation = null;
+        if (!releaseFinal.isCompleted) releaseFinal.complete();
+        await controller.close();
+        await tester.pumpWidget(const SizedBox.shrink());
+      });
       await tester.pumpWidget(
         MaterialApp(
           home: StatefulBuilder(
             builder: (context, setState) {
               updatePresentation = setState;
-              return Scaffold(
-                body: SingleChildScrollView(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      SessionPresentationHost(
-                        session: session,
-                        extensions: runtime.extensions,
-                      ),
-                      StockChatExecutionStatus(controller: controller),
-                    ],
-                  ),
+              return AdeleShell(
+                project: project,
+                task: created.task,
+                environment: created.environment,
+                environmentReady:
+                    runtime.lifecycle.environmentRuntime.currentMaterialization(
+                      created.environment.id,
+                    ) !=
+                    null,
+                selectors: const [],
+                onSelectProject: (_) =>
+                    fail('Project selection is not part of this Run.'),
+                sessionControls: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    SessionPresentationHost(
+                      session: session,
+                      extensions: runtime.extensions,
+                    ),
+                    StockChatExecutionStatus(controller: controller),
+                  ],
                 ),
+                inspection: switch (inspection.selection) {
+                  final ActivityInspectionSelection selection => InspectionHost(
+                    selection: selection,
+                    activity: controller.activityForRun(selection.runId),
+                    heading: controller
+                        .activitySummary(
+                          selection.runId,
+                          selection.modelInvocationId,
+                        )!
+                        .content,
+                    extensions: runtime.extensions,
+                    onClose: inspection.clear,
+                  ),
+                  null => null,
+                },
               );
             },
           ),
@@ -480,6 +581,15 @@ void main() {
       );
       await tester.pumpAndSettle();
       final Finder sessionHost = find.byType(SessionPresentationHost);
+      final Finder inspectionHost = find.byType(InspectionHost);
+      final Finder narratedActivity = find.descendant(
+        of: sessionHost,
+        matching: find.textContaining(_narration),
+      );
+      final Finder fallbackActivity = find.descendant(
+        of: sessionHost,
+        matching: find.textContaining('1 tool operation'),
+      );
       final Finder promptField = find.descendant(
         of: sessionHost,
         matching: find.byType(TextField),
@@ -493,11 +603,36 @@ void main() {
         matching: find.widgetWithText(FilledButton, 'Allow once'),
       );
       expect(sessionHost, findsOneWidget);
+      expect(
+        tester.widget<AdeleShell>(find.byType(AdeleShell)).project,
+        same(project),
+      );
+      expect(
+        tester.widget<AdeleShell>(find.byType(AdeleShell)).task,
+        same(created.task),
+      );
+      expect(
+        tester.widget<AdeleShell>(find.byType(AdeleShell)).environment,
+        same(created.environment),
+      );
+      expect(inspection.selection, isNull);
+      expect(inspectionHost, findsNothing);
       expect(promptField, findsOneWidget);
       expect(send, findsOneWidget);
       expect(allowOnce, findsNothing);
       expect(tester.widget<TextField>(promptField).controller!.text, isEmpty);
       expect(tester.widget<TextField>(promptField).enabled, isTrue);
+      final Finder chatPresentation = find.descendant(
+        of: sessionHost,
+        matching: find.byWidgetPredicate(
+          (widget) => widget is $StatefulWidget$bridge,
+        ),
+      );
+      final chatWidget = tester.widget<$StatefulWidget$bridge>(
+        chatPresentation,
+      );
+      final chatState = tester.state(chatPresentation);
+      final chatRuntime = chatWidget.$runtime;
       expect(outbound, isEmpty);
       expect(controller.snapshot.entries, isEmpty);
       expect(controller.currentRun, isNull);
@@ -522,8 +657,8 @@ void main() {
       expect(find.text('Tool: apply_patch'), findsOneWidget);
       expect(allowOnce, findsOneWidget);
 
-      expect(find.textContaining(_narration), findsOneWidget);
-      expect(find.textContaining('1 tool operation'), findsOneWidget);
+      expect(narratedActivity, findsOneWidget);
+      expect(fallbackActivity, findsOneWidget);
       expect(
         find.descendant(of: sessionHost, matching: find.text('Allow once')),
         findsNothing,
@@ -599,6 +734,124 @@ void main() {
       expect(await _sourceSnapshot(source), projectBefore);
       expect(await _sourceSnapshot(worktree), taskBefore);
 
+      // Navigate through the interpreted summary, without giving its bridge any
+      // approval authority or synthesizing a tool for the unprepared proposal.
+      expect(inspectionHost, findsNothing);
+      await tester.ensureVisible(narratedActivity);
+      await tester.tap(narratedActivity);
+      await tester.pumpAndSettle();
+      final ActivityInspectionSelection selected = inspection.selection!;
+      expect(selected.sessionId, session.id);
+      expect(selected.runId, run.id);
+      expect(selected.modelInvocationId, batch.invocationId);
+      expect(inspectionHost, findsOneWidget);
+      expect(
+        tester.widget<InspectionHost>(inspectionHost).activity,
+        same(controller.activityForRun(run.id)),
+      );
+      expect(tester.widget<InspectionHost>(inspectionHost).heading, _narration);
+      expect(
+        tester.getTopLeft(inspectionHost).dx,
+        greaterThan(tester.getBottomRight(sessionHost).dx),
+      );
+      expect(narratedActivity, findsOneWidget);
+      expect(
+        find.descendant(of: inspectionHost, matching: find.text(_narration)),
+        findsOneWidget,
+      );
+
+      Finder toolHost(ToolInvocationId id) => find.descendant(
+        of: inspectionHost,
+        matching: find.byWidgetPredicate(
+          (widget) =>
+              widget is ToolActivityInspectionHost &&
+              widget.source.snapshot.id == id,
+        ),
+      );
+      Finder toolPresentation(ToolInvocationId id) => find.descendant(
+        of: toolHost(id),
+        matching: find.byWidgetPredicate(
+          (widget) => widget is $StatefulWidget$bridge,
+        ),
+      );
+      final Finder patchPresentation = toolPresentation(
+        patchInterruption.toolInvocationId,
+      );
+      final patchWidget = tester.widget<$StatefulWidget$bridge>(
+        patchPresentation,
+      );
+      final patchState = tester.state(patchPresentation);
+      final patchRuntime = patchWidget.$runtime;
+      final patchSource = tester
+          .widget<ToolActivityInspectionHost>(
+            toolHost(patchInterruption.toolInvocationId),
+          )
+          .source;
+      final ToolInvocationActivity waitingPatch = patchSource.snapshot;
+      expect(waitingPatch.id, patchInterruption.toolInvocationId);
+      expect(waitingPatch.toolId, patchInterruption.toolId);
+      expect(waitingPatch.modelInvocationId, batch.invocationId);
+      expect(
+        waitingPatch.proposalSequence,
+        waitingEvidence.models.last.outputs[1].sequence,
+      );
+      expect(
+        waitingPatch.changes.last.kind,
+        ToolActivityKind.approvalRequested,
+      );
+      expect(waitingPatch.outcome, isNull);
+      expect(patchRuntime, isNot(same(chatRuntime)));
+      for (final String label in [
+        'Apply Patch',
+        'Relative path: "$_sourcePath"',
+        'Edit count: 1',
+        'Status: Waiting for approval',
+        'Tool delivery: Pending',
+      ]) {
+        expect(
+          find.descendant(of: patchPresentation, matching: find.text(label)),
+          findsOneWidget,
+        );
+      }
+      expect(find.byType(ToolActivityInspectionHost), findsOneWidget);
+      expect(
+        find.byWidgetPredicate((widget) => widget is $StatefulWidget$bridge),
+        findsNWidgets(2),
+      );
+      final Finder unresolvedCommand = find.descendant(
+        of: inspectionHost,
+        matching: find.text('Proposal: run_command'),
+      );
+      expect(unresolvedCommand, findsOneWidget);
+      expect(
+        find.descendant(
+          of: inspectionHost,
+          matching: find.text('Waiting to be processed.'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        tester.getBottomLeft(patchPresentation).dy,
+        lessThan(tester.getTopLeft(unresolvedCommand).dy),
+      );
+      expect(
+        find.descendant(of: inspectionHost, matching: find.text('Allow once')),
+        findsNothing,
+      );
+      expect(
+        find.descendant(
+          of: inspectionHost,
+          matching: find.text('Program: "git"'),
+        ),
+        findsNothing,
+      );
+      expect(controller.currentRun, same(execution));
+      expect(controller.pendingApproval, same(patchApproval));
+      expect(controller.snapshot.entries.single.content, _prompt);
+      expect(run.journal.records.map((record) => record.event), beforePatch);
+      expect(outbound, hasLength(2));
+      expect(tester.takeException(), isNull);
+
       await tester.ensureVisible(allowOnce);
       await tester.tap(allowOnce);
       final Future<void>? patching = controller.activeRunFuture;
@@ -614,7 +867,7 @@ void main() {
       );
       expect(allowOnce, findsOneWidget);
       expect(tester.widget<TextField>(promptField).enabled, isFalse);
-      expect(find.textContaining(_narration), findsOneWidget);
+      expect(narratedActivity, findsOneWidget);
 
       expect(endpointFailures, isEmpty);
       expect(controller.failure, isNull);
@@ -664,6 +917,117 @@ void main() {
         batchTools.last.changes.last.kind,
         ToolActivityKind.approvalRequested,
       );
+      expect(inspection.selection, same(selected));
+      expect(
+        tester.widget<InspectionHost>(inspectionHost).activity,
+        same(controller.activityForRun(run.id)),
+      );
+      expect(
+        tester.widget<$StatefulWidget$bridge>(patchPresentation),
+        same(patchWidget),
+      );
+      expect(tester.state(patchPresentation), same(patchState));
+      expect(
+        tester.widget<$StatefulWidget$bridge>(patchPresentation).$runtime,
+        same(patchRuntime),
+      );
+      expect(
+        tester
+            .widget<ToolActivityInspectionHost>(
+              toolHost(patchInterruption.toolInvocationId),
+            )
+            .source,
+        same(patchSource),
+      );
+      expect(patchSource.snapshot.id, waitingPatch.id);
+      expect(patchSource.snapshot.toolId, waitingPatch.toolId);
+      expect(
+        patchSource.snapshot.proposalSequence,
+        waitingPatch.proposalSequence,
+      );
+      expect(
+        patchSource.snapshot.outcome!.disposition,
+        ToolOutcomeDisposition.success,
+      );
+      final String inspectionRevision =
+          patchSource.snapshot.outcome!.hostData['newRevision']! as String;
+      expect(inspectionRevision, isNotEmpty);
+      expect(inspectionRevision, isNot(observedRevision));
+      expect(waitingPatch.outcome, isNull);
+      for (final String label in [
+        'Status: Succeeded',
+        'Tool delivery: success',
+        'New revision: $inspectionRevision',
+      ]) {
+        expect(
+          find.descendant(of: patchPresentation, matching: find.text(label)),
+          findsOneWidget,
+        );
+      }
+      expect(unresolvedCommand, findsNothing);
+      expect(find.byType(ToolActivityInspectionHost), findsNWidgets(2));
+      expect(
+        find.byWidgetPredicate((widget) => widget is $StatefulWidget$bridge),
+        findsNWidgets(3),
+      );
+      final Finder commandPresentation = toolPresentation(
+        commandInterruption.toolInvocationId,
+      );
+      final commandWidget = tester.widget<$StatefulWidget$bridge>(
+        commandPresentation,
+      );
+      final commandState = tester.state(commandPresentation);
+      final commandRuntime = commandWidget.$runtime;
+      final commandSource = tester
+          .widget<ToolActivityInspectionHost>(
+            toolHost(commandInterruption.toolInvocationId),
+          )
+          .source;
+      expect(commandSource.snapshot.id, commandInterruption.toolInvocationId);
+      expect(commandSource.snapshot.modelInvocationId, batch.invocationId);
+      expect(
+        commandSource.snapshot.proposalSequence,
+        waitingEvidence.models.last.outputs[2].sequence,
+      );
+      expect(
+        commandSource.snapshot.changes.last.kind,
+        ToolActivityKind.approvalRequested,
+      );
+      expect(commandSource.snapshot.outcome, isNull);
+      expect(commandRuntime, isNot(same(patchRuntime)));
+      expect(commandRuntime, isNot(same(chatRuntime)));
+      for (final String label in [
+        'Run Command',
+        'Program: "git"',
+        'Arguments (direct argv):',
+        '[0]: "diff"',
+        '[1]: "--check"',
+        'Working directory: "" (Environment root)',
+        'Timeout seconds: 5',
+        'Status: Waiting for approval',
+        'Tool delivery: Pending',
+        'Exit code: Not reported',
+      ]) {
+        expect(
+          find.descendant(of: commandPresentation, matching: find.text(label)),
+          findsOneWidget,
+        );
+      }
+      await tester.ensureVisible(
+        find.descendant(
+          of: commandPresentation,
+          matching: find.text('Status: Waiting for approval'),
+        ),
+      );
+      expect(
+        tester.getBottomLeft(patchPresentation).dy,
+        lessThan(tester.getTopLeft(commandPresentation).dy),
+      );
+      expect(
+        find.descendant(of: inspectionHost, matching: find.text('Allow once')),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
       expect(
         controller.timeline.whereType<ChatActivitySummary>().last.invocationId,
         batch.invocationId,
@@ -734,10 +1098,44 @@ void main() {
       await tester.pumpAndSettle();
       expect(controller.isAdvancing, isTrue);
       expect(controller.activeRunFuture, same(validating));
-      expect(find.textContaining(_narration), findsOneWidget);
-      expect(find.textContaining('1 tool operation'), findsOneWidget);
+      expect(narratedActivity, findsOneWidget);
+      expect(fallbackActivity, findsOneWidget);
       expect(find.text(_answer), findsNothing);
       expect(controller.snapshot.entries, hasLength(1));
+      expect(inspection.selection, same(selected));
+      expect(inspectionHost, findsOneWidget);
+      expect(patchedRevision, inspectionRevision);
+      expect(
+        commandSource.snapshot.outcome!.disposition,
+        ToolOutcomeDisposition.success,
+      );
+      expect(commandSource.snapshot.outcome!.hostData['exitCode'], 0);
+      expect(
+        tester.widget<$StatefulWidget$bridge>(commandPresentation),
+        same(commandWidget),
+      );
+      expect(tester.state(commandPresentation), same(commandState));
+      expect(
+        tester.widget<$StatefulWidget$bridge>(commandPresentation).$runtime,
+        same(commandRuntime),
+      );
+      for (final String label in [
+        'Status: Completed',
+        'Tool delivery: success',
+        'Process termination: exited',
+        'Exit code: 0',
+      ]) {
+        expect(
+          find.descendant(of: commandPresentation, matching: find.text(label)),
+          findsOneWidget,
+        );
+      }
+      await tester.ensureVisible(
+        find.descendant(
+          of: commandPresentation,
+          matching: find.text('Exit code: 0'),
+        ),
+      );
       releaseFinal.complete();
       await validating!;
       await tester.pumpAndSettle();
@@ -758,14 +1156,6 @@ void main() {
       expect(allowOnce, findsNothing);
       expect(find.text('Approval required'), findsNothing);
       expect(tester.takeException(), isNull);
-      final Finder narratedActivity = find.descendant(
-        of: sessionHost,
-        matching: find.textContaining(_narration),
-      );
-      final Finder fallbackActivity = find.descendant(
-        of: sessionHost,
-        matching: find.textContaining('1 tool operation'),
-      );
       expect(narratedActivity, findsOneWidget);
       expect(fallbackActivity, findsOneWidget);
       expect(
@@ -966,9 +1356,116 @@ void main() {
       expect(resultingFile.text, _patchedText);
       expect(resultingFile.revision, patchedRevision);
 
+      await tester.ensureVisible(
+        find.descendant(of: sessionHost, matching: find.text(_answer)),
+      );
+      expect(inspection.selection, same(selected));
+      expect(inspectionHost, findsOneWidget);
+      expect(
+        tester.widget<InspectionHost>(inspectionHost).activity,
+        same(activity),
+      );
+      expect(
+        tester.widget<$StatefulWidget$bridge>(patchPresentation),
+        same(patchWidget),
+      );
+      expect(tester.state(patchPresentation), same(patchState));
+      expect(
+        tester.widget<$StatefulWidget$bridge>(patchPresentation).$runtime,
+        same(patchRuntime),
+      );
+      expect(
+        tester
+            .widget<ToolActivityInspectionHost>(
+              toolHost(patchInterruption.toolInvocationId),
+            )
+            .source,
+        same(patchSource),
+      );
+      expect(
+        tester.widget<$StatefulWidget$bridge>(commandPresentation),
+        same(commandWidget),
+      );
+      expect(tester.state(commandPresentation), same(commandState));
+      expect(
+        tester.widget<$StatefulWidget$bridge>(commandPresentation).$runtime,
+        same(commandRuntime),
+      );
+      expect(
+        tester
+            .widget<ToolActivityInspectionHost>(
+              toolHost(commandInterruption.toolInvocationId),
+            )
+            .source,
+        same(commandSource),
+      );
+      expect(
+        patchSource.snapshot.outcome!.hostData['newRevision'],
+        patchedRevision,
+      );
+      expect(commandSource.snapshot.outcome!.hostData, commandOutcome.hostData);
+      expect(
+        tester.widget<$StatefulWidget$bridge>(chatPresentation),
+        same(chatWidget),
+      );
+      expect(tester.state(chatPresentation), same(chatState));
+      expect(
+        tester.widget<$StatefulWidget$bridge>(chatPresentation).$runtime,
+        same(chatRuntime),
+      );
+
+      // Closing this window-local surface disposes only presentation resources.
+      final Finder closeInspection = find.descendant(
+        of: inspectionHost,
+        matching: find.byTooltip('Close Inspection'),
+      );
+      await tester.ensureVisible(closeInspection);
+      await tester.tap(closeInspection);
+      await tester.pumpAndSettle();
+      expect(inspection.selection, isNull);
+      expect(inspectionHost, findsNothing);
+      expect(find.byType(ToolActivityInspectionHost), findsNothing);
+      expect(
+        find.byWidgetPredicate((widget) => widget is $StatefulWidget$bridge),
+        findsOneWidget,
+      );
+      expect(patchState.mounted, isFalse);
+      expect(commandState.mounted, isFalse);
+      expect(tester.state(chatPresentation), same(chatState));
+      expect(
+        tester.widget<$StatefulWidget$bridge>(chatPresentation).$runtime,
+        same(chatRuntime),
+      );
+      expect(controller.currentRun, same(execution));
+      expect(run.state, RunState.completed);
+      expect(run.journal.records.map((record) => record.event), events);
+      expect(controller.snapshot, same(snapshot));
+      expect(controller.activityForRun(run.id), same(activity));
+      expect(
+        controller.activitySummary(run.id, batch.invocationId)!.content,
+        _narration,
+      );
+      expect(controller.activitySnapshots.single, same(activity));
+      expect(
+        runtime.chat.sessions.obtain(session.id).snapshot().entries,
+        snapshot.entries,
+      );
+      expect(narratedActivity, findsOneWidget);
+      expect(fallbackActivity, findsOneWidget);
+      expect(
+        find.descendant(of: sessionHost, matching: find.text(_answer)),
+        findsOneWidget,
+      );
+      expect(controller.pendingApproval, isNull);
+      expect(controller.activeRunFuture, isNull);
+      expect(outbound, hasLength(3));
+      expect(tester.takeException(), isNull);
+
       await controller.close();
       updatePresentation = null;
       await tester.pumpWidget(const SizedBox.shrink());
+      await commandFrontend.close();
+      await filesystemFrontend.close();
       await frontend.close();
       await runtime.close();
       expect(runtime.plugins.state, ApplicationPluginState.closed);

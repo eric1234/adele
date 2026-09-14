@@ -5,17 +5,22 @@ import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_desktop/core/resource_cleanup.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/plugins/stock_backend_plugins.dart';
 import 'package:adele_desktop/plugins/stock_chat_execution_status.dart';
 import 'package:adele_desktop/plugins/stock_chat_frontend.dart';
 import 'package:adele_desktop/plugins/stock_openai.dart';
+import 'package:adele_desktop/plugins/stock_tool_inspection_frontends.dart';
 import 'package:adele_desktop/ui/chat/chat_controller.dart';
+import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
+import 'package:adele_desktop/ui/inspection/inspection_host.dart';
 import 'package:adele_desktop/ui/session/session_presentation_host.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_desktop/ui/shell/task_title_form.dart';
 import 'package:adele_desktop/ui/theme/adele_theme.dart';
 import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
@@ -31,6 +36,12 @@ final class AdeleApplication extends StatefulWidget {
     this.chatFrontendArtifact = const String.fromEnvironment(
       'ADELE_CHAT_FRONTEND_ARTIFACT',
     ),
+    this.filesystemFrontendArtifact = const String.fromEnvironment(
+      'ADELE_FILESYSTEM_TOOLS_FRONTEND_ARTIFACT',
+    ),
+    this.commandFrontendArtifact = const String.fromEnvironment(
+      'ADELE_COMMAND_TOOLS_FRONTEND_ARTIFACT',
+    ),
   });
 
   /// Called once when mounted; this application owns and closes the result.
@@ -40,6 +51,8 @@ final class AdeleApplication extends StatefulWidget {
   final StockChatGptConfiguration? Function() readChatGptConfiguration;
   final RunIdSource? runIds;
   final String chatFrontendArtifact;
+  final String filesystemFrontendArtifact;
+  final String commandFrontendArtifact;
 
   @override
   State<AdeleApplication> createState() => _AdeleApplicationState();
@@ -68,11 +81,15 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   Future<void>? _frontendActivation;
   bool _frontendFailed = false;
   String? _sessionError;
+  final WindowInspection _inspection = WindowInspection();
+  final List<StockToolInspectionFrontend> _toolFrontends = [];
+  Future<void>? _toolFrontendActivation;
 
   @override
   void initState() {
     super.initState();
     _runtime = widget.createRuntime();
+    _inspection.addListener(_inspectionChanged);
     try {
       _chatGptConfiguration = widget.readChatGptConfiguration();
     } on Object {
@@ -85,6 +102,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     });
     unawaited(_bootstrapPlugins());
     _frontendActivation = _activateFrontend();
+    _toolFrontendActivation = _activateToolFrontends();
     _lifecycleListener = AppLifecycleListener(
       onExitRequested: () async {
         await _closeRuntime();
@@ -99,6 +117,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       final StockChatFrontend frontend = await StockChatFrontend.activate(
         extensions: _runtime.extensions,
         artifactPath: widget.chatFrontendArtifact,
+        inspectActivity: _inspectActivity,
         controllerForSession: (session) {
           final ChatController? controller = _chat;
           if (controller == null || !identical(controller.session, session)) {
@@ -121,6 +140,62 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       _frontendActivation = null;
       if (mounted && _closing == null) setState(() {});
     }
+  }
+
+  Future<void> _activateToolFrontends() async {
+    // Explicit stock selection is provisional; each frontend fails independently.
+    try {
+      for (final activate in <Future<StockToolInspectionFrontend> Function()>[
+        () => StockToolInspectionFrontend.activateFilesystem(
+          extensions: _runtime.extensions,
+          artifactPath: widget.filesystemFrontendArtifact,
+        ),
+        () => StockToolInspectionFrontend.activateCommand(
+          extensions: _runtime.extensions,
+          artifactPath: widget.commandFrontendArtifact,
+        ),
+      ]) {
+        try {
+          final frontend = await activate();
+          if (!mounted || _closing != null) {
+            await frontend.close();
+          } else {
+            _toolFrontends.add(frontend);
+          }
+        } on Object {
+          // No presenter is a normal unavailable state, never a backend failure.
+        }
+      }
+    } finally {
+      _toolFrontendActivation = null;
+    }
+  }
+
+  void _inspectionChanged() {
+    if (mounted && _closing == null) setState(() {});
+  }
+
+  bool _inspectActivity(
+    Session session,
+    RunId runId,
+    ModelInvocationId modelInvocationId,
+  ) {
+    final ChatController? chat = _chat;
+    if (!mounted ||
+        _closing != null ||
+        chat == null ||
+        !identical(_session, session) ||
+        chat.isClosed ||
+        chat.activitySummary(runId, modelInvocationId) == null) {
+      return false;
+    }
+    final RunActivitySnapshot? activity = chat.activityForRun(runId);
+    if (activity == null) return false;
+    return _inspection.inspectActivity(
+      session: session,
+      activity: activity,
+      modelInvocationId: modelInvocationId,
+    );
   }
 
   Future<void> _bootstrapPlugins() async {
@@ -158,6 +233,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       );
       // Publication is independent of both presentation and controller setup.
       _session = session;
+      _inspection.presentSession(session);
       final StockChatGptConfiguration? configuration = _chatGptConfiguration;
       final ChatController chat = ChatController(
         runtime: _runtime,
@@ -174,6 +250,9 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         onChanged: () {
           _frontend?.refresh();
           if (mounted && _closing == null) setState(() {});
+        },
+        onActivityChanged: () {
+          if (_inspection.selection != null) _inspectionChanged();
         },
       );
       setState(() {
@@ -274,6 +353,8 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   }
 
   Future<void> _closeRuntime() => _closing ??= () async {
+    _inspection.removeListener(_inspectionChanged);
+    _inspection.clear();
     final Future<void>? settlingRun = _chat?.close();
     try {
       try {
@@ -285,6 +366,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       }
       try {
         await _frontendActivation;
+        await _toolFrontendActivation;
       } on Object {
         // A frontend cleanup failure cannot prevent backend/runtime cleanup.
       }
@@ -298,7 +380,10 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       } finally {
         // Keep the inert input mounted while exit observers await Run settlement.
         // Removing it earlier disposes Flutter lifecycle listeners mid-dispatch.
-        await _frontend?.close();
+        await closeResources([
+          if (_frontend case final frontend?) frontend.close,
+          for (final frontend in _toolFrontends) frontend.close,
+        ]);
       }
     } on Object catch (error, stackTrace) {
       FlutterError.reportError(
@@ -350,6 +435,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     unawaited(_pluginSubscription.cancel());
     // Flutter disposal cannot await; graceful desktop exit awaits above.
     unawaited(_closeRuntime());
+    _inspection.dispose();
     super.dispose();
   }
 
@@ -362,6 +448,23 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         task: _task,
         environment: _environment,
         environmentReady: _environmentReady,
+        inspection: switch (_inspection.selection) {
+          final ActivityInspectionSelection selection => InspectionHost(
+            selection: selection,
+            activity: _chat?.activityForRun(selection.runId),
+            heading:
+                _chat
+                    ?.activitySummary(
+                      selection.runId,
+                      selection.modelInvocationId,
+                    )
+                    ?.content ??
+                'Activity is unavailable.',
+            extensions: _runtime.extensions,
+            onClose: _inspection.clear,
+          ),
+          null => null,
+        },
         taskControls: _session != null
             ? null
             : Column(

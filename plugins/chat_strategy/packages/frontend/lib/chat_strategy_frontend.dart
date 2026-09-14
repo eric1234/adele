@@ -37,6 +37,24 @@ class _ChatFrontendState extends State<ChatFrontend> {
     super.dispose();
   }
 
+  // The eval pin cannot retain a for-in local reliably in a late callback.
+  Widget activity(ChatPresentationEntry entry) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: 16),
+      child: TextButton(
+        onPressed: () {
+          if (!disposed && entry.id != null) {
+            inspectChatActivity(entry.id!);
+          }
+        },
+        child: Text(
+          'ACTIVITY: ${entry.content}',
+          style: TextStyle(fontSize: 12, color: Colors.grey),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final ChatPresentationSnapshot snapshot = readChatSnapshot();
@@ -46,15 +64,7 @@ class _ChatFrontendState extends State<ChatFrontend> {
     ];
     for (final ChatPresentationEntry entry in snapshot.entries) {
       if (entry.kind == 'activity') {
-        children.add(
-          Padding(
-            padding: EdgeInsets.only(bottom: 16),
-            child: Text(
-              'ACTIVITY: ${entry.content}',
-              style: TextStyle(fontSize: 12, color: Colors.grey),
-            ),
-          ),
-        );
+        children.add(activity(entry));
       } else {
         children.add(
           Padding(

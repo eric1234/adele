@@ -19,3 +19,27 @@ the terminal model result, and continue after an existing-file source mutation.
 
 Shell classification, background processes, stdin, signals, environment
 overrides, and network policy remain outside this plugin.
+
+## Run Command Inspection
+
+The separate Flutter package `packages/frontend` (`command_tools_frontend`) owns
+the interpreted `run_command` card. It interprets immutable structured arguments
+and terminal data: program, individual direct-argv arguments, working directory,
+timeout, common lifecycle, tool-result disposition, process termination/exit code,
+and bounded stdout/stderr previews with truncation indicators. Successful tool
+delivery does not imply exit code zero. Previews come from terminal outcome data,
+not flattened progress history or a live Console stream.
+
+The headless package exports `runCommandToolId` for stock composition to register
+`adele_ui`'s `ToolActivityInspectionContribution`. The frontend depends only on
+Flutter and `adele_ui`, not the headless implementation, app, or kernel. The
+generic host matches exact Tool ID and transports immutable maps/latest common
+lifecycle without interpreting command fields.
+
+Stock activation independently loads prepared EVC through `PreparedFrontend`;
+coalesced read-only snapshot updates retain the same view/runtime. Missing/corrupt
+or retired presentation stays unavailable without backend failure or a native
+tool-card fallback. Only common host approval UI supplies exact-invocation
+Allow/Deny; this card cannot execute, resume, or approve. Console navigation and
+nested inspection remain deferred. Build-time preparation is documented in
+[`app/README.md`](../../app/README.md#prepared-chat-frontend).
