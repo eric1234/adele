@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:test/test.dart';
 
@@ -283,10 +284,16 @@ void main() {
     });
 
     test('does not register a frontend target without standalone tests', () {
-      expect(
-        () => lookupTestTarget('chat_strategy_frontend'),
-        throwsA(isA<TestUsageException>()),
-      );
+      for (final String name in [
+        'chat_strategy_frontend',
+        'filesystem_tools_frontend',
+        'command_tools_frontend',
+      ]) {
+        expect(
+          () => lookupTestTarget(name),
+          throwsA(isA<TestUsageException>()),
+        );
+      }
     });
 
     test('discovers the local selector without Linux desktop dependencies', () {
@@ -319,13 +326,21 @@ void main() {
     });
   });
 
-  test('discovers UI and Chat frontend packages for Flutter analysis', () {
+  test('discovers UI and stock frontend packages for Flutter analysis', () {
     for (final ({String name, String path}) expected
         in <({String name, String path})>[
           (name: 'adele_ui', path: 'packages/ui'),
           (
             name: 'chat_strategy_frontend',
             path: 'plugins/chat_strategy/packages/frontend',
+          ),
+          (
+            name: 'filesystem_tools_frontend',
+            path: 'plugins/filesystem_tools/packages/frontend',
+          ),
+          (
+            name: 'command_tools_frontend',
+            path: 'plugins/command_tools/packages/frontend',
           ),
         ]) {
       final target = analysisTargets.singleWhere(
@@ -334,11 +349,42 @@ void main() {
       expect(target.path, expected.path);
       expect(target.flutter, isTrue);
     }
+    for (final String name in [
+      'chat_strategy_plugin',
+      'filesystem_tools_plugin',
+      'command_tools_plugin',
+    ]) {
+      expect(
+        analysisTargets.singleWhere((package) => package.name == name).flutter,
+        isFalse,
+      );
+      expect(lookupTestTarget(name).executable, 'dart');
+    }
+  });
+
+  test('tool frontends are workspace members isolated from headless tools', () {
+    final String workspace = File('pubspec.yaml').readAsStringSync();
+    for (final String tool in ['filesystem_tools', 'command_tools']) {
+      final String path = 'plugins/$tool/packages/frontend';
+      expect(workspace, contains('  - $path\n'));
+      final String frontend = File('$path/pubspec.yaml').readAsStringSync();
+      expect(frontend, contains('name: ${tool}_frontend\n'));
+      expect(frontend, contains('resolution: workspace\n'));
+      expect(frontend, contains('  adele_ui: ^0.1.0\n'));
+      expect(frontend, contains('    sdk: flutter\n'));
+      expect(frontend, isNot(contains('${tool}_plugin')));
+      final String headless = File(
+        'plugins/$tool/pubspec.yaml',
+      ).readAsStringSync();
+      expect(headless, isNot(contains('flutter:')));
+      expect(headless, isNot(contains('adele_ui:')));
+      expect(headless, isNot(contains('${tool}_frontend')));
+    }
+    // Actual EVC tests need Flutter and the app bridge, so use the app target.
+    expect(lookupTestTarget('adele_desktop').argumentsFor(), ['test']);
     expect(
-      analysisTargets
-          .singleWhere((package) => package.name == 'chat_strategy_plugin')
-          .flutter,
-      isFalse,
+      File('app/test/tool_inspection_frontend_eval_test.dart').existsSync(),
+      isTrue,
     );
   });
 

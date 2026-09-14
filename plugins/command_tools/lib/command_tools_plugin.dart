@@ -11,6 +11,10 @@ final PluginId commandToolsPluginId = PluginId(
   'dev.adele.plugin.command-tools',
 );
 
+final ToolId runCommandToolId = ToolId(
+  'dev.adele.plugin.command-tools.run-command',
+);
+
 final class CommandToolsPlugin {
   const CommandToolsPlugin();
 
@@ -41,16 +45,13 @@ final class _CommandModelTools implements ModelToolContribution {
 final class _RunCommandExecutable implements ToolExecutable {
   const _RunCommandExecutable(this._process);
 
-  static final ToolId _toolId = ToolId(
-    'dev.adele.plugin.command-tools.run-command',
-  );
   static const int _defaultTimeoutSeconds = 120;
 
   final AuthorizedEnvironmentProcessFacet _process;
 
   ToolRegistration get registration => ToolRegistration(
     definition: ToolDefinition(
-      id: _toolId,
+      id: runCommandToolId,
       description:
           'Run one foreground program in the current Session Environment.',
     ),

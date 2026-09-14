@@ -10,8 +10,10 @@ header and initially displays `No Project is open` with B1 Project selector
 buttons. After opening, it shows the Project source and initially `No Tasks yet`.
 B2 adds title-only Task creation and primary Environment status. Normal interaction
 supports one canonical stock Chat Session and approval-gated ChatGPT-backed Runs,
-with plugin-owned evaluated history/composer and separate host-owned execution
-status/approvals, not a Task Browser or complete active-Session workbench.
+with plugin-owned evaluated history/composer, clickable activity groups, and
+window-local Inspection containing interpreted Apply Patch and Run Command cards.
+Execution status/approvals remain host-owned; this is not a Task Browser or
+complete active-Session workbench.
 
 The Stateful `AdeleApplication` constructs one `AdeleRuntime` synchronously in
 `initState` and retains it across rebuilds. `lib/core/adele_runtime.dart` owns one
@@ -87,9 +89,9 @@ using public `adele_environment` contracts and internal host APIs. It imports no
 Git backend implementation. Task UI and lifecycle contain no stock Git IDs.
 
 Normal Linux `dart tools/adele.dart run linux` and `build linux` prepare the host,
-Git, and OpenAI snapshots plus Chat frontend EVC before the Flutter run/build
-invocation. The backend launcher helper `prepareDesktopBackendDefines` in
-`tools/backend_artifacts.dart` uses
+Git, and OpenAI snapshots plus Chat, Filesystem Tools, and Command Tools frontend
+EVCs before the Flutter run/build invocation. The backend launcher helper
+`prepareDesktopBackendDefines` in `tools/backend_artifacts.dart` uses
 `plugin_builder.compileAotSnapshot`, selects compiler/runtime from the launching
 Flutter SDK, and retains fresh isolated artifacts below
 `.dart_tool/adele/desktop-backends/` on every invocation. Earlier artifacts are
@@ -101,8 +103,8 @@ only on the source-checkout machine while that SDK and those artifacts remain in
 place; moving/deleting them breaks the corresponding backend startup or frontend
 loading. This is not a cache, installation, portable/production packaging,
 discovery, or profile system. Direct
-Flutter startup without the artifact defines leaves backend support and Chat
-presentation unavailable independently.
+Flutter startup without the artifact defines leaves backend support, Chat
+presentation, and stock tool Inspection presentation unavailable independently.
 
 Future installation/update should prepare compiled artifacts; activation should
 consume those artifacts, start runtimes, and register contributions through the
@@ -119,19 +121,42 @@ operations. The shared runtime has no dependency on development composition.
 
 ### Prepared Chat frontend
 
-`tools/frontend_artifacts.dart` prepares a fresh `chat.evc` below
-`.dart_tool/adele/desktop-frontends/build-*` and passes its absolute path as
-`ADELE_CHAT_FRONTEND_ARTIFACT`. It invokes `app/tool/compile_chat_frontend.dart`
-with the selected Flutter SDK before launching or building the app. The compiler
-entrypoint takes `ADELE_REPOSITORY_ROOT` and `ADELE_CHAT_FRONTEND_OUTPUT` as
-build-time environment inputs. From `app/`, with an existing output parent
-directory, the standalone invocation is:
+`tools/frontend_artifacts.dart` prepares three fresh EVCs below
+`.dart_tool/adele/desktop-frontends/build-*` before launching or building the app:
+
+| Artifact | Compile-time deployment define |
+| --- | --- |
+| `chat.evc` | `ADELE_CHAT_FRONTEND_ARTIFACT` |
+| `filesystem.evc` | `ADELE_FILESYSTEM_TOOLS_FRONTEND_ARTIFACT` |
+| `command.evc` | `ADELE_COMMAND_TOOLS_FRONTEND_ARTIFACT` |
+
+Each define contains an absolute artifact path. Chat compilation invokes
+`app/tool/compile_chat_frontend.dart` with the selected Flutter SDK and takes
+`ADELE_REPOSITORY_ROOT` and `ADELE_CHAT_FRONTEND_OUTPUT` as build-time environment
+inputs. From `app/`, with an existing output parent directory, the standalone
+invocation is:
 
 ```sh
 ADELE_REPOSITORY_ROOT="$(git rev-parse --show-toplevel)" \
 ADELE_CHAT_FRONTEND_OUTPUT="/absolute/path/to/chat.evc" \
 flutter test --no-pub --concurrency 1 tool/compile_chat_frontend.dart
 ```
+
+Tool Inspection compilation invokes `app/tool/compile_tool_inspection_frontends.dart`,
+using `tool_inspection_frontend_compiler.dart`. Its inputs are
+`ADELE_REPOSITORY_ROOT`, `ADELE_TOOL_INSPECTION_FRONTEND` (`filesystem` or
+`command`), and `ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT`. From `app/`, with an
+existing output parent directory:
+
+```sh
+ADELE_REPOSITORY_ROOT="$(git rev-parse --show-toplevel)" \
+ADELE_TOOL_INSPECTION_FRONTEND=filesystem \
+ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT="/absolute/path/to/filesystem.evc" \
+flutter test --no-pub --concurrency 1 tool/compile_tool_inspection_frontends.dart
+```
+
+Use `command` and its output path to compile the Command Tools frontend. These
+inputs are build-time environment variables, not runtime artifact defines.
 
 The Flutter test runner is the build-time execution environment for eval
 compilation, not an on-start compilation mechanism. Normal runtime never compiles
@@ -152,6 +177,23 @@ eval implementation shares prepared bytes but uses a separate runtime per view
 to isolate globals and callbacks. This is an implementation constraint, not a
 permanent plugin-instance model. View disposal and generation retirement
 invalidate their bridges; neither migrates callbacks to a replacement generation.
+
+`lib/frontend/interpreted_widget.dart` installs runtime-local guards for the
+current pin's interpreted `createState`, `initState`, `build`, and `dispose`
+calls. Together with the Tool bridge's per-view failure notification, these revoke
+observation, release the failed view, and display generic unavailable UI without
+retiring sibling presentations. Interpreted cleanup gets one attempt, with native
+State disposal completed even on failure. These guards do not intercept native
+Flutter errors outside the guarded calls, such as layout/paint errors, or arbitrary
+asynchronous callbacks; they do not replace global Flutter error handling.
+
+`lib/plugins/stock_tool_inspection_frontends.dart` independently activates the
+Filesystem Tools and Command Tools presentations using the same `PreparedFrontend`
+lifecycle. Each failure leaves that presentation unavailable without affecting
+the other frontends, headless tools, or backend support. Retirement removes its
+registration and invalidates its bridges; missing/corrupt EVC never triggers
+source compilation or a native tool-card fallback. Window close also settles
+pending tool-frontend activation and retires late activations.
 
 ### ChatGPT source-checkout configuration
 
@@ -241,8 +283,9 @@ does not change Session identity, strategy binding, or backend validity.
 owns conversation rendering and the prompt/Send composer as interpreted Flutter
 source. It imports neither `chat_strategy_plugin` implementation nor app/kernel
 code. The stock adapter exposes only immutable primitive mixed message/activity snapshots,
-a composer-enabled boolean, and submission of a string returning synchronous
-boolean acceptance. Neither `Session`, `ChatController`, execution objects,
+a composer-enabled boolean, submission of a string returning synchronous
+boolean acceptance, and read-only `inspectActivity` requests for emitted opaque
+activity IDs. Neither `Session`, `ChatController`, execution objects,
 approval objects, nor approval decisions cross this eval bridge. The public
 Session factory is the native registration boundary, not an execution bridge.
 
@@ -291,8 +334,8 @@ Completed groups survive follow-up prompts for this controller's lifetime, not b
 adding `ChatEntry` variants. Reconstructing/reopening the Session cannot restore
 historical activity without future persistence. Observation detaches on close,
 and the interpreted bridge retains coalesced post-frame callbacks and disposal
-guards. Compact activity is non-clickable plugin-owned interpreted text; there is
-no generic tool card, Inspection panel, or provider reasoning presentation.
+guards. Compact activity remains plugin-owned interpreted content; clicking it
+requests the window-local Inspection described below, not execution or approval.
 
 `ApprovalGatedToolPolicy` allows a singleton certain `sourceRead` effect, asks for
 a singleton certain `sourceMutation`, and asks for a singleton `processExecution`
@@ -341,8 +384,8 @@ The Session presentation API changes neither kernel execution semantics, Chat
 sequencing, nor Environment contracts. Host policy and exact-invocation approval
 remain the security authority, not the frontend or its bridge. Configurable
 permissions/profiles, steering, cancellation controls,
-streaming-delta UI, richer tool activity/console, diff/review, and a Run history
-browser remain deferred.
+streaming-delta UI, provider reasoning, nested inspection, Source/Diff/Console
+navigation, and a Run history browser remain deferred.
 
 Focused deterministic coverage lives in `test/chat_session_test.dart`,
 `test/chat_frontend_eval_test.dart`, `test/core/run_activity_projection_test.dart`,
@@ -366,6 +409,58 @@ flutter test --no-pub test/chat_session_test.dart test/core/approval_gated_tool_
 flutter test --no-pub test/core/run_activity_projection_test.dart test/chat_frontend_eval_test.dart
 flutter test --no-pub test/core/normal_chatgpt_run_integration_test.dart
 ```
+
+### Activity Inspection
+
+One `WindowInspection` in application State owns an optional
+`ActivityInspectionSelection(SessionId, RunId, ModelInvocationId)`, not activity
+copies or Session history. Binding a different presented Session clears it.
+Close removes only the Inspection view: retained Run evidence, Chat history,
+approval state, and execution are unchanged. Clicking a retained group can reopen
+it. The shell places Inspection to the right on wide windows and stacks it below
+on narrow windows; this is private layout, not a public physical panel API.
+
+The stock Chat adapter accepts only an opaque ID it emitted for a retained group,
+resolving the exact Run/model identity rather than decoding arbitrary input or
+matching labels. The application validates the current Session and retained
+activity before changing selection. No controller, kernel, Run execution, or
+approval object crosses the eval bridge.
+
+`lib/ui/inspection/inspection_host.dart` owns the common group header and proposal
+composition in model output-sequence order. Proposals not yet prepared, rejected
+before preparation, or left unprocessed when the Run ends keep explicit
+placeholders. Each prepared invocation gets a stable read-only
+`ToolActivityInspectionSource`, a `Listenable` whose `snapshot` is an immutable
+`ToolInvocationActivity` from public pure-Dart `adele_orchestration`.
+
+Public Flutter `adele_ui` supplies
+`ToolActivityInspectionContribution(toolId, createPresentation)` with factory type
+`Widget Function(ToolActivityInspectionSource)` and typed
+`toolActivityInspectionContributions`. `ToolActivityInspectionResolver` matches
+the exact `ToolId`: zero is unavailable, one returns a binding, multiple are
+ambiguous. `tool_activity_inspection_host.dart` uses existing registry liveness,
+retains a view across source updates, and removes retired widgets/resources.
+Only fresh resolution can select a replacement; factory/load failure does not
+invalidate execution or select a fallback.
+
+The separate `filesystem_tools_frontend` and `command_tools_frontend` packages
+under their plugins' `packages/frontend` own interpretation of `apply_patch` and
+`run_command` fields. Stock composition imports only the owning headless packages'
+public `applyPatchToolId` and `runCommandToolId` for registration, never their
+private implementations or native frontend views. Other tools remain explicitly
+unavailable for bespoke Inspection.
+
+`lib/frontend/tool_activity_inspection_bridge.dart` transports recursively
+immutable canonical-argument and terminal `hostData` maps, the latest non-progress
+common lifecycle, outcome disposition/failure kind, and model content. It does not
+switch on tool-specific fields or flatten progress history. Coalesced post-frame
+notifications update the same interpreted view/runtime; the Command card's output
+preview comes from bounded terminal data, not a live console. Tool cards display
+read-only status. Only the common host approval card offers `Allow once` / `Deny`
+for the exact retained interruption.
+
+Nested inspection, provider reasoning, Source/Diff/Console integration, navigation
+history, persistence, and plugin discovery remain deferred.
 
 ### B1 Project opening
 
@@ -689,12 +784,13 @@ path. The headless Chat package's only direct production dependencies are
 `adele_orchestration` and `adele_plugin_api`; it has no `agent_kernel` dependency, including in
 `dev_dependencies`.
 
-`adele_ui` is the deliberately public Flutter Session presentation package. It
-depends on Flutter, `adele_plugin_api`, and `adele_product`, not internal host
-packages, app code, or concrete plugins. Product, orchestration, the registry, and
-shared headless runtime retain their pure-Dart boundaries. The separate Chat
-frontend is compiled to EVC, not imported as a native app view or linked to the
-headless implementation.
+`adele_ui` is the deliberately public Flutter Session presentation and tool
+activity Inspection package. It depends on Flutter, `adele_plugin_api`,
+`adele_product`, `adele_orchestration`, and `adele_model_tool`, not internal host
+packages, app code, or concrete plugins. Product, orchestration, model tools, the
+registry, and shared headless runtime retain their pure-Dart boundaries. The
+separate Chat, Filesystem Tools, and Command Tools frontends are compiled to EVC,
+not imported as native app views or linked to their headless implementations.
 
 `adele_core_extensions` imports only `adele_plugin_api` and owns core extension
 contracts with no natural existing public domain package. It does not absorb
@@ -707,8 +803,9 @@ core host logic do not belong here.
 
 The long-term extension direction expects the host to own broad workbench
 geometry, Command/Command Palette/keybinding infrastructure, and composition of
-semantic plugin surfaces. The narrow Session presentation API is implemented;
-broader workbench UI and Command APIs remain unimplemented.
+semantic plugin surfaces. Narrow Session presentation and tool activity
+Inspection APIs are implemented; broader workbench UI and Command APIs remain
+unimplemented.
 
 ## Developer Self-Hosting Runner
 
@@ -815,7 +912,8 @@ richer activity/console and diff/review presentation, product
 plugin discovery and configurable activation, production Agent UI, application
 Commands/keybindings, a common execution timeline, and broader plugin-facing
 workbench UI APIs remain deferred. Normal UI reaches a canonical Chat Session with
-evaluated history/composer, read/search, and per-invocation approvals
+evaluated history/composer, clickable activity groups and window-local tool
+Inspection, read/search, and per-invocation approvals
 for eligible source mutation and command execution over the Task's real Git
 worktree. These window-local controls are not a general permission configuration
 or workbench presentation API.

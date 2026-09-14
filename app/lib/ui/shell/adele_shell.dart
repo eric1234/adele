@@ -16,6 +16,7 @@ final class AdeleShell extends StatelessWidget {
     this.environmentReady = false,
     this.taskControls,
     this.sessionControls,
+    this.inspection,
   });
 
   final Project? project;
@@ -29,6 +30,7 @@ final class AdeleShell extends StatelessWidget {
   final bool environmentReady;
   final Widget? taskControls;
   final Widget? sessionControls;
+  final Widget? inspection;
 
   @override
   Widget build(BuildContext context) {
@@ -57,90 +59,133 @@ final class AdeleShell extends StatelessWidget {
               ),
               const SizedBox(height: 24),
               Expanded(
-                child: Center(
-                  child: SingleChildScrollView(
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 560),
-                      child: _StatusCard(
-                        icon: project == null
-                            ? Icons.folder_off_outlined
-                            : Icons.folder_open_outlined,
-                        message: project == null
-                            ? 'No Project is open'
-                            : _projectDisplayName(project!.sourceLocation),
-                        children: <Widget>[
-                          if (project case final Project project) ...<Widget>[
-                            const Text('Project is open'),
-                            const SizedBox(height: 8),
-                            SelectableText(project.sourceLocation.toString()),
-                            const SizedBox(height: 24),
-                            if (task case final Task task) ...[
-                              Text(
-                                'Task: ${task.title}',
-                                style: textTheme.titleMedium,
-                              ),
-                              const SizedBox(height: 8),
-                              Text(
-                                environmentReady
-                                    ? 'Primary Environment ready'
-                                    : 'Primary Environment unavailable',
-                              ),
-                              if (environment
-                                  case final Environment environment)
-                                SelectableText(
-                                  'Environment: ${environment.id}',
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final bool horizontal = constraints.maxWidth >= 840;
+                    return Flex(
+                      direction: horizontal ? Axis.horizontal : Axis.vertical,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Expanded(
+                          flex: 3,
+                          child: Center(
+                            child: SingleChildScrollView(
+                              child: ConstrainedBox(
+                                constraints: const BoxConstraints(
+                                  maxWidth: 560,
                                 ),
-                            ] else
-                              Text(
-                                'No Tasks yet',
-                                style: textTheme.titleMedium,
-                              ),
-                            if (taskControls case final Widget controls) ...[
-                              const SizedBox(height: 24),
-                              controls,
-                            ],
-                            if (sessionControls case final Widget controls) ...[
-                              const SizedBox(height: 24),
-                              controls,
-                            ],
-                          ] else ...<Widget>[
-                            if (selectors.isEmpty)
-                              const Text('No Project selectors are available.'),
-                            for (final selector in selectors)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 8),
-                                child: FilledButton(
-                                  onPressed: openingProject
-                                      ? null
-                                      : () => onSelectProject(selector),
-                                  child: Text(selector.value.displayName),
+                                child: _StatusCard(
+                                  icon: project == null
+                                      ? Icons.folder_off_outlined
+                                      : Icons.folder_open_outlined,
+                                  message: project == null
+                                      ? 'No Project is open'
+                                      : _projectDisplayName(
+                                          project!.sourceLocation,
+                                        ),
+                                  children: <Widget>[
+                                    if (project
+                                        case final Project project) ...<Widget>[
+                                      const Text('Project is open'),
+                                      const SizedBox(height: 8),
+                                      SelectableText(
+                                        project.sourceLocation.toString(),
+                                      ),
+                                      const SizedBox(height: 24),
+                                      if (task case final Task task) ...[
+                                        Text(
+                                          'Task: ${task.title}',
+                                          style: textTheme.titleMedium,
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Text(
+                                          environmentReady
+                                              ? 'Primary Environment ready'
+                                              : 'Primary Environment unavailable',
+                                        ),
+                                        if (environment
+                                            case final Environment environment)
+                                          SelectableText(
+                                            'Environment: ${environment.id}',
+                                          ),
+                                      ] else
+                                        Text(
+                                          'No Tasks yet',
+                                          style: textTheme.titleMedium,
+                                        ),
+                                      if (taskControls
+                                          case final Widget controls) ...[
+                                        const SizedBox(height: 24),
+                                        controls,
+                                      ],
+                                      if (sessionControls
+                                          case final Widget controls) ...[
+                                        const SizedBox(height: 24),
+                                        controls,
+                                      ],
+                                    ] else ...<Widget>[
+                                      if (selectors.isEmpty)
+                                        const Text(
+                                          'No Project selectors are available.',
+                                        ),
+                                      for (final selector in selectors)
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                            top: 8,
+                                          ),
+                                          child: FilledButton(
+                                            onPressed: openingProject
+                                                ? null
+                                                : () =>
+                                                      onSelectProject(selector),
+                                            child: Text(
+                                              selector.value.displayName,
+                                            ),
+                                          ),
+                                        ),
+                                      if (openingProject)
+                                        const Padding(
+                                          padding: EdgeInsets.only(top: 16),
+                                          child: Text('Selecting Project...'),
+                                        ),
+                                      if (projectError case final String error)
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                            top: 16,
+                                          ),
+                                          child: Semantics(
+                                            liveRegion: true,
+                                            child: Text(
+                                              error,
+                                              style: TextStyle(
+                                                color: Theme.of(
+                                                  context,
+                                                ).colorScheme.error,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  ],
                                 ),
                               ),
-                            if (openingProject)
-                              const Padding(
-                                padding: EdgeInsets.only(top: 16),
-                                child: Text('Selecting Project...'),
+                            ),
+                          ),
+                        ),
+                        if (inspection case final Widget content)
+                          Expanded(
+                            flex: 2,
+                            child: Padding(
+                              padding: EdgeInsets.only(
+                                left: horizontal ? 16 : 0,
+                                top: horizontal ? 0 : 16,
                               ),
-                            if (projectError case final String error)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 16),
-                                child: Semantics(
-                                  liveRegion: true,
-                                  child: Text(
-                                    error,
-                                    style: TextStyle(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.error,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ),
+                              child: SingleChildScrollView(child: content),
+                            ),
+                          ),
+                      ],
+                    );
+                  },
                 ),
               ),
             ],

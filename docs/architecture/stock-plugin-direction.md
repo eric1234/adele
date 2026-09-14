@@ -36,6 +36,11 @@ canonical Chat history or changing plugin sequencing. This is provisional stock
 composition, not Agent Interaction, Settings, configurable permissions, or a
 profile/provider preference API.
 
+Compact Chat activity groups open one window-local Inspection. The app owns
+group framing and ordered proposal composition; separate Filesystem Tools and
+Command Tools frontends own interpreted `apply_patch` and `run_command` cards.
+These read-only presentations do not authorize tools or change execution.
+
 Future discovery/profile activation should replace hard-coded stock selection at
 this composition edge, starting plugin runtimes and registering contributions
 without changing downstream capability, extension, or product lifecycle semantics.
@@ -116,6 +121,15 @@ explicitly ambiguous. It retains exact binding liveness and removes retired
 widgets; only fresh resolution may select a replacement. Presentation availability
 is not a condition of Session validity or headless execution. This is not the
 broader workbench framework below.
+
+`ToolActivityInspectionContribution(toolId, createPresentation)` is also
+implemented in `adele_ui`, with a `Widget Function(ToolActivityInspectionSource)`
+factory and typed `toolActivityInspectionContributions`. Its read-only source is
+a `Listenable` exposing one immutable public `ToolInvocationActivity` snapshot.
+Exact `ToolId` resolution is unavailable/one/ambiguous and retains existing
+registry liveness/disposal semantics, with replacement only through fresh
+resolution. This is the bounded tool-activity subset of Inspection, not a generic
+operation/resource or physical panel API.
 
 ```text
 MainContentView
@@ -471,8 +485,11 @@ minimal history and prompt/Send composer as evaluated Flutter source. It imports
 neither the headless implementation nor app/kernel code. `ChatController` remains
 provisional in `app/lib/ui/chat`; `app/lib/plugins/stock_chat_frontend.dart` adapts it
 through only immutable primitive message/activity timeline snapshots, composer-enabled
-state, and string submission with synchronous boolean acceptance. No execution
-or approval objects or approval decisions cross that eval bridge. Common
+state, string submission with synchronous boolean acceptance, and read-only
+Inspection requests for emitted opaque activity IDs. The adapter resolves exact
+retained Run/model identities rather than interpreting arbitrary IDs. No
+controller, execution, kernel, or approval objects or approval decisions cross
+that eval bridge. Common
 `RunExecutionStatus`, `PendingToolApproval`, and display safety remain host-owned
 under `app/lib/ui/execution`; policy and exact-invocation approval remain the
 security authority.
@@ -480,11 +497,14 @@ security authority.
 The provisional controller retains completed activity snapshots separately from
 canonical Chat state for its current presentation lifetime. Follow-up prompts do
 not erase earlier summaries. Reopening/reconstructing a Session cannot restore
-historical activity until persistence exists. Summaries are lightweight,
-non-clickable interpreted text, not assistant messages or generic tool cards.
-Bespoke plugin-owned tool/provider compact UI, legitimate provider-exposed thought
-feedback, Inspection, and deeper Source/Diff/Stream navigation remain future E
-work. No tool-plugin frontend package is needed for the Chat-owned summary.
+historical activity until persistence exists. Summaries are lightweight interpreted
+click targets, not assistant messages or generic tool cards. One app-owned
+`WindowInspection` retains the selected Session/Run/model identity; changing the
+presented Session clears it, and Close removes only the view. The common host
+composes proposals in output-sequence order with unprepared/rejected placeholders.
+Tool-plugin frontends supply individual prepared-invocation cards, not the
+Chat-owned group summary. Nested inspection, provider reasoning, and deeper
+Source/Diff/Console navigation remain deferred.
 
 Prepared frontend generations are distinct from individual presentation instances.
 View resources follow widget lifecycle and exact registration liveness; this does
@@ -620,7 +640,15 @@ Accounting failure should not fail the inference it observes. Quota may be live 
 
 ## 8.1 Filesystem Tools
 
-Likely provides structured tools directionally resembling:
+The headless stock plugin implements `read_file`, `apply_patch`, `create_file`, and
+`delete_file`. Its separate `packages/frontend` (`filesystem_tools_frontend`)
+owns interpreted Apply Patch Inspection: path, edit count, lifecycle, and terminal
+result/failure details from immutable structured data. Public `applyPatchToolId`
+is exported by the headless package for stock presentation registration, not
+generic host routing by alias. The frontend has no headless implementation
+dependency and offers no approval or mutation controls.
+
+Broader tool direction may resemble:
 
 ```text
 list_directory
@@ -670,12 +698,23 @@ It consumes Environment filesystem/search or process execution and optional `Dis
 
 **Role:** universal model-callable external-program escape hatch.
 
-The initial stock Command Tools plugin now contributes direct-argv
+The stock Command Tools plugin contributes direct-argv
 `run_command`, projects ordered stdout/stderr progress, bounds terminal model
 output, and describes one uncertain process-execution effect over the whole
-authorized Environment. It deliberately does not yet implement the richer
-identity, classification, presentation, shell, or background-resource direction
-below.
+authorized Environment. Its separate `packages/frontend` (`command_tools_frontend`)
+owns interpreted Run Command Inspection: direct argv/cwd/timeout, common
+lifecycle, terminal process termination/exit status, and bounded output previews
+with truncation indicators. Tool-result delivery is distinct from process exit
+success. The headless package exports `runCommandToolId` for stock composition;
+the frontend imports no headless implementation and cannot execute or approve.
+Shell classification, Console integration, and background resources remain
+directional.
+
+Both stock tool frontends independently load prepared EVC through the existing
+`PreparedFrontend` lifecycle. Missing/corrupt or retired presentation is unavailable
+without backend failure or native tool-card fallback. Only common host UI supplies
+exact-invocation Allow/Deny controls. The shared read-only bridge and update
+semantics are maintained in [`overview.md`](overview.md#activity-inspection).
 
 Likely provides:
 
@@ -992,6 +1031,10 @@ Git Worktree and Docker route the same tool to different concrete filesystems.
 
 ## 12.8 Command operation
 
+The stock Inspection card currently shows lifecycle and bounded terminal output.
+The Console action below remains directional; tool progress history is not
+flattened into the Inspection bridge.
+
 ```text
 model calls run_command
     -> Command Tool normalizes invocation/effects
@@ -1056,6 +1099,7 @@ The child remains a Session, not a Task, and is not normally a peer in Task Brow
 | Session creation | Core | Session identity/lifecycle is core-owned |
 | OrchestrationStrategy registration/binding | Core/public | Session creation/restoration must validate permanent strategy binding independent of optional UI |
 | `SessionPresentationContribution` | `adele_ui` (implemented, Flutter) | Generic host presents an existing Session through exact strategy matching without owning strategy-specific UI |
+| `ToolActivityInspectionContribution` | `adele_ui` (implemented, Flutter) | Exact Tool ID selects read-only individual invocation presentation; group composition stays host-owned and field interpretation stays plugin-owned |
 | Public orchestration/execution API | Core/public, backed internally by `agent_kernel` | Strategy plugins need Run/model/tool execution without depending on internal implementation packages |
 | Inference composition buckets | Core | Core owns stable provider-neutral invocation boundary |
 | Tool registration/execution semantics | Core/public facade backed by kernel | Cross-strategy execution invariant while `agent_kernel` remains internal |
@@ -1076,6 +1120,7 @@ The stock installation should be coherent and useful, but ADELE should tolerate 
 - zero Project selectors (unavailable), or multiple independent selector actions;
 - strategy registered with no Agent Interaction UI consumer;
 - Session with no matching presentation contribution, reported as unavailable without invalidating execution;
+- tool invocation with no matching Inspection contribution, reported as unavailable without invalidating execution;
 - Diff with no source-display provider;
 - multiple Environment providers with one contextual default;
 - no Accounting plugin;

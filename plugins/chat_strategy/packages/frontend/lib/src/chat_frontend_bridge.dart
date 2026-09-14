@@ -37,6 +37,11 @@ bool submitChatPrompt(String prompt) {
   throw UnsupportedError('Interpreted Chat bridge only.');
 }
 
+/// Requests navigation only; the host validates the emitted opaque identity.
+bool inspectChatActivity(String opaqueId) {
+  throw UnsupportedError('Interpreted Chat bridge only.');
+}
+
 void subscribeChatChanges(void Function() callback) {
   throw UnsupportedError('Interpreted Chat bridge only.');
 }

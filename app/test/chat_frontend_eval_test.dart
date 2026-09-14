@@ -4,6 +4,7 @@ import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/plugins/chat_frontend_bridge.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
+import 'package:dart_eval/stdlib/core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -98,15 +99,13 @@ void main() {
     expect(find.byType(Card), findsNothing);
     expect(find.byType(CircleAvatar), findsNothing);
     expect(
-      find.ancestor(
-        of: activity,
-        matching: find.byWidgetPredicate(
-          (widget) => widget is InkWell || widget is GestureDetector,
-        ),
-      ),
-      findsNothing,
+      find.ancestor(of: activity, matching: find.byType(TextButton)),
+      findsOneWidget,
     );
-    expect(find.byType(TextButton), findsOneWidget);
+    expect(find.byType(TextButton), findsNWidgets(2));
+    await tester.tap(activity);
+    expect(source.inspected, ['run-1/model-1']);
+    expect(source.submitted, isEmpty);
     expect(find.text('Frontend unavailable.'), findsNothing);
     expect(tester.takeException(), isNull);
 
@@ -174,6 +173,8 @@ void main() {
         same(controller),
       );
       expect(_draft(tester), 'Keep my draft');
+      await tester.tap(find.text('ACTIVITY: $content'));
+      expect(source.inspected.last, 'run-1/model-1');
     }
 
     source.entries.addAll(const [
@@ -204,8 +205,68 @@ void main() {
       lessThan(tester.getTopLeft(find.text('All files inspected')).dy),
     );
     expect(_draft(tester), 'Keep my draft');
+    await tester.tap(activities.at(1));
+    expect(source.inspected.last, 'run-1/model-2');
+    expect(source.submitted, isEmpty);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'activity navigation is independent of submission and revocable',
+    (WidgetTester tester) async {
+      const String id = '["run/opaque","model,opaque"]';
+      final _Source source = _Source()
+        ..canSubmit = false
+        ..entries.add(
+          const ChatPresentationEntry.activity(
+            id: id,
+            content: 'Inspect while running or awaiting approval',
+          ),
+        );
+      bool active = true;
+      await tester.pumpWidget(
+        _host(generation, source, isActive: () => active),
+      );
+      final Finder activity = find.textContaining('ACTIVITY: ');
+      final VoidCallback retained = tester
+          .widget<TextButton>(
+            find.ancestor(of: activity, matching: find.byType(TextButton)),
+          )
+          .onPressed!;
+      await tester.tap(activity);
+      expect(source.inspected, [id]);
+      expect(source.submitted, isEmpty);
+      expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
+
+      source.entries.clear();
+      retained();
+      expect(source.inspected, [id]);
+      source.entries.add(
+        const ChatPresentationEntry.activity(
+          id: id,
+          content: 'Restored retained evidence',
+        ),
+      );
+      active = false;
+      retained();
+      expect(source.inspected, [id]);
+      active = true;
+      retained();
+      expect(source.inspected, [id, id]);
+      source.closed = true;
+      retained();
+      expect(source.inspected, [id, id]);
+      source.closed = false;
+      generation.invalidate();
+      retained();
+      await tester.pumpWidget(const SizedBox.shrink());
+      retained();
+      expect(source.inspected, [id, id]);
+      expect(source.submitted, isEmpty);
+      expect(source.listening, isFalse);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('rejection and host updates preserve the same composer', (
     WidgetTester tester,
@@ -489,13 +550,14 @@ void main() {
 
   test('compiled EVC reads primitive kinds and exact stable activity IDs', () {
     final _Source source = _Source();
+    bool active = true;
     source.entries.addAll(const [
       ChatPresentationEntry(role: 'user', content: 'Inspect files'),
       ChatPresentationEntry.activity(id: 'run-1/model-1', content: 'Read File'),
     ]);
     final ChatFrontendBridge bridge = ChatFrontendBridge(
       source: source,
-      isActive: () => true,
+      isActive: () => active,
     );
     addTearDown(bridge.invalidate);
     final Compiler compiler = Compiler()
@@ -505,6 +567,8 @@ void main() {
       'probe': {
         'main.dart': '''
 import 'package:chat_strategy_frontend/src/chat_frontend_bridge.dart';
+
+bool inspect(String id) => inspectChatActivity(id);
 
 List<String?> inspectEntries() {
   final List<String?> result = <String?>[];
@@ -527,6 +591,9 @@ List<String?> inspectEntries() {
     });
     final Runtime runtime = Runtime(program.write().buffer.asByteData())
       ..addPlugin(bridge);
+    bool inspect(String id) =>
+        runtime.executeLib('package:probe/main.dart', 'inspect', [$String(id)])
+            as bool;
     expect(
       (runtime.executeLib('package:probe/main.dart', 'inspectEntries')
               as List<$Value>)
@@ -561,6 +628,35 @@ List<String?> inspectEntries() {
         'Reading the next file',
       ],
     );
+    source.canSubmit = false;
+    expect(inspect('run-1/model-1'), isTrue);
+    for (final String unknown in [
+      '',
+      '0',
+      'run-1/model-2',
+      '["run-1","model-1"]',
+    ]) {
+      expect(inspect(unknown), isFalse);
+    }
+    expect(source.inspected, ['run-1/model-1']);
+    expect(source.submitted, isEmpty);
+    source.entries.clear();
+    expect(inspect('run-1/model-1'), isFalse);
+    source.entries.add(
+      const ChatPresentationEntry.activity(
+        id: 'run-1/model-1',
+        content: 'Still retained',
+      ),
+    );
+    source.closed = true;
+    expect(inspect('run-1/model-1'), isFalse);
+    source.closed = false;
+    active = false;
+    expect(inspect('run-1/model-1'), isFalse);
+    active = true;
+    bridge.invalidate();
+    expect(inspect('run-1/model-1'), isFalse);
+    expect(source.inspected, ['run-1/model-1']);
   });
 }
 
@@ -583,6 +679,8 @@ String _draft(WidgetTester tester) =>
 class _Source extends ChangeNotifier implements ChatFrontendSource {
   final List<ChatPresentationEntry> entries = [];
   final List<String> submitted = [];
+  final List<String> inspected = [];
+  bool closed = false;
   bool canSubmit = true;
   bool accept = true;
   int snapshotReads = 0;
@@ -601,6 +699,16 @@ class _Source extends ChangeNotifier implements ChatFrontendSource {
     if (!accept) return false;
     entries.add(ChatPresentationEntry(role: 'user', content: prompt));
     notifyListeners();
+    return true;
+  }
+
+  @override
+  bool inspectActivity(String id) {
+    if (closed ||
+        !entries.any((entry) => entry.kind == 'activity' && entry.id == id)) {
+      return false;
+    }
+    inspected.add(id);
     return true;
   }
 }

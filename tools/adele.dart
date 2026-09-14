@@ -238,6 +238,16 @@ analysisTargets = <({String name, String path, bool flutter})>[
   ),
   (name: 'search_tools_plugin', path: 'plugins/search_tools', flutter: false),
   (name: 'command_tools_plugin', path: 'plugins/command_tools', flutter: false),
+  (
+    name: 'filesystem_tools_frontend',
+    path: 'plugins/filesystem_tools/packages/frontend',
+    flutter: true,
+  ),
+  (
+    name: 'command_tools_frontend',
+    path: 'plugins/command_tools/packages/frontend',
+    flutter: true,
+  ),
   (name: 'agents_md_plugin', path: 'plugins/agents_md', flutter: false),
   (name: 'chat_strategy_plugin', path: 'plugins/chat_strategy', flutter: false),
   (

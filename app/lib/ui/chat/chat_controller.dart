@@ -12,6 +12,7 @@ import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
@@ -25,6 +26,7 @@ final class ChatController {
     RunIdSource? runIds,
     this.configurationUnavailableReason,
     this.onChanged,
+    this.onActivityChanged,
   }) : _runtime = runtime,
        _runIds = runIds ?? MonotonicRunIdSource() {
     if (!identical(runtime.store.session(session.id), session) ||
@@ -50,6 +52,9 @@ final class ChatController {
   final RunIdSource _runIds;
   final String? configurationUnavailableReason;
   final void Function()? onChanged;
+
+  /// Read-only evidence changed, independently of compact Chat presentation.
+  final void Function()? onActivityChanged;
   late final ChatSessionState _chat;
   late ChatSessionSnapshot _snapshot;
   late ChatUserMessage _activeUserMessage;
@@ -74,6 +79,27 @@ final class ChatController {
   /// Presentation-lifetime evidence only, never canonical Chat or Run authority.
   List<RunActivitySnapshot> get activitySnapshots =>
       List.unmodifiable(_activity.values);
+
+  /// Reads retained evidence without capturing new progress or execution state.
+  RunActivitySnapshot? activityForRun(RunId runId) {
+    if (_closed) return null;
+    for (final RunActivitySnapshot activity in _activity.values) {
+      if (activity.runId == runId) return activity;
+    }
+    return null;
+  }
+
+  ChatActivitySummary? activitySummary(
+    RunId runId,
+    ModelInvocationId invocationId,
+  ) {
+    final RunActivitySnapshot? activity = activityForRun(runId);
+    if (activity == null) return null;
+    for (final ChatActivitySummary summary in _summaries(activity)) {
+      if (summary.invocationId == invocationId) return summary;
+    }
+    return null;
+  }
 
   List<ChatTimelineEntry> get timeline => List.unmodifiable([
     for (final ChatEntry entry in _snapshot.entries) ...[
@@ -253,12 +279,26 @@ final class ChatController {
     ChatUserMessage user, {
     bool notify = true,
   }) {
-    _activity[user] = source.snapshot;
+    final RunActivitySnapshot snapshot = source.snapshot;
+    if (identical(_activity[user], snapshot)) return;
+    _activity[user] = snapshot;
     final int count = timeline.whereType<ChatActivitySummary>().length;
     final bool changed = count != _visibleActivityCount;
     _visibleActivityCount = count;
+    try {
+      onActivityChanged?.call();
+    } on Object catch (error, stack) {
+      // Observation failures must not become Run failures or skip settlement.
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          stack: stack,
+          library: 'Chat activity observation',
+        ),
+      );
+    }
     // Tool progress stays inspectable without rebuilding compact UI per chunk.
-    if (notify && changed) onChanged?.call();
+    if (!_closed && notify && changed) onChanged?.call();
   }
 
   void _detachActivity() {

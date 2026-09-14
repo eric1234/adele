@@ -34,9 +34,11 @@ activity, and instruction-context composition, sharing semantic values with the
 internal kernel without depending on it. B1 adds tiny pure-Dart
 `adele_core_extensions` for the concrete
 Project selector contract, depending only on `adele_plugin_api`. Public Flutter
-`adele_ui` supplies the concrete Session presentation contract, depending on
-Flutter, `adele_plugin_api`, and `adele_product`. Plugin-defined extension API
-packages and broader workbench UI APIs remain architectural direction.
+`adele_ui` supplies concrete Session presentation and read-only tool activity
+Inspection contracts, depending on Flutter, `adele_plugin_api`, `adele_product`,
+`adele_orchestration`, and `adele_model_tool`. The latter two remain public pure-Dart
+packages; neither depends on UI. Plugin-defined extension API packages and broader
+workbench UI APIs remain architectural direction.
 
 ## Package boundaries
 
@@ -50,7 +52,7 @@ packages and broader workbench UI APIs remain architectural direction.
 | `adele_product` | Experimental plugin-facing, pure Dart | Dart SDK and `adele_capabilities` | Flutter, internal host packages, application code, `adele_orchestration`, `adele_plugin_api`, `adele_core_extensions` |
 | `adele_model_tool` | Experimental plugin-facing, pure Dart | Dart SDK, `adele_plugin_api`, and `adele_product` | Flutter, internal host packages, application code, concrete tools |
 | `adele_orchestration` | Experimental plugin-facing, pure Dart | Dart SDK, `adele_product`, `adele_plugin_api`, and `adele_model_tool` | Flutter, `agent_kernel`, other internal host packages, application code, concrete strategies or sources |
-| `adele_ui` | Experimental plugin-facing, Flutter; semantic Session presentation | Flutter, `adele_plugin_api`, and `adele_product` | Internal host packages, application code, concrete plugins |
+| `adele_ui` | Experimental plugin-facing, Flutter; semantic Session presentation and tool activity Inspection | Flutter, `adele_plugin_api`, `adele_product`, `adele_orchestration`, and `adele_model_tool` | Internal host packages, application code, concrete plugins |
 | future broader extension/UI APIs | Experimental plugin-facing | Only lightweight public dependencies required by concrete interfaces | Internal host packages, application code, concrete plugins |
 | plugin-defined public extension API | Experimental plugin-facing | Public/core APIs and other deliberately public interface packages needed by the concept | Another plugin's implementation packages, internal host packages, application code |
 | `plugin_runtime` | Internal, pure Dart | Dart SDK, public packages, and concrete acyclic internal dependencies | Flutter, application code, plugin implementations |
@@ -80,7 +82,7 @@ Existing ownership remains singular:
 - Strategy contracts, execution, read-only Run activity, and inference-context composition belong to `adele_orchestration`.
 - Model-tool contracts belong to `adele_model_tool`.
 - Environment provider contracts belong to `adele_environment`.
-- Flutter Session presentation contracts belong to `adele_ui`; neither product nor orchestration depends on UI.
+- Flutter Session presentation and tool activity Inspection contracts belong to `adele_ui`; product, orchestration, and model tools do not depend on UI.
 - Plugin-defined ecosystems keep their contracts with their deliberately public plugin/component API owners.
 
 ### Application backend composition
@@ -152,8 +154,10 @@ APIs. Host policy and exact-invocation approval remain the security authority.
 The separate `chat_strategy_frontend` Flutter package renders history/composer
 from prepared EVC, without importing the headless Chat implementation, app, or
 kernel. Its eval bridge carries only immutable primitive message/activity timeline
-snapshots, composer-enabled state, and string submission returning synchronous
-boolean acceptance. No execution or approval objects cross it. The native
+snapshots, composer-enabled state, string submission returning synchronous
+boolean acceptance, and read-only Inspection requests for emitted opaque activity
+IDs. The stock adapter resolves only exact retained Run/model identities; no
+execution, kernel, controller, or approval objects cross it. The native
 Session presentation factory is distinct from this narrow eval bridge.
 
 The public Run activity source and immutable read model live in pure-Dart
@@ -163,6 +167,35 @@ is a separate read-only facade, not a Run object with a restricted static type.
 Chat's proposal-batch grouping is presentation policy, not a universal Run
 invariant. Opaque native output and structured tool outcome data are retained
 without forwarding executable authority or arbitrary exception objects.
+
+`adele_ui` also owns `ToolActivityInspectionContribution(toolId,
+createPresentation)` and typed `toolActivityInspectionContributions`. The factory
+is `Widget Function(ToolActivityInspectionSource)`; the source is a read-only
+`Listenable` exposing an immutable public `ToolInvocationActivity` snapshot.
+Resolution matches exact `ToolId` with unavailable/one/ambiguous outcomes and uses
+existing registry binding liveness. Widgets/resources retire with their exact
+registration; only fresh resolution may select a replacement.
+
+Application State owns window-local Inspection selection.
+`app/lib/ui/inspection/inspection_host.dart` owns common group framing and
+output-sequence proposal composition, including unprepared/rejected placeholders,
+not plugin field interpretation. This adds no public physical panel API or
+Session history; see [`overview.md`](overview.md#activity-inspection).
+
+The separate Flutter `filesystem_tools_frontend` and `command_tools_frontend`
+packages own `apply_patch` and `run_command` Inspection field interpretation. They
+depend only on Flutter and `adele_ui`, not headless implementations, app, or kernel.
+`app/lib/plugins/stock_tool_inspection_frontends.dart` imports the owning headless
+packages' public `applyPatchToolId` and `runCommandToolId` only for stock
+registration. This composition-edge identity knowledge is not permission for
+generic hosts or other plugins to depend on tool implementations.
+
+The generic tool eval bridge transports immutable structured maps and latest
+common lifecycle/terminal data without semantic tool-field switches or flattened
+progress history. Independent stock activations reuse `PreparedFrontend`;
+presentation failure/retirement neither fails backend execution nor substitutes
+native tool cards. Tool cards show read-only status; only common host approval UI
+offers Allow/Deny for the exact retained interruption.
 
 Flutter build-time tooling compiles frontend source; normal runtime activation
 only consumes prepared artifacts. Checkout preparation is a stand-in for future
@@ -217,7 +250,7 @@ Within a source plugin, dependencies have this shape:
          backend            frontend
 ```
 
-The backend and frontend depend on shared contract/API packages as needed. They do not depend on one another. Transport contracts do not depend on Flutter. A frontend may depend on Flutter and deliberately public UI APIs such as `adele_ui`. The same implementation split applies to the in-process headless `chat_strategy_plugin` and its separate Flutter frontend. A backend may use full Dart capabilities subject to the runtime and eventual security model.
+The backend and frontend depend on shared contract/API packages as needed. They do not depend on one another. Transport contracts do not depend on Flutter. A frontend may depend on Flutter and deliberately public UI APIs such as `adele_ui`. The same implementation split applies to the in-process headless Chat, Filesystem Tools, and Command Tools plugins and their separate Flutter frontends. A backend may use full Dart capabilities subject to the runtime and eventual security model.
 
 Plugin tests may use internal host packages as development-only dependencies to exercise integration boundaries. Those dependencies must remain under `dev_dependencies` and must not be imported by plugin production libraries or entrypoints. The `workspace_demo_backend` host integration test uses `plugin_runtime` on this basis; the backend's production dependency graph does not include it.
 

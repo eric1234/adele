@@ -37,6 +37,9 @@ final class ChatPresentationSnapshot {
 abstract interface class ChatFrontendSource implements Listenable {
   ChatPresentationSnapshot get snapshot;
   bool submit(String prompt);
+
+  /// Requests read-only navigation to an emitted opaque activity identity.
+  bool inspectActivity(String id);
 }
 
 extension ChatFrontendPresentation on PreparedFrontend {
@@ -89,6 +92,22 @@ class ChatFrontendDeclarations implements EvalPlugin {
             params: [
               BridgeParameter(
                 'prompt',
+                BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.string)),
+                false,
+              ),
+            ],
+          ),
+        ),
+      )
+      ..defineBridgeTopLevelFunction(
+        const BridgeFunctionDeclaration(
+          _bridgeLibrary,
+          'inspectChatActivity',
+          BridgeFunctionDef(
+            returns: BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.bool)),
+            params: [
+              BridgeParameter(
+                'opaqueId',
                 BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.string)),
                 false,
               ),
@@ -162,6 +181,11 @@ final class ChatFrontendBridge extends ChatFrontendDeclarations
               prompt.trim().isNotEmpty &&
               _source.snapshot.canSubmit &&
               _source.submit(prompt),
+        );
+      })
+      ..registerBridgeFunc(_bridgeLibrary, 'inspectChatActivity', (_, _, args) {
+        return $bool(
+          _available && _source.inspectActivity(args.single!.$value as String),
         );
       })
       ..registerBridgeFunc(_bridgeLibrary, 'subscribeChatChanges', (

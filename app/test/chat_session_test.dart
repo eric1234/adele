@@ -17,6 +17,8 @@ import 'package:adele_desktop/plugins/stock_openai.dart';
 import 'package:adele_desktop/ui/chat/chat_controller.dart';
 import 'package:adele_desktop/ui/execution/approval_display.dart';
 import 'package:adele_desktop/ui/execution/pending_tool_approval.dart';
+import 'package:adele_desktop/ui/inspection/inspection_host.dart';
+import 'package:adele_desktop/ui/inspection/tool_activity_inspection_host.dart';
 import 'package:adele_desktop/ui/session/session_presentation_host.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_environment/adele_environment.dart';
@@ -411,6 +413,132 @@ void main() {
     await disposeApplication(tester);
   });
 
+  testWidgets(
+    'normal application activity clicks inspect exact groups without changing Chat',
+    (tester) async {
+      final _ModelChannel model = fixture.registerModel();
+      await openChat(tester);
+      final ChatController controller = chat(tester);
+      expect(shell(tester).inspection, isNull);
+      await send(tester, 'Read the source and propose validation');
+      final execution = controller.currentRun!;
+      model.calls.single.output('Reading the requested source.');
+      model.calls.single.propose('read', 'read_file', {
+        'relativePath': _EnvironmentChannel.sourcePath,
+      });
+      model.calls.single.settle();
+      await tester.pumpAndSettle();
+      expect(model.calls, hasLength(2));
+      model.calls.last.output('Reviewing the proposed validation.');
+      model.calls.last.propose('command', 'run_command', _commandArguments);
+      model.calls.last.settle();
+      await tester.pumpAndSettle();
+      expect(controller.pendingApproval, isNotNull);
+      await tap(tester, 'Deny');
+      expect(model.calls, hasLength(3));
+      model.calls.last.output('Read the source; validation was declined.');
+      model.calls.last.settle();
+      await tester.pumpAndSettle();
+      expect(execution.run.state, RunState.completed);
+      final ChatSessionSnapshot history = controller.snapshot;
+      final List<ExecutionEventRecord> journal = execution.run.journal.records;
+      final List<ChatActivitySummary> groups = controller.timeline
+          .whereType<ChatActivitySummary>()
+          .toList();
+      expect(groups, hasLength(2));
+      expect(groups.first.invocationId, isNot(groups.last.invocationId));
+      await tester.ensureVisible(find.byType(TextField));
+      await tester.enterText(find.byType(TextField), 'Keep my next question');
+      final TextEditingController composer = tester
+          .widget<TextField>(find.byType(TextField))
+          .controller!;
+      final VoidCallback retained = action(
+        tester,
+        'ACTIVITY: ${groups.first.content}',
+      )!;
+
+      for (final ChatActivitySummary group in [groups.last, groups.first]) {
+        await tap(tester, 'ACTIVITY: ${group.content}');
+        final InspectionHost inspection = tester.widget<InspectionHost>(
+          find.byType(InspectionHost),
+        );
+        expect(shell(tester).inspection, same(inspection));
+        expect(inspection.selection.sessionId, controller.session.id);
+        expect(inspection.selection.runId, group.runId);
+        expect(inspection.selection.modelInvocationId, group.invocationId);
+        expect(inspection.heading, group.content);
+        expect(
+          inspection.activity,
+          same(controller.activityForRun(group.runId)),
+        );
+        expect(
+          tester
+              .widgetList<ToolActivityInspectionHost>(
+                find.descendant(
+                  of: find.byType(InspectionHost),
+                  matching: find.byType(ToolActivityInspectionHost),
+                ),
+              )
+              .map((host) => host.source.snapshot),
+          inspection.activity!.tools.where(
+            (tool) => tool.modelInvocationId == group.invocationId,
+          ),
+        );
+        expect(
+          find.text('Tool activity inspection is unavailable.'),
+          findsOneWidget,
+        );
+        expect(controller.currentRun, same(execution));
+        expect(controller.snapshot, same(history));
+        expect(execution.run.journal.records, journal);
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller,
+          same(composer),
+        );
+        expect(composer.text, 'Keep my next question');
+      }
+
+      await tester.ensureVisible(find.byTooltip('Close Inspection'));
+      await tester.tap(find.byTooltip('Close Inspection'));
+      await tester.pumpAndSettle();
+      expect(shell(tester).inspection, isNull);
+      expect(find.byType(InspectionHost), findsNothing);
+      expect(controller.currentRun, same(execution));
+      expect(controller.snapshot, same(history));
+      expect(execution.run.journal.records, journal);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller,
+        same(composer),
+      );
+      expect(composer.text, 'Keep my next question');
+      expect(
+        fixture.runtime.chat.sessions
+            .obtain(controller.session.id)
+            .snapshot()
+            .entries,
+        history.entries,
+      );
+      expect(fixture.runIds.values, hasLength(1));
+      expect(model.calls, hasLength(3));
+      expect(fixture.environment.processes, isEmpty);
+
+      await tap(tester, 'ACTIVITY: ${groups.first.content}');
+      expect(find.byType(InspectionHost), findsOneWidget);
+      await disposeApplication(tester);
+      expect(controller.isClosed, isTrue);
+      retained();
+      await tester.pumpAndSettle();
+      expect(find.byType(InspectionHost), findsNothing);
+      expect(controller.currentRun, same(execution));
+      expect(controller.snapshot, same(history));
+      expect(execution.run.journal.records, journal);
+      expect(fixture.runIds.values, hasLength(1));
+      expect(model.calls, hasLength(3));
+      expect(fixture.environment.processes, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   for (final bool narrated in [true, false]) {
     testWidgets(
       'live ${narrated ? 'narrated' : 'fallback'} batches stay ordered across tools and follow-up',
@@ -587,8 +715,10 @@ void main() {
     (tester) async {
       final _ModelChannel model = fixture.registerModel();
       int notifications = 0;
+      int activityNotifications = 0;
       final ChatController controller = await fixture.createController(
         onChanged: () => notifications++,
+        onActivityChanged: () => activityNotifications++,
       );
       expect(controller.submit('Read with progress'), isTrue);
       final _ModelCall call = await model.callAt(0);
@@ -603,6 +733,7 @@ void main() {
       final RunActivitySnapshot before = controller.activitySnapshots.single;
       final ToolInvocationId tool = before.tools.single.id;
       final int beforeNotifications = notifications;
+      final int beforeActivityNotifications = activityNotifications;
       for (int i = 0; i < 1000; i++) {
         run.record(
           ToolProgressObserved(
@@ -614,6 +745,7 @@ void main() {
       }
       expect(controller.activitySnapshots.single, same(before));
       expect(notifications, beforeNotifications);
+      expect(activityNotifications, beforeActivityNotifications);
       await tester.pump();
       final RunActivitySnapshot captured = controller.activitySnapshots.single;
       expect(captured.sequence, before.sequence + 1000);
@@ -624,6 +756,10 @@ void main() {
         hasLength(1000),
       );
       expect(notifications, beforeNotifications);
+      expect(activityNotifications, beforeActivityNotifications + 1);
+      expect(controller.activityForRun(run.id), same(captured));
+      await tester.pump();
+      expect(activityNotifications, beforeActivityNotifications + 1);
       run.record(
         ToolProgressObserved(
           invocationId: tool,
@@ -640,9 +776,252 @@ void main() {
       await tester.pumpAndSettle();
       expect(controller.activitySnapshots.single, same(captured));
       expect(notifications, beforeNotifications);
+      expect(activityNotifications, beforeActivityNotifications + 1);
+      expect(controller.activityForRun(run.id), isNull);
+      expect(
+        controller.activitySummary(run.id, captured.models.first.id),
+        isNull,
+      );
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets(
+    'controller activity lookups retain exact evidence through waits and follow-up',
+    (tester) async {
+      final _ModelChannel model = fixture.registerModel();
+      final List<RunActivitySnapshot> observed = [];
+      late ChatController controller;
+      controller = await fixture.createController(
+        onActivityChanged: () =>
+            observed.add(controller.activitySnapshots.last),
+      );
+      final RunId unknownRun = RunId('unknown');
+      final ModelInvocationId unknownModel = ModelInvocationId('unknown');
+      expect(controller.activityForRun(unknownRun), isNull);
+      expect(controller.activitySummary(unknownRun, unknownModel), isNull);
+      expect(
+        controller.submit('Propose a read-only inspection target'),
+        isTrue,
+      );
+      final Future<void> starting = controller.activeRunFuture!;
+      final _ModelCall call = await model.callAt(0);
+      call.output('Reviewing the proposed command.');
+      call.propose('command', 'run_command', _commandArguments);
+      await tester.pump();
+      final AgentRun run = controller.currentRun!.run;
+      final RunActivitySnapshot unsettled = controller.activityForRun(run.id)!;
+      final ModelInvocationId invocationId = unsettled.models.single.id;
+      expect(controller.activitySummary(run.id, invocationId), isNull);
+      call.settle();
+      // No frame is needed for the final capture of the waiting advancement.
+      await starting;
+      final RunActivitySnapshot waiting = controller.activityForRun(run.id)!;
+      expect(waiting.state, RunState.waiting);
+      expect(observed.last, same(waiting));
+      final ChatActivitySummary summary = controller.activitySummary(
+        RunId(run.id.value),
+        ModelInvocationId(invocationId.value),
+      )!;
+      expect(summary.runId, same(waiting.runId));
+      expect(summary.invocationId, same(waiting.models.single.id));
+      expect(summary.content, 'Reviewing the proposed command.');
+      expect(controller.activitySummary(run.id, unknownModel), isNull);
+      final int notifications = observed.length;
+      final int sequence = run.journal.lastSequence;
+      final PendingToolApproval approval = controller.pendingApproval!;
+      for (int i = 0; i < 5; i++) {
+        expect(controller.activityForRun(run.id), same(waiting));
+        expect(controller.activitySummary(run.id, invocationId), isNotNull);
+      }
+      await tester.pumpAndSettle();
+      expect(observed, hasLength(notifications));
+      expect(run.journal.lastSequence, sequence);
+      expect(controller.pendingApproval, same(approval));
+      expect(controller.isRunning, isTrue);
+      expect(controller.submit('Not a navigation operation'), isFalse);
+      expect(fixture.environment.processes, isEmpty);
+      expect(controller.snapshot.entries, hasLength(1));
+
+      expect(controller.resolveApproval(approval, approved: false), isTrue);
+      final Future<void> finishing = controller.activeRunFuture!;
+      final _ModelCall finalCall = await model.callAt(1);
+      finalCall.output('Declined command.');
+      finalCall.settle();
+      await finishing;
+      final RunActivitySnapshot completed = controller.activityForRun(run.id)!;
+      expect(completed.state, RunState.completed);
+      expect(observed.last, same(completed));
+      expect(
+        controller.activitySummary(run.id, completed.models.last.id),
+        isNull,
+      );
+      expect(controller.submit('Follow-up'), isTrue);
+      final Future<void> followUp = controller.activeRunFuture!;
+      final _ModelCall nextCall = await model.callAt(2);
+      expect(controller.activityForRun(run.id), same(completed));
+      expect(
+        controller.activitySummary(run.id, invocationId)!.content,
+        summary.content,
+      );
+      nextCall.output('Follow-up answer.');
+      nextCall.settle();
+      await followUp;
+      expect(controller.activitySnapshots, hasLength(2));
+      expect(controller.activityForRun(run.id), same(completed));
+      await controller.close();
+      expect(controller.activityForRun(run.id), isNull);
+      expect(controller.activitySummary(run.id, invocationId), isNull);
+      expect(fixture.environment.processes, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final String revoked in ['controller', 'source', 'generation']) {
+    testWidgets(
+      'controller adapter inspects retained IDs until $revoked closes',
+      (tester) async {
+        final _ModelChannel model = fixture.registerModel();
+        final ChatController controller = await fixture.createController();
+        final List<(Session, RunId, ModelInvocationId)> inspected = [];
+        final StockChatFrontend frontend = (await tester.runAsync(
+          () => StockChatFrontend.activate(
+            extensions: fixture.runtime.extensions,
+            artifactPath: _frontendArtifact.path,
+            controllerForSession: (_) => controller,
+            inspectActivity: (session, run, invocation) {
+              inspected.add((session, run, invocation));
+              return true;
+            },
+          ),
+        ))!;
+        addTearDown(() => tester.runAsync(frontend.close));
+        final Widget presentation = fixture.runtime.extensions
+            .discover(sessionPresentationContributions)
+            .single
+            .value
+            .createPresentation(controller.session);
+        await tester.pumpWidget(
+          MaterialApp(home: Scaffold(body: presentation)),
+        );
+        expect(controller.submit('Review the proposed command'), isTrue);
+        final Future<void> starting = controller.activeRunFuture!;
+        final _ModelCall first = await model.callAt(0);
+        first.output('Inspect this command batch.');
+        first.propose('command', 'run_command', _commandArguments);
+        first.settle();
+        await starting;
+        frontend.refresh();
+        await tester.pumpAndSettle();
+        final Finder activity = find.text(
+          'ACTIVITY: Inspect this command batch.',
+        );
+        expect(activity, findsOneWidget);
+        final VoidCallback retained = tester
+            .widget<TextButton>(
+              find.ancestor(of: activity, matching: find.byType(TextButton)),
+            )
+            .onPressed!;
+        final RunActivitySnapshot evidence =
+            controller.activitySnapshots.single;
+        final AgentRun run = controller.currentRun!.run;
+        final int sequence = run.journal.lastSequence;
+        final PendingToolApproval approval = controller.pendingApproval!;
+        await tester.tap(activity);
+        expect(inspected, hasLength(1));
+        expect(inspected.last.$1, same(controller.session));
+        expect(inspected.last.$2, same(evidence.runId));
+        expect(inspected.last.$3, same(evidence.models.single.id));
+        expect(controller.pendingApproval, same(approval));
+        expect(run.journal.lastSequence, sequence);
+        expect(controller.isRunning, isTrue);
+        expect(controller.isAdvancing, isFalse);
+        expect(controller.snapshot.entries, hasLength(1));
+        expect(fixture.runIds.values, hasLength(1));
+        expect(model.calls, hasLength(1));
+        expect(fixture.environment.processes, isEmpty);
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).enabled,
+          isFalse,
+        );
+
+        expect(controller.resolveApproval(approval, approved: false), isTrue);
+        final Future<void> finishing = controller.activeRunFuture!;
+        final _ModelCall continuation = await model.callAt(1);
+        expect(controller.isAdvancing, isTrue);
+        retained();
+        expect(inspected, hasLength(2));
+        continuation.output('Command declined.');
+        continuation.settle();
+        await finishing;
+        expect(controller.submit('Follow up'), isTrue);
+        final Future<void> following = controller.activeRunFuture!;
+        final _ModelCall followUp = await model.callAt(2);
+        frontend.refresh();
+        await tester.pumpAndSettle();
+        expect(activity, findsOneWidget);
+        retained();
+        expect(inspected, hasLength(3));
+        expect(inspected.every((target) => target == inspected.first), isTrue);
+        followUp.output('Follow-up answer.');
+        followUp.settle();
+        await following;
+
+        switch (revoked) {
+          case 'controller':
+            await controller.close();
+          case 'source':
+            await tester.pumpWidget(const SizedBox.shrink());
+          case 'generation':
+            await tester.runAsync(frontend.close);
+        }
+        retained();
+        expect(inspected, hasLength(3));
+        expect(fixture.runIds.values, hasLength(2));
+        expect(model.calls, hasLength(3));
+        expect(fixture.environment.processes, isEmpty);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await controller.close();
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets('activity observer failures do not fail controller execution', (
+    tester,
+  ) async {
+    final _ModelChannel model = fixture.registerModel();
+    final List<FlutterErrorDetails> failures = [];
+    final void Function(FlutterErrorDetails)? previous = FlutterError.onError;
+    FlutterError.onError = failures.add;
+    addTearDown(() => FlutterError.onError = previous);
+    final ChatController controller = await fixture.createController(
+      onActivityChanged: () => throw StateError('Observer failure'),
+    );
+    expect(controller.submit('Answer despite broken observation'), isTrue);
+    final Future<void> running = controller.activeRunFuture!;
+    final _ModelCall call = await model.callAt(0);
+    call.output('Execution still succeeds.');
+    call.settle();
+    await running;
+    expect(controller.failure, isNull);
+    expect(controller.isAdvancing, isFalse);
+    expect(controller.currentRun!.run.state, RunState.completed);
+    expect(controller.activitySnapshots.single.state, RunState.completed);
+    expect(
+      controller.snapshot.entries.last.content,
+      'Execution still succeeds.',
+    );
+    expect(failures.length, greaterThanOrEqualTo(2));
+    expect(
+      failures.every((failure) => failure.exception is StateError),
+      isTrue,
+    );
+    await controller.close();
+    await tester.pumpAndSettle();
+    FlutterError.onError = previous;
+    expect(tester.takeException(), isNull);
+  });
 
   test(
     'controller preserves explicit Session instructions and narration protocol',
@@ -2491,15 +2870,18 @@ final class _Fixture {
     );
   }
 
-  Future<ChatController> createController({VoidCallback? onChanged}) async =>
-      ChatController(
-        runtime: runtime,
-        session: await createSession(),
-        providerId: stockChatGptProviderId,
-        model: _configuration.model,
-        runIds: runIds,
-        onChanged: onChanged,
-      );
+  Future<ChatController> createController({
+    VoidCallback? onChanged,
+    VoidCallback? onActivityChanged,
+  }) async => ChatController(
+    runtime: runtime,
+    session: await createSession(),
+    providerId: stockChatGptProviderId,
+    model: _configuration.model,
+    runIds: runIds,
+    onChanged: onChanged,
+    onActivityChanged: onActivityChanged,
+  );
 
   Future<void> close() async {
     if (_closed) return;

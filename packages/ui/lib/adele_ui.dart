@@ -1,9 +1,11 @@
-/// Public semantic ADELE Session presentation contracts.
+/// Public semantic ADELE Session and Tool activity presentation contracts.
 library;
 
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:flutter/widgets.dart';
+
+export 'tool_activity_inspection.dart';
 
 /// Exactly one active contribution may present a Session's stored strategy.
 /// Missing or ambiguous contributions are unavailable, never a default choice.

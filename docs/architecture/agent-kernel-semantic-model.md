@@ -705,8 +705,12 @@ group, regardless of tool count. Explicit user-facing model text is its preferre
 narration; absent narration uses a structural count. This is Chat presentation
 policy, not a kernel grouping invariant. Proposal-free final assistant text stays
 canonical Chat content, and completed groups are retained only for the current
-controller lifetime. Bespoke interpreted provider/tool presentations and
-Inspection remain future work.
+controller lifetime. Groups can open window-owned Inspection, whose common host
+preserves exact proposal order and delegates resolved tool content through public
+`adele_ui` contributions matched by `ToolId`. Filesystem and Command provide the
+first bespoke interpreted tool presentations. Selection, frontend resources, and
+tool-specific rendering remain outside the kernel; provider-native presentation
+and nested Inspection remain deferred.
 
 Public plugin Events are a broader extension concept defined outside the kernel. A kernel observation may later be projected into a public Event, but the internal Run journal and public Event system are not assumed to be identical.
 
