@@ -6,6 +6,11 @@ It contributes `dev.adele.strategy.chat` through the public
 `dev.adele.plugin.chat-strategy`; its registration identity is
 `dev.adele.plugin.chat-strategy.orchestration`.
 
+The plugin also has a separate Flutter package at `packages/frontend`, named
+`chat_strategy_frontend`, for the minimal evaluated history/composer. The root
+`chat_strategy_plugin` package remains headless and pure Dart; neither package
+depends on the other's implementation.
+
 ## Activation And State
 
 Create `ChatStrategyPlugin` and activate it with an `ExtensionRegistry` before
@@ -61,8 +66,8 @@ projection plus Run-local replay. It neither registers nor discovers context
 sources in production. The host's `InferenceContextComposer` discovers current
 sources through the existing `ExtensionRegistry` on every new inference,
 including Chat continuation, and captures instruction material without changing
-Chat's semantic input. Only development/self-hosting composition activates the
-independent stock [`agents_md_plugin`](../agents_md/README.md), which rereads root
+Chat's semantic input. Shared normal and development/self-hosting composition
+activates the independent stock [`agents_md_plugin`](../agents_md/README.md), which rereads root
 `AGENTS.md` through the Session-authorized Environment read facet each snapshot.
 Chat remains AGENTS-unaware and activates no source; zero-source provider
 instructions retain their exact bytes.
@@ -76,12 +81,48 @@ composition; an optional failure omits that source with diagnostics. Safely
 captured data survives later source retirement, unlike the unchanged exact-binding
 requirements on executable strategies and tools.
 
+## Session Presentation
+
+Public Flutter `adele_ui` owns `SessionPresentationContribution` with an
+`OrchestrationStrategyId` and `Widget Function(Session)` factory, registered at
+typed `sessionPresentationContributions` on the existing extension registry.
+The generic app host matches the canonical Session's stored strategy ID exactly:
+zero matches is unavailable, one supplies presentation, and multiple matches is
+explicit ambiguity. Presentation is optional for Session validity and headless
+execution. Retired bindings cannot silently become replacement presentations.
+
+The frontend package owns history rendering and the prompt/Send composer. It uses
+Flutter without importing the headless Chat implementation, application code, or
+`agent_kernel`. Normal Linux checkout tooling compiles it to prepared EVC before
+app run/build. Runtime activation only loads prepared bytecode; it never compiles
+source or falls back to an app-owned native Chat view. Preparation and deployment
+inputs are documented in [`app/README.md`](../../app/README.md#prepared-chat-frontend).
+
+`app/lib/plugins/stock_chat_frontend.dart` is the provisional activation proxy and
+adapter to `ChatController`, which intentionally remains in `app/lib/ui/chat`.
+Only immutable primitive entry role/text snapshots, composer-enabled state, and
+string submission with synchronous boolean acceptance cross the eval bridge.
+The canonical store and controller are not shared by identity with the frontend.
+Plugin frontend generations and individual presentation instances are distinct;
+view resources follow widget lifecycle and exact registration liveness.
+
+Common Run status, `PendingToolApproval`, approval cards, and display safety belong
+to `app/lib/ui/execution`, outside the evaluated widget. No execution or approval
+objects or approval decisions cross the Chat bridge. Host policy and exact
+invocation authorization remain the security authority. Missing or failed
+presentation does not invalidate the Session or backend execution.
+
 ## Deferred Work
 
 The current context projection deliberately preserves the development loop's
 simple conversation-plus-Run-items behavior. Rich context selection, context
 truncation and summarization, context sources beyond root AGENTS.md, provider-aware
-projection/cache planning, token budgets, Chat UI, persistence,
-profiles, child Sessions, state migration, and concurrent conversation editing
-are not implemented. State retention is
-in-memory and scoped to the supplied store, not durable product Session storage.
+projection/cache planning, token budgets, richer Chat UI, a common execution
+timeline, persistence, profiles, child Sessions, state migration, and concurrent
+conversation editing are not implemented. State retention is in-memory and scoped
+to the supplied store, not durable product Session storage.
+Plugin discovery, installation/update management, and artifact caching
+are also deferred. Checkout preparation stands in for future installation/update
+compilation, separate from activation consuming prepared artifacts. The current
+SDK/eval pin does not establish a broad third-party UI API; eval modernization
+remains necessary for that wider surface and is outside this presentation slice.

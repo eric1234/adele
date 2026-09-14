@@ -3,8 +3,12 @@
 ## Canonical form
 
 Plugin source is the canonical distribution format. The development build
-pipeline derives persisted frontend eval bytecode and a native Dart AOT backend
-from that source.
+pipeline derives prepared frontend eval bytecode and native Dart AOT backend
+artifacts from the source components a plugin supplies. A plugin need not supply
+both a frontend and an AOT backend. Normal runtime activation consumes prepared
+artifacts and never compiles source; future installation/update should own that
+preparation. Current checkout tooling is a stand-in, not plugin installation or
+artifact caching.
 
 `workspace_demo` establishes the maintained reference repository shape; its name
 is historical fixture terminology and does not establish a first-class ADELE
@@ -42,9 +46,10 @@ choose a requested plugin's contract.
 | Backend | Privileged/native Dart behavior | Depends on public contract/API packages as needed; never on frontend; compiled locally to AOT and hosted in an external isolate group |
 | Frontend | Plugin UI source | Depends on public contract/API packages as needed; never on backend; may use Flutter; currently interpreted with pinned `flutter_eval`/`dart_eval` |
 
-Frontend/backend communication uses shared public contracts and generated typed
-transport. Source imports do not cross between their implementation packages,
-and crossing a runtime boundary never shares object identity.
+Typed frontend/backend service communication uses shared public contracts and
+generated transport. Source imports do not cross between implementation packages,
+and crossing a runtime boundary never shares object identity. A narrow frontend
+presentation bridge need not expose backend services or implementation objects.
 
 A plugin may also publish a deliberately public lightweight API package for an
 extension point it owns when another plugin concretely needs to implement that
@@ -55,6 +60,23 @@ or lifecycle system.
 
 See [`dependency-rules.md`](dependency-rules.md) and
 [`plugin-extension-model.md`](plugin-extension-model.md).
+
+### Stock Chat split
+
+`plugins/chat_strategy` keeps the pure-Dart `chat_strategy_plugin` at its root for
+in-process orchestration and retained canonical history. The separate Flutter
+package `packages/frontend` (`chat_strategy_frontend`) owns the evaluated
+history/composer. It depends on neither the headless implementation nor app/kernel
+code; this split does not introduce a Chat AOT backend or a general manifest
+installation model.
+
+The generic app host consumes public Flutter `adele_ui` Session presentation
+contributions. `app/lib/plugins/stock_chat_frontend.dart` supplies the provisional
+stock activation proxy/controller adapter; `app/lib/frontend` owns only generic
+prepared-generation/runtime hosting. Chat state, execution objects, and approval
+authority stay outside the evaluated package. The narrow primitive bridge and
+host-owned execution presentation are described in
+[`overview.md`](overview.md#session-presentation).
 
 ## Distinct identities
 
@@ -72,6 +94,8 @@ another:
 | Installation | Source/compiled artifacts available to one ADELE installation |
 | Profile activation | Whether an installed plugin participates in a context |
 | Plugin runtime instance | Running plugin created for an activation context |
+| Frontend activation generation | Exact active prepared frontend and its registrations, not a canonical Session identity |
+| Presentation instance | One view's widget/resources, distinct from the frontend generation that supplied it |
 | Configured capability instance | Persistent named provider/account/connection managed by a runtime |
 | Project/Task/Session/Environment | Core product identities associated with plugin behavior, not plugin/package identity |
 | Runtime resource | Temporary document, terminal, browser session, process, or similar handle |
@@ -102,12 +126,18 @@ isolation/concurrency models remain deferred.
 Temporary runtime resources are created/disposed during operation. They are not
 plugin instances and are not persistent provider configurations.
 
+Session presentation retains exact extension bindings. Retirement removes old
+widgets and their resources; only fresh resolution may select a replacement.
+Missing or failed presentation does not invalidate the Session or headless/backend
+execution. Eval runtime allocation is an implementation detail of the pinned
+stack, not a permanent one-runtime-per-presentation contract.
+
 Future active plugins may register several independent semantic extensions from
 one runtime—for example Git may provide Environment behavior, review/SCM
 services, Commands, summary contributions, and model tools. Registration into
 multiple extension points does not imply multiple plugin runtimes.
 
-## Normal stock backend composition
+## Normal stock artifact composition
 
 Normal composition uses existing backend-only Git and OpenAI plugins without linking
 their implementations into Flutter. Synchronous, provider-free `AdeleRuntime()` owns
@@ -137,6 +167,13 @@ Deployment and build details are maintained in
 [`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
 This is not plugin installation, production packaging, discovery, or profiles.
 
+Normal Chat activation separately consumes prepared EVC. Flutter build-time
+tooling prepares it before app launch/build, outside the normal runtime import
+graph. A missing or failed frontend does not retire backend support or trigger
+source compilation or a native Chat fallback. The SDK/eval pin remains bounded
+interoperability infrastructure; broad third-party interpreted UI support still
+requires eval modernization.
+
 ## Proven and deferred
 
 The `workspace_demo` fixture proves local AOT compilation, shared process-hosted
@@ -152,8 +189,9 @@ Session-authorized Environment reads composed by stock Filesystem and Search
 tool plugins.
 
 These proofs do **not** implement the accepted general recursive extension
-system, complete Project/Task/Session/Environment product lifecycle, production UI
-composition, plugin-defined extension API packaging/versioning, or sandboxing.
+system, complete Project/Task/Session/Environment product lifecycle, broader
+workbench UI composition, plugin-defined extension API packaging/versioning, or
+sandboxing.
 
 Plugin-specific typed vertical tests belong to the plugin backend package that
 owns the implementation and contract. The shared backend host package tests

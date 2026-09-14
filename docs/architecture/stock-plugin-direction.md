@@ -15,7 +15,7 @@ The expected stock composition should be read alongside:
 - [`agent-tooling-direction.md`](agent-tooling-direction.md), which describes model tools and execution presentation;
 - [`../mockups/README.md`](../mockups/README.md), which shows the default development UX produced by a stock plugin/configuration set.
 
-The maintained codebase implements only a small subset of this topology: source-plugin runtime/build infrastructure, generated contracts, active capability routing, the common ModelProvider and OpenAI provider, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, a Git Worktree Environment provider, generic model-tool registration, stock Filesystem Tools, Search Tools, and Command Tools, headless stock Chat, the root-level AGENTS.md source, B1 Local Directory Project Selector with minimal Project opening, and normal Task/primary Environment creation. Public `adele_orchestration` provides executable strategy contributions, the narrow execution facade, and instruction-only inference-context composition over the same extension registry; application Session-routed hosting materializes the exact strategy contribution rather than constructing a loop directly. Chat owns in-memory state and sequencing, not context sources, UI, or persistence. Shared `AdeleRuntime` composition activates `agents_md_plugin` and Local Directory Project Selector in normal startup and development/self-hosting; Chat itself activates no source and remains AGENTS-unaware. Most stock plugins below do not yet exist.
+The maintained codebase implements only a small subset of this topology: source-plugin runtime/build infrastructure, generated contracts, active capability routing, the common ModelProvider and OpenAI provider, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, a Git Worktree Environment provider, generic model-tool registration, stock Filesystem Tools, Search Tools, and Command Tools, headless stock Chat with a separate evaluated history/composer frontend, the root-level AGENTS.md source, B1 Local Directory Project Selector with minimal Project opening, and normal Task/primary Environment creation. Public `adele_orchestration` provides executable strategy contributions, the narrow execution facade, and instruction-only inference-context composition over the same extension registry; application Session-routed hosting materializes the exact strategy contribution rather than constructing a loop directly. Headless Chat owns in-memory state and sequencing, not context sources or persistence; its separate Flutter package owns the minimal Chat surface through the public `adele_ui` Session presentation boundary. Shared `AdeleRuntime` composition activates `agents_md_plugin` and Local Directory Project Selector in normal startup and development/self-hosting; Chat itself activates no source and remains AGENTS-unaware. Most stock plugins below do not yet exist.
 
 `AdeleRuntime()` remains synchronous and provider-free. Its pure-Dart
 `ApplicationPluginBootstrap` owns application-lifetime backend resources on the
@@ -39,6 +39,9 @@ profile/provider preference API.
 Future discovery/profile activation should replace hard-coded stock selection at
 this composition edge, starting plugin runtimes and registering contributions
 without changing downstream capability, extension, or product lifecycle semantics.
+Installation/update should prepare artifacts; activation consumes them and never
+compiles source. Current checkout tooling is only a stand-in, not installation,
+update management, profiles, discovery, or artifact caching.
 
 ---
 
@@ -102,6 +105,17 @@ Names below are provisional except where explicitly identified as implemented.
 The important point is the semantic role.
 
 ## 2.1 Workbench/UI semantics
+
+The implemented narrow contract is `SessionPresentationContribution` in public
+Flutter `adele_ui`, with `strategyId: OrchestrationStrategyId` and
+`createPresentation: Widget Function(Session)`. Typed
+`sessionPresentationContributions` reuses the existing extension registry. The
+generic app host matches the canonical Session's stored strategy exactly: no
+match is unavailable, one supplies presentation, and multiple matches are
+explicitly ambiguous. It retains exact binding liveness and removes retired
+widgets; only fresh resolution may select a replacement. Presentation availability
+is not a condition of Session validity or headless execution. This is not the
+broader workbench framework below.
 
 ```text
 MainContentView
@@ -392,14 +406,14 @@ A strategy may register and execute through core facilities even if no Agent Int
 
 ## 5.2 Chat Strategy
 
-**Role:** implemented headless conversational model/tool/model strategy; a rich Chat Session surface remains future work.
+**Role:** implemented headless conversational model/tool/model strategy with a separate evaluated history/composer; a rich Chat Session surface remains future work.
 
 `plugins/chat_strategy` contains `chat_strategy_plugin`, the first executable
 stock strategy. `ChatStrategyPlugin.activate` follows the same in-process
 registration convention as the stock tool plugins. Semantic strategy ID
 `dev.adele.strategy.chat`, plugin ID `dev.adele.plugin.chat-strategy`, and
 extension ID `dev.adele.plugin.chat-strategy.orchestration` are separate
-identities. Chat's only direct production dependencies are public
+identities. The headless package's only direct production dependencies are public
 `adele_orchestration` and `adele_plugin_api`. It **does not import
 `agent_kernel`**, has no kernel development dependency, and does not redefine Run
 semantics.
@@ -412,8 +426,7 @@ Run-local replay. Instructions and a positive model-invocation budget are
 Chat-owned configuration snapshotted for each materialized Run, not fields on the
 canonical product `Session(id, taskId, strategyId)`.
 
-The private Chat loop is extracted from the former app-owned
-`DevelopmentToolLoopStrategy`. It drains proposal batches sequentially against
+The private Chat loop drains proposal batches sequentially against
 the same opaque per-turn tool snapshot. Proposal/tool failures and policy denial
 continue to later proposals; `ask` pauses, and approval/rejection resumes in
 order with earlier results retained. One model continuation follows the batch.
@@ -436,11 +449,29 @@ authority retain their existing owners. The independent root AGENTS.md source
 described in section 2.4 is activated by shared `AdeleRuntime` composition,
 not Chat. Other context sources and context UI/persistence remain deferred.
 
+`plugins/chat_strategy/packages/frontend` (`chat_strategy_frontend`) owns the
+minimal history and prompt/Send composer as evaluated Flutter source. It imports
+neither the headless implementation nor app/kernel code. `ChatController` remains
+provisional in `app/lib/ui/chat`; `app/lib/plugins/stock_chat_frontend.dart` adapts it
+through only immutable primitive entry role/text snapshots, composer-enabled
+state, and string submission with synchronous boolean acceptance. No execution
+or approval objects or approval decisions cross that eval bridge. Common
+`RunExecutionStatus`, `PendingToolApproval`, and display safety remain host-owned
+under `app/lib/ui/execution`; policy and exact-invocation approval remain the
+security authority.
+
+Prepared frontend generations are distinct from individual presentation instances.
+View resources follow widget lifecycle and exact registration liveness; this does
+not define a permanent eval runtime-per-view model. Normal activation loads EVC
+prepared by Flutter build-time tooling, never compiling source or substituting a
+native app Chat view. The pinned eval stack remains limited; broad third-party
+interpreted UI support still requires modernization outside this slice.
+
 Further expected Chat functionality remains unimplemented:
 
 - Chat-specific persistent Session state;
-- timeline and Draft Request/composer UI;
-- user/agent message and operation-group presentation;
+- a common execution timeline and richer Draft Request/composer integration;
+- operation-group and richer message presentation;
 - child-Session activity/inspection when delegated work is created;
 - Chat-specific events such as `ChatTurnCompleted` where useful.
 
@@ -453,7 +484,7 @@ ChatTurnAction
 ChatTimelineDecoration / ChatOperationPresentation
 ```
 
-Chat currently consumes the public execution facade and opaque tool snapshots, not kernel catalogs. The normal app supplies temporary Chat-specific presentation over its canonical history. Future UI and state features may consume structured inference composition, Session persistence, child-Session query/creation, common timeline/composer components, and optional tool/review presentation interfaces. Profiles, child Sessions, persistence, and plugin-owned rich Chat UI are not part of the implemented strategy.
+Headless Chat consumes the public execution facade and opaque tool snapshots, not kernel catalogs. Its evaluated frontend supplies minimal history/composer presentation through provisional app adaptation. Future UI and state features may consume structured inference composition, Session persistence, child-Session query/creation, common timeline/composer components, and optional tool/review presentation interfaces. Profiles, child Sessions, persistence, and rich Chat UI remain deferred.
 
 Expected stock integrations:
 
@@ -866,6 +897,12 @@ There may be no active Environment while merely browsing.
 
 ## 12.4 Create a Chat Session
 
+The implemented normal app creates a canonical Session with the explicit stock
+Chat strategy ID, then presents it through exact `sessionPresentationContributions`
+resolution. Missing, ambiguous, or failed presentation does not undo Session
+creation. The broader strategy-selection and Agent Interaction flow remains
+directional:
+
 ```text
 user chooses Chat strategy through Agent Interaction or another caller
     -> core resolves/validates Chat in the core orchestration registry
@@ -992,6 +1029,7 @@ The child remains a Session, not a Task, and is not normally a peer in Task Brow
 | Task creation | Core | Task identity/lifecycle is core-owned |
 | Session creation | Core | Session identity/lifecycle is core-owned |
 | OrchestrationStrategy registration/binding | Core/public | Session creation/restoration must validate permanent strategy binding independent of optional UI |
+| `SessionPresentationContribution` | `adele_ui` (implemented, Flutter) | Generic host presents an existing Session through exact strategy matching without owning strategy-specific UI |
 | Public orchestration/execution API | Core/public, backed internally by `agent_kernel` | Strategy plugins need Run/model/tool execution without depending on internal implementation packages |
 | Inference composition buckets | Core | Core owns stable provider-neutral invocation boundary |
 | Tool registration/execution semantics | Core/public facade backed by kernel | Cross-strategy execution invariant while `agent_kernel` remains internal |
@@ -1011,6 +1049,7 @@ The stock installation should be coherent and useful, but ADELE should tolerate 
 - Chat with no tools;
 - zero Project selectors (unavailable), or multiple independent selector actions;
 - strategy registered with no Agent Interaction UI consumer;
+- Session with no matching presentation contribution, reported as unavailable without invalidating execution;
 - Diff with no source-display provider;
 - multiple Environment providers with one contextual default;
 - no Accounting plugin;

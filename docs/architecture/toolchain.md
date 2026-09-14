@@ -17,6 +17,8 @@ The repository tracks `flutter 3.38.10-stable` in `.tool-versions`. This pin is
 temporary. Flutter 3.44.8 with `flutter_eval 0.8.2` is not compatible, and no
 Flutter 3.44 or Dart 3.12 support is claimed. Eval modernization or replacement
 is required before broad third-party interpreted UI support.
+The narrow stock Chat Session presentation slice uses this pin; it neither
+modernizes eval nor establishes a broad third-party Flutter compatibility surface.
 
 ## Local plugin compilation
 
@@ -24,6 +26,21 @@ Source is the canonical plugin distribution format. The integrated development
 pipeline compiles backend source to native Dart AOT and frontend source to
 `dart_eval`/`flutter_eval` bytecode. End-user SDK provisioning and consistent
 Windows and macOS behavior remain future packaging and validation work.
+
+Normal desktop runtime activation never compiles plugin source. The Linux checkout
+launcher prepares shared-host/Git/OpenAI AOT artifacts and stock Chat frontend EVC
+before launching or building Flutter, using the selected Flutter SDK. Frontend
+compilation runs in Flutter build-time tooling, not generic runtime hosting or the
+pure-Dart `plugin_builder` dependency graph. Normal activation loads the prepared
+artifacts; missing or invalid artifacts fail the affected support rather than
+triggering compilation or a substitute implementation.
+
+Future installation/update should own source compilation and artifact preparation,
+separate from activation consuming those artifacts. Current repository tooling is
+only a source-checkout stand-in, not installation/discovery, profile management, or
+an artifact cache. Operational preparation inputs and invocations live in
+[`app/README.md`](../../app/README.md#prepared-chat-frontend) and the
+[`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
 
 ## Artifact identity and invalidation
 

@@ -5,62 +5,12 @@ import 'package:adele_desktop/core/model_provider_host.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
+import 'package:adele_desktop/ui/execution/pending_tool_approval.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_product/adele_product.dart' show Session;
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
-
-import 'approval_display.dart';
-
-/// Immutable window-local presentation and identity token, not execution authority.
-final class PendingToolApproval {
-  PendingToolApproval._(ToolApprovalInterruption interruption)
-    : toolAlias = approvalDisplayText(
-        interruption.invocation.tool.modelDefinition.alias,
-      ),
-      toolId = approvalDisplayText(interruption.toolId.value),
-      effects = interruption.effects.effects,
-      summary = approvalDisplayText(interruption.effects.summary),
-      uncertainty = interruption.effects.uncertainty,
-      targets = List<String>.unmodifiable(
-        interruption.effects.targets.map(
-          (target) => approvalDisplayText(target.uri.toString()),
-        ),
-      ),
-      canonicalArgumentsJson = approvalDisplayJson(
-        interruption.canonicalArguments,
-      ),
-      hasUnsafeAuthorityText =
-          <String>[
-            interruption.invocation.tool.modelDefinition.alias,
-            interruption.toolId.value,
-            interruption.effects.summary,
-          ].any(hasUnsafeApprovalControls) ||
-          interruption.effects.targets.any(
-            (target) => hasUnsafeApprovalTarget(target.uri),
-          );
-
-  final String toolAlias;
-  final String toolId;
-  final Set<ToolEffect> effects;
-  final String summary;
-  final EffectUncertainty uncertainty;
-  final List<String> targets;
-  final String canonicalArgumentsJson;
-
-  /// Only raw identity/summary and decoded URI targets block approval. Canonical
-  /// payloads may contain arbitrary source text: escape them, do not reject them.
-  final bool hasUnsafeAuthorityText;
-
-  bool get isUncertain => uncertainty != EffectUncertainty.none;
-  Iterable<String> get effectNames => effects.map((effect) => effect.name);
-  String get effectLabel => switch (effects.toList()) {
-    [ToolEffect.sourceMutation] => 'Modify source',
-    [ToolEffect.processExecution] => 'Run command',
-    _ => 'Tool effects',
-  };
-}
 
 /// Window-local stock Chat interaction, not shared Session lifecycle authority.
 final class ChatController {
@@ -257,7 +207,7 @@ final class ChatController {
             .toList();
         if (interruptions case [final ToolApprovalInterruption interruption]) {
           _pendingInterruption = interruption;
-          _pendingApproval = PendingToolApproval._(interruption);
+          _pendingApproval = PendingToolApproval(interruption);
         } else {
           throw const InvalidRunOperation(
             'Expected exactly one tool approval while Chat is waiting.',

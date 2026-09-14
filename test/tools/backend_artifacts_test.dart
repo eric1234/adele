@@ -9,12 +9,15 @@ const String _gitEntrypoint =
     'plugins/git_environment/packages/backend/bin/git_environment_backend.dart';
 const String _openaiEntrypoint =
     'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart';
+const String _frontendHarness = 'tool/compile_chat_frontend.dart';
 
 void main() {
   late Directory root;
   late Directory sdkBin;
   late File commands;
   late File launchArguments;
+  late File frontendArguments;
+  late File frontendEnvironment;
   late Map<String, String> environment;
 
   setUp(() {
@@ -23,6 +26,7 @@ void main() {
     for (final String path in <String>[
       'tools/adele.dart',
       'tools/backend_artifacts.dart',
+      'tools/frontend_artifacts.dart',
       'tools/test_runner.dart',
       'packages/plugin_builder/lib/plugin_builder.dart',
       'packages/plugin_builder/lib/src/development_plugin_builder.dart',
@@ -32,6 +36,9 @@ void main() {
       File(path).copySync(destination.path);
     }
     Directory('${root.path}/app').createSync();
+    final File harness = File('${root.path}/app/$_frontendHarness');
+    harness.parent.createSync();
+    harness.writeAsStringSync('void main() {}');
     for (final String entrypoint in <String>[
       _hostEntrypoint,
       _gitEntrypoint,
@@ -47,6 +54,8 @@ void main() {
       ..createSync(recursive: true);
     commands = File('${root.path}/commands.txt');
     launchArguments = File('${root.path}/launch-arguments.txt');
+    frontendArguments = File('${root.path}/frontend-arguments.txt');
+    frontendEnvironment = File('${root.path}/frontend-environment.txt');
     environment = <String, String>{
       'PATH': '${bin.path}:${Platform.environment['PATH']}',
     };
@@ -54,6 +63,29 @@ void main() {
 if [ "\$1" = "--version" ]; then
   printf 'inspect-sdk\n' >> '${commands.path}'
   printf '%s\n' '${jsonEncode(<String, String>{'flutterRoot': flutterRoot.path})}'
+elif [ "\$1" = test ]; then
+  test "\$PWD" = '${root.path}/app' || exit 98
+  test "\$#" = 5 && test "\$2" = --no-pub && test "\$3" = --concurrency && test "\$4" = 1 && test "\$5" = '$_frontendHarness' || exit 97
+  test -f "\$5" || exit 96
+  test "\$ADELE_REPOSITORY_ROOT" = '${root.path}' || exit 95
+  case "\$ADELE_CHAT_FRONTEND_OUTPUT" in /*) ;; *) exit 94 ;; esac
+  test ! -e "\$ADELE_CHAT_FRONTEND_OUTPUT" || exit 93
+  printf 'compile|$_frontendHarness\n' >> '${commands.path}'
+  printf '%s\n' "\$@" > '${frontendArguments.path}'
+  printf '%s\n' "\$ADELE_REPOSITORY_ROOT" "\$ADELE_CHAT_FRONTEND_OUTPUT" > '${frontendEnvironment.path}'
+  if [ "\$ADELE_TEST_FRONTEND_ARTIFACT" != missing ]; then
+    if [ "\$ADELE_TEST_FRONTEND_ARTIFACT" = empty ]; then
+      : > "\$ADELE_CHAT_FRONTEND_OUTPUT"
+    else
+      printf 'frontend bytecode\n' > "\$ADELE_CHAT_FRONTEND_OUTPUT"
+    fi
+  fi
+  if [ "\$ADELE_TEST_FAIL_FRONTEND" = 1 ]; then
+    printf 'frontend compiler failed' >&2
+    exit 23
+  fi
+  printf 'compiled|$_frontendHarness\n' >> '${commands.path}'
+  printf 'frontend compiler output\n'
 else
   test "\$PWD" = '${root.path}/app' || exit 98
   printf 'flutter-launch\n' >> '${commands.path}'
@@ -96,7 +128,12 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
       expect(result.exitCode, 0, reason: result.stderr.toString());
       final Map<String, Object?> plan =
           jsonDecode(result.stdout.toString()) as Map<String, Object?>;
-      expect(plan['include'], isNotEmpty);
+      expect(
+        (plan['include']! as List<Object?>).cast<Map<String, Object?>>().map(
+          (Map<String, Object?> item) => item['name'],
+        ),
+        contains('adele_ui'),
+      );
       expect(commands.existsSync(), isFalse);
       expect(Directory('${root.path}/.dart_tool').existsSync(), isFalse);
     },
@@ -107,6 +144,9 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
     () async {
       final Set<String> outputDirectories = <String>{};
       final Map<String, String> retainedArtifacts = <String, String>{};
+      // Preparation must replace inherited inputs with this checkout's paths.
+      environment['ADELE_REPOSITORY_ROOT'] = '/wrong-repository';
+      environment['ADELE_CHAT_FRONTEND_OUTPUT'] = '/wrong-output';
       for (final List<String> arguments in <List<String>>[
         <String>['run', 'linux'],
         <String>['build', 'linux', '--profile'],
@@ -121,7 +161,17 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           'compiled|$_gitEntrypoint',
           'compile|$_openaiEntrypoint',
           'compiled|$_openaiEntrypoint',
+          'compile|$_frontendHarness',
+          'compiled|$_frontendHarness',
           'flutter-launch',
+        ]);
+        expect(result.stdout, contains('frontend compiler output'));
+        expect(frontendArguments.readAsLinesSync(), <String>[
+          'test',
+          '--no-pub',
+          '--concurrency',
+          '1',
+          _frontendHarness,
         ]);
         final List<String> launched = launchArguments.readAsLinesSync();
         final bool run = arguments.first == 'run';
@@ -140,7 +190,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             separator + 1,
           );
         }
-        expect(launched, hasLength(run ? 8 : 7));
+        expect(launched, hasLength(run ? 9 : 8));
         expect(
           defines.keys,
           unorderedEquals(<String>[
@@ -148,6 +198,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             'ADELE_BACKEND_HOST_ARTIFACT',
             'ADELE_GIT_ENVIRONMENT_ARTIFACT',
             'ADELE_OPENAI_ARTIFACT',
+            'ADELE_CHAT_FRONTEND_ARTIFACT',
           ]),
         );
         expect(
@@ -157,12 +208,19 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
         final File host = File(defines['ADELE_BACKEND_HOST_ARTIFACT']!);
         final File git = File(defines['ADELE_GIT_ENVIRONMENT_ARTIFACT']!);
         final File openai = File(defines['ADELE_OPENAI_ARTIFACT']!);
+        final File frontend = File(defines['ADELE_CHAT_FRONTEND_ARTIFACT']!);
         expect(host.uri.isAbsolute, isTrue);
         expect(git.uri.isAbsolute, isTrue);
         expect(openai.uri.isAbsolute, isTrue);
+        expect(frontend.uri.isAbsolute, isTrue);
         expect(host.path, endsWith('/host.aot'));
         expect(git.path, endsWith('/git-environment.aot'));
         expect(openai.path, endsWith('/openai.aot'));
+        expect(frontend.path, endsWith('/chat.evc'));
+        expect(frontendEnvironment.readAsLinesSync(), <String>[
+          root.path,
+          frontend.path,
+        ]);
         expect(host.parent.path, git.parent.path);
         expect(host.parent.path, openai.parent.path);
         expect(
@@ -170,12 +228,19 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           startsWith('${root.path}/.dart_tool/adele/desktop-backends/build-'),
         );
         expect(outputDirectories.add(host.parent.path), isTrue);
+        expect(
+          frontend.parent.path,
+          startsWith('${root.path}/.dart_tool/adele/desktop-frontends/build-'),
+        );
+        expect(outputDirectories.add(frontend.parent.path), isTrue);
         expect(host.readAsStringSync(), 'snapshot $_hostEntrypoint\n');
         expect(git.readAsStringSync(), 'snapshot $_gitEntrypoint\n');
         expect(openai.readAsStringSync(), 'snapshot $_openaiEntrypoint\n');
+        expect(frontend.readAsStringSync(), 'frontend bytecode\n');
         retainedArtifacts[host.path] = host.readAsStringSync();
         retainedArtifacts[git.path] = git.readAsStringSync();
         retainedArtifacts[openai.path] = openai.readAsStringSync();
+        retainedArtifacts[frontend.path] = frontend.readAsStringSync();
         for (final MapEntry<String, String> artifact
             in retainedArtifacts.entries) {
           expect(File(artifact.key).readAsStringSync(), artifact.value);
@@ -217,6 +282,67 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
       });
     }
   }
+
+  for (final String command in <String>['run', 'build']) {
+    for (final String failure in <String>['exit', 'missing', 'empty']) {
+      test('$command never launches after frontend $failure failure', () async {
+        if (failure == 'exit') {
+          environment['ADELE_TEST_FAIL_FRONTEND'] = '1';
+        } else {
+          environment['ADELE_TEST_FRONTEND_ARTIFACT'] = failure;
+        }
+        final ProcessResult result = await invoke(<String>[
+          command,
+          'linux',
+          '--profile',
+        ]);
+        expect(result.exitCode, failure == 'exit' ? 23 : 1);
+        expect(result.stderr, contains('chat-frontend-compilation'));
+        if (failure == 'exit') {
+          expect(result.stderr, contains('frontend compiler failed'));
+          expect(result.stderr, contains('failed with exit code 23'));
+          expect(
+            File(frontendEnvironment.readAsLinesSync()[1]).lengthSync(),
+            greaterThan(0),
+          );
+        } else {
+          expect(result.stderr, contains('produced no non-empty artifact'));
+        }
+        expect(commands.readAsLinesSync(), <String>[
+          'inspect-sdk',
+          'compile|$_hostEntrypoint',
+          'compiled|$_hostEntrypoint',
+          'compile|$_gitEntrypoint',
+          'compiled|$_gitEntrypoint',
+          'compile|$_openaiEntrypoint',
+          'compiled|$_openaiEntrypoint',
+          'compile|$_frontendHarness',
+          if (failure != 'exit') 'compiled|$_frontendHarness',
+        ]);
+        expect(launchArguments.existsSync(), isFalse);
+      });
+    }
+  }
+
+  test(
+    'frontend failure never reuses a retained successful artifact',
+    () async {
+      final ProcessResult first = await invoke(<String>['build', 'linux']);
+      expect(first.exitCode, 0, reason: first.stderr.toString());
+      final File previous = File(frontendEnvironment.readAsLinesSync()[1]);
+      launchArguments.deleteSync();
+      commands.deleteSync();
+
+      environment['ADELE_TEST_FRONTEND_ARTIFACT'] = 'missing';
+      final ProcessResult second = await invoke(<String>['run', 'linux']);
+      expect(second.exitCode, 1);
+      expect(second.stderr, contains('produced no non-empty artifact'));
+      expect(previous.readAsStringSync(), 'frontend bytecode\n');
+      expect(frontendEnvironment.readAsLinesSync()[1], isNot(previous.path));
+      expect(commands.readAsLinesSync(), isNot(contains('flutter-launch')));
+      expect(launchArguments.existsSync(), isFalse);
+    },
+  );
 
   test('missing matched runtime fails before compiling or launching', () async {
     File('${sdkBin.path}/dartaotruntime').deleteSync();

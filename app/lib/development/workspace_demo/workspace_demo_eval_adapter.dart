@@ -1,8 +1,8 @@
 import 'dart:io';
 
 import 'package:adele_desktop/development/workspace_demo/workspace_demo_eval_bridge.dart';
+import 'package:adele_desktop/frontend/interpreted_widget.dart';
 import 'package:dart_eval/dart_eval.dart';
-import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 
@@ -46,23 +46,16 @@ final class WorkspaceDemoEvalAdapter {
     required File artifact,
     required WorkspaceDemoEvalBridge bridge,
   }) async {
-    final Runtime runtime =
-        Runtime((await artifact.readAsBytes()).buffer.asByteData())
-          ..addPlugin(flutterEvalPlugin)
-          ..addPlugin(bridge);
-    final Object? pending = runtime.executeLib(
-      'package:workspace_demo_frontend/workspace_demo_frontend.dart',
-      'buildWorkspaceDemo',
-    );
-    final Object? result = pending is Future<Object?> ? await pending : pending;
-    final Object? reified = result is $Value ? result.$reified : result;
-    if (reified is! Widget) {
-      throw StateError('The interpreted entrypoint did not return a Widget.');
-    }
-    return WorkspaceDemoEvalAdapter._(
-      runtime: runtime,
+    final InterpretedWidget loaded = await loadInterpretedWidget(
+      bytes: await artifact.readAsBytes(),
       bridge: bridge,
-      widget: reified,
+      library: 'package:workspace_demo_frontend/workspace_demo_frontend.dart',
+      entrypoint: 'buildWorkspaceDemo',
+    );
+    return WorkspaceDemoEvalAdapter._(
+      runtime: loaded.runtime,
+      bridge: bridge,
+      widget: loaded.widget,
     );
   }
 

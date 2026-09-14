@@ -271,6 +271,24 @@ void main() {
       expect(target.ciTestConcurrency, isNull);
     });
 
+    test('discovers the UI API with the Flutter runner policy', () {
+      final TestTarget target = lookupTestTarget('adele_ui');
+
+      expect(target.path, 'packages/ui');
+      expect(target.executable, 'flutter');
+      expect(target.argumentsFor(), <String>['test']);
+      expect(target.argumentsFor(ci: true), <String>['test']);
+      expect(target.linuxDesktopDeps, isFalse);
+      expect(target.ciTestConcurrency, isNull);
+    });
+
+    test('does not register a frontend target without standalone tests', () {
+      expect(
+        () => lookupTestTarget('chat_strategy_frontend'),
+        throwsA(isA<TestUsageException>()),
+      );
+    });
+
     test('discovers the local selector without Linux desktop dependencies', () {
       final TestOptions options = parseTestOptions(<String>[
         '--target',
@@ -301,6 +319,29 @@ void main() {
     });
   });
 
+  test('discovers UI and Chat frontend packages for Flutter analysis', () {
+    for (final ({String name, String path}) expected
+        in <({String name, String path})>[
+          (name: 'adele_ui', path: 'packages/ui'),
+          (
+            name: 'chat_strategy_frontend',
+            path: 'plugins/chat_strategy/packages/frontend',
+          ),
+        ]) {
+      final target = analysisTargets.singleWhere(
+        (package) => package.name == expected.name,
+      );
+      expect(target.path, expected.path);
+      expect(target.flutter, isTrue);
+    }
+    expect(
+      analysisTargets
+          .singleWhere((package) => package.name == 'chat_strategy_plugin')
+          .flutter,
+      isFalse,
+    );
+  });
+
   test('target data preserves package-specific runners and timeouts', () {
     expect(
       <String>[
@@ -315,6 +356,7 @@ void main() {
         'adele_plugin_api|dart|packages/plugin_api|test',
         'adele_product|dart|packages/product|test',
         'adele_core_extensions|dart|packages/core_extensions|test',
+        'adele_ui|flutter|packages/ui|test',
         'adele_orchestration|dart|packages/orchestration|test',
         'adele_environment|dart|packages/environment|test',
         'adele_model_tool|dart|packages/model_tool|test',

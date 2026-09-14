@@ -30,7 +30,7 @@ The following remain largely or entirely unimplemented:
 - context sources beyond root AGENTS.md, broader Reference/Observation material, provider-aware projection/cache planning, compaction, and token budgets;
 - parent/child Session lifecycle;
 - plugin-defined extension ecosystems beyond registration, model tools, executable strategies, and instruction-context composition;
-- production plugin-facing UI composition;
+- broader plugin-facing workbench UI composition beyond Session presentation;
 - application Command/Command Palette/keybinding infrastructure;
 - profile-aware provider preference and general configuration services;
 - additional Environment providers, process modes beyond the foreground surface, and broader mutable source tooling such as whole-file overwrite, directory/move/copy, and binary operations;
@@ -41,7 +41,9 @@ Public plugin-facing APIs remain experimental.
 
 The normal shell supports Project opening, title-only Task creation with a real
 Git primary Environment, and one stock Chat Session with sequential approval-gated
-Runs through the experimental ChatGPT subscription-backed ModelProvider.
+Runs through the experimental ChatGPT subscription-backed ModelProvider. A narrow
+public Flutter Session presentation contract hosts the stock Chat plugin's
+evaluated history/composer; common execution status and approvals remain host-owned.
 
 ## System shape
 
@@ -102,13 +104,17 @@ one button per contribution in deterministic registry registration order. Zero
 selectors is an explicit unavailable state; one or multiple contributions are
 independent actions, not a chooser/default-provider framework.
 
-Normal stock bootstrap consumes prepared runtime/backend artifacts, not source
-paths or a compiler. Missing required artifact configuration leaves Task Environment support
-unavailable. Artifact preparation belongs to repository tooling, not app startup;
+Normal stock activation consumes prepared backend and frontend artifacts, not
+source paths or a compiler. Missing required backend artifact configuration leaves
+Task Environment support unavailable; missing Chat EVC leaves presentation
+unavailable independently.
+Artifact preparation belongs to repository/build-time tooling, not app startup;
 deployment inputs and source-checkout limitations are documented in
 [`app/README.md`](../../app/README.md#normal-backend-startup) and the
 [`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
-Production packaging, discovery, and profiles remain deferred.
+Checkout preparation stands in for future installation/update-time compilation;
+activation only consumes prepared artifacts. Caching, plugin management,
+production packaging, discovery, and profiles remain deferred.
 
 Flutter startup reads only stock configuration references; credential loading
 belongs to the OpenAI backend. Startup creates no Project, Task, Environment, or
@@ -180,7 +186,7 @@ Runtime composition should prefer typed interface discovery over hidden activati
 
 Capabilities remain the implemented callable-provider mechanism for Actions and Services. Events are read-only fact notifications. Other extension points may collect UI fragments or structured operation contributions without being callable capabilities.
 
-The generic `ExtensionRegistry` supports typed registration/discovery, retirement, and exact binding liveness. Current model-tool, orchestration-strategy, inference-context-source, and Project selector points reuse it with their own composition semantics; already-resolved bindings do not migrate to replacement generations. Instruction-source data becomes independent of binding liveness after safe capture, unlike executable work.
+The generic `ExtensionRegistry` supports typed registration/discovery, change notifications, retirement, and exact binding liveness. Current model-tool, orchestration-strategy, inference-context-source, Project selector, and Session presentation points reuse it with their own composition semantics; already-resolved bindings do not migrate to replacement generations. Instruction-source data becomes independent of binding liveness after safe capture, unlike executable work.
 
 Tiny pure-Dart `adele_core_extensions` imports only `adele_plugin_api` and owns
 core extension contracts with no natural existing public domain package, not all
@@ -188,7 +194,12 @@ extension APIs. Product values, orchestration strategies/context, model tools,
 Environment providers, generic registry mechanics, and plugin-defined ecosystems
 keep their existing owners; see [`dependency-rules.md`](dependency-rules.md).
 
-Broader recursive composition, plugin-defined UI extension APIs, generic Event subscription, Commands/keybindings, and inference composition beyond instruction material remain direction rather than implemented production systems.
+Public Flutter `adele_ui` owns the concrete Session presentation contract without
+adding Flutter to product, orchestration, or the registry. Broader recursive
+composition, plugin-defined UI ecosystems, generic Event subscription,
+Commands/keybindings, and inference composition beyond instruction material remain
+direction rather than implemented production systems. Registry change
+notifications are not a general domain Event subscription system.
 
 ## Contracts, capabilities, and providers
 
@@ -338,6 +349,42 @@ Persistence, strategy defaults/profiles, and multi-Session navigation remain def
 
 The accepted direction allows child Sessions for delegated work. They may share an Environment or use another Task-associated Environment and are primarily surfaced through the parent Session/orchestration experience. Child Session lifecycle remains deferred.
 
+### Session presentation
+
+`packages/ui` (`adele_ui`) defines `SessionPresentationContribution` with
+`strategyId: OrchestrationStrategyId` and
+`createPresentation: Widget Function(Session)`. Typed
+`sessionPresentationContributions` uses the existing extension registry. The
+canonical Session's stored strategy ID is matched exactly: no match is
+unavailable, one match provides presentation, and multiple matches are explicitly
+ambiguous. Presentation selection neither supplies a default strategy nor changes
+Session lifecycle or execution resolution.
+
+The generic `app/lib/ui/session/session_presentation_host.dart` hosts an existing
+Session without Chat identities or controller knowledge. It observes registry
+changes, validates its retained exact binding, and removes retired presentation
+widgets so their resources dispose. Only fresh resolution can select a replacement.
+Absent presentation or a factory/load failure does not invalidate the Session or
+backend execution; there is no native Chat fallback.
+
+The separate Flutter `chat_strategy_frontend` package under
+`plugins/chat_strategy/packages/frontend` owns evaluated history/composer UI. It
+does not import the headless Chat implementation, app, or kernel.
+`app/lib/frontend` owns generic prepared-generation/runtime hosting only;
+`app/lib/plugins/stock_chat_frontend.dart` is the provisional activation proxy and
+adapter to `ChatController`, intentionally retained in `app/lib/ui/chat`.
+Frontend activation generations and presentation instances are distinct; widget
+lifecycle does not define a permanent one-runtime-per-view architecture.
+
+The eval bridge carries only immutable primitive entry role/text snapshots,
+composer-enabled state, and submission of a string returning synchronous boolean
+acceptance. Session, controller, execution, and approval objects do not cross it.
+Common `RunExecutionStatus`, `PendingToolApproval`, and display safety live under
+`app/lib/ui/execution`, with stock controller adaptation at the composition edge.
+Host policy and exact-invocation approval remain the security authority. A common
+execution timeline, richer workbench composition, and broad third-party UI APIs
+remain deferred.
+
 ## Agent execution
 
 `agent_kernel` remains an internal provider-neutral execution substrate. Concrete models, tools, editors, SCM integrations, terminals, orchestration strategies, and presentation belong outside the kernel.
@@ -404,8 +451,9 @@ targets, and canonical arguments from the retained Run interruption. `Allow once
 resolves that exact interruption; object-identity checks reject stale callbacks.
 User denial produces `userRejected` continuation without execution. Sequential
 approvals resume the same Run, with no inference between same-batch proposals.
-Cards are not canonical Chat entries. Approval preserves revision checks and
-exact-generation authority and is not sandboxing. Tool execution and Environment
+Cards remain outside the evaluated Chat frontend and are not canonical Chat
+entries. Approval preserves revision checks and exact-generation authority and is
+not sandboxing. Tool execution and Environment
 authority remain outside presentation. Configurable permissions, richer
 activity/console, diff/review, and steering remain deferred.
 
@@ -547,7 +595,7 @@ self-hosting.
 | Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, Session-authorized read/mutation/process facets, bounded create/patch/delete text-file mutation, and generated foreground process streaming through the Git provider are proven; persistence and complete lifecycle remain unimplemented. |
 | Session-bound strategy execution | Canonical immutable Session creation, atomic publication with separate Environment authority, executable contributions, explicit unavailable/ambiguous resolution, and exact binding validation across Run operations/resume/settlement are implemented and deterministically validated. Headless Chat uses the public facade with validated state, sequencing, and application integration. Persistent strategy state, child Sessions, and disk persistence remain deferred. |
 | Inference context | Instruction-only source discovery, exact-binding capture, immutable snapshots, current adapter rendering, and the stock root AGENTS.md source activated by the shared runtime are implemented; other sources, broader material, provider-aware projection/cache planning, budgets, and compaction remain deferred. |
-| Production orchestration/UI/Commands | Stock Chat, minimal Project/Task/Environment presentation, and a single normal Chat Session with approval-gated Runs are implemented; configurable permissions, Task Browser, rich workbench UI, Commands, and plugin discovery remain directional. |
+| Production orchestration/UI/Commands | Stock Chat, minimal Project/Task/Environment presentation, typed Session presentation with prepared evaluated Chat history/composer, and host-owned approval-gated Runs are implemented; configurable permissions, a common execution timeline, Task Browser, rich workbench UI, Commands, and plugin discovery remain directional. |
 | Cross-platform/release | Unproven on Windows, macOS, and release mode. |
 | Packaging/sandboxing | Unproven; process isolation is not a sandbox. |
 

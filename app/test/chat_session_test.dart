@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
 import 'package:adele_capabilities/adele_capabilities.dart';
@@ -10,21 +11,29 @@ import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
+import 'package:adele_desktop/plugins/stock_chat_execution_status.dart';
+import 'package:adele_desktop/plugins/stock_chat_frontend.dart';
 import 'package:adele_desktop/plugins/stock_openai.dart';
-import 'package:adele_desktop/ui/chat/approval_display.dart';
 import 'package:adele_desktop/ui/chat/chat_controller.dart';
-import 'package:adele_desktop/ui/chat/chat_view.dart';
+import 'package:adele_desktop/ui/execution/approval_display.dart';
+import 'package:adele_desktop/ui/execution/pending_tool_approval.dart';
+import 'package:adele_desktop/ui/session/session_presentation_host.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_ui/adele_ui.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
+
+import '../tool/chat_frontend_compiler.dart';
+
+late File _frontendArtifact;
 
 const StockChatGptConfiguration _configuration = StockChatGptConfiguration(
   credentialFile: 'fake-unused',
@@ -50,6 +59,18 @@ Iterable<ExecutionEvent> _events(AgentRun run) =>
 void main() {
   late _Fixture fixture;
 
+  setUpAll(() async {
+    final Directory directory = await Directory.systemTemp.createTemp(
+      'adele-chat-presentation-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    _frontendArtifact = File('${directory.path}/chat.evc');
+    await compileChatFrontend(
+      repositoryRoot: Directory.current.parent,
+      artifact: _frontendArtifact,
+    );
+  });
+
   setUp(() {
     fixture = _Fixture();
     addTearDown(fixture.close);
@@ -58,23 +79,51 @@ void main() {
   AdeleShell shell(WidgetTester tester) =>
       tester.widget<AdeleShell>(find.byType(AdeleShell));
 
-  ChatController chat(WidgetTester tester) =>
-      tester.widget<ChatView>(find.byType(ChatView)).controller;
+  ChatController chat(WidgetTester tester) => tester
+      .widget<StockChatExecutionStatus>(find.byType(StockChatExecutionStatus))
+      .controller;
 
-  FilledButton button(WidgetTester tester, String label) =>
-      tester.widget<FilledButton>(find.widgetWithText(FilledButton, label));
+  Finder button(String label) => find.ancestor(
+    of: find.text(label),
+    matching: find.byWidgetPredicate((widget) => widget is ButtonStyleButton),
+  );
+
+  VoidCallback? action(WidgetTester tester, String label) =>
+      button(label).evaluate().isEmpty
+      ? null
+      : tester.widget<ButtonStyleButton>(button(label)).onPressed;
 
   Future<void> tap(WidgetTester tester, String label) async {
-    await tester.ensureVisible(find.widgetWithText(FilledButton, label));
-    await tester.tap(find.widgetWithText(FilledButton, label));
+    await tester.ensureVisible(button(label));
+    await tester.tap(button(label));
     await tester.pumpAndSettle();
   }
 
   Future<void> openTask(
     WidgetTester tester, {
     StockChatGptConfiguration? configuration = _configuration,
+    String? frontendArtifact,
   }) async {
-    await tester.pumpWidget(fixture.application(configuration: configuration));
+    // Start file IO in real async; frame settling cannot await activation.
+    await tester.runAsync(() async {
+      await tester.pumpWidget(
+        fixture.application(
+          configuration: configuration,
+          frontendArtifact: frontendArtifact,
+        ),
+      );
+      if (frontendArtifact == null) {
+        bool activated() => fixture.runtime.extensions
+            .discover(sessionPresentationContributions)
+            .isNotEmpty;
+        if (!activated()) {
+          await fixture.runtime.extensions.changes
+              .firstWhere((_) => activated())
+              .timeout(const Duration(seconds: 10));
+        }
+      }
+    });
+    await tester.pumpAndSettle();
     expect(find.text('New Session'), findsNothing);
     await tap(tester, 'Open Chat Test Project...');
     expect(find.text('New Session'), findsNothing);
@@ -94,7 +143,8 @@ void main() {
   }) async {
     await openTask(tester, configuration: configuration);
     await tap(tester, 'New Session');
-    expect(find.byType(ChatView), findsOneWidget);
+    expect(find.byType(SessionPresentationHost), findsOneWidget);
+    expect(find.text('Ask ADELE...'), findsOneWidget);
   }
 
   Future<void> send(WidgetTester tester, String prompt) async {
@@ -110,6 +160,100 @@ void main() {
     expect(tester.takeException(), isNull);
   }
 
+  for (final String artifact in ['', '/missing/adele-chat-frontend.evc']) {
+    testWidgets(
+      'missing prepared frontend retains canonical product ($artifact)',
+      (tester) async {
+        final _ModelChannel model = fixture.registerModel();
+        await openTask(tester, frontendArtifact: artifact);
+        final Task task = shell(tester).task!;
+        final Environment environment = shell(tester).environment!;
+        await tap(tester, 'New Session');
+        final Session session = chat(tester).session;
+        expect(fixture.runtime.store.session(session.id), same(session));
+        expect(session.taskId, task.id);
+        expect(shell(tester).environment, same(environment));
+        expect(shell(tester).environmentReady, isTrue);
+        expect(chat(tester).unavailableReason, isNull);
+        expect(find.textContaining('presentation'), findsWidgets);
+        expect(find.text('Send'), findsNothing);
+        expect(find.byType(TextField), findsNothing);
+        expect(find.text('New Session'), findsNothing);
+        expect(model.calls, isEmpty);
+        expect(fixture.runIds.values, isEmpty);
+        await disposeApplication(tester);
+      },
+    );
+  }
+
+  testWidgets('interpreted composer survives normal application rebuilds', (
+    tester,
+  ) async {
+    fixture.registerModel();
+    await openChat(tester);
+    await tester.enterText(find.byType(TextField), 'Unsubmitted draft');
+    await tester.pumpWidget(fixture.application());
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      'Unsubmitted draft',
+    );
+    expect(chat(tester).snapshot.entries, isEmpty);
+    await disposeApplication(tester);
+  });
+
+  testWidgets(
+    'retired stock presentation cannot submit through retained UI',
+    (tester) async => tester.runAsync(() async {
+      final _ModelChannel model = fixture.registerModel();
+      final Session session = await fixture.createSession();
+      final ChatController controller = ChatController(
+        runtime: fixture.runtime,
+        session: session,
+        providerId: stockChatGptProviderId,
+        model: _configuration.model,
+        runIds: fixture.runIds,
+      );
+      addTearDown(controller.close);
+      final StockChatFrontend frontend = await StockChatFrontend.activate(
+        extensions: fixture.runtime.extensions,
+        artifactPath: _frontendArtifact.path,
+        controllerForSession: (_) => controller,
+      );
+      addTearDown(frontend.close);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SessionPresentationHost(
+              session: session,
+              extensions: fixture.runtime.extensions,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'Retired submission');
+      final VoidCallback retained = action(tester, 'Send')!;
+      final Future<void> closing = frontend.close();
+      expect(frontend.close(), same(closing));
+      retained();
+      await closing;
+      await tester.pumpAndSettle();
+      retained();
+      expect(find.text('Session presentation is unavailable.'), findsOneWidget);
+      expect(find.byType(TextField), findsNothing);
+      expect(controller.snapshot.entries, isEmpty);
+      expect(model.calls, isEmpty);
+      expect(fixture.runIds.values, isEmpty);
+      expect(fixture.runtime.store.session(session.id), same(session));
+      expect(controller.unavailableReason, isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await controller.close();
+      await fixture.close();
+      expect(tester.takeException(), isNull);
+    }),
+  );
+
   for (final bool configured in <bool>[false, true]) {
     testWidgets(
       'New Session publishes exactly once without ${configured ? 'a provider' : 'model configuration'}',
@@ -120,7 +264,7 @@ void main() {
         );
         final Task task = shell(tester).task!;
         final Environment environment = shell(tester).environment!;
-        final VoidCallback retained = button(tester, 'New Session').onPressed!;
+        final VoidCallback retained = action(tester, 'New Session')!;
         retained();
         retained();
         await tester.pumpAndSettle();
@@ -147,7 +291,7 @@ void main() {
         expect(controller.activeRunFuture, isNull);
         expect(controller.isRunning, isFalse);
         expect(controller.unavailableReason, isNotNull);
-        expect(button(tester, 'Send').onPressed, isNull);
+        expect(action(tester, 'Send'), isNull);
         expect(
           tester.widget<TextField>(find.byType(TextField)).enabled,
           isFalse,
@@ -276,7 +420,7 @@ void main() {
       expect(controller.unavailableReason, contains('not configured'));
       expect(shell(tester).environmentReady, isTrue);
       expect(shell(tester).task!.id, controller.session.taskId);
-      expect(button(tester, 'Send').onPressed, isNull);
+      expect(action(tester, 'Send'), isNull);
       expect(
         controller.submit('Provider presence cannot replace configuration'),
         isFalse,
@@ -300,7 +444,7 @@ void main() {
     expect(controller.snapshot.entries, isEmpty);
     expect(model.calls, isEmpty);
     await tester.enterText(find.byType(TextField), 'Only once');
-    final VoidCallback retained = button(tester, 'Send').onPressed!;
+    final VoidCallback retained = action(tester, 'Send')!;
     retained();
     final Future<void> active = controller.activeRunFuture!;
     retained();
@@ -313,7 +457,7 @@ void main() {
     expect(controller.submit('Duplicate while active'), isFalse);
     await tester.pump();
     expect(field.enabled, isFalse);
-    expect(button(tester, 'Send').onPressed, isNull);
+    expect(action(tester, 'Send'), isNull);
     expect(find.text('Running...'), findsOneWidget);
     expect(controller.activeRunFuture, same(active));
     expect(fixture.runIds.values, hasLength(1));
@@ -324,7 +468,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(controller.snapshot.entries, hasLength(2));
     expect(controller.isRunning, isFalse);
-    expect(button(tester, 'Send').onPressed, isNotNull);
+    expect(action(tester, 'Send'), isNotNull);
     await disposeApplication(tester);
   });
 
@@ -361,7 +505,7 @@ void main() {
     expect(find.text('Run failed: model rateLimited.'), findsOneWidget);
     expect(controller.isRunning, isFalse);
     expect(controller.activeRunFuture, isNull);
-    expect(button(tester, 'Send').onPressed, isNotNull);
+    expect(action(tester, 'Send'), isNotNull);
     expect(controller.session, same(session));
     expect(fixture.runtime.store.session(session.id), same(session));
     await send(tester, 'Try again');
@@ -399,7 +543,7 @@ void main() {
     await tester.pumpAndSettle();
     final AgentRun first = controller.currentRun!.run;
     final ChatSessionSnapshot prior = controller.snapshot;
-    final VoidCallback retained = button(tester, 'Send').onPressed!;
+    final VoidCallback retained = action(tester, 'Send')!;
     await original.registration.close();
     tester.widget<TextField>(find.byType(TextField)).controller!.text =
         'No fallback';
@@ -411,7 +555,7 @@ void main() {
     expect(fallback.calls, isEmpty);
     await tester.pumpWidget(fixture.application());
     await tester.pumpAndSettle();
-    expect(button(tester, 'Send').onPressed, isNull);
+    expect(action(tester, 'Send'), isNull);
     final _ModelChannel replacement = fixture.registerModel();
     await tester.pumpWidget(fixture.application());
     await tester.pumpAndSettle();
@@ -485,7 +629,7 @@ void main() {
           final ChatController controller = chat(tester);
           final Task task = shell(tester).task!;
           final Environment environment = shell(tester).environment!;
-          final VoidCallback retained = button(tester, 'Send').onPressed!;
+          final VoidCallback retained = action(tester, 'Send')!;
           await send(tester, 'Drain accepted work');
           tester.widget<TextField>(find.byType(TextField)).controller!.text =
               'Retained submission after closing';
@@ -578,7 +722,7 @@ void main() {
             expect(shell(tester).environment, same(environment));
             expect(chat(tester), same(controller));
           } else {
-            expect(find.byType(ChatView), findsNothing);
+            expect(find.byType(SessionPresentationHost), findsNothing);
           }
           expect(find.text('Late answer.'), findsNothing);
           expect(find.textContaining('Run failed:'), findsNothing);
@@ -608,10 +752,7 @@ void main() {
         final PendingToolApproval approval = controller.pendingApproval!;
         final ChatSessionSnapshot frozen = controller.snapshot;
         final List<ExecutionEventRecord> journal = run.journal.records;
-        final VoidCallback retainedAllow = button(
-          tester,
-          'Allow once',
-        ).onPressed!;
+        final VoidCallback retainedAllow = action(tester, 'Allow once')!;
         final VoidCallback retainedDeny = tester
             .widget<OutlinedButton>(find.widgetWithText(OutlinedButton, 'Deny'))
             .onPressed!;
@@ -681,7 +822,7 @@ void main() {
           expect(find.text(approval.summary), findsOneWidget);
           expect(find.text('Approval required'), findsOneWidget);
         } else {
-          expect(find.byType(ChatView), findsNothing);
+          expect(find.byType(SessionPresentationHost), findsNothing);
         }
         expect(find.textContaining('Run failed:'), findsNothing);
         await disposeApplication(tester);
@@ -704,8 +845,8 @@ void main() {
     );
     model.calls.single.settle();
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Send'));
-    expect(button(tester, 'Send').onPressed, isNotNull);
+    await tester.ensureVisible(button('Send'));
+    expect(action(tester, 'Send'), isNotNull);
     expect(chat(tester).snapshot.entries, hasLength(2));
     expect(tester.takeException(), isNull);
     await disposeApplication(tester);
@@ -810,7 +951,7 @@ void main() {
       expect(controller.activeRunFuture, isNull);
       expect(controller.submit('Cannot skip this approval'), isFalse);
       expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
-      expect(button(tester, 'Send').onPressed, isNull);
+      expect(action(tester, 'Send'), isNull);
       expect(patch.toolAlias, 'apply_patch');
       expect(patch.toolId, 'dev.adele.plugin.filesystem-tools.apply-patch');
       expect(patch.effects, <ToolEffect>{ToolEffect.sourceMutation});
@@ -863,10 +1004,7 @@ void main() {
       await tester.ensureVisible(find.text(patch.canonicalArgumentsJson));
       expect(tester.takeException(), isNull);
 
-      final VoidCallback retainedAllow = button(
-        tester,
-        'Allow once',
-      ).onPressed!;
+      final VoidCallback retainedAllow = action(tester, 'Allow once')!;
       final VoidCallback retainedDeny = tester
           .widget<OutlinedButton>(find.widgetWithText(OutlinedButton, 'Deny'))
           .onPressed!;
@@ -880,7 +1018,7 @@ void main() {
       retainedAllow();
       retainedDeny();
       await tester.pump();
-      expect(button(tester, 'Allow once').onPressed, isNull);
+      expect(action(tester, 'Allow once'), isNull);
       expect(
         tester
             .widget<OutlinedButton>(find.widgetWithText(OutlinedButton, 'Deny'))
@@ -961,7 +1099,7 @@ void main() {
       await tap(tester, 'Allow once');
       final Future<void> commandResume = controller.activeRunFuture!;
       expect(controller.pendingApproval, same(command));
-      expect(button(tester, 'Allow once').onPressed, isNull);
+      expect(action(tester, 'Allow once'), isNull);
       expect(fixture.environment.processes.single, <String, Object?>{
         'environmentId': 'environment-1',
         'request': <String, Object?>{
@@ -978,7 +1116,7 @@ void main() {
       expect(controller.pendingApproval, same(command));
       expect(controller.isAdvancing, isTrue);
       expect(controller.activeRunFuture, same(commandResume));
-      expect(button(tester, 'Allow once').onPressed, isNull);
+      expect(action(tester, 'Allow once'), isNull);
       final List<Map<String, Object?>> outcomes = model.calls.last.outcomes;
       expect(
         outcomes.map((outcome) => (outcome['callId'], outcome['status'])),
@@ -1030,7 +1168,7 @@ void main() {
       expect(find.text('Allow once'), findsNothing);
       expect(find.text('Deny'), findsNothing);
       expect(find.text(command.canonicalArgumentsJson), findsNothing);
-      expect(button(tester, 'Send').onPressed, isNotNull);
+      expect(action(tester, 'Send'), isNotNull);
       expect(
         controller.snapshot.entries.map((entry) => entry.runtimeType),
         <Type>[ChatUserMessage, ChatAssistantMessage],
@@ -1114,7 +1252,7 @@ void main() {
           find.text('Effects may extend beyond the listed target.'),
           command ? findsOneWidget : findsNothing,
         );
-        expect(button(tester, 'Allow once').onPressed, isNotNull);
+        expect(action(tester, 'Allow once'), isNotNull);
         final Finder deny = find.widgetWithText(OutlinedButton, 'Deny');
         await tester.ensureVisible(deny);
         await tester.tap(deny);
@@ -1130,7 +1268,7 @@ void main() {
         expect(run.state, RunState.running);
         expect(controller.failure, isNull);
         expect(controller.pendingApproval, same(approval));
-        expect(button(tester, 'Allow once').onPressed, isNull);
+        expect(action(tester, 'Allow once'), isNull);
         expect(tester.widget<OutlinedButton>(deny).onPressed, isNull);
         final ToolInvocationCompleted rejected = _events(
           run,
@@ -1260,7 +1398,7 @@ void main() {
         ),
         findsOneWidget,
       );
-      expect(button(tester, 'Allow once').onPressed, isNull);
+      expect(action(tester, 'Allow once'), isNull);
       final Finder deny = find.widgetWithText(OutlinedButton, 'Deny');
       expect(tester.widget<OutlinedButton>(deny).onPressed, isNotNull);
 
@@ -1994,7 +2132,9 @@ final class _Fixture {
 
   AdeleApplication application({
     StockChatGptConfiguration? configuration = _configuration,
+    String? frontendArtifact,
   }) => AdeleApplication(
+    chatFrontendArtifact: frontendArtifact ?? _frontendArtifact.path,
     createRuntime: () {
       runtimeCreations++;
       return runtime;

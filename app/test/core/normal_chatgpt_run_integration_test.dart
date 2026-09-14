@@ -10,16 +10,23 @@ import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/plugins/stock_backend_plugins.dart';
+import 'package:adele_desktop/plugins/stock_chat_execution_status.dart';
+import 'package:adele_desktop/plugins/stock_chat_frontend.dart';
 import 'package:adele_desktop/plugins/stock_git_environment.dart';
 import 'package:adele_desktop/plugins/stock_openai.dart';
 import 'package:adele_desktop/ui/chat/chat_controller.dart';
+import 'package:adele_desktop/ui/execution/pending_tool_approval.dart';
+import 'package:adele_desktop/ui/session/session_presentation_host.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
+
+import '../../tool/chat_frontend_compiler.dart';
 
 const String _sourcePath = 'lib/task_answer.dart';
 const String _taskText = 'const taskAnswer = "task-worktree-only";\n';
@@ -33,7 +40,8 @@ const String _prompt =
     'and validate with git diff --check after each operation is approved.';
 const String _answer =
     'Patched lib/task_answer.dart to declare taskAnswer as "approved-task-value". '
-    'The separately approved git diff --check exited with code 0 in the Task.';
+    'The separately approved git diff --check exited with code 0 in the Task. '
+    'D1 real-EVC canonical final reply.';
 const Map<String, Object?> _commandArguments = {
   'program': 'git',
   'arguments': ['diff', '--check'],
@@ -47,6 +55,7 @@ void main() {
   late File hostArtifact;
   late File gitArtifact;
   late File openAiArtifact;
+  late File evc;
 
   setUpAll(() async {
     final Directory repository = Directory.current.parent;
@@ -63,6 +72,8 @@ void main() {
     hostArtifact = File('${artifacts.path}/host.aot');
     gitArtifact = File('${artifacts.path}/git-environment.aot');
     openAiArtifact = File('${artifacts.path}/openai.aot');
+    evc = File('${artifacts.path}/chat.evc');
+    await compileChatFrontend(repositoryRoot: repository, artifact: evc);
     // Use the normal artifact boundary, compiling each real backend just once.
     for (final target in [
       (
@@ -93,9 +104,9 @@ void main() {
     }
   });
 
-  test(
-    'normal ChatGPT Run separately approves a patch and command batch in its Task',
-    () async {
+  testWidgets(
+    'normal real-EVC ChatGPT Run separately approves a patch and command in its Task',
+    (tester) => tester.runAsync(() async {
       final Directory container = await Directory.systemTemp.createTemp(
         'adele-normal-chatgpt-run-',
       );
@@ -418,24 +429,97 @@ void main() {
       expect(projectCheck.exitCode, isNot(0));
       expect(projectCheck.stdout, contains(_sourcePath));
 
+      late final VoidCallback refreshFrontend;
+      StateSetter? updatePresentation;
       final ChatController controller = ChatController(
         runtime: runtime,
         session: session,
         providerId: stockChatGptProviderId,
         model: 'gpt-6-astra',
         runIds: MonotonicRunIdSource(seed: 'c2-fixture'),
+        onChanged: () {
+          refreshFrontend();
+          updatePresentation?.call(() {});
+        },
       );
       addTearDown(controller.close);
+      final frontend = await StockChatFrontend.activate(
+        extensions: runtime.extensions,
+        artifactPath: evc.path,
+        controllerForSession: (presentedSession) {
+          expect(presentedSession, same(session));
+          return controller;
+        },
+      );
+      refreshFrontend = frontend.refresh;
+      addTearDown(frontend.close);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: StatefulBuilder(
+            builder: (context, setState) {
+              updatePresentation = setState;
+              return Scaffold(
+                body: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      SessionPresentationHost(
+                        session: session,
+                        extensions: runtime.extensions,
+                      ),
+                      StockChatExecutionStatus(controller: controller),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final Finder sessionHost = find.byType(SessionPresentationHost);
+      final Finder promptField = find.descendant(
+        of: sessionHost,
+        matching: find.byType(TextField),
+      );
+      final Finder send = find.descendant(
+        of: sessionHost,
+        matching: find.text('Send'),
+      );
+      final Finder allowOnce = find.descendant(
+        of: find.byType(StockChatExecutionStatus),
+        matching: find.widgetWithText(FilledButton, 'Allow once'),
+      );
+      expect(sessionHost, findsOneWidget);
+      expect(promptField, findsOneWidget);
+      expect(send, findsOneWidget);
+      expect(allowOnce, findsNothing);
+      expect(tester.widget<TextField>(promptField).controller!.text, isEmpty);
+      expect(tester.widget<TextField>(promptField).enabled, isTrue);
+      expect(outbound, isEmpty);
       expect(controller.snapshot.entries, isEmpty);
       expect(controller.currentRun, isNull);
       expect(controller.activeRunFuture, isNull);
       expect(controller.pendingApproval, isNull);
-      expect(controller.submit(_prompt), isTrue);
+      // Keep process/socket work in real async, including the interpreted Send
+      // callback. Pump UI only after each start/resume operation has settled.
+      await tester.enterText(promptField, _prompt);
+      await tester.ensureVisible(send);
+      await tester.tap(send);
       final Future<void>? running = controller.activeRunFuture;
       expect(running, isNotNull);
       expect(controller.isAdvancing, isTrue);
       expect(controller.submit('Duplicate must not enter history.'), isFalse);
       await running!;
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(of: sessionHost, matching: find.text(_prompt)),
+        findsOneWidget,
+      );
+      expect(tester.widget<TextField>(promptField).controller!.text, isEmpty);
+      expect(tester.widget<TextField>(promptField).enabled, isFalse);
+      expect(find.text('Tool: apply_patch'), findsOneWidget);
+      expect(allowOnce, findsOneWidget);
 
       expect(endpointFailures, isEmpty);
       expect(controller.failure, isNull);
@@ -493,11 +577,21 @@ void main() {
       expect(await _sourceSnapshot(source), projectBefore);
       expect(await _sourceSnapshot(worktree), taskBefore);
 
-      expect(controller.resolveApproval(patchApproval, approved: true), isTrue);
+      await tester.ensureVisible(allowOnce);
+      await tester.tap(allowOnce);
       final Future<void>? patching = controller.activeRunFuture;
       expect(patching, isNotNull);
       expect(controller.isAdvancing, isTrue);
       await patching!;
+      await tester.pumpAndSettle();
+      expect(find.text('Tool: apply_patch'), findsNothing);
+      expect(find.text('Tool: run_command'), findsOneWidget);
+      expect(
+        find.text('Effects may extend beyond the listed target.'),
+        findsOneWidget,
+      );
+      expect(allowOnce, findsOneWidget);
+      expect(tester.widget<TextField>(promptField).enabled, isFalse);
 
       expect(endpointFailures, isEmpty);
       expect(controller.failure, isNull);
@@ -585,18 +679,30 @@ void main() {
       expect(await _git(worktree, ['diff', '--name-only']), '$_sourcePath\n');
       expect(await _sourceSnapshot(source), projectBefore);
 
-      expect(
-        controller.resolveApproval(commandApproval, approved: true),
-        isTrue,
-      );
+      await tester.ensureVisible(allowOnce);
+      await tester.tap(allowOnce);
       final Future<void>? validating = controller.activeRunFuture;
       expect(validating, isNotNull);
       expect(controller.isAdvancing, isTrue);
       await validating!;
+      await tester.pumpAndSettle();
       if (endpointFailures.isNotEmpty) {
         final (error, stack) = endpointFailures.first;
         Error.throwWithStackTrace(error, stack);
       }
+      expect(
+        find.descendant(of: sessionHost, matching: find.text(_answer)),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: sessionHost, matching: find.text(_prompt)),
+        findsOneWidget,
+      );
+      expect(tester.widget<TextField>(promptField).controller!.text, isEmpty);
+      expect(tester.widget<TextField>(promptField).enabled, isTrue);
+      expect(allowOnce, findsNothing);
+      expect(find.text('Approval required'), findsNothing);
+      expect(tester.takeException(), isNull);
 
       expect(controller.failure, isNull);
       expect(controller.currentRun, same(execution));
@@ -764,6 +870,9 @@ void main() {
       expect(resultingFile.revision, patchedRevision);
 
       await controller.close();
+      updatePresentation = null;
+      await tester.pumpWidget(const SizedBox.shrink());
+      await frontend.close();
       await runtime.close();
       expect(runtime.plugins.state, ApplicationPluginState.closed);
       expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
@@ -778,7 +887,7 @@ void main() {
         runtime.store.requireSessionAuthority(session.id),
         same(authority),
       );
-    },
+    }),
     timeout: const Timeout(Duration(seconds: 45)),
   );
 }

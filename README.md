@@ -11,6 +11,7 @@ Dynamic source-plugin runtime and generated typed transport
 Active capability registry and exact-generation routing
 Provider-neutral Run/model/tool/policy/approval mechanics
 Session-bound executable strategies and headless stock Chat
+Typed Session presentation and prepared interpreted stock Chat history/composer
 Per-inference instruction-source capture and immutable context snapshots
 Shared application runtime and static stock plugin composition
 Typed Project selectors and minimal local-directory Project opening
@@ -21,9 +22,9 @@ Session-authorized Environment read/search and bounded text-file mutation
 Foreground process execution and model-facing command validation
 ```
 
-Interpreted Flutter frontends and locally compiled AOT backends run through one
-shared child Dart runtime with generated typed clients, codecs, backend
-dispatch, and deterministic provider selection. `workspace_demo` remains the
+Interpreted Flutter frontends run in the Flutter host; locally compiled AOT
+backends run through one shared child Dart runtime with generated typed clients,
+codecs, backend dispatch, and deterministic provider selection. `workspace_demo` remains the
 Phase I/II regression fixture, `resource_inspector` remains the Phase III
 multi-provider capability fixture, and `scripted_model` remains deterministic
 model-provider/transport regression infrastructure. These are internal
@@ -172,8 +173,31 @@ conventions. `AdeleRuntime` activates and retains Chat in normal startup and
 development/self-hosting. Self-hosting obtains its retained Session state, appends
 the prompt, and routes `SessionId` through core lifecycle and orchestration
 hosting rather than constructing a loop directly.
-Normal presentation also consumes this retained Chat state. This remains stock
-application composition, not production plugin discovery or a plugin-facing UI API.
+Normal presentation consumes this retained Chat state through a provisional app
+controller adapter. The separate Flutter `chat_strategy_frontend` package under
+`plugins/chat_strategy/packages/frontend` owns the evaluated history and composer,
+without importing the headless strategy implementation, app, or kernel.
+
+Public Flutter `adele_ui` in `packages/ui` defines
+`SessionPresentationContribution(strategyId, createPresentation)` and typed
+`sessionPresentationContributions` over the existing extension registry. The
+factory has type `Widget Function(Session)`. The generic app Session host matches
+the canonical Session's `OrchestrationStrategyId` exactly: no match is unavailable,
+one match supplies presentation, and multiple matches are explicitly ambiguous.
+It validates retained bindings and removes retired presentation widgets; only
+fresh resolution may select a replacement. Missing or failed presentation does
+not invalidate the Session or backend execution.
+
+Normal Chat presentation loads prepared EVC bytecode rather than compiling source
+at runtime. Its narrow bridge carries immutable primitive role/text history
+snapshots, composer-enabled state, and prompt submission with synchronous boolean
+acceptance. Run status and approval cards remain host-owned under
+`app/lib/ui/execution`; execution objects and approval authority never cross that
+bridge. `ChatController` remains provisional in `app/lib/ui/chat`, while generic
+prepared frontend hosting lives in `app/lib/frontend` and stock Chat activation
+and adaptation belong at `app/lib/plugins/stock_chat_frontend.dart`. This is a
+bounded Session presentation API, not production plugin discovery or a general
+workbench extension framework.
 
 Chat supplies `StrategyInferenceMaterial` containing instructions and ordered
 semantic input from history projection plus Run-local replay. Public
@@ -303,10 +327,10 @@ runtime discovery rather than dependencies on specific implementation plugins.
 Capabilities remain the callable Action/Service provider mechanism; Events are
 read-only fact notifications; UI/composition extension points may use different
 zero/one/many and merge/failure semantics. Generic registration/liveness and
-typed model-tool, orchestration-strategy, inference-context-source, and Project
-selector points are implemented; broader recursive composition and plugin-facing
-UI APIs remain deferred. The Project buttons are temporary host presentation,
-not a chooser framework or application Commands.
+typed model-tool, orchestration-strategy, inference-context-source, Project
+selector, and Session presentation points are implemented; broader recursive
+composition and workbench UI APIs remain deferred. The Project buttons are
+temporary host presentation, not a chooser framework or application Commands.
 
 ADR 0031 accepts these shared product-domain identities:
 
@@ -368,20 +392,27 @@ dart tools/adele.dart build linux
 ```
 
 Normal Linux `run` and `build` prepare fresh shared-host, Git, and OpenAI backend AOT
-snapshots before the Flutter run/build invocation, using `compileAotSnapshot` from
-`plugin_builder`. `tools/backend_artifacts.dart` selects the Dart compiler and
-`dartaotruntime` from the launching Flutter SDK, retains a fresh isolated directory
-under `.dart_tool/adele/desktop-backends/` for each invocation, and passes four
-compile-time artifact-location defines: `ADELE_DARTAOTRUNTIME_EXECUTABLE`,
-`ADELE_BACKEND_HOST_ARTIFACT`, `ADELE_GIT_ENVIRONMENT_ARTIFACT`, and
-`ADELE_OPENAI_ARTIFACT`. The app consumes
-only these prepared locations, not source paths or a compiler.
+snapshots plus Chat frontend EVC before the Flutter run/build invocation.
+`tools/backend_artifacts.dart` uses `compileAotSnapshot` from `plugin_builder` and
+selects the Dart compiler and `dartaotruntime` from the launching Flutter SDK.
+`tools/frontend_artifacts.dart` invokes the Flutter build-time entrypoint
+`app/tool/compile_chat_frontend.dart`. Fresh artifacts are retained under
+`.dart_tool/adele/desktop-backends/` and `.dart_tool/adele/desktop-frontends/`.
+The launcher passes `ADELE_DARTAOTRUNTIME_EXECUTABLE`,
+`ADELE_BACKEND_HOST_ARTIFACT`, `ADELE_GIT_ENVIRONMENT_ARTIFACT`,
+`ADELE_OPENAI_ARTIFACT`, and `ADELE_CHAT_FRONTEND_ARTIFACT` as compile-time
+artifact-location defines. The normal app consumes only prepared locations;
+runtime activation never compiles source. See `app/README.md` for frontend
+preparation inputs and the standalone build-time invocation.
 
 These provisional absolute paths make the built app runnable only on the
 source-checkout machine while those artifacts and that SDK remain in place.
-Moving or deleting them breaks backend startup. This is not artifact caching,
-installation, portable/production packaging, discovery, or profiles; invoking
-Flutter directly without the defines leaves Task Environment support unavailable.
+Moving or deleting them breaks the corresponding backend startup or frontend
+loading. This is not artifact caching, installation, portable/production
+packaging, discovery, or profiles. Invoking Flutter directly without the defines
+leaves Task Environment support and Chat presentation unavailable independently.
+Checkout tooling stands in for future installation/update-time compilation;
+activation consumes prepared artifacts rather than building them.
 
 The maintained Linux profile build passed with real host/Git compilation before
 Flutter build. Focused widget/runtime/bootstrap, real-host/Git, and tooling tests
@@ -414,6 +445,10 @@ the CI matrix. Run their pure-Dart tests with
 `dart tools/adele.dart test --target chat_strategy_plugin` or
 `dart tools/adele.dart test --target agents_md_plugin`.
 
+`adele_ui` is a Flutter analysis/test target. The separate
+`chat_strategy_frontend` is also a Flutter workspace member and analysis target;
+its EVC preparation belongs to the app's build-time tooling.
+
 The repository development command above is unrelated to ADELE's future
 application-level Command Palette/keybinding subsystem described by the
 extension architecture.
@@ -424,6 +459,7 @@ extension architecture.
 app/                         single Flutter desktop application
 packages/plugin_api/         adele_plugin_api (experimental public)
 packages/core_extensions/    adele_core_extensions narrow core-owned contracts
+packages/ui/                 adele_ui public Flutter Session presentation API
 packages/contract/           adele_contract (experimental public)
 packages/contract_codegen/   contract_codegen (internal, pure Dart)
 packages/model_provider/     adele_model_provider (experimental public)
@@ -443,7 +479,7 @@ plugins/openai/              real OpenAI ModelProvider; ChatGPT route experiment
 plugins/filesystem_tools/    stock Session-authorized text-file tools
 plugins/search_tools/        stock Session-authorized literal Search tool
 plugins/command_tools/       stock Session-authorized foreground Command tool
-plugins/chat_strategy/       stock headless Chat strategy and in-memory history
+plugins/chat_strategy/       headless Chat strategy plus separate evaluated frontend
 plugins/agents_md/           stock root-level AGENTS.md instruction source
 plugins/local_directory_project_selector/ stock native directory Project selector
 plugins/git_environment/     Git worktree Environment provider
@@ -539,7 +575,9 @@ public APIs. Provider-aware projection and cache planning, token budgets,
 compaction, and context preview remain deferred.
 General provider/model configuration, Task Browser, and richer Session/Run UI
 remain deferred. The normal product path reaches one stock Chat Session with
-sequential, approval-gated Runs through experimental ChatGPT subscription auth.
+plugin-owned evaluated history/composer and sequential, approval-gated Runs through
+experimental ChatGPT subscription auth. A common execution timeline and broader
+presentation extension ecosystem remain deferred.
 GitHub, cloud, recent-project/catalog selectors, persistence, and deduplication
 are not implemented; application Command surfacing remains deferred.
 Chat persistence, configurable permissions/profiles, steering, richer activity and
