@@ -12,6 +12,13 @@ final OrchestrationStrategyId chatStrategyId = OrchestrationStrategyId(
   'dev.adele.strategy.chat',
 );
 
+/// Chat-owned guidance included once in each Run's inference instructions.
+const String chatToolNarrationGuidance =
+    'When proposing one or more related tool operations, include one brief '
+    'user-facing statement describing their shared purpose. Prefer one concise '
+    'summary for the related batch rather than narrating each operation '
+    'individually. Explicit user instructions take precedence over this guidance.';
+
 final class ChatStrategyPlugin {
   ChatStrategyPlugin({ChatSessionStore? sessions})
     : sessions = sessions ?? ChatSessionStore();
@@ -97,7 +104,9 @@ String _requireContent(String content) {
 
 final class _ChatExecution implements OrchestrationExecution {
   _ChatExecution(this.host, this.session)
-    : instructions = session.instructions,
+    : instructions = session.instructions.isEmpty
+          ? chatToolNarrationGuidance
+          : '$chatToolNarrationGuidance\n\n${session.instructions}',
       maxModelInvocations = session.maxModelInvocations {
     if (host.sessionId != session.id) {
       throw ArgumentError('Run and Session identities must match.');

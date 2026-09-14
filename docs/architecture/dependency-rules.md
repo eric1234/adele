@@ -29,9 +29,10 @@ desktop composition root
 Arrows point toward dependencies. Dependencies flow toward public contracts and APIs; public packages never depend on internal host packages or the desktop application. All packages are initially private to the repository via `publish_to: none`, even when described as public or plugin-facing.
 
 The maintained code currently implements only part of this picture. Public
-`adele_orchestration` implements strategy registration/execution and instruction
-context composition, sharing semantic values with the internal kernel without
-depending on it. B1 adds tiny pure-Dart `adele_core_extensions` for the concrete
+`adele_orchestration` implements strategy registration/execution, read-only Run
+activity, and instruction-context composition, sharing semantic values with the
+internal kernel without depending on it. B1 adds tiny pure-Dart
+`adele_core_extensions` for the concrete
 Project selector contract, depending only on `adele_plugin_api`. Public Flutter
 `adele_ui` supplies the concrete Session presentation contract, depending on
 Flutter, `adele_plugin_api`, and `adele_product`. Plugin-defined extension API
@@ -76,7 +77,7 @@ Existing ownership remains singular:
 
 - Generic registry, registration, and binding liveness belong to `adele_plugin_api`.
 - Product identities and immutable values belong to `adele_product`.
-- Strategy contracts, execution, and inference-context composition belong to `adele_orchestration`.
+- Strategy contracts, execution, read-only Run activity, and inference-context composition belong to `adele_orchestration`.
 - Model-tool contracts belong to `adele_model_tool`.
 - Environment provider contracts belong to `adele_environment`.
 - Flutter Session presentation contracts belong to `adele_ui`; neither product nor orchestration depends on UI.
@@ -150,10 +151,18 @@ APIs. Host policy and exact-invocation approval remain the security authority.
 
 The separate `chat_strategy_frontend` Flutter package renders history/composer
 from prepared EVC, without importing the headless Chat implementation, app, or
-kernel. Its eval bridge carries only immutable primitive entry role/text
+kernel. Its eval bridge carries only immutable primitive message/activity timeline
 snapshots, composer-enabled state, and string submission returning synchronous
 boolean acceptance. No execution or approval objects cross it. The native
 Session presentation factory is distinct from this narrow eval bridge.
+
+The public Run activity source and immutable read model live in pure-Dart
+`adele_orchestration`. The application host translates internal journal evidence
+into those values. No public activity consumer needs `agent_kernel`; the source
+is a separate read-only facade, not a Run object with a restricted static type.
+Chat's proposal-batch grouping is presentation policy, not a universal Run
+invariant. Opaque native output and structured tool outcome data are retained
+without forwarding executable authority or arbitrary exception objects.
 
 Flutter build-time tooling compiles frontend source; normal runtime activation
 only consumes prepared artifacts. Checkout preparation is a stand-in for future

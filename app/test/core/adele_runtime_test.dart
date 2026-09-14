@@ -212,7 +212,7 @@ void main() {
       expect(
         (request.context.instructionGroups.first as StrategyInstructionGroup)
             .instructions,
-        history.instructions,
+        '$chatToolNarrationGuidance\n\nRuntime-owned Chat instructions.',
       );
       final InferenceContextSourceResult source =
           request.context.sourceResults.single;

@@ -45,30 +45,42 @@ class _ChatFrontendState extends State<ChatFrontend> {
       SizedBox(height: 16),
     ];
     for (final ChatPresentationEntry entry in snapshot.entries) {
-      children.add(
-        Padding(
-          padding: EdgeInsets.only(bottom: 16),
-          child: Align(
-            alignment: entry.role == 'user'
-                ? Alignment.centerRight
-                : Alignment.centerLeft,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: entry.role == 'user'
-                  ? CrossAxisAlignment.end
-                  : CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(
-                  entry.role == 'user' ? 'You' : 'ADELE',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-                SizedBox(height: 4),
-                Text(entry.content),
-              ],
+      if (entry.kind == 'activity') {
+        children.add(
+          Padding(
+            padding: EdgeInsets.only(bottom: 16),
+            child: Text(
+              'ACTIVITY: ${entry.content}',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
           ),
-        ),
-      );
+        );
+      } else {
+        children.add(
+          Padding(
+            padding: EdgeInsets.only(bottom: 16),
+            child: Align(
+              alignment: entry.role == 'user'
+                  ? Alignment.centerRight
+                  : Alignment.centerLeft,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: entry.role == 'user'
+                    ? CrossAxisAlignment.end
+                    : CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    entry.role == 'user' ? 'You' : 'ADELE',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  SizedBox(height: 4),
+                  Text(entry.content),
+                ],
+              ),
+            ),
+          ),
+        );
+      }
     }
     // flutter_eval 0.8.2 does not bridge TextField.decoration.
     children.add(Text('Ask ADELE...'));

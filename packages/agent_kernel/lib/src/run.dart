@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_orchestration/adele_orchestration.dart'
     show
@@ -289,9 +291,37 @@ final class ModelInvocationFailed extends ExecutionEvent {
 }
 
 final class ToolInvocationPrepared extends ExecutionEvent {
-  const ToolInvocationPrepared(this.invocation);
+  const ToolInvocationPrepared(
+    this.invocation, {
+    this.modelInvocationId,
+    this.proposalSequence,
+  });
 
   final ToolInvocation invocation;
+  // Absent for directly prepared, non-model kernel invocations.
+  final ModelInvocationId? modelInvocationId;
+  final int? proposalSequence;
+}
+
+final class ToolProposalRejected extends ExecutionEvent {
+  const ToolProposalRejected({
+    required this.modelInvocationId,
+    required this.proposalSequence,
+    required this.proposal,
+    required this.failure,
+  });
+
+  final ModelInvocationId modelInvocationId;
+  final int proposalSequence;
+  final ProviderToolProposal proposal;
+  final ToolProposalFailure failure;
+}
+
+final class ToolPolicyFailed extends ExecutionEvent {
+  const ToolPolicyFailed({required this.invocationId, required this.effects});
+
+  final ToolInvocationId invocationId;
+  final EffectDescription effects;
 }
 
 final class ToolPolicyEvaluated extends ExecutionEvent {
@@ -368,13 +398,38 @@ final class ExecutionEventRecord {
 /// A deterministic in-memory observation journal, not durable event storage.
 final class RunJournal {
   final List<ExecutionEventRecord> _records = <ExecutionEventRecord>[];
+  final StreamController<void> _changes = StreamController<void>.broadcast();
+  bool _notificationPending = false;
   int _nextSequence = 1;
+
+  /// Async coalesced invalidation only. Recording never invokes observers;
+  /// callback errors are handled by their subscription Zones, not execution.
+  Stream<void> get changes => _changes.stream;
+  int get lastSequence => _nextSequence - 1;
 
   List<ExecutionEventRecord> get records =>
       List<ExecutionEventRecord>.unmodifiable(_records);
 
-  void _record(ExecutionEvent event) {
-    _records.add(ExecutionEventRecord(sequence: _nextSequence++, event: event));
+  /// Captures only the unread suffix without copying the accumulated journal.
+  List<ExecutionEventRecord> recordsAfter(int sequence) =>
+      List<ExecutionEventRecord>.unmodifiable(
+        _records.getRange(sequence, _records.length),
+      );
+
+  ExecutionEventRecord _record(ExecutionEvent event) {
+    final ExecutionEventRecord record = ExecutionEventRecord(
+      sequence: _nextSequence++,
+      event: event,
+    );
+    _records.add(record);
+    if (!_notificationPending && _changes.hasListener) {
+      _notificationPending = true;
+      scheduleMicrotask(() {
+        _notificationPending = false;
+        _changes.add(null);
+      });
+    }
+    return record;
   }
 }
 
@@ -402,7 +457,7 @@ final class AgentRun {
     journal._record(const RunStarted());
   }
 
-  void record(ExecutionEvent event) {
+  ExecutionEventRecord record(ExecutionEvent event) {
     if (_state != RunState.running && _state != RunState.waiting) {
       throw InvalidRunOperation(
         'Cannot record execution activity while Run $id is $_state.',
@@ -423,7 +478,7 @@ final class AgentRun {
     if (event case ToolInvocationPrepared(:final invocation)) {
       _validateInvocationContext(invocation);
     }
-    journal._record(event);
+    return journal._record(event);
   }
 
   ToolExecutionStart startToolExecution(ToolExecutionAllowed allowed) {

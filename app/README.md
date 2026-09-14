@@ -240,7 +240,7 @@ does not change Session identity, strategy binding, or backend validity.
 `plugins/chat_strategy/packages/frontend` (`chat_strategy_frontend`)
 owns conversation rendering and the prompt/Send composer as interpreted Flutter
 source. It imports neither `chat_strategy_plugin` implementation nor app/kernel
-code. The stock adapter exposes only immutable primitive entry role/text snapshots,
+code. The stock adapter exposes only immutable primitive mixed message/activity snapshots,
 a composer-enabled boolean, and submission of a string returning synchronous
 boolean acceptance. Neither `Session`, `ChatController`, execution objects,
 approval objects, nor approval decisions cross this eval bridge. The public
@@ -265,6 +265,35 @@ a new `ModelProviderCapabilityAdapter`, and builds tools through
 Chat strategy and per-inference AGENTS.md context composition. The second prompt
 reuses canonical Chat history, not a Run, model binding, or materialized tool set.
 
+Normal Runs expose a read-only live activity source in public pure-Dart
+`adele_orchestration`. The application host translates internal journal evidence
+into immutable model/output/tool snapshots, preserving exact identities and
+authoritative order without executable bindings, arbitrary exceptions, or approval
+authority. Asynchronous coalesced journal invalidations do not eagerly freeze
+snapshots per progress chunk. The controller captures the latest evidence at most
+once per frame, plus advancement-settlement catch-up, while model/tool work is
+still in flight. Native output and terminal
+metadata remain opaque; structured tool `hostData` is retained, not flattened into
+summary prose or rendered automatically.
+
+The provisional controller subscribes before starting its Run and retains
+presentation-only activity snapshots separately from canonical Chat. It inserts
+one compact group after the initiating user entry for each successfully completed
+model invocation containing proposals. Four tool proposals from one invocation
+still produce one summary; later batches produce later groups. Ordered explicit
+`ModelTextOutput` supplies narration, with a structural `N tool operations`
+fallback when absent. Final proposal-free text remains a canonical assistant
+message. The Chat strategy automatically includes stable shared-purpose narration
+guidance, with explicit user instructions taking precedence, without erasing
+Session instructions or changing independent AGENTS.md composition.
+
+Completed groups survive follow-up prompts for this controller's lifetime, not by
+adding `ChatEntry` variants. Reconstructing/reopening the Session cannot restore
+historical activity without future persistence. Observation detaches on close,
+and the interpreted bridge retains coalesced post-frame callbacks and disposal
+guards. Compact activity is non-clickable plugin-owned interpreted text; there is
+no generic tool card, Inspection panel, or provider reasoning presentation.
+
 `ApprovalGatedToolPolicy` allows a singleton certain `sourceRead` effect, asks for
 a singleton certain `sourceMutation`, and asks for a singleton `processExecution`
 regardless of uncertainty. It denies everything else, including empty effects,
@@ -272,7 +301,7 @@ regardless of uncertainty. It denies everything else, including empty effects,
 and instruction prose do not determine authorization. Policy denial remains a
 model-visible `policyDenied` outcome without execution or an interruption.
 
-The evaluated frontend shows conversation, prompt, and Send. Common host-owned
+The evaluated frontend shows conversation, compact activity, prompt, and Send. Common host-owned
 `RunExecutionStatus`, `PendingToolApproval`, and display-safety code live under
 `lib/ui/execution`; `lib/plugins/stock_chat_execution_status.dart` adapts the
 provisional controller to that common surface. Advancing/waiting state, model/Run
@@ -316,20 +345,25 @@ streaming-delta UI, richer tool activity/console, diff/review, and a Run history
 browser remain deferred.
 
 Focused deterministic coverage lives in `test/chat_session_test.dart`,
+`test/chat_frontend_eval_test.dart`, `test/core/run_activity_projection_test.dart`,
 `test/core/approval_gated_tool_policy_test.dart`, `test/core/run_id_source_test.dart`,
 and `test/plugins/stock_openai_test.dart`. The separate
 `test/core/normal_chatgpt_run_integration_test.dart` compiles real host/Git/OpenAI
 artifacts and drives the normal controller through a local fake ChatGPT SSE
-endpoint with temporary fake credentials. Coverage follows a revision-bearing
-read into a patch-and-command proposal batch, separate approvals, direct-argv
-`git diff --check`, and model continuation, checking Task-worktree-only mutation
-and Project/checkout isolation. It requires no account or API key and performs no
-live model request.
+endpoint with temporary fake credentials and the actual prepared Chat EVC.
+Coverage follows a narration-free revision-bearing read into one narrated
+patch-and-command proposal batch, separate approvals without an intervening
+inference, direct-argv `git diff --check`, and model continuation. The interpreted
+timeline stays visible during held final continuation and retains activity between
+the user and canonical final response. Task-worktree-only mutation and
+Project/checkout isolation remain checked. It requires no account or API key and
+performs no live model request.
 
 From `app/`, focused validation uses:
 
 ```sh
 flutter test --no-pub test/chat_session_test.dart test/core/approval_gated_tool_policy_test.dart test/core/orchestration_host_test.dart test/core/orchestration_authority_test.dart test/core/model_tool_host_test.dart
+flutter test --no-pub test/core/run_activity_projection_test.dart test/chat_frontend_eval_test.dart
 flutter test --no-pub test/core/normal_chatgpt_run_integration_test.dart
 ```
 

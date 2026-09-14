@@ -1,7 +1,7 @@
 # ADELE Orchestration
 
 `adele_orchestration` is the experimental public provider-neutral registration,
-binding, execution, and inference-context boundary for orchestration. It is pure
+binding, execution, live activity observation, and inference-context boundary for orchestration. It is pure
 Dart and depends only on public `adele_product`, `adele_plugin_api`, and
 `adele_model_tool`. Its API is not stable. Neither this package nor its stock
 Chat consumer depends on `agent_kernel` or the application.
@@ -102,6 +102,42 @@ also shared through this package.
 materializations, policy machinery, `AgentRun`, and the journal remain internal.
 This public boundary returns collected semantic turns; it does not make the
 kernel's streaming execution or observation implementation public.
+
+## Live Run Activity
+
+`RunActivitySource` supplies `RunActivitySnapshot get snapshot` and
+`Stream<void> get changes`. A snapshot contains ordered `ModelInvocationActivity`,
+`ModelOutputActivity`, `ToolInvocationActivity`, `ToolActivityChange`,
+`RunLifecycleActivity`, and `RejectedToolProposalActivity` values.
+`ToolOutcomeActivity` and `ActivityFailure` are data-only outcome/failure
+projections. `ModelInvocationId` is shared here with the kernel alongside the
+existing Run/tool identities; output and change sequences are Run-local occurrence
+identities, never list indices or globally persistent IDs.
+
+The public activity boundary is deliberately separate from execution. A read-only
+source supplies an initial immutable snapshot and change notifications; it has no
+start, resume, approval, cancellation, or tool methods. The application host
+projects the internal Run journal into these values without exposing the journal
+or retaining executable objects in snapshots. Cancelling a subscription only
+detaches observation. Terminal evidence remains readable after completion/failure.
+
+The read model retains exact model invocation identity, ordered output occurrence
+identity, and resolved tool invocation identity across lifecycle changes. Model
+text, tool proposals, and provider-native outputs keep their distinct public
+types and exact output order. Native envelopes and terminal metadata remain
+opaque, without generic reasoning interpretation. Tools retain explicit proposal
+provenance, canonical arguments, known effect/policy/approval state, progress, and
+data-only outcomes including structured immutable `hostData`; arbitrary exception
+objects, host diagnostics, bindings, and callable authority are not projected.
+
+Chat's compact grouping is a consumer rule, not a core invariant: one successfully
+completed proposal-containing model invocation yields one activity summary.
+Explicit user-facing model text accompanying proposals is preferred narration;
+missing text yields a structural count with no extra inference. Final text without
+proposals remains canonical Chat content. Activity is not canonical Chat history
+and is not persisted. Completed activity retained by a current presentation cannot
+be reconstructed after reopening until persistence exists. Bespoke plugin-owned
+activity UI and Inspection remain future work.
 
 ## Inference Context
 
@@ -219,9 +255,10 @@ Chat's only direct production dependencies are `adele_orchestration` and
 development dependencies.
 
 Chat contributes no context source and does not discover sources
-itself. It owns history, instructions, Run-local replay, and bounded sequencing;
-tools, policy, and model controls remain separate. Only development/self-hosting
-composition activates the independent stock
+itself. It owns history, instructions (including automatic batch-narration
+guidance), Run-local replay, and bounded sequencing; tools, policy, and model
+controls remain separate. Shared normal and development/self-hosting composition
+activates the independent stock
 [`agents_md_plugin`](../../plugins/agents_md/README.md); Chat remains AGENTS-unaware.
 That source rereads root `AGENTS.md` through the Session-authorized
 `AuthorizedEnvironmentFileReadFacet` each snapshot. Missing (`not_found`) or blank
@@ -232,8 +269,8 @@ that explicit user instructions and direct requests take precedence. This is
 plugin-owned guidance, not a generic precedence or repository-instructions API.
 
 There are no kernel, Flutter, app, or plugin-runtime imports. Scheduling,
-production discovery, Chat UI, persistence, profiles, and child Sessions remain
-deferred. The generic context contract remains instruction-only. Nested/scoped
+production discovery, rich Chat UI/Inspection, persistence, profiles, and child
+Sessions remain deferred. The generic context contract remains instruction-only. Nested/scoped
 AGENTS.md, aliases/overrides, global/home files, imports, and AGENTS.md caching are
 deferred; time, Skills, roles, and repository maps remain independent, unimplemented
 source concerns. Broader Reference/Observation material is directional;

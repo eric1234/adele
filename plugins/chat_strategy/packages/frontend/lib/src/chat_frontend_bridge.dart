@@ -1,7 +1,21 @@
 final class ChatPresentationEntry {
-  const ChatPresentationEntry({required this.role, required this.content});
+  const ChatPresentationEntry({
+    required String this.role,
+    required this.content,
+  }) : kind = 'message',
+       id = null;
 
-  final String role;
+  const ChatPresentationEntry.activity({
+    required String this.id,
+    required this.content,
+  }) : kind = 'activity',
+       role = null;
+
+  final String kind;
+
+  /// Opaque Run/model-invocation identity for an activity; null for a message.
+  final String? id;
+  final String? role;
   final String content;
 }
 

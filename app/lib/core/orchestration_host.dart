@@ -3,6 +3,7 @@ import 'package:agent_kernel/agent_kernel.dart';
 
 import 'inference_context_host.dart';
 import 'product_lifecycle.dart';
+import 'run_activity_projection.dart';
 
 /// Resolves only the canonical Session's stored strategy, once for this Run.
 SessionOrchestrationRun createSessionOrchestrationRun({
@@ -48,6 +49,7 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
   bool _busy = false;
 
   AgentRun get run => _host._run;
+  RunActivitySource get activity => _host.activity;
   ToolOutcome? get lastToolOutcome => _host._lastToolOutcome;
   ToolInvocation? get lastToolInvocation => _host._lastToolInvocation;
   MaterializedToolSet? get lastModelTools => _host._lastModelTools;
@@ -149,6 +151,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
   ToolOutcome? _lastToolOutcome;
   ToolInvocation? _lastToolInvocation;
   MaterializedToolSet? _lastModelTools;
+  late final RunActivitySource activity = RunActivityProjection(_run).source;
 
   @override
   RunId get id => _run.id;
@@ -218,7 +221,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
       context: context,
       tools: tools,
     );
-    final _ToolSnapshot snapshot = _ToolSnapshot(this, tools);
+    final _ToolSnapshot snapshot = _ToolSnapshot(this, tools, invocationId);
     _run.record(ModelInvocationStarted(invocationId));
     final List<ModelOutputItem> output = <ModelOutputItem>[];
     try {
@@ -236,9 +239,15 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
             },
             onOutput: (ModelOutputItem item) {
               output.add(item);
-              _run.record(
+              final ExecutionEventRecord record = _run.record(
                 ModelOutputObserved(invocationId: invocationId, item: item),
               );
+              if (item is ModelToolProposalOutput) {
+                snapshot._proposals.add((
+                  proposal: item.proposal,
+                  sequence: record.sequence,
+                ));
+              }
             },
           );
       switch (observation.terminal) {
@@ -251,13 +260,8 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
               metadata: terminal.metadata,
             ),
           );
-          if (terminal.settlement == ModelSettlement.completed) {
-            snapshot._proposals.addAll(
-              output.whereType<ModelToolProposalOutput>().map(
-                (ModelToolProposalOutput item) => item.proposal,
-              ),
-            );
-          }
+          snapshot._completed =
+              terminal.settlement == ModelSettlement.completed;
           return StrategyModelTurn.settled(
             tools: snapshot,
             output: output,
@@ -300,13 +304,22 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
     required ProviderToolProposal proposal,
   }) => _operation(() async {
     _requireRunning();
-    if (tools is! _ToolSnapshot ||
-        !identical(tools._owner, this) ||
-        !tools._proposals.remove(proposal)) {
+    final int proposalIndex =
+        tools is _ToolSnapshot &&
+            identical(tools._owner, this) &&
+            tools._completed
+        ? tools._proposals.indexWhere(
+            (item) => identical(item.proposal, proposal),
+          )
+        : -1;
+    if (tools is! _ToolSnapshot || proposalIndex < 0) {
       throw const InvalidRunOperation(
         'Proposal must belong to this Run\'s exact model materialization and be unused.',
       );
     }
+    final int proposalSequence = tools._proposals
+        .removeAt(proposalIndex)
+        .sequence;
     final ToolProposalResolution resolution = _resolver.resolve(
       invocationId: ToolInvocationId(
         '${id.value}-tool-${_nextToolInvocation++}',
@@ -317,12 +330,26 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
     );
     switch (resolution) {
       case RejectedToolProposal(:final failure):
+        _run.record(
+          ToolProposalRejected(
+            modelInvocationId: tools._modelInvocationId,
+            proposalSequence: proposalSequence,
+            proposal: proposal,
+            failure: failure,
+          ),
+        );
         return StrategyToolContinuation(
           SemanticToolProposalFailureInput(failure: failure),
         );
       case ResolvedToolProposal(:final invocation):
         _lastToolInvocation = invocation;
-        _run.record(ToolInvocationPrepared(invocation));
+        _run.record(
+          ToolInvocationPrepared(
+            invocation,
+            modelInvocationId: tools._modelInvocationId,
+            proposalSequence: proposalSequence,
+          ),
+        );
         return _applyPolicy(invocation);
     }
   });
@@ -353,6 +380,9 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
         ),
       );
     } on ToolPolicyEvaluationFailed catch (error) {
+      _run.record(
+        ToolPolicyFailed(invocationId: invocation.id, effects: error.effects),
+      );
       return StrategyToolContinuation(
         _recordToolTerminal(
           invocation,
@@ -368,7 +398,8 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
         ),
       );
     }
-    validateBinding();
+    // Preserve the completed preflight evidence even if the strategy retired
+    // while describe() was pending; execution still requires a live binding.
     _run.record(
       ToolPolicyEvaluated(
         invocationId: invocation.id,
@@ -380,6 +411,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
         effects: result.effects,
       ),
     );
+    validateBinding();
     switch (result) {
       case ToolExecutionAllowed():
         return StrategyToolContinuation(await _execute(result));
@@ -569,9 +601,11 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
 }
 
 final class _ToolSnapshot implements StrategyToolSnapshot {
-  _ToolSnapshot(this._owner, this._tools);
+  _ToolSnapshot(this._owner, this._tools, this._modelInvocationId);
 
   final KernelOrchestrationHost _owner;
   final MaterializedToolSet _tools;
-  final List<ProviderToolProposal> _proposals = <ProviderToolProposal>[];
+  final ModelInvocationId _modelInvocationId;
+  bool _completed = false;
+  final List<({ProviderToolProposal proposal, int sequence})> _proposals = [];
 }
