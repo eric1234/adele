@@ -217,10 +217,47 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     }
     final RunActivitySnapshot? activity = chat.activityForRun(runId);
     if (activity == null) return false;
+    final outputSequence = chat
+        .activitySummary(runId, modelInvocationId)!
+        .outputSequence;
+    if (outputSequence != null) {
+      return _inspection.inspectOutput(
+        session: session,
+        activity: activity,
+        modelInvocationId: modelInvocationId,
+        outputSequence: outputSequence,
+      );
+    }
     return _inspection.inspectActivity(
       session: session,
       activity: activity,
       modelInvocationId: modelInvocationId,
+    );
+  }
+
+  void _inspectOutput(
+    Session session,
+    InspectionCardId originCardId,
+    ModelOutputInspectionTarget target,
+  ) {
+    final chat = _chat;
+    if (!mounted ||
+        _closing != null ||
+        chat == null ||
+        chat.isClosed ||
+        !identical(_session, session) ||
+        target.sessionId != session.id ||
+        chat.activitySummary(target.runId, target.modelInvocationId) == null) {
+      return;
+    }
+    final activity = chat.activityForRun(target.runId);
+    if (activity == null) return;
+    _inspection.inspectOutput(
+      session: session,
+      activity: activity,
+      modelInvocationId: target.modelInvocationId,
+      outputSequence: target.outputSequence,
+      originCardId: originCardId,
     );
   }
 
@@ -278,7 +315,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
           if (mounted && _closing == null) setState(() {});
         },
         onActivityChanged: () {
-          if (_inspection.selection != null) _inspectionChanged();
+          if (_inspection.cards.isNotEmpty) _inspectionChanged();
         },
       );
       setState(() {
@@ -469,6 +506,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
 
   @override
   Widget build(BuildContext context) {
+    final session = _session;
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       home: AdeleShell(
@@ -476,23 +514,30 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         task: _task,
         environment: _environment,
         environmentReady: _environmentReady,
-        inspection: switch (_inspection.selection) {
-          final ActivityInspectionSelection selection => InspectionHost(
-            selection: selection,
-            activity: _chat?.activityForRun(selection.runId),
-            heading:
-                _chat
-                    ?.activitySummary(
-                      selection.runId,
-                      selection.modelInvocationId,
-                    )
-                    ?.content ??
-                'Activity is unavailable.',
-            extensions: _runtime.extensions,
-            onClose: _inspection.clear,
-          ),
-          null => null,
-        },
+        inspection: _inspection.cards.isEmpty
+            ? null
+            : InspectionStackHost(
+                cards: _inspection.cards,
+                cardBuilder: (context, card) => InspectionHost(
+                  card: card,
+                  activity: _chat?.activityForRun(card.target.runId),
+                  heading:
+                      _chat
+                          ?.activitySummary(
+                            card.target.runId,
+                            card.target.modelInvocationId,
+                          )
+                          ?.content ??
+                      'Activity is unavailable.',
+                  extensions: _runtime.extensions,
+                  onCollapse: () => _inspection.collapse(card.id),
+                  onExpand: () => _inspection.expand(card.id),
+                  onDismiss: () => _inspection.dismiss(card.id),
+                  onInspectOutput: session == null
+                      ? (_) {}
+                      : (target) => _inspectOutput(session, card.id, target),
+                ),
+              ),
         taskControls: _session != null
             ? null
             : Column(

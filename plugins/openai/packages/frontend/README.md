@@ -1,8 +1,9 @@
 # OpenAI Activity Frontend
 
-`openai_frontend` owns interpreted, read-only Inspection of provider-supplied
-OpenAI reasoning summaries. Its `lib/openai_frontend.dart` entrypoint is
-`buildOpenAiReasoningInspection`. It depends on Flutter and public `adele_ui`,
+`openai_frontend` owns interpreted, read-only compact activity and rich Inspection
+of provider-supplied OpenAI reasoning summaries. Its `lib/openai_frontend.dart`
+entrypoints are `buildOpenAiReasoningCompact` and `buildOpenAiReasoningInspection`
+in the same prepared artifact. It depends on Flutter and public `adele_ui`,
 not the OpenAI backend, app, kernel, or headless Chat implementation. Normal app
 composition loads prepared EVC rather than importing this widget as a native view.
 
@@ -58,6 +59,12 @@ backend's Unicode code-point bound. `inspectionDisplayText` escapes unsafe
 display characters without changing replay data. The card has no tool controls,
 approval buttons, model calls, or continuation actions.
 
+`buildOpenAiReasoningCompact` uses the same safe data, displaying a bounded first
+summary part. Common
+hosting owns inspect interaction and card controls; the compact EVC receives no
+navigation callback. If custom compact presentation is unavailable, common code
+retains the provider-approved `compactText` rather than hiding the activity.
+
 ## Composition And Lifetime
 
 `app/lib/plugins/stock_openai_activity_frontend.dart` registers
@@ -70,6 +77,13 @@ owns no projection, raw interpretation, or display-safety algorithms and is
 explicitly provisional until discovery/profiles replace hard-coded selection.
 Generic Chat and Inspection never parse OpenAI fields.
 
+The activation also registers
+`ModelNativeActivityCompactPresentationContribution` at
+`modelNativeActivityCompactPresentationContributions`. Both roles resolve exact
+safe kind with zero/one/many semantics and independent exact-binding liveness.
+Compact unavailability, ambiguity, or failure preserves factual safe-text fallback;
+rich unavailability preserves the card with bounded unavailable framing.
+
 `ModelNativeActivityPresentationResolver` matches exact safe presentation kind.
 Zero matches make rich Inspection unavailable while safe activity still exists,
 one supplies a retained binding, and many are explicitly ambiguous without priority.
@@ -80,14 +94,16 @@ source compilation or a native card fallback. Exact-generation retirement remove
 the old view and invalidates its resources; replacement requires fresh resolution,
 never stale-resource retargeting.
 
-Chat creates one group for a successfully completed invocation with tools or
-native `output.presentation != null`, independently of rich frontend activation.
-No Chat negative projection cache or registry-change retry is needed. The heading
-prefers tool-batch narration only when tools are present, then safe compact text,
-then tool count. Reasoning-only activity appears before canonical
-final assistant text. Inspection interleaves tools and native activity by exact
-`output.sequence`. Groups are retained for the controller lifetime, including
-follow-up prompts, not persisted into canonical Chat history.
+Chat counts tool proposals and native `output.presentation != null` occurrences
+per successfully completed invocation, independently of frontend activation.
+One appears directly through compact presentation; two or more use one group.
+Narration and opaque native outputs do not count. Group headings prefer tool-batch
+narration when tools are present, then safe compact text, then operation count.
+Reasoning-only activity appears before canonical final assistant text. Group
+Inspection interleaves compact tool/native rows by exact `output.sequence`;
+common row interaction prepends individual cards whose expanded bodies use rich
+presentation. Existing cards retain independent collapse/dismiss state. Activity
+survives follow-up prompts for the controller lifetime, not in canonical history.
 
 ## Prepared Artifact
 
@@ -124,7 +140,7 @@ generic DTO mapping, and raw-only replay.
 This deterministic scope does not establish live-provider summary support.
 
 Hidden chain-of-thought and encrypted reasoning are never user-presented.
-Reasoning deltas, compaction/configuration UI, nested
-inspection, Source/Diff/Console navigation, terminal/PTY/full-output views, and
+Reasoning deltas, compaction/configuration UI, arbitrary plugin
+drill-down, Source/Diff/Console navigation, terminal/PTY/full-output views, and
 activity persistence remain deferred. Summary request support is provider-local
 and narrowly guarded, as documented in the [backend README](../backend/README.md).

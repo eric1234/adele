@@ -1,220 +1,244 @@
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
-import 'package:adele_desktop/ui/inspection/model_native_activity_inspection_host.dart';
-import 'package:adele_desktop/ui/inspection/tool_activity_inspection_host.dart';
+import 'package:adele_desktop/ui/inspection/activity_output_presentation.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
-import 'package:adele_ui/adele_ui.dart';
-import 'package:adele_ui/inspection_display.dart';
 import 'package:flutter/material.dart';
 
-/// Common group composition. Native/tool interpretation belongs to contributions.
+/// Keyed card composition inside the shell's independently scrollable viewport.
+final class InspectionStackHost extends StatefulWidget {
+  const InspectionStackHost({
+    super.key,
+    required this.cards,
+    required this.cardBuilder,
+  });
+
+  final List<InspectionCard> cards;
+  final Widget Function(BuildContext, InspectionCard) cardBuilder;
+
+  @override
+  State<InspectionStackHost> createState() => _InspectionStackHostState();
+}
+
+final class _InspectionStackHostState extends State<InspectionStackHost> {
+  @override
+  void initState() {
+    super.initState();
+    _revealNewest();
+  }
+
+  @override
+  void didUpdateWidget(InspectionStackHost oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final newest = widget.cards.firstOrNull;
+    if (newest != null &&
+        !oldWidget.cards.any((card) => identical(card.id, newest.id))) {
+      _revealNewest();
+    }
+  }
+
+  void _revealNewest() {
+    final id = widget.cards.firstOrNull?.id;
+    if (id == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !identical(widget.cards.firstOrNull?.id, id)) return;
+      final position = Scrollable.maybeOf(context)?.position;
+      position?.jumpTo(position.minScrollExtent);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      for (final card in widget.cards)
+        Padding(
+          key: ValueKey(card.id),
+          padding: const EdgeInsets.only(bottom: 12),
+          child: widget.cardBuilder(context, card),
+        ),
+    ],
+  );
+}
+
+/// Common card chrome; group rows and individual headers are compact only.
 final class InspectionHost extends StatelessWidget {
   const InspectionHost({
     super.key,
-    required this.selection,
+    required this.card,
     required this.activity,
     required this.heading,
     required this.extensions,
-    required this.onClose,
+    required this.onCollapse,
+    required this.onExpand,
+    required this.onDismiss,
+    required this.onInspectOutput,
   });
 
-  final ActivityInspectionSelection selection;
+  final InspectionCard card;
   final RunActivitySnapshot? activity;
   final String heading;
   final ExtensionRegistry extensions;
-  final VoidCallback onClose;
+  final VoidCallback onCollapse;
+  final VoidCallback onExpand;
+  final VoidCallback onDismiss;
+  final ValueChanged<ModelOutputInspectionTarget> onInspectOutput;
 
   @override
   Widget build(BuildContext context) {
-    final RunActivitySnapshot? snapshot = activity;
-    final ModelInvocationActivity? model =
-        snapshot?.runId == selection.runId &&
-            snapshot?.sessionId == selection.sessionId
+    final target = card.target;
+    final snapshot = activity;
+    final model =
+        snapshot?.runId == target.runId &&
+            snapshot?.sessionId == target.sessionId
         ? snapshot!.models
-              .where((model) => model.id == selection.modelInvocationId)
+              .where((model) => model.id == target.modelInvocationId)
               .firstOrNull
         : null;
-    final tools = <int, ToolInvocationActivity>{
-      if (model != null)
-        for (final tool in snapshot!.tools)
-          if (tool.modelInvocationId == model.id) tool.proposalSequence: tool,
-    };
-    final rejected = <int, RejectedToolProposalActivity>{
-      if (model != null)
-        for (final proposal in snapshot!.rejectedProposals)
-          if (proposal.modelInvocationId == model.id)
-            proposal.proposalSequence: proposal,
-    };
-    final bool terminal = switch (snapshot?.state) {
-      RunState.completed || RunState.failed || RunState.cancelled => true,
-      _ => false,
-    };
     final outputs = [...?model?.outputs]
       ..sort((a, b) => a.sequence.compareTo(b.sequence));
-
     return DecoratedBox(
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface,
         border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(8),
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(8),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
-                  child: Text(
-                    'Inspection',
-                    style: Theme.of(context).textTheme.titleLarge,
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: switch (target) {
+                      ActivityGroupInspectionTarget() => Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'ACTIVITY',
+                            style: Theme.of(context).textTheme.labelSmall,
+                          ),
+                          Text(
+                            model == null
+                                ? 'Activity is unavailable.'
+                                : heading,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ],
+                      ),
+                      ModelOutputInspectionTarget() =>
+                        ActivityOutputPresentation(
+                          extensions: extensions,
+                          activity: activity,
+                          target: target,
+                          compact: true,
+                        ),
+                    },
                   ),
                 ),
                 IconButton(
-                  tooltip: 'Close Inspection',
-                  onPressed: onClose,
+                  tooltip: card.isCollapsed
+                      ? 'Expand Inspection'
+                      : 'Collapse Inspection',
+                  onPressed: card.isCollapsed ? onExpand : onCollapse,
+                  visualDensity: VisualDensity.compact,
+                  iconSize: 18,
+                  icon: Icon(
+                    card.isCollapsed ? Icons.expand_more : Icons.expand_less,
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Dismiss Inspection',
+                  onPressed: onDismiss,
+                  visualDensity: VisualDensity.compact,
+                  iconSize: 18,
                   icon: const Icon(Icons.close),
                 ),
               ],
             ),
-            const SizedBox(height: 12),
-            if (model == null)
-              const Text('Activity is unavailable.')
-            else ...[
-              const Text('ACTIVITY'),
-              const SizedBox(height: 4),
-              Text(heading, style: Theme.of(context).textTheme.titleMedium),
-              const SizedBox(height: 16),
-              // Outputs, not preparation/completion order, own these positions.
-              for (final output in outputs)
-                if (output.item case ModelToolProposalOutput(:final proposal))
-                  Padding(
-                    key: ValueKey((selection.runId, model.id, output.sequence)),
-                    padding: const EdgeInsets.only(bottom: 16),
-                    child: switch (tools[output.sequence]) {
-                      final ToolInvocationActivity tool => _ToolInspectionItem(
-                        key: ValueKey(tool.id),
-                        activity: tool,
-                        extensions: extensions,
-                        runEndedWithoutOutcome:
-                            terminal && tool.outcome == null,
-                      ),
-                      null => _UnresolvedProposal(
-                        alias: proposal.alias,
-                        rejection: rejected[output.sequence],
-                        terminal: terminal,
-                      ),
-                    },
-                  )
-                else if (output.item case ModelNativeOutput(
-                  presentation: final ModelNativePresentation presentation,
-                ))
-                  ModelNativeActivityInspectionHost(
-                    key: ValueKey((selection.runId, model.id, output.sequence)),
-                    extensions: extensions,
-                    presentation: presentation,
-                  ),
-            ],
-          ],
-        ),
+          ),
+          // Collapsing hides the body without replacing its sources or runtimes.
+          Visibility(
+            visible: !card.isCollapsed,
+            maintainState: true,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Divider(height: 1),
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: switch (target) {
+                    ModelOutputInspectionTarget() => ActivityOutputPresentation(
+                      extensions: extensions,
+                      activity: activity,
+                      target: target,
+                      compact: false,
+                    ),
+                    ActivityGroupInspectionTarget() => Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        for (final output in outputs)
+                          if (switch (output.item) {
+                            ModelToolProposalOutput() => true,
+                            ModelNativeOutput(
+                              presentation: ModelNativePresentation(),
+                            ) =>
+                              true,
+                            _ => false,
+                          })
+                            _outputRow(output, target),
+                      ],
+                    ),
+                  },
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
-}
 
-final class _UnresolvedProposal extends StatelessWidget {
-  const _UnresolvedProposal({
-    required this.alias,
-    required this.rejection,
-    required this.terminal,
-  });
-
-  final String alias;
-  final RejectedToolProposalActivity? rejection;
-  final bool terminal;
-
-  @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      Text('Proposal: ${inspectionDisplayText(alias)}', maxLines: 3),
-      Text(
-        rejection != null
-            ? 'Proposal rejected: ${rejection!.kind.name}.'
-            : terminal
-            ? 'Not processed before the Run ended.'
-            : 'Waiting to be processed.',
+  Widget _outputRow(ModelOutputActivity output, InspectionTarget group) {
+    final target = ModelOutputInspectionTarget(
+      sessionId: group.sessionId,
+      runId: group.runId,
+      modelInvocationId: group.modelInvocationId,
+      outputSequence: output.sequence,
+    );
+    return TextButton(
+      key: ValueKey((
+        group.sessionId,
+        group.runId,
+        group.modelInvocationId,
+        output.sequence,
+      )),
+      onPressed: () => onInspectOutput(target),
+      style: TextButton.styleFrom(
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+        alignment: Alignment.centerLeft,
       ),
-    ],
-  );
-}
-
-final class _ToolInspectionItem extends StatefulWidget {
-  const _ToolInspectionItem({
-    super.key,
-    required this.activity,
-    required this.extensions,
-    required this.runEndedWithoutOutcome,
-  });
-
-  final ToolInvocationActivity activity;
-  final ExtensionRegistry extensions;
-  final bool runEndedWithoutOutcome;
-
-  @override
-  State<_ToolInspectionItem> createState() => _ToolInspectionItemState();
-}
-
-final class _ToolInspectionItemState extends State<_ToolInspectionItem> {
-  late final _ToolSource _source = _ToolSource(widget.activity);
-
-  @override
-  void didUpdateWidget(_ToolInspectionItem oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    _source.update(widget.activity);
-  }
-
-  @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      if (widget.runEndedWithoutOutcome)
-        const Padding(
-          padding: EdgeInsets.only(bottom: 8),
-          child: Text(
-            'Run ended without a terminal tool result. '
-            'Last observed activity:',
+      child: Row(
+        children: [
+          Expanded(
+            child: IgnorePointer(
+              child: ActivityOutputPresentation(
+                extensions: extensions,
+                activity: activity,
+                target: target,
+                compact: true,
+              ),
+            ),
           ),
-        ),
-      ToolActivityInspectionHost(
-        key: ValueKey(_source),
-        extensions: widget.extensions,
-        source: _source,
+          const SizedBox(width: 8),
+          const Icon(Icons.chevron_right, size: 18),
+        ],
       ),
-    ],
-  );
-
-  @override
-  void dispose() {
-    _source.dispose();
-    super.dispose();
-  }
-}
-
-final class _ToolSource extends ChangeNotifier
-    implements ToolActivityInspectionSource {
-  _ToolSource(this._snapshot);
-
-  ToolInvocationActivity _snapshot;
-
-  @override
-  ToolInvocationActivity get snapshot => _snapshot;
-
-  void update(ToolInvocationActivity value) {
-    assert(value.id == _snapshot.id && value.toolId == _snapshot.toolId);
-    if (identical(value, _snapshot)) return;
-    _snapshot = value;
-    notifyListeners();
+    );
   }
 }

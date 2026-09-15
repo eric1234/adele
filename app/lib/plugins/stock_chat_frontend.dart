@@ -4,18 +4,25 @@ import 'dart:io';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/plugins/chat_frontend_bridge.dart';
 import 'package:adele_desktop/ui/chat/chat_controller.dart';
+import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
+import 'package:adele_desktop/ui/inspection/activity_output_presentation.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
-import 'package:flutter/widgets.dart';
+import 'package:flutter/material.dart';
 
 /// Transitional stock activation over a prepared generation, not discovery or
 /// installation. Neither activation nor presentation compiles frontend source.
 final class StockChatFrontend {
-  StockChatFrontend._(this._generation, this._inspectActivity);
+  StockChatFrontend._(
+    this._generation,
+    this._extensions,
+    this._inspectActivity,
+  );
 
   final PreparedFrontend _generation;
+  final ExtensionRegistry _extensions;
   final bool Function(
     Session session,
     RunId runId,
@@ -46,6 +53,7 @@ final class StockChatFrontend {
     }
     final StockChatFrontend frontend = StockChatFrontend._(
       generation,
+      extensions,
       inspectActivity,
     );
     try {
@@ -116,6 +124,7 @@ final class _StockChatPresentationState extends State<_StockChatPresentation> {
     super.initState();
     _source = _ControllerSource(
       widget.controller,
+      extensions: widget.frontend._extensions,
       isActive: () => widget.frontend._active,
       inspectActivity: widget.frontend._inspectActivity,
     );
@@ -123,6 +132,7 @@ final class _StockChatPresentationState extends State<_StockChatPresentation> {
     _presentation = widget.frontend._generation.createChatPresentation(
       source: _source,
       isActive: () => widget.frontend._active && !_source.closed,
+      buildActivity: _source.buildActivity,
     );
   }
 
@@ -138,11 +148,12 @@ final class _StockChatPresentationState extends State<_StockChatPresentation> {
 }
 
 /// The interpreted frontend receives this narrow source only through boxed
-/// primitive snapshots/functions, never the controller or its authority graph.
+/// snapshots/functions and opaque native widgets, never controller authority.
 final class _ControllerSource extends ChangeNotifier
     implements ChatFrontendSource {
   _ControllerSource(
     this._controller, {
+    required ExtensionRegistry extensions,
     required bool Function() isActive,
     required bool Function(
       Session session,
@@ -150,10 +161,14 @@ final class _ControllerSource extends ChangeNotifier
       ModelInvocationId invocationId,
     )?
     inspectActivity,
-  }) : _isActive = isActive,
+  }) : _extensions = extensions,
+       _isActive = isActive,
        _inspectActivity = inspectActivity;
 
   final ChatController _controller;
+  final ExtensionRegistry _extensions;
+  static int _nextSourceId = 0;
+  final int _sourceId = _nextSourceId++;
   final bool Function() _isActive;
   final bool Function(
     Session session,
@@ -182,8 +197,10 @@ final class _ControllerSource extends ChangeNotifier
           );
         case ChatActivitySummary():
           final String id = jsonEncode([
+            _sourceId,
             entry.runId.value,
             entry.invocationId.value,
+            entry.outputSequence,
           ]);
           _emittedActivity[id] = entry;
           entries.add(
@@ -203,20 +220,35 @@ final class _ControllerSource extends ChangeNotifier
 
   @override
   bool inspectActivity(String id) {
-    if (closed || !_isActive() || _controller.isClosed) return false;
-    // Match only emitted IDs. Never decode a caller's string into authority.
-    final ChatActivitySummary? summary = _emittedActivity[id];
-    if (summary == null ||
-        _controller.activitySummary(summary.runId, summary.invocationId) ==
-            null) {
-      return false;
-    }
+    final summary = _summary(id);
+    if (summary == null) return false;
     return _inspectActivity?.call(
           _controller.session,
           summary.runId,
           summary.invocationId,
         ) ??
         false;
+  }
+
+  ChatActivitySummary? _summary(String id) {
+    if (closed || !_isActive() || _controller.isClosed) return null;
+    // Match only emitted IDs. Never decode a caller's string into authority.
+    final ChatActivitySummary? summary = _emittedActivity[id];
+    if (summary == null ||
+        !identical(
+          _controller.activitySummary(summary.runId, summary.invocationId),
+          summary,
+        )) {
+      return null;
+    }
+    return summary;
+  }
+
+  Widget? buildActivity(String id) {
+    if (_summary(id) == null) return null;
+    // This root is native. Factories execute later inside its child host, never
+    // while the parent EVC is building or reading its primitive snapshot.
+    return _ChatActivity(key: ValueKey((_sourceId, id)), source: this, id: id);
   }
 
   void refresh() {
@@ -229,4 +261,51 @@ final class _ControllerSource extends ChangeNotifier
     _emittedActivity.clear();
     dispose();
   }
+}
+
+final class _ChatActivity extends StatelessWidget {
+  const _ChatActivity({super.key, required this.source, required this.id});
+
+  final _ControllerSource source;
+  final String id;
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: source._controller.activityChanges,
+    builder: (context, _) {
+      final summary = source._summary(id);
+      if (summary == null) return const SizedBox.shrink();
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: TextButton(
+          onPressed: () {
+            if (ChatActivityHostScope.isActiveOf(context)) {
+              source.inspectActivity(id);
+            }
+          },
+          style: TextButton.styleFrom(alignment: Alignment.centerLeft),
+          child: DefaultTextStyle.merge(
+            style: const TextStyle(color: Colors.grey, fontSize: 12),
+            child: summary.isGroup
+                ? Text('ACTIVITY: ${summary.content}')
+                : IgnorePointer(
+                    child: ActivityOutputPresentation(
+                      extensions: source._extensions,
+                      activity: source._controller.activityForRun(
+                        summary.runId,
+                      ),
+                      target: ModelOutputInspectionTarget(
+                        sessionId: source._controller.session.id,
+                        runId: summary.runId,
+                        modelInvocationId: summary.invocationId,
+                        outputSequence: summary.outputSequence!,
+                      ),
+                      compact: true,
+                    ),
+                  ),
+          ),
+        ),
+      );
+    },
+  );
 }

@@ -15,15 +15,17 @@ means one button per contribution in registry registration order. They have no
 priorities, defaults, categories, or applicability rules. Cancellation is a
 successful `null` result, distinct from selector or lifecycle failure.
 
-Public Flutter `adele_ui` supplies typed Session, tool Inspection, and model-native
-activity presentation contributions on the same registry. Session and tool
+Public Flutter `adele_ui` supplies typed Session, compact activity, tool Inspection,
+and model-native activity presentation contributions on the same registry. Session and tool
 presentation resolve exact strategy or Tool ID with explicit unavailable/ambiguous
 states. Rich native Inspection resolves exact safe presentation kind: zero leaves
 rich presentation unavailable without hiding safe activity, one supplies a retained
-binding, and many are explicitly ambiguous. None has priority
-or fallback. Stock Chat tool/native groups open common host-owned Inspection with
-interpreted Apply Patch, Run Command, and OpenAI provider-supplied reasoning-summary
-cards. This is a bounded presentation surface, not the general workbench extension
+binding, and many are explicitly ambiguous. There is no priority-based selection
+or substitution. Compact resolution uses factual common fallback
+when unavailable or ambiguous. Stock Chat single activities and groups open
+common host-owned retained Inspection cards with interpreted Apply Patch, Run
+Command, and OpenAI provider-supplied reasoning-summary bodies.
+This is a bounded presentation surface, not the general workbench extension
 system below.
 
 Normal Task/primary Environment creation uses existing capability routing and
@@ -634,12 +636,26 @@ They retain presentation resources across updates, remove retired widgets, and
 select a replacement only through fresh resolution. Observation confers neither
 tool execution nor approval authority.
 
-The app owns window-local selection, group framing, and tool/native composition
-by exact `output.sequence`; tool frontends own field interpretation over immutable
-structured snapshot transport and reuse `PreparedFrontend`. Close removes only the view,
-changing the presented Session clears selection, and responsive placement is not
-public panel API semantics. Common host approval UI alone offers Allow/Deny;
-tool cards are read-only. Detailed boundaries and deferred scope are maintained
+`ToolActivityCompactPresentationContribution(toolId, createPresentation)` and
+`ModelNativeActivityCompactPresentationContribution(presentationKind,
+createPresentation)` provide the distinct compact semantic role. Factories receive
+the same read-only tool source or safe native presentation, never navigation or
+approval callbacks. Exact zero/one/many resolution and generation liveness mirror
+rich presentation; missing, ambiguous, failed, or retired compact views leave a
+bounded alias or provider-approved compact-text fallback, not native plugin-field
+interpretation. Plugins retain bespoke interpreted widget composition.
+
+Chat strategy owns grouping and timeline placement; the host owns inspect
+interaction, newest-first window-local cards, independent collapse/dismiss chrome,
+and tool/native compact-row composition by exact `output.sequence`. Individual
+cards reuse compact headers and existing rich bodies. A group-row click prepends
+an individual output target; no existing card is replaced or collapsed. Card IDs
+are distinct from exact Session/Run/model/output targets, which resolve retained
+live evidence rather than frozen copies. Tool frontends own field interpretation
+over immutable structured transport and reuse `PreparedFrontend`. Dismiss removes
+only the view, changing Session clears the stack, and responsive placement is not
+public panel API semantics. Run/core owns evidence identity/order/lifecycle;
+common host approval UI alone offers Allow/Deny. Detailed boundaries and deferred scope are maintained
 in [`overview.md`](overview.md#activity-inspection).
 
 `ModelNativeActivityPresentationContribution(presentationKind, createInspection)`
@@ -676,13 +692,17 @@ Stock OpenAI activation imports Contract identity, loads prepared EVC, registers
 the factory, and retires its resources through `PreparedFrontend`. This edge is
 provisional until discovery/profiles replace hard-coded stock selection;
 `app/tool` compilation remains a checkout stand-in for installation preparation.
-Chat groups successfully completed invocations with tools or
-`output.presentation != null`, independently of frontend activation. It has no
-negative projection cache or registry-change retry machinery. Headings prefer
+Chat counts each tool proposal and native output with `presentation != null`
+within each successfully completed model invocation, independently of frontend
+activation. Narration and opaque native outputs do not count. One occurrence uses
+compact presentation directly; two or more use one group. Group headings prefer
 tool-batch narration only when tools are present, then safe compact text, then
-tool count. Reasoning-only groups precede canonical final text;
-retention is controller-lifetime state, not persistence. Reasoning deltas,
-compaction/configuration UI, nested inspection, and Source/Diff/Console,
+presentable operation count. The interpreted Chat bridge requests a native
+inspectable activity-widget slot by a previously emitted opaque ID, not arbitrary
+domain identities or plugin arguments. The slot hosts a separate plugin runtime.
+Reasoning-only activity precedes canonical final text; retention is
+controller-lifetime state, not persistence. Reasoning deltas,
+compaction/configuration UI, arbitrary plugin drill-down, and Source/Diff/Console,
 terminal/PTY/full-output surfaces remain deferred.
 
 ---

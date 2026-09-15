@@ -2,6 +2,46 @@ import 'package:adele_ui/inspection_display.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('compact text is bounded after escaping and preserves exact limits', () {
+    for (final length in [159, 160, 161, 100000]) {
+      final result = compactDisplayText('x' * length);
+      expect(result.runes.length, lessThanOrEqualTo(160));
+      expect(result, length <= 160 ? 'x' * length : '${'x' * 157}...');
+    }
+    expect(compactDisplayText('x' * 158, quoted: true), '"${'x' * 158}"');
+    expect(compactDisplayText('x' * 159, quoted: true), '"${'x' * 155}..."');
+    expect(
+      () => compactDisplayText('x', maximumCharacters: 7),
+      throwsArgumentError,
+    );
+  });
+
+  test('compact tokens preserve whitespace, quotes and complete escapes', () {
+    expect(compactDisplayText('', quoted: true), '""');
+    expect(compactDisplayText('  ', quoted: true), '"  "');
+    expect(compactDisplayText(' a"\\\n ', quoted: true), r'" a\"\\\n "');
+    expect(
+      compactDisplayText('\u202E' * 100000, maximumCharacters: 16),
+      r'\u202E\u202E...',
+    );
+    expect(compactDisplayText('x && y', quoted: true), '"x && y"');
+  });
+
+  test(
+    'compact Unicode boundaries never split pairs or invisible-tag escapes',
+    () {
+      final text = '\u{1F600}' * 160;
+      expect(compactDisplayText(text), text);
+      expect(compactDisplayText('$text!'), '${'\u{1F600}' * 157}...');
+      expect(
+        compactDisplayText('\u{E007F}' * 10, maximumCharacters: 16),
+        r'\uDB40\uDC7F...',
+      );
+      expect(compactDisplayText('\uD800'), r'\uD800');
+      expect(compactDisplayText('e\u0301'), 'e\u0301');
+    },
+  );
+
   test('ordinary Unicode and valid surrogate pairs survive unchanged', () {
     const String value = 'plain text / \u00E9 \u00E6 \u00F8 \u00E5';
     expect(inspectionDisplayText(value), value);

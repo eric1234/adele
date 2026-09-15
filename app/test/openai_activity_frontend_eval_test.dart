@@ -4,10 +4,12 @@ import 'package:adele_desktop/frontend/model_native_activity_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/plugins/stock_openai_activity_frontend.dart';
 import 'package:adele_desktop/plugins/stock_tool_inspection_frontends.dart';
+import 'package:adele_desktop/ui/activity/model_native_activity_compact_host.dart';
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:adele_ui/inspection_display.dart';
 import 'package:command_tools_plugin/command_tools_plugin.dart';
@@ -109,6 +111,208 @@ Map<String, dynamic> inspect() => readModelNativeActivityData();
       .single
       .value;
 
+  Widget compact(
+    ModelNativePresentation presentation, {
+    String fallback = 'Factual safe summary',
+  }) => ModelNativeActivityCompactHost(
+    extensions: extensions,
+    presentation: presentation,
+    fallback: Text(fallback),
+  );
+
+  testWidgets(
+    'same OpenAI EVC mounts separate compact and rich views from safe data',
+    (tester) async {
+      final presentation = _presentation([
+        'First approved summary',
+        'Full detail only',
+      ], truncated: true);
+      await tester.pumpWidget(
+        _host([
+          compact(presentation),
+          contribution().createInspection(presentation),
+        ]),
+      );
+      expect(find.text('Reasoning: First approved summary'), findsOneWidget);
+      final compactText = find.descendant(
+        of: find.byType(ModelNativeActivityCompactHost),
+        matching: find.byType(Text),
+      );
+      expect(compactText, findsOneWidget);
+      expect(find.text('2 summary parts'), findsNothing);
+      expect(find.text('Supplied summary truncated.'), findsNothing);
+      expect(find.text('Reasoning summary'), findsOneWidget);
+      expect(find.text('Full detail only'), findsOneWidget);
+      expect(find.text('Reasoning summary truncated.'), findsOneWidget);
+      expect(find.byType(TextButton), findsNothing);
+      expect(find.byType(TextField), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('compact OpenAI text has bounded escaping without raw metadata', (
+    tester,
+  ) async {
+    final presentation = _presentation([
+      '\u202E\u{1F600}${'x' * 10000}',
+      'Second part',
+    ]);
+    final raw = _output(presentation);
+    await tester.binding.setSurfaceSize(const Size(360, 640));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(_host([compact(presentation)]));
+    expect(find.byType(Text), findsOneWidget);
+    final text = tester.widget<Text>(find.textContaining('Reasoning:')).data!;
+    expect(text.runes.length, lessThanOrEqualTo(171));
+    expect(text, endsWith('...'));
+    expect(text, contains(r'\u202E'));
+    expect(text, isNot(contains('\u202E')));
+    expect(text, contains('\u{1F600}'));
+    expect(find.text('Second part'), findsNothing);
+    expect(find.textContaining(_secret), findsNothing);
+    expect(raw.providerNativeMetadata.data.toString(), contains(_secret));
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final retireCompact in [true, false]) {
+    testWidgets(
+      'retiring OpenAI ${retireCompact ? 'compact' : 'rich'} role preserves sibling generation',
+      (tester) async {
+        final presentation = _presentation(['Approved summary']);
+        final compactBinding = ModelNativeActivityCompactPresentationResolver(
+          extensions,
+        ).resolve(presentation.kind);
+        final richBinding = ModelNativeActivityPresentationResolver(
+          extensions,
+        ).resolve(presentation.kind);
+        final compactFactory = compactBinding.value.createPresentation;
+        final richFactory = richBinding.value.createInspection;
+        await tester.pumpWidget(
+          _host([compact(presentation), richFactory(presentation)]),
+        );
+        if (retireCompact) {
+          await openai.retireCompact();
+        } else {
+          await openai.retireInspection();
+        }
+        await tester.pumpAndSettle();
+        if (retireCompact) {
+          expect(
+            compactBinding.validate,
+            throwsA(isA<StaleExtensionBinding>()),
+          );
+          expect(() => compactFactory(presentation), throwsStateError);
+          richBinding.validate();
+          expect(find.text('Factual safe summary'), findsOneWidget);
+          expect(find.text('Reasoning summary'), findsOneWidget);
+        } else {
+          expect(richBinding.validate, throwsA(isA<StaleExtensionBinding>()));
+          expect(() => richFactory(presentation), throwsStateError);
+          compactBinding.validate();
+          expect(find.text('Reasoning: Approved summary'), findsOneWidget);
+        }
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets(
+    'compact malformed suffix is rejected before displaying any part',
+    (tester) async {
+      for (final data in <Map<String, Object?>>[
+        {
+          'summaryParts': ['MUST-NOT-DISPLAY', 42],
+          'truncated': false,
+        },
+        {
+          'summaryParts': ['MUST-NOT-DISPLAY', '  '],
+          'truncated': false,
+        },
+        {
+          'summaryParts': ['MUST-NOT-DISPLAY'],
+          'truncated': false,
+          'extra': 'private',
+        },
+        {
+          'summaryParts': List.filled(129, 'MUST-NOT-DISPLAY'),
+          'truncated': false,
+        },
+        {
+          'summaryParts': ['MUST-NOT-DISPLAY', 'x' * 65536],
+          'truncated': false,
+        },
+      ]) {
+        final presentation = ModelNativePresentation(
+          kind: openAiReasoningSummaryPresentationKind,
+          compactText: 'Safe factual fallback',
+          data: data,
+        );
+        await tester.pumpWidget(_host([compact(presentation)]));
+        await tester.pumpAndSettle();
+        expect(find.text('Factual safe summary'), findsOneWidget);
+        expect(find.textContaining('MUST-NOT-DISPLAY'), findsNothing);
+        expect(find.text('Frontend unavailable.'), findsNothing);
+        expect(tester.takeException(), isNull);
+      }
+    },
+  );
+
+  testWidgets(
+    'missing compact entrypoint and corrupt EVC preserve host fallback',
+    (tester) async {
+      await tester.runAsync(openai.close);
+      final corrupt = File('${temporary.path}/compact-corrupt.evc');
+      await tester.runAsync(() => corrupt.writeAsBytes([1, 2, 3]));
+      // failingArtifact deliberately exports only the rich entrypoint.
+      for (final file in [failingArtifact, corrupt]) {
+        openai = (await tester.runAsync(
+          () => activateStockOpenAiActivityFrontend(
+            extensions: extensions,
+            artifactPath: file.path,
+          ),
+        ))!;
+        final presentation = _presentation(['Healthy OpenAI sibling']);
+        await tester.pumpWidget(_host([compact(presentation)]));
+        await tester.pumpAndSettle();
+        expect(find.text('Factual safe summary'), findsOneWidget);
+        await tester.pumpWidget(
+          _host([compact(presentation, fallback: 'Updated facts')]),
+        );
+        expect(find.text('Updated facts'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+        await tester.runAsync(openai.close);
+      }
+    },
+  );
+
+  test(
+    'OpenAI compact registration collision rolls back acquired rich role',
+    () async {
+      final registry = ExtensionRegistry();
+      final blocker = registry.register(
+        point: modelNativeActivityCompactPresentationContributions,
+        id: ExtensionId('dev.adele.plugin.openai.activity-compact'),
+        value: ModelNativeActivityCompactPresentationContribution(
+          presentationKind: openAiReasoningSummaryPresentationKind,
+          createPresentation: (_) => const SizedBox.shrink(),
+        ),
+      );
+      await expectLater(
+        activateStockOpenAiActivityFrontend(
+          extensions: registry,
+          artifactPath: artifact.path,
+        ),
+        throwsA(isA<ExtensionRegistrationException>()),
+      );
+      expect(
+        registry.discover(modelNativeActivityPresentationContributions),
+        isEmpty,
+      );
+      expect(blocker.isClosed, isFalse);
+      await blocker.close();
+    },
+  );
+
   for (final compactionOnly in [false, true]) {
     testWidgets(
       compactionOnly
@@ -128,7 +332,7 @@ Map<String, dynamic> inspect() => readModelNativeActivityData();
             'relativePath': 'example.txt',
             'expectedRevision': 'revision',
             'edits': [
-              {'oldText': 'before', 'newText': 'after'},
+              {'search': 'before', 'replace': 'after'},
             ],
           },
           changes: const [],
@@ -196,21 +400,25 @@ Map<String, dynamic> inspect() => readModelNativeActivityData();
         await tester.pumpWidget(
           _host([
             InspectionHost(
-              selection: ActivityInspectionSelection(
-                sessionId: activity.sessionId,
-                runId: activity.runId,
-                modelInvocationId: modelId,
-              ),
+              card: _groupCard(activity, modelId),
               activity: activity,
               heading: 'Direct ordered activity',
               extensions: extensions,
-              onClose: () {},
+              onCollapse: () {},
+              onExpand: () {},
+              onDismiss: () {},
+              onInspectOutput: (_) {},
             ),
           ]),
         );
         final labels = compactionOnly
-            ? ['Apply Patch']
-            : ['Reasoning A', 'Apply Patch', 'Reasoning B', 'Run Command'];
+            ? ['Apply Patch: "example.txt" / 1 edit']
+            : [
+                'Reasoning: Reasoning A',
+                'Apply Patch: "example.txt" / 1 edit',
+                'Reasoning: Reasoning B',
+                'Run Command: "dart" ["test"]',
+              ];
         double previous = -1;
         for (final label in labels) {
           final finder = find.text(label);
@@ -219,10 +427,7 @@ Map<String, dynamic> inspect() => readModelNativeActivityData();
           expect(y, greaterThan(previous));
           previous = y;
         }
-        expect(
-          find.text('Reasoning summary'),
-          findsNWidgets(compactionOnly ? 0 : 2),
-        );
+        expect(find.text('Reasoning summary'), findsNothing);
         expect(find.text('Never present compaction'), findsNothing);
         expect(find.textContaining('Model native activity'), findsNothing);
         expect(find.textContaining(_secret), findsNothing);
@@ -246,7 +451,8 @@ Map<String, dynamic> inspect() => readModelNativeActivityData();
             }
           }
         }
-        expect(find.byType(TextButton), findsNothing);
+        // Navigation belongs to common group rows, not the interpreted widgets.
+        expect(find.byType(TextButton), findsNWidgets(compactionOnly ? 1 : 4));
         expect(tester.takeException(), isNull);
       },
     );
@@ -524,6 +730,26 @@ Widget _host(List<Widget> children) => MaterialApp(
     body: SingleChildScrollView(child: Column(children: children)),
   ),
 );
+
+InspectionCard _groupCard(
+  RunActivitySnapshot activity,
+  ModelInvocationId model,
+) {
+  final session = Session(
+    id: activity.sessionId,
+    taskId: TaskId('task'),
+    strategyId: OrchestrationStrategyId('dev.example.chat'),
+  );
+  final window = WindowInspection()..presentSession(session);
+  window.inspectActivity(
+    session: session,
+    activity: activity,
+    modelInvocationId: model,
+  );
+  final card = window.cards.single;
+  window.dispose();
+  return card;
+}
 
 ModelNativePresentation _presentation(
   List<String> parts, {

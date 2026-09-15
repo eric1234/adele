@@ -10,8 +10,8 @@ header and initially displays `No Project is open` with B1 Project selector
 buttons. After opening, it shows the Project source and initially `No Tasks yet`.
 B2 adds title-only Task creation and primary Environment status. Normal interaction
 supports one canonical stock Chat Session and approval-gated ChatGPT-backed Runs,
-with plugin-owned evaluated history/composer, clickable activity groups, and
-window-local Inspection containing interpreted Apply Patch, Run Command, and
+with plugin-owned evaluated history/composer, direct compact activity or groups, and
+retained window-local Inspection cards containing interpreted Apply Patch, Run Command, and
 OpenAI provider-supplied reasoning-summary cards.
 Execution status/approvals remain host-owned; this is not a Task Browser or
 complete active-Session workbench.
@@ -309,10 +309,13 @@ does not change Session identity, strategy binding, or backend validity.
 `plugins/chat_strategy/packages/frontend` (`chat_strategy_frontend`)
 owns conversation rendering and the prompt/Send composer as interpreted Flutter
 source. It imports neither `chat_strategy_plugin` implementation nor app/kernel
-code. The stock adapter exposes only immutable primitive mixed message/activity snapshots,
+code. The stock adapter exposes immutable primitive mixed message/activity snapshots,
 a composer-enabled boolean, submission of a string returning synchronous
-boolean acceptance, and read-only `inspectActivity` requests for emitted opaque
-activity IDs. Neither `Session`, `ChatController`, execution objects,
+boolean acceptance, and `buildChatActivity` for emitted opaque activity IDs.
+The latter returns a native widget wrapper that hosts plugin compact presentation
+in a separate prepared runtime and supplies common inspect interaction. The
+interpreted Chat strategy still decides timeline placement, without receiving
+plugin fields or manufacturing identities. Neither `Session`, `ChatController`, execution objects,
 approval objects, nor approval decisions cross this eval bridge. The public
 Session factory is the native registration boundary, not an execution bridge.
 
@@ -350,18 +353,19 @@ rendered automatically.
 
 The provisional controller subscribes before starting its Run and retains
 presentation-only activity snapshots separately from canonical Chat. It inserts
-one compact group after the initiating user entry for each successfully completed
-model invocation containing tools or native `output.presentation != null`. Four tool
-proposals from one invocation still produce one summary; later invocations produce
-later groups. Presence is independent of frontend activation, without a negative
-projection cache or registry-change retry machinery in Chat. The heading prefers
+one activity entry after the initiating user entry for each successfully completed
+model invocation containing proposals or native `output.presentation != null`.
+Each proposal and safe native output counts once; narration and opaque native
+output do not count. One occurrence uses its compact presentation directly, while
+two or more use one group. Later invocations make separate decisions. Presence is
+independent of frontend activation. A group's heading prefers
 ordered explicit tool-batch `ModelTextOutput` narration only when tools are present,
-then safe `compactText`, then a structural `N tool operations` count. Generic Chat
+then safe `compactText`, then a structural `N operations` count. Generic Chat
 escapes unsafe display controls and reapplies the 160-code-point compact cap after
 escaping, rather than relying on stock OpenAI activation for display safety.
-A reasoning-only invocation can produce a group before its canonical final
+A reasoning-only invocation can produce a direct compact activity before its canonical final
 assistant message; proposal-free final text is not repurposed as batch narration.
-Raw items without safe presentation alone create no group; a missing rich
+Raw items without safe presentation alone create no activity; a missing rich
 presenter does not hide safe activity. The Chat strategy
 automatically includes stable shared-purpose narration guidance, with explicit
 user instructions taking precedence, without erasing
@@ -421,8 +425,8 @@ The Session presentation API changes neither kernel execution semantics, Chat
 sequencing, nor Environment contracts. Host policy and exact-invocation approval
 remain the security authority, not the frontend or its bridge. Configurable
 permissions/profiles, steering, cancellation controls,
-streaming/reasoning-delta UI, compaction UI, nested
-inspection, Source/Diff/Console navigation, terminal/PTY/full-output views, and a
+streaming/reasoning-delta UI, compaction UI, arbitrary plugin
+drill-down, Source/Diff/Console navigation, terminal/PTY/full-output views, and a
 Run history browser remain deferred.
 
 Focused deterministic coverage lives in `test/chat_session_test.dart`,
@@ -432,15 +436,16 @@ and `test/plugins/stock_openai_test.dart`. The separate
 `test/core/normal_chatgpt_run_integration_test.dart` compiles real host/Git/OpenAI
 artifacts and drives the normal controller through a local fake ChatGPT SSE
 endpoint with temporary fake credentials and real prepared frontend artifacts.
-Its maintained E3 validation scope includes mixed reasoning and tool activity,
-read-to-patch-and-command continuation, separate approvals without an intervening
-inference, direct-argv `git diff --check`, and a separate reasoning-only final
-response. The scope checks interpreted Chat/Inspection ordering, a visible
+Its maintained validation scope includes direct reasoning activity followed by
+mixed reasoning/tool groups, group-row-to-individual card insertion, independent
+collapse/dismiss, read-to-patch-and-command continuation, separate approvals
+without an intervening inference, and direct-argv `git diff --check`.
+The scope checks interpreted Chat/Inspection ordering, a visible
 timeline during held final continuation, retention between user and canonical
 final response, safe summary-only frontend data, untouched encrypted replay, and
 Task-worktree/Project/checkout isolation. It requires no account or API key and
 performs no live model request; deterministic fixture coverage does not establish
-live-provider summary compatibility. Focused E3 presentation cases live in
+live-provider summary compatibility. Focused presentation cases live in
 `test/model_native_activity_bridge_test.dart`,
 `test/model_native_activity_inspection_host_test.dart`, and
 `test/openai_activity_frontend_eval_test.dart`, alongside public `adele_ui`
@@ -457,30 +462,40 @@ From `app/`, focused validation uses:
 flutter test --no-pub test/chat_session_test.dart test/core/approval_gated_tool_policy_test.dart test/core/orchestration_host_test.dart test/core/orchestration_authority_test.dart test/core/model_tool_host_test.dart
 flutter test --no-pub test/core/run_activity_projection_test.dart test/chat_frontend_eval_test.dart
 flutter test --no-pub test/model_native_activity_bridge_test.dart test/model_native_activity_inspection_host_test.dart test/openai_activity_frontend_eval_test.dart
+flutter test --no-pub test/inspection_host_test.dart test/inspection_stack_test.dart test/tool_activity_compact_host_test.dart test/model_native_activity_compact_host_test.dart test/tool_inspection_frontend_eval_test.dart
 flutter test --no-pub test/core/normal_chatgpt_run_integration_test.dart
 ```
 
 ### Activity Inspection
 
-One `WindowInspection` in application State owns an optional
-`ActivityInspectionSelection(SessionId, RunId, ModelInvocationId)`, not activity
-copies or Session history. Binding a different presented Session clears it.
-Close removes only the Inspection view: retained Run evidence, Chat history,
-approval state, and execution are unchanged. Clicking a retained group can reopen
-it. The shell places Inspection to the right on wide windows and stacks it below
-on narrow windows; this is private layout, not a public physical panel API.
+One `WindowInspection` in application State owns newest-first `InspectionCard`
+instances, not activity copies or Session history. Each has a window-local
+`InspectionCardId`, an exact target, and independent collapsed state. Targets are
+`ActivityGroupInspectionTarget(SessionId, RunId, ModelInvocationId)` or
+`ModelOutputInspectionTarget` with an additional exact output sequence. Every
+open prepends a new card; duplicates are allowed. Collapse retains target/order
+and the mounted presentation, expand restores its visibility, and dismiss removes
+exactly that card. Binding a
+different presented Session clears all cards and invalidates stale callbacks.
+Completion, follow-up prompts, and presenter retirement do not clear cards.
+The shell places independently scrollable Inspection to the right on wide windows
+and stacks it below on narrow windows; this is not a public physical panel API.
 
-The stock Chat adapter accepts only an opaque ID it emitted for a retained group,
-resolving the exact Run/model identity rather than decoding arbitrary input or
+The stock Chat adapter accepts only opaque IDs it emitted for retained activity,
+resolving exact Run/model/output identity rather than decoding arbitrary input or
 matching labels. The application validates the current Session and retained
-activity before changing selection. No controller, kernel, Run execution, or
-approval object crosses the eval bridge.
+activity before insertion. Common host code supplies inspect interaction, not
+plugin callbacks. No controller, kernel, Run execution, or approval object crosses
+the eval bridge.
 
-`lib/ui/inspection/inspection_host.dart` owns the common group header and interleaves
-tools and native activity by exact `output.sequence`, not by item kind or a
-separate reasoning section. Proposals not yet prepared, rejected
-before preparation, or left unprocessed when the Run ends keep explicit
-placeholders. Each prepared invocation gets a stable read-only
+`lib/ui/inspection/inspection_host.dart` owns common card chrome. Group bodies
+interleave compact tool/native rows in exact `output.sequence`, not rich bodies
+or separate reasoning sections. Selecting a row prepends an individual card,
+leaving its group in place. Individual cards use compact headers and existing rich
+bodies. Proposals not yet prepared, rejected before preparation, or left
+unprocessed when the Run ends keep factual placeholders. Stable output targets
+upgrade to prepared tool presentation in place as live evidence changes, without
+duplicating the Chat entry or reordering the stack. Each prepared invocation gets a stable read-only
 `ToolActivityInspectionSource`, a `Listenable` whose `snapshot` is an immutable
 `ToolInvocationActivity` from public pure-Dart `adele_orchestration`.
 
@@ -494,12 +509,27 @@ retains a view across source updates, and removes retired widgets/resources.
 Only fresh resolution can select a replacement; factory/load failure does not
 invalidate execution or select a fallback.
 
+The distinct compact role uses public
+`ToolActivityCompactPresentationContribution` and
+`ModelNativeActivityCompactPresentationContribution`, with typed extension points
+and exact ToolId/safe-kind resolvers. Zero matches use bounded factual fallback;
+one uses its exact binding; many expose ambiguity plus fallback, never an ordering
+winner. Retirement/failure affects the custom view only, with fresh exact
+resolution required for replacement. Tool fallback identifies the alias without
+parsing arguments; native fallback retains provider-approved `compactText`.
+Plugins own bespoke compact and rich widgets, while Chat owns grouping/placement,
+the common host owns inspect interaction/cards, Run owns evidence lifecycle, and
+the approval host alone authorizes execution.
+
 The separate `filesystem_tools_frontend` and `command_tools_frontend` packages
 under their plugins' `packages/frontend` own interpretation of `apply_patch` and
 `run_command` fields. Stock composition imports only the owning headless packages'
 public `applyPatchToolId` and `runCommandToolId` for registration, never their
-private implementations or native frontend views. Other tools remain explicitly
-unavailable for bespoke Inspection.
+private implementations or native frontend views. Each existing artifact exposes
+compact and rich entrypoints. Filesystem compact shows relative path and canonical
+edit count, not inferred Git line statistics; Command compact preserves bounded
+direct-argv token boundaries without reconstructing a shell command. Other tools
+remain unavailable for bespoke Inspection but have factual compact fallbacks.
 
 `lib/frontend/tool_activity_inspection_bridge.dart` transports recursively
 immutable canonical-argument and terminal `hostData` maps, the latest non-progress
@@ -568,16 +598,16 @@ hard-coded selection; it performs no projection, raw parsing, or display escapin
 
 Malformed, unsupported, empty, or oversized summary input produces no safe
 presentation in Backend, without changing Run replay. Missing/corrupt EVC,
-malformed safe payload, factory failure, and contained EVC failure affect only rich
-presentation. Existing exact-binding liveness removes retired views and
+malformed safe payload, factory failure, and contained EVC failure affect only
+presentation, retaining common compact fallback. Existing exact-binding liveness removes retired views and
 invalidates their resources; only fresh resolution may create a replacement,
 never retargeting stale resources or removing captured safe activity. Multiple
 registrations remain explicitly ambiguous. Native Inspection is read-only,
 without approval or continuation controls.
 
 Hidden chain-of-thought and encrypted reasoning are never user-presented.
-Reasoning deltas, compaction and configuration UI, nested
-inspection, Source/Diff/Console integration, terminal/PTY/full-output views,
+Reasoning deltas, compaction and configuration UI, arbitrary plugin
+drill-down, Source/Diff/Console integration, terminal/PTY/full-output views,
 navigation history, persistence, and plugin discovery remain deferred.
 
 ### B1 Project opening

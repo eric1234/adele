@@ -18,6 +18,26 @@ abstract interface class PreparedFrontendFailureSource {
   set onFailure(VoidCallback? callback);
 }
 
+/// Opt-in host-owned factual content for unavailable prepared presentations.
+/// It stays outside eval and can update without recreating a retained runtime.
+final class PreparedFrontendFallback extends InheritedWidget {
+  const PreparedFrontendFallback({
+    super.key,
+    required this.fallback,
+    required super.child,
+  });
+
+  final Widget fallback;
+
+  static Widget? maybeOf(BuildContext context) => context
+      .dependOnInheritedWidgetOfExactType<PreparedFrontendFallback>()
+      ?.fallback;
+
+  @override
+  bool updateShouldNotify(PreparedFrontendFallback oldWidget) =>
+      !identical(fallback, oldWidget.fallback);
+}
+
 /// One prepared artifact generation, independent of product or view identity.
 final class PreparedFrontend {
   PreparedFrontend._(this._bytes, this.failure);
@@ -164,8 +184,11 @@ class _PreparedPresentationState extends State<_PreparedPresentation> {
   @override
   Widget build(BuildContext context) {
     if (_failed || !widget.generation._active) {
-      return const Text('Frontend unavailable.');
+      return PreparedFrontendFallback.maybeOf(context) ??
+          const Text('Frontend unavailable.');
     }
-    return _loaded?.widget ?? const SizedBox.shrink();
+    return _loaded?.widget ??
+        PreparedFrontendFallback.maybeOf(context) ??
+        const SizedBox.shrink();
   }
 }

@@ -8,7 +8,9 @@ import 'package:flutter/widgets.dart';
 export 'package:adele_orchestration/adele_orchestration.dart'
     show ModelNativePresentation;
 
+export 'model_native_activity_compact_presentation.dart';
 export 'model_native_activity_presentation.dart';
+export 'tool_activity_compact_presentation.dart';
 export 'tool_activity_inspection.dart';
 
 /// Exactly one active contribution may present a Session's stored strategy.

@@ -2,6 +2,7 @@ import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:dart_eval/stdlib/core.dart';
 import 'package:flutter/widgets.dart';
+import 'package:flutter_eval/widgets.dart';
 
 final class ChatPresentationEntry {
   const ChatPresentationEntry({
@@ -18,7 +19,7 @@ final class ChatPresentationEntry {
 
   final String kind;
 
-  /// Opaque Run/model-invocation identity for an activity; null for a message.
+  /// Opaque presentation-local activity identity; null for a message.
   final String? id;
   final String? role;
   final String content;
@@ -42,10 +43,37 @@ abstract interface class ChatFrontendSource implements Listenable {
   bool inspectActivity(String id);
 }
 
+/// Native actions belong to the emitting Chat view, not just its retained source.
+final class ChatActivityHostScope extends InheritedWidget {
+  const ChatActivityHostScope._({
+    super.key,
+    required bool Function() isActive,
+    required super.child,
+  }) : _isActive = isActive;
+
+  final bool Function() _isActive;
+
+  static bool isActiveOf(BuildContext context) =>
+      context.mounted &&
+      (context
+              .getInheritedWidgetOfExactType<ChatActivityHostScope>()
+              ?._isActive() ??
+          false);
+
+  // Actions read current liveness; revocation does not need a child rebuild.
+  @override
+  bool updateShouldNotify(ChatActivityHostScope oldWidget) => false;
+}
+
 extension ChatFrontendPresentation on PreparedFrontend {
+  /// [buildActivity] returns an inert native host root. Plugin execution belongs
+  /// to that root's mounted lifecycle, not the calling Chat runtime.
+  /// Native actions must check [ChatActivityHostScope.isActiveOf] before calling
+  /// their source, using the originating action's mounted context.
   Widget createChatPresentation({
     required ChatFrontendSource source,
     required bool Function() isActive,
+    Widget? Function(String opaqueId)? buildActivity,
     Key? key,
   }) => KeyedSubtree(
     key: key,
@@ -53,8 +81,11 @@ extension ChatFrontendPresentation on PreparedFrontend {
       key: ValueKey((this, source)),
       library: chatFrontendLibrary,
       entrypoint: 'buildChat',
-      createBridge: () =>
-          ChatFrontendBridge(source: source, isActive: isActive),
+      createBridge: () => ChatFrontendBridge(
+        source: source,
+        isActive: isActive,
+        buildActivity: buildActivity,
+      ),
     ),
   );
 }
@@ -92,6 +123,22 @@ class ChatFrontendDeclarations implements EvalPlugin {
             params: [
               BridgeParameter(
                 'prompt',
+                BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.string)),
+                false,
+              ),
+            ],
+          ),
+        ),
+      )
+      ..defineBridgeTopLevelFunction(
+        const BridgeFunctionDeclaration(
+          _bridgeLibrary,
+          'buildChatActivity',
+          BridgeFunctionDef(
+            returns: BridgeTypeAnnotation($Widget.$type, nullable: true),
+            params: [
+              BridgeParameter(
+                'opaqueId',
                 BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.string)),
                 false,
               ),
@@ -153,11 +200,15 @@ final class ChatFrontendBridge extends ChatFrontendDeclarations
   ChatFrontendBridge({
     required ChatFrontendSource source,
     required bool Function() isActive,
+    Widget? Function(String opaqueId)? buildActivity,
   }) : _source = source,
-       _isActive = isActive;
+       _isActive = isActive,
+       _buildActivity = buildActivity;
 
   final ChatFrontendSource _source;
   final bool Function() _isActive;
+  final Widget? Function(String opaqueId)? _buildActivity;
+  final Set<String> _emittedActivities = {};
   bool _active = true;
   bool _scheduled = false;
   VoidCallback? _callback;
@@ -168,11 +219,16 @@ final class ChatFrontendBridge extends ChatFrontendDeclarations
   void configureForRuntime(Runtime runtime) {
     runtime
       ..registerBridgeFunc(_bridgeLibrary, 'readChatSnapshot', (_, _, _) {
-        return _ChatSnapshot(
-          _available
-              ? _source.snapshot
-              : ChatPresentationSnapshot(entries: const [], canSubmit: false),
-        );
+        final snapshot = _available
+            ? _source.snapshot
+            : ChatPresentationSnapshot(entries: const [], canSubmit: false);
+        _emittedActivities
+          ..clear()
+          ..addAll([
+            for (final entry in snapshot.entries)
+              if (entry.kind == 'activity' && entry.id != null) entry.id!,
+          ]);
+        return _ChatSnapshot(snapshot);
       })
       ..registerBridgeFunc(_bridgeLibrary, 'submitChatPrompt', (_, _, args) {
         final String prompt = args.single!.$value as String;
@@ -183,9 +239,29 @@ final class ChatFrontendBridge extends ChatFrontendDeclarations
               _source.submit(prompt),
         );
       })
+      ..registerBridgeFunc(_bridgeLibrary, 'buildChatActivity', (_, _, args) {
+        final String id = args.single!.$value as String;
+        if (!_available || !_emittedActivities.contains(id)) {
+          return const $null();
+        }
+        final Widget? host = _buildActivity?.call(id);
+        if (host == null) return const $null();
+        // Revoke actions synchronously with the bridge, before Flutter unmounts
+        // a failed Chat subtree. Keep the occurrence key on the native root.
+        return $Widget.wrap(
+          ChatActivityHostScope._(
+            key: host.key,
+            isActive: () => _available && _emittedActivities.contains(id),
+            child: host,
+          ),
+        );
+      })
       ..registerBridgeFunc(_bridgeLibrary, 'inspectChatActivity', (_, _, args) {
+        final String id = args.single!.$value as String;
         return $bool(
-          _available && _source.inspectActivity(args.single!.$value as String),
+          _available &&
+              _emittedActivities.contains(id) &&
+              _source.inspectActivity(id),
         );
       })
       ..registerBridgeFunc(_bridgeLibrary, 'subscribeChatChanges', (
@@ -227,6 +303,7 @@ final class ChatFrontendBridge extends ChatFrontendDeclarations
   void invalidate() {
     if (!_active) return;
     _active = false;
+    _emittedActivities.clear();
     _unsubscribe();
   }
 }

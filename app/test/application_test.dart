@@ -45,13 +45,22 @@ void main() {
     final binding = runtime.extensions
         .discover(modelNativeActivityPresentationContributions)
         .single;
+    final compactBinding = runtime.extensions
+        .discover(modelNativeActivityCompactPresentationContributions)
+        .single;
     expect(binding.validate, returnsNormally);
+    expect(compactBinding.validate, returnsNormally);
+    expect(
+      compactBinding.value.presentationKind,
+      binding.value.presentationKind,
+    );
     expect(runtime.extensions.discover(modelToolContributions), hasLength(3));
     expect(find.text('No Project is open'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpAndSettle();
     expect(binding.validate, throwsA(isA<StaleExtensionBinding>()));
+    expect(compactBinding.validate, throwsA(isA<StaleExtensionBinding>()));
   });
 
   testWidgets('normal entrypoint renders the pre-Project shell', (

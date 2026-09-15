@@ -97,10 +97,17 @@ Flutter and `adele_ui`, not the headless implementation, app, or kernel. Generic
 app hosting transports data without interpreting patch fields, composes proposals
 in model output order, and uses exact Tool ID/liveness resolution.
 
+The same EVC also exposes a distinct compact entrypoint through
+`ToolActivityCompactPresentationContribution`: relative path plus the canonical
+requested edit count. It does not pretend replacement operations are Git diff
+line statistics. Common hosting supplies inspect interaction, reusing this
+read-only body in single-activity Chat, group rows, and individual card headers.
+Missing compact UI retains a factual alias fallback, not native patch parsing.
+
 Stock activation loads prepared EVC independently of tool execution through the
 existing `PreparedFrontend` lifecycle. Coalesced read-only snapshot updates retain
 the view/runtime; missing/corrupt or retired presentation stays unavailable with
 no backend failure or native card fallback. The card has no execution or approval
-controls: only common host approval UI supplies Allow/Deny. Source/Diff navigation
-and nested inspection remain deferred. Build-time preparation is documented in
+controls or navigation callbacks: only common host approval UI supplies Allow/Deny.
+Source/Diff navigation and arbitrary plugin drill-down remain deferred. Build-time preparation is documented in
 [`app/README.md`](../../app/README.md#prepared-chat-frontend).

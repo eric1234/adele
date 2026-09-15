@@ -1,3 +1,5 @@
+import 'package:flutter/widgets.dart';
+
 final class ChatPresentationEntry {
   const ChatPresentationEntry({
     required String this.role,
@@ -13,7 +15,7 @@ final class ChatPresentationEntry {
 
   final String kind;
 
-  /// Opaque Run/model-invocation identity for an activity; null for a message.
+  /// Opaque presentation-local activity identity; null for a message.
   final String? id;
   final String? role;
   final String content;
@@ -39,6 +41,11 @@ bool submitChatPrompt(String prompt) {
 
 /// Requests navigation only; the host validates the emitted opaque identity.
 bool inspectChatActivity(String opaqueId) {
+  throw UnsupportedError('Interpreted Chat bridge only.');
+}
+
+/// Mounts an opaque native presentation host, not another runtime's eval object.
+Widget? buildChatActivity(String opaqueId) {
   throw UnsupportedError('Interpreted Chat bridge only.');
 }
 

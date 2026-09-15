@@ -1,8 +1,10 @@
+import 'package:adele_desktop/ui/activity/model_native_activity_compact_host.dart';
+import 'package:adele_desktop/ui/activity/tool_activity_compact_host.dart';
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
+import 'package:adele_desktop/ui/inspection/activity_output_presentation.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
 import 'package:adele_desktop/ui/inspection/model_native_activity_inspection_host.dart';
 import 'package:adele_desktop/ui/inspection/tool_activity_inspection_host.dart';
-import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
@@ -11,33 +13,33 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  final Session session = Session(
+  final session = Session(
     id: SessionId('session'),
     taskId: TaskId('task'),
     strategyId: OrchestrationStrategyId('strategy'),
   );
-  final ModelInvocationId modelId = ModelInvocationId('model');
-  final ToolId supported = ToolId('dev.example.supported');
+  final modelId = ModelInvocationId('model');
+  final supported = ToolId('dev.example.supported');
   late ExtensionRegistry extensions;
   late WindowInspection window;
 
-  ProviderToolProposal proposal(String alias) => ProviderToolProposal(
+  ProviderToolProposal proposal(int sequence) => ProviderToolProposal(
     providerCallId: 'same-provider-call',
-    alias: alias,
+    alias: 'proposal-$sequence',
     arguments: const {},
   );
 
   ToolInvocationActivity tool(
     int sequence, {
-    ToolId? toolId,
     bool done = false,
+    String? alias,
   }) => ToolInvocationActivity(
     id: ToolInvocationId('tool-$sequence'),
     preparedSequence: sequence + 10,
     modelInvocationId: modelId,
     proposalSequence: sequence,
-    toolId: toolId ?? supported,
-    alias: 'same-alias',
+    toolId: supported,
+    alias: alias ?? 'tool-$sequence',
     providerCallId: 'same-provider-call',
     canonicalArguments: const {},
     changes: [
@@ -48,33 +50,85 @@ void main() {
     ],
   );
 
+  ModelOutputActivity native(int sequence, {bool safe = true}) =>
+      ModelOutputActivity(
+        sequence: sequence,
+        item: ModelNativeOutput(
+          providerItemId: 'same-provider-call',
+          providerNativeMetadata: ModelNativeEnvelope(
+            kind: 'dev.example.raw',
+            compatibility: const {},
+            data: const {'private': 'RAW-SECRET'},
+          ),
+          presentation: safe
+              ? ModelNativePresentation(
+                  kind: 'dev.example.safe',
+                  compactText: 'Safe $sequence',
+                  data: {'text': 'Rich $sequence'},
+                )
+              : null,
+        ),
+      );
+
   RunActivitySnapshot activity({
     String run = 'run',
+    String? sessionId,
+    String? invocationId,
+    List<ModelOutputActivity>? outputs,
     List<ToolInvocationActivity> tools = const [],
     List<RejectedToolProposalActivity> rejected = const [],
     RunState state = RunState.waiting,
   }) => RunActivitySnapshot(
     runId: RunId(run),
-    sessionId: session.id,
+    sessionId: sessionId == null ? session.id : SessionId(sessionId),
     state: state,
     sequence: 40,
     models: [
       ModelInvocationActivity(
-        id: modelId,
+        id: invocationId == null ? modelId : ModelInvocationId(invocationId),
         startSequence: 1,
         settlement: ModelSettlement.completed,
-        terminalSequence: 5,
-        outputs: [
-          for (final sequence in [2, 3, 4])
-            ModelOutputActivity(
-              sequence: sequence,
-              item: ModelToolProposalOutput(proposal('proposal-$sequence')),
-            ),
-        ],
+        terminalSequence: 10,
+        outputs:
+            outputs ??
+            [
+              for (final sequence in [2, 3, 4])
+                ModelOutputActivity(
+                  sequence: sequence,
+                  item: ModelToolProposalOutput(proposal(sequence)),
+                ),
+            ],
       ),
     ],
     tools: tools,
     rejectedProposals: rejected,
+  );
+
+  ModelOutputInspectionTarget target(int sequence, {String run = 'run'}) =>
+      ModelOutputInspectionTarget(
+        sessionId: session.id,
+        runId: RunId(run),
+        modelInvocationId: modelId,
+        outputSequence: sequence,
+      );
+
+  Widget frame(Widget child) => MaterialApp(
+    home: Scaffold(body: SingleChildScrollView(child: child)),
+  );
+
+  Widget card(
+    RunActivitySnapshot? current, {
+    ValueChanged<ModelOutputInspectionTarget>? inspect,
+  }) => InspectionHost(
+    key: ValueKey(window.cards.first.id),
+    card: window.cards.first,
+    activity: current,
+    heading: 'Ordered operations',
+    extensions: extensions,
+    onCollapse: () => window.collapse(window.cards.first.id),
+    onExpand: () => window.expand(window.cards.first.id),
+    onDismiss: () => window.dismiss(window.cards.first.id),
+    onInspectOutput: inspect ?? (_) {},
   );
 
   setUp(() {
@@ -83,397 +137,235 @@ void main() {
     addTearDown(window.dispose);
   });
 
-  testWidgets('window opens, replaces, and closes only exact selection', (
+  testWidgets('groups contain compact rows in exact output order, never rich', (
     tester,
   ) async {
-    await tester.binding.setSurfaceSize(const Size(1400, 1100));
-    addTearDown(() => tester.binding.setSurfaceSize(null));
-    final first = activity();
-    final second = activity(run: 'other-run');
-    RunActivitySnapshot current = first;
-    StateSetter? refresh;
-    window.addListener(() => refresh?.call(() {}));
-    await tester.pumpWidget(
-      MaterialApp(
-        home: StatefulBuilder(
-          builder: (context, setState) {
-            refresh = setState;
-            return AdeleShell(
-              project: Project(
-                id: ProjectId('project'),
-                sourceLocation: Uri.parse('file:///project'),
-              ),
-              selectors: const [],
-              onSelectProject: (_) {},
-              sessionControls: Column(
-                children: [
-                  const Text('Main Session'),
-                  const TextField(),
-                  TextButton(
-                    onPressed: () => window.inspectActivity(
-                      session: session,
-                      activity: current,
-                      modelInvocationId: modelId,
-                    ),
-                    child: const Text('Inspect group'),
-                  ),
-                ],
-              ),
-              inspection: window.selection == null
-                  ? null
-                  : InspectionHost(
-                      selection: window.selection!,
-                      activity: current,
-                      heading: current.runId == first.runId
-                          ? 'First group'
-                          : 'Second group',
-                      extensions: extensions,
-                      onClose: window.clear,
-                    ),
-            );
-          },
-        ),
-      ),
-    );
-    expect(find.byType(InspectionHost), findsNothing);
-    await tester.enterText(find.byType(TextField), 'Retained draft');
-    await tester.tap(find.text('Inspect group'));
-    await tester.pumpAndSettle();
-    expect(find.text('First group'), findsOneWidget);
-    expect(find.text('Waiting to be processed.'), findsNWidgets(3));
-    expect(
-      tester.getTopLeft(find.byType(InspectionHost)).dx,
-      greaterThan(tester.getTopRight(find.text('Main Session')).dx),
-    );
-    final selected = window.selection;
-    expect(
-      window.inspectActivity(
-        session: session,
-        activity: first,
-        modelInvocationId: modelId,
-      ),
-      isTrue,
-    );
-    expect(window.selection, same(selected));
-    current = second;
-    await tester.tap(find.text('Inspect group'));
-    await tester.pumpAndSettle();
-    expect(find.text('First group'), findsNothing);
-    expect(find.text('Second group'), findsOneWidget);
-    expect(window.selection!.runId, second.runId);
-    expect(window.selection!.modelInvocationId, modelId);
-    await tester.tap(find.byTooltip('Close Inspection'));
-    await tester.pumpAndSettle();
-    expect(find.byType(InspectionHost), findsNothing);
-    expect(
-      tester
-          .widget<EditableText>(
-            find.descendant(
-              of: find.byType(TextField),
-              matching: find.byType(EditableText),
-            ),
-          )
-          .controller
-          .text,
-      'Retained draft',
-    );
-    expect(first.state, RunState.waiting);
-    expect(second.tools, isEmpty);
-    refresh = null;
-  });
-
-  testWidgets('proposal order includes unresolved and rejected occurrences', (
-    tester,
-  ) async {
-    int creations = 0;
-    final registration = extensions.register(
-      point: toolActivityInspectionContributions,
-      id: ExtensionId('dev.example.presenter'),
-      value: ToolActivityInspectionContribution(
+    int pluginActions = 0;
+    final compactSources = <ToolActivityInspectionSource>[];
+    final toolRegistration = extensions.register(
+      point: toolActivityCompactPresentationContributions,
+      id: ExtensionId('dev.example.compact-tool'),
+      value: ToolActivityCompactPresentationContribution(
         toolId: supported,
         createPresentation: (source) {
-          creations++;
-          return ListenableBuilder(
-            listenable: source,
-            builder: (context, _) => Text(
-              '${source.snapshot.id.value}: ${source.snapshot.changes.last.kind.name}',
-            ),
+          compactSources.add(source);
+          return GestureDetector(
+            onTap: () => pluginActions++,
+            child: Text('Compact ${source.snapshot.id}'),
           );
         },
       ),
     );
-    addTearDown(registration.close);
-    var current = activity(tools: [tool(4), tool(2)]);
-    window.inspectActivity(
-      session: session,
-      activity: current,
-      modelInvocationId: modelId,
-    );
-    Widget host() => MaterialApp(
-      home: Scaffold(
-        body: SingleChildScrollView(
-          child: InspectionHost(
-            selection: window.selection!,
-            activity: current,
-            heading: 'Ordered operations',
-            extensions: extensions,
-            onClose: window.clear,
-          ),
+    addTearDown(toolRegistration.close);
+    final nativeRegistration = extensions.register(
+      point: modelNativeActivityCompactPresentationContributions,
+      id: ExtensionId('dev.example.compact-native'),
+      value: ModelNativeActivityCompactPresentationContribution(
+        presentationKind: 'dev.example.safe',
+        createPresentation: (presentation) => TextButton(
+          onPressed: () => pluginActions++,
+          child: Text(presentation.compactText),
         ),
       ),
     );
-    await tester.pumpWidget(host());
-    expect(creations, 2);
-    expect(
-      tester.getTopLeft(find.text('tool-2: prepared')).dy,
-      lessThan(tester.getTopLeft(find.text('Proposal: proposal-3')).dy),
-    );
-    expect(
-      tester.getTopLeft(find.text('Proposal: proposal-3')).dy,
-      lessThan(tester.getTopLeft(find.text('tool-4: prepared')).dy),
-    );
-    current = activity(
-      tools: [tool(4), tool(2, done: true)],
-      rejected: [
-        RejectedToolProposalActivity(
-          sequence: 39,
-          modelInvocationId: modelId,
-          proposalSequence: 3,
-          proposal: proposal('proposal-3'),
-          kind: ToolProposalFailureKind.unknownAlias,
-          message: 'Unknown proposal',
+    addTearDown(nativeRegistration.close);
+    final current = activity(
+      outputs: [
+        native(8),
+        ModelOutputActivity(
+          sequence: 4,
+          item: ModelToolProposalOutput(proposal(4)),
+        ),
+        native(2),
+        native(5, safe: false),
+        ModelOutputActivity(
+          sequence: 3,
+          item: ModelToolProposalOutput(proposal(3)),
         ),
       ],
+      tools: [tool(4)],
     );
-    await tester.pumpWidget(host());
-    await tester.pumpAndSettle();
-    expect(
-      creations,
-      2,
-      reason: 'Live snapshots retain presentation resources.',
-    );
-    expect(find.text('tool-2: completed'), findsOneWidget);
-    expect(find.textContaining('Proposal rejected:'), findsOneWidget);
-    expect(find.byType(ToolActivityInspectionHost), findsNWidgets(2));
-  });
-
-  testWidgets(
-    'unsupported tool and terminal unprocessed proposal stay bounded',
-    (tester) async {
-      final current = activity(
-        tools: [tool(2, toolId: ToolId('unsupported'))],
-        state: RunState.failed,
-      );
-      window.inspectActivity(
-        session: session,
-        activity: current,
-        modelInvocationId: modelId,
-      );
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: InspectionHost(
-              selection: window.selection!,
-              activity: current,
-              heading: 'Failed Run',
-              extensions: extensions,
-              onClose: window.clear,
-            ),
-          ),
-        ),
-      );
-      expect(find.textContaining('unavailable'), findsOneWidget);
-      expect(
-        find.text(
-          'Run ended without a terminal tool result. Last observed activity:',
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.text('Not processed before the Run ended.'),
-        findsNWidgets(2),
-      );
-      expect(current.tools.single.toolId, ToolId('unsupported'));
-    },
-  );
-
-  testWidgets('Run failure marks retained waiting tool state as historical', (
-    tester,
-  ) async {
-    int creations = 0;
-    final registration = extensions.register(
-      point: toolActivityInspectionContributions,
-      id: ExtensionId('dev.example.waiting-presentation'),
-      value: ToolActivityInspectionContribution(
-        toolId: supported,
-        createPresentation: (_) {
-          creations++;
-          return const Text('Waiting for approval');
-        },
-      ),
-    );
-    addTearDown(registration.close);
-    final waiting = tool(2);
-    var current = activity(tools: [waiting]);
     window.inspectActivity(
       session: session,
       activity: current,
       modelInvocationId: modelId,
     );
-    final selection = window.selection;
-    Widget host() => MaterialApp(
-      home: Scaffold(
-        body: InspectionHost(
-          selection: selection!,
-          activity: current,
-          heading: 'Retained group',
-          extensions: extensions,
-          onClose: window.clear,
-        ),
-      ),
-    );
-    await tester.pumpWidget(host());
-    final Element presentation = find
-        .byType(ToolActivityInspectionHost)
-        .evaluate()
-        .single;
-    expect(find.textContaining('Last observed activity:'), findsNothing);
-    current = activity(tools: [waiting], state: RunState.failed);
-    await tester.pumpWidget(host());
-    expect(find.textContaining('Last observed activity:'), findsOneWidget);
-    expect(find.text('Waiting for approval'), findsOneWidget);
+    final selected = <ModelOutputInspectionTarget>[];
+    await tester.pumpWidget(frame(card(current, inspect: selected.add)));
+    expect(find.byType(ToolActivityInspectionHost), findsNothing);
+    expect(find.byType(ModelNativeActivityInspectionHost), findsNothing);
+    expect(find.byType(ModelNativeActivityCompactHost), findsNWidgets(2));
+    expect(compactSources, hasLength(1));
+    final labels = [
+      'Safe 2',
+      'Proposal: proposal-3',
+      'Compact tool-4',
+      'Safe 8',
+    ];
+    for (int i = 1; i < labels.length; i++) {
+      expect(
+        tester.getTopLeft(find.text(labels[i - 1])).dy,
+        lessThan(tester.getTopLeft(find.text(labels[i])).dy),
+      );
+    }
+    // Hit the body coordinates; only the enclosing row should receive the tap.
+    await tester.tapAt(tester.getCenter(find.text('Proposal: proposal-3')));
+    expect(selected.single.outputSequence, 3);
+    expect(selected.single.runId, current.runId);
+    expect(selected.single.modelInvocationId, modelId);
+    await tester.tapAt(tester.getCenter(find.text('Compact tool-4')));
+    await tester.tapAt(tester.getCenter(find.text('Safe 2')));
+    expect(selected.map((target) => target.outputSequence), [3, 4, 2]);
     expect(
-      find.byType(ToolActivityInspectionHost).evaluate().single,
-      same(presentation),
+      pluginActions,
+      0,
+      reason: 'Compact bodies cannot intercept common row navigation.',
     );
-    expect(creations, 1);
-    expect(window.selection, same(selection));
-    expect(
-      waiting.outcome,
-      isNull,
-      reason: 'Presentation must not synthesize a terminal tool result.',
-    );
+    expect(find.textContaining('RAW-SECRET'), findsNothing);
+    expect(find.text('Safe 5'), findsNothing);
+    expect(current.tools.single.outcome, isNull);
   });
 
   testWidgets(
-    'narrow Inspection and main Session remain scrollable without overflow',
+    'prepared rows retain logical position and compact source across updates',
     (tester) async {
-      await tester.binding.setSurfaceSize(const Size(360, 640));
-      addTearDown(() => tester.binding.setSurfaceSize(null));
-      final current = activity();
+      int creations = 0;
+      final registration = extensions.register(
+        point: toolActivityCompactPresentationContributions,
+        id: ExtensionId('dev.example.compact'),
+        value: ToolActivityCompactPresentationContribution(
+          toolId: supported,
+          createPresentation: (source) {
+            creations++;
+            return ListenableBuilder(
+              listenable: source,
+              builder: (_, _) => Text(
+                '${source.snapshot.id}: ${source.snapshot.changes.last.kind.name}',
+              ),
+            );
+          },
+        ),
+      );
+      addTearDown(registration.close);
+      var current = activity(tools: [tool(4), tool(2)]);
       window.inspectActivity(
         session: session,
         activity: current,
         modelInvocationId: modelId,
       );
-      await tester.pumpWidget(
-        MaterialApp(
-          home: AdeleShell(
-            project: Project(
-              id: ProjectId('project'),
-              sourceLocation: Uri.parse('file:///project'),
-            ),
-            selectors: const [],
-            onSelectProject: (_) {},
-            sessionControls: const TextField(),
-            inspection: InspectionHost(
-              selection: window.selection!,
-              activity: current,
-              heading:
-                  'A longer heading that wraps in a narrow Inspection surface',
-              extensions: extensions,
-              onClose: window.clear,
-            ),
-          ),
-        ),
+      await tester.pumpWidget(frame(card(current)));
+      final occurrence = find.byWidgetPredicate(
+        (widget) =>
+            widget is ActivityOutputPresentation &&
+            widget.target.outputSequence == 3,
       );
+      final occurrenceElement = tester.element(occurrence);
+      final retained = tester
+          .widgetList<ToolActivityCompactHost>(
+            find.byType(ToolActivityCompactHost),
+          )
+          .first
+          .source;
+      current = activity(tools: [tool(4), tool(3), tool(2, done: true)]);
+      await tester.pumpWidget(frame(card(current)));
       await tester.pumpAndSettle();
-      expect(find.byType(InspectionHost), findsOneWidget);
-      expect(find.byType(SingleChildScrollView), findsNWidgets(2));
-      expect(tester.takeException(), isNull);
-      await tester.ensureVisible(find.text('Proposal: proposal-4'));
-      expect(tester.takeException(), isNull);
+      expect(tester.element(occurrence), same(occurrenceElement));
+      expect(creations, 3);
+      expect(
+        tester
+            .widgetList<ToolActivityCompactHost>(
+              find.byType(ToolActivityCompactHost),
+            )
+            .first
+            .source,
+        same(retained),
+      );
+      expect(retained.snapshot, same(current.tools.last));
+      expect(find.text('tool-2: completed'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('tool-3: prepared')).dy,
+        lessThan(tester.getTopLeft(find.text('tool-4: prepared')).dy),
+      );
+      expect(find.byType(ToolActivityInspectionHost), findsNothing);
     },
   );
 
-  test(
-    'Session change, unknown groups, and disposal reject stale selection',
-    () {
-      final current = activity();
-      expect(
-        window.inspectActivity(
-          session: session,
-          activity: current,
-          modelInvocationId: ModelInvocationId('missing'),
+  testWidgets(
+    'individual pending occurrence upgrades rich source without changing card',
+    (tester) async {
+      int creations = 0;
+      final registration = extensions.register(
+        point: toolActivityInspectionContributions,
+        id: ExtensionId('dev.example.rich'),
+        value: ToolActivityInspectionContribution(
+          toolId: supported,
+          createPresentation: (source) {
+            creations++;
+            return ListenableBuilder(
+              listenable: source,
+              builder: (_, _) =>
+                  Text('Rich ${source.snapshot.changes.last.kind.name}'),
+            );
+          },
         ),
-        isFalse,
       );
-      window.inspectActivity(
+      addTearDown(registration.close);
+      var current = activity();
+      window.inspectOutput(
         session: session,
         activity: current,
         modelInvocationId: modelId,
+        outputSequence: 2,
       );
-      final other = Session(
-        id: SessionId('other'),
-        taskId: session.taskId,
-        strategyId: session.strategyId,
+      final id = window.cards.single.id;
+      await tester.pumpWidget(frame(card(current)));
+      final hostElement = tester.element(find.byType(InspectionHost));
+      expect(find.text('Waiting to be processed.'), findsNWidgets(2));
+      current = activity(tools: [tool(2)]);
+      await tester.pumpWidget(frame(card(current)));
+      final richHost = tester.widget<ToolActivityInspectionHost>(
+        find.byType(ToolActivityInspectionHost),
       );
-      window.presentSession(other);
-      expect(window.selection, isNull);
+      final richElement = tester.element(find.text('Rich prepared'));
+      final compactSource = tester
+          .widget<ToolActivityCompactHost>(find.byType(ToolActivityCompactHost))
+          .source;
+      expect(compactSource, isNot(same(richHost.source)));
+      expect(find.text('Tool: tool-2'), findsOneWidget);
+      window.collapse(id);
+      await tester.pumpWidget(frame(card(current)));
+      expect(find.text('Rich prepared'), findsNothing);
+      expect(find.text('Tool: tool-2'), findsOneWidget);
+      current = activity(tools: [tool(2, done: true)]);
+      await tester.pumpWidget(frame(card(current)));
+      window.expand(id);
+      await tester.pumpWidget(frame(card(current)));
+      await tester.pumpAndSettle();
+      expect(creations, 1);
+      expect(window.cards.single.id, same(id));
+      expect(tester.element(find.byType(InspectionHost)), same(hostElement));
+      expect(tester.element(find.text('Rich completed')), same(richElement));
       expect(
-        window.inspectActivity(
-          session: session,
-          activity: current,
-          modelInvocationId: modelId,
-        ),
-        isFalse,
+        tester
+            .widget<ToolActivityInspectionHost>(
+              find.byType(ToolActivityInspectionHost),
+            )
+            .source,
+        same(richHost.source),
       );
-      window.presentSession(null);
-      expect(window.selection, isNull);
-      final disposed = WindowInspection()..presentSession(session);
-      disposed.dispose();
-      expect(
-        disposed.inspectActivity(
-          session: session,
-          activity: current,
-          modelInvocationId: modelId,
-        ),
-        isFalse,
-      );
+      expect(richHost.source.snapshot, same(current.tools.single));
+      expect(compactSource.snapshot, same(current.tools.single));
+      expect(tester.takeException(), isNull);
     },
   );
 
-  testWidgets('mismatched retained Run cannot retarget selected group', (
-    tester,
-  ) async {
-    final current = activity();
-    window.inspectActivity(
-      session: session,
-      activity: current,
-      modelInvocationId: modelId,
-    );
-    await tester.pumpWidget(
-      MaterialApp(
-        home: InspectionHost(
-          selection: window.selection!,
-          activity: activity(run: 'wrong-run'),
-          heading: 'Never retarget',
-          extensions: extensions,
-          onClose: window.clear,
-        ),
-      ),
-    );
-    expect(find.text('Activity is unavailable.'), findsOneWidget);
-    expect(find.text('Never retarget'), findsNothing);
-  });
-
   testWidgets(
-    'native and tool occurrences interleave by sequence, not provider IDs',
+    'individual native header is compact and body rich with safe data only',
     (tester) async {
       final received = <ModelNativePresentation>[];
-      final nativeRegistration = extensions.register(
+      final registration = extensions.register(
         point: modelNativeActivityPresentationContributions,
-        id: ExtensionId('dev.example.native'),
+        id: ExtensionId('dev.example.native-rich'),
         value: ModelNativeActivityPresentationContribution(
           presentationKind: 'dev.example.safe',
           createInspection: (presentation) {
@@ -482,180 +374,298 @@ void main() {
           },
         ),
       );
-      addTearDown(nativeRegistration.close);
-      final toolRegistration = extensions.register(
-        point: toolActivityInspectionContributions,
-        id: ExtensionId('dev.example.tool'),
-        value: ToolActivityInspectionContribution(
-          toolId: supported,
-          createPresentation: (source) => Text('Tool ${source.snapshot.id}'),
-        ),
+      addTearDown(registration.close);
+      final current = activity(outputs: [native(2)]);
+      window.inspectOutput(
+        session: session,
+        activity: current,
+        modelInvocationId: modelId,
+        outputSequence: 2,
       );
-      addTearDown(toolRegistration.close);
-      ModelOutputActivity native(int sequence, String? presentationKind) =>
-          ModelOutputActivity(
-            sequence: sequence,
-            item: ModelNativeOutput(
-              providerItemId: 'same-provider-call',
-              presentation: presentationKind == null
-                  ? null
-                  : ModelNativePresentation(
-                      kind: presentationKind,
-                      compactText: 'Native',
-                      data: {'text': 'Native $sequence'},
-                    ),
-              providerNativeMetadata: ModelNativeEnvelope(
-                kind: 'dev.example.safe',
-                compatibility: const {},
-                data: {
-                  'approvedText': 'Raw must never classify $sequence',
-                  'private': 'opaque secret',
-                },
-              ),
-            ),
-          );
-      final outputs = [
-        native(8, 'dev.example.safe'),
-        native(2, 'dev.example.safe'),
-        native(5, null),
-        native(6, 'unknown-safe-kind'),
-        ModelOutputActivity(
-          sequence: 4,
-          item: ModelToolProposalOutput(proposal('tool')),
-        ),
-      ];
-      RunActivitySnapshot current(String run) => RunActivitySnapshot(
-        runId: RunId(run),
-        sessionId: session.id,
-        state: RunState.completed,
-        sequence: 20,
-        models: [
-          ModelInvocationActivity(
-            id: modelId,
-            startSequence: 1,
-            settlement: ModelSettlement.completed,
-            terminalSequence: 9,
-            outputs: outputs,
-          ),
-        ],
-        tools: [tool(4, done: true)],
-      );
-      Widget host(String run) => MaterialApp(
-        home: Scaffold(
-          body: InspectionHost(
-            selection: ActivityInspectionSelection(
-              sessionId: session.id,
-              runId: RunId(run),
-              modelInvocationId: modelId,
-            ),
-            activity: current(run),
-            heading: 'Mixed',
-            extensions: extensions,
-            onClose: () {},
-          ),
-        ),
-      );
-      await tester.pumpWidget(host('first'));
-      expect(received, hasLength(2));
-      expect(
-        tester.getTopLeft(find.text('Native 2')).dy,
-        lessThan(tester.getTopLeft(find.text('Tool tool-4')).dy),
-      );
-      expect(
-        tester.getTopLeft(find.text('Tool tool-4')).dy,
-        lessThan(tester.getTopLeft(find.text('Native 8')).dy),
-      );
-      expect(
-        find.text('Model native activity rich inspection is unavailable.'),
-        findsOneWidget,
-      );
-      expect(find.byType(ModelNativeActivityInspectionHost), findsNWidgets(3));
-      expect(
-        tester.getTopLeft(find.text('Tool tool-4')).dy,
-        lessThan(tester.getTopLeft(find.textContaining('rich inspection')).dy),
-      );
-      expect(
-        tester.getTopLeft(find.textContaining('rich inspection')).dy,
-        lessThan(tester.getTopLeft(find.text('Native 8')).dy),
-      );
-      expect(find.textContaining('opaque'), findsNothing);
-      expect(find.text('Native 5'), findsNothing);
-      expect(find.text('Native 6'), findsNothing);
-      expect(find.textContaining('Raw must never classify'), findsNothing);
-      for (final output in outputs) {
-        if (output.item case final ModelNativeOutput native) {
-          expect(
-            native.providerNativeMetadata.data['private'],
-            'opaque secret',
-          );
-        }
-      }
-      await tester.pumpWidget(host('first'));
-      expect(received, hasLength(2));
-      await tester.pumpWidget(host('second'));
-      expect(
-        received,
-        hasLength(4),
-        reason: 'Run identity changes remount each native occurrence.',
-      );
-      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(frame(card(current)));
+      expect(find.text('Safe 2'), findsOneWidget);
+      expect(find.text('Rich 2'), findsOneWidget);
+      expect(received, hasLength(1));
+      expect(received.single.data, {'text': 'Rich 2'});
+      expect(find.textContaining('RAW-SECRET'), findsNothing);
+      window.collapse(window.cards.single.id);
+      await tester.pumpWidget(frame(card(current)));
+      expect(find.text('Safe 2'), findsOneWidget);
+      expect(find.text('Rich 2'), findsNothing);
+      window.expand(window.cards.single.id);
+      await tester.pumpWidget(frame(card(current)));
+      expect(received, hasLength(1));
     },
   );
 
-  test(
-    'window accepts exact completed native-only evidence, not unknown or unsettled models',
-    () {
-      RunActivitySnapshot evidence(ModelSettlement? settlement) =>
-          RunActivitySnapshot(
-            runId: RunId('native-run'),
-            sessionId: session.id,
-            state: RunState.completed,
-            sequence: 4,
-            models: [
-              ModelInvocationActivity(
-                id: modelId,
-                startSequence: 1,
-                settlement: settlement,
-                outputs: [
-                  ModelOutputActivity(
-                    sequence: 2,
-                    item: ModelNativeOutput(
-                      providerNativeMetadata: ModelNativeEnvelope(
-                        kind: 'fixture',
-                        compatibility: const {},
-                        data: const {},
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
+  testWidgets('rejected and terminal unprocessed occurrences remain factual', (
+    tester,
+  ) async {
+    final current = activity(
+      state: RunState.failed,
+      rejected: [
+        RejectedToolProposalActivity(
+          sequence: 39,
+          modelInvocationId: modelId,
+          proposalSequence: 3,
+          proposal: proposal(3),
+          kind: ToolProposalFailureKind.unknownAlias,
+          message: 'PRIVATE-ERROR',
+        ),
+      ],
+    );
+    window.inspectActivity(
+      session: session,
+      activity: current,
+      modelInvocationId: modelId,
+    );
+    await tester.pumpWidget(frame(card(current)));
+    expect(find.text('Proposal rejected: unknownAlias.'), findsOneWidget);
+    expect(find.text('Not processed before the Run ended.'), findsNWidgets(2));
+    expect(find.textContaining('PRIVATE-ERROR'), findsNothing);
+  });
+
+  testWidgets(
+    'Run failure labels rich waiting evidence without synthesizing an outcome',
+    (tester) async {
+      int creations = 0;
+      final registration = extensions.register(
+        point: toolActivityInspectionContributions,
+        id: ExtensionId('dev.example.waiting'),
+        value: ToolActivityInspectionContribution(
+          toolId: supported,
+          createPresentation: (_) {
+            creations++;
+            return const Text('Waiting for approval');
+          },
+        ),
+      );
+      addTearDown(registration.close);
+      final waiting = tool(2);
+      var current = activity(tools: [waiting]);
+      window.inspectOutput(
+        session: session,
+        activity: current,
+        modelInvocationId: modelId,
+        outputSequence: 2,
+      );
+      await tester.pumpWidget(frame(card(current)));
+      final element = tester.element(find.byType(ToolActivityInspectionHost));
+      current = activity(tools: [waiting], state: RunState.failed);
+      await tester.pumpWidget(frame(card(current)));
+      expect(find.textContaining('Last observed activity:'), findsOneWidget);
+      expect(find.text('Waiting for approval'), findsOneWidget);
+      expect(
+        tester.element(find.byType(ToolActivityInspectionHost)),
+        same(element),
+      );
+      expect(creations, 1);
+      expect(waiting.outcome, isNull);
+    },
+  );
+
+  for (final surface in ['direct', 'group', 'collapsed']) {
+    testWidgets(
+      'terminal $surface compact evidence is qualified without replacement',
+      (tester) async {
+        final registration = extensions.register(
+          point: toolActivityCompactPresentationContributions,
+          id: ExtensionId('dev.example.waiting-compact'),
+          value: ToolActivityCompactPresentationContribution(
+            toolId: supported,
+            createPresentation: (_) => const Text('Waiting for approval'),
+          ),
+        );
+        addTearDown(registration.close);
+        final waiting = tool(2);
+        var current = activity(
+          tools: [waiting],
+          outputs: [
+            ModelOutputActivity(
+              sequence: 2,
+              item: ModelToolProposalOutput(proposal(2)),
+            ),
+          ],
+        );
+        if (surface == 'group') {
+          window.inspectActivity(
+            session: session,
+            activity: current,
+            modelInvocationId: modelId,
           );
-      expect(
-        window.inspectActivity(
-          session: session,
-          activity: evidence(null),
-          modelInvocationId: modelId,
-        ),
-        isFalse,
+        } else if (surface == 'collapsed') {
+          window.inspectOutput(
+            session: session,
+            activity: current,
+            modelInvocationId: modelId,
+            outputSequence: 2,
+          );
+          window.collapse(window.cards.single.id);
+        }
+        Widget view() => frame(
+          surface == 'direct'
+              ? ActivityOutputPresentation(
+                  extensions: extensions,
+                  activity: current,
+                  target: target(2),
+                  compact: true,
+                )
+              : card(current),
+        );
+        await tester.pumpWidget(view());
+        final source = tester
+            .widget<ToolActivityCompactHost>(
+              find.byType(ToolActivityCompactHost),
+            )
+            .source;
+        final cards = window.cards;
+        expect(find.text('Run ended; last observed activity.'), findsNothing);
+        current = activity(
+          tools: [waiting],
+          outputs: current.models.single.outputs,
+          state: RunState.failed,
+        );
+        await tester.pumpWidget(view());
+        expect(find.text('Run ended; last observed activity.'), findsOneWidget);
+        expect(find.text('Waiting for approval'), findsOneWidget);
+        expect(
+          tester
+              .widget<ToolActivityCompactHost>(
+                find.byType(ToolActivityCompactHost),
+              )
+              .source,
+          same(source),
+        );
+        expect(window.cards, same(cards));
+        expect(waiting.outcome, isNull);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets(
+    'exact occurrence rejects mismatched Run, Session, model, or sequence',
+    (tester) async {
+      for (final current in [
+        activity(run: 'wrong'),
+        activity(sessionId: 'wrong'),
+        activity(invocationId: 'wrong'),
+        activity(outputs: [native(9)]),
+        activity(outputs: [native(2, safe: false)]),
+        null,
+      ]) {
+        await tester.pumpWidget(
+          frame(
+            ActivityOutputPresentation(
+              extensions: extensions,
+              activity: current,
+              target: target(2),
+              compact: true,
+            ),
+          ),
+        );
+        expect(find.text('Activity output is unavailable.'), findsOneWidget);
+        expect(find.textContaining('RAW-SECRET'), findsNothing);
+      }
+      final current = activity();
+      window.inspectActivity(
+        session: session,
+        activity: current,
+        modelInvocationId: modelId,
       );
-      expect(
-        window.inspectActivity(
-          session: session,
-          activity: evidence(ModelSettlement.completed),
-          modelInvocationId: ModelInvocationId('unknown'),
-        ),
-        isFalse,
+      await tester.pumpWidget(frame(card(activity(run: 'wrong'))));
+      expect(find.text('Activity is unavailable.'), findsOneWidget);
+      expect(find.text('Ordered operations'), findsNothing);
+      expect(find.byType(ActivityOutputPresentation), findsNothing);
+    },
+  );
+
+  testWidgets('same tool identity in a different Run gets a fresh source', (
+    tester,
+  ) async {
+    Widget output(String run) => frame(
+      ActivityOutputPresentation(
+        extensions: extensions,
+        activity: activity(run: run, tools: [tool(2)]),
+        target: target(2, run: run),
+        compact: true,
+      ),
+    );
+    await tester.pumpWidget(output('first'));
+    final source = tester
+        .widget<ToolActivityCompactHost>(find.byType(ToolActivityCompactHost))
+        .source;
+    await tester.pumpWidget(output('second'));
+    expect(
+      tester
+          .widget<ToolActivityCompactHost>(find.byType(ToolActivityCompactHost))
+          .source,
+      isNot(same(source)),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'missing compact presenters use bounded escaped factual fallbacks',
+    (tester) async {
+      final label = 'Visible\n${'x' * 100000}';
+      final current = activity(
+        outputs: [
+          ModelOutputActivity(
+            sequence: 2,
+            item: ModelToolProposalOutput(
+              ProviderToolProposal(
+                providerCallId: 'call',
+                alias: label,
+                arguments: const {},
+              ),
+            ),
+          ),
+          ModelOutputActivity(
+            sequence: 3,
+            item: ModelNativeOutput(
+              providerNativeMetadata: ModelNativeEnvelope(
+                kind: 'raw',
+                compatibility: const {},
+                data: const {'private': 'RAW-SECRET'},
+              ),
+              presentation: ModelNativePresentation(
+                kind: 'unknown-safe-kind',
+                compactText: label,
+                data: const {
+                  'summaryParts': ['DO-NOT-RENDER'],
+                },
+              ),
+            ),
+          ),
+          ModelOutputActivity(
+            sequence: 4,
+            item: ModelToolProposalOutput(proposal(4)),
+          ),
+        ],
+        tools: [tool(4, alias: label)],
       );
-      expect(
-        window.inspectActivity(
-          session: session,
-          activity: evidence(ModelSettlement.completed),
-          modelInvocationId: modelId,
-        ),
-        isTrue,
+      window.inspectActivity(
+        session: session,
+        activity: current,
+        modelInvocationId: modelId,
       );
-      expect(window.selection!.runId, RunId('native-run'));
+      await tester.pumpWidget(frame(card(current)));
+      final labels = tester
+          .widgetList<Text>(find.byType(Text))
+          .map((text) => text.data)
+          .whereType<String>()
+          .where((text) => text.contains('Visible'))
+          .toList();
+      expect(labels, hasLength(3));
+      for (final text in labels) {
+        expect(text, contains(r'Visible\n'));
+        expect(text, endsWith('...'));
+        expect(text.length, lessThanOrEqualTo(170));
+      }
+      expect(find.textContaining('RAW-SECRET'), findsNothing);
+      expect(find.textContaining('DO-NOT-RENDER'), findsNothing);
+      expect(find.byType(ModelNativeActivityInspectionHost), findsNothing);
     },
   );
 }

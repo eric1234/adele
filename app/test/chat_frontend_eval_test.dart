@@ -1,11 +1,15 @@
 import 'dart:io';
 
+import 'package:adele_desktop/frontend/model_native_activity_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/plugins/chat_frontend_bridge.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:dart_eval/stdlib/core.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_eval/flutter_eval.dart';
+import 'package:flutter_eval/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../tool/chat_frontend_compiler.dart';
@@ -28,7 +32,156 @@ void main() {
 
   setUp(() async {
     generation = await PreparedFrontend.load(artifact);
+    addTearDown(generation.invalidate);
   });
+
+  testWidgets(
+    'opaque native slots nest separate EVC runtimes and contain child failures',
+    (tester) async {
+      const library = 'package:compact_probe/main.dart';
+      final compiler = Compiler()
+        ..addPlugin(flutterEvalPlugin)
+        ..addPlugin(const ModelNativeActivityDeclarations())
+        ..entrypoints.add(library);
+      final program = compiler.compile({
+        'compact_probe': {
+          'main.dart': '''
+import 'package:flutter/material.dart';
+import 'package:adele_ui/model_native_activity_bridge.dart';
+
+Widget buildCompact() => Compact();
+
+class Compact extends StatefulWidget {
+  State<Compact> createState() => CompactState();
+}
+
+class CompactState extends State<Compact> {
+  int count = 0;
+  Widget build(BuildContext context) {
+    final data = readModelNativeActivityData();
+    if (data['broken'] == true && count > 0) {
+      throw StateError('private child failure');
+    }
+    return TextButton(
+      onPressed: () { setState(() { count = count + 1; }); },
+      child: Text(data['label'] + ': ' + count.toString()),
+    );
+  }
+}
+''',
+        },
+        'adele_ui': {
+          'model_native_activity_bridge.dart': File(
+            '${Directory.current.parent.path}/packages/ui/lib/'
+            'model_native_activity_bridge.dart',
+          ).readAsStringSync(),
+        },
+      });
+      final PreparedFrontend child = (await tester.runAsync(() async {
+        final file = File('${temporary.path}/compact.evc');
+        await file.writeAsBytes(program.write());
+        return PreparedFrontend.load(file);
+      }))!;
+      addTearDown(child.invalidate);
+      final source = _Source()
+        ..entries.addAll(const [
+          ChatPresentationEntry.activity(id: 'first', content: 'First'),
+          ChatPresentationEntry.activity(id: 'second', content: 'Second'),
+        ]);
+      addTearDown(source.dispose);
+      final bridges = <ModelNativeActivityBridge>[];
+      Widget? slot(String id) => Builder(
+        key: ValueKey(id),
+        builder: (context) => TextButton(
+          key: ValueKey('inspect-$id'),
+          onPressed: () {
+            if (ChatActivityHostScope.isActiveOf(context)) {
+              source.inspectActivity(id);
+            }
+          },
+          child: child.createPresentation(
+            key: ValueKey(id),
+            library: library,
+            entrypoint: 'buildCompact',
+            createBridge: () {
+              final bridge = ModelNativeActivityBridge(
+                presentation: ModelNativePresentation(
+                  kind: 'dev.example.compact',
+                  compactText: id,
+                  data: {'label': id, 'broken': id == 'first'},
+                ),
+                isActive: () => true,
+              );
+              bridges.add(bridge);
+              return bridge;
+            },
+          ),
+        ),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: generation.createChatPresentation(
+              source: source,
+              isActive: () => true,
+              buildActivity: slot,
+            ),
+          ),
+        ),
+      );
+      expect(find.text('first: 0'), findsOneWidget);
+      expect(find.text('second: 0'), findsOneWidget);
+      expect(bridges, hasLength(2));
+      final inspectFirst = tester
+          .widget<TextButton>(find.byKey(const ValueKey('inspect-first')))
+          .onPressed!;
+      inspectFirst();
+      expect(source.inspected, ['first']);
+      final runtimes = tester
+          .widgetList<$StatefulWidget$bridge>(
+            find.byWidgetPredicate(
+              (widget) => widget is $StatefulWidget$bridge,
+            ),
+          )
+          .map((widget) => widget.$runtime)
+          .toSet();
+      expect(runtimes, hasLength(3));
+      final chatElement = tester.element(find.text('Chat'));
+      final secondElement = tester.element(find.text('second: 0'));
+      await tester.enterText(find.byType(TextField), 'Retain Chat draft');
+      source.notifyListeners();
+      await tester.pump();
+      await tester.pump();
+      expect(bridges, hasLength(2));
+      expect(tester.element(find.text('second: 0')), same(secondElement));
+      await tester.tap(find.text('second: 0'));
+      await tester.pump();
+      expect(find.text('second: 1'), findsOneWidget);
+      expect(find.text('first: 0'), findsOneWidget);
+      await tester.tap(find.text('first: 0'));
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('Frontend unavailable.'), findsOneWidget);
+      expect(find.text('second: 1'), findsOneWidget);
+      expect(tester.element(find.text('Chat')), same(chatElement));
+      expect(_draft(tester), 'Retain Chat draft');
+      inspectFirst();
+      expect(source.inspected, ['first', 'first']);
+      child.invalidate();
+      await tester.pump();
+      expect(find.text('Frontend unavailable.'), findsNWidgets(2));
+      expect(find.text('Chat'), findsOneWidget);
+      expect(_draft(tester), 'Retain Chat draft');
+      expect(source.listening, isTrue);
+      inspectFirst();
+      expect(source.inspected, ['first', 'first', 'first']);
+      generation.invalidate();
+      inspectFirst();
+      expect(source.inspected, ['first', 'first', 'first']);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('actual EVC renders history and submits accepted prompts', (
     WidgetTester tester,
@@ -118,22 +271,74 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  for (final String fallback in ['Read File', '4 tool calls']) {
-    testWidgets('actual EVC renders supplied activity fallback: $fallback', (
+  for (final String heading in ['Reading files', '4 operations']) {
+    testWidgets('actual EVC renders native activity heading: $heading', (
       WidgetTester tester,
     ) async {
       final _Source source = _Source();
       // A multi-call batch crosses the bridge as one DTO, not individual calls.
       source.entries.add(
-        ChatPresentationEntry.activity(id: 'run-1/model-1', content: fallback),
+        ChatPresentationEntry.activity(id: 'run-1/model-1', content: heading),
       );
       await tester.pumpWidget(_host(generation, source));
-      expect(find.text('ACTIVITY: $fallback'), findsOneWidget);
+      expect(find.text('ACTIVITY: $heading'), findsOneWidget);
       expect(find.textContaining('ACTIVITY: '), findsOneWidget);
       expect(find.text('ADELE'), findsNothing);
       expect(find.text('You'), findsNothing);
       expect(tester.takeException(), isNull);
     });
+  }
+
+  for (final supplied in [false, true]) {
+    testWidgets(
+      '${supplied ? 'null' : 'absent'} native slot never renders an interpreted activity or action',
+      (tester) async {
+        final source = _Source()
+          ..canSubmit = false
+          ..entries.addAll(const [
+            ChatPresentationEntry(
+              role: 'user',
+              content: 'Retained user message',
+            ),
+            ChatPresentationEntry.activity(id: 'single', content: 'read_file'),
+            ChatPresentationEntry.activity(
+              id: 'group',
+              content: '4 operations',
+            ),
+            ChatPresentationEntry(
+              role: 'assistant',
+              content: 'Retained answer',
+            ),
+          ]);
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: generation.createChatPresentation(
+                source: source,
+                isActive: () => true,
+                buildActivity: supplied ? (_) => null : null,
+              ),
+            ),
+          ),
+        );
+        expect(find.text('Retained user message'), findsOneWidget);
+        expect(find.text('Retained answer'), findsOneWidget);
+        expect(find.textContaining('ACTIVITY'), findsNothing);
+        expect(find.textContaining('read_file'), findsNothing);
+        expect(find.textContaining('4 operations'), findsNothing);
+        expect(find.byType(TextButton), findsNothing);
+        source.canSubmit = true;
+        source.notifyListeners();
+        await tester.pump();
+        await tester.pump();
+        await tester.enterText(find.byType(TextField), 'Still usable');
+        expect(find.byType(TextButton), findsOneWidget);
+        expect(find.textContaining('ACTIVITY'), findsNothing);
+        expect(source.inspected, isEmpty);
+        expect(_draft(tester), 'Still usable');
+        expect(tester.takeException(), isNull);
+      },
+    );
   }
 
   testWidgets('actual EVC keeps one header per batch across mounted updates', (
@@ -561,6 +766,7 @@ void main() {
     );
     addTearDown(bridge.invalidate);
     final Compiler compiler = Compiler()
+      ..addPlugin(flutterEvalPlugin)
       ..addPlugin(const ChatFrontendDeclarations())
       ..entrypoints.add('package:probe/main.dart');
     final Program program = compiler.compile({
@@ -590,6 +796,7 @@ List<String?> inspectEntries() {
       },
     });
     final Runtime runtime = Runtime(program.write().buffer.asByteData())
+      ..addPlugin(flutterEvalPlugin)
       ..addPlugin(bridge);
     bool inspect(String id) =>
         runtime.executeLib('package:probe/main.dart', 'inspect', [$String(id)])
@@ -669,6 +876,30 @@ Widget _host(
     body: generation.createChatPresentation(
       source: source,
       isActive: isActive ?? () => true,
+      buildActivity: (id) {
+        final entry = source.entries
+            .where((entry) => entry.kind == 'activity' && entry.id == id)
+            .firstOrNull;
+        if (entry == null) return null;
+        return Builder(
+          key: ValueKey((source, id)),
+          builder: (context) => Padding(
+            padding: const EdgeInsets.only(bottom: 16),
+            child: TextButton(
+              onPressed: () {
+                if (ChatActivityHostScope.isActiveOf(context) &&
+                    (isActive?.call() ?? true)) {
+                  source.inspectActivity(id);
+                }
+              },
+              child: Text(
+                'ACTIVITY: ${entry.content}',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ),
+          ),
+        );
+      },
     ),
   ),
 );

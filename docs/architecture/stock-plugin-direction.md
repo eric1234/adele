@@ -82,11 +82,14 @@ are maintained in [`overview.md`](overview.md) and the owning package documentat
 
 ## 2.1 Workbench/UI semantics
 
-Session presentation belongs to its strategy; tool and provider-specific
-Inspection bodies belong to the owning plugins. The common host owns selection,
-group framing, ordered composition, and view lifetime, not plugin field
-interpretation. Read-only presentation does not grant execution or approval
-authority, and unavailable rich UI must not invalidate execution or erase safe
+Session presentation, activity grouping, and timeline placement belong to the
+strategy. Tool and provider-specific compact activity and rich Inspection bodies
+belong to the owning plugins. Compact and rich presentation are distinct semantic
+roles, not size variants. The common host owns inspect interactions, retained card
+order, collapse/dismiss chrome, and view lifetime, not plugin field interpretation.
+Run/core owns evidence identity, order, and lifecycle. Read-only presentation does
+not grant execution or approval authority, and unavailable rich UI must not
+invalidate execution or erase safe
 activity. Concrete Session/tool/native presentation contracts live in
 [`plugin-extension-model.md`](plugin-extension-model.md#122-implemented-presentation-boundaries),
 separately from the broader workbench hypotheses below.
