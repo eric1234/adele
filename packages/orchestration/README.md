@@ -131,16 +131,20 @@ data-only outcomes including structured immutable `hostData`; arbitrary exceptio
 objects, host diagnostics, bindings, and callable authority are not projected.
 
 Chat's compact grouping is a consumer rule, not a core invariant: one successfully
-completed proposal-containing model invocation yields one activity summary.
-Explicit user-facing model text accompanying proposals is preferred narration;
-missing text yields a structural count with no extra inference. Final text without
-proposals remains canonical Chat content. Activity is not canonical Chat history
+completed model invocation with tools or presentable native activity yields one
+group. Headings prefer explicit tool-batch narration, then native compact text,
+then a structural tool count, with no extra inference. Reasoning-only groups
+precede canonical final Chat text. Activity is not canonical Chat history
 and is not persisted. Completed activity retained by a current presentation cannot
 be reconstructed after reopening until persistence exists. Chat groups can open
-window-owned Inspection, where public Flutter `adele_ui` selects read-only tool
-presenters by exact `ToolId`. Filesystem and Command supply the first interpreted
-presentations. This package remains Flutter-free and owns neither selection nor
-tool-specific UI; nested navigation and provider-native presentation remain deferred.
+window-owned Inspection, where public Flutter `adele_ui` selects read-only
+presentations by exact `ToolId` or native kind, interleaved by `output.sequence`.
+Filesystem and Command own tool cards; OpenAI owns safe reasoning-summary
+projection and interpreted Inspection. This package remains Flutter-free and
+owns neither selection nor provider/tool interpretation: native envelopes stay
+opaque here, with exact native/encrypted replay unchanged. See
+[model-native activity presentation](../../docs/architecture/overview.md#model-native-activity-presentation).
+Reasoning deltas and nested navigation remain deferred.
 
 ## Inference Context
 

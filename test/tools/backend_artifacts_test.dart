@@ -12,6 +12,8 @@ const String _openaiEntrypoint =
 const String _frontendHarness = 'tool/compile_chat_frontend.dart';
 const String _toolFrontendHarness =
     'tool/compile_tool_inspection_frontends.dart';
+const String _openaiFrontendHarness =
+    'tool/compile_openai_activity_frontend.dart';
 
 void main() {
   late Directory root;
@@ -43,6 +45,9 @@ void main() {
     harness.writeAsStringSync('void main() {}');
     File(
       '${root.path}/app/$_toolFrontendHarness',
+    ).writeAsStringSync('void main() {}');
+    File(
+      '${root.path}/app/$_openaiFrontendHarness',
     ).writeAsStringSync('void main() {}');
     for (final String entrypoint in <String>[
       _hostEntrypoint,
@@ -79,6 +84,10 @@ elif [ "\$1" = test ]; then
     label='$_frontendHarness'
     printf '%s\n' "\$@" > '${frontendArguments.path}'
     printf '%s\n' "\$ADELE_REPOSITORY_ROOT" "\$output" > '${frontendEnvironment.path}'
+  elif [ "\$5" = '$_openaiFrontendHarness' ]; then
+    kind=openai
+    output="\$ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT"
+    label='$_openaiFrontendHarness'
   else
     test "\$5" = '$_toolFrontendHarness' || exit 92
     kind="\$ADELE_TOOL_INSPECTION_FRONTEND"
@@ -171,6 +180,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
       environment['ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT'] =
           '/wrong-tool-output';
       environment['ADELE_TOOL_INSPECTION_FRONTEND'] = 'wrong-tool';
+      environment['ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT'] = '/wrong-openai';
       for (final List<String> arguments in <List<String>>[
         <String>['run', 'linux'],
         <String>['build', 'linux', '--profile'],
@@ -191,6 +201,8 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           'compiled|$_toolFrontendHarness|filesystem',
           'compile|$_toolFrontendHarness|command',
           'compiled|$_toolFrontendHarness|command',
+          'compile|$_openaiFrontendHarness',
+          'compiled|$_openaiFrontendHarness',
           'flutter-launch',
         ]);
         expect(result.stdout, contains('frontend compiler output'));
@@ -218,7 +230,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             separator + 1,
           );
         }
-        expect(launched, hasLength(run ? 11 : 10));
+        expect(launched, hasLength(run ? 12 : 11));
         expect(
           defines.keys,
           unorderedEquals(<String>[
@@ -229,6 +241,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             'ADELE_CHAT_FRONTEND_ARTIFACT',
             'ADELE_FILESYSTEM_TOOLS_FRONTEND_ARTIFACT',
             'ADELE_COMMAND_TOOLS_FRONTEND_ARTIFACT',
+            'ADELE_OPENAI_ACTIVITY_FRONTEND_ARTIFACT',
           ]),
         );
         expect(
@@ -277,6 +290,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             define: 'ADELE_FILESYSTEM_TOOLS_FRONTEND_ARTIFACT',
           ),
           (name: 'command', define: 'ADELE_COMMAND_TOOLS_FRONTEND_ARTIFACT'),
+          (name: 'openai', define: 'ADELE_OPENAI_ACTIVITY_FRONTEND_ARTIFACT'),
         ]) {
           final File artifact = File(defines[tool.define]!);
           expect(artifact.uri.isAbsolute, isTrue);
@@ -328,7 +342,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
   }
 
   for (final String command in <String>['run', 'build']) {
-    for (final String kind in ['chat', 'filesystem', 'command']) {
+    for (final String kind in ['chat', 'filesystem', 'command', 'openai']) {
       for (final String failure in <String>['exit', 'missing', 'empty']) {
         test(
           '$command never launches after $kind frontend $failure failure',
@@ -369,11 +383,16 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
                 'compiled|$_frontendHarness',
               if (kind != 'chat') 'compile|$_toolFrontendHarness|filesystem',
               if (kind == 'command' ||
+                  kind == 'openai' ||
                   (kind == 'filesystem' && failure != 'exit'))
                 'compiled|$_toolFrontendHarness|filesystem',
-              if (kind == 'command') 'compile|$_toolFrontendHarness|command',
-              if (kind == 'command' && failure != 'exit')
+              if (kind == 'command' || kind == 'openai')
+                'compile|$_toolFrontendHarness|command',
+              if (kind == 'openai' || (kind == 'command' && failure != 'exit'))
                 'compiled|$_toolFrontendHarness|command',
+              if (kind == 'openai') 'compile|$_openaiFrontendHarness',
+              if (kind == 'openai' && failure != 'exit')
+                'compiled|$_openaiFrontendHarness',
             ]);
             expect(launchArguments.existsSync(), isFalse);
           },

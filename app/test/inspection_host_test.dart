@@ -465,4 +465,182 @@ void main() {
     expect(find.text('Activity is unavailable.'), findsOneWidget);
     expect(find.text('Never retarget'), findsNothing);
   });
+
+  testWidgets(
+    'native and tool occurrences interleave by sequence, not provider IDs',
+    (tester) async {
+      final received = <ModelNativeActivityProjection>[];
+      final nativeRegistration = extensions.register(
+        point: modelNativeActivityPresentationContributions,
+        id: ExtensionId('dev.example.native'),
+        value: ModelNativeActivityPresentationContribution(
+          nativeKind: 'dev.example.native',
+          project: (output) => ModelNativeActivityProjection(
+            compactText: 'Native',
+            data: {'text': output.providerNativeMetadata.data['approvedText']},
+          ),
+          createInspection: (projection) {
+            received.add(projection);
+            return Text(projection.data['text']! as String);
+          },
+        ),
+      );
+      addTearDown(nativeRegistration.close);
+      final toolRegistration = extensions.register(
+        point: toolActivityInspectionContributions,
+        id: ExtensionId('dev.example.tool'),
+        value: ToolActivityInspectionContribution(
+          toolId: supported,
+          createPresentation: (source) => Text('Tool ${source.snapshot.id}'),
+        ),
+      );
+      addTearDown(toolRegistration.close);
+      final declineRegistration = extensions.register(
+        point: modelNativeActivityPresentationContributions,
+        id: ExtensionId('dev.example.decline'),
+        value: ModelNativeActivityPresentationContribution(
+          nativeKind: 'declined',
+          project: (_) => null,
+          createInspection: (_) => throw StateError('Never run'),
+        ),
+      );
+      addTearDown(declineRegistration.close);
+      ModelOutputActivity native(int sequence, String kind) =>
+          ModelOutputActivity(
+            sequence: sequence,
+            item: ModelNativeOutput(
+              providerItemId: 'same-provider-call',
+              providerNativeMetadata: ModelNativeEnvelope(
+                kind: kind,
+                compatibility: const {},
+                data: {
+                  'approvedText': 'Native $sequence',
+                  'private': 'opaque secret',
+                },
+              ),
+            ),
+          );
+      final outputs = [
+        native(8, 'dev.example.native'),
+        native(2, 'dev.example.native'),
+        native(5, 'unknown'),
+        native(6, 'declined'),
+        ModelOutputActivity(
+          sequence: 4,
+          item: ModelToolProposalOutput(proposal('tool')),
+        ),
+      ];
+      RunActivitySnapshot current(String run) => RunActivitySnapshot(
+        runId: RunId(run),
+        sessionId: session.id,
+        state: RunState.completed,
+        sequence: 20,
+        models: [
+          ModelInvocationActivity(
+            id: modelId,
+            startSequence: 1,
+            settlement: ModelSettlement.completed,
+            terminalSequence: 9,
+            outputs: outputs,
+          ),
+        ],
+        tools: [tool(4, done: true)],
+      );
+      Widget host(String run) => MaterialApp(
+        home: Scaffold(
+          body: InspectionHost(
+            selection: ActivityInspectionSelection(
+              sessionId: session.id,
+              runId: RunId(run),
+              modelInvocationId: modelId,
+            ),
+            activity: current(run),
+            heading: 'Mixed',
+            extensions: extensions,
+            onClose: () {},
+          ),
+        ),
+      );
+      await tester.pumpWidget(host('first'));
+      expect(received, hasLength(2));
+      expect(
+        tester.getTopLeft(find.text('Native 2')).dy,
+        lessThan(tester.getTopLeft(find.text('Tool tool-4')).dy),
+      );
+      expect(
+        tester.getTopLeft(find.text('Tool tool-4')).dy,
+        lessThan(tester.getTopLeft(find.text('Native 8')).dy),
+      );
+      expect(find.textContaining('unavailable'), findsNothing);
+      expect(find.textContaining('opaque'), findsNothing);
+      expect(find.text('Native 5'), findsNothing);
+      expect(find.text('Native 6'), findsNothing);
+      await tester.pumpWidget(host('first'));
+      expect(received, hasLength(2));
+      await tester.pumpWidget(host('second'));
+      expect(
+        received,
+        hasLength(4),
+        reason: 'Run identity changes remount each native occurrence.',
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  test(
+    'window accepts exact completed native-only evidence, not unknown or unsettled models',
+    () {
+      RunActivitySnapshot evidence(ModelSettlement? settlement) =>
+          RunActivitySnapshot(
+            runId: RunId('native-run'),
+            sessionId: session.id,
+            state: RunState.completed,
+            sequence: 4,
+            models: [
+              ModelInvocationActivity(
+                id: modelId,
+                startSequence: 1,
+                settlement: settlement,
+                outputs: [
+                  ModelOutputActivity(
+                    sequence: 2,
+                    item: ModelNativeOutput(
+                      providerNativeMetadata: ModelNativeEnvelope(
+                        kind: 'fixture',
+                        compatibility: const {},
+                        data: const {},
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          );
+      expect(
+        window.inspectActivity(
+          session: session,
+          activity: evidence(null),
+          modelInvocationId: modelId,
+        ),
+        isFalse,
+      );
+      expect(
+        window.inspectActivity(
+          session: session,
+          activity: evidence(ModelSettlement.completed),
+          modelInvocationId: ModelInvocationId('unknown'),
+        ),
+        isFalse,
+      );
+      expect(
+        window.inspectActivity(
+          session: session,
+          activity: evidence(ModelSettlement.completed),
+          modelInvocationId: modelId,
+        ),
+        isTrue,
+      );
+      expect(window.selection!.runId, RunId('native-run'));
+    },
+  );
 }

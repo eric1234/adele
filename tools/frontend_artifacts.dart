@@ -21,12 +21,14 @@ Future<List<String>> prepareDesktopFrontendDefines({
     (name: 'chat', define: 'ADELE_CHAT_FRONTEND_ARTIFACT'),
     (name: 'filesystem', define: 'ADELE_FILESYSTEM_TOOLS_FRONTEND_ARTIFACT'),
     (name: 'command', define: 'ADELE_COMMAND_TOOLS_FRONTEND_ARTIFACT'),
+    (name: 'openai', define: 'ADELE_OPENAI_ACTIVITY_FRONTEND_ARTIFACT'),
   ]) {
     final File artifact = File.fromUri(
       output.uri.resolve('${frontend.name}.evc'),
     );
     final String stage = '${frontend.name}-frontend-compilation';
     final bool chat = frontend.name == 'chat';
+    final bool openai = frontend.name == 'openai';
     final List<String> arguments = <String>[
       'test',
       '--no-pub',
@@ -34,6 +36,8 @@ Future<List<String>> prepareDesktopFrontendDefines({
       '1',
       chat
           ? 'tool/compile_chat_frontend.dart'
+          : openai
+          ? 'tool/compile_openai_activity_frontend.dart'
           : 'tool/compile_tool_inspection_frontends.dart',
     ];
     stdout.writeln('==> $stage');
@@ -46,7 +50,8 @@ Future<List<String>> prepareDesktopFrontendDefines({
         environment: <String, String>{
           'ADELE_REPOSITORY_ROOT': root.path,
           if (chat) 'ADELE_CHAT_FRONTEND_OUTPUT': artifact.path,
-          if (!chat) ...{
+          if (openai) 'ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT': artifact.path,
+          if (!chat && !openai) ...{
             'ADELE_TOOL_INSPECTION_FRONTEND': frontend.name,
             'ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT': artifact.path,
           },

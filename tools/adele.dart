@@ -178,6 +178,12 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test', '--timeout', '4m'],
   ),
   TestTarget(
+    name: 'openai_native_activity',
+    path: 'plugins/openai/packages/native_activity',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
     name: 'workspace_demo_contract',
     path: 'plugins/workspace_demo/packages/contract',
     executable: 'dart',
@@ -230,6 +236,16 @@ analysisTargets = <({String name, String path, bool flutter})>[
   (name: 'agent_kernel', path: 'packages/agent_kernel', flutter: false),
   (name: 'scripted_model', path: 'plugins/scripted_model', flutter: false),
   (name: 'openai_plugin', path: 'plugins/openai', flutter: false),
+  (
+    name: 'openai_native_activity',
+    path: 'plugins/openai/packages/native_activity',
+    flutter: false,
+  ),
+  (
+    name: 'openai_frontend',
+    path: 'plugins/openai/packages/frontend',
+    flutter: true,
+  ),
   (name: 'git_environment', path: 'plugins/git_environment', flutter: false),
   (
     name: 'filesystem_tools_plugin',

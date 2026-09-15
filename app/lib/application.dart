@@ -11,6 +11,7 @@ import 'package:adele_desktop/plugins/stock_backend_plugins.dart';
 import 'package:adele_desktop/plugins/stock_chat_execution_status.dart';
 import 'package:adele_desktop/plugins/stock_chat_frontend.dart';
 import 'package:adele_desktop/plugins/stock_openai.dart';
+import 'package:adele_desktop/plugins/stock_openai_activity_frontend.dart';
 import 'package:adele_desktop/plugins/stock_tool_inspection_frontends.dart';
 import 'package:adele_desktop/ui/chat/chat_controller.dart';
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
@@ -42,6 +43,9 @@ final class AdeleApplication extends StatefulWidget {
     this.commandFrontendArtifact = const String.fromEnvironment(
       'ADELE_COMMAND_TOOLS_FRONTEND_ARTIFACT',
     ),
+    this.openaiActivityFrontendArtifact = const String.fromEnvironment(
+      'ADELE_OPENAI_ACTIVITY_FRONTEND_ARTIFACT',
+    ),
   });
 
   /// Called once when mounted; this application owns and closes the result.
@@ -53,6 +57,7 @@ final class AdeleApplication extends StatefulWidget {
   final String chatFrontendArtifact;
   final String filesystemFrontendArtifact;
   final String commandFrontendArtifact;
+  final String openaiActivityFrontendArtifact;
 
   @override
   State<AdeleApplication> createState() => _AdeleApplicationState();
@@ -84,6 +89,8 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   final WindowInspection _inspection = WindowInspection();
   final List<StockToolInspectionFrontend> _toolFrontends = [];
   Future<void>? _toolFrontendActivation;
+  StockOpenAiActivityFrontendActivation? _openaiActivityFrontend;
+  Future<void>? _openaiActivityFrontendActivation;
 
   @override
   void initState() {
@@ -103,6 +110,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     unawaited(_bootstrapPlugins());
     _frontendActivation = _activateFrontend();
     _toolFrontendActivation = _activateToolFrontends();
+    _openaiActivityFrontendActivation = _activateOpenAiActivityFrontend();
     _lifecycleListener = AppLifecycleListener(
       onExitRequested: () async {
         await _closeRuntime();
@@ -173,6 +181,24 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
 
   void _inspectionChanged() {
     if (mounted && _closing == null) setState(() {});
+  }
+
+  Future<void> _activateOpenAiActivityFrontend() async {
+    try {
+      final frontend = await activateStockOpenAiActivityFrontend(
+        extensions: _runtime.extensions,
+        artifactPath: widget.openaiActivityFrontendArtifact,
+      );
+      if (!mounted || _closing != null) {
+        await frontend.close();
+      } else {
+        _openaiActivityFrontend = frontend;
+      }
+    } on Object {
+      // Native evidence and model execution do not require its presentation.
+    } finally {
+      _openaiActivityFrontendActivation = null;
+    }
   }
 
   bool _inspectActivity(
@@ -367,6 +393,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       try {
         await _frontendActivation;
         await _toolFrontendActivation;
+        await _openaiActivityFrontendActivation;
       } on Object {
         // A frontend cleanup failure cannot prevent backend/runtime cleanup.
       }
@@ -383,6 +410,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         await closeResources([
           if (_frontend case final frontend?) frontend.close,
           for (final frontend in _toolFrontends) frontend.close,
+          if (_openaiActivityFrontend case final frontend?) frontend.close,
         ]);
       }
     } on Object catch (error, stackTrace) {

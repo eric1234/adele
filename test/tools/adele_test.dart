@@ -288,6 +288,7 @@ void main() {
         'chat_strategy_frontend',
         'filesystem_tools_frontend',
         'command_tools_frontend',
+        'openai_frontend',
       ]) {
         expect(
           () => lookupTestTarget(name),
@@ -342,6 +343,7 @@ void main() {
             name: 'command_tools_frontend',
             path: 'plugins/command_tools/packages/frontend',
           ),
+          (name: 'openai_frontend', path: 'plugins/openai/packages/frontend'),
         ]) {
       final target = analysisTargets.singleWhere(
         (package) => package.name == expected.name,
@@ -353,6 +355,7 @@ void main() {
       'chat_strategy_plugin',
       'filesystem_tools_plugin',
       'command_tools_plugin',
+      'openai_native_activity',
     ]) {
       expect(
         analysisTargets.singleWhere((package) => package.name == name).flutter,
@@ -423,6 +426,7 @@ void main() {
         'scripted_model_contract|dart|plugins/scripted_model/packages/contract|test --timeout 4m',
         'scripted_model_backend|dart|plugins/scripted_model/packages/backend|test',
         'openai_model_provider_backend|dart|plugins/openai/packages/backend|test --timeout 4m',
+        'openai_native_activity|dart|plugins/openai/packages/native_activity|test',
         'workspace_demo_contract|dart|plugins/workspace_demo/packages/contract|test',
         'workspace_demo_backend|dart|plugins/workspace_demo/packages/backend|test',
         'adele_desktop|flutter|app|test',
@@ -444,6 +448,73 @@ void main() {
       lookupTestTarget('git_environment_backend').argumentsFor(ci: true),
       <String>['test', '--timeout', '4m', '--concurrency', '1'],
     );
+  });
+
+  test('OpenAI presentation preserves package and raw-evidence boundaries', () {
+    final String workspace = File(
+      'plugins/openai/pubspec.yaml',
+    ).readAsStringSync();
+    expect(workspace, contains('  - packages/native_activity\n'));
+    expect(workspace, contains('  - packages/frontend\n'));
+    final String backend = File(
+      'plugins/openai/packages/backend/pubspec.yaml',
+    ).readAsStringSync();
+    final String shared = File(
+      'plugins/openai/packages/native_activity/pubspec.yaml',
+    ).readAsStringSync();
+    final String frontend = File(
+      'plugins/openai/packages/frontend/pubspec.yaml',
+    ).readAsStringSync();
+    expect(backend, contains('  openai_native_activity: ^0.1.0\n'));
+    for (final manifest in [backend, shared]) {
+      expect(manifest, isNot(contains('flutter:')));
+      expect(manifest, isNot(contains('adele_ui:')));
+      expect(manifest, isNot(contains('openai_frontend:')));
+    }
+    expect(frontend, contains('  adele_ui: ^0.1.0\n'));
+    expect(frontend, isNot(contains('openai_model_provider_backend:')));
+    expect(lookupTestTarget('openai_native_activity').executable, 'dart');
+    expect(
+      File('app/test/openai_activity_frontend_eval_test.dart').existsSync(),
+      isTrue,
+    );
+
+    // Provider-specific raw-item interpretation must not drift into UI hosts.
+    for (final directory in ['app/lib/ui', 'app/lib/frontend']) {
+      for (final file in Directory(
+        directory,
+      ).listSync(recursive: true).whereType<File>()) {
+        if (!file.path.endsWith('.dart')) continue;
+        final String source = file.readAsStringSync();
+        for (final forbidden in [
+          'openai.responses.item.v1',
+          'encrypted_content',
+          "['summary']",
+          "['summaryParts']",
+          'package:openai_',
+        ]) {
+          expect(source, isNot(contains(forbidden)), reason: file.path);
+        }
+      }
+    }
+    for (final path in [
+      'packages/ui/lib/model_native_activity_bridge.dart',
+      'app/lib/frontend/model_native_activity_bridge.dart',
+      'plugins/openai/packages/frontend/lib/openai_frontend.dart',
+    ]) {
+      final String source = File(path).readAsStringSync();
+      for (final forbidden in [
+        'ModelNativeEnvelope',
+        'ModelNativeOutput',
+        'ModelPort',
+        'ModelProvider',
+        'SessionController',
+        'encrypted_content',
+        'credential',
+      ]) {
+        expect(source, isNot(contains(forbidden)), reason: path);
+      }
+    }
   });
 }
 

@@ -15,12 +15,15 @@ means one button per contribution in registry registration order. They have no
 priorities, defaults, categories, or applicability rules. Cancellation is a
 successful `null` result, distinct from selector or lifecycle failure.
 
-Public Flutter `adele_ui` supplies typed Session presentation and tool activity
-Inspection contributions on the same registry. Each resolves exactly one semantic
-strategy or Tool ID, with explicit unavailable/ambiguous states and no priority or
-fallback. Stock Chat activity opens common host-owned group Inspection containing
-plugin-owned interpreted Apply Patch and Run Command cards. This is a bounded
-presentation surface, not the general workbench extension system below.
+Public Flutter `adele_ui` supplies typed Session, tool Inspection, and model-native
+activity presentation contributions on the same registry. Session and tool
+presentation resolve exact strategy or Tool ID with explicit unavailable/ambiguous
+states. Native activity resolves exact kind: zero leaves opaque evidence omitted,
+one projector may decline, and many are explicitly ambiguous. None has priority
+or fallback. Stock Chat tool/native groups open common host-owned Inspection with
+interpreted Apply Patch, Run Command, and OpenAI provider-supplied reasoning-summary
+cards. This is a bounded presentation surface, not the general workbench extension
+system below.
 
 Normal Task/primary Environment creation uses existing capability routing and
 product lifecycle, not a new extension point or Task Browser API. Synchronous,
@@ -580,6 +583,7 @@ Examples:
 - B1 Project selectors return `null` for cancellation; selector/lifecycle failure is an inline app error with no fallback or change to the presented Project.
 - Required host/Git startup failure cleans up acquired resources and leaves Task support visibly unavailable without blocking Project opening; optional OpenAI activation failure affects model availability only. Task establishment failure publishes no new Task/Environment and substitutes no provider.
 - Missing, ambiguous, failed, or retired Session/tool presentation is visibly unavailable without invalidating headless execution. Independent prepared frontends do not substitute native views or compile source on failure.
+- Native activity with no matching kind or a declined projection stays opaque and omitted; duplicate exact-kind registrations are explicitly ambiguous before projection. Malformed input and bounded projector/factory/EVC failures affect presentation, never the Run or exact replay. No priority, raw-envelope rendering, or native fallback is introduced.
 
 Each Extension Point must define failure semantics appropriate to its role.
 
@@ -613,7 +617,7 @@ Host rendering is desirable for small structural pieces where it improves compil
 
 Plugins may render bespoke UI when richer domain presentation is useful, including Chat, Diff, source editing, inspection bodies, plans/artifacts, and consoles.
 
-## 12.2 Implemented Session and tool Inspection boundaries
+## 12.2 Implemented presentation boundaries
 
 `SessionPresentationContribution(strategyId, createPresentation)` supplies a
 `Widget Function(Session)` factory at typed `sessionPresentationContributions`.
@@ -624,18 +628,47 @@ whose immutable `ToolInvocationActivity` snapshot belongs to public pure-Dart
 `adele_orchestration`. Flutter `adele_ui` depends on that public activity API and
 `adele_model_tool`, not kernel or application implementations.
 
-Both hosts use exact semantic identity matching and existing registry liveness.
+These hosts use exact semantic identity matching and existing registry liveness.
 They retain presentation resources across updates, remove retired widgets, and
 select a replacement only through fresh resolution. Observation confers neither
 tool execution nor approval authority.
 
-The app owns window-local selection, group framing, and output-sequence proposal
-composition; tool frontends own field interpretation over immutable structured
-snapshot transport and reuse `PreparedFrontend`. Close removes only the view,
+The app owns window-local selection, group framing, and tool/native composition
+by exact `output.sequence`; tool frontends own field interpretation over immutable
+structured snapshot transport and reuse `PreparedFrontend`. Close removes only the view,
 changing the presented Session clears selection, and responsive placement is not
 public panel API semantics. Common host approval UI alone offers Allow/Deny;
 tool cards are read-only. Detailed boundaries and deferred scope are maintained
 in [`overview.md`](overview.md#activity-inspection).
+
+`ModelNativeActivityProjection(compactText, data)` and
+`ModelNativeActivityPresentationContribution(nativeKind, project,
+createInspection)` also belong to `adele_ui`, with typed
+`modelNativeActivityPresentationContributions` and
+`ModelNativeActivityPresentationResolver`. `project(ModelNativeOutput)` returns a
+nullable projection with recursively immutable safe data;
+`createInspection(projection)` returns a `Widget`. Exact-kind resolution has
+zero/one/many semantics described above, not an ordered series of applicability
+probes. Views retain exact bindings, retire with that generation, and use fresh
+resolution for replacements rather than retargeting stale resources.
+
+Generic Chat and Inspection never parse OpenAI. The concrete pure-Dart
+`openai_native_activity` API owns `openAiResponsesItemKind`
+(`openai.responses.item.v1`), version 1, and
+`projectOpenAiReasoningSummary(ModelNativeEnvelope)`. Its bounded compact/full
+summary projection feeds the separate interpreted `openai_frontend`. Only
+`{'summaryParts': List<String>, 'truncated': bool}` reaches that EVC, not raw
+envelopes, compatibility metadata, encrypted content, or execution/approval
+authority. Full Run/backend replay remains exact and untouched. This is
+provider-supplied summary presentation, not hidden chain-of-thought recovery.
+
+Stock OpenAI presentation reuses `PreparedFrontend` independently of the model
+backend and other frontends. Chat groups successfully completed invocations with
+tools or presentable native activity, preferring tool-batch narration, then native
+compact text, then tool count. Reasoning-only groups precede canonical final text;
+retention is controller-lifetime state, not persistence. Reasoning deltas,
+compaction/configuration UI, nested inspection, and Source/Diff/Console,
+terminal/PTY/full-output surfaces remain deferred.
 
 ---
 

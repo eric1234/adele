@@ -34,9 +34,9 @@ activity, and instruction-context composition, sharing semantic values with the
 internal kernel without depending on it. B1 adds tiny pure-Dart
 `adele_core_extensions` for the concrete
 Project selector contract, depending only on `adele_plugin_api`. Public Flutter
-`adele_ui` supplies concrete Session presentation and read-only tool activity
-Inspection contracts, depending on Flutter, `adele_plugin_api`, `adele_product`,
-`adele_orchestration`, and `adele_model_tool`. The latter two remain public pure-Dart
+`adele_ui` supplies concrete Session, read-only tool Inspection, and model-native
+activity presentation contracts, depending on Flutter, `adele_plugin_api`,
+`adele_product`, `adele_orchestration`, and `adele_model_tool`. The latter two remain public pure-Dart
 packages; neither depends on UI. Plugin-defined extension API packages and broader
 workbench UI APIs remain architectural direction.
 
@@ -52,7 +52,7 @@ workbench UI APIs remain architectural direction.
 | `adele_product` | Experimental plugin-facing, pure Dart | Dart SDK and `adele_capabilities` | Flutter, internal host packages, application code, `adele_orchestration`, `adele_plugin_api`, `adele_core_extensions` |
 | `adele_model_tool` | Experimental plugin-facing, pure Dart | Dart SDK, `adele_plugin_api`, and `adele_product` | Flutter, internal host packages, application code, concrete tools |
 | `adele_orchestration` | Experimental plugin-facing, pure Dart | Dart SDK, `adele_product`, `adele_plugin_api`, and `adele_model_tool` | Flutter, `agent_kernel`, other internal host packages, application code, concrete strategies or sources |
-| `adele_ui` | Experimental plugin-facing, Flutter; semantic Session presentation and tool activity Inspection | Flutter, `adele_plugin_api`, `adele_product`, `adele_orchestration`, and `adele_model_tool` | Internal host packages, application code, concrete plugins |
+| `adele_ui` | Experimental plugin-facing, Flutter; semantic Session, tool Inspection, and model-native activity presentation | Flutter, `adele_plugin_api`, `adele_product`, `adele_orchestration`, and `adele_model_tool` | Internal host packages, application code, concrete plugins |
 | future broader extension/UI APIs | Experimental plugin-facing | Only lightweight public dependencies required by concrete interfaces | Internal host packages, application code, concrete plugins |
 | plugin-defined public extension API | Experimental plugin-facing | Public/core APIs and other deliberately public interface packages needed by the concept | Another plugin's implementation packages, internal host packages, application code |
 | `plugin_runtime` | Internal, pure Dart | Dart SDK, public packages, and concrete acyclic internal dependencies | Flutter, application code, plugin implementations |
@@ -82,7 +82,7 @@ Existing ownership remains singular:
 - Strategy contracts, execution, read-only Run activity, and inference-context composition belong to `adele_orchestration`.
 - Model-tool contracts belong to `adele_model_tool`.
 - Environment provider contracts belong to `adele_environment`.
-- Flutter Session presentation and tool activity Inspection contracts belong to `adele_ui`; product, orchestration, and model tools do not depend on UI.
+- Flutter Session, tool Inspection, and model-native activity presentation contracts belong to `adele_ui`; product, orchestration, and model tools do not depend on UI.
 - Plugin-defined ecosystems keep their contracts with their deliberately public plugin/component API owners.
 
 ### Application backend composition
@@ -164,7 +164,7 @@ The public Run activity source and immutable read model live in pure-Dart
 `adele_orchestration`. The application host translates internal journal evidence
 into those values. No public activity consumer needs `agent_kernel`; the source
 is a separate read-only facade, not a Run object with a restricted static type.
-Chat's proposal-batch grouping is presentation policy, not a universal Run
+Chat's tool/native activity grouping is presentation policy, not a universal Run
 invariant. Opaque native output and structured tool outcome data are retained
 without forwarding executable authority or arbitrary exception objects.
 
@@ -178,8 +178,8 @@ registration; only fresh resolution may select a replacement.
 
 Application State owns window-local Inspection selection.
 `app/lib/ui/inspection/inspection_host.dart` owns common group framing and
-output-sequence proposal composition, including unprepared/rejected placeholders,
-not plugin field interpretation. This adds no public physical panel API or
+tool/native composition by exact `output.sequence`, including unprepared/rejected
+tool placeholders, not plugin field interpretation. This adds no public physical panel API or
 Session history; see [`overview.md`](overview.md#activity-inspection).
 
 The separate Flutter `filesystem_tools_frontend` and `command_tools_frontend`
@@ -196,6 +196,43 @@ progress history. Independent stock activations reuse `PreparedFrontend`;
 presentation failure/retirement neither fails backend execution nor substitutes
 native tool cards. Tool cards show read-only status; only common host approval UI
 offers Allow/Deny for the exact retained interruption.
+
+`adele_ui` owns the provider-neutral
+`ModelNativeActivityProjection(compactText, data)` with recursively immutable safe
+data, `ModelNativeActivityPresentationContribution(nativeKind, project,
+createInspection)`, `modelNativeActivityPresentationContributions`, and
+`ModelNativeActivityPresentationResolver`. Projection takes public
+`ModelNativeOutput`; the Inspection factory takes only the projection. Exact-kind
+resolution leaves zero matches opaque/omitted, allows one projector to decline,
+and reports many as explicit ambiguity without priority. Registry liveness
+removes exact-generation views; replacement requires fresh resolution and never
+retargets stale resources.
+
+OpenAI native-field interpretation belongs to the pure-Dart plugin-owned
+`plugins/openai/packages/native_activity` (`openai_native_activity`) API, not
+`adele_ui`, generic Chat/Inspection, orchestration, or the kernel. It depends on
+public `adele_orchestration` and owns the Responses native kind/version and
+`projectOpenAiReasoningSummary(ModelNativeEnvelope)`. The OpenAI backend imports
+its native-kind/version constants; `app/lib/plugins/stock_openai_activity_frontend.dart`
+imports its public projection API solely at stock composition. Neither imports
+the other's implementation. This is a concrete shared plugin API, not a new
+generic extension-package owner or permission for unrelated plugins to import
+OpenAI implementation code.
+
+The separate Flutter `openai_frontend` package renders the safe projection map
+from prepared EVC using public `adele_ui`; it does not import the backend, app, or
+kernel. The generic `app/lib/frontend/model_native_activity_bridge.dart` carries
+only immutable safe display data. For OpenAI, that is exactly `summaryParts` and
+`truncated`, never the raw envelope, compatibility metadata, encrypted content,
+or execution/approval authority. Exact native/encrypted replay stays untouched in
+the backend and full Run evidence. Display bounds do not change replay state.
+
+Stock OpenAI frontend activation reuses `PreparedFrontend` independently of model
+backend readiness and other frontends. Malformed/declined projections and bounded
+projector/factory/EVC failures do not fail Runs or select a native fallback.
+Summary request support remains provider-local in the backend; generic inference
+and presentation code neither assert all-model support nor select reasoning
+options. See the [backend README](../../plugins/openai/packages/backend/README.md).
 
 Flutter build-time tooling compiles frontend source; normal runtime activation
 only consumes prepared artifacts. Checkout preparation is a stand-in for future

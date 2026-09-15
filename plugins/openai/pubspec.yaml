@@ -10,3 +10,5 @@ resolution: workspace
 
 workspace:
   - packages/backend
+  - packages/native_activity
+  - packages/frontend

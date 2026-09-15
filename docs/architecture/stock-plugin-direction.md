@@ -37,9 +37,11 @@ composition, not Agent Interaction, Settings, configurable permissions, or a
 profile/provider preference API.
 
 Compact Chat activity groups open one window-local Inspection. The app owns
-group framing and ordered proposal composition; separate Filesystem Tools and
-Command Tools frontends own interpreted `apply_patch` and `run_command` cards.
-These read-only presentations do not authorize tools or change execution.
+group framing and tool/native composition by exact `output.sequence`; separate
+Filesystem Tools, Command Tools, and OpenAI frontends own interpreted
+`apply_patch`, `run_command`, and provider-supplied reasoning-summary cards.
+These read-only presentations do not authorize tools, expose hidden reasoning,
+or change execution/replay.
 
 Future discovery/profile activation should replace hard-coded stock selection at
 this composition edge, starting plugin runtimes and registering contributions
@@ -130,6 +132,17 @@ Exact `ToolId` resolution is unavailable/one/ambiguous and retains existing
 registry liveness/disposal semantics, with replacement only through fresh
 resolution. This is the bounded tool-activity subset of Inspection, not a generic
 operation/resource or physical panel API.
+
+`ModelNativeActivityProjection(compactText, data)` and
+`ModelNativeActivityPresentationContribution(nativeKind, project,
+createInspection)` are implemented in `adele_ui`, with typed
+`modelNativeActivityPresentationContributions` and
+`ModelNativeActivityPresentationResolver`. Projection takes `ModelNativeOutput`
+and returns nullable, recursively immutable safe display data; the Inspection
+factory takes only the projection and returns a `Widget`. Exact native kind
+matching leaves zero opaque/omitted, permits one projector to decline, and makes
+many explicitly ambiguous, without priority or fallback. Existing exact-generation
+liveness retires views; only fresh resolution can choose a replacement.
 
 ```text
 MainContentView
@@ -468,17 +481,21 @@ instructions for every inference, including continuation. It asks for one brief
 user-facing shared-purpose statement when proposing related tools, respects
 explicit user instructions, and adds no canonical history entry or context-source
 plugin. The model's explicit text accompanying a successfully completed proposal
-batch is preferred compact narration. Absent text produces a structural operation
-count without an extra inference; tool evidence, not prose, establishes effects.
+batch is preferred compact narration, followed by presentable native compact text,
+then a structural operation count. No extra inference is requested; tool evidence,
+not prose, establishes effects.
 
 Normal Runs supply a read-only live activity projection through public
 `adele_orchestration`, with host translation from the internal journal. Chat uses
-the exact model invocation as its proposal-batch group identity. Four proposals
-from one invocation produce one summary; another proposal-containing invocation
-produces another. Proposal-free final text is still canonical assistant content.
+the exact successfully completed model invocation as its tool/native group
+identity. Four proposals from one invocation produce one summary; another
+invocation containing tools or presentable native output produces another.
+Reasoning-only activity is placed before canonical final assistant text, without
+using proposal-free final text as batch narration.
 Ordered text/native/proposal evidence and stable resolved tool identities remain
-available underneath the summary. Native output is opaque, not automatically
-reasoning or user-presentable content. No hidden reasoning is recovered or shown.
+available underneath the summary. Native output remains opaque unless an
+exact-kind contribution projects it; generic Chat never parses OpenAI. Unknown or
+declined native items alone create no group. No hidden reasoning is recovered or shown.
 
 `plugins/chat_strategy/packages/frontend` (`chat_strategy_frontend`) owns the
 minimal history and prompt/Send composer as evaluated Flutter source. It imports
@@ -501,10 +518,12 @@ historical activity until persistence exists. Summaries are lightweight interpre
 click targets, not assistant messages or generic tool cards. One app-owned
 `WindowInspection` retains the selected Session/Run/model identity; changing the
 presented Session clears it, and Close removes only the view. The common host
-composes proposals in output-sequence order with unprepared/rejected placeholders.
-Tool-plugin frontends supply individual prepared-invocation cards, not the
-Chat-owned group summary. Nested inspection, provider reasoning, and deeper
-Source/Diff/Console navigation remain deferred.
+interleaves tools and native activity by exact `output.sequence`, with
+unprepared/rejected tool placeholders. Tool frontends supply prepared-invocation
+cards and OpenAI supplies reasoning-summary Inspection, not the Chat-owned group
+composition. Reasoning deltas, compaction UI, nested
+inspection, and deeper Source/Diff/Console, terminal/PTY/full-output views remain
+deferred.
 
 Prepared frontend generations are distinct from individual presentation instances.
 View resources follow widget lifecycle and exact registration liveness; this does
@@ -851,6 +870,28 @@ while the shared backend owner stays provider-neutral. Missing/failed OpenAI doe
 not invalidate Sessions or Git Environments; it affects model execution only.
 The account/settings/catalog UI integrations above remain future work.
 
+The plugin also owns the concrete E3 native-activity split:
+
+- Pure-Dart `plugins/openai/packages/native_activity` (`openai_native_activity`) owns `openAiResponsesItemKind = 'openai.responses.item.v1'`, version 1, and `projectOpenAiReasoningSummary(ModelNativeEnvelope)`. It recognizes supported, nonblank summary text and bounds both compact and full display text.
+- Flutter `plugins/openai/packages/frontend` (`openai_frontend`) owns `buildOpenAiReasoningInspection` in `lib/openai_frontend.dart`, rendered from prepared EVC. It receives only `{'summaryParts': List<String>, 'truncated': bool}`, never raw envelopes, compatibility metadata, encrypted content, or execution/approval authority.
+- `app/lib/plugins/stock_openai_activity_frontend.dart` is the stock activation edge, importing the owning projection API and reusing `PreparedFrontend`/registry liveness. It activates independently of OpenAI model backend readiness and every other frontend, with no native fallback.
+
+The backend and full Run preserve exact native/encrypted replay untouched.
+Generic Chat and Inspection never interpret OpenAI fields. Declined/malformed
+projection and bounded projector/factory/EVC failures affect only presentation,
+not Run success. Retirement removes exact-generation views; a replacement
+requires fresh resolution and cannot inherit stale resources.
+
+The backend's `reasoning.summary: 'auto'` request policy is narrowly guarded by
+evidenced model IDs, not enabled for every OpenAI model or exposed as a new
+provider-neutral option. Exact support and external references are maintained in
+the [backend README](../../plugins/openai/packages/backend/README.md). Local fake
+Responses with real prepared artifacts define the product regression scope for
+mixed reasoning/tool approvals and a separate reasoning-only final response;
+this is not a live-provider validation claim. Hidden chain-of-thought and encrypted
+reasoning are never user-presented. Reasoning deltas, compaction UI, and
+model/account configuration UI remain deferred.
+
 ---
 
 # 12. Concrete default flows
@@ -1100,6 +1141,7 @@ The child remains a Session, not a Task, and is not normally a peer in Task Brow
 | OrchestrationStrategy registration/binding | Core/public | Session creation/restoration must validate permanent strategy binding independent of optional UI |
 | `SessionPresentationContribution` | `adele_ui` (implemented, Flutter) | Generic host presents an existing Session through exact strategy matching without owning strategy-specific UI |
 | `ToolActivityInspectionContribution` | `adele_ui` (implemented, Flutter) | Exact Tool ID selects read-only individual invocation presentation; group composition stays host-owned and field interpretation stays plugin-owned |
+| `ModelNativeActivityPresentationContribution` | `adele_ui` (implemented, Flutter) | Exact native kind selects nullable safe projection and read-only Inspection; provider interpretation stays plugin-owned and replay remains opaque to generic consumers |
 | Public orchestration/execution API | Core/public, backed internally by `agent_kernel` | Strategy plugins need Run/model/tool execution without depending on internal implementation packages |
 | Inference composition buckets | Core | Core owns stable provider-neutral invocation boundary |
 | Tool registration/execution semantics | Core/public facade backed by kernel | Cross-strategy execution invariant while `agent_kernel` remains internal |
@@ -1121,6 +1163,7 @@ The stock installation should be coherent and useful, but ADELE should tolerate 
 - strategy registered with no Agent Interaction UI consumer;
 - Session with no matching presentation contribution, reported as unavailable without invalidating execution;
 - tool invocation with no matching Inspection contribution, reported as unavailable without invalidating execution;
+- native output with no matching presentation contribution or a declined projection, retained opaquely and omitted from presentation without invalidating execution;
 - Diff with no source-display provider;
 - multiple Environment providers with one contextual default;
 - no Accounting plugin;

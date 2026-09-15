@@ -28,14 +28,18 @@ The current physical layout shown here is also product direction rather than plu
 
 Some ideas in this document may not be part of the immediate implementation needed to make ADELE self-hosting. Once ADELE is used for real development, experience may show that some decisions should change. The near-term implementation may therefore be a subset of this design.
 
-The current activity subset is clickable Chat proposal-batch summaries opening
-one window-local Inspection, with common ordered proposal composition and
-interpreted Apply Patch and Run Command cards. Close removes only the view;
+The current activity subset is clickable Chat groups for successfully completed
+invocations with tools or presentable native activity, opening one window-local
+Inspection. It interleaves tools and native activity by exact `output.sequence`,
+with interpreted Apply Patch, Run Command, and OpenAI provider-supplied
+reasoning-summary cards. Close removes only the view;
 changing the presented Session clears selection. Inspection is right-aligned on
 wide windows and stacked on narrow ones, not a public physical panel API. Nested
-inspections, provider reasoning, Source/Diff/Console navigation, persistence, and
+inspections, reasoning deltas, Source/Diff/Console navigation, persistence, and
 the broader layout below remain directional. Approval stays in common host UI,
-not the read-only tool cards.
+not the read-only cards. Native interpretation is provider-owned, not hidden
+chain-of-thought disclosure; see the
+[maintained presentation boundary](../architecture/overview.md#model-native-activity-presentation).
 
 For canonical architectural boundaries, see:
 

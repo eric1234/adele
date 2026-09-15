@@ -93,8 +93,42 @@ Flutter analysis targets, not additional AOT backends.
 for stock contribution registration. The generic Inspection host matches exact
 `ToolId` through `adele_ui`, owns group framing/order, and knows no plugin-specific
 fields. The interpreted widgets own field interpretation over a read-only
-structured snapshot bridge. All three stock frontends reuse `PreparedFrontend`;
+structured snapshot bridge. All stock frontends reuse `PreparedFrontend`;
 there is no parallel tool-specific runtime/activation framework.
+
+### OpenAI native activity split
+
+The OpenAI plugin keeps provider execution, native display projection, and Flutter
+presentation in separate packages:
+
+```text
+plugins/openai/packages/
+|-- backend/          # openai_model_provider_backend, pure-Dart AOT
+|-- native_activity/  # openai_native_activity, pure-Dart shared projection API
+`-- frontend/         # openai_frontend, interpreted Flutter Inspection
+```
+
+`openai_native_activity` owns `openAiResponsesItemKind`
+(`openai.responses.item.v1`), version 1, and
+`projectOpenAiReasoningSummary(ModelNativeEnvelope)` through public
+`adele_orchestration`. The backend shares its native kind/version constants;
+stock activity composition uses its bounded compact/full summary projector.
+This concrete plugin-owned API does not import Flutter, backend implementation,
+app, or kernel, and does not move OpenAI interpretation into common APIs.
+
+`openai_frontend` supplies `lib/openai_frontend.dart` entrypoint
+`buildOpenAiReasoningInspection`, using public `adele_ui` rather than backend
+implementation. Its EVC receives only the recursively immutable safe
+`summaryParts`/`truncated` map, never the raw envelope, compatibility metadata,
+encrypted content, or execution/approval authority. Exact native/encrypted replay
+remains untouched in the backend and full Run evidence.
+
+`app/lib/plugins/stock_openai_activity_frontend.dart` owns independent prepared
+activation through existing `PreparedFrontend` and exact registry liveness.
+Generic Chat and Inspection use `adele_ui` exact-kind contribution resolution and
+never parse OpenAI. The frontend's absence/failure does not disable the model
+backend or other frontends and never triggers a native fallback. This adds no
+general manifest discovery or activation-dependency mechanism.
 
 ## Distinct identities
 
@@ -144,8 +178,9 @@ isolation/concurrency models remain deferred.
 Temporary runtime resources are created/disposed during operation. They are not
 plugin instances and are not persistent provider configurations.
 
-Session and tool activity presentation retain exact extension bindings. Retirement
-removes old widgets and their resources; only fresh resolution may select a replacement.
+Session, tool Inspection, and model-native presentation retain exact extension
+bindings. Retirement removes old widgets and their resources; only fresh
+resolution may select a replacement.
 Missing or failed presentation does not invalidate the Session or headless/backend
 execution. Eval runtime allocation is an implementation detail of the pinned
 stack, not a permanent one-runtime-per-presentation contract.
@@ -157,9 +192,11 @@ multiple extension points does not imply multiple plugin runtimes.
 
 ## Normal stock artifact composition
 
-Normal composition uses existing backend-only Git and OpenAI plugins without linking
-their implementations into Flutter. Synchronous, provider-free `AdeleRuntime()` owns
-in-process stock registrations and generic `ApplicationPluginBootstrap` on its
+Normal composition loads Git and OpenAI backends without linking their
+implementations into Flutter; OpenAI additionally supplies separate activity
+projection and interpreted presentation packages. Synchronous, provider-free
+`AdeleRuntime()` owns in-process stock registrations and generic
+`ApplicationPluginBootstrap` on its
 existing capability registry. `AdeleApplication` explicitly invokes async stock
 composition, supplying activation callbacks to that application-lifetime owner
 of one shared backend host. Git is required startup; OpenAI is an additional
@@ -185,12 +222,13 @@ Deployment and build details are maintained in
 [`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
 This is not plugin installation, production packaging, discovery, or profiles.
 
-Normal Chat, Filesystem Tools, and Command Tools frontend activations independently
-consume prepared EVCs. Flutter build-time tooling prepares all three before app
-launch/build, outside the normal runtime import graph. Tool Inspection retains
+Normal Chat, Filesystem Tools, Command Tools, and OpenAI activity frontend
+activations independently consume prepared EVCs. Flutter build-time tooling
+prepares all four before app launch/build, outside the normal runtime import
+graph. Tool Inspection retains
 the same view/runtime across coalesced snapshot updates rather than reloading
 bytecode for lifecycle changes. A missing, corrupt, or retired frontend does not
-retire backend support or trigger source compilation or a native Chat/tool-card
+retire backend support or trigger source compilation or a native presentation
 fallback. The SDK/eval pin remains bounded interoperability infrastructure;
 broad third-party interpreted UI support still
 requires eval modernization.
@@ -203,7 +241,7 @@ rebuild/reload on Linux x64 Flutter profile mode. Windows, macOS, release mode,
 packaging, discovery, activation contexts, and broad plugin APIs remain
 unproven.
 
-Maintained backend-only plugins additionally prove generated server streaming,
+Maintained plugin backends additionally prove generated server streaming,
 multiple generation-bound configuration contexts, real HTTP/SSE model-provider
 integration, Git Environment establishment/restoration, and bounded
 Session-authorized Environment reads composed by stock Filesystem and Search

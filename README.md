@@ -12,8 +12,8 @@ Active capability registry and exact-generation routing
 Provider-neutral Run/model/tool/policy/approval mechanics
 Session-bound executable strategies and headless stock Chat
 Typed Session presentation and prepared interpreted stock Chat history/composer
-Read-only live Run activity and model-narrated Chat proposal-batch summaries
-Window-local activity Inspection with interpreted Apply Patch and Run Command cards
+Read-only live Run activity with tool-batch narration and native activity summaries
+Window-local Inspection with interpreted tool cards and OpenAI reasoning summaries
 Per-inference instruction-source capture and immutable context snapshots
 Shared application runtime and static stock plugin composition
 Typed Project selectors and minimal local-directory Project opening
@@ -206,25 +206,57 @@ Normal Runs expose immutable live activity through public pure-Dart
 `adele_orchestration`, projected by the application host from the internal journal.
 Observation grants no execution or approval authority. Ordered model text, opaque
 native outputs, proposals, and resolved tool evidence retain stable identities.
-Chat displays one lightweight summary per successfully completed,
-proposal-containing model invocation, preferring its explicit user-facing text.
+Chat displays one lightweight group per successfully completed model invocation
+containing tool proposals or presentable native activity. Its heading prefers
+explicit tool-batch narration, then a native projection's compact text, then a
+structural tool-operation count. Reasoning-only activity appears before the
+canonical final assistant text, without turning that text into batch narration.
 The Chat strategy automatically adds batch-narration guidance to its inference
 instructions while preserving Session instructions and independent context sources.
-Missing narration uses a structural tool-operation count, never an extra inference.
-Narration stays out of canonical Chat history; completed groups remain only for
-the current controller lifetime, including follow-up prompts. Reconstructing a
+Grouping never requests an extra inference. Activity stays out of canonical Chat
+history; completed groups remain only for the current controller lifetime,
+including follow-up prompts. Reconstructing a
 Session cannot restore historical activity without future persistence. Native
-output is preserved opaquely, not generically interpreted or labeled reasoning.
+output remains opaque to generic Chat and Inspection code; only an owning plugin
+can project it for presentation.
 Clicking a group opens one window-local Inspection selected by exact Session,
-Run, and model-invocation identity. The common host composes proposals in output
-order, including unprepared/rejected placeholders. Filesystem Tools and Command
-Tools supply separate interpreted `apply_patch` and `run_command` cards through
+Run, and model-invocation identity. The common host interleaves tools and native
+activity by exact `output.sequence`, including unprepared/rejected tool
+placeholders. Filesystem Tools and Command Tools supply separate interpreted
+`apply_patch` and `run_command` cards through
 public `adele_ui` read-only tool Inspection contributions. The app transports
 immutable data without interpreting plugin fields; missing/failed presentation
 stays unavailable without failing execution or using native tool cards. Close
 removes only the view; changing the presented Session clears selection. Tool cards
 show status, never Allow/Deny controls. See `docs/architecture/overview.md` for
 exact Tool ID resolution, liveness, and deferred scope.
+
+Public Flutter `adele_ui` also defines `ModelNativeActivityProjection(compactText,
+data)`, with recursively immutable safe data, and
+`ModelNativeActivityPresentationContribution(nativeKind, project, createInspection)`
+at `modelNativeActivityPresentationContributions`. Its
+`ModelNativeActivityPresentationResolver` matches exact native kind: zero leaves
+the item opaque and omitted, one projector may return no projection, and multiple
+matches are explicitly ambiguous, without priority or fallback.
+
+OpenAI's pure-Dart `openai_native_activity` package owns
+`openAiResponsesItemKind = 'openai.responses.item.v1'`, version 1, and
+`projectOpenAiReasoningSummary(ModelNativeEnvelope)`. It extracts only bounded
+provider-supplied summary text; `openai_frontend` renders the read-only Inspection
+from a safe `summaryParts`/`truncated` map. Raw envelopes, compatibility metadata,
+encrypted content, and execution/approval authority never enter that EVC. Exact
+native/encrypted replay remains untouched in the backend and full Run evidence.
+This is a supplied summary, not hidden chain-of-thought disclosure.
+
+`app/lib/plugins/stock_openai_activity_frontend.dart` independently activates the
+prepared OpenAI presentation, reusing `PreparedFrontend` and existing registry
+liveness. Missing/corrupt EVC, malformed or declined projection, and projector or
+factory failure remain presentation-local without failing the Run or selecting a
+native fallback. Retirement removes the exact-generation view; a replacement
+requires fresh resolution and cannot retarget stale resources. Backend summary
+request support remains a narrow provider-local policy documented in the
+[OpenAI backend README](plugins/openai/packages/backend/README.md), not a common
+model option or a claim that every OpenAI model supports summaries.
 
 Chat supplies `StrategyInferenceMaterial` containing instructions and ordered
 semantic input from history projection plus Run-local replay. Public
@@ -355,8 +387,9 @@ Capabilities remain the callable Action/Service provider mechanism; Events are
 read-only fact notifications; UI/composition extension points may use different
 zero/one/many and merge/failure semantics. Generic registration/liveness and
 typed model-tool, orchestration-strategy, inference-context-source, Project
-selector, Session presentation, and tool activity Inspection points are implemented;
-broader recursive composition and workbench UI APIs remain deferred. The Project buttons are
+selector, Session presentation, tool Inspection, and model-native activity
+presentation points are implemented; broader recursive composition and workbench
+UI APIs remain deferred. The Project buttons are
 temporary host presentation, not a chooser framework or application Commands.
 
 ADR 0031 accepts these shared product-domain identities:
@@ -419,19 +452,21 @@ dart tools/adele.dart build linux
 ```
 
 Normal Linux `run` and `build` prepare fresh shared-host, Git, and OpenAI backend AOT
-snapshots plus Chat, Filesystem Tools, and Command Tools frontend EVCs before the
-Flutter run/build invocation.
+snapshots plus four frontend EVCs (Chat, Filesystem Tools, Command Tools, and OpenAI
+activity) before the Flutter run/build invocation.
 `tools/backend_artifacts.dart` uses `compileAotSnapshot` from `plugin_builder` and
 selects the Dart compiler and `dartaotruntime` from the launching Flutter SDK.
 `tools/frontend_artifacts.dart` invokes the Flutter build-time entrypoints
-`app/tool/compile_chat_frontend.dart` and
-`app/tool/compile_tool_inspection_frontends.dart`. Fresh artifacts are retained under
+`app/tool/compile_chat_frontend.dart`,
+`app/tool/compile_tool_inspection_frontends.dart`, and
+`app/tool/compile_openai_activity_frontend.dart`. Fresh artifacts are retained under
 `.dart_tool/adele/desktop-backends/` and `.dart_tool/adele/desktop-frontends/`.
 The launcher passes `ADELE_DARTAOTRUNTIME_EXECUTABLE`,
 `ADELE_BACKEND_HOST_ARTIFACT`, `ADELE_GIT_ENVIRONMENT_ARTIFACT`,
 `ADELE_OPENAI_ARTIFACT`, `ADELE_CHAT_FRONTEND_ARTIFACT`,
-`ADELE_FILESYSTEM_TOOLS_FRONTEND_ARTIFACT`, and
-`ADELE_COMMAND_TOOLS_FRONTEND_ARTIFACT` as compile-time artifact-location defines.
+`ADELE_FILESYSTEM_TOOLS_FRONTEND_ARTIFACT`,
+`ADELE_COMMAND_TOOLS_FRONTEND_ARTIFACT`, and
+`ADELE_OPENAI_ACTIVITY_FRONTEND_ARTIFACT` as compile-time artifact-location defines.
 The normal app consumes only prepared locations; runtime activation never compiles
 source. See `app/README.md` for frontend
 preparation inputs and standalone build-time invocations.
@@ -441,8 +476,8 @@ source-checkout machine while those artifacts and that SDK remain in place.
 Moving or deleting them breaks the corresponding backend startup or frontend
 loading. This is not artifact caching, installation, portable/production
 packaging, discovery, or profiles. Invoking Flutter directly without the defines
-leaves Task Environment support, Chat presentation, and stock tool Inspection
-presentation unavailable independently.
+leaves Task Environment support, Chat presentation, stock tool Inspection, and
+OpenAI activity presentation unavailable independently.
 Checkout tooling stands in for future installation/update-time compilation;
 activation consumes prepared artifacts rather than building them.
 
@@ -478,9 +513,11 @@ the CI matrix. Run their pure-Dart tests with
 `dart tools/adele.dart test --target agents_md_plugin`.
 
 `adele_ui` is a Flutter analysis/test target. The separate
-`chat_strategy_frontend`, `filesystem_tools_frontend`, and
-`command_tools_frontend` packages are Flutter workspace members and analysis
-targets; their EVC preparation belongs to the app's build-time tooling.
+`chat_strategy_frontend`, `filesystem_tools_frontend`, `command_tools_frontend`,
+and `openai_frontend` packages are Flutter workspace members and analysis targets;
+their EVC preparation belongs to the app's build-time tooling. The pure-Dart
+`openai_native_activity` package has maintained analysis/test discovery through
+`tools/adele.dart`.
 
 The repository development command above is unrelated to ADELE's future
 application-level Command Palette/keybinding subsystem described by the
@@ -492,7 +529,7 @@ extension architecture.
 app/                         single Flutter desktop application
 packages/plugin_api/         adele_plugin_api (experimental public)
 packages/core_extensions/    adele_core_extensions narrow core-owned contracts
-packages/ui/                 adele_ui public Flutter Session/Tool Inspection APIs
+packages/ui/                 adele_ui public Session/tool/native activity UI APIs
 packages/contract/           adele_contract (experimental public)
 packages/contract_codegen/   contract_codegen (internal, pure Dart)
 packages/model_provider/     adele_model_provider (experimental public)
@@ -508,7 +545,7 @@ packages/agent_kernel/       agent_kernel (internal, pure Dart)
 plugins/workspace_demo/      internal source-plugin reference fixture
 plugins/resource_inspector/  Phase III two-provider capability fixture
 plugins/scripted_model/      deterministic ModelProvider/transport fixture
-plugins/openai/              real OpenAI ModelProvider; ChatGPT route experimental
+plugins/openai/              OpenAI ModelProvider, safe native projection, evaluated Inspection
 plugins/filesystem_tools/    stock text-file tools plus evaluated Apply Patch Inspection
 plugins/search_tools/        stock Session-authorized literal Search tool
 plugins/command_tools/       stock foreground Command tool plus evaluated Inspection
@@ -610,9 +647,13 @@ General provider/model configuration, Task Browser, and richer Session/Run UI
 remain deferred. The normal product path reaches one stock Chat Session with
 plugin-owned evaluated history/composer and sequential, approval-gated Runs through
 experimental ChatGPT subscription auth. Live compact Chat activity groups open
-window-local Inspection with interpreted Apply Patch and Run Command cards.
-Nested inspection, provider reasoning, Source/Diff/Console navigation, and the
-broader presentation extension ecosystem remain deferred.
+window-local Inspection with interpreted Apply Patch, Run Command, and OpenAI
+provider-supplied reasoning-summary cards. E3 regression scope uses real prepared
+artifacts with local fake Responses for mixed reasoning/tool approvals and a
+separate reasoning-only final response, not live-provider evidence.
+Hidden chain-of-thought and encrypted reasoning are never user-presented.
+Reasoning deltas, compaction UI, nested inspection, Source/Diff/Console navigation, terminal/PTY and
+full-output views, and the broader presentation extension ecosystem remain deferred.
 GitHub, cloud, recent-project/catalog selectors, persistence, and deduplication
 are not implemented; application Command surfacing remains deferred.
 Chat persistence, configurable permissions/profiles, steering, richer activity and

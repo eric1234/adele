@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:openai_model_provider_backend/openai_model_provider_backend.dart';
 import 'package:openai_model_provider_backend/src/openai_chatgpt_auth.dart';
+import 'package:openai_native_activity/openai_native_activity.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -20,6 +21,187 @@ void main() {
         throwsFormatException,
       );
     });
+
+    for (final bool chatGpt in <bool>[false, true]) {
+      final String profile = chatGpt ? 'ChatGPT' : 'API key';
+      for (final (String model, bool supported) in <(String, bool)>[
+        ('gpt-6-astra', true),
+        ('gpt-5.6-sol', true),
+        ('gpt-5.6-terra', true),
+        ('gpt-5.6-luna', true),
+        ('gpt-5.5', true),
+        ('gpt-5.4', true),
+        ('gpt-4.1', false),
+        ('gpt-4.1-mini', false),
+        ('gpt-4.1-2025-04-14', false),
+        ('gpt-6-astra-unverified', false),
+        ('gpt-5.4-mini', false),
+        ('unknown-model', false),
+      ]) {
+        test('$profile summary request policy for $model', () async {
+          late Map<String, Object?> captured;
+          final _FakeServer server = await _FakeServer.start((request) async {
+            captured = await _jsonBody(request);
+            _sse(
+              request.response,
+              _outputDone(_message('msg_policy', 'Ready.')),
+            );
+            _sse(request.response, _completed('resp_policy'));
+            await request.response.close();
+          });
+          addTearDown(server.close);
+          final OpenAiModelProvider provider = await _testProvider(
+            server,
+            chatGpt: chatGpt,
+          );
+          final List<ModelProviderEvent> events = await provider
+              .invoke(
+                _request(
+                  model: model,
+                  toolChoice: ModelProviderToolChoice.none,
+                  maxOutputTokens: chatGpt ? null : 42,
+                ),
+              )
+              .toList();
+
+          expect(
+            events.last.terminal?.settlement,
+            ModelProviderSettlement.completed,
+          );
+          expect(captured['model'], model);
+          expect(captured.containsKey('reasoning'), supported);
+          if (supported) {
+            expect(captured['reasoning'], <String, Object?>{'summary': 'auto'});
+          }
+          expect(captured['store'], isFalse);
+          expect(captured['stream'], isTrue);
+          expect(captured['include'], <Object?>['reasoning.encrypted_content']);
+          expect(captured['parallel_tool_calls'], isTrue);
+          expect(captured['tool_choice'], 'none');
+          expect(captured['max_output_tokens'], chatGpt ? null : 42);
+          expect(captured.containsKey('max_output_tokens'), !chatGpt);
+        });
+      }
+
+      test('$profile does not retry rejected summary requests', () async {
+        int attempts = 0;
+        final _FakeServer server = await _FakeServer.start((request) async {
+          attempts++;
+          expect((await _jsonBody(request))['reasoning'], <String, Object?>{
+            'summary': 'auto',
+          });
+          request.response.statusCode = HttpStatus.badRequest;
+          request.response.write(
+            jsonEncode(<String, Object?>{
+              'error': <String, Object?>{
+                'code': 'unsupported_parameter',
+                'message': 'reasoning.summary is not supported.',
+              },
+            }),
+          );
+          await request.response.close();
+        });
+        addTearDown(server.close);
+        final OpenAiModelProvider provider = await _testProvider(
+          server,
+          chatGpt: chatGpt,
+        );
+        final List<ModelProviderEvent> events = await provider
+            .invoke(_request(model: 'gpt-6-astra'))
+            .toList();
+
+        expect(attempts, 1);
+        expect(events, hasLength(1));
+        expect(
+          events.single.terminal?.failure?.kind,
+          ModelProviderFailureKind.invalidRequest,
+        );
+        expect(
+          events.single.terminal?.failure?.providerCode,
+          'unsupported_parameter',
+        );
+      });
+
+      test(
+        '$profile preserves empty reasoning and compaction as native evidence',
+        () async {
+          final List<Map<String, Object?>> items = <Map<String, Object?>>[
+            _reasoning('rs_empty', 'ENCRYPTED-EMPTY'),
+            <String, Object?>{
+              'type': 'compaction',
+              'id': 'compact_1',
+              'encrypted_content': 'ENCRYPTED-COMPACTION',
+              'unknown': <String, Object?>{'text': 'HIDDEN-COMPACTION'},
+            },
+          ];
+          final List<Map<String, Object?>> requests = <Map<String, Object?>>[];
+          final _FakeServer server = await _FakeServer.start((request) async {
+            requests.add(await _jsonBody(request));
+            if (requests.length == 1) {
+              for (final Map<String, Object?> item in items) {
+                _sse(request.response, _outputDone(item));
+              }
+            } else {
+              _sse(
+                request.response,
+                _outputDone(_message('msg_done', 'Done.')),
+              );
+            }
+            _sse(request.response, _completed('resp_native'));
+            await request.response.close();
+          });
+          addTearDown(server.close);
+          final OpenAiModelProvider provider = await _testProvider(
+            server,
+            chatGpt: chatGpt,
+          );
+          final List<ModelProviderEvent> first = await provider
+              .invoke(_request(model: 'gpt-6-astra'))
+              .toList();
+          final List<ModelProviderOutput> outputs = first
+              .map((event) => event.output)
+              .whereType<ModelProviderOutput>()
+              .toList();
+          expect(first, hasLength(3));
+          expect(
+            first.last.terminal?.settlement,
+            ModelProviderSettlement.completed,
+          );
+          expect(outputs, hasLength(2));
+          for (int index = 0; index < outputs.length; index++) {
+            expect(outputs[index].kind, ModelProviderOutputKind.nativeItem);
+            expect(outputs[index].text, isNull);
+            expect(
+              outputs[index].nativeMetadata!.kind,
+              openAiResponsesItemKind,
+            );
+            expect(
+              outputs[index].nativeMetadata!.compatibility,
+              <String, Object?>{'version': openAiResponsesItemVersion},
+            );
+            expect(outputs[index].nativeMetadata!.data, <String, Object?>{
+              'item': items[index],
+            });
+          }
+          final List<ModelProviderEvent> second = await provider
+              .invoke(
+                _request(
+                  model: 'gpt-6-astra',
+                  input: <ModelProviderInput>[
+                    _userInput(),
+                    ...outputs.map(_replay),
+                  ],
+                ),
+              )
+              .toList();
+          expect(
+            second.last.terminal?.settlement,
+            ModelProviderSettlement.completed,
+          );
+          expect((requests[1]['input']! as List<Object?>).skip(1), items);
+        },
+      );
+    }
 
     test('allows HTTPS and loopback HTTP endpoints only', () {
       final List<OpenAiModelProvider> allowed = <OpenAiModelProvider>[
@@ -187,7 +369,23 @@ void main() {
         '${chatGpt ? 'ChatGPT' : 'API key'} preserves Astra calls, $phase metadata, and ordered replay',
         () async {
           final List<Map<String, Object?>> items = <Map<String, Object?>>[
-            _reasoning('rs_a', 'enc-a'),
+            <String, Object?>{
+              ..._reasoning(
+                'rs_a',
+                'enc-a',
+                summary: <String>[
+                  'Inspect the first resource.',
+                  'Then compare the second resource.',
+                ],
+              ),
+              'content': <Object?>[
+                <String, Object?>{
+                  'type': 'reasoning_text',
+                  'text': 'HIDDEN-REASONING',
+                },
+              ],
+              'unknown': <String, Object?>{'value': 'OPAQUE-STATE'},
+            },
             <String, Object?>{
               ..._message('msg_1', 'Inspecting.'),
               'phase': phase,
@@ -202,7 +400,11 @@ void main() {
               'namespace': 'resources.first',
               'status': 'completed',
             },
-            _reasoning('rs_c', 'enc-c'),
+            _reasoning(
+              'rs_c',
+              'enc-c',
+              summary: <String>['Check the remaining resource.'],
+            ),
             <String, Object?>{
               'type': 'function_call',
               'id': 'fc_a',
@@ -231,6 +433,34 @@ void main() {
               charset: 'utf-8',
             );
             if (requests.length == 1) {
+              for (final Map<String, Object?> event in <Map<String, Object?>>[
+                <String, Object?>{
+                  'type': 'response.reasoning_summary_part.added',
+                  'part': <String, Object?>{'type': 'summary_text', 'text': ''},
+                },
+                <String, Object?>{
+                  'type': 'response.reasoning_summary_text.delta',
+                  'delta': 'NONAUTHORITATIVE-SUMMARY',
+                },
+                <String, Object?>{
+                  'type': 'response.reasoning_summary_text.done',
+                  'text': 'NONAUTHORITATIVE-SUMMARY',
+                },
+                <String, Object?>{
+                  'type': 'response.reasoning_summary_part.done',
+                  'part': <String, Object?>{
+                    'type': 'summary_text',
+                    'text': 'NONAUTHORITATIVE-SUMMARY',
+                  },
+                },
+              ]) {
+                _sse(response, <String, Object?>{
+                  'item_id': 'rs_a',
+                  'output_index': 0,
+                  'summary_index': 0,
+                  ...event,
+                });
+              }
               // Argument fragments are not authoritative tool proposals.
               for (final String itemId in <String>['fc_z', 'fc_a']) {
                 _sse(response, <String, Object?>{
@@ -421,11 +651,13 @@ void main() {
                 'tools',
                 'tool_choice',
                 'parallel_tool_calls',
+                'reasoning',
                 'include',
                 'store',
                 'stream',
               ]),
             );
+            expect(request['reasoning'], <String, Object?>{'summary': 'auto'});
           }
           expect(
             requests.map((request) => request['parallel_tool_calls']),
@@ -2195,13 +2427,19 @@ Map<String, Object?> _refusal(String id, String text) => <String, Object?>{
   ],
 };
 
-Map<String, Object?> _reasoning(String id, String encrypted) =>
-    <String, Object?>{
-      'type': 'reasoning',
-      'id': id,
-      'summary': <Object?>[],
-      'encrypted_content': encrypted,
-    };
+Map<String, Object?> _reasoning(
+  String id,
+  String encrypted, {
+  List<String> summary = const <String>[],
+}) => <String, Object?>{
+  'type': 'reasoning',
+  'id': id,
+  'summary': <Object?>[
+    for (final String text in summary)
+      <String, Object?>{'type': 'summary_text', 'text': text},
+  ],
+  'encrypted_content': encrypted,
+};
 
 Map<String, Object?> _completed(String id) => <String, Object?>{
   'type': 'response.completed',
@@ -2231,6 +2469,43 @@ void _sse(HttpResponse response, Map<String, Object?> event) {
 Future<Map<String, Object?>> _jsonBody(HttpRequest request) async {
   final Object? value = jsonDecode(await utf8.decoder.bind(request).join());
   return value! as Map<String, Object?>;
+}
+
+Future<OpenAiModelProvider> _testProvider(
+  _FakeServer server, {
+  required bool chatGpt,
+}) async {
+  final OpenAiModelProvider provider;
+  if (chatGpt) {
+    final OpenAiOAuthClient oauth = _oauth(server);
+    addTearDown(oauth.close);
+    final OpenAiChatGptAuth auth = OpenAiChatGptAuth(
+      instanceId: 'summary-test',
+      store: InMemoryOpenAiCredentialStore(),
+      oauth: oauth,
+    );
+    await auth.install(
+      OpenAiChatGptCredential(
+        idToken: _idToken('summary-account'),
+        accessToken: 'summary-access',
+        refreshToken: 'summary-refresh',
+        accountId: 'summary-account',
+        fedRamp: false,
+        expiresAt: null,
+      ),
+    );
+    provider = OpenAiModelProvider.chatGpt(
+      auth: auth,
+      endpoint: server.responsesUri,
+    );
+  } else {
+    provider = OpenAiModelProvider(
+      apiKey: 'fake-openai-key',
+      endpoint: server.responsesUri,
+    );
+  }
+  addTearDown(provider.close);
+  return provider;
 }
 
 OpenAiOAuthClient _oauth(_FakeServer server) =>

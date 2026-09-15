@@ -11,7 +11,8 @@ buttons. After opening, it shows the Project source and initially `No Tasks yet`
 B2 adds title-only Task creation and primary Environment status. Normal interaction
 supports one canonical stock Chat Session and approval-gated ChatGPT-backed Runs,
 with plugin-owned evaluated history/composer, clickable activity groups, and
-window-local Inspection containing interpreted Apply Patch and Run Command cards.
+window-local Inspection containing interpreted Apply Patch, Run Command, and
+OpenAI provider-supplied reasoning-summary cards.
 Execution status/approvals remain host-owned; this is not a Task Browser or
 complete active-Session workbench.
 
@@ -89,8 +90,9 @@ using public `adele_environment` contracts and internal host APIs. It imports no
 Git backend implementation. Task UI and lifecycle contain no stock Git IDs.
 
 Normal Linux `dart tools/adele.dart run linux` and `build linux` prepare the host,
-Git, and OpenAI snapshots plus Chat, Filesystem Tools, and Command Tools frontend
-EVCs before the Flutter run/build invocation. The backend launcher helper
+Git, and OpenAI snapshots plus four frontend EVCs (Chat, Filesystem Tools, Command
+Tools, and OpenAI activity) before the Flutter run/build invocation. The backend
+launcher helper
 `prepareDesktopBackendDefines` in `tools/backend_artifacts.dart` uses
 `plugin_builder.compileAotSnapshot`, selects compiler/runtime from the launching
 Flutter SDK, and retains fresh isolated artifacts below
@@ -104,7 +106,8 @@ place; moving/deleting them breaks the corresponding backend startup or frontend
 loading. This is not a cache, installation, portable/production packaging,
 discovery, or profile system. Direct
 Flutter startup without the artifact defines leaves backend support, Chat
-presentation, and stock tool Inspection presentation unavailable independently.
+presentation, stock tool Inspection, and OpenAI activity presentation unavailable
+independently.
 
 Future installation/update should prepare compiled artifacts; activation should
 consume those artifacts, start runtimes, and register contributions through the
@@ -121,7 +124,7 @@ operations. The shared runtime has no dependency on development composition.
 
 ### Prepared Chat frontend
 
-`tools/frontend_artifacts.dart` prepares three fresh EVCs below
+`tools/frontend_artifacts.dart` prepares four fresh EVCs below
 `.dart_tool/adele/desktop-frontends/build-*` before launching or building the app:
 
 | Artifact | Compile-time deployment define |
@@ -129,6 +132,7 @@ operations. The shared runtime has no dependency on development composition.
 | `chat.evc` | `ADELE_CHAT_FRONTEND_ARTIFACT` |
 | `filesystem.evc` | `ADELE_FILESYSTEM_TOOLS_FRONTEND_ARTIFACT` |
 | `command.evc` | `ADELE_COMMAND_TOOLS_FRONTEND_ARTIFACT` |
+| `openai.evc` | `ADELE_OPENAI_ACTIVITY_FRONTEND_ARTIFACT` |
 
 Each define contains an absolute artifact path. Chat compilation invokes
 `app/tool/compile_chat_frontend.dart` with the selected Flutter SDK and takes
@@ -155,8 +159,21 @@ ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT="/absolute/path/to/filesystem.evc" \
 flutter test --no-pub --concurrency 1 tool/compile_tool_inspection_frontends.dart
 ```
 
-Use `command` and its output path to compile the Command Tools frontend. These
-inputs are build-time environment variables, not runtime artifact defines.
+Use `command` and its output path to compile the Command Tools frontend.
+
+OpenAI activity compilation invokes `app/tool/compile_openai_activity_frontend.dart`,
+using `openai_activity_frontend_compiler.dart`. From `app/`, with an existing
+output parent directory:
+
+```sh
+ADELE_REPOSITORY_ROOT="$(git rev-parse --show-toplevel)" \
+ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT="/absolute/path/to/openai.evc" \
+flutter test --no-pub --concurrency 1 tool/compile_openai_activity_frontend.dart
+```
+
+These compiler inputs are build-time environment variables, not runtime artifact
+defines. Runtime receives only `ADELE_OPENAI_ACTIVITY_FRONTEND_ARTIFACT` for this
+frontend, not its source path or output environment variable.
 
 The Flutter test runner is the build-time execution environment for eval
 compilation, not an on-start compilation mechanism. Normal runtime never compiles
@@ -194,6 +211,14 @@ the other frontends, headless tools, or backend support. Retirement removes its
 registration and invalidates its bridges; missing/corrupt EVC never triggers
 source compilation or a native tool-card fallback. Window close also settles
 pending tool-frontend activation and retires late activations.
+
+`lib/plugins/stock_openai_activity_frontend.dart` independently activates the
+OpenAI native-activity contribution through the same `PreparedFrontend` and exact
+registration-liveness machinery. Its availability does not depend on OpenAI model
+backend readiness, credentials, Chat presentation, or either tool frontend.
+Missing/corrupt EVC affects only this presentation; there is no native reasoning
+card fallback or runtime compilation. Window close settles pending activation,
+retires late activations, and invalidates exact-generation view resources.
 
 ### ChatGPT source-checkout configuration
 
@@ -315,19 +340,23 @@ authoritative order without executable bindings, arbitrary exceptions, or approv
 authority. Asynchronous coalesced journal invalidations do not eagerly freeze
 snapshots per progress chunk. The controller captures the latest evidence at most
 once per frame, plus advancement-settlement catch-up, while model/tool work is
-still in flight. Native output and terminal
-metadata remain opaque; structured tool `hostData` is retained, not flattened into
-summary prose or rendered automatically.
+still in flight. Native output and terminal metadata remain opaque to generic
+consumers; native presentation requires an exact-kind plugin contribution.
+Structured tool `hostData` is retained, not flattened into summary prose or
+rendered automatically.
 
 The provisional controller subscribes before starting its Run and retains
 presentation-only activity snapshots separately from canonical Chat. It inserts
 one compact group after the initiating user entry for each successfully completed
-model invocation containing proposals. Four tool proposals from one invocation
-still produce one summary; later batches produce later groups. Ordered explicit
-`ModelTextOutput` supplies narration, with a structural `N tool operations`
-fallback when absent. Final proposal-free text remains a canonical assistant
-message. The Chat strategy automatically includes stable shared-purpose narration
-guidance, with explicit user instructions taking precedence, without erasing
+model invocation containing tools or presentable native activity. Four tool
+proposals from one invocation still produce one summary; later invocations produce
+later groups. The heading prefers ordered explicit tool-batch `ModelTextOutput`
+narration, then native `compactText`, then a structural `N tool operations` count.
+A reasoning-only invocation can produce a group before its canonical final
+assistant message; proposal-free final text is not repurposed as batch narration.
+Unknown or declined native items alone create no group. The Chat strategy
+automatically includes stable shared-purpose narration guidance, with explicit
+user instructions taking precedence, without erasing
 Session instructions or changing independent AGENTS.md composition.
 
 Completed groups survive follow-up prompts for this controller's lifetime, not by
@@ -384,8 +413,9 @@ The Session presentation API changes neither kernel execution semantics, Chat
 sequencing, nor Environment contracts. Host policy and exact-invocation approval
 remain the security authority, not the frontend or its bridge. Configurable
 permissions/profiles, steering, cancellation controls,
-streaming-delta UI, provider reasoning, nested inspection, Source/Diff/Console
-navigation, and a Run history browser remain deferred.
+streaming/reasoning-delta UI, compaction UI, nested
+inspection, Source/Diff/Console navigation, terminal/PTY/full-output views, and a
+Run history browser remain deferred.
 
 Focused deterministic coverage lives in `test/chat_session_test.dart`,
 `test/chat_frontend_eval_test.dart`, `test/core/run_activity_projection_test.dart`,
@@ -393,20 +423,27 @@ Focused deterministic coverage lives in `test/chat_session_test.dart`,
 and `test/plugins/stock_openai_test.dart`. The separate
 `test/core/normal_chatgpt_run_integration_test.dart` compiles real host/Git/OpenAI
 artifacts and drives the normal controller through a local fake ChatGPT SSE
-endpoint with temporary fake credentials and the actual prepared Chat EVC.
-Coverage follows a narration-free revision-bearing read into one narrated
-patch-and-command proposal batch, separate approvals without an intervening
-inference, direct-argv `git diff --check`, and model continuation. The interpreted
-timeline stays visible during held final continuation and retains activity between
-the user and canonical final response. Task-worktree-only mutation and
-Project/checkout isolation remain checked. It requires no account or API key and
-performs no live model request.
+endpoint with temporary fake credentials and real prepared frontend artifacts.
+Its maintained E3 validation scope includes mixed reasoning and tool activity,
+read-to-patch-and-command continuation, separate approvals without an intervening
+inference, direct-argv `git diff --check`, and a separate reasoning-only final
+response. The scope checks interpreted Chat/Inspection ordering, a visible
+timeline during held final continuation, retention between user and canonical
+final response, safe summary-only frontend data, untouched encrypted replay, and
+Task-worktree/Project/checkout isolation. It requires no account or API key and
+performs no live model request; deterministic fixture coverage does not establish
+live-provider summary compatibility. Focused E3 presentation cases live in
+`test/model_native_activity_bridge_test.dart`,
+`test/model_native_activity_inspection_host_test.dart`, and
+`test/openai_activity_frontend_eval_test.dart`, alongside public `adele_ui`
+resolver tests and pure-Dart `openai_native_activity` projection tests.
 
 From `app/`, focused validation uses:
 
 ```sh
 flutter test --no-pub test/chat_session_test.dart test/core/approval_gated_tool_policy_test.dart test/core/orchestration_host_test.dart test/core/orchestration_authority_test.dart test/core/model_tool_host_test.dart
 flutter test --no-pub test/core/run_activity_projection_test.dart test/chat_frontend_eval_test.dart
+flutter test --no-pub test/model_native_activity_bridge_test.dart test/model_native_activity_inspection_host_test.dart test/openai_activity_frontend_eval_test.dart
 flutter test --no-pub test/core/normal_chatgpt_run_integration_test.dart
 ```
 
@@ -426,8 +463,9 @@ matching labels. The application validates the current Session and retained
 activity before changing selection. No controller, kernel, Run execution, or
 approval object crosses the eval bridge.
 
-`lib/ui/inspection/inspection_host.dart` owns the common group header and proposal
-composition in model output-sequence order. Proposals not yet prepared, rejected
+`lib/ui/inspection/inspection_host.dart` owns the common group header and interleaves
+tools and native activity by exact `output.sequence`, not by item kind or a
+separate reasoning section. Proposals not yet prepared, rejected
 before preparation, or left unprocessed when the Run ends keep explicit
 placeholders. Each prepared invocation gets a stable read-only
 `ToolActivityInspectionSource`, a `Listenable` whose `snapshot` is an immutable
@@ -459,8 +497,50 @@ preview comes from bounded terminal data, not a live console. Tool cards display
 read-only status. Only the common host approval card offers `Allow once` / `Deny`
 for the exact retained interruption.
 
-Nested inspection, provider reasoning, Source/Diff/Console integration, navigation
-history, persistence, and plugin discovery remain deferred.
+### Model-native activity presentation
+
+Public Flutter `adele_ui` supplies `ModelNativeActivityProjection(compactText,
+data)` with recursively immutable safe data and
+`ModelNativeActivityPresentationContribution(nativeKind, project,
+createInspection)` at `modelNativeActivityPresentationContributions`.
+`project` accepts a public `ModelNativeOutput` and returns a nullable projection;
+`createInspection` accepts only that projection and returns a `Widget`.
+`ModelNativeActivityPresentationResolver` matches exact native kind: zero leaves
+the item opaque and omitted, one matching projector may decline, and multiple
+matches are explicit ambiguity. There is no priority, tie-breaking, provider
+switch, or fallback. Generic Chat and Inspection never parse OpenAI fields.
+
+The pure-Dart `openai_native_activity` package at
+`plugins/openai/packages/native_activity` owns
+`openAiResponsesItemKind = 'openai.responses.item.v1'`, version 1, and
+`projectOpenAiReasoningSummary(ModelNativeEnvelope)`. It validates supported
+reasoning-summary items and produces bounded compact text plus only
+`{'summaryParts': List<String>, 'truncated': bool}`. The separate Flutter
+`openai_frontend` package at `plugins/openai/packages/frontend` owns
+`lib/openai_frontend.dart` and entrypoint `buildOpenAiReasoningInspection`.
+It renders provider-supplied summaries, not raw or recovered hidden reasoning.
+
+`lib/frontend/model_native_activity_bridge.dart` forwards only the safe projection
+map into the EVC. Raw native envelopes, compatibility metadata, encrypted replay
+content, Run/kernel/controller objects, and execution or approval authority do not
+cross that boundary. The backend and full Run retain exact native/encrypted replay
+unchanged; display filtering, bounds, and escaping never rewrite it. See the
+[OpenAI frontend README](../plugins/openai/packages/frontend/README.md) for the
+plugin-owned display contract and the [backend README](../plugins/openai/packages/backend/README.md)
+for provider-local summary request support.
+
+Malformed/unsupported or empty summaries are omitted rather than guessed.
+Projector, factory, and contained EVC failures remain bounded presentation failures,
+not Run failures. Existing exact-binding liveness removes retired views and
+invalidates their resources; only fresh resolution may create a replacement, never
+retargeting stale resources to it. Multiple registrations remain ambiguous even
+if one projector could decline. Native Inspection is read-only, without approval
+or continuation controls.
+
+Hidden chain-of-thought and encrypted reasoning are never user-presented.
+Reasoning deltas, compaction and configuration UI, nested
+inspection, Source/Diff/Console integration, terminal/PTY/full-output views,
+navigation history, persistence, and plugin discovery remain deferred.
 
 ### B1 Project opening
 
@@ -784,13 +864,16 @@ path. The headless Chat package's only direct production dependencies are
 `adele_orchestration` and `adele_plugin_api`; it has no `agent_kernel` dependency, including in
 `dev_dependencies`.
 
-`adele_ui` is the deliberately public Flutter Session presentation and tool
-activity Inspection package. It depends on Flutter, `adele_plugin_api`,
+`adele_ui` is the deliberately public Flutter Session, tool Inspection, and
+model-native activity presentation package. It depends on Flutter, `adele_plugin_api`,
 `adele_product`, `adele_orchestration`, and `adele_model_tool`, not internal host
 packages, app code, or concrete plugins. Product, orchestration, model tools, the
 registry, and shared headless runtime retain their pure-Dart boundaries. The
-separate Chat, Filesystem Tools, and Command Tools frontends are compiled to EVC,
-not imported as native app views or linked to their headless implementations.
+separate Chat, Filesystem Tools, Command Tools, and OpenAI frontends are compiled
+to EVC, not imported as native app views or linked to their headless/backend
+implementations. Stock OpenAI activity composition imports only the owning
+pure-Dart `openai_native_activity` projection API; provider field interpretation
+stays there, outside generic Chat, Inspection, and frontend hosting.
 
 `adele_core_extensions` imports only `adele_plugin_api` and owns core extension
 contracts with no natural existing public domain package. It does not absorb
@@ -803,9 +886,9 @@ core host logic do not belong here.
 
 The long-term extension direction expects the host to own broad workbench
 geometry, Command/Command Palette/keybinding infrastructure, and composition of
-semantic plugin surfaces. Narrow Session presentation and tool activity
-Inspection APIs are implemented; broader workbench UI and Command APIs remain
-unimplemented.
+semantic plugin surfaces. Narrow Session, tool Inspection, and model-native
+activity presentation APIs are implemented; broader workbench UI and Command APIs
+remain unimplemented.
 
 ## Developer Self-Hosting Runner
 
@@ -912,9 +995,10 @@ richer activity/console and diff/review presentation, product
 plugin discovery and configurable activation, production Agent UI, application
 Commands/keybindings, a common execution timeline, and broader plugin-facing
 workbench UI APIs remain deferred. Normal UI reaches a canonical Chat Session with
-evaluated history/composer, clickable activity groups and window-local tool
-Inspection, read/search, and per-invocation approvals
-for eligible source mutation and command execution over the Task's real Git
+evaluated history/composer, clickable activity groups and window-local tool/native
+Inspection, including OpenAI provider-supplied reasoning summaries, read/search,
+and per-invocation approvals for eligible source mutation and command execution
+over the Task's real Git
 worktree. These window-local controls are not a general permission configuration
 or workbench presentation API.
 

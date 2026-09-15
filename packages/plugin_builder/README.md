@@ -27,7 +27,7 @@ compiler share this primitive.
 
 Normal `dart tools/adele.dart run linux` and `build linux --profile` prepare the
 shared host, Git Environment, and OpenAI backend AOT snapshots plus Chat,
-Filesystem Tools, and Command Tools frontend EVC before launching the Flutter
+Filesystem Tools, Command Tools, and OpenAI activity frontend EVCs before launching the Flutter
 run/build command. Backend compilation runs
 outside Flutter; frontend compilation uses Flutter build-time tooling. This also
 applies to explicit Linux debug/release modes; non-Linux commands and the explicit
@@ -37,7 +37,7 @@ backend source paths, not the normal app runtime or the snapshot primitive.
 The launcher inspects its selected Flutter executable and uses that SDK's bundled
 `dart` and sibling `dartaotruntime`, not a potentially unrelated `dart` on PATH.
 It compiles the host first, then Git and OpenAI. `tools/frontend_artifacts.dart`
-then prepares all three stock EVCs with the selected Flutter SDK. Only after preparation
+then prepares all four stock EVCs with the selected Flutter SDK. Only after preparation
 succeeds does the launcher pass:
 
 - `ADELE_DARTAOTRUNTIME_EXECUTABLE`: absolute matched runtime path.
@@ -47,6 +47,7 @@ succeeds does the launcher pass:
 - `ADELE_CHAT_FRONTEND_ARTIFACT`: absolute Chat frontend `.evc` path.
 - `ADELE_FILESYSTEM_TOOLS_FRONTEND_ARTIFACT`: absolute Filesystem Inspection `.evc` path.
 - `ADELE_COMMAND_TOOLS_FRONTEND_ARTIFACT`: absolute Command Inspection `.evc` path.
+- `ADELE_OPENAI_ACTIVITY_FRONTEND_ARTIFACT`: absolute OpenAI activity `.evc` path.
 
 These are deployment inputs only. ChatGPT credential-store paths, OAuth
 configuration, and model selection remain runtime stock configuration described
@@ -63,7 +64,9 @@ Dart and does not gain Flutter/eval dependencies. See
 
 The same launcher invokes `app/tool/compile_tool_inspection_frontends.dart` once
 for each owning tool frontend, using `ADELE_TOOL_INSPECTION_FRONTEND` and
-`ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT` alongside the repository root. Each stage
+`ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT` alongside the repository root. It also
+invokes `app/tool/compile_openai_activity_frontend.dart` with build-time inputs
+`ADELE_REPOSITORY_ROOT` and `ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT`. Each stage
 must produce nonempty EVC before application launch; failure never silently reuses
 an older artifact. These Flutter compiler entrypoints remain outside this package
 and the normal application startup import graph.

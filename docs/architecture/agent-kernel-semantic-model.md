@@ -699,18 +699,20 @@ projection preserves canonical arguments, known effects, and structured outcome
 Opaque native and tool-owned payloads are evidence, not automatically rendered
 or classified as reasoning.
 
-Stock Chat uses this observation boundary for presentation-only proposal-batch
-summaries: one successfully completed proposal-containing model invocation is one
-group, regardless of tool count. Explicit user-facing model text is its preferred
-narration; absent narration uses a structural count. This is Chat presentation
-policy, not a kernel grouping invariant. Proposal-free final assistant text stays
-canonical Chat content, and completed groups are retained only for the current
-controller lifetime. Groups can open window-owned Inspection, whose common host
-preserves exact proposal order and delegates resolved tool content through public
-`adele_ui` contributions matched by `ToolId`. Filesystem and Command provide the
-first bespoke interpreted tool presentations. Selection, frontend resources, and
-tool-specific rendering remain outside the kernel; provider-native presentation
-and nested Inspection remain deferred.
+Stock Chat uses this observation boundary for presentation-only activity groups:
+one successfully completed model invocation with tools or presentable native
+activity is one group. Headings prefer explicit tool-batch narration, then native
+compact text, then a structural tool count. This is Chat presentation policy, not
+a kernel grouping invariant. Reasoning-only groups precede canonical final
+assistant text; completed groups remain only for the current controller lifetime.
+Groups can open window-owned Inspection, whose common host interleaves tools and
+native activity by exact `output.sequence` through public `adele_ui` contributions
+matched by `ToolId` or native kind. Filesystem and Command own tool cards; OpenAI
+owns safe reasoning-summary projection and interpreted Inspection. Native evidence
+remains opaque in orchestration and the kernel, with exact native/encrypted replay
+unchanged. Selection, frontend resources, and provider/tool interpretation remain
+outside the kernel; see [model-native activity presentation](overview.md#model-native-activity-presentation).
+Reasoning deltas and nested Inspection remain deferred.
 
 Public plugin Events are a broader extension concept defined outside the kernel. A kernel observation may later be projected into a public Event, but the internal Run journal and public Event system are not assumed to be identical.
 

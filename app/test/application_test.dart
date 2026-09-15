@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
 import 'package:adele_core_extensions/adele_core_extensions.dart';
@@ -9,11 +10,50 @@ import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_ui/adele_ui.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets('owns optional prepared OpenAI presentation independently', (
+    WidgetTester tester,
+  ) async {
+    final Directory directory = Directory.systemTemp.createTempSync(
+      'openai-activation-',
+    );
+    addTearDown(() => directory.deleteSync(recursive: true));
+    // Loading prepared bytes is independent of per-view decoding and backend work.
+    final File artifact = File('${directory.path}/openai.evc')
+      ..writeAsBytesSync([1, 2, 3]);
+    final AdeleRuntime runtime = AdeleRuntime();
+    await tester.runAsync(() async {
+      final activated = runtime.extensions.changes.firstWhere(
+        (_) => runtime.extensions
+            .discover(modelNativeActivityPresentationContributions)
+            .isNotEmpty,
+      );
+      await tester.pumpWidget(
+        AdeleApplication(
+          createRuntime: () => runtime,
+          openaiActivityFrontendArtifact: artifact.path,
+        ),
+      );
+      await activated.timeout(const Duration(seconds: 10));
+    });
+    await tester.pumpAndSettle();
+    final binding = runtime.extensions
+        .discover(modelNativeActivityPresentationContributions)
+        .single;
+    expect(binding.validate, returnsNormally);
+    expect(runtime.extensions.discover(modelToolContributions), hasLength(3));
+    expect(find.text('No Project is open'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+    expect(binding.validate, throwsA(isA<StaleExtensionBinding>()));
+  });
+
   testWidgets('normal entrypoint renders the pre-Project shell', (
     WidgetTester tester,
   ) async {

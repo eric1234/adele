@@ -14,11 +14,13 @@ import 'package:adele_desktop/plugins/stock_chat_execution_status.dart';
 import 'package:adele_desktop/plugins/stock_chat_frontend.dart';
 import 'package:adele_desktop/plugins/stock_git_environment.dart';
 import 'package:adele_desktop/plugins/stock_openai.dart';
+import 'package:adele_desktop/plugins/stock_openai_activity_frontend.dart';
 import 'package:adele_desktop/plugins/stock_tool_inspection_frontends.dart';
 import 'package:adele_desktop/ui/chat/chat_controller.dart';
 import 'package:adele_desktop/ui/execution/pending_tool_approval.dart';
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
+import 'package:adele_desktop/ui/inspection/model_native_activity_inspection_host.dart';
 import 'package:adele_desktop/ui/inspection/tool_activity_inspection_host.dart';
 import 'package:adele_desktop/ui/session/session_presentation_host.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
@@ -26,6 +28,7 @@ import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_ui/adele_ui.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter/material.dart';
@@ -34,6 +37,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 
 import '../../tool/chat_frontend_compiler.dart';
+import '../../tool/openai_activity_frontend_compiler.dart';
 import '../../tool/tool_inspection_frontend_compiler.dart';
 
 const String _sourcePath = 'lib/task_answer.dart';
@@ -49,8 +53,19 @@ const String _prompt =
 const String _answer =
     'Patched lib/task_answer.dart to declare taskAnswer as "approved-task-value". '
     'The separately approved git diff --check exited with code 0 in the Task. '
-    'E2 real-EVC canonical final reply.';
+    'E3 real-EVC canonical final reply.';
 const String _narration = 'Updating the test file and validating the change.';
+const String _reasoningA = 'Checking the exact file revision before the patch.';
+const String _reasoningB = 'Checking the validation command after the patch.';
+const String _followUpPrompt = 'Summarize the completed change without tools.';
+const String _followUpSummary = 'Reviewing the completed change without tools.';
+const String _followUpAnswer =
+    'The Task file was updated and git diff --check passed. No further tools ran.';
+const String _encryptedA = 'e3-encrypted-replay-A-never-present';
+const String _encryptedB = 'e3-encrypted-replay-B-never-present';
+const String _encryptedFollowUp = 'e3-encrypted-followup-never-present';
+const String _privateReasoning = 'e3-private-reasoning-content-never-present';
+const String _providerExtra = 'e3-provider-extra-field-never-present';
 const Map<String, Object?> _commandArguments = {
   'program': 'git',
   'arguments': ['diff', '--check'],
@@ -67,6 +82,7 @@ void main() {
   late File evc;
   late File filesystemEvc;
   late File commandEvc;
+  late File openAiEvc;
 
   setUpAll(() async {
     final Directory repository = Directory.current.parent;
@@ -86,7 +102,11 @@ void main() {
     evc = File('${artifacts.path}/chat.evc');
     filesystemEvc = File('${artifacts.path}/filesystem.evc');
     commandEvc = File('${artifacts.path}/command.evc');
+    openAiEvc = File('${artifacts.path}/openai-activity.evc');
     await compileChatFrontend(repositoryRoot: repository, artifact: evc);
+    await openAiEvc.writeAsBytes(
+      await compileOpenAiActivityFrontend(repositoryRoot: repository),
+    );
     for (final target in [
       (frontend: ToolInspectionFrontend.filesystem, artifact: filesystemEvc),
       (frontend: ToolInspectionFrontend.command, artifact: commandEvc),
@@ -128,7 +148,7 @@ void main() {
   });
 
   testWidgets(
-    'normal real-EVC Chat inspects one patch/command batch through separate approvals',
+    'E3 real artifacts interleave native/tool Inspection and expose a no-tool Run',
     (tester) => tester.runAsync(() async {
       await tester.binding.setSurfaceSize(const Size(1400, 1100));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -207,6 +227,7 @@ void main() {
             expect(body['store'], isFalse);
             expect(body['stream'], isTrue);
             expect(body['parallel_tool_calls'], isTrue);
+            expect(body['reasoning'], {'summary': 'auto'});
             expect(body['include'], ['reasoning.encrypted_content']);
             expect(body, isNot(contains('max_output_tokens')));
             expect(body, isNot(contains('previous_response_id')));
@@ -294,11 +315,19 @@ void main() {
                 // wait for its own approval before the next inference occurs.
                 _output(
                   request.response,
+                  _reasoning('reasoning-a', _reasoningA, _encryptedA),
+                );
+                _output(
+                  request.response,
                   _message('batch-purpose', _narration),
                 );
                 _output(
                   request.response,
                   _call('patch', 'apply_patch', patchArguments),
+                );
+                _output(
+                  request.response,
+                  _reasoning('reasoning-b', _reasoningB, _encryptedB),
                 );
                 _output(
                   request.response,
@@ -332,9 +361,66 @@ void main() {
                       .map((item) => item['call_id']),
                   ['read', 'patch', 'command'],
                 );
+                // Native items retain exact ciphertext and opaque fields in
+                // replay, in output order, not in a separate native-first group.
+                expect(body['input'], [
+                  ...(outbound[1]['input']! as List<Object?>),
+                  _reasoning('reasoning-a', _reasoningA, _encryptedA),
+                  _message('batch-purpose', _narration),
+                  _call('patch', 'apply_patch', patchArguments),
+                  _reasoning('reasoning-b', _reasoningB, _encryptedB),
+                  _call('command', 'run_command', _commandArguments),
+                  {
+                    'type': 'function_call_output',
+                    'call_id': 'patch',
+                    'output': patchOutput,
+                  },
+                  {
+                    'type': 'function_call_output',
+                    'call_id': 'command',
+                    'output': commandOutput,
+                  },
+                ]);
                 continuationArrived.complete();
                 await releaseFinal.future;
                 _output(request.response, _message('message-final', _answer));
+              case 4:
+                // A fresh Run reuses only canonical user/final assistant Chat
+                // history, not prior native output, narration, or tool replay.
+                expect(body['input'], [
+                  ...(outbound.first['input']! as List<Object?>),
+                  {
+                    'type': 'message',
+                    'role': 'assistant',
+                    'content': [
+                      {
+                        'type': 'output_text',
+                        'text': _answer,
+                        'annotations': <Object?>[],
+                      },
+                    ],
+                    'status': 'completed',
+                  },
+                  {
+                    'type': 'message',
+                    'role': 'user',
+                    'content': [
+                      {'type': 'input_text', 'text': _followUpPrompt},
+                    ],
+                  },
+                ]);
+                _output(
+                  request.response,
+                  _reasoning(
+                    'reasoning-followup',
+                    _followUpSummary,
+                    _encryptedFollowUp,
+                  ),
+                );
+                _output(
+                  request.response,
+                  _message('message-followup-final', _followUpAnswer),
+                );
               default:
                 fail('Unexpected Responses invocation ${outbound.length}.');
             }
@@ -347,6 +433,9 @@ void main() {
             });
           } on Object catch (error, stack) {
             endpointFailures.add((error, stack));
+            if (!continuationArrived.isCompleted && outbound.length == 3) {
+              continuationArrived.complete();
+            }
           } finally {
             await request.response.close();
           }
@@ -526,6 +615,11 @@ void main() {
         artifactPath: commandEvc.path,
       );
       addTearDown(commandFrontend.close);
+      final openAiFrontend = await activateStockOpenAiActivityFrontend(
+        extensions: runtime.extensions,
+        artifactPath: openAiEvc.path,
+      );
+      addTearDown(openAiFrontend.close);
       addTearDown(() async {
         updatePresentation = null;
         if (!releaseFinal.isCompleted) releaseFinal.complete();
@@ -686,10 +780,34 @@ void main() {
       );
       final RunActivitySnapshot waitingEvidence = execution.activity.snapshot;
       expect(waitingEvidence.models.last.outputs.map((output) => output.item), [
+        isA<ModelNativeOutput>(),
         isA<ModelTextOutput>(),
         isA<ModelToolProposalOutput>(),
+        isA<ModelNativeOutput>(),
         isA<ModelToolProposalOutput>(),
       ]);
+      final ModelNativeOutput nativeA =
+          waitingEvidence.models.last.outputs[0].item as ModelNativeOutput;
+      final ModelNativeOutput nativeB =
+          waitingEvidence.models.last.outputs[3].item as ModelNativeOutput;
+      final nativeResolver = ModelNativeActivityPresentationResolver(
+        runtime.extensions,
+      );
+      _expectSafeProjection(
+        nativeResolver,
+        nativeA,
+        id: 'reasoning-a',
+        summary: _reasoningA,
+        encrypted: _encryptedA,
+      );
+      _expectSafeProjection(
+        nativeResolver,
+        nativeB,
+        id: 'reasoning-b',
+        summary: _reasoningB,
+        encrypted: _encryptedB,
+      );
+      _expectNoPresentationSecrets(tester, controller);
       final PendingToolApproval patchApproval = controller.pendingApproval!;
       final ToolApprovalInterruption patchInterruption =
           run.interruptions.values.single as ToolApprovalInterruption;
@@ -768,6 +886,35 @@ void main() {
               widget.source.snapshot.id == id,
         ),
       );
+      Finder nativeHost(ModelNativeOutput output) => find.descendant(
+        of: inspectionHost,
+        matching: find.byWidgetPredicate(
+          (widget) =>
+              widget is ModelNativeActivityInspectionHost &&
+              identical(widget.output, output),
+        ),
+      );
+      final Finder reasoningAHost = nativeHost(nativeA);
+      final Finder reasoningBHost = nativeHost(nativeB);
+      final reasoningAState = tester.state(reasoningAHost);
+      final reasoningBState = tester.state(reasoningBHost);
+      for (final (host, summary) in [
+        (reasoningAHost, _reasoningA),
+        (reasoningBHost, _reasoningB),
+      ]) {
+        // These labels are supplied only by the compiled OpenAI EVC. The
+        // generic host neither interprets fields nor supplies a native card.
+        expect(host, findsOneWidget);
+        expect(
+          find.descendant(of: host, matching: find.text('Reasoning summary')),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(of: host, matching: find.text(summary)),
+          findsOneWidget,
+        );
+      }
+      expect(find.byType(ModelNativeActivityInspectionHost), findsNWidgets(2));
       Finder toolPresentation(ToolInvocationId id) => find.descendant(
         of: toolHost(id),
         matching: find.byWidgetPredicate(
@@ -793,7 +940,7 @@ void main() {
       expect(waitingPatch.modelInvocationId, batch.invocationId);
       expect(
         waitingPatch.proposalSequence,
-        waitingEvidence.models.last.outputs[1].sequence,
+        waitingEvidence.models.last.outputs[2].sequence,
       );
       expect(
         waitingPatch.changes.last.kind,
@@ -823,6 +970,13 @@ void main() {
         matching: find.text('Proposal: run_command'),
       );
       expect(unresolvedCommand, findsOneWidget);
+      _expectVerticalOrder(tester, [
+        reasoningAHost,
+        patchPresentation,
+        reasoningBHost,
+        unresolvedCommand,
+      ]);
+      _expectNoPresentationSecrets(tester, controller);
       expect(
         find.descendant(
           of: inspectionHost,
@@ -987,7 +1141,7 @@ void main() {
       expect(commandSource.snapshot.modelInvocationId, batch.invocationId);
       expect(
         commandSource.snapshot.proposalSequence,
-        waitingEvidence.models.last.outputs[2].sequence,
+        waitingEvidence.models.last.outputs[4].sequence,
       );
       expect(
         commandSource.snapshot.changes.last.kind,
@@ -996,6 +1150,15 @@ void main() {
       expect(commandSource.snapshot.outcome, isNull);
       expect(commandRuntime, isNot(same(patchRuntime)));
       expect(commandRuntime, isNot(same(chatRuntime)));
+      expect(tester.state(reasoningAHost), same(reasoningAState));
+      expect(tester.state(reasoningBHost), same(reasoningBState));
+      _expectVerticalOrder(tester, [
+        reasoningAHost,
+        patchPresentation,
+        reasoningBHost,
+        commandPresentation,
+      ]);
+      _expectNoPresentationSecrets(tester, controller);
       for (final String label in [
         'Run Command',
         'Program: "git"',
@@ -1095,6 +1258,10 @@ void main() {
       expect(validating, isNotNull);
       expect(controller.isAdvancing, isTrue);
       await continuationArrived.future;
+      if (endpointFailures.isNotEmpty) {
+        final (error, stack) = endpointFailures.first;
+        Error.throwWithStackTrace(error, stack);
+      }
       await tester.pumpAndSettle();
       expect(controller.isAdvancing, isTrue);
       expect(controller.activeRunFuture, same(validating));
@@ -1404,6 +1571,13 @@ void main() {
         patchedRevision,
       );
       expect(commandSource.snapshot.outcome!.hostData, commandOutcome.hostData);
+      _expectVerticalOrder(tester, [
+        reasoningAHost,
+        patchPresentation,
+        reasoningBHost,
+        commandPresentation,
+      ]);
+      _expectNoPresentationSecrets(tester, controller);
       expect(
         tester.widget<$StatefulWidget$bridge>(chatPresentation),
         same(chatWidget),
@@ -1425,12 +1599,15 @@ void main() {
       expect(inspection.selection, isNull);
       expect(inspectionHost, findsNothing);
       expect(find.byType(ToolActivityInspectionHost), findsNothing);
+      expect(find.byType(ModelNativeActivityInspectionHost), findsNothing);
       expect(
         find.byWidgetPredicate((widget) => widget is $StatefulWidget$bridge),
         findsOneWidget,
       );
       expect(patchState.mounted, isFalse);
       expect(commandState.mounted, isFalse);
+      expect(reasoningAState.mounted, isFalse);
+      expect(reasoningBState.mounted, isFalse);
       expect(tester.state(chatPresentation), same(chatState));
       expect(
         tester.widget<$StatefulWidget$bridge>(chatPresentation).$runtime,
@@ -1461,9 +1638,179 @@ void main() {
       expect(outbound, hasLength(3));
       expect(tester.takeException(), isNull);
 
+      // Proof B: a separate Run has one native summary and a final answer, but
+      // no proposals. Its activity must not disappear or duplicate final text.
+      await tester.enterText(promptField, _followUpPrompt);
+      await tester.ensureVisible(send);
+      await tester.tap(send);
+      final Future<void>? followingUp = controller.activeRunFuture;
+      expect(followingUp, isNotNull);
+      await followingUp!;
+      await tester.pumpAndSettle();
+      if (endpointFailures.isNotEmpty) {
+        final (error, stack) = endpointFailures.first;
+        Error.throwWithStackTrace(error, stack);
+      }
+      final followUpExecution = controller.currentRun!;
+      final AgentRun followUpRun = followUpExecution.run;
+      expect(followUpExecution, isNot(same(execution)));
+      expect(followUpRun.id, RunId('run-c2-fixture-2'));
+      expect(followUpRun.sessionId, session.id);
+      expect(followUpRun.state, RunState.completed);
+      expect(followUpRun.failure, isNull);
+      expect(followUpRun.interruptions, isEmpty);
+      expect(controller.failure, isNull);
+      expect(controller.isRunning, isFalse);
+      expect(controller.isAdvancing, isFalse);
+      expect(controller.activeRunFuture, isNull);
+      expect(controller.pendingApproval, isNull);
+      expect(allowOnce, findsNothing);
+      expect(tester.widget<TextField>(promptField).enabled, isTrue);
+      expect(tester.widget<TextField>(promptField).controller!.text, isEmpty);
+      expect(outbound, hasLength(4));
+      final RunActivitySnapshot followUpActivity = controller.activityForRun(
+        followUpRun.id,
+      )!;
+      expect(controller.activitySnapshots, [activity, followUpActivity]);
+      expect(followUpActivity.state, RunState.completed);
+      expect(followUpActivity.models, hasLength(1));
+      expect(followUpActivity.tools, isEmpty);
+      expect(followUpActivity.rejectedProposals, isEmpty);
+      final ModelInvocationActivity followUpModel =
+          followUpActivity.models.single;
+      expect(followUpModel.settlement, ModelSettlement.completed);
+      expect(followUpModel.failure, isNull);
+      expect(followUpModel.outputs.map((output) => output.item), [
+        isA<ModelNativeOutput>(),
+        isA<ModelTextOutput>(),
+      ]);
+      final ModelNativeOutput followUpNative =
+          followUpModel.outputs.first.item as ModelNativeOutput;
+      _expectSafeProjection(
+        nativeResolver,
+        followUpNative,
+        id: 'reasoning-followup',
+        summary: _followUpSummary,
+        encrypted: _encryptedFollowUp,
+      );
+      final ChatActivitySummary followUpSummary = controller.timeline
+          .whereType<ChatActivitySummary>()
+          .where((entry) => entry.runId == followUpRun.id)
+          .single;
+      expect(followUpSummary.invocationId, followUpModel.id);
+      expect(followUpSummary.content, _followUpSummary);
+      expect(controller.timeline.map((entry) => entry.content), [
+        _prompt,
+        '1 tool operation',
+        _narration,
+        _answer,
+        _followUpPrompt,
+        _followUpSummary,
+        _followUpAnswer,
+      ]);
+      final ChatSessionSnapshot followUpSnapshot = controller.snapshot;
+      expect(followUpSnapshot.entries, [
+        isA<ChatUserMessage>(),
+        isA<ChatAssistantMessage>(),
+        isA<ChatUserMessage>(),
+        isA<ChatAssistantMessage>(),
+      ]);
+      expect(followUpSnapshot.entries.map((entry) => entry.content), [
+        _prompt,
+        _answer,
+        _followUpPrompt,
+        _followUpAnswer,
+      ]);
+      expect(
+        runtime.chat.sessions.obtain(session.id).snapshot().entries,
+        followUpSnapshot.entries,
+      );
+      final followUpEvents = followUpRun.journal.records
+          .map((record) => record.event)
+          .toList();
+      expect(followUpEvents.whereType<ModelInvocationStarted>(), hasLength(1));
+      final followUpSettlement = followUpEvents
+          .whereType<ModelInvocationSettled>()
+          .single;
+      expect(followUpSettlement.settlement, ModelSettlement.completed);
+      expect(followUpSettlement.metadata.effectiveModel, 'gpt-6-astra');
+      expect(followUpEvents.whereType<ToolInvocationPrepared>(), isEmpty);
+      expect(followUpEvents.whereType<ToolPolicyEvaluated>(), isEmpty);
+      expect(followUpEvents.whereType<ToolExecutionStarted>(), isEmpty);
+      expect(followUpEvents.whereType<RunInterrupted>(), isEmpty);
+      final Finder followUpActivityLink = find.descendant(
+        of: sessionHost,
+        matching: find.textContaining(_followUpSummary),
+      );
+      final Finder followUpFinal = find.descendant(
+        of: sessionHost,
+        matching: find.text(_followUpAnswer),
+      );
+      expect(followUpActivityLink, findsOneWidget);
+      expect(followUpFinal, findsOneWidget);
+      _expectVerticalOrder(tester, [
+        find.descendant(of: sessionHost, matching: find.text(_followUpPrompt)),
+        followUpActivityLink,
+        followUpFinal,
+      ]);
+      expect(inspection.selection, isNull);
+      await tester.ensureVisible(followUpActivityLink);
+      await tester.tap(followUpActivityLink);
+      await tester.pumpAndSettle();
+      expect(inspection.selection!.sessionId, session.id);
+      expect(inspection.selection!.runId, followUpRun.id);
+      expect(inspection.selection!.modelInvocationId, followUpModel.id);
+      expect(inspectionHost, findsOneWidget);
+      expect(
+        tester.widget<InspectionHost>(inspectionHost).heading,
+        _followUpSummary,
+      );
+      expect(
+        tester.widget<InspectionHost>(inspectionHost).activity,
+        same(followUpActivity),
+      );
+      final Finder followUpNativeHost = nativeHost(followUpNative);
+      expect(find.byType(ModelNativeActivityInspectionHost), findsOneWidget);
+      expect(followUpNativeHost, findsOneWidget);
+      expect(
+        find.descendant(
+          of: followUpNativeHost,
+          matching: find.text('Reasoning summary'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: followUpNativeHost,
+          matching: find.text(_followUpSummary),
+        ),
+        findsOneWidget,
+      );
+      expect(find.byType(ToolActivityInspectionHost), findsNothing);
+      expect(
+        find.descendant(of: inspectionHost, matching: find.text('Allow once')),
+        findsNothing,
+      );
+      expect(followUpActivityLink, findsOneWidget);
+      expect(followUpFinal, findsOneWidget);
+      expect(controller.currentRun, same(followUpExecution));
+      expect(controller.snapshot, same(followUpSnapshot));
+      expect(
+        followUpRun.journal.records.map((record) => record.event),
+        followUpEvents,
+      );
+      expect(run.journal.records.map((record) => record.event), events);
+      expect(outbound, hasLength(4));
+      expect(await _sourceSnapshot(source), projectBefore);
+      expect(await _sourceSnapshot(worktree), taskAfterPatch);
+      expect(tester.state(chatPresentation), same(chatState));
+      _expectNoPresentationSecrets(tester, controller);
+      expect(tester.takeException(), isNull);
+
       await controller.close();
       updatePresentation = null;
       await tester.pumpWidget(const SizedBox.shrink());
+      await openAiFrontend.close();
       await commandFrontend.close();
       await filesystemFrontend.close();
       await frontend.close();
@@ -1484,6 +1831,70 @@ void main() {
     }),
     timeout: const Timeout(Duration(seconds: 45)),
   );
+}
+
+void _expectSafeProjection(
+  ModelNativeActivityPresentationResolver resolver,
+  ModelNativeOutput output, {
+  required String id,
+  required String summary,
+  required String encrypted,
+}) {
+  expect(output.providerItemId, id);
+  expect(output.providerNativeMetadata.data, {
+    'item': _reasoning(id, summary, encrypted),
+  });
+  final projected = resolver.project(output);
+  expect(projected, isNotNull);
+  expect(projected!.projection.compactText, summary);
+  // Exact allowlist at the native-to-frontend boundary: not merely a check that
+  // an encrypted sentinel happens not to be rendered by this particular widget.
+  expect(projected.projection.data, {
+    'summaryParts': [summary],
+    'truncated': false,
+  });
+  expect(projected.projection.data.clear, throwsUnsupportedError);
+}
+
+void _expectNoPresentationSecrets(
+  WidgetTester tester,
+  ChatController controller,
+) {
+  final String timeline = controller.timeline
+      .map((entry) => entry.content)
+      .join('\n');
+  final String rendered = tester
+      .widgetList<Text>(find.byType(Text, skipOffstage: false))
+      .map((widget) => widget.data ?? widget.textSpan?.toPlainText() ?? '')
+      .join('\n');
+  for (final secret in [
+    _encryptedA,
+    _encryptedB,
+    _encryptedFollowUp,
+    _privateReasoning,
+    _providerExtra,
+    'encrypted_content',
+    'reasoning_text',
+    'provider_extra',
+  ]) {
+    expect(timeline, isNot(contains(secret)));
+    expect(rendered, isNot(contains(secret)));
+  }
+  expect(find.text('Frontend unavailable.'), findsNothing);
+  expect(find.text('Reasoning summary unavailable.'), findsNothing);
+}
+
+void _expectVerticalOrder(WidgetTester tester, List<Finder> items) {
+  for (final item in items) {
+    expect(item, findsOneWidget);
+  }
+  for (int index = 1; index < items.length; index++) {
+    expect(
+      tester.getBottomLeft(items[index - 1]).dy,
+      lessThanOrEqualTo(tester.getTopLeft(items[index]).dy),
+      reason: 'Inspection/timeline item $index must follow item ${index - 1}.',
+    );
+  }
 }
 
 String _revision(String output) =>
@@ -1525,6 +1936,21 @@ Map<String, Object?> _message(String id, String text) => {
     {'type': 'output_text', 'text': text, 'annotations': <Object?>[]},
   ],
 };
+
+Map<String, Object?> _reasoning(String id, String summary, String encrypted) =>
+    {
+      'type': 'reasoning',
+      'id': id,
+      'status': 'completed',
+      'summary': [
+        {'type': 'summary_text', 'text': summary},
+      ],
+      'encrypted_content': encrypted,
+      'content': [
+        {'type': 'reasoning_text', 'text': _privateReasoning},
+      ],
+      'provider_extra': {'text': _providerExtra},
+    };
 
 void _output(HttpResponse response, Map<String, Object?> item) =>
     _sse(response, {'type': 'response.output_item.done', 'item': item});
