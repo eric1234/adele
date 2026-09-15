@@ -31,6 +31,7 @@ dependencies:
     sdk: flutter
   flutter_eval: 0.8.2
   local_directory_project_selector_plugin: ^0.1.0
+  openai_contract: ^0.1.0
   plugin_builder: ^0.1.0
   plugin_runtime: ^0.1.0
   resource_inspector_contract: ^0.1.0

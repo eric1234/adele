@@ -28,15 +28,6 @@ The current physical layout shown here is also product direction rather than plu
 
 Some ideas in this document may not be part of the immediate implementation needed to make ADELE self-hosting. Once ADELE is used for real development, experience may show that some decisions should change. The near-term implementation may therefore be a subset of this design.
 
-The current activity subset is clickable Chat proposal-batch summaries opening
-one window-local Inspection, with common ordered proposal composition and
-interpreted Apply Patch and Run Command cards. Close removes only the view;
-changing the presented Session clears selection. Inspection is right-aligned on
-wide windows and stacked on narrow ones, not a public physical panel API. Nested
-inspections, provider reasoning, Source/Diff/Console navigation, persistence, and
-the broader layout below remain directional. Approval stays in common host UI,
-not the read-only tool cards.
-
 For canonical architectural boundaries, see:
 
 - [`../architecture/plugin-extension-model.md`](../architecture/plugin-extension-model.md);

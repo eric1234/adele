@@ -9,6 +9,7 @@ export 'package:adele_orchestration/adele_orchestration.dart'
         InferenceContextSnapshot,
         SemanticMessageRole,
         ModelNativeEnvelope,
+        ModelNativePresentation,
         SemanticModelInputItem,
         SemanticNativeInput,
         SemanticMessageInput,

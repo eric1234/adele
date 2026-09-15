@@ -31,6 +31,24 @@ final class ModelNativeEnvelope {
   final Map<String, Object?> data;
 }
 
+/// Provider-selected display data; never semantic input or native replay state.
+final class ModelNativePresentation {
+  ModelNativePresentation({
+    required String kind,
+    required String compactText,
+    required Map<String, Object?> data,
+  }) : kind = _requireNonEmpty(kind, 'Model native presentation kind'),
+       compactText = _requireNonEmpty(
+         compactText,
+         'Model native presentation compact text',
+       ),
+       data = _freezeMap(data);
+
+  final String kind;
+  final String compactText;
+  final Map<String, Object?> data;
+}
+
 sealed class SemanticModelInputItem {
   const SemanticModelInputItem();
 }
@@ -110,12 +128,14 @@ final class ModelNativeOutput extends ModelOutputItem {
   ModelNativeOutput({
     required this.providerNativeMetadata,
     this.providerItemId,
+    this.presentation,
   }) {
     _requireOptionalNonEmpty(providerItemId, 'Provider item ID');
   }
 
   final String? providerItemId;
   final ModelNativeEnvelope providerNativeMetadata;
+  final ModelNativePresentation? presentation;
 }
 
 final class ModelTextOutput extends ModelOutputItem {

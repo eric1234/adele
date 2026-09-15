@@ -4,8 +4,11 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:adele_model_provider/adele_model_provider.dart';
+import 'package:openai_contract/openai_contract.dart'
+    show openAiResponsesItemKind, openAiResponsesItemVersion;
 
 import 'src/openai_chatgpt_auth.dart';
+import 'src/openai_native_presentation.dart';
 
 // Plugin-owned runtime identities, temporarily mirrored by stock app bootstrap.
 // Future discovery/activation metadata should replace that hard-coded app knowledge.
@@ -13,9 +16,21 @@ const String openAiPluginId = 'dev.adele.openai';
 const String openAiApiKeyProviderId = 'dev.adele.openai.api-key';
 const String openAiChatGptProviderId = 'dev.adele.openai.chatgpt-experimental';
 const String openAiChatGptConfigurationContext = 'chatgpt-experimental';
-const String _nativeItemKind = 'openai.responses.item.v1';
 const String _semanticMetadataKind = 'openai.responses.semantic-item.v1';
 const int _maximumErrorBodyBytes = 16 * 1024;
+
+// Exact maintained IDs with summary support in OpenAI's reasoning guide and
+// first-party Codex catalog; unknown models retain the previous request policy.
+// https://developers.openai.com/api/docs/guides/reasoning#reasoning-summaries
+// https://github.com/openai/codex/blob/7f01a84effccef40d4726c3ca12e6c839ec98d7a/codex-rs/models-manager/models.json
+const Set<String> _reasoningSummaryModels = <String>{
+  'gpt-6-astra',
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+  'gpt-5.5',
+  'gpt-5.4',
+};
 
 final class OpenAiModelProvider implements ModelProviderService {
   OpenAiModelProvider({
@@ -450,6 +465,8 @@ Map<String, Object?> _lowerRequest(
     'parallel_tool_calls': true,
     if (request.maxOutputTokens != null)
       'max_output_tokens': request.maxOutputTokens,
+    if (_reasoningSummaryModels.contains(request.model))
+      'reasoning': <String, Object?>{'summary': 'auto'},
     'include': <String>['reasoning.encrypted_content'],
     'store': false,
     'stream': true,
@@ -527,8 +544,8 @@ Map<String, Object?> _lowerInput(ModelProviderInput input) {
       };
     case ModelProviderInputKind.nativeItem:
       final ModelProviderNativeEnvelope envelope = input.nativeMetadata!;
-      if (envelope.kind != _nativeItemKind ||
-          envelope.compatibility['version'] != 1 ||
+      if (envelope.kind != openAiResponsesItemKind ||
+          envelope.compatibility['version'] != openAiResponsesItemVersion ||
           envelope.compatibility.length != 1 ||
           envelope.data['item'] is! Map<String, Object?> ||
           envelope.data.length != 1) {
@@ -790,6 +807,7 @@ final class _ResponsesNormalizer {
                       },
                       data: <String, Object?>{'phase': phase},
                     ),
+              nativePresentation: null,
             ),
           ),
         );
@@ -835,12 +853,21 @@ final class _ResponsesNormalizer {
                       },
                       data: <String, Object?>{'namespace': namespace},
                     ),
+              nativePresentation: null,
             ),
           ),
         );
         return;
       case 'reasoning':
       case 'compaction':
+        final ModelProviderNativeEnvelope nativeMetadata =
+            ModelProviderNativeEnvelope(
+              kind: openAiResponsesItemKind,
+              compatibility: const <String, Object?>{
+                'version': openAiResponsesItemVersion,
+              },
+              data: <String, Object?>{'item': item},
+            );
         emit(
           _outputEvent(
             ModelProviderOutput(
@@ -848,11 +875,8 @@ final class _ResponsesNormalizer {
               text: null,
               toolProposal: null,
               itemId: id,
-              nativeMetadata: ModelProviderNativeEnvelope(
-                kind: _nativeItemKind,
-                compatibility: const <String, Object?>{'version': 1},
-                data: <String, Object?>{'item': item},
-              ),
+              nativeMetadata: nativeMetadata,
+              nativePresentation: projectOpenAiReasoningSummary(nativeMetadata),
             ),
           ),
         );

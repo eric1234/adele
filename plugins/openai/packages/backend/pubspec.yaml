@@ -13,6 +13,7 @@ dependencies:
   adele_model_provider: ^0.1.0
   ffi: ^2.1.4
   oauth2: ^2.0.5
+  openai_contract: ^0.1.0
   win32: ^6.4.0
 
 dev_dependencies:

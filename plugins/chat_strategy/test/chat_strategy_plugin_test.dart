@@ -975,6 +975,99 @@ void main() {
   );
 
   test(
+    'safe native presentation never enters replay or canonical history',
+    () async {
+      final ModelNativePresentation presentation = ModelNativePresentation(
+        kind: 'display.fixture.v2',
+        compactText: 'Display only heading',
+        data: const <String, Object?>{'safeDetail': 'Display only detail'},
+      );
+      final StrategyModelTurn batch = _batchTurn(
+        proposalCount: 1,
+        presentation: presentation,
+      );
+      final ModelNativeOutput native = batch.output.first as ModelNativeOutput;
+      final _Fixture fixture = _Fixture(
+        turns: <StrategyModelTurn>[
+          batch,
+          _finalTurn(
+            output: <ModelOutputItem>[native, ModelTextOutput('Complete.')],
+          ),
+        ],
+      );
+      await fixture.execution.start();
+      expect(fixture.host.state, RunState.completed);
+      expect(native.presentation, same(presentation));
+      final List<SemanticModelInputItem> replay =
+          fixture.host.requests.last.input;
+      expect(replay.map((item) => item.runtimeType), <Type>[
+        SemanticMessageInput,
+        SemanticNativeInput,
+        SemanticToolProposalInput,
+        SemanticMessageInput,
+        SemanticToolOutcomeInput,
+      ]);
+      final SemanticNativeInput replayNative = replay[1] as SemanticNativeInput;
+      expect(replayNative.providerItemId, native.providerItemId);
+      expect(
+        replayNative.providerNativeMetadata,
+        same(native.providerNativeMetadata),
+      );
+      expect(replayNative.providerNativeMetadata.kind, 'fixture');
+      expect(replayNative.providerNativeMetadata.compatibility, isEmpty);
+      expect(replayNative.providerNativeMetadata.data, <String, Object?>{
+        'retained': true,
+      });
+      expect(
+        () => (replayNative as dynamic).presentation,
+        throwsNoSuchMethodError,
+      );
+      expect(
+        () => (replayNative.providerNativeMetadata as dynamic).presentation,
+        throwsNoSuchMethodError,
+      );
+      expect(
+        replay.whereType<SemanticMessageInput>().map((item) => item.content),
+        <String>['Perform steps.', 'Between proposals.'],
+      );
+      expect(
+        fixture.state.snapshot().entries.map((entry) => entry.content),
+        <String>['Perform steps.', 'Complete.'],
+      );
+
+      fixture.state.append(ChatUserMessage('Follow up.'));
+      final _Host nextHost = _Host(
+        RunId('run-presentation-followup'),
+        fixture.session.id,
+        <StrategyModelTurn>[_finalTurn()],
+      );
+      final OrchestrationExecution next = fixture.resolver
+          .resolve(fixture.session.strategyId)
+          .materialize(
+            OrchestrationStrategyHostContext(
+              session: fixture.session,
+              host: nextHost,
+            ),
+          );
+      await next.start();
+      expect(nextHost.state, RunState.completed);
+      final List<SemanticMessageInput> history = nextHost.requests.single.input
+          .cast<SemanticMessageInput>();
+      expect(history.map((item) => item.content), <String>[
+        'Perform steps.',
+        'Complete.',
+        'Follow up.',
+      ]);
+      expect(
+        history.map((item) => item.providerNativeMetadata),
+        everyElement(isNull),
+      );
+      expect(history.map((item) => item.providerItemId), everyElement(isNull));
+      expect(nextHost.requests.single.instructions, chatToolNarrationGuidance);
+    },
+  );
+
+  test(
     'resume without pending approval and repeated start preserve lifecycle',
     () async {
       final _Fixture fixture = _Fixture(
@@ -1371,6 +1464,7 @@ StrategyModelTurn _batchTurn({
   ModelSettlement settlement = ModelSettlement.completed,
   ModelIncompleteReason? incompleteReason,
   ModelTerminalMetadata? metadata,
+  ModelNativePresentation? presentation,
 }) {
   final ModelNativeEnvelope native = _metadata();
   return StrategyModelTurn.settled(
@@ -1381,6 +1475,7 @@ StrategyModelTurn _batchTurn({
           ModelNativeOutput(
             providerItemId: 'native-$step',
             providerNativeMetadata: native,
+            presentation: presentation,
           ),
         ModelToolProposalOutput(
           ProviderToolProposal(

@@ -42,7 +42,7 @@ choose a requested plugin's contract.
 
 | Package | Responsibility | Rules |
 | --- | --- | --- |
-| Contract | Shared typed async transport declarations and immutable values | Pure Dart; no Flutter; no transport/generation implementation |
+| Contract | Shared identities, payload schemas, typed async transport declarations, and immutable values as needed | Pure Dart; no Flutter; no provider algorithms or transport/generation implementation |
 | Backend | Privileged/native Dart behavior | Depends on public contract/API packages as needed; never on frontend; compiled locally to AOT and hosted in an external isolate group |
 | Frontend | Plugin UI source | Depends on public contract/API packages as needed; never on backend; may use Flutter; currently interpreted with pinned `flutter_eval`/`dart_eval` |
 
@@ -51,12 +51,12 @@ generated transport. Source imports do not cross between implementation packages
 and crossing a runtime boundary never shares object identity. A narrow frontend
 presentation bridge need not expose backend services or implementation objects.
 
-A plugin may also publish a deliberately public lightweight API package for an
-extension point it owns when another plugin concretely needs to implement that
-interface. That API package is interface surface, not permission to import the
-owning plugin's frontend/backend implementation. General plugin-defined
-extension packaging is accepted direction but not yet implemented as a manifest
-or lifecycle system.
+A plugin may expose a deliberately public lightweight extension interface through
+its Contract surface when another plugin concretely needs to implement it. This
+is shared interface ownership, not an additional classification/projection role
+or permission to import the owning plugin's frontend/backend implementation.
+General plugin-defined extension packaging is accepted direction but not yet
+implemented as a manifest or lifecycle system.
 
 See [`dependency-rules.md`](dependency-rules.md) and
 [`plugin-extension-model.md`](plugin-extension-model.md).
@@ -93,8 +93,52 @@ Flutter analysis targets, not additional AOT backends.
 for stock contribution registration. The generic Inspection host matches exact
 `ToolId` through `adele_ui`, owns group framing/order, and knows no plugin-specific
 fields. The interpreted widgets own field interpretation over a read-only
-structured snapshot bridge. All three stock frontends reuse `PreparedFrontend`;
+structured snapshot bridge. All stock frontends reuse `PreparedFrontend`;
 there is no parallel tool-specific runtime/activation framework.
+
+### OpenAI Contract/Backend/Frontend split
+
+The OpenAI plugin follows the canonical three roles. Native classification and
+safe display projection belong to Backend, not an additional plugin component:
+
+```text
+plugins/openai/packages/
+|-- contract/         # openai_contract, pure-Dart identities and payload schema
+|-- backend/          # openai_model_provider_backend, raw interpretation and AOT
+`-- frontend/         # openai_frontend, interpreted Flutter Inspection
+```
+
+`openai_contract` owns shared identities and payload schema only. Raw Responses
+identity remains `openAiResponsesItemKind = 'openai.responses.item.v1'` with
+`openAiResponsesItemVersion = 1`; safe reasoning-summary presentation has the
+distinct kind `openai.responses.reasoning-summary.v1`, version 1. Contract contains
+no parsing, classification, projection, truncation, or display-safety algorithms.
+It does not depend on Flutter, Backend, Frontend, app, or kernel.
+
+Backend owns raw Responses reasoning-summary classification, bounded compact/full
+projection, and exact native preservation. It sends optional safe presentation
+through the generated common ModelProvider DTO, separately from raw
+`nativeMetadata`, the only native replay source. Frontend renders the safe payload;
+neither implementation depends on the other. The generic app adapter maps the
+presentation to immutable orchestration data without knowing OpenAI fields.
+
+`openai_frontend` supplies `lib/openai_frontend.dart` entrypoint
+`buildOpenAiReasoningInspection`, using public `adele_ui` rather than backend
+implementation. Its EVC receives only the recursively immutable safe
+`summaryParts`/`truncated` map, never the raw envelope, compatibility metadata,
+encrypted content, or execution/approval authority. Exact native/encrypted replay
+remains untouched in the backend and full Run evidence.
+
+`app/lib/plugins/stock_openai_activity_frontend.dart` imports Contract identity,
+loads the prepared artifact, registers the Inspection factory, and retires its
+registration/resources through existing `PreparedFrontend` and registry liveness.
+This app activation is provisional until discovery/profiles replace hard-coded
+stock selection; it does not classify or project raw output. Generic Chat uses
+`ModelNativeOutput.presentation != null` independently of frontend activation.
+Inspection resolves the exact safe presentation kind through `adele_ui`. Missing
+or failed rich presentation leaves safe activity intact without disabling backend
+execution or substituting a native card. The `app/tool` compile harness remains a
+checkout stand-in for installation/update-time preparation, not runtime activation.
 
 ## Distinct identities
 
@@ -144,8 +188,9 @@ isolation/concurrency models remain deferred.
 Temporary runtime resources are created/disposed during operation. They are not
 plugin instances and are not persistent provider configurations.
 
-Session and tool activity presentation retain exact extension bindings. Retirement
-removes old widgets and their resources; only fresh resolution may select a replacement.
+Session, tool Inspection, and model-native presentation retain exact extension
+bindings. Retirement removes old widgets and their resources; only fresh
+resolution may select a replacement.
 Missing or failed presentation does not invalidate the Session or headless/backend
 execution. Eval runtime allocation is an implementation detail of the pinned
 stack, not a permanent one-runtime-per-presentation contract.
@@ -157,9 +202,11 @@ multiple extension points does not imply multiple plugin runtimes.
 
 ## Normal stock artifact composition
 
-Normal composition uses existing backend-only Git and OpenAI plugins without linking
-their implementations into Flutter. Synchronous, provider-free `AdeleRuntime()` owns
-in-process stock registrations and generic `ApplicationPluginBootstrap` on its
+Normal composition loads Git and OpenAI backends without linking their
+implementations into Flutter; OpenAI shares Contract identities/schema and supplies
+an interpreted Frontend, while projection stays in Backend. Synchronous, provider-free
+`AdeleRuntime()` owns in-process stock registrations and generic
+`ApplicationPluginBootstrap` on its
 existing capability registry. `AdeleApplication` explicitly invokes async stock
 composition, supplying activation callbacks to that application-lifetime owner
 of one shared backend host. Git is required startup; OpenAI is an additional
@@ -185,12 +232,13 @@ Deployment and build details are maintained in
 [`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
 This is not plugin installation, production packaging, discovery, or profiles.
 
-Normal Chat, Filesystem Tools, and Command Tools frontend activations independently
-consume prepared EVCs. Flutter build-time tooling prepares all three before app
-launch/build, outside the normal runtime import graph. Tool Inspection retains
+Normal Chat, Filesystem Tools, Command Tools, and OpenAI activity frontend
+activations independently consume prepared EVCs. Flutter build-time tooling
+prepares all four before app launch/build, outside the normal runtime import
+graph. Tool Inspection retains
 the same view/runtime across coalesced snapshot updates rather than reloading
 bytecode for lifecycle changes. A missing, corrupt, or retired frontend does not
-retire backend support or trigger source compilation or a native Chat/tool-card
+retire backend support or trigger source compilation or a native presentation
 fallback. The SDK/eval pin remains bounded interoperability infrastructure;
 broad third-party interpreted UI support still
 requires eval modernization.
@@ -203,7 +251,7 @@ rebuild/reload on Linux x64 Flutter profile mode. Windows, macOS, release mode,
 packaging, discovery, activation contexts, and broad plugin APIs remain
 unproven.
 
-Maintained backend-only plugins additionally prove generated server streaming,
+Maintained plugin backends additionally prove generated server streaming,
 multiple generation-bound configuration contexts, real HTTP/SSE model-provider
 integration, Git Environment establishment/restoration, and bounded
 Session-authorized Environment reads composed by stock Filesystem and Search

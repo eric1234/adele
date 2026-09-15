@@ -10,6 +10,7 @@ import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/ui/execution/pending_tool_approval.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_ui/inspection_display.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter/foundation.dart';
@@ -59,6 +60,8 @@ final class ChatController {
   late ChatSessionSnapshot _snapshot;
   late ChatUserMessage _activeUserMessage;
   final Map<ChatUserMessage, RunActivitySnapshot> _activity = {};
+  final Map<(RunId, ModelInvocationId), ChatActivitySummary>
+  _activitySummaries = {};
   RunActivitySource? _activitySource;
   StreamSubscription<void>? _activitySubscription;
   bool _activityUpdateScheduled = false;
@@ -95,17 +98,17 @@ final class ChatController {
   ) {
     final RunActivitySnapshot? activity = activityForRun(runId);
     if (activity == null) return null;
-    for (final ChatActivitySummary summary in _summaries(activity)) {
-      if (summary.invocationId == invocationId) return summary;
-    }
-    return null;
+    return _activitySummaries[(runId, invocationId)];
   }
 
   List<ChatTimelineEntry> get timeline => List.unmodifiable([
     for (final ChatEntry entry in _snapshot.entries) ...[
       ChatTimelineMessage(entry),
       if (_activity[entry] case final RunActivitySnapshot activity)
-        ..._summaries(activity),
+        for (final model in activity.models)
+          if (_activitySummaries[(activity.runId, model.id)]
+              case final ChatActivitySummary summary)
+            summary,
     ],
   ]);
 
@@ -282,23 +285,33 @@ final class ChatController {
     final RunActivitySnapshot snapshot = source.snapshot;
     if (identical(_activity[user], snapshot)) return;
     _activity[user] = snapshot;
+    _captureSummaries(snapshot);
+    _notifyActivity(notify: notify);
+  }
+
+  void _notifyActivity({bool notify = true}) {
     final int count = timeline.whereType<ChatActivitySummary>().length;
     final bool changed = count != _visibleActivityCount;
     _visibleActivityCount = count;
-    try {
-      onActivityChanged?.call();
-    } on Object catch (error, stack) {
-      // Observation failures must not become Run failures or skip settlement.
-      FlutterError.reportError(
-        FlutterErrorDetails(
-          exception: error,
-          stack: stack,
-          library: 'Chat activity observation',
-        ),
-      );
+    for (final callback in [
+      onActivityChanged,
+      // Tool progress stays inspectable without rebuilding compact UI per chunk.
+      if (notify && changed) onChanged,
+    ]) {
+      if (_closed) return;
+      try {
+        callback?.call();
+      } on Object catch (error, stack) {
+        // Observation failures must not become Run failures or skip settlement.
+        FlutterError.reportError(
+          FlutterErrorDetails(
+            exception: error,
+            stack: stack,
+            library: 'Chat activity observation',
+          ),
+        );
+      }
     }
-    // Tool progress stays inspectable without rebuilding compact UI per chunk.
-    if (!_closed && notify && changed) onChanged?.call();
   }
 
   void _detachActivity() {
@@ -308,6 +321,56 @@ final class ChatController {
     // Listener removal is synchronous; this notification-only source owns no
     // asynchronous execution cleanup to put ahead of the accepted Run drain.
     unawaited(subscription?.cancel());
+  }
+
+  void _captureSummaries(RunActivitySnapshot activity) {
+    for (final model in activity.models) {
+      if (_closed) return;
+      final key = (activity.runId, model.id);
+      if (model.settlement != ModelSettlement.completed ||
+          model.failure != null ||
+          _activitySummaries.containsKey(key)) {
+        continue;
+      }
+      final output = [...model.outputs]
+        ..sort((a, b) => a.sequence.compareTo(b.sequence));
+      final int count = output
+          .where((output) => output.item is ModelToolProposalOutput)
+          .length;
+      String? compactNative;
+      for (final item in output) {
+        if (item.item case ModelNativeOutput(
+          presentation: final ModelNativePresentation presentation,
+        )) {
+          compactNative = presentation.compactText;
+          break;
+        }
+      }
+      if (count == 0 && compactNative == null) continue;
+      final String narration = count == 0
+          ? ''
+          : output
+                .map((output) => output.item)
+                .whereType<ModelTextOutput>()
+                .map((item) => item.content)
+                .join('\n')
+                .trim();
+      final content = inspectionDisplayText(
+        narration.isNotEmpty
+            ? narration
+            : compactNative ??
+                  '$count tool ${count == 1 ? 'operation' : 'operations'}',
+      );
+      // Completed evidence and its compact summary outlive frontend generations.
+      // Cap after escaping so invisible controls cannot expand a Chat row.
+      _activitySummaries[key] = ChatActivitySummary(
+        runId: activity.runId,
+        invocationId: model.id,
+        content: content.runes.length <= 160
+            ? content
+            : '${String.fromCharCodes(content.runes.take(159))}\u2026',
+      );
+    }
   }
 
   void _inspectRun(AgentRun run) {
@@ -378,30 +441,4 @@ final class ChatActivitySummary extends ChatTimelineEntry {
   final ModelInvocationId invocationId;
   @override
   final String content;
-}
-
-Iterable<ChatActivitySummary> _summaries(RunActivitySnapshot activity) sync* {
-  for (final ModelInvocationActivity model in activity.models) {
-    if (model.settlement != ModelSettlement.completed ||
-        model.failure != null) {
-      continue;
-    }
-    final List<ModelOutputItem> output = [
-      for (final ModelOutputActivity item in model.outputs) item.item,
-    ];
-    final int count = output.whereType<ModelToolProposalOutput>().length;
-    if (count == 0) continue;
-    final String narration = output
-        .whereType<ModelTextOutput>()
-        .map((item) => item.content)
-        .join('\n')
-        .trim();
-    yield ChatActivitySummary(
-      runId: activity.runId,
-      invocationId: model.id,
-      content: narration.isNotEmpty
-          ? narration
-          : '$count tool ${count == 1 ? 'operation' : 'operations'}',
-    );
-  }
 }

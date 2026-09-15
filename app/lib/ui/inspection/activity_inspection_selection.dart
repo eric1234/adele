@@ -28,7 +28,9 @@ final class WindowInspection extends ChangeNotifier {
     clear();
   }
 
-  /// The stock adapter supplies retained evidence, not frontend-created objects.
+  /// The stock adapter and application first validate an emitted token against
+  /// the controller's exact retained group. This accepts that evidence, never a
+  /// frontend-supplied Run/model identity or an arbitrary group lookup.
   bool inspectActivity({
     required Session session,
     required RunActivitySnapshot activity,
@@ -41,10 +43,7 @@ final class WindowInspection extends ChangeNotifier {
           (model) =>
               model.id == modelInvocationId &&
               model.settlement == ModelSettlement.completed &&
-              model.failure == null &&
-              model.outputs.any(
-                (output) => output.item is ModelToolProposalOutput,
-              ),
+              model.failure == null,
         )) {
       return false;
     }

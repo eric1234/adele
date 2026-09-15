@@ -88,10 +88,16 @@ void main() {
 
   test('settled turns snapshot ordered output and retain exact tools', () {
     final StrategyToolSnapshot tools = _ToolSnapshot();
+    final ModelNativePresentation presentation = ModelNativePresentation(
+      kind: 'display-v2',
+      compactText: ' Safe heading.\n',
+      data: const <String, Object?>{'safe': true},
+    );
     final List<ModelOutputItem> output = <ModelOutputItem>[
       ModelNativeOutput(
         providerItemId: 'native-1',
         providerNativeMetadata: native,
+        presentation: presentation,
       ),
       ModelTextOutput(
         'Inspecting.',
@@ -111,6 +117,16 @@ void main() {
 
     expect(turn.tools, same(tools));
     expect(turn.output, orderedEquals(output));
+    final ModelNativeOutput retained = turn.output.first as ModelNativeOutput;
+    expect(retained, same(output.first));
+    expect(retained.presentation, same(presentation));
+    expect(presentation.kind, 'display-v2');
+    expect(presentation.compactText, ' Safe heading.\n');
+    expect(retained.providerNativeMetadata, same(native));
+    expect(
+      ModelNativeOutput(providerNativeMetadata: native).presentation,
+      isNull,
+    );
     expect(turn.settlement, ModelSettlement.completed);
     expect(turn.incompleteReason, isNull);
     expect(turn.failure, isNull);
@@ -232,6 +248,11 @@ void main() {
       data: source,
     );
     final ModelUsage usage = ModelUsage(providerDetails: source);
+    final ModelNativePresentation presentation = ModelNativePresentation(
+      kind: 'display-v1',
+      compactText: 'Heading',
+      data: source,
+    );
     final ProviderToolProposal proposal = ProviderToolProposal(
       providerCallId: 'call-1',
       alias: 'inspect',
@@ -244,6 +265,7 @@ void main() {
     for (final Map<String, Object?> snapshot in <Map<String, Object?>>[
       envelope.compatibility,
       envelope.data,
+      presentation.data,
       usage.providerDetails,
       proposal.arguments,
     ]) {
@@ -263,6 +285,18 @@ void main() {
 
   test('semantic validation is preserved on the public boundary', () {
     final List<void Function()> invalid = <void Function()>[
+      for (final String blank in <String>['', ' \t\n']) ...<void Function()>[
+        () => ModelNativePresentation(
+          kind: blank,
+          compactText: 'Heading',
+          data: const <String, Object?>{},
+        ),
+        () => ModelNativePresentation(
+          kind: 'display-v1',
+          compactText: blank,
+          data: const <String, Object?>{},
+        ),
+      ],
       () => ModelNativeEnvelope(
         kind: ' ',
         compatibility: const <String, Object?>{},
@@ -328,6 +362,8 @@ void main() {
   test('structured metadata rejects invalid values, cycles and depth', () {
     final Map<String, Object?> cyclic = <String, Object?>{};
     cyclic['self'] = cyclic;
+    final List<Object?> cyclicList = <Object?>[];
+    cyclicList.add(cyclicList);
     final Map<String, Object?> deep = <String, Object?>{};
     Map<String, Object?> cursor = deep;
     for (int index = 0; index < 65; index++) {
@@ -337,11 +373,30 @@ void main() {
     }
     for (final Map<String, Object?> invalid in <Map<String, Object?>>[
       cyclic,
+      <String, Object?>{'list': cyclicList},
       deep,
       <String, Object?>{'value': double.infinity},
+      <String, Object?>{'value': double.negativeInfinity},
       <String, Object?>{'value': double.nan},
       <String, Object?>{'value': Object()},
+      <String, Object?>{
+        'value': <int, Object?>{1: true},
+      },
     ]) {
+      expect(
+        () => ModelNativePresentation(
+          kind: 'display-v1',
+          compactText: 'Heading',
+          data: invalid,
+        ),
+        throwsA(
+          isA<FormatException>().having(
+            (error) => error.toString().length,
+            'bounded error',
+            lessThan(200),
+          ),
+        ),
+      );
       expect(() => ModelUsage(providerDetails: invalid), throwsFormatException);
       expect(
         () => ProviderToolProposal(
@@ -365,6 +420,14 @@ void main() {
       ModelUsage(
         providerDetails: <String, Object?>{'left': shared, 'right': shared},
       ).providerDetails,
+      <String, Object?>{'left': shared, 'right': shared},
+    );
+    expect(
+      ModelNativePresentation(
+        kind: 'display-v1',
+        compactText: 'Heading',
+        data: <String, Object?>{'left': shared, 'right': shared},
+      ).data,
       <String, Object?>{'left': shared, 'right': shared},
     );
   });

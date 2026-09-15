@@ -17,8 +17,9 @@ The repository tracks `flutter 3.38.10-stable` in `.tool-versions`. This pin is
 temporary. Flutter 3.44.8 with `flutter_eval 0.8.2` is not compatible, and no
 Flutter 3.44 or Dart 3.12 support is claimed. Eval modernization or replacement
 is required before broad third-party interpreted UI support.
-The narrow stock Chat Session and Filesystem/Command Tools Inspection frontends
-use this pin; they neither modernize eval nor establish a broad third-party
+The narrow stock Chat Session, Filesystem/Command Tools Inspection, and OpenAI
+reasoning-summary Inspection frontends use this pin; they neither modernize eval
+nor establish a broad third-party
 Flutter compatibility surface.
 
 ## Local plugin compilation
@@ -29,15 +30,41 @@ pipeline compiles backend source to native Dart AOT and frontend source to
 Windows and macOS behavior remain future packaging and validation work.
 
 Normal desktop runtime activation never compiles plugin source. The Linux checkout
-launcher prepares shared-host/Git/OpenAI AOT artifacts and three stock frontend
-EVCs (Chat, Filesystem Tools, and Command Tools) before launching or building
-Flutter, using the selected Flutter SDK. `tools/frontend_artifacts.dart` invokes
-`app/tool/compile_chat_frontend.dart` and
-`app/tool/compile_tool_inspection_frontends.dart` through the Flutter test runner.
+launcher prepares shared-host/Git/OpenAI AOT artifacts and four stock frontend
+EVCs (Chat, Filesystem Tools, Command Tools, and OpenAI activity) before launching
+or building Flutter, using the selected Flutter SDK. `tools/frontend_artifacts.dart` invokes
+`app/tool/compile_chat_frontend.dart`,
+`app/tool/compile_tool_inspection_frontends.dart`, and
+`app/tool/compile_openai_activity_frontend.dart` through the Flutter test runner.
 Frontend compilation runs in Flutter build-time tooling, not generic runtime hosting or the
 pure-Dart `plugin_builder` dependency graph. Normal activation loads the prepared
 artifacts; missing or invalid artifacts fail the affected support rather than
 triggering compilation or a substitute implementation.
+
+The OpenAI activity compiler takes build-time environment inputs
+`ADELE_REPOSITORY_ROOT` and `ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT`; the launcher
+passes the prepared `openai.evc` path as compile-time deployment define
+`ADELE_OPENAI_ACTIVITY_FRONTEND_ARTIFACT`. Runtime activation at
+`app/lib/plugins/stock_openai_activity_frontend.dart` reuses `PreparedFrontend`
+independently of model backend support and other frontends. It loads no source
+and substitutes no native card on failure. It imports only OpenAI Contract
+identity to load/register/retire rich presentation, with no raw classification or
+projection algorithms. This stock activation edge is provisional until
+discovery/profiles replace hard-coded selection. These inputs are not model options,
+credentials, or a general configuration UI.
+
+OpenAI follows `plugins/openai/packages/{contract,backend,frontend}`:
+`openai_contract` is pure-Dart identities/schema with no algorithms; classification,
+projection, bounds, and native-preservation tests belong to
+`openai_model_provider_backend`. Contract identity tests and Backend tests have
+workspace membership and maintained analysis/test discovery in `tools/adele.dart`.
+`openai_frontend` is a Flutter analysis target whose EVC compilation and product
+integration belong to app build-time/test tooling. The regression scope uses real
+prepared artifacts with local fake Responses for mixed
+reasoning/tool approvals and a separate reasoning-only final response. That scope
+does not establish live-provider summary support or broader SDK/platform
+compatibility. Generated safe-presentation transport, generic adapter mapping, and
+safe Chat activity without frontend activation are separate regression boundaries.
 
 Future installation/update should own source compilation and artifact preparation,
 separate from activation consuming those artifacts. Current repository tooling is

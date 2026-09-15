@@ -126,27 +126,37 @@ inputs are documented in [`app/README.md`](../../app/README.md#prepared-chat-fro
 
 `app/lib/plugins/stock_chat_frontend.dart` is the provisional activation proxy and
 adapter to `ChatController`, which intentionally remains in `app/lib/ui/chat`.
-Only immutable primitive message/activity snapshots, composer-enabled state, and
-string submission with synchronous boolean acceptance cross the eval bridge.
+Only immutable primitive message/activity snapshots, composer-enabled state,
+string submission with synchronous boolean acceptance, and read-only Inspection
+requests for emitted opaque activity IDs cross the eval bridge.
 The canonical store and controller are not shared by identity with the frontend.
 Plugin frontend generations and individual presentation instances are distinct;
 view resources follow widget lifecycle and exact registration liveness.
 
 The controller observes the Run through public `adele_orchestration`'s read-only
 `RunActivitySource`, not by passing a journal to the frontend. Each successfully
-completed model invocation containing proposals becomes one lightweight Chat
-activity group keyed by its exact `ModelInvocationId`, regardless of tool count.
-Ordered explicit model text provides the narration; absent text uses
-`N tool operations` (singular for one). Proposal-free final text remains canonical
-assistant content, never a third activity variant in `ChatEntry`.
+completed model invocation containing tools or native `output.presentation != null`
+becomes one lightweight Chat group keyed by its exact `ModelInvocationId`,
+independently of rich frontend activation. Chat has no negative projection cache
+or registry-change retry machinery. Headings prefer ordered explicit tool-batch
+narration only when tools are present, then safe compact text, then
+`N tool operations` (singular for one). Reasoning-only groups precede canonical
+final assistant text, never adding an activity variant to `ChatEntry`.
 
 The interpreted timeline places groups between the initiating user message and
-the final assistant response, rendering small muted `ACTIVITY: ...` text without
-cards, actions, or tool detail rows. Completed groups and their structured evidence
+the final assistant response, rendering clickable `ACTIVITY: ...` summaries without
+tool cards, execution controls, or tool detail rows. Completed groups and their structured evidence
 are retained separately from Chat history for the controller lifetime, including
 follow-up prompts. Reconstructing a Session cannot restore historical activity
-until persistence exists. Native model output remains ordered and opaque in the
-read model, without reasoning labels or generic envelope interpretation.
+until persistence exists. Raw native model output remains ordered and opaque in
+the read model, separate from immutable backend-supplied `ModelNativePresentation`.
+`adele_ui` contributions supply rich Inspection by exact safe presentation kind,
+not raw-output projection. Missing rich presentation leaves safe activity intact.
+Generic Chat escapes compact display controls and retains the compact bound after
+escaping; the provider frontend escapes full text. Generic Chat never parses
+OpenAI envelopes or replays safe presentation. The common Inspection host
+interleaves tools and native activity by exact `output.sequence`.
+See [model-native activity presentation](../../docs/architecture/overview.md#model-native-activity-presentation).
 Subscriptions detach on close; the bridge coalesces frontend updates post-frame
 and rejects late updates after disposal.
 
@@ -161,8 +171,9 @@ presentation does not invalidate the Session or backend execution.
 The current context projection deliberately preserves the development loop's
 simple conversation-plus-Run-items behavior. Rich context selection, context
 truncation and summarization, context sources beyond root AGENTS.md, provider-aware
-projection/cache planning, token budgets, richer Chat UI, bespoke tool/provider
-activity presentation, Inspection, persistence, profiles, child Sessions, state migration, and concurrent
+projection/cache planning, token budgets, richer Chat UI, broader tool/provider
+activity presentation, reasoning deltas, nested Inspection, persistence, profiles,
+child Sessions, state migration, and concurrent
 conversation editing are not implemented. State retention is in-memory and scoped
 to the supplied store, not durable product Session storage.
 Plugin discovery, installation/update management, and artifact caching

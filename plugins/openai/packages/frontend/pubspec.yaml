@@ -1,0 +1,15 @@
+name: openai_frontend
+description: Interpreted Inspection presentation for approved OpenAI activity.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+  flutter: ">=3.38.10"
+
+resolution: workspace
+
+dependencies:
+  adele_ui: ^0.1.0
+  flutter:
+    sdk: flutter

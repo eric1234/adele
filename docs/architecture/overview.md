@@ -30,7 +30,7 @@ The following remain largely or entirely unimplemented:
 - context sources beyond root AGENTS.md, broader Reference/Observation material, provider-aware projection/cache planning, compaction, and token budgets;
 - parent/child Session lifecycle;
 - plugin-defined extension ecosystems beyond registration, model tools, executable strategies, and instruction-context composition;
-- broader plugin-facing workbench UI composition beyond Session presentation and tool activity Inspection;
+- broader plugin-facing workbench UI composition beyond Session, tool Inspection, and model-native activity presentation;
 - application Command/Command Palette/keybinding infrastructure;
 - profile-aware provider preference and general configuration services;
 - additional Environment providers, process modes beyond the foreground surface, and broader mutable source tooling such as whole-file overwrite, directory/move/copy, and binary operations;
@@ -44,11 +44,11 @@ Git primary Environment, and one stock Chat Session with sequential approval-gat
 Runs through the experimental ChatGPT subscription-backed ModelProvider. A narrow
 public Flutter Session presentation contract hosts the stock Chat plugin's
 evaluated mixed message/activity timeline and composer; common execution status
-and approvals remain host-owned. Compact Chat proposal-batch summaries open one
+and approvals remain host-owned. Compact Chat tool/native activity groups open one
 window-local Inspection, with common ordered group composition and separate
-interpreted Apply Patch and Run Command presentations. These reuse prepared
-frontend hosting without a native Chat/tool-card fallback or a general workbench
-UI framework.
+interpreted Apply Patch, Run Command, and OpenAI reasoning-summary presentations.
+These reuse prepared frontend hosting without a native presentation fallback or
+a general workbench UI framework.
 
 ## System shape
 
@@ -111,8 +111,9 @@ independent actions, not a chooser/default-provider framework.
 
 Normal stock activation consumes prepared backend and frontend artifacts, not
 source paths or a compiler. Missing required backend artifact configuration leaves
-Task Environment support unavailable; missing Chat, Filesystem Tools, or Command
-Tools EVC leaves the corresponding presentation unavailable independently.
+Task Environment support unavailable; missing Chat, Filesystem Tools, Command
+Tools, or OpenAI activity EVC leaves the corresponding presentation unavailable
+independently of the other frontends and model backend support.
 Artifact preparation belongs to repository/build-time tooling, not app startup;
 deployment inputs and source-checkout limitations are documented in
 [`app/README.md`](../../app/README.md#normal-backend-startup) and the
@@ -191,7 +192,7 @@ Runtime composition should prefer typed interface discovery over hidden activati
 
 Capabilities remain the implemented callable-provider mechanism for Actions and Services. Events are read-only fact notifications. Other extension points may collect UI fragments or structured operation contributions without being callable capabilities.
 
-The generic `ExtensionRegistry` supports typed registration/discovery, change notifications, retirement, and exact binding liveness. Current model-tool, orchestration-strategy, inference-context-source, Project selector, Session presentation, and tool activity Inspection points reuse it with their own composition semantics; already-resolved bindings do not migrate to replacement generations. Instruction-source data becomes independent of binding liveness after safe capture, unlike executable work.
+The generic `ExtensionRegistry` supports typed registration/discovery, change notifications, retirement, and exact binding liveness. Current model-tool, orchestration-strategy, inference-context-source, Project selector, Session presentation, tool Inspection, and model-native activity presentation points reuse it with their own composition semantics; already-resolved bindings do not migrate to replacement generations. Instruction-source data becomes independent of binding liveness after safe capture, unlike executable work.
 
 Tiny pure-Dart `adele_core_extensions` imports only `adele_plugin_api` and owns
 core extension contracts with no natural existing public domain package, not all
@@ -199,10 +200,11 @@ extension APIs. Product values, orchestration strategies/context, model tools,
 Environment providers, generic registry mechanics, and plugin-defined ecosystems
 keep their existing owners; see [`dependency-rules.md`](dependency-rules.md).
 
-Public Flutter `adele_ui` owns the concrete Session presentation and tool activity
-Inspection contracts, depending on public `adele_orchestration` and
-`adele_model_tool` without adding Flutter to those packages, product, or the
-registry. Broader recursive composition, plugin-defined UI ecosystems, generic Event subscription,
+Public Flutter `adele_ui` owns the concrete Session, tool Inspection, and
+model-native activity presentation contracts, depending on public
+`adele_orchestration` and `adele_model_tool` without adding Flutter to those
+packages, product, or the registry. Broader recursive composition,
+plugin-defined UI ecosystems, generic Event subscription,
 Commands/keybindings, and inference composition beyond instruction material remain
 direction rather than implemented production systems. Registry change
 notifications are not a general domain Event subscription system.
@@ -246,7 +248,7 @@ Stock `local_directory_project_selector_plugin` provides `Open Local Directory..
 through an injected narrow native picker using `file_selector ^1.1.0`. It returns
 an absolute `file:` directory URI with lexical dot normalization, without
 Git/filesystem validation or symlink resolution. The registration boundary is
-recorded in [`stock-plugin-direction.md`](stock-plugin-direction.md#31-local-directory-project-selector).
+recorded in the [selector README](../../plugins/local_directory_project_selector/README.md).
 
 Only the app invokes the contribution and passes a selected URI to
 `runtime.lifecycle.createProject`, which publishes and returns the canonical
@@ -402,9 +404,9 @@ IDs it emitted for exact retained Run/model groups, with current-Session and
 lifetime validation. This grants no execution or approval authority.
 
 `app/lib/ui/inspection/inspection_host.dart` owns the common group header and
-composes proposals in model output-sequence order. Unprepared and rejected
-proposals retain explicit placeholders, including proposals left unprocessed at
-Run termination. Each prepared invocation has a read-only
+interleaves tools and native activity by exact `output.sequence`. Unprepared and
+rejected proposals retain explicit placeholders, including proposals left
+unprocessed at Run termination. Each prepared invocation has a read-only
 `ToolActivityInspectionSource`: a `Listenable` with an immutable
 `ToolInvocationActivity` snapshot and fixed invocation/tool identities.
 If a Run ends without a terminal result for a prepared invocation, the host
@@ -441,10 +443,103 @@ calls (including layout/paint) and arbitrary asynchronous callbacks are not
 intercepted. No global Flutter error handler is replaced.
 
 Inspection appears to the right on wide windows and below on narrow windows;
-placement is private app layout, not a public physical panel API. Tool cards show
-read-only status; only common host approval UI offers Allow/Deny for the exact
-interruption. Nested inspection, provider reasoning, Source/Diff/Console
-navigation, persistence, and discovery remain deferred.
+placement is private app layout, not a public physical panel API. Tool and native
+cards are read-only; only common host approval UI offers Allow/Deny for the exact
+interruption. Nested inspection, Source/Diff/Console navigation, terminal/PTY and
+full-output views, persistence, and discovery remain deferred.
+
+### Model-native activity presentation
+
+The provider backend supplies safe presentation alongside, never inside or instead
+of, exact raw native metadata. The source-of-truth common contract in
+`packages/model_provider/lib/adele_model_provider.dart` defines generated
+`ModelProviderNativePresentation(kind, compactText, data)`, with `String` identity
+and compact text and recursively immutable JSON-like `Map<String, Object?>` data.
+`ModelProviderOutput.nativePresentation` is a required nullable field, non-null
+only for native outputs. Nullability means semantic absence; the constructor
+argument and generated map key remain
+required under the existing coherent-schema convention. This is not mixed-schema
+wire compatibility or permission to hand-edit generated output.
+
+Public pure-Dart `adele_orchestration` owns immutable
+`ModelNativePresentation(kind, compactText, data)` in
+`packages/orchestration/lib/src/model.dart` and optional
+`ModelNativeOutput.presentation`. The adapter in
+`app/lib/core/model_provider_host.dart` maps the common DTO fields generically,
+without provider imports, classification, or redaction. Safe field selection and
+bounds are backend responsibilities; immutable containers validate/copy data but
+do not determine whether provider fields are safe. Raw `nativeMetadata` remains
+exact and the only native replay source. Safe presentation never enters replay,
+canonical Chat history, or a new persistence model.
+
+Public Flutter `adele_ui` defines
+`ModelNativeActivityPresentationContribution(presentationKind, createInspection)`
+at typed `modelNativeActivityPresentationContributions`. The factory has type
+`Widget Function(ModelNativePresentation)` and receives no raw envelope. There is
+no UI-owned projection type or projector callback.
+`ModelNativeActivityPresentationResolver` matches exact safe presentation kind
+through the existing registry: zero makes rich Inspection unavailable while safe
+activity still exists, one returns a retained binding, and many are explicitly
+ambiguous. There is no priority, applicability probing, or fallback. Retained views
+use exact-generation liveness; only fresh resolution can choose a replacement.
+
+OpenAI has only `plugins/openai/packages/{contract,backend,frontend}`. Pure-Dart
+`openai_contract` owns identities and payload schema, with no algorithms. It keeps
+`openAiResponsesItemKind = 'openai.responses.item.v1'` and
+`openAiResponsesItemVersion = 1` unchanged. Contract's
+`openAiReasoningSummaryPresentationKind` is
+`openai.responses.reasoning-summary.v1`, with
+`openAiReasoningSummaryPresentationVersion = 1`. Backend's
+`lib/src/openai_native_presentation.dart` owns
+`projectOpenAiReasoningSummary(ModelProviderNativeEnvelope)`; its output is attached
+in `lib/openai_model_provider_backend.dart` while raw native metadata is preserved.
+It emits only `{'summaryParts': List<String>, 'truncated': bool}` as safe data.
+Unsupported, malformed, empty, or oversized summary input produces no safe
+presentation without changing the raw item, decoding encrypted data, or treating
+compaction as reasoning-summary content.
+
+Before text processing, input is bounded to 1,024 parts and 262,144 aggregate UTF-16
+code units; all parts within that budget are validated, including discarded
+suffixes. Full presentation retains at most 32,768 Unicode code points across 128
+trimmed nonblank parts. `truncated` signals full-text loss, not merely compact
+shortening. Compact text is capped at 160 code points including its ellipsis.
+Generic Chat escapes unsafe display controls and reapplies the compact cap after
+escaping; the OpenAI frontend separately escapes full text. None of these display
+limits or escapes changes replay.
+
+The separate Flutter `openai_frontend` package under
+`plugins/openai/packages/frontend` supplies `buildOpenAiReasoningInspection` in
+`lib/openai_frontend.dart`. The common Inspection host preserves `output.sequence`
+order and passes only `ModelNativePresentation` to
+`app/lib/ui/inspection/model_native_activity_inspection_host.dart`. Only its safe
+`data` map crosses `app/lib/frontend/model_native_activity_bridge.dart`: no raw
+envelope, compatibility metadata, encrypted content, or
+execution/approval authority. Exact native/encrypted replay remains untouched in
+the backend and full Run evidence. Display projection is neither replay state nor
+a new canonical Chat entry, and summaries are not hidden chain of thought.
+
+`app/lib/plugins/stock_openai_activity_frontend.dart` imports Contract identity,
+loads the prepared artifact, registers the factory, and retires its exact
+registration/resources using existing `PreparedFrontend` hosting. It performs no
+projection, raw interpretation, or display escaping. This activation edge is
+explicitly provisional until discovery/profiles replace hard-coded stock
+selection. The `app/tool` compile harness remains checkout tooling standing in for
+future installation/update-time preparation, not runtime activation.
+Frontend readiness is independent of the model backend and other frontends.
+Missing/corrupt artifacts, malformed safe data, factory failures, and contained EVC
+failures remain presentation-local without failing the Run, compiling source, or
+substituting a native card. Retirement removes the old view and resources but not
+captured safe activity; fresh resolution cannot retarget stale resources. See
+[`app/README.md`](../../app/README.md#model-native-activity-presentation) for
+composition and bridge ownership.
+
+OpenAI summary requests are a narrow provider-local `reasoning.summary: 'auto'`
+policy, not a common inference option or all-model support claim. Exact guarded
+model IDs and external evidence belong in the
+[OpenAI backend README](../../plugins/openai/packages/backend/README.md).
+Hidden chain-of-thought and encrypted reasoning are never user-presented.
+Reasoning deltas, compaction UI, and general
+provider/model configuration UI remain deferred.
 
 ## Agent execution
 
@@ -484,16 +579,23 @@ and structured outcome `hostData` remain data, without executable bindings,
 approval callbacks, or arbitrary exception objects. Evidence order follows the
 internal journal rather than reconstructed alias/provider-call matching.
 
-Chat projects one summary for each successfully completed model invocation with
-tool proposals, not one per Run or per tool. It joins that invocation's explicit
-user-facing `ModelTextOutput` as narration; proposal-free final text remains the
-canonical assistant response. Missing narration uses a modest operation count.
+Chat projects one group for each successfully completed model invocation with
+tool proposals or a native output whose `presentation != null`, not one per Run,
+tool, or native item. Presence and compact text do not depend on frontend
+activation or registry resolution, so Chat has no native-presentation negative
+cache or registry-change retry machinery. Its heading prefers explicit user-facing
+tool-batch `ModelTextOutput` narration only when tools are present, then safe
+presentation `compactText`, then a modest tool-operation count. A reasoning-only
+group precedes the canonical assistant response; proposal-free final text is not
+repurposed as batch narration. Raw native items without safe presentation alone
+do not create a group; an unknown rich presentation kind does not hide safe activity.
 Stable Chat-owned inference guidance requests one brief shared-purpose statement
 per related tool batch and defers to explicit user instructions. Session
 instructions and independently composed sources are preserved, and guidance is
 not itself history. Model narration is ordinary user-facing output, not hidden
-reasoning. Opaque `ModelNativeOutput` evidence is retained without generic parsing
-or reasoning labels.
+reasoning. Raw `ModelNativeOutput` evidence is retained without generic parsing;
+the provider backend supplies safe presentation and its frontend renders rich
+Inspection, without changing raw replay.
 
 The provisional `ChatController` observes the active Run and retains immutable
 activity snapshots separately from canonical Chat state. Its mixed presentation
@@ -504,7 +606,8 @@ and frontend notifications are coalesced post-frame, not repeated per progress
 chunk. It detaches observation on close. Reopening/reconstructing a Session cannot restore
 historical activity until persistence exists. Inspection consumes this retained
 evidence separately from compact Chat narration; tool-specific fields belong to
-the interpreted tool frontend, not a generic host-owned tool-card schema.
+the interpreted tool frontend and native interpretation to its owning plugin,
+not a generic host-owned card schema.
 
 The public `OrchestrationExecutionHost` exposes lifecycle operations and binding
 validation, `invokeModel(StrategyInferenceMaterial)`, `processProposal` using an
@@ -664,6 +767,13 @@ revision provenance and final Task/Project/checkout isolation. Generation
 coverage checks that fresh tools replace retired Search-tool and
 Environment-provider bindings while old tools remain stale.
 
+The normal product E3 regression scope additionally uses real host/Git/OpenAI
+artifacts and prepared frontend EVCs against local fake Responses: mixed reasoning
+and tools with separate approvals, ordered Inspection and retained Chat activity,
+and a separate reasoning-only final response. It checks safe display projection
+without changing exact native/encrypted replay. This deterministic validation
+boundary does not establish live-provider summary support.
+
 Recorded opt-in live API-key and experimental ChatGPT evidence covers read/search,
 real-model existing-file edit, direct-argv command validation, continuation, and
 isolation. Paid live services have not been rerun against the current
@@ -694,7 +804,7 @@ self-hosting.
 | Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, Session-authorized read/mutation/process facets, bounded create/patch/delete text-file mutation, and generated foreground process streaming through the Git provider are proven; persistence and complete lifecycle remain unimplemented. |
 | Session-bound strategy execution | Canonical immutable Session creation, atomic publication with separate Environment authority, executable contributions, explicit unavailable/ambiguous resolution, and exact binding validation across Run operations/resume/settlement are implemented and deterministically validated. Headless Chat uses the public facade with validated state, sequencing, and application integration. Persistent strategy state, child Sessions, and disk persistence remain deferred. |
 | Inference context | Instruction-only source discovery, exact-binding capture, immutable snapshots, current adapter rendering, and the stock root AGENTS.md source activated by the shared runtime are implemented; other sources, broader material, provider-aware projection/cache planning, budgets, and compaction remain deferred. |
-| Production orchestration/UI/Commands | Stock Chat, minimal Project/Task/Environment presentation, prepared evaluated mixed Chat timeline/composer, clickable proposal-batch narration, window-local Inspection with interpreted Apply Patch and Run Command cards, and host-owned approval-gated Runs are implemented; configurable permissions, nested inspection, provider reasoning, Source/Diff/Console navigation, Task Browser, rich workbench UI, Commands, and plugin discovery remain directional. |
+| Production orchestration/UI/Commands | Stock Chat, minimal Project/Task/Environment presentation, prepared mixed Chat timeline/composer, tool/native activity groups, window-local Inspection with interpreted Apply Patch, Run Command, and OpenAI reasoning-summary cards, and host-owned approval-gated Runs are implemented; configurable permissions, reasoning deltas, compaction UI, nested inspection, Source/Diff/Console and terminal/PTY/full-output views, Task Browser, rich workbench UI, Commands, and plugin discovery remain directional. Hidden chain-of-thought and encrypted reasoning are never user-presented. |
 | Cross-platform/release | Unproven on Windows, macOS, and release mode. |
 | Packaging/sandboxing | Unproven; process isolation is not a sandbox. |
 

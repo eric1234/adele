@@ -43,9 +43,15 @@ void main() {
       compatibility: nested,
       data: nested,
     );
-    final ModelOutputItem item = ModelNativeOutput(
+    final ModelNativePresentation presentation = ModelNativePresentation(
+      kind: 'safe-display',
+      compactText: 'Safe heading',
+      data: nested,
+    );
+    final ModelNativeOutput item = ModelNativeOutput(
       providerItemId: 'native',
       providerNativeMetadata: native,
+      presentation: presentation,
     );
     final List<ModelOutputActivity> outputs = [
       ModelOutputActivity(sequence: 3, item: item),
@@ -92,6 +98,10 @@ void main() {
     tools.clear();
     rejected.clear();
     expect(snapshot.models.single.outputs.single.item, same(item));
+    final ModelNativeOutput retained =
+        snapshot.models.single.outputs.single.item as ModelNativeOutput;
+    expect(retained.presentation, same(presentation));
+    expect(retained.providerNativeMetadata, same(native));
     expect(snapshot.models.single.outputs.single.sequence, 3);
     expect(snapshot.tools.single.changes.single.outcome, same(outcome));
     expect(
@@ -114,6 +124,7 @@ void main() {
       failure.providerDetails,
       native.data,
       native.compatibility,
+      presentation.data,
     ]) {
       expect(map.clear, throwsUnsupportedError);
       final List<Object?> list = map['list']! as List<Object?>;

@@ -1,4 +1,5 @@
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
+import 'package:adele_desktop/ui/inspection/model_native_activity_inspection_host.dart';
 import 'package:adele_desktop/ui/inspection/tool_activity_inspection_host.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
@@ -6,7 +7,7 @@ import 'package:adele_ui/adele_ui.dart';
 import 'package:adele_ui/inspection_display.dart';
 import 'package:flutter/material.dart';
 
-/// Common group composition. Tool data interpretation belongs to contributions.
+/// Common group composition. Native/tool interpretation belongs to contributions.
 final class InspectionHost extends StatelessWidget {
   const InspectionHost({
     super.key,
@@ -48,6 +49,8 @@ final class InspectionHost extends StatelessWidget {
       RunState.completed || RunState.failed || RunState.cancelled => true,
       _ => false,
     };
+    final outputs = [...?model?.outputs]
+      ..sort((a, b) => a.sequence.compareTo(b.sequence));
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -84,7 +87,7 @@ final class InspectionHost extends StatelessWidget {
               Text(heading, style: Theme.of(context).textTheme.titleMedium),
               const SizedBox(height: 16),
               // Outputs, not preparation/completion order, own these positions.
-              for (final output in model.outputs)
+              for (final output in outputs)
                 if (output.item case ModelToolProposalOutput(:final proposal))
                   Padding(
                     key: ValueKey((selection.runId, model.id, output.sequence)),
@@ -103,6 +106,14 @@ final class InspectionHost extends StatelessWidget {
                         terminal: terminal,
                       ),
                     },
+                  )
+                else if (output.item case ModelNativeOutput(
+                  presentation: final ModelNativePresentation presentation,
+                ))
+                  ModelNativeActivityInspectionHost(
+                    key: ValueKey((selection.runId, model.id, output.sequence)),
+                    extensions: extensions,
+                    presentation: presentation,
                   ),
             ],
           ],

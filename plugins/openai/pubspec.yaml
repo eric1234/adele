@@ -9,4 +9,6 @@ environment:
 resolution: workspace
 
 workspace:
+  - packages/contract
   - packages/backend
+  - packages/frontend
