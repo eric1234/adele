@@ -3,9 +3,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_model_provider/adele_model_provider.dart';
+import 'package:openai_contract/openai_contract.dart';
 import 'package:openai_model_provider_backend/openai_model_provider_backend.dart';
 import 'package:openai_model_provider_backend/src/openai_chatgpt_auth.dart';
-import 'package:openai_native_activity/openai_native_activity.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -123,15 +123,81 @@ void main() {
       });
 
       test(
-        '$profile preserves empty reasoning and compaction as native evidence',
+        '$profile preserves declined reasoning and compaction as native evidence',
         () async {
           final List<Map<String, Object?>> items = <Map<String, Object?>>[
             _reasoning('rs_empty', 'ENCRYPTED-EMPTY'),
+            <String, Object?>{
+              'type': 'reasoning',
+              'id': 'rs_missing',
+              'encrypted_content': 'ENCRYPTED-MISSING',
+              'text': 'HIDDEN-TEXT',
+              'content': <Object?>[
+                <String, Object?>{'text': 'HIDDEN-CONTENT'},
+              ],
+            },
+            for (final (String label, Object? summary) in <(String, Object?)>[
+              ('null', null),
+              ('string', 'HIDDEN-SUMMARY'),
+              (
+                'blank',
+                <Object?>[
+                  <String, Object?>{'type': 'summary_text', 'text': ' \n\t '},
+                ],
+              ),
+              (
+                'malformed',
+                <Object?>[
+                  <String, Object?>{'type': 'summary_text', 'text': 'Visible.'},
+                  <String, Object?>{'type': 'summary_text', 'text': 42},
+                ],
+              ),
+              (
+                'unknown',
+                <Object?>[
+                  <String, Object?>{
+                    'type': 'unknown',
+                    'text': 'HIDDEN-SUMMARY',
+                  },
+                ],
+              ),
+              (
+                'nested',
+                <Object?>[
+                  <String, Object?>{
+                    'type': 'summary_text',
+                    'text': <String, Object?>{'text': 'HIDDEN-SUMMARY'},
+                  },
+                ],
+              ),
+              (
+                'over-budget',
+                <Object?>[
+                  <String, Object?>{
+                    'type': 'summary_text',
+                    'text': List<String>.filled(262145, ' ').join(),
+                  },
+                ],
+              ),
+            ])
+              <String, Object?>{
+                ..._reasoning('rs_$label', 'ENCRYPTED-$label'),
+                'summary': summary,
+                'unknown': <String, Object?>{
+                  'private': <Object?>['PRIVATE-STATE', summary],
+                },
+              },
             <String, Object?>{
               'type': 'compaction',
               'id': 'compact_1',
               'encrypted_content': 'ENCRYPTED-COMPACTION',
               'unknown': <String, Object?>{'text': 'HIDDEN-COMPACTION'},
+              'summary': <Object?>[
+                <String, Object?>{
+                  'type': 'summary_text',
+                  'text': 'Compaction must not become a reasoning summary.',
+                },
+              ],
             },
           ];
           final List<Map<String, Object?>> requests = <Map<String, Object?>>[];
@@ -162,15 +228,16 @@ void main() {
               .map((event) => event.output)
               .whereType<ModelProviderOutput>()
               .toList();
-          expect(first, hasLength(3));
+          expect(first, hasLength(items.length + 1));
           expect(
             first.last.terminal?.settlement,
             ModelProviderSettlement.completed,
           );
-          expect(outputs, hasLength(2));
+          expect(outputs, hasLength(items.length));
           for (int index = 0; index < outputs.length; index++) {
             expect(outputs[index].kind, ModelProviderOutputKind.nativeItem);
             expect(outputs[index].text, isNull);
+            expect(outputs[index].nativePresentation, isNull);
             expect(
               outputs[index].nativeMetadata!.kind,
               openAiResponsesItemKind,
@@ -182,6 +249,13 @@ void main() {
             expect(outputs[index].nativeMetadata!.data, <String, Object?>{
               'item': items[index],
             });
+            expect(
+              () =>
+                  (outputs[index].nativeMetadata!.data['item']!
+                          as Map<String, Object?>)['encrypted_content'] =
+                      'Changed.',
+              throwsUnsupportedError,
+            );
           }
           final List<ModelProviderEvent> second = await provider
               .invoke(
@@ -303,6 +377,7 @@ void main() {
       expect(events[0].observation?.textDelta, ' ');
       expect(events[1].output?.text, 'authoritative');
       expect(events[1].output?.itemId, 'msg_1');
+      expect(events[1].output!.nativePresentation, isNull);
       expect(events[2].terminal?.settlement, ModelProviderSettlement.completed);
       expect(events[2].terminal?.responseId, 'resp_1');
       expect(events[2].terminal?.requestId, 'req_test');
@@ -370,14 +445,20 @@ void main() {
         () async {
           final List<Map<String, Object?>> items = <Map<String, Object?>>[
             <String, Object?>{
-              ..._reasoning(
-                'rs_a',
-                'enc-a',
-                summary: <String>[
-                  'Inspect the first resource.',
-                  'Then compare the second resource.',
-                ],
-              ),
+              ..._reasoning('rs_a', 'enc-a'),
+              'summary': <Object?>[
+                <String, Object?>{
+                  'type': 'summary_text',
+                  'text': '  Inspect the first resource.  ',
+                  'unknown': <String, Object?>{
+                    'encrypted_content': <String>['NESTED-SECRET'],
+                  },
+                },
+                <String, Object?>{
+                  'type': 'summary_text',
+                  'text': 'Then compare the second resource.',
+                },
+              ],
               'content': <Object?>[
                 <String, Object?>{
                   'type': 'reasoning_text',
@@ -583,6 +664,88 @@ void main() {
               'item': items[index],
             });
           }
+          void checkSafe(Object? value) {
+            if (value is Map<String, Object?>) {
+              expect(
+                value.keys,
+                unorderedEquals(<String>['summaryParts', 'truncated']),
+              );
+              for (final MapEntry<String, Object?> entry in value.entries) {
+                checkSafe(entry.key);
+                checkSafe(entry.value);
+              }
+            } else if (value is List<Object?>) {
+              for (final Object? element in value) {
+                expect(element, isA<String>());
+                checkSafe(element);
+              }
+            } else if (value is String) {
+              for (final String secret in <String>[
+                'rs_a',
+                'rs_b',
+                'rs_c',
+                'enc-a',
+                'enc-b',
+                'enc-c',
+                'HIDDEN-REASONING',
+                'OPAQUE-STATE',
+                'NESTED-SECRET',
+                'NONAUTHORITATIVE-SUMMARY',
+                'access-semantics',
+                'account-semantics',
+              ]) {
+                expect(value, isNot(contains(secret)));
+              }
+            } else {
+              expect(value, isA<bool>());
+            }
+          }
+
+          for (final int index in <int>[0, 4]) {
+            final ModelProviderNativePresentation presentation =
+                output[index].nativePresentation!;
+            expect(presentation.kind, openAiReasoningSummaryPresentationKind);
+            expect(
+              presentation.compactText,
+              index == 0
+                  ? 'Inspect the first resource.'
+                  : 'Check the remaining resource.',
+            );
+            expect(presentation.data, <String, Object?>{
+              'summaryParts': index == 0
+                  ? <String>[
+                      'Inspect the first resource.',
+                      'Then compare the second resource.',
+                    ]
+                  : <String>['Check the remaining resource.'],
+              'truncated': false,
+            });
+            checkSafe(presentation.kind);
+            checkSafe(presentation.compactText);
+            checkSafe(presentation.data);
+            expect(
+              () =>
+                  (presentation.data['summaryParts']! as List<Object?>).clear(),
+              throwsUnsupportedError,
+            );
+          }
+          for (final int index in <int>[1, 2, 3, 5]) {
+            expect(output[index].nativePresentation, isNull);
+          }
+          final Map<String, Object?> rawItem =
+              output[0].nativeMetadata!.data['item']! as Map<String, Object?>;
+          final Map<String, Object?> rawPart =
+              (rawItem['summary']! as List<Object?>).first!
+                  as Map<String, Object?>;
+          expect(() => rawPart['text'] = 'Changed.', throwsUnsupportedError);
+          expect(
+            () =>
+                ((rawPart['unknown']!
+                            as Map<String, Object?>)['encrypted_content']!
+                        as List<Object?>)
+                    .clear(),
+            throwsUnsupportedError,
+          );
           expect(output[1].text, 'Inspecting.');
           expect(output[1].nativeMetadata!.data, <String, Object?>{
             'phase': phase,
@@ -635,6 +798,7 @@ void main() {
           expect(second.last.terminal!.effectiveModel, 'gpt-6-astra');
           expect(second.first.output!.text, 'Finished.');
           expect(second.first.output!.itemId, 'msg_2');
+          expect(second.first.output!.nativePresentation, isNull);
           expect(second.first.output!.nativeMetadata!.data, <String, Object?>{
             'phase': 'final_answer',
           });

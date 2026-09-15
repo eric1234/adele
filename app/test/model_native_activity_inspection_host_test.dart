@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:adele_desktop/ui/inspection/model_native_activity_inspection_host.dart';
-import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:flutter/material.dart';
@@ -10,40 +9,26 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   const kind = 'dev.example.native';
   late ExtensionRegistry extensions;
-  late ModelNativeOutput output;
-  late ModelNativeActivityProjection projection;
+  late ModelNativePresentation presentation;
   late ModelNativeActivityPresentationContribution contribution;
   late Widget view;
-  int projections = 0;
   int factories = 0;
   int disposals = 0;
 
   setUp(() {
     extensions = ExtensionRegistry();
-    output = ModelNativeOutput(
-      providerItemId: 'private-provider-id',
-      providerNativeMetadata: ModelNativeEnvelope(
-        kind: kind,
-        compatibility: const {'private': 'secret compatibility'},
-        data: const {'private': 'secret envelope'},
-      ),
-    );
-    projection = ModelNativeActivityProjection(
+    presentation = ModelNativePresentation(
+      kind: kind,
       compactText: 'Safe compact',
       data: const {'text': 'Safe detail'},
     );
-    projections = factories = disposals = 0;
+    factories = disposals = 0;
     view = _Probe(onDispose: () => disposals++);
     contribution = ModelNativeActivityPresentationContribution(
-      nativeKind: kind,
-      project: (received) {
-        projections++;
-        expect(received, same(output));
-        return projection;
-      },
+      presentationKind: kind,
       createInspection: (received) {
         factories++;
-        expect(received, same(projection));
+        expect(received, same(presentation));
         expect(received.data, {'text': 'Safe detail'});
         return view;
       },
@@ -64,46 +49,32 @@ void main() {
     home: Scaffold(
       body: ModelNativeActivityInspectionHost(
         extensions: registry ?? extensions,
-        output: output,
+        presentation: presentation,
       ),
     ),
   );
 
   testWidgets(
-    'missing, unrelated and declined native outputs occupy no space',
+    'missing and unrelated presenters show bounded rich-unavailable state',
     (tester) async {
       await tester.pumpWidget(host());
       expect(
-        tester.getSize(find.byType(ModelNativeActivityInspectionHost)).height,
-        0,
+        find.text('Model native activity rich inspection is unavailable.'),
+        findsOneWidget,
       );
       register(
         value: ModelNativeActivityPresentationContribution(
-          nativeKind: 'unrelated',
-          project: (_) => throw _OpaqueFailure(),
-          createInspection: (_) => throw _OpaqueFailure(),
-        ),
-      );
-      final declined = register(
-        id: 'dev.example.declined',
-        value: ModelNativeActivityPresentationContribution(
-          nativeKind: kind,
-          project: (_) {
-            projections++;
-            return null;
-          },
+          presentationKind: 'unrelated',
           createInspection: (_) => throw _OpaqueFailure(),
         ),
       );
       await tester.pumpAndSettle();
       await tester.pumpWidget(host());
-      expect(projections, 1);
       expect(factories, 0);
       expect(
-        tester.getSize(find.byType(ModelNativeActivityInspectionHost)).height,
-        0,
+        find.text('Model native activity rich inspection is unavailable.'),
+        findsOneWidget,
       );
-      await declined.close();
       register(id: 'dev.example.exact');
       await tester.pumpAndSettle();
       expect(find.byType(_Probe), findsOneWidget);
@@ -112,7 +83,7 @@ void main() {
   );
 
   testWidgets(
-    'rebuild and unrelated registry changes retain safe projection and widget',
+    'rebuild and unrelated registry changes retain safe evidence and widget',
     (tester) async {
       register();
       await tester.pumpWidget(host());
@@ -121,8 +92,7 @@ void main() {
       final unrelated = register(
         id: 'dev.example.other',
         value: ModelNativeActivityPresentationContribution(
-          nativeKind: 'other',
-          project: (_) => null,
+          presentationKind: 'other',
           createInspection: (_) => const SizedBox(),
         ),
       );
@@ -133,20 +103,38 @@ void main() {
       expect(tester.state(find.byType(_Probe)), same(state));
       expect(state.localValue, 'Retained');
       expect(tester.widget(find.byType(_Probe)), same(view));
-      expect(projections, 1);
       expect(factories, 1);
       expect(disposals, 0);
     },
   );
 
-  testWidgets('ambiguity calls neither projector nor factory', (tester) async {
+  testWidgets('ambiguity calls no factory', (tester) async {
     register();
     register(id: 'dev.example.second');
     await tester.pumpWidget(host());
     expect(find.textContaining('ambiguous'), findsOneWidget);
-    expect(projections, 0);
     expect(factories, 0);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('new safe evidence remounts even with the same kind and widget', (
+    tester,
+  ) async {
+    register();
+    await tester.pumpWidget(host());
+    final state = tester.state<_ProbeState>(find.byType(_Probe));
+    state.localValue = 'Discard';
+    presentation = ModelNativePresentation(
+      kind: kind,
+      compactText: 'New safe compact',
+      data: const {'text': 'Safe detail'},
+    );
+    await tester.pumpWidget(host());
+    final fresh = tester.state<_ProbeState>(find.byType(_Probe));
+    expect(fresh, isNot(same(state)));
+    expect(fresh.localValue, isEmpty);
+    expect(factories, 2);
+    expect(disposals, 1);
   });
 
   testWidgets('added ambiguity disposes state and removal freshly resolves', (
@@ -160,30 +148,26 @@ void main() {
     expect(find.textContaining('ambiguous'), findsOneWidget);
     expect(state.mounted, isFalse);
     expect(disposals, 1);
-    expect(projections, 1);
     await duplicate.close();
     await tester.pumpAndSettle();
     expect(tester.state(find.byType(_Probe)), isNot(same(state)));
-    expect(projections, 2);
     expect(factories, 2);
   });
 
   testWidgets(
-    'retirement disposes presentation without changing native evidence',
+    'retirement disposes presentation without changing safe evidence',
     (tester) async {
       final registration = register();
-      final metadata = output.providerNativeMetadata;
       await tester.pumpWidget(host());
       await registration.close();
       await tester.pumpAndSettle();
       expect(find.byType(_Probe), findsNothing);
       expect(disposals, 1);
       expect(
-        tester.getSize(find.byType(ModelNativeActivityInspectionHost)).height,
-        0,
+        find.text('Model native activity rich inspection is unavailable.'),
+        findsOneWidget,
       );
-      expect(output.providerNativeMetadata, same(metadata));
-      expect(projection.data, {'text': 'Safe detail'});
+      expect(presentation.data, {'text': 'Safe detail'});
     },
   );
 
@@ -205,81 +189,57 @@ void main() {
         expect(fresh, isNot(same(state)));
         expect(fresh.localValue, isEmpty);
         expect(disposals, 1);
-        expect(projections, 2);
         expect(factories, 2);
       },
     );
   }
 
-  for (final projectorFails in [true, false]) {
-    testWidgets(
-      '${projectorFails ? 'projector' : 'factory'} failure is bounded and retried only on fresh generation',
-      (tester) async {
-        final failed = register(
-          value: ModelNativeActivityPresentationContribution(
-            nativeKind: kind,
-            project: (_) {
-              projections++;
-              if (projectorFails) throw _OpaqueFailure();
-              return projection;
-            },
-            createInspection: (_) {
-              factories++;
-              throw _OpaqueFailure();
-            },
-          ),
-        );
-        await tester.pumpWidget(host());
-        await tester.pumpWidget(host());
-        expect(projections, 1);
-        expect(factories, projectorFails ? 0 : 1);
-        expect(
-          find.text(
-            projectorFails
-                ? 'Model native activity could not be projected.'
-                : 'Model native activity inspection could not be created.',
-          ),
-          findsOneWidget,
-        );
-        expect(find.textContaining('secret'), findsNothing);
-        expect(tester.takeException(), isNull);
-        await failed.close();
-        register();
-        await tester.pumpAndSettle();
-        expect(find.byType(_Probe), findsOneWidget);
-      },
+  testWidgets(
+    'factory failure is bounded and retried only on fresh generation',
+    (tester) async {
+      final failed = register(
+        value: ModelNativeActivityPresentationContribution(
+          presentationKind: kind,
+          createInspection: (_) {
+            factories++;
+            throw _OpaqueFailure();
+          },
+        ),
+      );
+      await tester.pumpWidget(host());
+      await tester.pumpWidget(host());
+      expect(factories, 1);
+      expect(
+        find.text('Model native activity inspection could not be created.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('secret'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await failed.close();
+      register();
+      await tester.pumpAndSettle();
+      expect(find.byType(_Probe), findsOneWidget);
+    },
+  );
+  testWidgets('retirement during factory prevents mounting', (tester) async {
+    late ExtensionRegistration registration;
+    registration = register(
+      value: ModelNativeActivityPresentationContribution(
+        presentationKind: kind,
+        createInspection: (_) {
+          factories++;
+          unawaited(registration.close());
+          return view;
+        },
+      ),
     );
-  }
-
-  for (final duringProjection in [true, false]) {
-    testWidgets(
-      'retirement during ${duringProjection ? 'projection' : 'factory'} prevents mounting',
-      (tester) async {
-        late ExtensionRegistration registration;
-        registration = register(
-          value: ModelNativeActivityPresentationContribution(
-            nativeKind: kind,
-            project: (_) {
-              if (duringProjection) unawaited(registration.close());
-              return projection;
-            },
-            createInspection: (_) {
-              factories++;
-              unawaited(registration.close());
-              return view;
-            },
-          ),
-        );
-        await tester.pumpWidget(host());
-        await tester.pumpAndSettle();
-        expect(find.byType(_Probe), findsNothing);
-        expect(factories, duringProjection ? 0 : 1);
-        expect(disposals, 0);
-        expect(tester.takeException(), isNull);
-      },
-    );
-  }
-
+    await tester.pumpWidget(host());
+    await tester.pumpAndSettle();
+    expect(find.byType(_Probe), findsNothing);
+    expect(factories, 1);
+    expect(disposals, 0);
+    expect(tester.takeException(), isNull);
+  });
   testWidgets(
     'registry replacement detaches old notifications and unmount disposes',
     (tester) async {

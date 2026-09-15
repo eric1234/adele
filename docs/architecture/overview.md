@@ -248,7 +248,7 @@ Stock `local_directory_project_selector_plugin` provides `Open Local Directory..
 through an injected narrow native picker using `file_selector ^1.1.0`. It returns
 an absolute `file:` directory URI with lexical dot normalization, without
 Git/filesystem validation or symlink resolution. The registration boundary is
-recorded in [`stock-plugin-direction.md`](stock-plugin-direction.md#31-local-directory-project-selector).
+recorded in the [selector README](../../plugins/local_directory_project_selector/README.md).
 
 Only the app invokes the contribution and passes a selected URI to
 `runtime.lifecycle.createProject`, which publishes and returns the canonical
@@ -450,49 +450,88 @@ full-output views, persistence, and discovery remain deferred.
 
 ### Model-native activity presentation
 
-Public Flutter `adele_ui` defines `ModelNativeActivityProjection(compactText,
-data)` with recursively immutable safe data, and
-`ModelNativeActivityPresentationContribution(nativeKind, project,
-createInspection)` at typed `modelNativeActivityPresentationContributions`.
-`project(ModelNativeOutput)` returns a nullable projection; the
-`createInspection(projection)` factory receives no raw native output and returns a
-`Widget`. `ModelNativeActivityPresentationResolver` uses the existing registry and
-matches exact native kind: zero leaves the item opaque and omitted, one matching
-projector may decline, and many are explicitly ambiguous. Projectors are not a
-priority/applicability competition; ambiguity is not resolved by trying them.
+The provider backend supplies safe presentation alongside, never inside or instead
+of, exact raw native metadata. The source-of-truth common contract in
+`packages/model_provider/lib/adele_model_provider.dart` defines generated
+`ModelProviderNativePresentation(kind, compactText, data)`, with `String` identity
+and compact text and recursively immutable JSON-like `Map<String, Object?>` data.
+`ModelProviderOutput.nativePresentation` is a required nullable field, non-null
+only for native outputs. Nullability means semantic absence; the constructor
+argument and generated map key remain
+required under the existing coherent-schema convention. This is not mixed-schema
+wire compatibility or permission to hand-edit generated output.
 
-Projection data is copied and validated as immutable JSON-like values. Selecting
-safe fields is the owning projector's responsibility, not generic redaction by
-the container or EVC bridge.
+Public pure-Dart `adele_orchestration` owns immutable
+`ModelNativePresentation(kind, compactText, data)` in
+`packages/orchestration/lib/src/model.dart` and optional
+`ModelNativeOutput.presentation`. The adapter in
+`app/lib/core/model_provider_host.dart` maps the common DTO fields generically,
+without provider imports, classification, or redaction. Safe field selection and
+bounds are backend responsibilities; immutable containers validate/copy data but
+do not determine whether provider fields are safe. Raw `nativeMetadata` remains
+exact and the only native replay source. Safe presentation never enters replay,
+canonical Chat history, or a new persistence model.
 
-Generic Chat and Inspection consume this public contract without OpenAI imports
-or native-field parsing. OpenAI's pure-Dart `openai_native_activity` package under
-`plugins/openai/packages/native_activity` owns
-`openAiResponsesItemKind = 'openai.responses.item.v1'`, version 1, and
-`projectOpenAiReasoningSummary(ModelNativeEnvelope)`. It recognizes only supported
-provider-supplied reasoning-summary text and emits bounded compact text plus the
-safe map `{'summaryParts': List<String>, 'truncated': bool}`. Its full display text
-is bounded independently of the compact heading. Unsupported, malformed, or empty
-summaries decline presentation, without inferring content from encrypted data or
-compaction items.
+Public Flutter `adele_ui` defines
+`ModelNativeActivityPresentationContribution(presentationKind, createInspection)`
+at typed `modelNativeActivityPresentationContributions`. The factory has type
+`Widget Function(ModelNativePresentation)` and receives no raw envelope. There is
+no UI-owned projection type or projector callback.
+`ModelNativeActivityPresentationResolver` matches exact safe presentation kind
+through the existing registry: zero makes rich Inspection unavailable while safe
+activity still exists, one returns a retained binding, and many are explicitly
+ambiguous. There is no priority, applicability probing, or fallback. Retained views
+use exact-generation liveness; only fresh resolution can choose a replacement.
+
+OpenAI has only `plugins/openai/packages/{contract,backend,frontend}`. Pure-Dart
+`openai_contract` owns identities and payload schema, with no algorithms. It keeps
+`openAiResponsesItemKind = 'openai.responses.item.v1'` and
+`openAiResponsesItemVersion = 1` unchanged. Contract's
+`openAiReasoningSummaryPresentationKind` is
+`openai.responses.reasoning-summary.v1`, with
+`openAiReasoningSummaryPresentationVersion = 1`. Backend's
+`lib/src/openai_native_presentation.dart` owns
+`projectOpenAiReasoningSummary(ModelProviderNativeEnvelope)`; its output is attached
+in `lib/openai_model_provider_backend.dart` while raw native metadata is preserved.
+It emits only `{'summaryParts': List<String>, 'truncated': bool}` as safe data.
+Unsupported, malformed, empty, or oversized summary input produces no safe
+presentation without changing the raw item, decoding encrypted data, or treating
+compaction as reasoning-summary content.
+
+Before text processing, input is bounded to 1,024 parts and 262,144 aggregate UTF-16
+code units; all parts within that budget are validated, including discarded
+suffixes. Full presentation retains at most 32,768 Unicode code points across 128
+trimmed nonblank parts. `truncated` signals full-text loss, not merely compact
+shortening. Compact text is capped at 160 code points including its ellipsis.
+Generic Chat escapes unsafe display controls and reapplies the compact cap after
+escaping; the OpenAI frontend separately escapes full text. None of these display
+limits or escapes changes replay.
 
 The separate Flutter `openai_frontend` package under
 `plugins/openai/packages/frontend` supplies `buildOpenAiReasoningInspection` in
-`lib/openai_frontend.dart`. Only the safe map crosses the generic native-activity
-EVC bridge: no raw envelope, compatibility metadata, encrypted content, or
+`lib/openai_frontend.dart`. The common Inspection host preserves `output.sequence`
+order and passes only `ModelNativePresentation` to
+`app/lib/ui/inspection/model_native_activity_inspection_host.dart`. Only its safe
+`data` map crosses `app/lib/frontend/model_native_activity_bridge.dart`: no raw
+envelope, compatibility metadata, encrypted content, or
 execution/approval authority. Exact native/encrypted replay remains untouched in
 the backend and full Run evidence. Display projection is neither replay state nor
 a new canonical Chat entry, and summaries are not hidden chain of thought.
 
-`app/lib/plugins/stock_openai_activity_frontend.dart` independently registers this
-presentation over existing `PreparedFrontend` hosting and exact-generation
-liveness. It does not require the OpenAI model backend or another frontend to be
-available. Missing/corrupt artifacts, projector or factory failures, and contained
-EVC failures remain bounded to presentation without failing the Run, compiling
-source, or substituting a native card. Retirement removes the old view and its
-resources; fresh resolution may create a replacement but cannot retarget stale
-resources. See [`app/README.md`](../../app/README.md#model-native-activity-presentation)
-for composition and bridge ownership.
+`app/lib/plugins/stock_openai_activity_frontend.dart` imports Contract identity,
+loads the prepared artifact, registers the factory, and retires its exact
+registration/resources using existing `PreparedFrontend` hosting. It performs no
+projection, raw interpretation, or display escaping. This activation edge is
+explicitly provisional until discovery/profiles replace hard-coded stock
+selection. The `app/tool` compile harness remains checkout tooling standing in for
+future installation/update-time preparation, not runtime activation.
+Frontend readiness is independent of the model backend and other frontends.
+Missing/corrupt artifacts, malformed safe data, factory failures, and contained EVC
+failures remain presentation-local without failing the Run, compiling source, or
+substituting a native card. Retirement removes the old view and resources but not
+captured safe activity; fresh resolution cannot retarget stale resources. See
+[`app/README.md`](../../app/README.md#model-native-activity-presentation) for
+composition and bridge ownership.
 
 OpenAI summary requests are a narrow provider-local `reasoning.summary: 'auto'`
 policy, not a common inference option or all-model support claim. Exact guarded
@@ -541,18 +580,22 @@ approval callbacks, or arbitrary exception objects. Evidence order follows the
 internal journal rather than reconstructed alias/provider-call matching.
 
 Chat projects one group for each successfully completed model invocation with
-tool proposals or presentable native activity, not one per Run, tool, or native
-item. Its heading prefers explicit user-facing tool-batch `ModelTextOutput`
-narration, then a native projection's `compactText`, then a modest tool-operation
-count. A reasoning-only group precedes the canonical assistant response;
-proposal-free final text is not repurposed as batch narration. Unknown or declined
-native items alone do not create a group.
+tool proposals or a native output whose `presentation != null`, not one per Run,
+tool, or native item. Presence and compact text do not depend on frontend
+activation or registry resolution, so Chat has no native-presentation negative
+cache or registry-change retry machinery. Its heading prefers explicit user-facing
+tool-batch `ModelTextOutput` narration only when tools are present, then safe
+presentation `compactText`, then a modest tool-operation count. A reasoning-only
+group precedes the canonical assistant response; proposal-free final text is not
+repurposed as batch narration. Raw native items without safe presentation alone
+do not create a group; an unknown rich presentation kind does not hide safe activity.
 Stable Chat-owned inference guidance requests one brief shared-purpose statement
 per related tool batch and defers to explicit user instructions. Session
 instructions and independently composed sources are preserved, and guidance is
 not itself history. Model narration is ordinary user-facing output, not hidden
-reasoning. Opaque `ModelNativeOutput` evidence is retained without generic parsing;
-only the owning native-activity contribution supplies presentation semantics.
+reasoning. Raw `ModelNativeOutput` evidence is retained without generic parsing;
+the provider backend supplies safe presentation and its frontend renders rich
+Inspection, without changing raw replay.
 
 The provisional `ChatController` observes the active Run and retains immutable
 activity snapshots separately from canonical Chat state. Its mixed presentation

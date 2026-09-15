@@ -71,6 +71,14 @@ must produce nonempty EVC before application launch; failure never silently reus
 an older artifact. These Flutter compiler entrypoints remain outside this package
 and the normal application startup import graph.
 
+The OpenAI source split is Contract/Backend/Frontend under
+`plugins/openai/packages/{contract,backend,frontend}`. Contract is pure-Dart
+identities/schema only; raw classification and bounded safe presentation belong
+to Backend, not the frontend compiler or app activation. The app stock activator
+imports Contract identity to load/register/retire prepared presentation and remains
+provisional until discovery/profiles replace hard-coded selection. These compile
+harnesses stand in for future installation/update-time preparation, not an installer.
+
 Each invocation gets fresh `.dart_tool/adele/desktop-backends/build-*` and
 `.dart_tool/adele/desktop-frontends/build-*` directories.
 Outputs are retained, including partial failed builds, so later invocations do not

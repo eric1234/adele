@@ -18,8 +18,9 @@ successful `null` result, distinct from selector or lifecycle failure.
 Public Flutter `adele_ui` supplies typed Session, tool Inspection, and model-native
 activity presentation contributions on the same registry. Session and tool
 presentation resolve exact strategy or Tool ID with explicit unavailable/ambiguous
-states. Native activity resolves exact kind: zero leaves opaque evidence omitted,
-one projector may decline, and many are explicitly ambiguous. None has priority
+states. Rich native Inspection resolves exact safe presentation kind: zero leaves
+rich presentation unavailable without hiding safe activity, one supplies a retained
+binding, and many are explicitly ambiguous. None has priority
 or fallback. Stock Chat tool/native groups open common host-owned Inspection with
 interpreted Apply Patch, Run Command, and OpenAI provider-supplied reasoning-summary
 cards. This is a bounded presentation surface, not the general workbench extension
@@ -583,7 +584,7 @@ Examples:
 - B1 Project selectors return `null` for cancellation; selector/lifecycle failure is an inline app error with no fallback or change to the presented Project.
 - Required host/Git startup failure cleans up acquired resources and leaves Task support visibly unavailable without blocking Project opening; optional OpenAI activation failure affects model availability only. Task establishment failure publishes no new Task/Environment and substitutes no provider.
 - Missing, ambiguous, failed, or retired Session/tool presentation is visibly unavailable without invalidating headless execution. Independent prepared frontends do not substitute native views or compile source on failure.
-- Native activity with no matching kind or a declined projection stays opaque and omitted; duplicate exact-kind registrations are explicitly ambiguous before projection. Malformed input and bounded projector/factory/EVC failures affect presentation, never the Run or exact replay. No priority, raw-envelope rendering, or native fallback is introduced.
+- Native output without backend-supplied safe presentation stays opaque and omitted. Safe activity with no matching rich presenter remains visible, with rich Inspection unavailable; duplicate exact safe-kind registrations are explicitly ambiguous. Malformed summary input produces no presentation, and factory/EVC failures remain presentation-local without changing Run settlement or exact replay. No priority, raw-envelope rendering, or native fallback is introduced.
 
 Each Extension Point must define failure semantics appropriate to its role.
 
@@ -641,31 +642,45 @@ public panel API semantics. Common host approval UI alone offers Allow/Deny;
 tool cards are read-only. Detailed boundaries and deferred scope are maintained
 in [`overview.md`](overview.md#activity-inspection).
 
-`ModelNativeActivityProjection(compactText, data)` and
-`ModelNativeActivityPresentationContribution(nativeKind, project,
-createInspection)` also belong to `adele_ui`, with typed
+`ModelNativeActivityPresentationContribution(presentationKind, createInspection)`
+also belongs to `adele_ui`, with typed
 `modelNativeActivityPresentationContributions` and
-`ModelNativeActivityPresentationResolver`. `project(ModelNativeOutput)` returns a
-nullable projection with recursively immutable safe data;
-`createInspection(projection)` returns a `Widget`. Exact-kind resolution has
-zero/one/many semantics described above, not an ordered series of applicability
-probes. Views retain exact bindings, retire with that generation, and use fresh
-resolution for replacements rather than retargeting stale resources.
+`ModelNativeActivityPresentationResolver`. Its factory is
+`Widget Function(ModelNativePresentation)` over immutable public orchestration
+data; there is no UI projection DTO or projector callback. Exact safe-kind
+resolution has the zero/one/many semantics described above, not an ordered series
+of applicability probes. Views retain exact bindings, retire with that generation,
+and use fresh resolution for replacements rather than retargeting stale resources.
 
-Generic Chat and Inspection never parse OpenAI. The concrete pure-Dart
-`openai_native_activity` API owns `openAiResponsesItemKind`
-(`openai.responses.item.v1`), version 1, and
-`projectOpenAiReasoningSummary(ModelNativeEnvelope)`. Its bounded compact/full
-summary projection feeds the separate interpreted `openai_frontend`. Only
-`{'summaryParts': List<String>, 'truncated': bool}` reaches that EVC, not raw
+Backend supplies generated `ModelProviderNativePresentation(kind, compactText,
+data)` through required nullable `ModelProviderOutput.nativePresentation`.
+Nullability means semantic absence, not an omitted generated key. The generic app
+adapter maps the same fields to immutable orchestration `ModelNativePresentation`
+on optional `ModelNativeOutput.presentation`, without provider interpretation.
+The coherent-schema convention and raw replay boundary remain unchanged.
+
+Generic Chat and Inspection never parse OpenAI. OpenAI uses
+`plugins/openai/packages/{contract,backend,frontend}`. Pure-Dart `openai_contract`
+owns only shared identities/schema: raw `openai.responses.item.v1`, version 1,
+and safe `openai.responses.reasoning-summary.v1`, version 1. Backend owns raw
+classification, bounded summary projection, and exact native preservation;
+Frontend renders the safe payload. Only
+`{'summaryParts': List<String>, 'truncated': bool}` reaches its EVC, not raw
 envelopes, compatibility metadata, encrypted content, or execution/approval
-authority. Full Run/backend replay remains exact and untouched. This is
-provider-supplied summary presentation, not hidden chain-of-thought recovery.
+authority. Raw `nativeMetadata` is the only native replay source; safe presentation
+is never replayed. This is provider-supplied summary presentation, not hidden
+chain-of-thought recovery. Display controls are escaped by generic Chat for compact
+text and the OpenAI frontend for full text, never by stock activation.
 
-Stock OpenAI presentation reuses `PreparedFrontend` independently of the model
-backend and other frontends. Chat groups successfully completed invocations with
-tools or presentable native activity, preferring tool-batch narration, then native
-compact text, then tool count. Reasoning-only groups precede canonical final text;
+Stock OpenAI activation imports Contract identity, loads prepared EVC, registers
+the factory, and retires its resources through `PreparedFrontend`. This edge is
+provisional until discovery/profiles replace hard-coded stock selection;
+`app/tool` compilation remains a checkout stand-in for installation preparation.
+Chat groups successfully completed invocations with tools or
+`output.presentation != null`, independently of frontend activation. It has no
+negative projection cache or registry-change retry machinery. Headings prefer
+tool-batch narration only when tools are present, then safe compact text, then
+tool count. Reasoning-only groups precede canonical final text;
 retention is controller-lifetime state, not persistence. Reasoning deltas,
 compaction/configuration UI, nested inspection, and Source/Diff/Console,
 terminal/PTY/full-output surfaces remain deferred.

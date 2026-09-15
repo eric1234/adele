@@ -1,21 +1,20 @@
 import 'dart:async';
 
-import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:flutter/widgets.dart';
 
 /// One immutable Run/model/output occurrence, keyed by the common group host.
-/// Only the projector sees native data; widget factories receive safe snapshots.
+/// The host and widget factories receive only safe presentation evidence.
 final class ModelNativeActivityInspectionHost extends StatefulWidget {
   const ModelNativeActivityInspectionHost({
     super.key,
     required this.extensions,
-    required this.output,
+    required this.presentation,
   });
 
   final ExtensionRegistry extensions;
-  final ModelNativeOutput output;
+  final ModelNativePresentation presentation;
 
   @override
   State<ModelNativeActivityInspectionHost> createState() =>
@@ -47,7 +46,7 @@ final class _ModelNativeActivityInspectionHostState
       unawaited(_changes.cancel());
       _listen();
     }
-    if (!identical(oldWidget.output, widget.output) ||
+    if (!identical(oldWidget.presentation, widget.presentation) ||
         !identical(oldWidget.extensions, widget.extensions)) {
       _binding = null;
       _presentation = null;
@@ -59,16 +58,18 @@ final class _ModelNativeActivityInspectionHostState
     final ExtensionBinding<ModelNativeActivityPresentationContribution>
     selected;
     try {
-      selected = resolver.resolve(widget.output.providerNativeMetadata.kind);
+      selected = resolver.resolve(widget.presentation.kind);
     } on ModelNativeActivityPresentationUnavailable {
       _binding = null;
-      _presentation = null;
+      _presentation = const Text(
+        'Model native activity rich inspection is unavailable.',
+      );
       return;
     } on AmbiguousModelNativeActivityPresentation {
       _binding = null;
       _presentation = const Text(
         'Model native activity inspection is ambiguous: multiple contributions '
-        'match this native kind.',
+        'match this presentation kind.',
       );
       return;
     }
@@ -82,28 +83,15 @@ final class _ModelNativeActivityInspectionHostState
           return;
         }
       } on StaleExtensionBinding {
-        // A replacement must freshly project and mount even with the same value.
+        // A replacement must freshly mount even with the same value.
       }
     }
     _binding = selected;
     _presentation = null;
-    final ResolvedModelNativeActivityPresentation? projected;
     try {
-      projected = resolver.project(widget.output);
-    } on Object {
-      _presentation = const Text(
-        'Model native activity could not be projected.',
-      );
-      return;
-    }
-    if (projected == null) return;
-    _binding = projected.binding;
-    try {
-      projected.binding.validate();
-      final presentation = projected.binding.value.createInspection(
-        projected.projection,
-      );
-      projected.binding.validate();
+      selected.validate();
+      final presentation = selected.value.createInspection(widget.presentation);
+      selected.validate();
       _presentation = KeyedSubtree(key: UniqueKey(), child: presentation);
     } on Object {
       // Retain failed bindings so ordinary rebuilds do not retry plugin code.

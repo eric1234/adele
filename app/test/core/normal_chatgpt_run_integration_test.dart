@@ -34,6 +34,7 @@ import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_eval/widgets.dart' show $StatefulWidget$bridge;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:openai_contract/openai_contract.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 
 import '../../tool/chat_frontend_compiler.dart';
@@ -66,6 +67,17 @@ const String _encryptedB = 'e3-encrypted-replay-B-never-present';
 const String _encryptedFollowUp = 'e3-encrypted-followup-never-present';
 const String _privateReasoning = 'e3-private-reasoning-content-never-present';
 const String _providerExtra = 'e3-provider-extra-field-never-present';
+const List<String> _presentationSecrets = [
+  _encryptedA,
+  _encryptedB,
+  _encryptedFollowUp,
+  _privateReasoning,
+  _providerExtra,
+  'encrypted_content',
+  'reasoning_text',
+  'provider_extra',
+  'compatibility',
+];
 const Map<String, Object?> _commandArguments = {
   'program': 'git',
   'arguments': ['diff', '--check'],
@@ -234,6 +246,19 @@ void main() {
             expect(body['instructions'], contains(_agentsText));
             expect(body['instructions'], contains(chatToolNarrationGuidance));
             expect(body['instructions'], isNot(contains(_projectAgentsText)));
+            // Raw supplied summaries replay normally; their separate safe
+            // presentation DTO must never become model input.
+            final String replay = jsonEncode(body['input']);
+            for (final String presentationOnly in [
+              openAiReasoningSummaryPresentationKind,
+              '"nativePresentation"',
+              '"presentation"',
+              '"compactText"',
+              '"summaryParts"',
+              '"truncated"',
+            ]) {
+              expect(replay, isNot(contains(presentationOnly)));
+            }
             final List<Map<String, Object?>> tools =
                 (body['tools']! as List<Object?>).cast<Map<String, Object?>>();
             expect(
@@ -615,11 +640,6 @@ void main() {
         artifactPath: commandEvc.path,
       );
       addTearDown(commandFrontend.close);
-      final openAiFrontend = await activateStockOpenAiActivityFrontend(
-        extensions: runtime.extensions,
-        artifactPath: openAiEvc.path,
-      );
-      addTearDown(openAiFrontend.close);
       addTearDown(() async {
         updatePresentation = null;
         if (!releaseFinal.isCompleted) releaseFinal.complete();
@@ -793,15 +813,19 @@ void main() {
       final nativeResolver = ModelNativeActivityPresentationResolver(
         runtime.extensions,
       );
-      _expectSafeProjection(
-        nativeResolver,
+      // Classification crossed the real AOT transport and adapter before any
+      // OpenAI rich frontend registration, independently of UI resolution.
+      expect(
+        () => nativeResolver.resolve(openAiReasoningSummaryPresentationKind),
+        throwsA(isA<ModelNativeActivityPresentationUnavailable>()),
+      );
+      _expectSafePresentation(
         nativeA,
         id: 'reasoning-a',
         summary: _reasoningA,
         encrypted: _encryptedA,
       );
-      _expectSafeProjection(
-        nativeResolver,
+      _expectSafePresentation(
         nativeB,
         id: 'reasoning-b',
         summary: _reasoningB,
@@ -852,6 +876,19 @@ void main() {
       expect(await _sourceSnapshot(source), projectBefore);
       expect(await _sourceSnapshot(worktree), taskBefore);
 
+      final openAiFrontend = await activateStockOpenAiActivityFrontend(
+        extensions: runtime.extensions,
+        artifactPath: openAiEvc.path,
+      );
+      addTearDown(openAiFrontend.close);
+      expect(
+        nativeResolver
+            .resolve(nativeA.presentation!.kind)
+            .value
+            .presentationKind,
+        openAiReasoningSummaryPresentationKind,
+      );
+
       // Navigate through the interpreted summary, without giving its bridge any
       // approval authority or synthesizing a tool for the unprepared proposal.
       expect(inspectionHost, findsNothing);
@@ -886,16 +923,17 @@ void main() {
               widget.source.snapshot.id == id,
         ),
       );
-      Finder nativeHost(ModelNativeOutput output) => find.descendant(
-        of: inspectionHost,
-        matching: find.byWidgetPredicate(
-          (widget) =>
-              widget is ModelNativeActivityInspectionHost &&
-              identical(widget.output, output),
-        ),
-      );
-      final Finder reasoningAHost = nativeHost(nativeA);
-      final Finder reasoningBHost = nativeHost(nativeB);
+      Finder nativeHost(ModelNativePresentation presentation) =>
+          find.descendant(
+            of: inspectionHost,
+            matching: find.byWidgetPredicate(
+              (widget) =>
+                  widget is ModelNativeActivityInspectionHost &&
+                  identical(widget.presentation, presentation),
+            ),
+          );
+      final Finder reasoningAHost = nativeHost(nativeA.presentation!);
+      final Finder reasoningBHost = nativeHost(nativeB.presentation!);
       final reasoningAState = tester.state(reasoningAHost);
       final reasoningBState = tester.state(reasoningBHost);
       for (final (host, summary) in [
@@ -1686,8 +1724,7 @@ void main() {
       ]);
       final ModelNativeOutput followUpNative =
           followUpModel.outputs.first.item as ModelNativeOutput;
-      _expectSafeProjection(
-        nativeResolver,
+      _expectSafePresentation(
         followUpNative,
         id: 'reasoning-followup',
         summary: _followUpSummary,
@@ -1769,7 +1806,9 @@ void main() {
         tester.widget<InspectionHost>(inspectionHost).activity,
         same(followUpActivity),
       );
-      final Finder followUpNativeHost = nativeHost(followUpNative);
+      final Finder followUpNativeHost = nativeHost(
+        followUpNative.presentation!,
+      );
       expect(find.byType(ModelNativeActivityInspectionHost), findsOneWidget);
       expect(followUpNativeHost, findsOneWidget);
       expect(
@@ -1833,27 +1872,43 @@ void main() {
   );
 }
 
-void _expectSafeProjection(
-  ModelNativeActivityPresentationResolver resolver,
+void _expectSafePresentation(
   ModelNativeOutput output, {
   required String id,
   required String summary,
   required String encrypted,
 }) {
   expect(output.providerItemId, id);
+  expect(output.providerNativeMetadata.kind, openAiResponsesItemKind);
+  expect(output.providerNativeMetadata.compatibility, {
+    'version': openAiResponsesItemVersion,
+  });
   expect(output.providerNativeMetadata.data, {
     'item': _reasoning(id, summary, encrypted),
   });
-  final projected = resolver.project(output);
-  expect(projected, isNotNull);
-  expect(projected!.projection.compactText, summary);
-  // Exact allowlist at the native-to-frontend boundary: not merely a check that
+  final ModelNativePresentation? presentation = output.presentation;
+  expect(presentation, isNotNull);
+  expect(presentation!.kind, openAiReasoningSummaryPresentationKind);
+  expect(presentation.compactText, summary);
+  // Exact recursive allowlist at the provider-to-host boundary, not merely that
   // an encrypted sentinel happens not to be rendered by this particular widget.
-  expect(projected.projection.data, {
+  expect(presentation.data, {
     'summaryParts': [summary],
     'truncated': false,
   });
-  expect(projected.projection.data.clear, throwsUnsupportedError);
+  final String encoded = jsonEncode({
+    'kind': presentation.kind,
+    'compactText': presentation.compactText,
+    'data': presentation.data,
+  });
+  for (final String secret in _presentationSecrets) {
+    expect(encoded, isNot(contains(secret)));
+  }
+  expect(presentation.data.clear, throwsUnsupportedError);
+  expect(
+    (presentation.data['summaryParts']! as List<Object?>).clear,
+    throwsUnsupportedError,
+  );
 }
 
 void _expectNoPresentationSecrets(
@@ -1867,16 +1922,7 @@ void _expectNoPresentationSecrets(
       .widgetList<Text>(find.byType(Text, skipOffstage: false))
       .map((widget) => widget.data ?? widget.textSpan?.toPlainText() ?? '')
       .join('\n');
-  for (final secret in [
-    _encryptedA,
-    _encryptedB,
-    _encryptedFollowUp,
-    _privateReasoning,
-    _providerExtra,
-    'encrypted_content',
-    'reasoning_text',
-    'provider_extra',
-  ]) {
+  for (final String secret in _presentationSecrets) {
     expect(timeline, isNot(contains(secret)));
     expect(rendered, isNot(contains(secret)));
   }

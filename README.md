@@ -207,8 +207,9 @@ Normal Runs expose immutable live activity through public pure-Dart
 Observation grants no execution or approval authority. Ordered model text, opaque
 native outputs, proposals, and resolved tool evidence retain stable identities.
 Chat displays one lightweight group per successfully completed model invocation
-containing tool proposals or presentable native activity. Its heading prefers
-explicit tool-batch narration, then a native projection's compact text, then a
+containing tool proposals or a native output with `presentation != null`,
+independently of rich frontend activation. Its heading prefers explicit narration
+only when tools are present, then safe presentation `compactText`, then a
 structural tool-operation count. Reasoning-only activity appears before the
 canonical final assistant text, without turning that text into batch narration.
 The Chat strategy automatically adds batch-narration guidance to its inference
@@ -216,9 +217,10 @@ instructions while preserving Session instructions and independent context sourc
 Grouping never requests an extra inference. Activity stays out of canonical Chat
 history; completed groups remain only for the current controller lifetime,
 including follow-up prompts. Reconstructing a
-Session cannot restore historical activity without future persistence. Native
-output remains opaque to generic Chat and Inspection code; only an owning plugin
-can project it for presentation.
+Session cannot restore historical activity without future persistence. Raw native
+output remains opaque to generic Chat and Inspection code; the provider backend
+supplies safe presentation separately. Chat needs no native-presentation negative
+cache or registry-change retry machinery to decide activity presence.
 Clicking a group opens one window-local Inspection selected by exact Session,
 Run, and model-invocation identity. The common host interleaves tools and native
 activity by exact `output.sequence`, including unprepared/rejected tool
@@ -231,28 +233,43 @@ removes only the view; changing the presented Session clears selection. Tool car
 show status, never Allow/Deny controls. See `docs/architecture/overview.md` for
 exact Tool ID resolution, liveness, and deferred scope.
 
-Public Flutter `adele_ui` also defines `ModelNativeActivityProjection(compactText,
-data)`, with recursively immutable safe data, and
-`ModelNativeActivityPresentationContribution(nativeKind, project, createInspection)`
-at `modelNativeActivityPresentationContributions`. Its
-`ModelNativeActivityPresentationResolver` matches exact native kind: zero leaves
-the item opaque and omitted, one projector may return no projection, and multiple
-matches are explicitly ambiguous, without priority or fallback.
+The generated `adele_model_provider` contract carries
+`ModelProviderNativePresentation(kind, compactText, data)` separately from raw
+`nativeMetadata`. `ModelProviderOutput.nativePresentation` is required but nullable:
+`null` means no safe presentation, while the generated key remains required under
+the coherent-schema convention. The generic capability adapter maps it to
+immutable `adele_orchestration.ModelNativePresentation` with the same fields on
+optional `ModelNativeOutput.presentation`, without provider-specific parsing.
+Raw `nativeMetadata` remains exact and the only native replay source; safe
+presentation is never replayed.
 
-OpenAI's pure-Dart `openai_native_activity` package owns
-`openAiResponsesItemKind = 'openai.responses.item.v1'`, version 1, and
-`projectOpenAiReasoningSummary(ModelNativeEnvelope)`. It extracts only bounded
-provider-supplied summary text; `openai_frontend` renders the read-only Inspection
-from a safe `summaryParts`/`truncated` map. Raw envelopes, compatibility metadata,
-encrypted content, and execution/approval authority never enter that EVC. Exact
-native/encrypted replay remains untouched in the backend and full Run evidence.
-This is a supplied summary, not hidden chain-of-thought disclosure.
+Public Flutter `adele_ui` defines
+`ModelNativeActivityPresentationContribution(presentationKind, createInspection)`
+at `modelNativeActivityPresentationContributions`, with a
+`Widget Function(ModelNativePresentation)` factory. There is no UI projection type
+or projector callback. `ModelNativeActivityPresentationResolver` matches the exact
+safe presentation kind: zero makes rich Inspection unavailable without removing
+safe activity, one supplies a retained binding, and multiple matches are explicitly
+ambiguous, without priority or fallback.
 
-`app/lib/plugins/stock_openai_activity_frontend.dart` independently activates the
-prepared OpenAI presentation, reusing `PreparedFrontend` and existing registry
-liveness. Missing/corrupt EVC, malformed or declined projection, and projector or
-factory failure remain presentation-local without failing the Run or selecting a
-native fallback. Retirement removes the exact-generation view; a replacement
+OpenAI uses `plugins/openai/packages/{contract,backend,frontend}`. Pure-Dart
+`openai_contract` owns identities and payload schema only, not algorithms. The raw
+kind remains `openai.responses.item.v1`, version 1; the distinct safe presentation
+kind is `openai.responses.reasoning-summary.v1`, version 1. The backend classifies
+raw Responses items and produces bounded safe summaries; `openai_frontend` renders
+the read-only `summaryParts`/`truncated` payload. Generic Chat escapes compact
+display text, and the OpenAI frontend escapes full text. Raw envelopes,
+compatibility metadata, encrypted content, and execution/approval authority never
+enter that EVC. This is a supplied summary, not hidden chain-of-thought disclosure.
+
+`app/lib/plugins/stock_openai_activity_frontend.dart` imports Contract identity,
+loads the prepared artifact, registers its factory, and retires that registration
+and its resources through `PreparedFrontend` and existing registry liveness. This
+stock activation edge is explicitly provisional until discovery/profiles replace
+hard-coded selection; it owns no projection or display-safety algorithms.
+Missing/corrupt EVC, malformed safe payload, and factory failure remain
+presentation-local without failing the Run or selecting a native fallback.
+Retirement removes the exact-generation view; a replacement
 requires fresh resolution and cannot retarget stale resources. Backend summary
 request support remains a narrow provider-local policy documented in the
 [OpenAI backend README](plugins/openai/packages/backend/README.md), not a common
@@ -515,9 +532,10 @@ the CI matrix. Run their pure-Dart tests with
 `adele_ui` is a Flutter analysis/test target. The separate
 `chat_strategy_frontend`, `filesystem_tools_frontend`, `command_tools_frontend`,
 and `openai_frontend` packages are Flutter workspace members and analysis targets;
-their EVC preparation belongs to the app's build-time tooling. The pure-Dart
-`openai_native_activity` package has maintained analysis/test discovery through
-`tools/adele.dart`.
+their EVC preparation belongs to the app's build-time tooling. Pure-Dart
+`openai_contract` has maintained identity tests and analysis/test discovery through
+`tools/adele.dart`; raw classification, projection, bounds, and native-preservation
+tests belong to `openai_model_provider_backend`.
 
 The repository development command above is unrelated to ADELE's future
 application-level Command Palette/keybinding subsystem described by the
@@ -545,7 +563,7 @@ packages/agent_kernel/       agent_kernel (internal, pure Dart)
 plugins/workspace_demo/      internal source-plugin reference fixture
 plugins/resource_inspector/  Phase III two-provider capability fixture
 plugins/scripted_model/      deterministic ModelProvider/transport fixture
-plugins/openai/              OpenAI ModelProvider, safe native projection, evaluated Inspection
+plugins/openai/              Contract identities/schema, backend safe projection, evaluated frontend
 plugins/filesystem_tools/    stock text-file tools plus evaluated Apply Patch Inspection
 plugins/search_tools/        stock Session-authorized literal Search tool
 plugins/command_tools/       stock foreground Command tool plus evaluated Inspection

@@ -47,16 +47,24 @@ passes the prepared `openai.evc` path as compile-time deployment define
 `ADELE_OPENAI_ACTIVITY_FRONTEND_ARTIFACT`. Runtime activation at
 `app/lib/plugins/stock_openai_activity_frontend.dart` reuses `PreparedFrontend`
 independently of model backend support and other frontends. It loads no source
-and substitutes no native card on failure. These inputs are not model options,
+and substitutes no native card on failure. It imports only OpenAI Contract
+identity to load/register/retire rich presentation, with no raw classification or
+projection algorithms. This stock activation edge is provisional until
+discovery/profiles replace hard-coded selection. These inputs are not model options,
 credentials, or a general configuration UI.
 
-`openai_native_activity` remains a pure-Dart workspace analysis/test target;
-`openai_frontend` is a Flutter workspace analysis target whose EVC compilation and
-product integration belong to app build-time/test tooling. E3's enduring
-regression scope uses real prepared artifacts with local fake Responses for mixed
+OpenAI follows `plugins/openai/packages/{contract,backend,frontend}`:
+`openai_contract` is pure-Dart identities/schema with no algorithms; classification,
+projection, bounds, and native-preservation tests belong to
+`openai_model_provider_backend`. Contract identity tests and Backend tests have
+workspace membership and maintained analysis/test discovery in `tools/adele.dart`.
+`openai_frontend` is a Flutter analysis target whose EVC compilation and product
+integration belong to app build-time/test tooling. The regression scope uses real
+prepared artifacts with local fake Responses for mixed
 reasoning/tool approvals and a separate reasoning-only final response. That scope
 does not establish live-provider summary support or broader SDK/platform
-compatibility.
+compatibility. Generated safe-presentation transport, generic adapter mapping, and
+safe Chat activity without frontend activation are separate regression boundaries.
 
 Future installation/update should own source compilation and artifact preparation,
 separate from activation consuming those artifacts. Current repository tooling is

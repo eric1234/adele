@@ -355,7 +355,7 @@ void main() {
       'chat_strategy_plugin',
       'filesystem_tools_plugin',
       'command_tools_plugin',
-      'openai_native_activity',
+      'openai_contract',
     ]) {
       expect(
         analysisTargets.singleWhere((package) => package.name == name).flutter,
@@ -426,7 +426,7 @@ void main() {
         'scripted_model_contract|dart|plugins/scripted_model/packages/contract|test --timeout 4m',
         'scripted_model_backend|dart|plugins/scripted_model/packages/backend|test',
         'openai_model_provider_backend|dart|plugins/openai/packages/backend|test --timeout 4m',
-        'openai_native_activity|dart|plugins/openai/packages/native_activity|test',
+        'openai_contract|dart|plugins/openai/packages/contract|test',
         'workspace_demo_contract|dart|plugins/workspace_demo/packages/contract|test',
         'workspace_demo_backend|dart|plugins/workspace_demo/packages/backend|test',
         'adele_desktop|flutter|app|test',
@@ -454,18 +454,24 @@ void main() {
     final String workspace = File(
       'plugins/openai/pubspec.yaml',
     ).readAsStringSync();
-    expect(workspace, contains('  - packages/native_activity\n'));
+    expect(workspace, contains('  - packages/contract\n'));
+    expect(workspace, contains('  - packages/backend\n'));
     expect(workspace, contains('  - packages/frontend\n'));
+    expect(workspace, isNot(contains('packages/native_activity')));
+    expect(
+      File('plugins/openai/packages/native_activity/pubspec.yaml').existsSync(),
+      isFalse,
+    );
     final String backend = File(
       'plugins/openai/packages/backend/pubspec.yaml',
     ).readAsStringSync();
     final String shared = File(
-      'plugins/openai/packages/native_activity/pubspec.yaml',
+      'plugins/openai/packages/contract/pubspec.yaml',
     ).readAsStringSync();
     final String frontend = File(
       'plugins/openai/packages/frontend/pubspec.yaml',
     ).readAsStringSync();
-    expect(backend, contains('  openai_native_activity: ^0.1.0\n'));
+    expect(backend, contains('  openai_contract: ^0.1.0\n'));
     for (final manifest in [backend, shared]) {
       expect(manifest, isNot(contains('flutter:')));
       expect(manifest, isNot(contains('adele_ui:')));
@@ -473,7 +479,42 @@ void main() {
     }
     expect(frontend, contains('  adele_ui: ^0.1.0\n'));
     expect(frontend, isNot(contains('openai_model_provider_backend:')));
-    expect(lookupTestTarget('openai_native_activity').executable, 'dart');
+    expect(lookupTestTarget('openai_contract').executable, 'dart');
+    final String app = File('app/pubspec.yaml').readAsStringSync();
+    expect(app, contains('  openai_contract: ^0.1.0\n'));
+    for (final manifest in [app, backend, shared, frontend]) {
+      expect(manifest, isNot(contains('openai_native_activity')));
+    }
+    expect(app, isNot(contains('openai_model_provider_backend:')));
+    final String activation = File(
+      'app/lib/plugins/stock_openai_activity_frontend.dart',
+    ).readAsStringSync();
+    expect(activation, contains('openAiReasoningSummaryPresentationKind'));
+    for (final forbidden in [
+      'projectOpenAi',
+      'providerNativeMetadata',
+      'encrypted_content',
+      "['summary']",
+      "['summaryParts']",
+      'package:openai_model_provider_backend',
+    ]) {
+      expect(activation, isNot(contains(forbidden)), reason: forbidden);
+    }
+    for (final file in Directory(
+      'plugins/openai/packages/contract/lib',
+    ).listSync(recursive: true).whereType<File>()) {
+      if (!file.path.endsWith('.dart')) continue;
+      final String source = file.readAsStringSync();
+      for (final forbidden in [
+        'projectOpenAi',
+        'dart:io',
+        'package:flutter',
+        'ModelProviderOutput',
+        'ModelNativeOutput',
+      ]) {
+        expect(source, isNot(contains(forbidden)), reason: file.path);
+      }
+    }
     expect(
       File('app/test/openai_activity_frontend_eval_test.dart').existsSync(),
       isTrue,
@@ -499,6 +540,7 @@ void main() {
     }
     for (final path in [
       'packages/ui/lib/model_native_activity_bridge.dart',
+      'packages/ui/lib/model_native_activity_presentation.dart',
       'app/lib/frontend/model_native_activity_bridge.dart',
       'plugins/openai/packages/frontend/lib/openai_frontend.dart',
     ]) {

@@ -9,6 +9,6 @@ environment:
 resolution: workspace
 
 workspace:
+  - packages/contract
   - packages/backend
-  - packages/native_activity
   - packages/frontend

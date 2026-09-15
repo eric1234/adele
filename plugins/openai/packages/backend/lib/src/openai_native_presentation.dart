@@ -1,26 +1,5 @@
-import 'package:adele_orchestration/adele_orchestration.dart'
-    show ModelNativeEnvelope;
-
-const String openAiResponsesItemKind = 'openai.responses.item.v1';
-const int openAiResponsesItemVersion = 1;
-
-/// Read-only presentation data, never a replacement for native replay state.
-final class OpenAiReasoningSummaryProjection {
-  OpenAiReasoningSummaryProjection._({
-    required this.compactText,
-    required List<String> summaryParts,
-    required bool truncated,
-  }) : data = Map<String, Object?>.unmodifiable(<String, Object?>{
-         'summaryParts': List<String>.unmodifiable(summaryParts),
-         'truncated': truncated,
-       });
-
-  final String compactText;
-  final Map<String, Object?> data;
-
-  List<String> get summaryParts => data['summaryParts']! as List<String>;
-  bool get truncated => data['truncated']! as bool;
-}
+import 'package:adele_model_provider/adele_model_provider.dart';
+import 'package:openai_contract/openai_contract.dart';
 
 /// Projects only supported, nonblank summary text from an owned reasoning item.
 ///
@@ -28,12 +7,12 @@ final class OpenAiReasoningSummaryProjection {
 /// scanning text. Within that budget, every part is validated before projection.
 /// Nonblank parts are trimmed and retain at most 32,768 Unicode code points
 /// across 128 parts.
-/// [OpenAiReasoningSummaryProjection.truncated] indicates full-text loss. The
+/// The `truncated` data field indicates full-text loss. The
 /// compact first nonblank part is capped at 160 code points, including an
 /// ellipsis when either compact or full text is truncated. Text is not escaped;
 /// the presentation boundary owns escaping. Unknown fields are never copied.
-OpenAiReasoningSummaryProjection? projectOpenAiReasoningSummary(
-  ModelNativeEnvelope envelope,
+ModelProviderNativePresentation? projectOpenAiReasoningSummary(
+  ModelProviderNativeEnvelope envelope,
 ) {
   final Object? version = envelope.compatibility['version'];
   if (envelope.kind != openAiResponsesItemKind ||
@@ -92,9 +71,9 @@ OpenAiReasoningSummaryProjection? projectOpenAiReasoningSummary(
   final String compactText = compact.length > 160 || truncated
       ? '${String.fromCharCodes(compact.take(159)).trimRight()}\u2026'
       : String.fromCharCodes(compact);
-  return OpenAiReasoningSummaryProjection._(
+  return ModelProviderNativePresentation(
+    kind: openAiReasoningSummaryPresentationKind,
     compactText: compactText,
-    summaryParts: parts,
-    truncated: truncated,
+    data: <String, Object?>{'summaryParts': parts, 'truncated': truncated},
   );
 }

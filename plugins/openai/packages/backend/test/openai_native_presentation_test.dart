@@ -1,17 +1,22 @@
-import 'package:adele_orchestration/adele_orchestration.dart';
-import 'package:openai_native_activity/openai_native_activity.dart';
+import 'package:adele_model_provider/adele_model_provider.dart';
+import 'package:openai_contract/openai_contract.dart';
+import 'package:openai_model_provider_backend/src/openai_native_presentation.dart';
 import 'package:test/test.dart';
 
 void main() {
-  test('exports the existing native item wire identity', () {
-    expect(openAiResponsesItemKind, 'openai.responses.item.v1');
-    expect(openAiResponsesItemVersion, 1);
+  test('projects a safe presentation kind distinct from native replay', () {
+    final ModelProviderNativePresentation projection =
+        projectOpenAiReasoningSummary(
+          _envelope(summary: <Object?>[_part('Visible.')]),
+        )!;
+    expect(projection.kind, openAiReasoningSummaryPresentationKind);
+    expect(projection.kind, isNot(openAiResponsesItemKind));
   });
 
   test(
     'projects ordered nonblank parts without changing Unicode or markup',
     () {
-      final OpenAiReasoningSummaryProjection projection =
+      final ModelProviderNativePresentation projection =
           projectOpenAiReasoningSummary(
             _envelope(
               summary: <Object?>[
@@ -33,8 +38,7 @@ void main() {
         ],
         'truncated': false,
       });
-      expect(projection.summaryParts, same(projection.data['summaryParts']));
-      expect(projection.truncated, isFalse);
+      expect(projection.kind, openAiReasoningSummaryPresentationKind);
     },
   );
 
@@ -96,36 +100,41 @@ void main() {
         'type': 'reasoning',
         'summary': <Object?>[_part('Visible.')],
       };
-      for (final ModelNativeEnvelope envelope in <ModelNativeEnvelope>[
-        _envelope(kind: 'foreign.native', summary: reasoning['summary']),
-        for (final Object? version in <Object?>[null, '1', 1.0, 0, 2])
-          _envelope(version: version, summary: reasoning['summary']),
-        ModelNativeEnvelope(
-          kind: openAiResponsesItemKind,
-          compatibility: const <String, Object?>{'version': 1},
-          data: const <String, Object?>{},
-        ),
-        for (final Object? item in <Object?>[
-          null,
-          'reasoning',
-          <Object?>[],
-          <String, Object?>{},
-        ])
-          ModelNativeEnvelope(
-            kind: openAiResponsesItemKind,
-            compatibility: const <String, Object?>{'version': 1},
-            data: <String, Object?>{'item': item},
-          ),
-        for (final String type in <String>['compaction', 'message', 'unknown'])
-          _envelope(type: type, summary: reasoning['summary']),
-      ]) {
+      for (final ModelProviderNativeEnvelope envelope
+          in <ModelProviderNativeEnvelope>[
+            _envelope(kind: 'foreign.native', summary: reasoning['summary']),
+            for (final Object? version in <Object?>[null, '1', 1.0, 0, 2])
+              _envelope(version: version, summary: reasoning['summary']),
+            ModelProviderNativeEnvelope(
+              kind: openAiResponsesItemKind,
+              compatibility: const <String, Object?>{'version': 1},
+              data: const <String, Object?>{},
+            ),
+            for (final Object? item in <Object?>[
+              null,
+              'reasoning',
+              <Object?>[],
+              <String, Object?>{},
+            ])
+              ModelProviderNativeEnvelope(
+                kind: openAiResponsesItemKind,
+                compatibility: const <String, Object?>{'version': 1},
+                data: <String, Object?>{'item': item},
+              ),
+            for (final String type in <String>[
+              'compaction',
+              'message',
+              'unknown',
+            ])
+              _envelope(type: type, summary: reasoning['summary']),
+          ]) {
         expect(projectOpenAiReasoningSummary(envelope), isNull);
       }
     },
   );
 
   test('hidden text and encrypted state cannot replace a missing summary', () {
-    final ModelNativeEnvelope envelope = _envelope(
+    final ModelProviderNativeEnvelope envelope = _envelope(
       summary: <Object?>[],
       extra: <String, Object?>{
         'text': 'HIDDEN-TEXT',
@@ -158,7 +167,7 @@ void main() {
       'UNKNOWN-SECRET',
       'ACCOUNT-SECRET',
     };
-    final ModelNativeEnvelope envelope = ModelNativeEnvelope(
+    final ModelProviderNativeEnvelope envelope = ModelProviderNativeEnvelope(
       kind: openAiResponsesItemKind,
       compatibility: const <String, Object?>{
         'version': 1,
@@ -183,7 +192,7 @@ void main() {
         },
       },
     );
-    final OpenAiReasoningSummaryProjection projection =
+    final ModelProviderNativePresentation projection =
         projectOpenAiReasoningSummary(envelope)!;
 
     void check(Object? value) {
@@ -208,11 +217,12 @@ void main() {
 
     check(projection.data);
     check(projection.compactText);
+    check(projection.kind);
     expect(
       projection.data.keys,
       unorderedEquals(<String>['summaryParts', 'truncated']),
     );
-    expect(projection.summaryParts, <String>['Safe summary.']);
+    expect(projection.data['summaryParts'], <String>['Safe summary.']);
     expect(
       (envelope.data['item']! as Map<String, Object?>)['encrypted_content'],
       'ENCRYPTED-SECRET',
@@ -222,20 +232,20 @@ void main() {
   test('projection data is a detached recursively immutable snapshot', () {
     final Map<String, Object?> part = _part('Original.');
     final List<Object?> summary = <Object?>[part];
-    final OpenAiReasoningSummaryProjection projection =
+    final ModelProviderNativePresentation projection =
         projectOpenAiReasoningSummary(_envelope(summary: summary))!;
     part['text'] = 'Changed.';
     summary.clear();
 
-    expect(projection.summaryParts, <String>['Original.']);
+    expect(projection.data['summaryParts'], <String>['Original.']);
     expect(() => projection.data['truncated'] = true, throwsUnsupportedError);
     expect(() => projection.data.clear(), throwsUnsupportedError);
     expect(
-      () => projection.summaryParts.add('Changed.'),
+      () => (projection.data['summaryParts']! as List<Object?>).add('Changed.'),
       throwsUnsupportedError,
     );
     expect(
-      () => projection.summaryParts[0] = 'Changed.',
+      () => (projection.data['summaryParts']! as List<Object?>)[0] = 'Changed.',
       throwsUnsupportedError,
     );
   });
@@ -245,12 +255,12 @@ void main() {
       'compact bound counts $length Unicode code points, not UTF-16 units',
       () {
         final String text = List<String>.filled(length, '\u{1f680}').join();
-        final OpenAiReasoningSummaryProjection projection =
+        final ModelProviderNativePresentation projection =
             projectOpenAiReasoningSummary(
               _envelope(summary: <Object?>[_part(text)]),
             )!;
-        expect(projection.summaryParts, <String>[text]);
-        expect(projection.truncated, isFalse);
+        expect(projection.data['summaryParts'], <String>[text]);
+        expect(projection.data['truncated'], isFalse);
         expect(
           projection.compactText,
           length <= 160
@@ -266,16 +276,15 @@ void main() {
     'full character bound retains prefix and visible truncation indication',
     () {
       final String text = List<String>.filled(32769, '\u{1f680}').join();
-      final OpenAiReasoningSummaryProjection projection =
+      final ModelProviderNativePresentation projection =
           projectOpenAiReasoningSummary(
             _envelope(summary: <Object?>[_part(text)]),
           )!;
-      expect(projection.summaryParts.single.runes.length, 32768);
-      expect(
-        projection.summaryParts.single,
-        List<String>.filled(32768, '\u{1f680}').join(),
-      );
-      expect(projection.truncated, isTrue);
+      final String summary =
+          (projection.data['summaryParts']! as List<Object?>).single! as String;
+      expect(summary.runes.length, 32768);
+      expect(summary, List<String>.filled(32768, '\u{1f680}').join());
+      expect(projection.data['truncated'], isTrue);
       expect(projection.compactText.endsWith('\u2026'), isTrue);
     },
   );
@@ -283,7 +292,7 @@ void main() {
   test('full bound is aggregate and exact-bound content is not truncated', () {
     final String rest = List<String>.filled(32763, 'a').join();
     for (final bool overflow in <bool>[false, true]) {
-      final OpenAiReasoningSummaryProjection projection =
+      final ModelProviderNativePresentation projection =
           projectOpenAiReasoningSummary(
             _envelope(
               summary: <Object?>[
@@ -294,8 +303,8 @@ void main() {
               ],
             ),
           )!;
-      expect(projection.summaryParts, <String>['First', rest]);
-      expect(projection.truncated, overflow);
+      expect(projection.data['summaryParts'], <String>['First', rest]);
+      expect(projection.data['truncated'], overflow);
       expect(projection.compactText, overflow ? 'First\u2026' : 'First');
     }
   });
@@ -304,17 +313,17 @@ void main() {
     final List<Object?> summary = <Object?>[
       for (int index = 0; index < 129; index++) _part('Part $index'),
     ];
-    final OpenAiReasoningSummaryProjection projection =
+    final ModelProviderNativePresentation projection =
         projectOpenAiReasoningSummary(_envelope(summary: summary))!;
-    expect(projection.summaryParts, <String>[
+    expect(projection.data['summaryParts'], <String>[
       for (int index = 0; index < 128; index++) 'Part $index',
     ]);
-    expect(projection.truncated, isTrue);
+    expect(projection.data['truncated'], isTrue);
     expect(projection.compactText, 'Part 0\u2026');
     expect(
       projectOpenAiReasoningSummary(
         _envelope(summary: summary.take(128).toList()),
-      )!.truncated,
+      )!.data['truncated'],
       isFalse,
     );
   });
@@ -335,7 +344,7 @@ void main() {
   });
 
   test('leading whitespace cannot exhaust the visible summary budget', () {
-    final OpenAiReasoningSummaryProjection projection =
+    final ModelProviderNativePresentation projection =
         projectOpenAiReasoningSummary(
           _envelope(
             summary: <Object?>[
@@ -343,9 +352,9 @@ void main() {
             ],
           ),
         )!;
-    expect(projection.summaryParts, <String>['Visible.']);
+    expect(projection.data['summaryParts'], <String>['Visible.']);
     expect(projection.compactText, 'Visible.');
-    expect(projection.truncated, isFalse);
+    expect(projection.data['truncated'], isFalse);
   });
 
   for (final String label in <String>[
@@ -371,7 +380,7 @@ void main() {
         ],
         _ => <Object?>[_part(List<String>.filled(131073, '\u{1f680}').join())],
       };
-      final ModelNativeEnvelope envelope = _envelope(
+      final ModelProviderNativeEnvelope envelope = _envelope(
         summary: summary,
         extra: const <String, Object?>{
           'encrypted_content': 'UNCHANGED-ENCRYPTED-STATE',
@@ -379,7 +388,7 @@ void main() {
       );
       final Map<String, Object?> originalData = envelope.data;
       final Map<String, Object?> originalCompatibility = envelope.compatibility;
-      OpenAiReasoningSummaryProjection? result;
+      ModelProviderNativePresentation? result;
 
       expect(
         () => result = projectOpenAiReasoningSummary(envelope),
@@ -402,7 +411,7 @@ void main() {
   test(
     'exact input part limit remains eligible with unchanged display caps',
     () {
-      final OpenAiReasoningSummaryProjection projection =
+      final ModelProviderNativePresentation projection =
           projectOpenAiReasoningSummary(
             _envelope(
               summary: <Object?>[
@@ -410,17 +419,17 @@ void main() {
               ],
             ),
           )!;
-      expect(projection.summaryParts, <String>[
+      expect(projection.data['summaryParts'], <String>[
         for (int index = 0; index < 128; index++) 'Part $index',
       ]);
-      expect(projection.truncated, isTrue);
+      expect(projection.data['truncated'], isTrue);
       expect(projection.compactText, 'Part 0\u2026');
     },
   );
 
   test('exact aggregate input size remains eligible including whitespace', () {
     const String visible = 'Visible.';
-    final OpenAiReasoningSummaryProjection projection =
+    final ModelProviderNativePresentation projection =
         projectOpenAiReasoningSummary(
           _envelope(
             summary: <Object?>[
@@ -430,13 +439,13 @@ void main() {
             ],
           ),
         )!;
-    expect(projection.summaryParts, <String>[visible]);
+    expect(projection.data['summaryParts'], <String>[visible]);
     expect(projection.compactText, visible);
-    expect(projection.truncated, isFalse);
+    expect(projection.data['truncated'], isFalse);
   });
 
   test('exact UTF-16 input limit retains unchanged full code point cap', () {
-    final OpenAiReasoningSummaryProjection projection =
+    final ModelProviderNativePresentation projection =
         projectOpenAiReasoningSummary(
           _envelope(
             summary: <Object?>[
@@ -444,10 +453,15 @@ void main() {
             ],
           ),
         )!;
-    expect(projection.summaryParts.single.runes.length, 32768);
+    expect(
+      ((projection.data['summaryParts']! as List<Object?>).single! as String)
+          .runes
+          .length,
+      32768,
+    );
     expect(projection.compactText.runes.length, 160);
     expect(projection.compactText.endsWith('\u2026'), isTrue);
-    expect(projection.truncated, isTrue);
+    expect(projection.data['truncated'], isTrue);
   });
 
   test(
@@ -473,13 +487,13 @@ Map<String, Object?> _part(Object? text) => <String, Object?>{
   'text': text,
 };
 
-ModelNativeEnvelope _envelope({
+ModelProviderNativeEnvelope _envelope({
   required Object? summary,
   String kind = openAiResponsesItemKind,
   Object? version = openAiResponsesItemVersion,
   String type = 'reasoning',
   Map<String, Object?> extra = const <String, Object?>{},
-}) => ModelNativeEnvelope(
+}) => ModelProviderNativeEnvelope(
   kind: kind,
   compatibility: <String, Object?>{'version': version},
   data: <String, Object?>{

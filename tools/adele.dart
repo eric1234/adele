@@ -178,8 +178,8 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test', '--timeout', '4m'],
   ),
   TestTarget(
-    name: 'openai_native_activity',
-    path: 'plugins/openai/packages/native_activity',
+    name: 'openai_contract',
+    path: 'plugins/openai/packages/contract',
     executable: 'dart',
     arguments: <String>['test'],
   ),
@@ -237,8 +237,8 @@ analysisTargets = <({String name, String path, bool flutter})>[
   (name: 'scripted_model', path: 'plugins/scripted_model', flutter: false),
   (name: 'openai_plugin', path: 'plugins/openai', flutter: false),
   (
-    name: 'openai_native_activity',
-    path: 'plugins/openai/packages/native_activity',
+    name: 'openai_contract',
+    path: 'plugins/openai/packages/contract',
     flutter: false,
   ),
   (

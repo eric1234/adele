@@ -10,8 +10,7 @@ import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/ui/execution/pending_tool_approval.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
-import 'package:adele_plugin_api/adele_plugin_api.dart';
-import 'package:adele_ui/adele_ui.dart';
+import 'package:adele_ui/inspection_display.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter/foundation.dart';
@@ -45,9 +44,6 @@ final class ChatController {
           'approval before execution.';
     }
     _snapshot = _chat.snapshot();
-    _presentationSubscription = runtime.extensions.changes.listen(
-      (_) => _refreshNativePresentations(),
-    );
   }
 
   final AdeleRuntime _runtime;
@@ -64,14 +60,8 @@ final class ChatController {
   late ChatSessionSnapshot _snapshot;
   late ChatUserMessage _activeUserMessage;
   final Map<ChatUserMessage, RunActivitySnapshot> _activity = {};
-  final Map<(RunId, ModelInvocationId), ChatActivitySummary?>
+  final Map<(RunId, ModelInvocationId), ChatActivitySummary>
   _activitySummaries = {};
-  final Map<
-    (RunId, ModelInvocationId),
-    List<ExtensionBinding<ModelNativeActivityPresentationContribution>>
-  >
-  _nativePresentationAttempts = {};
-  StreamSubscription<void>? _presentationSubscription;
   RunActivitySource? _activitySource;
   StreamSubscription<void>? _activitySubscription;
   bool _activityUpdateScheduled = false;
@@ -324,53 +314,6 @@ final class ChatController {
     }
   }
 
-  List<ExtensionBinding<ModelNativeActivityPresentationContribution>>
-  _nativePresentationBindings(ModelInvocationActivity model) {
-    final kinds = {
-      for (final output in model.outputs)
-        if (output.item case final ModelNativeOutput native)
-          native.providerNativeMetadata.kind,
-    };
-    return [
-      for (final binding in _runtime.extensions.discover(
-        modelNativeActivityPresentationContributions,
-      ))
-        if (kinds.contains(binding.value.nativeKind)) binding,
-    ];
-  }
-
-  void _refreshNativePresentations() {
-    if (_closed || _nativePresentationAttempts.isEmpty) return;
-    for (final activity in _activity.values) {
-      bool retry = false;
-      for (final model in activity.models) {
-        final key = (activity.runId, model.id);
-        final previous = _nativePresentationAttempts[key];
-        if (previous == null) continue;
-        final current = _nativePresentationBindings(model);
-        bool changed = previous.length != current.length;
-        try {
-          // Equal IDs, values and counts can still represent new generations.
-          for (final binding in previous) {
-            binding.validate();
-          }
-        } on StaleExtensionBinding {
-          changed = true;
-        }
-        if (!changed) continue;
-        _nativePresentationAttempts.remove(key);
-        _activitySummaries.remove(key);
-        retry = true;
-      }
-      if (retry) _captureSummaries(activity);
-    }
-    if (!_closed &&
-        timeline.whereType<ChatActivitySummary>().length !=
-            _visibleActivityCount) {
-      _notifyActivity();
-    }
-  }
-
   void _detachActivity() {
     final StreamSubscription<void>? subscription = _activitySubscription;
     _activitySource = null;
@@ -389,38 +332,21 @@ final class ChatController {
           _activitySummaries.containsKey(key)) {
         continue;
       }
-      // Successful summaries outlive presentation retirement. Negative native
-      // attempts below remain cached only for the matching registry generations.
-      _activitySummaries[key] = null;
       final output = [...model.outputs]
         ..sort((a, b) => a.sequence.compareTo(b.sequence));
       final int count = output
           .where((output) => output.item is ModelToolProposalOutput)
           .length;
-      final bindings = _nativePresentationBindings(model);
       String? compactNative;
       for (final item in output) {
-        if (item.item case final ModelNativeOutput native) {
-          try {
-            final projected = ModelNativeActivityPresentationResolver(
-              _runtime.extensions,
-            ).project(native);
-            if (projected != null) {
-              compactNative = projected.projection.compactText;
-              break;
-            }
-          } on Object {
-            // Ambiguity and projector failure affect only this presentation.
-          }
+        if (item.item case ModelNativeOutput(
+          presentation: final ModelNativePresentation presentation,
+        )) {
+          compactNative = presentation.compactText;
+          break;
         }
       }
-      if (_closed) return;
-      if (count == 0 && compactNative == null) {
-        if (output.any((item) => item.item is ModelNativeOutput)) {
-          _nativePresentationAttempts[key] = bindings;
-        }
-        continue;
-      }
+      if (count == 0 && compactNative == null) continue;
       final String narration = count == 0
           ? ''
           : output
@@ -429,13 +355,20 @@ final class ChatController {
                 .map((item) => item.content)
                 .join('\n')
                 .trim();
-      _activitySummaries[key] = ChatActivitySummary(
-        runId: activity.runId,
-        invocationId: model.id,
-        content: narration.isNotEmpty
+      final content = inspectionDisplayText(
+        narration.isNotEmpty
             ? narration
             : compactNative ??
                   '$count tool ${count == 1 ? 'operation' : 'operations'}',
+      );
+      // Completed evidence and its compact summary outlive frontend generations.
+      // Cap after escaping so invisible controls cannot expand a Chat row.
+      _activitySummaries[key] = ChatActivitySummary(
+        runId: activity.runId,
+        invocationId: model.id,
+        content: content.runes.length <= 160
+            ? content
+            : '${String.fromCharCodes(content.runes.take(159))}\u2026',
       );
     }
   }
@@ -475,10 +408,6 @@ final class ChatController {
   Future<void> close() {
     _closed = true;
     _detachActivity();
-    final subscription = _presentationSubscription;
-    _presentationSubscription = null;
-    unawaited(subscription?.cancel());
-    _nativePresentationAttempts.clear();
     return _closing ??= () async {
       await _activeRunFuture;
     }();

@@ -4,10 +4,11 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:adele_model_provider/adele_model_provider.dart';
-import 'package:openai_native_activity/openai_native_activity.dart'
+import 'package:openai_contract/openai_contract.dart'
     show openAiResponsesItemKind, openAiResponsesItemVersion;
 
 import 'src/openai_chatgpt_auth.dart';
+import 'src/openai_native_presentation.dart';
 
 // Plugin-owned runtime identities, temporarily mirrored by stock app bootstrap.
 // Future discovery/activation metadata should replace that hard-coded app knowledge.
@@ -806,6 +807,7 @@ final class _ResponsesNormalizer {
                       },
                       data: <String, Object?>{'phase': phase},
                     ),
+              nativePresentation: null,
             ),
           ),
         );
@@ -851,12 +853,21 @@ final class _ResponsesNormalizer {
                       },
                       data: <String, Object?>{'namespace': namespace},
                     ),
+              nativePresentation: null,
             ),
           ),
         );
         return;
       case 'reasoning':
       case 'compaction':
+        final ModelProviderNativeEnvelope nativeMetadata =
+            ModelProviderNativeEnvelope(
+              kind: openAiResponsesItemKind,
+              compatibility: const <String, Object?>{
+                'version': openAiResponsesItemVersion,
+              },
+              data: <String, Object?>{'item': item},
+            );
         emit(
           _outputEvent(
             ModelProviderOutput(
@@ -864,13 +875,8 @@ final class _ResponsesNormalizer {
               text: null,
               toolProposal: null,
               itemId: id,
-              nativeMetadata: ModelProviderNativeEnvelope(
-                kind: openAiResponsesItemKind,
-                compatibility: const <String, Object?>{
-                  'version': openAiResponsesItemVersion,
-                },
-                data: <String, Object?>{'item': item},
-              ),
+              nativeMetadata: nativeMetadata,
+              nativePresentation: projectOpenAiReasoningSummary(nativeMetadata),
             ),
           ),
         );

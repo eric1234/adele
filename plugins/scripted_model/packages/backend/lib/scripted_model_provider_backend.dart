@@ -325,6 +325,7 @@ ModelProviderEvent _text(String text, String itemId) => ModelProviderEvent(
   observation: null,
   output: ModelProviderOutput(
     kind: ModelProviderOutputKind.text,
+    nativePresentation: null,
     text: text,
     toolProposal: null,
     itemId: itemId,
@@ -338,6 +339,7 @@ ModelProviderEvent _native(int index) => ModelProviderEvent(
   observation: null,
   output: ModelProviderOutput(
     kind: ModelProviderOutputKind.nativeItem,
+    nativePresentation: null,
     text: null,
     toolProposal: null,
     itemId: ScriptedCommonModelProvider.nativeItemIds[index],
@@ -355,6 +357,7 @@ ModelProviderEvent _proposal(String uri) => ModelProviderEvent(
   observation: null,
   output: ModelProviderOutput(
     kind: ModelProviderOutputKind.toolProposal,
+    nativePresentation: null,
     text: null,
     toolProposal: ModelProviderToolProposal(
       callId: ScriptedCommonModelProvider.callId,

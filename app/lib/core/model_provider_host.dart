@@ -335,6 +335,14 @@ ModelOutputItem _toModelOutput(ModelProviderOutput output) =>
       ModelProviderOutputKind.nativeItem => ModelNativeOutput(
         providerItemId: output.itemId,
         providerNativeMetadata: _toKernelNativeEnvelope(output.nativeMetadata)!,
+        presentation: switch (output.nativePresentation) {
+          final presentation? => ModelNativePresentation(
+            kind: presentation.kind,
+            compactText: presentation.compactText,
+            data: presentation.data,
+          ),
+          null => null,
+        },
       ),
       ModelProviderOutputKind.text => ModelTextOutput(
         output.text!,

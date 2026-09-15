@@ -17,13 +17,15 @@ import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:openai_native_activity/openai_native_activity.dart';
+import 'package:openai_contract/openai_contract.dart'
+    show openAiReasoningSummaryPresentationKind;
 
 import '../tool/openai_activity_frontend_compiler.dart';
 import '../tool/tool_inspection_frontend_compiler.dart';
 
 const String _library = 'package:openai_frontend/openai_frontend.dart';
 const String _secret = 'ENCRYPTED-PRIVATE-SECRET';
+const String _malformed = 'MALFORMED-SAFE-DATA';
 
 void main() {
   late Directory temporary;
@@ -151,12 +153,16 @@ Map<String, dynamic> inspect() => readModelNativeActivityData();
         final outputs = [
           ModelOutputActivity(
             sequence: 2,
-            item: _output([
-              compactionOnly ? 'Never present compaction' : 'Reasoning A',
-            ], type: compactionOnly ? 'compaction' : 'reasoning'),
+            item: _output(
+              compactionOnly ? null : _presentation(['Reasoning A']),
+              type: compactionOnly ? 'compaction' : 'reasoning',
+            ),
           ),
           if (!compactionOnly)
-            ModelOutputActivity(sequence: 4, item: _output(['Reasoning B'])),
+            ModelOutputActivity(
+              sequence: 4,
+              item: _output(_presentation(['Reasoning B'])),
+            ),
           for (final tool in tools)
             ModelOutputActivity(
               sequence: tool.proposalSequence,
@@ -220,51 +226,31 @@ Map<String, dynamic> inspect() => readModelNativeActivityData();
         expect(find.text('Never present compaction'), findsNothing);
         expect(find.textContaining('Model native activity'), findsNothing);
         expect(find.textContaining(_secret), findsNothing);
+        for (final output in outputs) {
+          if (output.item case final ModelNativeOutput native) {
+            expect(
+              native.providerNativeMetadata.data.toString(),
+              contains(_secret),
+            );
+            if (compactionOnly) {
+              expect(native.presentation, isNull);
+            } else {
+              expect(
+                native.presentation!.kind,
+                openAiReasoningSummaryPresentationKind,
+              );
+              expect(
+                native.presentation!.data.toString(),
+                isNot(contains(_secret)),
+              );
+            }
+          }
+        }
         expect(find.byType(TextButton), findsNothing);
         expect(tester.takeException(), isNull);
       },
     );
   }
-
-  test(
-    'compact Chat text escapes controls and remains bounded after escaping',
-    () {
-      for (final text in [
-        'Unicode \u00E9 \u{1F600}\n\r\t\u001B\u202E\u200B\\n',
-        'Unicode \u00E9 \u{1F600} ${List.filled(150, '\u202E').join()}',
-      ]) {
-        final output = _output([text]);
-        final projected = contribution().project(output)!;
-        final escaped = inspectionDisplayText(
-          projectOpenAiReasoningSummary(
-            output.providerNativeMetadata,
-          )!.compactText,
-        );
-        expect(projected.compactText, startsWith('Unicode \u00E9 \u{1F600}'));
-        expect(projected.compactText.runes.length, lessThanOrEqualTo(160));
-        for (final control in [
-          '\n',
-          '\r',
-          '\t',
-          '\u001B',
-          '\u202E',
-          '\u200B',
-        ]) {
-          expect(projected.compactText, isNot(contains(control)));
-        }
-        expect(
-          projected.compactText,
-          escaped.runes.length <= 160
-              ? escaped
-              : '${String.fromCharCodes(escaped.runes.take(159))}\u2026',
-        );
-        expect(projected.data, {
-          'summaryParts': [text],
-          'truncated': false,
-        });
-      }
-    },
-  );
 
   for (final parts in <List<String>>[
     ['One approved summary'],
@@ -279,13 +265,16 @@ Map<String, dynamic> inspect() => readModelNativeActivityData();
       (tester) async {
         await tester.binding.setSurfaceSize(const Size(360, 640));
         addTearDown(() => tester.binding.setSurfaceSize(null));
-        final output = _output(parts);
+        final presentation = _presentation(parts);
+        final output = _output(presentation);
         final presenter = contribution();
-        expect(presenter.nativeKind, openAiResponsesItemKind);
-        final projected = presenter.project(output)!;
-        expect(projected.data, {'summaryParts': parts, 'truncated': false});
+        expect(
+          presenter.presentationKind,
+          openAiReasoningSummaryPresentationKind,
+        );
+        expect(presentation.data, {'summaryParts': parts, 'truncated': false});
         final bridge = ModelNativeActivityBridge(
-          projection: projected,
+          presentation: presentation,
           isActive: () => true,
         );
         addTearDown(bridge.invalidate);
@@ -293,14 +282,16 @@ Map<String, dynamic> inspect() => readModelNativeActivityData();
           ..addPlugin(bridge);
         final transported =
             runtime.executeLib('package:probe/main.dart', 'inspect') as $Value;
-        expect(transported.$reified, projected.data);
+        expect(transported.$reified, presentation.data);
         expect(transported.$reified.toString(), isNot(contains(_secret)));
         expect((transported.$reified as Map).keys, [
           'summaryParts',
           'truncated',
         ]);
 
-        await tester.pumpWidget(_host([presenter.createInspection(projected)]));
+        await tester.pumpWidget(
+          _host([presenter.createInspection(presentation)]),
+        );
         expect(find.text('Reasoning summary'), findsOneWidget);
         double previous = -1;
         for (final part in parts) {
@@ -327,75 +318,63 @@ Map<String, dynamic> inspect() => readModelNativeActivityData();
     );
   }
 
-  testWidgets('actual projector truncation stays visible in EVC', (
+  testWidgets('safe presentation truncation stays visible in actual EVC', (
     tester,
   ) async {
-    final projected = contribution().project(
-      _output(List.filled(129, 'Part')),
-    )!;
-    expect(projected.data['truncated'], true);
+    final presentation = _presentation(
+      List.filled(128, 'Part'),
+      truncated: true,
+    );
     await tester.pumpWidget(
-      _host([contribution().createInspection(projected)]),
+      _host([contribution().createInspection(presentation)]),
     );
     expect(find.text('Part'), findsNWidgets(128));
     expect(find.text('Reasoning summary truncated.'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
-  test(
-    'stock projection declines unsupported and encrypted-only native output',
-    () {
-      for (final output in [
-        _output([]),
-        _output(['Approved'], kind: 'other.native'),
-        _output(['Approved'], version: 2),
-        _output(['Approved'], type: 'message'),
-      ]) {
-        expect(contribution().project(output), isNull);
-      }
-    },
-  );
-
   testWidgets(
     'actual EVC rejects malformed safe maps without echoing any part',
     (tester) async {
       for (final data in <Map<String, Object?>>[
         {},
-        {'summaryParts': _secret, 'truncated': false},
+        {'summaryParts': _malformed, 'truncated': false},
         {'summaryParts': <String>[], 'truncated': false},
         {
-          'summaryParts': [_secret],
+          'summaryParts': [_malformed],
           'truncated': 'false',
         },
         {
-          'summaryParts': [_secret, 7],
+          'summaryParts': [_malformed, 7],
           'truncated': false,
         },
         {
-          'summaryParts': [_secret, '  '],
+          'summaryParts': [_malformed, '  '],
           'truncated': false,
         },
         {
-          'summaryParts': [_secret],
+          'summaryParts': [_malformed],
           'truncated': false,
-          'unexpected': _secret,
+          'unexpected': _malformed,
         },
-        {'summaryParts': List.filled(129, _secret), 'truncated': false},
+        {'summaryParts': List.filled(129, _malformed), 'truncated': false},
         {
-          'summaryParts': ['${'x' * 65537}$_secret'],
+          'summaryParts': ['${'x' * 65537}$_malformed'],
           'truncated': false,
         },
       ]) {
-        final projected = ModelNativeActivityProjection(
-          compactText: _secret,
+        final presentation = ModelNativePresentation(
+          kind: openAiReasoningSummaryPresentationKind,
+          compactText: _malformed,
           data: data,
         );
         await tester.pumpWidget(
-          _host([contribution().createInspection(projected)]),
+          _host([contribution().createInspection(presentation)]),
         );
         expect(find.text('Reasoning summary unavailable.'), findsOneWidget);
         expect(find.text('Reasoning summary'), findsNothing);
         expect(find.textContaining(_secret), findsNothing);
+        expect(find.textContaining(_malformed), findsNothing);
         expect(
           tester.widgetList<Text>(find.byType(Text)).map((text) => text.data),
           ['Reasoning summary unavailable.'],
@@ -412,8 +391,8 @@ Map<String, dynamic> inspect() => readModelNativeActivityData();
           .discover(modelNativeActivityPresentationContributions)
           .single;
       final retained = binding.value;
-      final first = retained.project(_output(['First view']))!;
-      final second = retained.project(_output(['Second view']))!;
+      final first = _presentation(['First view']);
+      final second = _presentation(['Second view']);
       final source = _CommandSource();
       addTearDown(source.dispose);
       final toolView = ToolActivityInspectionResolver(
@@ -435,7 +414,6 @@ Map<String, dynamic> inspect() => readModelNativeActivityData();
       await tester.pump();
       expect(binding.validate, throwsA(isA<StaleExtensionBinding>()));
       expect(() => retained.createInspection(first), throwsStateError);
-      expect(() => retained.project(_output(['Late'])), throwsStateError);
       expect(find.text('Frontend unavailable.'), findsNWidgets(2));
       expect(tester.element(find.text('Run Command')), same(toolElement));
       expect(source.listening, isTrue);
@@ -445,7 +423,7 @@ Map<String, dynamic> inspect() => readModelNativeActivityData();
           artifactPath: artifact.path,
         ),
       ))!;
-      final fresh = contribution().project(_output(['Fresh generation']))!;
+      final fresh = _presentation(['Fresh generation']);
       await tester.pumpWidget(
         _host([...views, contribution().createInspection(fresh)]),
       );
@@ -508,11 +486,9 @@ Map<String, dynamic> inspect() => readModelNativeActivityData();
             artifactPath: file.path,
           ),
         ))!;
-        final projected = contribution().project(
-          _output(['Not a native fallback']),
-        )!;
+        final presentation = _presentation(['Not a native fallback']);
         await tester.pumpWidget(
-          _host([contribution().createInspection(projected), toolView]),
+          _host([contribution().createInspection(presentation), toolView]),
         );
         await tester.pump();
         expect(find.text('Frontend unavailable.'), findsOneWidget);
@@ -521,12 +497,10 @@ Map<String, dynamic> inspect() => readModelNativeActivityData();
         expect(tester.element(find.text('Run Command')), same(toolElement));
         expect(source.listening, isTrue);
         if (file == failingArtifact) {
-          final sibling = contribution().project(
-            _output(['Healthy OpenAI sibling']),
-          )!;
+          final sibling = _presentation(['Healthy OpenAI sibling']);
           await tester.pumpWidget(
             _host([
-              contribution().createInspection(projected),
+              contribution().createInspection(presentation),
               toolView,
               contribution().createInspection(sibling),
             ]),
@@ -551,23 +525,34 @@ Widget _host(List<Widget> children) => MaterialApp(
   ),
 );
 
-ModelNativeOutput _output(
+ModelNativePresentation _presentation(
   List<String> parts, {
-  String kind = openAiResponsesItemKind,
-  int version = 1,
+  bool truncated = false,
+}) => ModelNativePresentation(
+  kind: openAiReasoningSummaryPresentationKind,
+  compactText: parts.first,
+  data: {'summaryParts': parts, 'truncated': truncated},
+);
+
+ModelNativeOutput _output(
+  ModelNativePresentation? presentation, {
   String type = 'reasoning',
 }) => ModelNativeOutput(
   providerItemId: 'private-item-id',
+  presentation: presentation,
   providerNativeMetadata: ModelNativeEnvelope(
-    kind: kind,
-    compatibility: {'version': version, 'private': _secret},
+    kind: 'openai.responses.item.v1',
+    compatibility: {'version': 1, 'private': _secret},
     data: {
       'item': {
         'type': type,
         'id': 'private-item-id',
         'summary': [
-          for (final text in parts)
-            {'type': 'summary_text', 'text': text, 'private': _secret},
+          {
+            'type': 'summary_text',
+            'text': 'Never parse raw summary',
+            'private': _secret,
+          },
         ],
         'encrypted_content': _secret,
         'content': _secret,

@@ -10,7 +10,7 @@ const String _library = 'package:native_probe/main.dart';
 
 void main() {
   late Program program;
-  late ModelNativeActivityProjection projection;
+  late ModelNativePresentation presentation;
   late ModelNativeActivityBridge bridge;
   late Runtime runtime;
   bool active = true;
@@ -32,7 +32,8 @@ void main() {
 
   setUp(() {
     active = true;
-    projection = ModelNativeActivityProjection(
+    presentation = ModelNativePresentation(
+      kind: 'Not transported kind',
       compactText: 'Not transported',
       data: {
         'summaryParts': ['literal\u202Etext'],
@@ -43,7 +44,7 @@ void main() {
       },
     );
     bridge = ModelNativeActivityBridge(
-      projection: projection,
+      presentation: presentation,
       isActive: () => active,
     );
     runtime = Runtime(program.write().buffer.asByteData())..addPlugin(bridge);
@@ -55,12 +56,15 @@ void main() {
     return result is $Value ? result.$reified : result;
   }
 
-  test('actual eval bridge carries only frozen primitive projection data', () {
-    expect(invoke('inspect'), projection.data);
-    expect(invoke('text'), 'literal\u202Etext');
-    expect(invoke('hasAuthority'), false);
-    expect(invoke('inspect').toString(), isNot(contains('Not transported')));
-  });
+  test(
+    'actual eval bridge carries only frozen primitive presentation data',
+    () {
+      expect(invoke('inspect'), presentation.data);
+      expect(invoke('text'), 'literal\u202Etext');
+      expect(invoke('hasAuthority'), false);
+      expect(invoke('inspect').toString(), isNot(contains('Not transported')));
+    },
+  );
 
   for (final name in ['mutateMap', 'mutateList', 'mutateNestedMap']) {
     test('actual eval $name cannot alter a recursively frozen snapshot', () {
@@ -72,8 +76,8 @@ void main() {
           ),
         ),
       );
-      expect(projection.data['summaryParts'], ['literal\u202Etext']);
-      expect((projection.data['nested']! as List).single, {
+      expect(presentation.data['summaryParts'], ['literal\u202Etext']);
+      expect((presentation.data['nested']! as List).single, {
         'int': 3,
         'double': 1.5,
         'bool': true,
@@ -86,7 +90,8 @@ void main() {
     final parts = ['Captured'];
     final data = <String, Object?>{'summaryParts': parts, 'truncated': false};
     final captured = ModelNativeActivityBridge(
-      projection: ModelNativeActivityProjection(
+      presentation: ModelNativePresentation(
+        kind: 'safe-fixture',
         compactText: 'Captured',
         data: data,
       ),
@@ -108,7 +113,7 @@ void main() {
       if (mode == 'throw') {
         bridge.invalidate();
         bridge = ModelNativeActivityBridge(
-          projection: projection,
+          presentation: presentation,
           isActive: () => throw StateError('PRIVATE-LIVENESS-SECRET'),
         );
         runtime = Runtime(program.write().buffer.asByteData())

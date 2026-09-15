@@ -197,42 +197,50 @@ presentation failure/retirement neither fails backend execution nor substitutes
 native tool cards. Tool cards show read-only status; only common host approval UI
 offers Allow/Deny for the exact retained interruption.
 
-`adele_ui` owns the provider-neutral
-`ModelNativeActivityProjection(compactText, data)` with recursively immutable safe
-data, `ModelNativeActivityPresentationContribution(nativeKind, project,
-createInspection)`, `modelNativeActivityPresentationContributions`, and
-`ModelNativeActivityPresentationResolver`. Projection takes public
-`ModelNativeOutput`; the Inspection factory takes only the projection. Exact-kind
-resolution leaves zero matches opaque/omitted, allows one projector to decline,
-and reports many as explicit ambiguity without priority. Registry liveness
-removes exact-generation views; replacement requires fresh resolution and never
-retargets stale resources.
+`adele_model_provider` owns generated
+`ModelProviderNativePresentation(kind, compactText, data)` and required nullable
+`ModelProviderOutput.nativePresentation`. Null means no safe presentation; generated
+keys remain required under the coherent-schema convention. Pure-Dart
+`adele_orchestration` owns immutable `ModelNativePresentation` with the same fields
+and optional `ModelNativeOutput.presentation`. The app capability adapter maps
+these fields generically, without provider interpretation or a dependency between
+the two public domain packages solely for this mapping.
 
-OpenAI native-field interpretation belongs to the pure-Dart plugin-owned
-`plugins/openai/packages/native_activity` (`openai_native_activity`) API, not
-`adele_ui`, generic Chat/Inspection, orchestration, or the kernel. It depends on
-public `adele_orchestration` and owns the Responses native kind/version and
-`projectOpenAiReasoningSummary(ModelNativeEnvelope)`. The OpenAI backend imports
-its native-kind/version constants; `app/lib/plugins/stock_openai_activity_frontend.dart`
-imports its public projection API solely at stock composition. Neither imports
-the other's implementation. This is a concrete shared plugin API, not a new
-generic extension-package owner or permission for unrelated plugins to import
-OpenAI implementation code.
+`adele_ui` owns
+`ModelNativeActivityPresentationContribution(presentationKind, createInspection)`,
+`modelNativeActivityPresentationContributions`, and
+`ModelNativeActivityPresentationResolver`. Its factory is
+`Widget Function(ModelNativePresentation)`, not a raw-output projector; there is
+no UI projection DTO or callback. Exact safe presentation kind resolution gives
+zero rich-unavailable, one retained binding, or explicit ambiguity for many, with
+no priority. Registry liveness removes exact-generation views; replacement needs
+fresh resolution and never retargets stale resources. Safe activity survives
+missing/retired frontends. Chat derives presence from `output.presentation != null`,
+not registry activation, and needs no negative projection cache or registry retry.
 
-The separate Flutter `openai_frontend` package renders the safe projection map
-from prepared EVC using public `adele_ui`; it does not import the backend, app, or
-kernel. The generic `app/lib/frontend/model_native_activity_bridge.dart` carries
-only immutable safe display data. For OpenAI, that is exactly `summaryParts` and
-`truncated`, never the raw envelope, compatibility metadata, encrypted content,
-or execution/approval authority. Exact native/encrypted replay stays untouched in
-the backend and full Run evidence. Display bounds do not change replay state.
+OpenAI follows `plugins/openai/packages/{contract,backend,frontend}`:
 
-Stock OpenAI frontend activation reuses `PreparedFrontend` independently of model
-backend readiness and other frontends. Malformed/declined projections and bounded
-projector/factory/EVC failures do not fail Runs or select a native fallback.
-Summary request support remains provider-local in the backend; generic inference
-and presentation code neither assert all-model support nor select reasoning
-options. See the [backend README](../../plugins/openai/packages/backend/README.md).
+- Pure-Dart `openai_contract` owns only shared identities and payload schema. The raw kind remains `openai.responses.item.v1`, version 1; safe presentation uses `openai.responses.reasoning-summary.v1`, version 1. Contract contains no classification, projection, bounds-processing, or escaping algorithms and depends on neither implementation nor Flutter/app/kernel.
+- `openai_model_provider_backend` owns raw Responses classification, bounded reasoning-summary projection, and exact native preservation, using public ModelProvider transport and Contract identities/schema. It does not depend on Frontend or UI/orchestration projection APIs.
+- Flutter `openai_frontend` renders the safe payload using public `adele_ui` and shared Contract schema as needed. It does not import Backend, app, kernel, or raw native metadata. Generic Chat escapes compact text; the OpenAI frontend escapes full text.
+
+The generic `app/lib/frontend/model_native_activity_bridge.dart` carries only
+immutable safe display data. For OpenAI, that is exactly `summaryParts` and
+`truncated`, never raw envelopes, compatibility metadata, encrypted content, or
+execution/approval authority. Raw `nativeMetadata` stays exact and is the only
+native replay source; safe presentation is never replayed. Display filtering and
+bounds do not alter canonical history or add persistence.
+
+`app/lib/plugins/stock_openai_activity_frontend.dart` imports Contract identity
+only for stock registration: it loads prepared EVC, registers the factory, and
+retires registration/resources through `PreparedFrontend`. It owns no OpenAI
+algorithms. This composition edge is explicitly provisional until discovery and
+profiles replace hard-coded selection. Activation is independent of model backend
+readiness and other frontends. Malformed safe payload and factory/EVC failures
+leave rich presentation unavailable without failing Runs or selecting a native
+fallback. Summary requests remain provider-local; generic inference and UI code
+neither assert all-model support nor select reasoning options. See the
+[backend README](../../plugins/openai/packages/backend/README.md).
 
 Flutter build-time tooling compiles frontend source; normal runtime activation
 only consumes prepared artifacts. Checkout preparation is a stand-in for future

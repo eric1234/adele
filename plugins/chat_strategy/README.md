@@ -135,9 +135,11 @@ view resources follow widget lifecycle and exact registration liveness.
 
 The controller observes the Run through public `adele_orchestration`'s read-only
 `RunActivitySource`, not by passing a journal to the frontend. Each successfully
-completed model invocation containing tools or presentable native activity becomes
-one lightweight Chat group keyed by its exact `ModelInvocationId`. Headings prefer
-ordered explicit tool-batch narration, then native compact text, then
+completed model invocation containing tools or native `output.presentation != null`
+becomes one lightweight Chat group keyed by its exact `ModelInvocationId`,
+independently of rich frontend activation. Chat has no negative projection cache
+or registry-change retry machinery. Headings prefer ordered explicit tool-batch
+narration only when tools are present, then safe compact text, then
 `N tool operations` (singular for one). Reasoning-only groups precede canonical
 final assistant text, never adding an activity variant to `ChatEntry`.
 
@@ -146,10 +148,14 @@ the final assistant response, rendering clickable `ACTIVITY: ...` summaries with
 tool cards, execution controls, or tool detail rows. Completed groups and their structured evidence
 are retained separately from Chat history for the controller lifetime, including
 follow-up prompts. Reconstructing a Session cannot restore historical activity
-until persistence exists. Native model output remains ordered and opaque in the
-read model. Exact-kind `adele_ui` contributions supply provider-owned safe
-projection and Inspection; generic Chat never parses OpenAI envelopes. The common
-Inspection host interleaves tools and native activity by exact `output.sequence`.
+until persistence exists. Raw native model output remains ordered and opaque in
+the read model, separate from immutable backend-supplied `ModelNativePresentation`.
+`adele_ui` contributions supply rich Inspection by exact safe presentation kind,
+not raw-output projection. Missing rich presentation leaves safe activity intact.
+Generic Chat escapes compact display controls and retains the compact bound after
+escaping; the provider frontend escapes full text. Generic Chat never parses
+OpenAI envelopes or replays safe presentation. The common Inspection host
+interleaves tools and native activity by exact `output.sequence`.
 See [model-native activity presentation](../../docs/architecture/overview.md#model-native-activity-presentation).
 Subscriptions detach on close; the bridge coalesces frontend updates post-frame
 and rejects late updates after disposal.

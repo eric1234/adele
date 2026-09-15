@@ -25,6 +25,12 @@ settlement/metadata, Run state, and approval-resolution values are defined there
 here, not duplicated. Public orchestration and Chat do not depend on the kernel;
 the kernel depends on the public values.
 
+Those values include immutable `ModelNativePresentation(kind, compactText, data)`
+on optional `ModelNativeOutput.presentation`. The kernel retains backend-supplied
+safe presentation without interpreting provider fields or depending on UI
+activation. Raw native metadata remains exact and the only native replay source;
+safe presentation is never replayed or added to canonical Chat history.
+
 ## Ownership
 
 Runs own execution identity, a small lifecycle, interruptions, terminal failure,

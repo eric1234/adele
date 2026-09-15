@@ -5,6 +5,9 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:flutter/widgets.dart';
 
+export 'package:adele_orchestration/adele_orchestration.dart'
+    show ModelNativePresentation;
+
 export 'model_native_activity_presentation.dart';
 export 'tool_activity_inspection.dart';
 

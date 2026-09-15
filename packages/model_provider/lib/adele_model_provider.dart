@@ -68,6 +68,23 @@ final class ModelProviderNativeEnvelope {
   final Map<String, Object?> data;
 }
 
+/// Provider-selected display data, separate from opaque native replay state.
+@AdeleValue('modelProvider.nativePresentation')
+final class ModelProviderNativePresentation {
+  ModelProviderNativePresentation({
+    required this.kind,
+    required this.compactText,
+    required Map<String, Object?> data,
+  }) : data = adeleSnapshotJsonMap(data) {
+    _requireNonEmpty(kind, 'Native presentation kind');
+    _requireNonEmpty(compactText, 'Native presentation compact text');
+  }
+
+  final String kind;
+  final String compactText;
+  final Map<String, Object?> data;
+}
+
 @AdeleValue('modelProvider.content')
 final class ModelProviderContent {
   ModelProviderContent({required this.kind, required this.text}) {
@@ -238,6 +255,7 @@ final class ModelProviderOutput {
     required this.toolProposal,
     required this.itemId,
     required this.nativeMetadata,
+    required this.nativePresentation,
   }) {
     final bool textMatches =
         kind == ModelProviderOutputKind.text && text != null;
@@ -259,6 +277,12 @@ final class ModelProviderOutput {
     if (text != null && text!.isEmpty) {
       throw const FormatException('Completed text must not be empty.');
     }
+    if (nativePresentation != null &&
+        kind != ModelProviderOutputKind.nativeItem) {
+      throw const FormatException(
+        'Only native output may include native presentation.',
+      );
+    }
     _requireOptionalNonEmpty(itemId, 'Provider item ID');
   }
 
@@ -267,6 +291,7 @@ final class ModelProviderOutput {
   final ModelProviderToolProposal? toolProposal;
   final String? itemId;
   final ModelProviderNativeEnvelope? nativeMetadata;
+  final ModelProviderNativePresentation? nativePresentation;
 }
 
 @AdeleValue('modelProvider.failure')

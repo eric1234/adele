@@ -1,5 +1,6 @@
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
+import 'package:adele_desktop/ui/inspection/model_native_activity_inspection_host.dart';
 import 'package:adele_desktop/ui/inspection/tool_activity_inspection_host.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
@@ -469,19 +470,15 @@ void main() {
   testWidgets(
     'native and tool occurrences interleave by sequence, not provider IDs',
     (tester) async {
-      final received = <ModelNativeActivityProjection>[];
+      final received = <ModelNativePresentation>[];
       final nativeRegistration = extensions.register(
         point: modelNativeActivityPresentationContributions,
         id: ExtensionId('dev.example.native'),
         value: ModelNativeActivityPresentationContribution(
-          nativeKind: 'dev.example.native',
-          project: (output) => ModelNativeActivityProjection(
-            compactText: 'Native',
-            data: {'text': output.providerNativeMetadata.data['approvedText']},
-          ),
-          createInspection: (projection) {
-            received.add(projection);
-            return Text(projection.data['text']! as String);
+          presentationKind: 'dev.example.safe',
+          createInspection: (presentation) {
+            received.add(presentation);
+            return Text(presentation.data['text']! as String);
           },
         ),
       );
@@ -495,36 +492,33 @@ void main() {
         ),
       );
       addTearDown(toolRegistration.close);
-      final declineRegistration = extensions.register(
-        point: modelNativeActivityPresentationContributions,
-        id: ExtensionId('dev.example.decline'),
-        value: ModelNativeActivityPresentationContribution(
-          nativeKind: 'declined',
-          project: (_) => null,
-          createInspection: (_) => throw StateError('Never run'),
-        ),
-      );
-      addTearDown(declineRegistration.close);
-      ModelOutputActivity native(int sequence, String kind) =>
+      ModelOutputActivity native(int sequence, String? presentationKind) =>
           ModelOutputActivity(
             sequence: sequence,
             item: ModelNativeOutput(
               providerItemId: 'same-provider-call',
+              presentation: presentationKind == null
+                  ? null
+                  : ModelNativePresentation(
+                      kind: presentationKind,
+                      compactText: 'Native',
+                      data: {'text': 'Native $sequence'},
+                    ),
               providerNativeMetadata: ModelNativeEnvelope(
-                kind: kind,
+                kind: 'dev.example.safe',
                 compatibility: const {},
                 data: {
-                  'approvedText': 'Native $sequence',
+                  'approvedText': 'Raw must never classify $sequence',
                   'private': 'opaque secret',
                 },
               ),
             ),
           );
       final outputs = [
-        native(8, 'dev.example.native'),
-        native(2, 'dev.example.native'),
-        native(5, 'unknown'),
-        native(6, 'declined'),
+        native(8, 'dev.example.safe'),
+        native(2, 'dev.example.safe'),
+        native(5, null),
+        native(6, 'unknown-safe-kind'),
         ModelOutputActivity(
           sequence: 4,
           item: ModelToolProposalOutput(proposal('tool')),
@@ -571,10 +565,31 @@ void main() {
         tester.getTopLeft(find.text('Tool tool-4')).dy,
         lessThan(tester.getTopLeft(find.text('Native 8')).dy),
       );
-      expect(find.textContaining('unavailable'), findsNothing);
+      expect(
+        find.text('Model native activity rich inspection is unavailable.'),
+        findsOneWidget,
+      );
+      expect(find.byType(ModelNativeActivityInspectionHost), findsNWidgets(3));
+      expect(
+        tester.getTopLeft(find.text('Tool tool-4')).dy,
+        lessThan(tester.getTopLeft(find.textContaining('rich inspection')).dy),
+      );
+      expect(
+        tester.getTopLeft(find.textContaining('rich inspection')).dy,
+        lessThan(tester.getTopLeft(find.text('Native 8')).dy),
+      );
       expect(find.textContaining('opaque'), findsNothing);
       expect(find.text('Native 5'), findsNothing);
       expect(find.text('Native 6'), findsNothing);
+      expect(find.textContaining('Raw must never classify'), findsNothing);
+      for (final output in outputs) {
+        if (output.item case final ModelNativeOutput native) {
+          expect(
+            native.providerNativeMetadata.data['private'],
+            'opaque secret',
+          );
+        }
+      }
       await tester.pumpWidget(host('first'));
       expect(received, hasLength(2));
       await tester.pumpWidget(host('second'));

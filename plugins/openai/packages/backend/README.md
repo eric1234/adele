@@ -50,33 +50,60 @@ permit multiple proposals in one response, not concurrent ADELE tool execution.
 
 ## Replay And Presentation
 
-The pure-Dart sibling `openai_native_activity` owns the shared constants
+The pure-Dart sibling [Contract](../contract/README.md), `openai_contract`, owns
+identities and payload schema only, with no algorithms. Its shared raw constants
 `openAiResponsesItemKind = 'openai.responses.item.v1'` and
-`openAiResponsesItemVersion = 1`. This backend imports those constants rather than
+`openAiResponsesItemVersion = 1` are unchanged. This backend imports them rather than
 duplicating the native-envelope identity. Provider-native reasoning and compaction
 items remain opaque to common model/orchestration consumers. Supported native
 items, including encrypted content, retain their exact data and order for replay;
 presentation does not sanitize, truncate, replace, or otherwise rewrite them.
 
-`projectOpenAiReasoningSummary(ModelNativeEnvelope)` in that sibling package is a
-separate read-only display projection. It accepts the owned kind/version and
-supported nonblank `summary_text` parts of reasoning items, returning bounded
-compact text and a safe map containing only `summaryParts` and `truncated`.
+`lib/src/openai_native_presentation.dart` owns
+`projectOpenAiReasoningSummary(ModelProviderNativeEnvelope)`, including raw Responses
+classification and processing bounds. `lib/openai_model_provider_backend.dart`
+attaches the safe result while preserving exact native metadata. It accepts nonblank
+`summary_text` parts of reasoning items and emits generated
+`ModelProviderNativePresentation(kind, compactText, data)` with safe kind
+`openai.responses.reasoning-summary.v1`, version 1, from Contract's
+`openAiReasoningSummaryPresentationKind` and
+`openAiReasoningSummaryPresentationVersion` constants. This identity is distinct
+from the raw item kind. Safe `data` contains only `summaryParts` and `truncated`.
 Unknown kinds/versions, other native item types, malformed summaries, and empty
-summaries decline presentation. Input validation is bounded to 1,024 parts and
-262,144 aggregate UTF-16 code units before expensive text processing; oversized
-input also declines presentation without changing replay. It does not decode
-encrypted content or expose hidden chain of thought.
+summaries produce `nativePresentation: null`. Input validation is bounded to 1,024
+parts and 262,144 aggregate UTF-16 code units before expensive text processing;
+oversized input also yields no presentation without changing replay. Within that
+budget all parts are validated, including suffixes later discarded by display
+bounds. No encrypted content is decoded or hidden chain of thought exposed.
 
-The backend and full Run retain native/encrypted evidence independently of whether
-the presentation contribution is active. Only the safe projection map enters the
+Full display text retains at most 32,768 Unicode code points across 128 trimmed,
+nonblank parts. `truncated` reports full-text loss, not merely compact shortening.
+Compact text uses the first retained part and is capped at 160 code points,
+including an ellipsis when compact or full text is truncated. These algorithms
+belong here, not in Contract or app activation. Generic Chat escapes compact
+display controls and reapplies its compact cap after escaping; the OpenAI frontend
+separately escapes full display text.
+
+`ModelProviderOutput.nativePresentation` is required but nullable. Semantic
+optionality is represented by `null`, not by omitting the generated key; the
+existing coherent-schema convention remains unchanged. Text/tool outputs and
+native items without a supported safe summary carry null. The generic app adapter
+maps the DTO to immutable orchestration `ModelNativePresentation` with the same
+fields on optional `ModelNativeOutput.presentation`; it does not interpret OpenAI.
+
+Raw `nativeMetadata` stays exact and is the only native replay source. Safe
+presentation is never replayed, and no canonical history or persistence change is
+introduced. The backend and full Run retain native/encrypted evidence independently
+of presentation activation. Only the safe presentation data enters the
 separate [OpenAI frontend EVC](../frontend/README.md). Raw native envelopes,
 compatibility metadata, encrypted content, and execution/approval authority do
 not cross that presentation bridge. The frontend depends on neither this backend
 implementation nor model readiness. Generic Chat and Inspection never parse OpenAI.
-Malformed/declined display data and projector/factory/EVC failures do not change
-Run settlement or replay validity; backend request/replay errors retain their
-existing explicit failure semantics.
+Missing or failed rich presentation does not remove safe Chat activity.
+Malformed/unsupported summary input yields no presentation, while factory/EVC
+failures remain presentation-local. Neither changes Run settlement or replay
+validity; backend request/replay errors retain their existing explicit failure
+semantics.
 
 ## Validation Scope
 
@@ -84,11 +111,14 @@ The maintained pure-Dart targets are:
 
 ```sh
 dart tools/adele.dart test --target openai_model_provider_backend
-dart tools/adele.dart test --target openai_native_activity
+dart tools/adele.dart test --target openai_contract
 ```
 
-Run these from the repository root. The E3 regression boundary covers guarded
-summary request lowering in both profiles, unchanged requests for unlisted models,
+Run these from the repository root. Contract tests cover stable identities, not
+algorithms. Backend tests in `test/openai_native_presentation_test.dart` and
+`test/openai_model_provider_backend_test.dart` cover raw classification,
+projection, processing bounds, preservation, guarded summary request lowering in
+both profiles, unchanged requests for unlisted models,
 ordered native/encrypted replay, safe projection, malformed/unsupported/empty
 summaries, and compact/full display bounds. The separate app
 `test/core/normal_chatgpt_run_integration_test.dart` uses real host/Git/OpenAI
@@ -96,8 +126,9 @@ artifacts and prepared frontends against local fake Responses for mixed
 reasoning/tool approvals and a separate reasoning-only final response.
 
 Local fake endpoints and temporary fake credentials require no live account or
-API key. Existing opt-in live smokes remain separate and do not establish E3
-summary support. Hidden chain-of-thought and encrypted reasoning are never
-user-presented. Reasoning deltas, compaction UI,
+API key. Existing opt-in live smokes remain separate and do not establish summary
+support. Generated transport and app adapter tests cover safe-payload mapping,
+the required nullable key, and raw-only replay. Hidden chain-of-thought and
+encrypted reasoning are never user-presented. Reasoning deltas, compaction UI,
 provider/model configuration UI, and broader Source/Diff/Console,
 terminal/PTY/full-output presentation remain deferred.

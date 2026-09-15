@@ -38,14 +38,14 @@ class ModelNativeActivityDeclarations implements EvalPlugin {
   }
 }
 
-/// Captures only approved primitive projection data, never a native envelope.
+/// Captures only safe primitive presentation data, never a native envelope.
 /// Each view owns one frozen snapshot with no subscription or authority surface.
 final class ModelNativeActivityBridge extends ModelNativeActivityDeclarations
     implements PreparedFrontendBridge {
   ModelNativeActivityBridge({
-    required ModelNativeActivityProjection projection,
+    required ModelNativePresentation presentation,
     required bool Function() isActive,
-  }) : _snapshot = _wrapValue(projection.data),
+  }) : _snapshot = _wrapValue(presentation.data),
        _isActive = isActive;
 
   $Value? _snapshot;
@@ -89,6 +89,6 @@ $Value _wrapValue(Object? value) => switch (value) {
     ),
   ),
   _ => throw const FormatException(
-    'Unsupported model native projection value.',
+    'Unsupported model native presentation value.',
   ),
 };

@@ -14,6 +14,7 @@ import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/plugins/stock_chat_execution_status.dart';
 import 'package:adele_desktop/plugins/stock_chat_frontend.dart';
 import 'package:adele_desktop/plugins/stock_openai.dart';
+import 'package:adele_desktop/plugins/stock_openai_activity_frontend.dart';
 import 'package:adele_desktop/ui/chat/chat_controller.dart';
 import 'package:adele_desktop/ui/execution/approval_display.dart';
 import 'package:adele_desktop/ui/execution/pending_tool_approval.dart';
@@ -27,10 +28,13 @@ import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
+import 'package:adele_ui/inspection_display.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:openai_contract/openai_contract.dart'
+    show openAiReasoningSummaryPresentationKind;
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../tool/chat_frontend_compiler.dart';
@@ -164,31 +168,21 @@ void main() {
 
   ExtensionRegistration registerNativePresentation({
     String id = 'dev.example.native-presentation',
-    String nativeKind = 'dev.example.native',
-    ModelNativeActivityProjection? Function(ModelNativeOutput)? project,
+    String presentationKind = 'dev.example.safe',
+    Widget Function(ModelNativePresentation)? createInspection,
   }) => fixture.runtime.extensions.register(
     point: modelNativeActivityPresentationContributions,
     id: ExtensionId(id),
     value: ModelNativeActivityPresentationContribution(
-      nativeKind: nativeKind,
-      project:
-          project ??
-          (output) {
-            final text = output.providerNativeMetadata.data['approvedText'];
-            return text is String
-                ? ModelNativeActivityProjection(
-                    compactText: text,
-                    data: {'text': text},
-                  )
-                : null;
-          },
-      createInspection: (projection) =>
-          Text('Detail: ${projection.data['text']}'),
+      presentationKind: presentationKind,
+      createInspection:
+          createInspection ??
+          (presentation) => Text('Detail: ${presentation.data['text']}'),
     ),
   );
 
   testWidgets(
-    'late native activation recovers completed groups across Runs without changing canonical history',
+    'native groups exist without frontend and activation leaves retained groups and history unchanged',
     (tester) async {
       final model = fixture.registerModel();
       await openChat(tester);
@@ -200,14 +194,6 @@ void main() {
         model.calls.last.settle();
         await tester.pumpAndSettle();
       }
-      expect(controller.timeline.whereType<ChatActivitySummary>(), isEmpty);
-      final history = controller.snapshot;
-      final evidence = controller.activitySnapshots;
-      final run = controller.currentRun!.run;
-      final journal = run.journal.records;
-      final registration = registerNativePresentation();
-      addTearDown(registration.close);
-      await tester.pumpAndSettle();
       final groups = controller.timeline
           .whereType<ChatActivitySummary>()
           .toList();
@@ -215,6 +201,14 @@ void main() {
         'First reasoning',
         'Follow-up reasoning',
       ]);
+      final history = controller.snapshot;
+      final evidence = controller.activitySnapshots;
+      final run = controller.currentRun!.run;
+      final journal = run.journal.records;
+      final registration = registerNativePresentation();
+      addTearDown(registration.close);
+      await tester.pumpAndSettle();
+      expect(controller.timeline.whereType<ChatActivitySummary>(), groups);
       expect(
         groups.map((group) => group.runId),
         evidence.map((activity) => activity.runId),
@@ -228,6 +222,20 @@ void main() {
       ]);
       for (final activity in evidence) {
         expect(controller.activityForRun(activity.runId), same(activity));
+        final native = activity.models.single.outputs
+            .map((output) => output.item)
+            .whereType<ModelNativeOutput>()
+            .single;
+        expect(native.presentation!.data, {
+          'text': native.presentation!.compactText,
+        });
+        expect(native.providerNativeMetadata.data, {
+          'approvedText': 'Raw text is not approved for display',
+          'private': 'opaque-secret-data',
+        });
+        expect(native.providerNativeMetadata.compatibility, {
+          'private': 'opaque-secret-compatibility',
+        });
       }
       expect(run.journal.records, journal);
       expect(find.text('ACTIVITY: First reasoning'), findsOneWidget);
@@ -246,33 +254,29 @@ void main() {
     },
   );
 
-  for (final mode in ['ambiguous', 'failed', 'declined']) {
+  for (final mode in ['ambiguous', 'failed', 'missing']) {
     testWidgets(
-      'native negative cache recovers after $mode generation changes, not unrelated registrations',
+      '$mode frontend registration and retirement cannot alter safe Chat groups or notify observers',
       (tester) async {
         final model = fixture.registerModel();
-        int projections = 0;
+        int factories = 0;
         int chatNotifications = 0;
         int activityNotifications = 0;
-        bool healthy = mode == 'ambiguous';
-        final registration = registerNativePresentation(
-          project: (_) {
-            projections++;
-            if (!healthy) {
-              if (mode == 'failed') throw _OpaquePresentationFailure();
-              return null;
-            }
-            return ModelNativeActivityProjection(
-              compactText: 'Recovered reasoning',
-              data: const {},
-            );
+        final contribution = ModelNativeActivityPresentationContribution(
+          presentationKind: 'dev.example.safe',
+          createInspection: (_) {
+            factories++;
+            if (mode == 'failed') throw _OpaquePresentationFailure();
+            return const Text('Rich detail');
           },
         );
-        addTearDown(registration.close);
-        final retained = ModelNativeActivityPresentationResolver(
-          fixture.runtime.extensions,
-        ).resolve('dev.example.native');
-        final contribution = retained.value;
+        ExtensionRegistration activate() => fixture.runtime.extensions.register(
+          point: modelNativeActivityPresentationContributions,
+          id: ExtensionId('dev.example.presenter'),
+          value: contribution,
+        );
+        final registration = mode == 'missing' ? null : activate();
+        if (registration != null) addTearDown(registration.close);
         final duplicate = mode == 'ambiguous'
             ? registerNativePresentation(id: 'dev.example.duplicate')
             : null;
@@ -281,7 +285,7 @@ void main() {
           onChanged: () => chatNotifications++,
           onActivityChanged: () => activityNotifications++,
         );
-        expect(controller.submit('Recover retained reasoning'), isTrue);
+        expect(controller.submit('Retain safe reasoning'), isTrue);
         final running = controller.activeRunFuture!;
         final call = await model.callAt(0);
         call.native('Native evidence');
@@ -294,14 +298,17 @@ void main() {
         final run = controller.currentRun!.run;
         final journal = run.journal.records;
         final before = (chatNotifications, activityNotifications);
-        expect(controller.timeline.whereType<ChatActivitySummary>(), isEmpty);
-        expect(projections, mode == 'ambiguous' ? 0 : 1);
+        final summary = controller.timeline
+            .whereType<ChatActivitySummary>()
+            .single;
+        expect(summary.content, 'Native evidence');
+        expect(factories, 0);
 
-        healthy = true;
         final unrelated = registerNativePresentation(
           id: 'dev.example.unrelated',
-          nativeKind: 'dev.example.other',
-          project: (_) => throw StateError('Unrelated kind must not run.'),
+          presentationKind: 'dev.example.other',
+          createInspection: (_) =>
+              throw StateError('Unrelated kind must not run.'),
         );
         final otherPoint = fixture.runtime.extensions.register(
           point: toolActivityInspectionContributions,
@@ -315,37 +322,26 @@ void main() {
         await unrelated.close();
         await otherPoint.close();
         await tester.pumpAndSettle();
-        expect(controller.timeline.whereType<ChatActivitySummary>(), isEmpty);
-        expect(projections, mode == 'ambiguous' ? 0 : 1);
+        expect(
+          controller.timeline.whereType<ChatActivitySummary>().single,
+          same(summary),
+        );
+        expect(factories, 0);
         expect((chatNotifications, activityNotifications), before);
 
-        if (duplicate != null) {
-          await duplicate.close();
-        } else {
-          // Even identical contribution objects and IDs must expose the fresh
-          // generation, without treating the old binding as live again.
-          final retiring = registration.close();
-          final replacement = fixture.runtime.extensions.register(
-            point: modelNativeActivityPresentationContributions,
-            id: retained.id,
-            value: contribution,
-          );
-          addTearDown(replacement.close);
-          await retiring;
-          expect(retained.validate, throwsA(isA<StaleExtensionBinding>()));
-        }
+        await duplicate?.close();
+        await registration?.close();
+        final replacement = activate();
+        addTearDown(replacement.close);
         await tester.pumpAndSettle();
-        final summary = controller.timeline
-            .whereType<ChatActivitySummary>()
-            .single;
-        expect(summary.content, 'Recovered reasoning');
+        expect(
+          controller.timeline.whereType<ChatActivitySummary>().single,
+          same(summary),
+        );
         expect(summary.runId, activity.runId);
         expect(summary.invocationId, activity.models.single.id);
-        expect(projections, mode == 'ambiguous' ? 1 : 2);
-        expect(
-          (chatNotifications, activityNotifications),
-          (before.$1 + 1, before.$2 + 1),
-        );
+        expect(factories, 0);
+        expect((chatNotifications, activityNotifications), before);
         expect(controller.snapshot, same(history));
         expect(controller.activityForRun(activity.runId), same(activity));
         expect(run.journal.records, journal);
@@ -361,11 +357,8 @@ void main() {
           controller.activitySummary(summary.runId, summary.invocationId),
           same(summary),
         );
-        expect(projections, mode == 'ambiguous' ? 1 : 2);
-        expect(
-          (chatNotifications, activityNotifications),
-          (before.$1 + 1, before.$2 + 1),
-        );
+        expect(factories, 0);
+        expect((chatNotifications, activityNotifications), before);
         expect(model.calls, hasLength(1));
         await controller.close();
         expect(tester.takeException(), isNull);
@@ -373,12 +366,68 @@ void main() {
     );
   }
 
+  testWidgets(
+    'corrupt native EVC and retirement leave safe Chat activity intact',
+    (tester) async {
+      final model = fixture.registerModel();
+      await openChat(tester);
+      final controller = chat(tester);
+      final corrupt = File(
+        '${_frontendArtifact.parent.path}/corrupt-native.evc',
+      );
+      final activation = (await tester.runAsync(() async {
+        await corrupt.writeAsBytes([1, 2, 3]);
+        return activateStockOpenAiActivityFrontend(
+          extensions: fixture.runtime.extensions,
+          artifactPath: corrupt.path,
+        );
+      }))!;
+      addTearDown(() => tester.runAsync(activation.close));
+      await send(tester, 'Safe evidence despite corrupt UI');
+      model.calls.single.native(
+        'Retained safe summary',
+        presentationKind: openAiReasoningSummaryPresentationKind,
+        data: const {
+          'summaryParts': ['Retained safe summary'],
+          'truncated': false,
+        },
+      );
+      model.calls.single.output('Canonical answer.');
+      model.calls.single.settle();
+      await tester.pumpAndSettle();
+      final group = controller.timeline.whereType<ChatActivitySummary>().single;
+      final history = controller.snapshot;
+      final evidence = controller.activitySnapshots.single;
+      await tap(tester, 'ACTIVITY: Retained safe summary');
+      expect(find.text('Frontend unavailable.'), findsOneWidget);
+      expect(
+        controller.activitySummary(group.runId, group.invocationId),
+        same(group),
+      );
+      await tester.runAsync(activation.close);
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Model native activity rich inspection is unavailable.'),
+        findsOneWidget,
+      );
+      expect(
+        controller.activitySummary(group.runId, group.invocationId),
+        same(group),
+      );
+      expect(controller.snapshot, same(history));
+      expect(controller.activityForRun(group.runId), same(evidence));
+      expect(controller.failure, isNull);
+      expect(model.calls, hasLength(1));
+      await disposeApplication(tester);
+    },
+  );
+
   for (final queued in [true, false]) {
     testWidgets(
-      'native negative cache listener detaches on close with ${queued ? 'queued' : 'later'} activation',
+      'closed Chat ignores ${queued ? 'queued' : 'later'} frontend activation',
       (tester) async {
         final model = fixture.registerModel();
-        int projections = 0;
+        int factories = 0;
         int notifications = 0;
         final controller = await fixture.createController(
           onChanged: () => notifications++,
@@ -395,12 +444,9 @@ void main() {
         final history = controller.snapshot;
         final before = notifications;
         ExtensionRegistration activate() => registerNativePresentation(
-          project: (_) {
-            projections++;
-            return ModelNativeActivityProjection(
-              compactText: 'Must not project after close',
-              data: const {},
-            );
+          createInspection: (_) {
+            factories++;
+            return const Text('Must not create after close');
           },
         );
         final registration = queued ? activate() : null;
@@ -411,16 +457,19 @@ void main() {
         final replacement = activate();
         addTearDown(replacement.close);
         await tester.pumpAndSettle();
-        expect(projections, 0);
+        expect(factories, 0);
         expect(notifications, before);
         expect(controller.snapshot, same(history));
-        expect(controller.timeline.whereType<ChatActivitySummary>(), isEmpty);
+        expect(
+          controller.timeline.whereType<ChatActivitySummary>().single.content,
+          'Retained native',
+        );
         expect(tester.takeException(), isNull);
       },
     );
   }
 
-  testWidgets('native negative cache recovery isolates observer failures', (
+  testWidgets('frontend registration never invokes failing Chat observers', (
     tester,
   ) async {
     final model = fixture.registerModel();
@@ -459,12 +508,8 @@ void main() {
     );
     expect(controller.snapshot, same(history));
     expect(controller.failure, isNull);
-    expect(chatNotifications, before + 1);
-    expect(failures, hasLength(2));
-    expect(
-      failures.every((failure) => failure.exception is StateError),
-      isTrue,
-    );
+    expect(chatNotifications, before);
+    expect(failures, isEmpty);
     await controller.close();
     FlutterError.onError = previous;
     expect(tester.takeException(), isNull);
@@ -515,6 +560,10 @@ void main() {
       await presenter.close();
       await tester.pumpAndSettle();
       expect(find.text('Detail: Approved reasoning summary'), findsNothing);
+      expect(
+        find.text('Model native activity rich inspection is unavailable.'),
+        findsOneWidget,
+      );
       expect(find.byType(InspectionHost), findsOneWidget);
       expect(
         controller.activitySummary(group.runId, group.invocationId),
@@ -529,10 +578,11 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byType(InspectionHost), findsOneWidget);
       final replacement = registerNativePresentation(
-        project: (_) => ModelNativeActivityProjection(
-          compactText: 'Replacement compact must not rewrite history',
-          data: const {'text': 'Replacement detail'},
-        ),
+        createInspection: (presentation) {
+          expect(presentation.compactText, 'Approved reasoning summary');
+          expect(presentation.data, {'text': 'Approved reasoning summary'});
+          return const Text('Detail: Replacement detail');
+        },
       );
       addTearDown(replacement.close);
       await tester.pumpAndSettle();
@@ -581,11 +631,9 @@ void main() {
 
   for (final narrated in [true, false]) {
     test(
-      'native compact precedes tool count but ${narrated ? 'not narration' : 'uses the first projected output'}',
+      'native compact precedes tool count but ${narrated ? 'not narration' : 'uses the first safe output'}',
       () async {
         final model = fixture.registerModel();
-        final presenter = registerNativePresentation();
-        addTearDown(presenter.close);
         final controller = await fixture.createController();
         addTearDown(controller.close);
         expect(controller.submit('Inspect with native activity'), isTrue);
@@ -617,38 +665,18 @@ void main() {
     );
   }
 
-  for (final mode in ['missing', 'declined', 'ambiguous', 'failed']) {
+  for (final safe in [false, true]) {
     for (final withTool in [false, true]) {
       test(
-        '$mode native presentation ${withTool ? 'keeps tool-count fallback' : 'creates no opaque-only group'} without failing execution',
+        '${safe ? 'Safe' : 'Unknown raw'} native output ${withTool ? 'with tools' : 'without tools'} groups only by evidence',
         () async {
           final model = fixture.registerModel();
-          int projections = 0;
-          if (mode != 'missing') {
-            final registration = registerNativePresentation(
-              project: (output) {
-                projections++;
-                if (mode == 'failed') throw _OpaquePresentationFailure();
-                if (mode == 'ambiguous') {
-                  throw StateError('Ambiguity must precede projection.');
-                }
-                return null;
-              },
-            );
-            addTearDown(registration.close);
-          }
-          if (mode == 'ambiguous') {
-            final registration = registerNativePresentation(
-              id: 'dev.example.duplicate',
-            );
-            addTearDown(registration.close);
-          }
           final controller = await fixture.createController();
           addTearDown(controller.close);
           expect(controller.submit('Native output without display'), isTrue);
           final running = controller.activeRunFuture!;
           final call = await model.callAt(0);
-          call.native('Not approved by any unique working presenter');
+          call.native(safe ? 'Safe without rich frontend' : null);
           if (withTool) {
             call.propose('read', 'read_file', {
               'relativePath': _EnvironmentChannel.sourcePath,
@@ -663,11 +691,12 @@ void main() {
           }
           await running;
           expect(controller.failure, isNull);
-          expect(projections, mode == 'failed' || mode == 'declined' ? 1 : 0);
           expect(controller.currentRun!.run.state, RunState.completed);
           expect(controller.snapshot.entries.last.content, 'Canonical final.');
           final groups = controller.timeline.whereType<ChatActivitySummary>();
-          if (withTool) {
+          if (safe) {
+            expect(groups.single.content, 'Safe without rich frontend');
+          } else if (withTool) {
             expect(groups.single.content, '1 tool operation');
           } else {
             expect(groups, isEmpty);
@@ -680,9 +709,78 @@ void main() {
               isNull,
             );
           }
+          final before = groups.toList();
+          final history = controller.snapshot;
+          final registration = registerNativePresentation();
+          await Future<void>.delayed(Duration.zero);
+          expect(controller.timeline.whereType<ChatActivitySummary>(), before);
+          await registration.close();
+          await Future<void>.delayed(Duration.zero);
+          expect(controller.timeline.whereType<ChatActivitySummary>(), before);
+          expect(controller.snapshot, same(history));
         },
       );
     }
+  }
+
+  for (final narrated in [false, true]) {
+    testWidgets(
+      '${narrated ? 'Tool narration' : 'Safe native compact'} escapes controls before interpreted Chat and caps at 160 codepoints',
+      (tester) async {
+        final model = fixture.registerModel();
+        await openChat(tester);
+        final controller = chat(tester);
+        for (final text in [
+          'Unicode \u00E9 \u{1F600}\n\r\t\u001B\u202E\u200B\\n',
+          'Unicode \u00E9 \u{1F600} ${List.filled(150, '\u202E').join()}',
+          '${'x' * 158}\u{1F600}yz',
+        ]) {
+          await send(tester, 'Check display');
+          final call = model.calls.last;
+          call.native(narrated ? 'Lower priority safe compact' : text);
+          if (narrated) {
+            call.output(text);
+            call.propose('read', 'read_file', {
+              'relativePath': _EnvironmentChannel.sourcePath,
+            });
+            call.settle();
+            await tester.pumpAndSettle();
+            model.calls.last.output('Canonical answer.');
+            model.calls.last.settle();
+          } else {
+            call.output('Canonical answer.');
+            call.settle();
+          }
+          await tester.pumpAndSettle();
+          final compact = controller.timeline
+              .whereType<ChatActivitySummary>()
+              .last
+              .content;
+          final escaped = inspectionDisplayText(text);
+          expect(
+            compact,
+            escaped.runes.length <= 160
+                ? escaped
+                : '${String.fromCharCodes(escaped.runes.take(159))}\u2026',
+          );
+          expect(compact.runes.length, lessThanOrEqualTo(160));
+          expect(find.text('ACTIVITY: $compact'), findsOneWidget);
+          final outputs = controller.activitySnapshots.last.models.first.outputs
+              .map((output) => output.item);
+          if (narrated) {
+            expect(outputs.whereType<ModelTextOutput>().single.content, text);
+          } else {
+            final native = outputs.whereType<ModelNativeOutput>().single;
+            expect(native.presentation!.compactText, text);
+            expect(native.presentation!.data, {'text': text});
+          }
+          expect(controller.snapshot.entries.last.content, 'Canonical answer.');
+          expect(controller.failure, isNull);
+        }
+        expect(model.calls, hasLength(narrated ? 6 : 3));
+        await disposeApplication(tester);
+      },
+    );
   }
 
   for (final revoked in ['controller', 'source', 'generation']) {
@@ -1164,7 +1262,7 @@ void main() {
         first.settle();
         await tester.pumpAndSettle();
         final String compact = narrated
-            ? 'Inspecting resolver ownership.\nChecking retry behavior.'
+            ? r'Inspecting resolver ownership.\nChecking retry behavior.'
             : '4 tool operations';
         final ChatActivitySummary initial = controller.timeline
             .whereType<ChatActivitySummary>()
@@ -1663,11 +1761,11 @@ void main() {
     'failed model output remains evidence, not Chat activity narration',
     () async {
       final _ModelChannel model = fixture.registerModel();
-      int projections = 0;
+      int factories = 0;
       final presenter = registerNativePresentation(
-        project: (_) {
-          projections++;
-          throw StateError('Failed turns must not project.');
+        createInspection: (_) {
+          factories++;
+          throw StateError('Failed turns must not create a presenter.');
         },
       );
       addTearDown(presenter.close);
@@ -1684,7 +1782,7 @@ void main() {
       await running;
       expect(controller.failure, isNotNull);
       expect(controller.timeline.whereType<ChatActivitySummary>(), isEmpty);
-      expect(projections, 0);
+      expect(factories, 0);
       expect(controller.activitySnapshots, hasLength(1));
       expect(controller.activitySnapshots.single.state, RunState.failed);
       expect(
@@ -3728,6 +3826,7 @@ final class _ModelCall {
           },
           'itemId': callId,
           'nativeMetadata': null,
+          'nativePresentation': null,
         },
         'terminal': null,
       });
@@ -3741,11 +3840,16 @@ final class _ModelCall {
       'toolProposal': null,
       'itemId': 'answer',
       'nativeMetadata': null,
+      'nativePresentation': null,
     },
     'terminal': null,
   });
 
-  void native(String? approvedText) => events.add(<String, Object?>{
+  void native(
+    String? approvedText, {
+    String presentationKind = 'dev.example.safe',
+    Map<String, Object?>? data,
+  }) => events.add(<String, Object?>{
     'kind': 'output',
     'observation': null,
     'output': <String, Object?>{
@@ -3753,13 +3857,20 @@ final class _ModelCall {
       'text': null,
       'toolProposal': null,
       'itemId': 'same-native-provider-id',
+      'nativePresentation': approvedText == null
+          ? null
+          : <String, Object?>{
+              'kind': presentationKind,
+              'compactText': approvedText,
+              'data': data ?? <String, Object?>{'text': approvedText},
+            },
       'nativeMetadata': <String, Object?>{
         'kind': 'dev.example.native',
         'compatibility': <String, Object?>{
           'private': 'opaque-secret-compatibility',
         },
         'data': <String, Object?>{
-          'approvedText': approvedText,
+          'approvedText': 'Raw text is not approved for display',
           'private': 'opaque-secret-data',
         },
       },

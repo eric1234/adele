@@ -98,6 +98,17 @@ internal models. Existing public tool outcomes remain owned by
 `adele_model_tool`; the minimal Run state and approval-resolution values are
 also shared through this package.
 
+`lib/src/model.dart` owns immutable
+`ModelNativePresentation(kind, compactText, data)`, with recursively copied,
+validated JSON-like safe data, and optional `ModelNativeOutput.presentation`.
+The generic app capability adapter maps the generated
+`adele_model_provider.ModelProviderNativePresentation` fields without provider
+interpretation. Transport `ModelProviderOutput.nativePresentation` is required
+nullable: `null` means semantic absence, while its generated key remains required.
+This package needs no dependency on the transport DTO or Flutter to own its
+semantic value. Raw native metadata remains exact and the only native replay
+source; safe presentation is never copied into semantic replay input.
+
 `SemanticModelRequest`, model ports/events/streams/collectors, tool catalogs and
 materializations, policy machinery, `AgentRun`, and the journal remain internal.
 This public boundary returns collected semantic turns; it does not make the
@@ -131,17 +142,24 @@ data-only outcomes including structured immutable `hostData`; arbitrary exceptio
 objects, host diagnostics, bindings, and callable authority are not projected.
 
 Chat's compact grouping is a consumer rule, not a core invariant: one successfully
-completed model invocation with tools or presentable native activity yields one
-group. Headings prefer explicit tool-batch narration, then native compact text,
+completed model invocation with tools or `output.presentation != null` yields one
+group, independently of rich frontend activation. Chat needs no negative projection
+cache or registry-change retry machinery. Headings prefer explicit tool-batch
+narration only when tools are present, then safe compact text,
 then a structural tool count, with no extra inference. Reasoning-only groups
 precede canonical final Chat text. Activity is not canonical Chat history
 and is not persisted. Completed activity retained by a current presentation cannot
 be reconstructed after reopening until persistence exists. Chat groups can open
 window-owned Inspection, where public Flutter `adele_ui` selects read-only
-presentations by exact `ToolId` or native kind, interleaved by `output.sequence`.
-Filesystem and Command own tool cards; OpenAI owns safe reasoning-summary
-projection and interpreted Inspection. This package remains Flutter-free and
-owns neither selection nor provider/tool interpretation: native envelopes stay
+presentations by exact `ToolId` or safe presentation kind, interleaved by
+`output.sequence`. Zero native presenters leave rich Inspection unavailable, not
+safe activity absent; one supplies a retained binding and many are explicitly
+ambiguous without priority. Filesystem and Command own tool cards; OpenAI Backend
+owns raw classification and safe reasoning-summary projection, Contract owns only
+identities/schema, and Frontend renders safe Inspection. Generic Chat and the
+OpenAI frontend escape compact and full display controls respectively. This package
+remains Flutter-free and owns neither selection nor provider/tool interpretation:
+native envelopes stay
 opaque here, with exact native/encrypted replay unchanged. See
 [model-native activity presentation](../../docs/architecture/overview.md#model-native-activity-presentation).
 Reasoning deltas and nested navigation remain deferred.

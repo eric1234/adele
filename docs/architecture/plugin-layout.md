@@ -42,7 +42,7 @@ choose a requested plugin's contract.
 
 | Package | Responsibility | Rules |
 | --- | --- | --- |
-| Contract | Shared typed async transport declarations and immutable values | Pure Dart; no Flutter; no transport/generation implementation |
+| Contract | Shared identities, payload schemas, typed async transport declarations, and immutable values as needed | Pure Dart; no Flutter; no provider algorithms or transport/generation implementation |
 | Backend | Privileged/native Dart behavior | Depends on public contract/API packages as needed; never on frontend; compiled locally to AOT and hosted in an external isolate group |
 | Frontend | Plugin UI source | Depends on public contract/API packages as needed; never on backend; may use Flutter; currently interpreted with pinned `flutter_eval`/`dart_eval` |
 
@@ -51,12 +51,12 @@ generated transport. Source imports do not cross between implementation packages
 and crossing a runtime boundary never shares object identity. A narrow frontend
 presentation bridge need not expose backend services or implementation objects.
 
-A plugin may also publish a deliberately public lightweight API package for an
-extension point it owns when another plugin concretely needs to implement that
-interface. That API package is interface surface, not permission to import the
-owning plugin's frontend/backend implementation. General plugin-defined
-extension packaging is accepted direction but not yet implemented as a manifest
-or lifecycle system.
+A plugin may expose a deliberately public lightweight extension interface through
+its Contract surface when another plugin concretely needs to implement it. This
+is shared interface ownership, not an additional classification/projection role
+or permission to import the owning plugin's frontend/backend implementation.
+General plugin-defined extension packaging is accepted direction but not yet
+implemented as a manifest or lifecycle system.
 
 See [`dependency-rules.md`](dependency-rules.md) and
 [`plugin-extension-model.md`](plugin-extension-model.md).
@@ -96,25 +96,31 @@ fields. The interpreted widgets own field interpretation over a read-only
 structured snapshot bridge. All stock frontends reuse `PreparedFrontend`;
 there is no parallel tool-specific runtime/activation framework.
 
-### OpenAI native activity split
+### OpenAI Contract/Backend/Frontend split
 
-The OpenAI plugin keeps provider execution, native display projection, and Flutter
-presentation in separate packages:
+The OpenAI plugin follows the canonical three roles. Native classification and
+safe display projection belong to Backend, not an additional plugin component:
 
 ```text
 plugins/openai/packages/
-|-- backend/          # openai_model_provider_backend, pure-Dart AOT
-|-- native_activity/  # openai_native_activity, pure-Dart shared projection API
+|-- contract/         # openai_contract, pure-Dart identities and payload schema
+|-- backend/          # openai_model_provider_backend, raw interpretation and AOT
 `-- frontend/         # openai_frontend, interpreted Flutter Inspection
 ```
 
-`openai_native_activity` owns `openAiResponsesItemKind`
-(`openai.responses.item.v1`), version 1, and
-`projectOpenAiReasoningSummary(ModelNativeEnvelope)` through public
-`adele_orchestration`. The backend shares its native kind/version constants;
-stock activity composition uses its bounded compact/full summary projector.
-This concrete plugin-owned API does not import Flutter, backend implementation,
-app, or kernel, and does not move OpenAI interpretation into common APIs.
+`openai_contract` owns shared identities and payload schema only. Raw Responses
+identity remains `openAiResponsesItemKind = 'openai.responses.item.v1'` with
+`openAiResponsesItemVersion = 1`; safe reasoning-summary presentation has the
+distinct kind `openai.responses.reasoning-summary.v1`, version 1. Contract contains
+no parsing, classification, projection, truncation, or display-safety algorithms.
+It does not depend on Flutter, Backend, Frontend, app, or kernel.
+
+Backend owns raw Responses reasoning-summary classification, bounded compact/full
+projection, and exact native preservation. It sends optional safe presentation
+through the generated common ModelProvider DTO, separately from raw
+`nativeMetadata`, the only native replay source. Frontend renders the safe payload;
+neither implementation depends on the other. The generic app adapter maps the
+presentation to immutable orchestration data without knowing OpenAI fields.
 
 `openai_frontend` supplies `lib/openai_frontend.dart` entrypoint
 `buildOpenAiReasoningInspection`, using public `adele_ui` rather than backend
@@ -123,12 +129,16 @@ implementation. Its EVC receives only the recursively immutable safe
 encrypted content, or execution/approval authority. Exact native/encrypted replay
 remains untouched in the backend and full Run evidence.
 
-`app/lib/plugins/stock_openai_activity_frontend.dart` owns independent prepared
-activation through existing `PreparedFrontend` and exact registry liveness.
-Generic Chat and Inspection use `adele_ui` exact-kind contribution resolution and
-never parse OpenAI. The frontend's absence/failure does not disable the model
-backend or other frontends and never triggers a native fallback. This adds no
-general manifest discovery or activation-dependency mechanism.
+`app/lib/plugins/stock_openai_activity_frontend.dart` imports Contract identity,
+loads the prepared artifact, registers the Inspection factory, and retires its
+registration/resources through existing `PreparedFrontend` and registry liveness.
+This app activation is provisional until discovery/profiles replace hard-coded
+stock selection; it does not classify or project raw output. Generic Chat uses
+`ModelNativeOutput.presentation != null` independently of frontend activation.
+Inspection resolves the exact safe presentation kind through `adele_ui`. Missing
+or failed rich presentation leaves safe activity intact without disabling backend
+execution or substituting a native card. The `app/tool` compile harness remains a
+checkout stand-in for installation/update-time preparation, not runtime activation.
 
 ## Distinct identities
 
@@ -193,8 +203,8 @@ multiple extension points does not imply multiple plugin runtimes.
 ## Normal stock artifact composition
 
 Normal composition loads Git and OpenAI backends without linking their
-implementations into Flutter; OpenAI additionally supplies separate activity
-projection and interpreted presentation packages. Synchronous, provider-free
+implementations into Flutter; OpenAI shares Contract identities/schema and supplies
+an interpreted Frontend, while projection stays in Backend. Synchronous, provider-free
 `AdeleRuntime()` owns in-process stock registrations and generic
 `ApplicationPluginBootstrap` on its
 existing capability registry. `AdeleApplication` explicitly invokes async stock

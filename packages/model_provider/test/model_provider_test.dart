@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:test/test.dart';
@@ -58,6 +60,280 @@ void main() {
     expect(events.last.terminal!.usage!.cacheWriteTokens, 3);
   });
 
+  for (final bool present in <bool>[false, true]) {
+    test('generated native output round-trips presentation=$present', () async {
+      final Map<String, Object?> nested = <String, Object?>{
+        'text': 'Safe detail',
+      };
+      final List<Object?> parts = <Object?>[nested, true, null, 1, 1.5];
+      final Map<String, Object?> data = <String, Object?>{'parts': parts};
+      final ModelProviderNativePresentation? presentation = present
+          ? ModelProviderNativePresentation(
+              kind: 'display.fixture.v2',
+              compactText: ' Safe heading.\n',
+              data: data,
+            )
+          : null;
+      final ModelProviderNativeEnvelope native = _native('opaque');
+      final ModelProviderOutput output = ModelProviderOutput(
+        kind: ModelProviderOutputKind.nativeItem,
+        text: null,
+        toolProposal: null,
+        itemId: 'native-1',
+        nativeMetadata: native,
+        nativePresentation: presentation,
+      );
+      nested['text'] = 'Changed';
+      parts.clear();
+      data.clear();
+
+      final Map<String, Object?> encoded = await _generatedOutputEvent(output);
+      final Map<String, Object?> wireOutput =
+          encoded['output']! as Map<String, Object?>;
+      expect(wireOutput['nativeMetadata'], <String, Object?>{
+        'kind': native.kind,
+        'compatibility': native.compatibility,
+        'data': native.data,
+      });
+      expect(wireOutput, contains('nativePresentation'));
+      expect(
+        wireOutput['nativePresentation'],
+        present
+            ? <String, Object?>{
+                'kind': 'display.fixture.v2',
+                'compactText': ' Safe heading.\n',
+                'data': <String, Object?>{
+                  'parts': <Object?>[
+                    <String, Object?>{'text': 'Safe detail'},
+                    true,
+                    null,
+                    1,
+                    1.5,
+                  ],
+                },
+              }
+            : null,
+      );
+
+      final ModelProviderOutput decoded = (await ModelProviderServiceClient(
+        _Channel(event: encoded),
+      ).invoke(_request()).single).output!;
+      expect(decoded.kind, ModelProviderOutputKind.nativeItem);
+      expect(decoded.itemId, output.itemId);
+      expect(decoded.text, isNull);
+      expect(decoded.toolProposal, isNull);
+      expect(decoded.nativeMetadata!.kind, native.kind);
+      expect(decoded.nativeMetadata!.compatibility, native.compatibility);
+      expect(decoded.nativeMetadata!.data, native.data);
+      expect(decoded.nativeMetadata, isNot(same(native)));
+      if (!present) {
+        expect(decoded.nativePresentation, isNull);
+        return;
+      }
+      expect(decoded.nativePresentation!.kind, presentation!.kind);
+      expect(decoded.nativePresentation!.compactText, presentation.compactText);
+      expect(decoded.nativePresentation, isNot(same(presentation)));
+      for (final ModelProviderNativePresentation value
+          in <ModelProviderNativePresentation>[
+            presentation,
+            decoded.nativePresentation!,
+          ]) {
+        expect(value.data, presentation.data);
+        expect(() => value.data.clear(), throwsUnsupportedError);
+        final List<Object?> frozenParts = value.data['parts']! as List<Object?>;
+        expect(() => frozenParts.clear(), throwsUnsupportedError);
+        expect(
+          () => (frozenParts.first! as Map<String, Object?>).clear(),
+          throwsUnsupportedError,
+        );
+      }
+    });
+  }
+
+  test(
+    'presentation absence is explicit null, not an optional wire key',
+    () async {
+      final Map<String, Object?> event = _encodedTextOutput('Text');
+      (event['output']! as Map<String, Object?>).remove('nativePresentation');
+      await expectLater(
+        ModelProviderServiceClient(
+          _Channel(event: event),
+        ).invoke(_request()).single,
+        throwsA(isA<AdeleProtocolException>()),
+      );
+    },
+  );
+
+  test(
+    'presentation is rejected on text and proposal outputs, including wire',
+    () async {
+      final ModelProviderNativePresentation presentation =
+          ModelProviderNativePresentation(
+            kind: 'display.fixture',
+            compactText: 'Safe heading',
+            data: const <String, Object?>{},
+          );
+      for (final ModelProviderOutputKind kind in <ModelProviderOutputKind>[
+        ModelProviderOutputKind.text,
+        ModelProviderOutputKind.toolProposal,
+      ]) {
+        final ModelProviderToolProposal? proposal =
+            kind == ModelProviderOutputKind.toolProposal
+            ? _proposal('call-1', 'item-1').output!.toolProposal
+            : null;
+        expect(
+          () => ModelProviderOutput(
+            kind: kind,
+            text: proposal == null ? 'Text' : null,
+            toolProposal: proposal,
+            itemId: null,
+            nativeMetadata: _native('opaque'),
+            nativePresentation: presentation,
+          ),
+          throwsFormatException,
+        );
+        final Map<String, Object?> event = _encodedTextOutput('Text');
+        final Map<String, Object?> output =
+            event['output']! as Map<String, Object?>;
+        output['kind'] = kind.name;
+        output['text'] = proposal == null ? 'Text' : null;
+        output['toolProposal'] = proposal == null
+            ? null
+            : <String, Object?>{
+                'callId': proposal.callId,
+                'name': proposal.name,
+                'arguments': proposal.arguments,
+              };
+        output['nativePresentation'] = <String, Object?>{
+          'kind': presentation.kind,
+          'compactText': presentation.compactText,
+          'data': presentation.data,
+        };
+        await expectLater(
+          ModelProviderServiceClient(
+            _Channel(event: event),
+          ).invoke(_request()).single,
+          throwsA(
+            isA<AdeleProtocolException>().having(
+              (error) => error.message,
+              'bounded category error',
+              'Invalid value for ModelProviderOutput.',
+            ),
+          ),
+        );
+      }
+    },
+  );
+
+  test(
+    'presentation validates labels and structured data at both boundaries',
+    () async {
+      final Map<String, Object?> cyclic = <String, Object?>{};
+      cyclic['self'] = cyclic;
+      final List<Object?> cyclicList = <Object?>[];
+      cyclicList.add(cyclicList);
+      Object? deep = true;
+      for (int i = 0; i < 64; i++) {
+        deep = <Object?>[deep];
+      }
+      final List<Map<String, Object?>> invalidData = <Map<String, Object?>>[
+        cyclic,
+        <String, Object?>{'list': cyclicList},
+        <String, Object?>{'deep': deep},
+        for (final Object value in <Object>[
+          double.nan,
+          double.infinity,
+          double.negativeInfinity,
+          Object(),
+          <int, Object?>{1: true},
+        ])
+          <String, Object?>{'value': value},
+      ];
+      final List<Map<String, Object?>> invalidPresentations =
+          <Map<String, Object?>>[
+            for (final String blank in <String>[
+              '',
+              ' \t\n',
+            ]) ...<Map<String, Object?>>[
+              <String, Object?>{
+                'kind': blank,
+                'compactText': 'Heading',
+                'data': <String, Object?>{},
+              },
+              <String, Object?>{
+                'kind': 'display.fixture',
+                'compactText': blank,
+                'data': <String, Object?>{},
+              },
+            ],
+            for (final Map<String, Object?> data in invalidData)
+              <String, Object?>{
+                'kind': 'display.fixture',
+                'compactText': 'Heading',
+                'data': data,
+              },
+          ];
+      for (final Map<String, Object?> invalid in invalidPresentations) {
+        expect(
+          () => ModelProviderNativePresentation(
+            kind: invalid['kind']! as String,
+            compactText: invalid['compactText']! as String,
+            data: invalid['data']! as Map<String, Object?>,
+          ),
+          throwsA(
+            isA<FormatException>().having(
+              (error) => error.toString().length,
+              'bounded error',
+              lessThan(200),
+            ),
+          ),
+        );
+        final Map<String, Object?> event = _encodedTextOutput('Text');
+        final Map<String, Object?> output =
+            event['output']! as Map<String, Object?>;
+        output['kind'] = 'nativeItem';
+        output['text'] = null;
+        output['nativeMetadata'] = <String, Object?>{
+          'kind': 'opaque',
+          'compatibility': <String, Object?>{},
+          'data': <String, Object?>{'opaque': 'unchanged'},
+        };
+        output['nativePresentation'] = invalid;
+        await expectLater(
+          ModelProviderServiceClient(
+            _Channel(event: event),
+          ).invoke(_request()).single,
+          throwsA(
+            isA<AdeleProtocolException>().having(
+              (error) => error.message.length,
+              'bounded wire error',
+              lessThan(200),
+            ),
+          ),
+        );
+      }
+    },
+  );
+
+  test('presentation accepts shared data at the maximum container depth', () {
+    Object? nested = true;
+    for (int i = 0; i < 63; i++) {
+      nested = <Object?>[nested];
+    }
+    final Map<String, Object?> data = <String, Object?>{
+      'left': nested,
+      'right': nested,
+    };
+    expect(
+      ModelProviderNativePresentation(
+        kind: 'display.fixture',
+        compactText: 'Heading',
+        data: data,
+      ).data,
+      data,
+    );
+  });
+
   test('constructors reject incoherent categories and invalid values', () {
     expect(
       () => ModelProviderEvent(
@@ -110,6 +386,7 @@ void main() {
     expect(
       () => ModelProviderOutput(
         kind: ModelProviderOutputKind.nativeItem,
+        nativePresentation: null,
         text: 'semantic payload',
         toolProposal: null,
         itemId: null,
@@ -496,6 +773,7 @@ ModelProviderEvent _proposal(String callId, String itemId) =>
       observation: null,
       output: ModelProviderOutput(
         kind: ModelProviderOutputKind.toolProposal,
+        nativePresentation: null,
         text: null,
         toolProposal: ModelProviderToolProposal(
           callId: callId,
@@ -510,6 +788,7 @@ ModelProviderEvent _proposal(String callId, String itemId) =>
 
 ModelProviderOutput _textOutput(String text) => ModelProviderOutput(
   kind: ModelProviderOutputKind.text,
+  nativePresentation: null,
   text: text,
   toolProposal: null,
   itemId: null,
@@ -595,6 +874,52 @@ final class _CapturingChannel implements AdeleStreamChannel {
   }
 }
 
+Future<Map<String, Object?>> _generatedOutputEvent(
+  ModelProviderOutput output,
+) async {
+  final _CapturingChannel channel = _CapturingChannel();
+  await ModelProviderServiceClient(channel).invoke(_request()).toList();
+  final ModelProviderServiceDispatcher dispatcher =
+      ModelProviderServiceDispatcher(_OutputService(output));
+  final Completer<Map<String, Object?>> received =
+      Completer<Map<String, Object?>>();
+  try {
+    await dispatcher.handle(<String, Object?>{
+      'kind': 'streamOpen',
+      'requestId': 1,
+      'method': modelProviderServiceInvokeId,
+      'payload': <String, Object?>{'request': channel.encodedRequest},
+    }, received.complete);
+    await dispatcher.handle(<String, Object?>{
+      'kind': 'streamCredit',
+      'requestId': 1,
+      'credit': 1,
+    }, received.complete);
+    final Map<String, Object?> event = await received.future;
+    expect(event['kind'], 'streamItem');
+    return event['payload']! as Map<String, Object?>;
+  } finally {
+    await dispatcher.close();
+  }
+}
+
+final class _OutputService implements ModelProviderService {
+  _OutputService(this.output);
+
+  final ModelProviderOutput output;
+
+  @override
+  Stream<ModelProviderEvent> invoke(ModelProviderRequest request) =>
+      Stream<ModelProviderEvent>.value(
+        ModelProviderEvent(
+          kind: ModelProviderEventKind.output,
+          observation: null,
+          output: output,
+          terminal: null,
+        ),
+      );
+}
+
 Map<String, Object?> _encodedDelta(String delta) => <String, Object?>{
   'kind': 'observation',
   'observation': <String, Object?>{
@@ -615,6 +940,7 @@ Map<String, Object?> _encodedTextOutput(String text) => <String, Object?>{
     'toolProposal': null,
     'itemId': null,
     'nativeMetadata': null,
+    'nativePresentation': null,
   },
   'terminal': null,
 };

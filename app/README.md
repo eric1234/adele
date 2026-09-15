@@ -177,7 +177,9 @@ frontend, not its source path or output environment variable.
 
 The Flutter test runner is the build-time execution environment for eval
 compilation, not an on-start compilation mechanism. Normal runtime never compiles
-source. `lib/frontend` owns only generic prepared-generation/runtime hosting;
+source. The `app/tool` compile harness is a checkout stand-in for future
+installation/update-time preparation, not an installer or runtime plugin manager.
+`lib/frontend` owns only generic prepared-generation/runtime hosting;
 `lib/plugins/stock_chat_frontend.dart` owns the provisional stock activation proxy
 and Chat controller adapter. Missing or failed EVC loading leaves presentation
 unavailable without invalidating the canonical Session, headless strategy, Git,
@@ -340,21 +342,27 @@ authoritative order without executable bindings, arbitrary exceptions, or approv
 authority. Asynchronous coalesced journal invalidations do not eagerly freeze
 snapshots per progress chunk. The controller captures the latest evidence at most
 once per frame, plus advancement-settlement catch-up, while model/tool work is
-still in flight. Native output and terminal metadata remain opaque to generic
-consumers; native presentation requires an exact-kind plugin contribution.
+still in flight. Raw native output and terminal metadata remain opaque to generic
+consumers; backend-supplied safe presentation is separate from exact replay.
+Only rich Inspection requires an exact safe-presentation-kind contribution.
 Structured tool `hostData` is retained, not flattened into summary prose or
 rendered automatically.
 
 The provisional controller subscribes before starting its Run and retains
 presentation-only activity snapshots separately from canonical Chat. It inserts
 one compact group after the initiating user entry for each successfully completed
-model invocation containing tools or presentable native activity. Four tool
+model invocation containing tools or native `output.presentation != null`. Four tool
 proposals from one invocation still produce one summary; later invocations produce
-later groups. The heading prefers ordered explicit tool-batch `ModelTextOutput`
-narration, then native `compactText`, then a structural `N tool operations` count.
+later groups. Presence is independent of frontend activation, without a negative
+projection cache or registry-change retry machinery in Chat. The heading prefers
+ordered explicit tool-batch `ModelTextOutput` narration only when tools are present,
+then safe `compactText`, then a structural `N tool operations` count. Generic Chat
+escapes unsafe display controls and reapplies the 160-code-point compact cap after
+escaping, rather than relying on stock OpenAI activation for display safety.
 A reasoning-only invocation can produce a group before its canonical final
 assistant message; proposal-free final text is not repurposed as batch narration.
-Unknown or declined native items alone create no group. The Chat strategy
+Raw items without safe presentation alone create no group; a missing rich
+presenter does not hide safe activity. The Chat strategy
 automatically includes stable shared-purpose narration guidance, with explicit
 user instructions taking precedence, without erasing
 Session instructions or changing independent AGENTS.md composition.
@@ -436,7 +444,12 @@ live-provider summary compatibility. Focused E3 presentation cases live in
 `test/model_native_activity_bridge_test.dart`,
 `test/model_native_activity_inspection_host_test.dart`, and
 `test/openai_activity_frontend_eval_test.dart`, alongside public `adele_ui`
-resolver tests and pure-Dart `openai_native_activity` projection tests.
+resolver tests. Pure-Dart raw classification, projection, bounds, and preservation
+coverage lives in the OpenAI backend's `test/openai_native_presentation_test.dart`
+and `test/openai_model_provider_backend_test.dart`. Common ModelProvider DTO tests
+and `test/development/agent/agent_capability_adapters_test.dart` cover the separate
+safe payload, required nullable transport key, and generic mapping. Chat tests
+cover safe activity independently of rich frontend activation.
 
 From `app/`, focused validation uses:
 
@@ -499,43 +512,68 @@ for the exact retained interruption.
 
 ### Model-native activity presentation
 
-Public Flutter `adele_ui` supplies `ModelNativeActivityProjection(compactText,
-data)` with recursively immutable safe data and
-`ModelNativeActivityPresentationContribution(nativeKind, project,
-createInspection)` at `modelNativeActivityPresentationContributions`.
-`project` accepts a public `ModelNativeOutput` and returns a nullable projection;
-`createInspection` accepts only that projection and returns a `Widget`.
-`ModelNativeActivityPresentationResolver` matches exact native kind: zero leaves
-the item opaque and omitted, one matching projector may decline, and multiple
-matches are explicit ambiguity. There is no priority, tie-breaking, provider
-switch, or fallback. Generic Chat and Inspection never parse OpenAI fields.
+The generated `adele_model_provider` DTO
+`ModelProviderNativePresentation(kind, compactText, data)` travels separately from
+raw `nativeMetadata`. `ModelProviderOutput.nativePresentation` is required but
+nullable: `null` denotes semantic absence, while generated keys remain required
+under the existing coherent-schema convention. `lib/core/model_provider_host.dart`
+maps it generically to pure-Dart orchestration's immutable
+`ModelNativePresentation(kind, compactText, data)` on optional
+`ModelNativeOutput.presentation`. No OpenAI import, raw classification, or
+provider-specific projection belongs in that adapter.
 
-The pure-Dart `openai_native_activity` package at
-`plugins/openai/packages/native_activity` owns
-`openAiResponsesItemKind = 'openai.responses.item.v1'`, version 1, and
-`projectOpenAiReasoningSummary(ModelNativeEnvelope)`. It validates supported
-reasoning-summary items and produces bounded compact text plus only
-`{'summaryParts': List<String>, 'truncated': bool}`. The separate Flutter
-`openai_frontend` package at `plugins/openai/packages/frontend` owns
-`lib/openai_frontend.dart` and entrypoint `buildOpenAiReasoningInspection`.
-It renders provider-supplied summaries, not raw or recovered hidden reasoning.
+Public Flutter `adele_ui` supplies
+`ModelNativeActivityPresentationContribution(presentationKind, createInspection)`
+at `modelNativeActivityPresentationContributions`. Its factory is
+`Widget Function(ModelNativePresentation)`; there is no UI projection type or
+projector callback. `ModelNativeActivityPresentationResolver` matches the exact
+safe presentation kind: zero makes rich Inspection unavailable while safe activity
+still exists, one returns a retained binding, and multiple matches are explicit
+ambiguity. There is no priority, tie-breaking, provider switch, or fallback.
+Generic Chat and Inspection never parse OpenAI fields.
 
-`lib/frontend/model_native_activity_bridge.dart` forwards only the safe projection
+OpenAI uses `plugins/openai/packages/{contract,backend,frontend}`. Pure-Dart
+`openai_contract` owns shared identities and payload schema only, with no
+algorithms. Raw `openAiResponsesItemKind = 'openai.responses.item.v1'`, version 1,
+is unchanged; safe presentation uses `openai.responses.reasoning-summary.v1`,
+version 1. Backend owns raw Responses classification and bounded reasoning-summary
+projection in `plugins/openai/packages/backend/lib/src/openai_native_presentation.dart`;
+`plugins/openai/packages/backend/lib/openai_model_provider_backend.dart` attaches
+the result while preserving exact native metadata. The safe data contains only
+`{'summaryParts': List<String>, 'truncated': bool}`. Compact/full limits remain
+160/32,768 Unicode code points and 128 display parts, with pre-processing input
+limits of 1,024 parts and 262,144 aggregate UTF-16 code units. The separate
+`openai_frontend` owns `lib/openai_frontend.dart` and
+`buildOpenAiReasoningInspection`, rendering safe provider-supplied summaries and
+escaping full display text, not raw or recovered hidden reasoning.
+
+The common Inspection host keeps exact `output.sequence` order and passes only
+`ModelNativePresentation` to
+`lib/ui/inspection/model_native_activity_inspection_host.dart`.
+`lib/frontend/model_native_activity_bridge.dart` forwards only its safe `data`
 map into the EVC. Raw native envelopes, compatibility metadata, encrypted replay
 content, Run/kernel/controller objects, and execution or approval authority do not
-cross that boundary. The backend and full Run retain exact native/encrypted replay
-unchanged; display filtering, bounds, and escaping never rewrite it. See the
+cross that boundary. The backend and full Run retain exact raw `nativeMetadata`
+as the only native replay source; safe presentation is never replayed. Display
+filtering, bounds, and escaping never rewrite raw evidence. See the
 [OpenAI frontend README](../plugins/openai/packages/frontend/README.md) for the
 plugin-owned display contract and the [backend README](../plugins/openai/packages/backend/README.md)
 for provider-local summary request support.
 
-Malformed/unsupported or empty summaries are omitted rather than guessed.
-Projector, factory, and contained EVC failures remain bounded presentation failures,
-not Run failures. Existing exact-binding liveness removes retired views and
-invalidates their resources; only fresh resolution may create a replacement, never
-retargeting stale resources to it. Multiple registrations remain ambiguous even
-if one projector could decline. Native Inspection is read-only, without approval
-or continuation controls.
+`lib/plugins/stock_openai_activity_frontend.dart` imports Contract identity, loads
+the prepared artifact, registers its factory, and retires that registration and
+resources through `PreparedFrontend` and existing registry liveness. This stock
+activation edge is explicitly provisional until discovery/profiles replace
+hard-coded selection; it performs no projection, raw parsing, or display escaping.
+
+Malformed, unsupported, empty, or oversized summary input produces no safe
+presentation in Backend, without changing Run replay. Missing/corrupt EVC,
+malformed safe payload, factory failure, and contained EVC failure affect only rich
+presentation. Existing exact-binding liveness removes retired views and
+invalidates their resources; only fresh resolution may create a replacement,
+never retargeting stale resources or removing captured safe activity. Multiple
+registrations remain explicitly ambiguous. Native Inspection is read-only,
+without approval or continuation controls.
 
 Hidden chain-of-thought and encrypted reasoning are never user-presented.
 Reasoning deltas, compaction and configuration UI, nested
@@ -871,9 +909,10 @@ packages, app code, or concrete plugins. Product, orchestration, model tools, th
 registry, and shared headless runtime retain their pure-Dart boundaries. The
 separate Chat, Filesystem Tools, Command Tools, and OpenAI frontends are compiled
 to EVC, not imported as native app views or linked to their headless/backend
-implementations. Stock OpenAI activity composition imports only the owning
-pure-Dart `openai_native_activity` projection API; provider field interpretation
-stays there, outside generic Chat, Inspection, and frontend hosting.
+implementations. Stock OpenAI activity composition imports only pure-Dart
+`openai_contract` identity/schema, not backend projection APIs. Raw Responses
+interpretation and projection stay in the OpenAI backend; safe payload rendering
+stays in its frontend, outside generic Chat, Inspection, and frontend hosting.
 
 `adele_core_extensions` imports only `adele_plugin_api` and owns core extension
 contracts with no natural existing public domain package. It does not absorb

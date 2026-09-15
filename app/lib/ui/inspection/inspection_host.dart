@@ -107,11 +107,13 @@ final class InspectionHost extends StatelessWidget {
                       ),
                     },
                   )
-                else if (output.item case final ModelNativeOutput native)
+                else if (output.item case ModelNativeOutput(
+                  presentation: final ModelNativePresentation presentation,
+                ))
                   ModelNativeActivityInspectionHost(
                     key: ValueKey((selection.runId, model.id, output.sequence)),
                     extensions: extensions,
-                    output: native,
+                    presentation: presentation,
                   ),
             ],
           ],
