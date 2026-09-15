@@ -17,6 +17,7 @@ final class AdeleShell extends StatelessWidget {
     this.taskControls,
     this.sessionControls,
     this.inspection,
+    this.inspectionScrollController,
   });
 
   final Project? project;
@@ -31,6 +32,7 @@ final class AdeleShell extends StatelessWidget {
   final Widget? taskControls;
   final Widget? sessionControls;
   final Widget? inspection;
+  final ScrollController? inspectionScrollController;
 
   @override
   Widget build(BuildContext context) {
@@ -180,7 +182,10 @@ final class AdeleShell extends StatelessWidget {
                                 left: horizontal ? 16 : 0,
                                 top: horizontal ? 0 : 16,
                               ),
-                              child: SingleChildScrollView(child: content),
+                              child: SingleChildScrollView(
+                                controller: inspectionScrollController,
+                                child: content,
+                              ),
                             ),
                           ),
                       ],

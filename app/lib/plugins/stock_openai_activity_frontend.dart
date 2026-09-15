@@ -49,28 +49,61 @@ activateStockOpenAiActivityFrontend({
         },
       ),
     );
+    activation._registrations.add(activation._registration);
+    activation._compactRegistration = extensions.register(
+      point: modelNativeActivityCompactPresentationContributions,
+      id: ExtensionId('dev.adele.plugin.openai.activity-compact'),
+      value: ModelNativeActivityCompactPresentationContribution(
+        presentationKind: openAiReasoningSummaryPresentationKind,
+        createPresentation: (presentation) {
+          if (!activation._compactActive) {
+            throw StateError('The OpenAI compact frontend is retired.');
+          }
+          return generation.createPresentation(
+            library: 'package:openai_frontend/openai_frontend.dart',
+            entrypoint: 'buildOpenAiReasoningCompact',
+            key: ObjectKey(presentation),
+            createBridge: () => ModelNativeActivityBridge(
+              presentation: presentation,
+              isActive: () => activation._compactActive,
+            ),
+          );
+        },
+      ),
+    );
+    activation._registrations.add(activation._compactRegistration);
     return activation;
   } on Object {
+    activation._closed = true;
     generation.invalidate();
+    await activation._registrations.close();
     rethrow;
   }
 }
 
-/// Owns one EVC generation and its exact presentation registration.
+/// Owns one EVC generation and its independent exact presentation registrations.
 final class StockOpenAiActivityFrontendActivation {
   StockOpenAiActivityFrontendActivation._(this._generation);
 
   final PreparedFrontend _generation;
   late final ExtensionRegistration _registration;
+  late final ExtensionRegistration _compactRegistration;
+  final ExtensionRegistrationGroup _registrations =
+      ExtensionRegistrationGroup();
   bool _closed = false;
   Future<void>? _closing;
 
   bool get _active => !_closed && !_registration.isClosed;
+  bool get _compactActive => !_closed && !_compactRegistration.isClosed;
+
+  /// Retires one role; the exact-binding host disposes only that role's views.
+  Future<void> retireCompact() => _compactRegistration.close();
+  Future<void> retireInspection() => _registration.close();
 
   Future<void> close() {
     if (_closing != null) return _closing!;
     _closed = true;
-    final Future<void> retiring = _registration.close();
+    final Future<void> retiring = _registrations.close();
     _generation.invalidate();
     return _closing = retiring;
   }

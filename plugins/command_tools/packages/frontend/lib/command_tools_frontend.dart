@@ -3,17 +3,27 @@ import 'package:adele_ui/tool_activity_inspection_bridge.dart';
 import 'package:flutter/material.dart';
 
 Widget buildRunCommandInspection() => RunCommandInspection();
+Widget buildRunCommandCompact() => RunCommandInspection(compact: true);
 
 // Display delimiters preserve value boundaries; this is not shell quoting.
 String _quoted(String value) =>
     '"${inspectionDisplayText(value).replaceAll('"', r'\"')}"';
 
 class RunCommandInspection extends StatefulWidget {
+  RunCommandInspection({this.compact = false});
+
+  final bool compact;
+
   @override
-  State<RunCommandInspection> createState() => _RunCommandInspectionState();
+  State<RunCommandInspection> createState() =>
+      _RunCommandInspectionState(compact);
 }
 
 class _RunCommandInspectionState extends State<RunCommandInspection> {
+  // The eval pin cannot reliably resolve this field through State.widget.
+  _RunCommandInspectionState(this.compact);
+
+  final bool compact;
   bool disposed = false;
 
   @override
@@ -35,6 +45,31 @@ class _RunCommandInspectionState extends State<RunCommandInspection> {
   Widget build(BuildContext context) {
     final ToolActivityInspectionSnapshot snapshot = readToolActivitySnapshot();
     final Map<String, dynamic> arguments = snapshot.canonicalArguments;
+    if (compact) {
+      final dynamic program = arguments['program'];
+      final dynamic argv = arguments['arguments'];
+      if (program is! String || argv is! List<dynamic>) {
+        throw FormatException('Run Command compact data is unavailable.');
+      }
+      final List<String> tokens = <String>[];
+      for (int index = 0; index < argv.length && index < 4; index++) {
+        final dynamic argument = argv[index];
+        if (argument is! String) {
+          throw FormatException('Run Command argument is unavailable.');
+        }
+        tokens.add(
+          compactDisplayText(argument, maximumCharacters: 48, quoted: true),
+        );
+      }
+      String argumentsText = argv.isEmpty ? '[]' : '[${tokens.join(', ')}]';
+      if (argv.length > tokens.length) {
+        argumentsText =
+            '$argumentsText (${argv.length - tokens.length} more arguments)';
+      }
+      return Text(
+        'Run Command: ${compactDisplayText(program, maximumCharacters: 80, quoted: true)} $argumentsText',
+      );
+    }
     final Map<String, dynamic> data = snapshot.hostData;
     final String lifecycle = snapshot.lifecycle;
     String status = lifecycle;

@@ -36,10 +36,16 @@ Flutter and `adele_ui`, not the headless implementation, app, or kernel. The
 generic host matches exact Tool ID and transports immutable maps/latest common
 lifecycle without interpreting command fields.
 
+The same EVC exposes a distinct compact entrypoint through
+`ToolActivityCompactPresentationContribution`. It shows bounded program/argv
+tokens with boundaries preserved, never reconstructed shell quoting. Common
+hosting owns inspect interaction in Chat, group rows, and card headers. Missing
+compact UI retains a factual alias fallback, not native command-field parsing.
+
 Stock activation independently loads prepared EVC through `PreparedFrontend`;
 coalesced read-only snapshot updates retain the same view/runtime. Missing/corrupt
 or retired presentation stays unavailable without backend failure or a native
 tool-card fallback. Only common host approval UI supplies exact-invocation
-Allow/Deny; this card cannot execute, resume, or approve. Console navigation and
-nested inspection remain deferred. Build-time preparation is documented in
+Allow/Deny; this card cannot execute, resume, approve, or navigate. Console
+navigation and arbitrary plugin drill-down remain deferred. Build-time preparation is documented in
 [`app/README.md`](../../app/README.md#prepared-chat-frontend).

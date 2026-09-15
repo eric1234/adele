@@ -35,3 +35,41 @@ String inspectionDisplayText(String value) {
   result.write(value.substring(offset));
   return result.toString();
 }
+
+/// A bounded display prefix, including escapes, optional delimiters and `...`.
+/// Scans only the prefix needed for the budget, preserving Unicode pairs and
+/// whole escape tokens. Delimiters show value boundaries, not shell quoting.
+String compactDisplayText(
+  String value, {
+  int maximumCharacters = 160,
+  bool quoted = false,
+}) {
+  if (maximumCharacters < 8) {
+    throw ArgumentError('Compact display requires at least eight characters.');
+  }
+  final int budget = maximumCharacters - (quoted ? 2 : 0);
+  final String delimiter = quoted ? '"' : '';
+  final StringBuffer result = StringBuffer();
+  int characters = 0;
+  int clippedEnd = 0;
+  int offset = 0;
+  while (offset < value.length) {
+    int end = offset + 1;
+    final int unit = value.codeUnitAt(offset);
+    if (unit >= 0xD800 && unit <= 0xDBFF && end < value.length) {
+      final int next = value.codeUnitAt(end);
+      if (next >= 0xDC00 && next <= 0xDFFF) end++;
+    }
+    String token = inspectionDisplayText(value.substring(offset, end));
+    if (quoted && token == '"') token = r'\"';
+    final int count = end - offset == 2 && token.length == 2 ? 1 : token.length;
+    if (characters + count > budget) {
+      return '$delimiter${result.toString().substring(0, clippedEnd)}...$delimiter';
+    }
+    result.write(token);
+    characters += count;
+    if (characters <= budget - 3) clippedEnd = result.length;
+    offset = end;
+  }
+  return '$delimiter$result$delimiter';
+}

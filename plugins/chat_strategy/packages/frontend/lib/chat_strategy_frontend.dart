@@ -37,23 +37,8 @@ class _ChatFrontendState extends State<ChatFrontend> {
     super.dispose();
   }
 
-  // The eval pin cannot retain a for-in local reliably in a late callback.
-  Widget activity(ChatPresentationEntry entry) {
-    return Padding(
-      padding: EdgeInsets.only(bottom: 16),
-      child: TextButton(
-        onPressed: () {
-          if (!disposed && entry.id != null) {
-            inspectChatActivity(entry.id!);
-          }
-        },
-        child: Text(
-          'ACTIVITY: ${entry.content}',
-          style: TextStyle(fontSize: 12, color: Colors.grey),
-        ),
-      ),
-    );
-  }
+  Widget activity(ChatPresentationEntry entry) =>
+      buildChatActivity(entry.id!) ?? SizedBox.shrink();
 
   @override
   Widget build(BuildContext context) {

@@ -56,6 +56,11 @@ final class ChatController {
 
   /// Read-only evidence changed, independently of compact Chat presentation.
   final void Function()? onActivityChanged;
+  final ValueNotifier<int> _activityChanges = ValueNotifier(0);
+
+  /// Retained evidence updates, including progress that leaves the timeline intact.
+  Listenable get activityChanges => _activityChanges;
+
   late final ChatSessionState _chat;
   late ChatSessionSnapshot _snapshot;
   late ChatUserMessage _activeUserMessage;
@@ -294,8 +299,9 @@ final class ChatController {
     final bool changed = count != _visibleActivityCount;
     _visibleActivityCount = count;
     for (final callback in [
+      () => _activityChanges.value++,
       onActivityChanged,
-      // Tool progress stays inspectable without rebuilding compact UI per chunk.
+      // Compact sources refresh independently of Chat's interpreted timeline.
       if (notify && changed) onChanged,
     ]) {
       if (_closed) return;
@@ -334,9 +340,16 @@ final class ChatController {
       }
       final output = [...model.outputs]
         ..sort((a, b) => a.sequence.compareTo(b.sequence));
-      final int count = output
-          .where((output) => output.item is ModelToolProposalOutput)
-          .length;
+      final visible = output.where((output) {
+        final item = output.item;
+        return item is ModelToolProposalOutput ||
+            (item is ModelNativeOutput && item.presentation != null);
+      }).toList();
+      final int count = visible.length;
+      if (count == 0) continue;
+      final bool hasTools = visible.any(
+        (output) => output.item is ModelToolProposalOutput,
+      );
       String? compactNative;
       for (final item in output) {
         if (item.item case ModelNativeOutput(
@@ -346,8 +359,7 @@ final class ChatController {
           break;
         }
       }
-      if (count == 0 && compactNative == null) continue;
-      final String narration = count == 0
+      final String narration = !hasTools || count == 1
           ? ''
           : output
                 .map((output) => output.item)
@@ -356,16 +368,24 @@ final class ChatController {
                 .join('\n')
                 .trim();
       final content = inspectionDisplayText(
-        narration.isNotEmpty
+        count == 1
+            ? switch (visible.single.item) {
+                ModelToolProposalOutput(:final proposal) => proposal.alias,
+                ModelNativeOutput(:final presentation) =>
+                  presentation!.compactText,
+                _ => throw StateError('Expected a visible model output.'),
+              }
+            : narration.isNotEmpty
             ? narration
-            : compactNative ??
-                  '$count tool ${count == 1 ? 'operation' : 'operations'}',
+            : compactNative ?? '$count operations',
       );
       // Completed evidence and its compact summary outlive frontend generations.
       // Cap after escaping so invisible controls cannot expand a Chat row.
       _activitySummaries[key] = ChatActivitySummary(
         runId: activity.runId,
         invocationId: model.id,
+        activityCount: count,
+        outputSequence: count == 1 ? visible.single.sequence : null,
         content: content.runes.length <= 160
             ? content
             : '${String.fromCharCodes(content.runes.take(159))}\u2026',
@@ -410,6 +430,7 @@ final class ChatController {
     _detachActivity();
     return _closing ??= () async {
       await _activeRunFuture;
+      _activityChanges.dispose();
     }();
   }
 }
@@ -435,10 +456,20 @@ final class ChatActivitySummary extends ChatTimelineEntry {
     required this.runId,
     required this.invocationId,
     required this.content,
-  });
+    required this.activityCount,
+    this.outputSequence,
+  }) : assert(activityCount > 0),
+       assert((activityCount == 1) == (outputSequence != null));
 
   final RunId runId;
   final ModelInvocationId invocationId;
+
+  /// Only proposals and explicitly safe native presentations count as activity.
+  final int activityCount;
+
+  /// A single output's journal sequence; groups retain invocation identity only.
+  final int? outputSequence;
+  bool get isGroup => activityCount > 1;
   @override
   final String content;
 }

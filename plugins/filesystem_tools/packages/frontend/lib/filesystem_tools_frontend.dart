@@ -3,13 +3,23 @@ import 'package:adele_ui/tool_activity_inspection_bridge.dart';
 import 'package:flutter/material.dart';
 
 Widget buildApplyPatchInspection() => ApplyPatchInspection();
+Widget buildApplyPatchCompact() => ApplyPatchInspection(compact: true);
 
 class ApplyPatchInspection extends StatefulWidget {
+  ApplyPatchInspection({this.compact = false});
+
+  final bool compact;
+
   @override
-  State<ApplyPatchInspection> createState() => _ApplyPatchInspectionState();
+  State<ApplyPatchInspection> createState() =>
+      _ApplyPatchInspectionState(compact);
 }
 
 class _ApplyPatchInspectionState extends State<ApplyPatchInspection> {
+  // The eval pin cannot reliably resolve this field through State.widget.
+  _ApplyPatchInspectionState(this.compact);
+
+  final bool compact;
   bool disposed = false;
 
   @override
@@ -31,8 +41,23 @@ class _ApplyPatchInspectionState extends State<ApplyPatchInspection> {
   Widget build(BuildContext context) {
     final ToolActivityInspectionSnapshot snapshot = readToolActivitySnapshot();
     final Map<String, dynamic> arguments = snapshot.canonicalArguments;
-    final Map<String, dynamic> data = snapshot.hostData;
     final dynamic edits = arguments['edits'];
+    if (compact) {
+      final dynamic target = arguments['relativePath'];
+      if (target is! String || edits is! List<dynamic>) {
+        throw FormatException('Apply Patch compact data is unavailable.');
+      }
+      final String path = compactDisplayText(
+        target,
+        maximumCharacters: 120,
+        quoted: true,
+      );
+      // This is the canonical requested count, not applied edits or diff lines.
+      final int count = edits.length;
+      return Text(
+        'Apply Patch: $path / $count ${count == 1 ? 'edit' : 'edits'}',
+      );
+    }
     final String lifecycle = snapshot.lifecycle;
     String status = lifecycle;
     if (lifecycle == 'prepared') status = 'Prepared';
@@ -46,6 +71,7 @@ class _ApplyPatchInspectionState extends State<ApplyPatchInspection> {
     if (disposition == 'policyDenied') status = 'Policy denied';
     if (disposition == 'cancelled') status = 'Cancelled';
     if (disposition == 'indeterminate') status = 'Indeterminate';
+    final Map<String, dynamic> data = snapshot.hostData;
     final String path = inspectionDisplayText(
       "${arguments['relativePath'] ?? 'Unavailable'}",
     ).replaceAll('"', r'\"');

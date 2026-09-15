@@ -13,7 +13,7 @@ Provider-neutral Run/model/tool/policy/approval mechanics
 Session-bound executable strategies and headless stock Chat
 Typed Session presentation and prepared interpreted stock Chat history/composer
 Read-only live Run activity with tool-batch narration and native activity summaries
-Window-local Inspection with interpreted tool cards and OpenAI reasoning summaries
+Plugin-owned compact activity and retained, newest-first Inspection cards
 Per-inference instruction-source capture and immutable context snapshots
 Shared application runtime and static stock plugin composition
 Typed Project selectors and minimal local-directory Project opening
@@ -193,8 +193,10 @@ not invalidate the Session or backend execution.
 Normal Chat presentation loads prepared EVC bytecode rather than compiling source
 at runtime. Its narrow bridge carries immutable primitive mixed message/activity
 timeline snapshots, composer-enabled state, prompt submission with synchronous
-boolean acceptance, and read-only Inspection requests using emitted opaque activity
-IDs. Run status and approval cards remain host-owned under
+boolean acceptance, and host-built inspectable activity widgets using opaque IDs
+emitted to that presentation. These native slots compose plugin compact widgets
+in their own prepared runtimes, without plugin-specific Chat parsing.
+Run status and approval cards remain host-owned under
 `app/lib/ui/execution`; execution objects and approval authority never cross that
 bridge. `ChatController` remains provisional in `app/lib/ui/chat`, while generic
 prepared frontend hosting lives in `app/lib/frontend` and stock Chat activation
@@ -206,11 +208,14 @@ Normal Runs expose immutable live activity through public pure-Dart
 `adele_orchestration`, projected by the application host from the internal journal.
 Observation grants no execution or approval authority. Ordered model text, opaque
 native outputs, proposals, and resolved tool evidence retain stable identities.
-Chat displays one lightweight group per successfully completed model invocation
-containing tool proposals or a native output with `presentation != null`,
-independently of rich frontend activation. Its heading prefers explicit narration
-only when tools are present, then safe presentation `compactText`, then a
-structural tool-operation count. Reasoning-only activity appears before the
+Chat counts one occurrence per tool proposal or native output with
+`presentation != null` within each successfully completed model invocation.
+Narration and opaque native items do not count. A single occurrence appears
+directly using plugin compact presentation; two or more use one lightweight group.
+Its heading prefers explicit narration only when tools are present, then safe
+presentation `compactText`, then a structural operation count. Missing compact
+presentation preserves a bounded tool alias or provider-approved compact text,
+never a one-operation group count. Reasoning-only activity appears before the
 canonical final assistant text, without turning that text into batch narration.
 The Chat strategy automatically adds batch-narration guidance to its inference
 instructions while preserving Session instructions and independent context sources.
@@ -221,17 +226,20 @@ Session cannot restore historical activity without future persistence. Raw nativ
 output remains opaque to generic Chat and Inspection code; the provider backend
 supplies safe presentation separately. Chat needs no native-presentation negative
 cache or registry-change retry machinery to decide activity presence.
-Clicking a group opens one window-local Inspection selected by exact Session,
-Run, and model-invocation identity. The common host interleaves tools and native
-activity by exact `output.sequence`, including unprepared/rejected tool
-placeholders. Filesystem Tools and Command Tools supply separate interpreted
-`apply_patch` and `run_command` cards through
-public `adele_ui` read-only tool Inspection contributions. The app transports
-immutable data without interpreting plugin fields; missing/failed presentation
-stays unavailable without failing execution or using native tool cards. Close
-removes only the view; changing the presented Session clears selection. Tool cards
-show status, never Allow/Deny controls. See `docs/architecture/overview.md` for
-exact Tool ID resolution, liveness, and deferred scope.
+Clicking prepends a window-local Inspection card: a group target identifies exact
+Session/Run/model, while an individual target additionally identifies output
+sequence and remains stable from proposal through prepared invocation. Card IDs
+are independent of targets; duplicate targets are permitted. Cards independently
+collapse/expand or dismiss without affecting other cards or evidence. Group bodies
+interleave compact tool/native rows in exact output order; common row clicks
+prepend rich individual cards without replacing the group. Retained cards follow
+live evidence, survive follow-up prompts, and clear on Session replacement.
+Filesystem Tools, Command Tools, and OpenAI expose compact and rich entrypoints
+from their existing prepared artifacts through distinct public `adele_ui` roles.
+Exact zero/one/many resolution never picks an ordering winner; retirement affects
+only presentation. The app transports immutable data without interpreting plugin
+fields. Plugins receive no inspect or approval callbacks. See
+`docs/architecture/overview.md` for contracts, liveness, and deferred scope.
 
 The generated `adele_model_provider` contract carries
 `ModelProviderNativePresentation(kind, compactText, data)` separately from raw
@@ -664,13 +672,14 @@ compaction, and context preview remain deferred.
 General provider/model configuration, Task Browser, and richer Session/Run UI
 remain deferred. The normal product path reaches one stock Chat Session with
 plugin-owned evaluated history/composer and sequential, approval-gated Runs through
-experimental ChatGPT subscription auth. Live compact Chat activity groups open
-window-local Inspection with interpreted Apply Patch, Run Command, and OpenAI
-provider-supplied reasoning-summary cards. E3 regression scope uses real prepared
-artifacts with local fake Responses for mixed reasoning/tool approvals and a
-separate reasoning-only final response, not live-provider evidence.
+experimental ChatGPT subscription auth. Single compact Chat activities and groups
+open retained window-local Inspection cards with interpreted Apply Patch, Run
+Command, and OpenAI provider-supplied reasoning-summary bodies. Deterministic
+regression scope uses real prepared artifacts with local fake Responses for
+reasoning-only activity, mixed groups, nested individual cards, independent card
+controls, live evidence, and separate tool approvals, not live-provider evidence.
 Hidden chain-of-thought and encrypted reasoning are never user-presented.
-Reasoning deltas, compaction UI, nested inspection, Source/Diff/Console navigation, terminal/PTY and
+Reasoning deltas, compaction UI, arbitrary plugin drill-down, Source/Diff/Console navigation, terminal/PTY and
 full-output views, and the broader presentation extension ecosystem remain deferred.
 GitHub, cloud, recent-project/catalog selectors, persistence, and deduplication
 are not implemented; application Command surfacing remains deferred.

@@ -18,6 +18,9 @@ final class StockToolInspectionFrontend {
 
   final PreparedFrontend _generation;
   late final ExtensionRegistration _registration;
+  late final ExtensionRegistration _compactRegistration;
+  final ExtensionRegistrationGroup _registrations =
+      ExtensionRegistrationGroup();
   bool _closed = false;
   Future<void>? _closing;
 
@@ -30,7 +33,9 @@ final class StockToolInspectionFrontend {
     toolId: applyPatchToolId,
     library: 'package:filesystem_tools_frontend/filesystem_tools_frontend.dart',
     entrypoint: 'buildApplyPatchInspection',
+    compactEntrypoint: 'buildApplyPatchCompact',
     extensionId: 'dev.adele.plugin.filesystem-tools.inspection',
+    compactExtensionId: 'dev.adele.plugin.filesystem-tools.compact',
   );
 
   static Future<StockToolInspectionFrontend> activateCommand({
@@ -42,7 +47,9 @@ final class StockToolInspectionFrontend {
     toolId: runCommandToolId,
     library: 'package:command_tools_frontend/command_tools_frontend.dart',
     entrypoint: 'buildRunCommandInspection',
+    compactEntrypoint: 'buildRunCommandCompact',
     extensionId: 'dev.adele.plugin.command-tools.inspection',
+    compactExtensionId: 'dev.adele.plugin.command-tools.compact',
   );
 
   static Future<StockToolInspectionFrontend> _activate({
@@ -51,7 +58,9 @@ final class StockToolInspectionFrontend {
     required ToolId toolId,
     required String library,
     required String entrypoint,
+    required String compactEntrypoint,
     required String extensionId,
+    required String compactExtensionId,
   }) async {
     if (artifactPath.isEmpty) {
       throw StateError(
@@ -90,19 +99,49 @@ final class StockToolInspectionFrontend {
           },
         ),
       );
+      frontend._registrations.add(frontend._registration);
+      frontend._compactRegistration = extensions.register(
+        point: toolActivityCompactPresentationContributions,
+        id: ExtensionId(compactExtensionId),
+        value: ToolActivityCompactPresentationContribution(
+          toolId: toolId,
+          createPresentation: (source) {
+            if (!frontend._compactActive) {
+              throw StateError('The $compactExtensionId frontend is retired.');
+            }
+            return generation.createPresentation(
+              library: library,
+              entrypoint: compactEntrypoint,
+              key: ObjectKey(source),
+              createBridge: () => ToolActivityInspectionBridge(
+                source: source,
+                isActive: () => frontend._compactActive,
+              ),
+            );
+          },
+        ),
+      );
+      frontend._registrations.add(frontend._compactRegistration);
       return frontend;
     } on Object {
+      frontend._closed = true;
       generation.invalidate();
+      await frontend._registrations.close();
       rethrow;
     }
   }
 
   bool get _active => !_closed && !_registration.isClosed;
+  bool get _compactActive => !_closed && !_compactRegistration.isClosed;
+
+  /// Retires one role without invalidating the shared artifact or its sibling.
+  Future<void> retireCompact() => _compactRegistration.close();
+  Future<void> retireInspection() => _registration.close();
 
   Future<void> close() {
     if (_closing != null) return _closing!;
     _closed = true;
-    final Future<void> retiring = _registration.close();
+    final Future<void> retiring = _registrations.close();
     _generation.invalidate();
     return _closing = retiring;
   }

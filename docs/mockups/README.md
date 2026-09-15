@@ -505,6 +505,10 @@ Between visible user/Agent messages, the stock Chat strategy displays a compact 
 
 Common operation types include tool calls and provider-visible reasoning/activity traces. Individual operations should not fill the transcript with noise; contiguous operations between messages are grouped.
 
+A single presentable operation may appear directly using its compact
+presentation, without a one-item group wrapper. Multiple operations share a
+lightweight group summary rather than adding a detailed log to the conversation.
+
 Example while active:
 
 ```text
@@ -530,7 +534,9 @@ ACTIVITY · Investigated resolver cycle handling
 ✓ Read         resolver_test.dart
 ```
 
-Clicking a specific operation adds a separate inspection.
+Group inspections contain compact individual operations, not full detail bodies.
+Clicking a specific operation adds a separate inspection above the group, retaining
+the group and other cards.
 
 ## 8.1 Reasoning/provider differences
 
@@ -938,6 +944,10 @@ These work items belong to an individual Session. They are not one canonical Tas
 Examples include tool-call details, grouped operation activity, file-read details, search details, MCP invocation details, change-set metadata, and plugin-provided structured inspections.
 
 Cards are independently expandable/collapsible/removable and not manually reordered initially. Closing an inspection removes its **view**, not the tool call, output, plugin-owned content, or underlying state.
+
+Opening an inspection prepends its card without closing or collapsing existing
+cards. Collapsing retains the target and an identifying compact header in the same
+position. Multiple expanded cards remain accessible together through scrolling.
 
 Clicking an originating item again restores/reuses an inspection view where appropriate.
 

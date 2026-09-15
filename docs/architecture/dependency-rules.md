@@ -155,8 +155,10 @@ The separate `chat_strategy_frontend` Flutter package renders history/composer
 from prepared EVC, without importing the headless Chat implementation, app, or
 kernel. Its eval bridge carries only immutable primitive message/activity timeline
 snapshots, composer-enabled state, string submission returning synchronous
-boolean acceptance, and read-only Inspection requests for emitted opaque activity
-IDs. The stock adapter resolves only exact retained Run/model identities; no
+boolean acceptance, and an opaque host-built activity-widget slot for IDs emitted
+to that presentation. The native slot owns inspect interaction and hosts a
+plugin-owned compact widget in its own prepared runtime. The stock adapter
+resolves only exact retained Run/model/output identities; no
 execution, kernel, controller, or approval objects cross it. The native
 Session presentation factory is distinct from this narrow eval bridge.
 
@@ -176,14 +178,24 @@ Resolution matches exact `ToolId` with unavailable/one/ambiguous outcomes and us
 existing registry binding liveness. Widgets/resources retire with their exact
 registration; only fresh resolution may select a replacement.
 
-Application State owns window-local Inspection selection.
-`app/lib/ui/inspection/inspection_host.dart` owns common group framing and
-tool/native composition by exact `output.sequence`, including unprepared/rejected
-tool placeholders, not plugin field interpretation. This adds no public physical panel API or
+`adele_ui` separately owns tool/native Compact Presentation contributions and
+resolvers, receiving the same read-only tool source or safe native presentation.
+Compact is a semantic role, not rich Inspection resized for Chat. Exact matching
+and binding liveness are unchanged; zero/many/failure/retirement preserve common
+bounded identity or safe-text fallback without parsing plugin fields.
+
+Application State owns the newest-first window-local Inspection card stack.
+`app/lib/ui/inspection/inspection_host.dart` owns card identity/chrome, independent
+collapse/dismiss state, common inspect interaction, and compact group rows in
+exact `output.sequence`, including unprepared/rejected tool placeholders.
+Group-row selection prepends an individual output card, whose body uses the
+existing rich presenter. Plugins receive no navigation or approval authority.
+Chat owns grouping/timeline placement; Run/core owns evidence identity and
+lifecycle. This adds no public physical panel API or
 Session history; see [`overview.md`](overview.md#activity-inspection).
 
 The separate Flutter `filesystem_tools_frontend` and `command_tools_frontend`
-packages own `apply_patch` and `run_command` Inspection field interpretation. They
+packages own `apply_patch` and `run_command` compact and rich field interpretation. They
 depend only on Flutter and `adele_ui`, not headless implementations, app, or kernel.
 `app/lib/plugins/stock_tool_inspection_frontends.dart` imports the owning headless
 packages' public `applyPatchToolId` and `runCommandToolId` only for stock

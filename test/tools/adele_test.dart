@@ -391,6 +391,53 @@ void main() {
     );
   });
 
+  test('compact composition preserves plugin parsing and authority boundaries', () {
+    final files = <File>[
+      File('app/lib/plugins/stock_chat_frontend.dart'),
+      for (final path in [
+        'app/lib/ui/chat',
+        'app/lib/ui/activity',
+        'app/lib/ui/inspection',
+      ])
+        ...Directory(path).listSync(recursive: true).whereType<File>(),
+    ];
+    for (final file in files) {
+      if (!file.path.endsWith('.dart')) continue;
+      final source = file.readAsStringSync();
+      for (final forbidden in [
+        "['relativePath']",
+        "['edits']",
+        "['program']",
+        "['arguments']",
+        "['summaryParts']",
+        'package:filesystem_tools_frontend/',
+        'package:command_tools_frontend/',
+        'package:openai_frontend/',
+      ]) {
+        expect(source, isNot(contains(forbidden)), reason: file.path);
+      }
+    }
+    for (final path in [
+      'packages/ui/lib/tool_activity_compact_presentation.dart',
+      'packages/ui/lib/model_native_activity_compact_presentation.dart',
+      'plugins/filesystem_tools/packages/frontend/lib/filesystem_tools_frontend.dart',
+      'plugins/command_tools/packages/frontend/lib/command_tools_frontend.dart',
+      'plugins/openai/packages/frontend/lib/openai_frontend.dart',
+    ]) {
+      final source = File(path).readAsStringSync();
+      for (final forbidden in [
+        'openInspection(',
+        'inspectActivity(',
+        'ToolApprovalResolution',
+        'resolveApproval(',
+        'package:adele_desktop/',
+        'package:agent_kernel/',
+      ]) {
+        expect(source, isNot(contains(forbidden)), reason: path);
+      }
+    }
+  });
+
   test('target data preserves package-specific runners and timeouts', () {
     expect(
       <String>[
