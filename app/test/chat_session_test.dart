@@ -11,11 +11,10 @@ import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
+import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/plugins/chat_frontend_bridge.dart';
 import 'package:adele_desktop/plugins/stock_chat_execution_status.dart';
 import 'package:adele_desktop/plugins/stock_chat_frontend.dart';
-import 'package:adele_desktop/plugins/stock_openai_activity_frontend.dart';
-import 'package:adele_desktop/plugins/stock_tool_inspection_frontends.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
 import 'package:adele_desktop/ui/activity/tool_activity_compact_host.dart';
 import 'package:adele_desktop/ui/chat/chat_controller.dart';
@@ -49,9 +48,11 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../tool/chat_frontend_compiler.dart';
 import '../tool/tool_inspection_frontend_compiler.dart';
+import 'support/prepared_frontend_installations.dart';
 
 late File _frontendArtifact;
 late File _filesystemFrontendArtifact;
+late Directory _frontendInstallations;
 
 const StockChatGptConfiguration _configuration = StockChatGptConfiguration(
   model: 'gpt-6-astra',
@@ -92,6 +93,10 @@ void main() {
       artifact: _filesystemFrontendArtifact,
       frontend: ToolInspectionFrontend.filesystem,
     );
+    _frontendInstallations = await prepareFrontendInstallations(
+      root: Directory('${directory.path}/installed'),
+      artifacts: {'dev.adele.plugin.chat-strategy': _frontendArtifact},
+    );
   });
 
   setUp(() {
@@ -125,17 +130,24 @@ void main() {
   Future<void> openTask(
     WidgetTester tester, {
     StockChatGptConfiguration? configuration = _configuration,
-    String? frontendArtifact,
+    String? installationRoot,
   }) async {
     // Start file IO in real async; frame settling cannot await activation.
     await tester.runAsync(() async {
       await tester.pumpWidget(
         fixture.application(
           configuration: configuration,
-          frontendArtifact: frontendArtifact,
+          installationRoot: installationRoot,
         ),
       );
-      if (frontendArtifact == null) {
+      if (fixture.runtime.plugins.state != ApplicationPluginState.ready) {
+        await fixture.runtime.plugins.changes
+            .firstWhere((state) => state == ApplicationPluginState.ready)
+            .timeout(const Duration(seconds: 10));
+      }
+      expect(fixture.runtime.plugins.host, isNull);
+      expect(fixture.runtime.plugins.backends, isEmpty);
+      if (installationRoot == null) {
         bool activated() => fixture.runtime.extensions
             .discover(sessionPresentationContributions)
             .isNotEmpty;
@@ -177,9 +189,13 @@ void main() {
   }
 
   Future<void> disposeApplication(WidgetTester tester) async {
-    await tester.pumpWidget(const SizedBox.shrink());
-    await fixture.runtime.close();
-    await fixture.close();
+    // Startup owns real-async catalog I/O; shutdown must drain that same future.
+    await tester.runAsync(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      await fixture.runtime.close();
+      await fixture.close();
+    });
+    await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
   }
 
@@ -403,10 +419,21 @@ void main() {
       );
       final activation = (await tester.runAsync(() async {
         await corrupt.writeAsBytes([1, 2, 3]);
-        return activateStockOpenAiActivityFrontend(
-          extensions: fixture.runtime.extensions,
-          artifactPath: corrupt.path,
+        final root = await prepareFrontendInstallations(
+          root: Directory('${corrupt.parent.path}/corrupt-native-installed'),
+          artifacts: {'dev.adele.openai': corrupt},
         );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.issues, isEmpty);
+        final bootstrap = ApplicationFrontendBootstrap(
+          extensions: fixture.runtime.extensions,
+        );
+        await bootstrap.start(catalog);
+        expect(
+          bootstrap.generations.single.state,
+          InstalledFrontendState.active,
+        );
+        return bootstrap;
       }))!;
       addTearDown(() => tester.runAsync(activation.close));
       await send(tester, 'Safe evidence despite corrupt UI');
@@ -888,18 +915,26 @@ void main() {
         addTearDown(presenter.close);
         final controller = await fixture.createController();
         final inspected = <(Session, RunId, ModelInvocationId)>[];
-        final frontend = (await tester.runAsync(
-          () => StockChatFrontend.activate(
-            extensions: fixture.runtime.extensions,
-            artifactPath: _frontendArtifact.path,
-            controllerForSession: (_) => controller,
-            inspectActivity: (session, run, model) {
-              inspected.add((session, run, model));
-              return true;
-            },
-          ),
-        ))!;
-        addTearDown(() => tester.runAsync(frontend.close));
+        final frontend = StockChatFrontend(
+          extensions: fixture.runtime.extensions,
+          controllerForSession: (_) => controller,
+          inspectActivity: (session, run, model) {
+            inspected.add((session, run, model));
+            return true;
+          },
+        );
+        final frontends = ApplicationFrontendBootstrap(
+          extensions: fixture.runtime.extensions,
+          sessionAdapters: {'stock-chat-controller-v1': frontend},
+        );
+        addTearDown(() => tester.runAsync(frontends.close));
+        await tester.runAsync(() async {
+          final catalog = await PreparedPluginCatalog.discover(
+            _frontendInstallations.path,
+          );
+          expect(catalog.issues, isEmpty);
+          await frontends.start(catalog);
+        });
         final presentation = fixture.runtime.extensions
             .discover(sessionPresentationContributions)
             .single
@@ -939,7 +974,7 @@ void main() {
           case 'source':
             await tester.pumpWidget(const SizedBox.shrink());
           case 'generation':
-            await tester.runAsync(frontend.close);
+            await tester.runAsync(frontends.generations.single.close);
         }
         retained();
         expect(inspected, hasLength(2));
@@ -1000,18 +1035,28 @@ void main() {
       call.settle();
       await running;
       int inspected = 0;
-      final frontend = (await tester.runAsync(
-        () => StockChatFrontend.activate(
-          extensions: fixture.runtime.extensions,
-          artifactPath: artifact.path,
-          controllerForSession: (_) => controller,
-          inspectActivity: (_, _, _) {
-            inspected++;
-            return true;
-          },
-        ),
-      ))!;
-      addTearDown(() => tester.runAsync(frontend.close));
+      final frontend = StockChatFrontend(
+        extensions: fixture.runtime.extensions,
+        controllerForSession: (_) => controller,
+        inspectActivity: (_, _, _) {
+          inspected++;
+          return true;
+        },
+      );
+      final frontends = ApplicationFrontendBootstrap(
+        extensions: fixture.runtime.extensions,
+        sessionAdapters: {'stock-chat-controller-v1': frontend},
+      );
+      addTearDown(() => tester.runAsync(frontends.close));
+      await tester.runAsync(() async {
+        final root = await prepareFrontendInstallations(
+          root: Directory('${artifact.parent.path}/chat-revocation-installed'),
+          artifacts: {'dev.adele.plugin.chat-strategy': artifact},
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.issues, isEmpty);
+        await frontends.start(catalog);
+      });
       final contribution = fixture.runtime.extensions
           .discover(sessionPresentationContributions)
           .single
@@ -1168,18 +1213,28 @@ bool inspect(String id) => inspectChatActivity(id);
     final controller = await fixture.createController();
     addTearDown(controller.close);
     final inspected = <(RunId, ModelInvocationId)>[];
-    final frontend = (await tester.runAsync(
-      () => StockChatFrontend.activate(
-        extensions: fixture.runtime.extensions,
-        artifactPath: artifact.path,
-        controllerForSession: (_) => controller,
-        inspectActivity: (_, run, model) {
-          inspected.add((run, model));
-          return true;
-        },
-      ),
-    ))!;
-    addTearDown(() => tester.runAsync(frontend.close));
+    final frontend = StockChatFrontend(
+      extensions: fixture.runtime.extensions,
+      controllerForSession: (_) => controller,
+      inspectActivity: (_, run, model) {
+        inspected.add((run, model));
+        return true;
+      },
+    );
+    final frontends = ApplicationFrontendBootstrap(
+      extensions: fixture.runtime.extensions,
+      sessionAdapters: {'stock-chat-controller-v1': frontend},
+    );
+    addTearDown(() => tester.runAsync(frontends.close));
+    await tester.runAsync(() async {
+      final root = await prepareFrontendInstallations(
+        root: Directory('${artifact.parent.path}/chat-probe-installed'),
+        artifacts: {'dev.adele.plugin.chat-strategy': artifact},
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      await frontends.start(catalog);
+    });
     final contribution = fixture.runtime.extensions
         .discover(sessionPresentationContributions)
         .single
@@ -1262,7 +1317,7 @@ bool inspect(String id) => inspectChatActivity(id);
       tester.widget<TextField>(find.byType(TextField)).controller!.text,
       'Second draft',
     );
-    await tester.runAsync(frontend.close);
+    await tester.runAsync(frontends.generations.single.close);
     expect(probe(runtimes[1], 'buildSlot', idB), isNull);
     expect(probe(runtimes[1], 'inspect', idB), isFalse);
     expect(inspected, hasLength(3));
@@ -1272,12 +1327,43 @@ bool inspect(String id) => inspectChatActivity(id);
     expect(tester.takeException(), isNull);
   });
 
-  for (final String artifact in ['', '/missing/adele-chat-frontend.evc']) {
+  for (final missingArtifact in [false, true]) {
     testWidgets(
-      'missing prepared frontend retains canonical product ($artifact)',
+      '${missingArtifact ? 'missing artifact' : 'empty installation root'} retains canonical product',
       (tester) async {
         final _ModelChannel model = fixture.registerModel();
-        await openTask(tester, frontendArtifact: artifact);
+        final root = (await tester.runAsync(() async {
+          final root = await prepareFrontendInstallations(
+            root: Directory(
+              '${_frontendArtifact.parent.path}/missing-$missingArtifact',
+            ),
+            artifacts: {
+              if (missingArtifact)
+                'dev.adele.plugin.chat-strategy': _frontendArtifact,
+            },
+          );
+          if (missingArtifact) {
+            await File(
+              '${root.path}/dev.adele.plugin.chat-strategy/frontend.evc',
+            ).delete();
+          }
+          return root;
+        }))!;
+        await openTask(tester, installationRoot: root.path);
+        expect(
+          fixture.runtime.plugins.catalog!.installations,
+          hasLength(missingArtifact ? 1 : 0),
+        );
+        expect(
+          fixture.runtime.plugins.catalog!.installations.map(
+            (installation) => installation.frontend,
+          ),
+          everyElement(isNull),
+        );
+        expect(
+          fixture.runtime.plugins.catalog!.issues,
+          hasLength(missingArtifact ? 1 : 0),
+        );
         final Task task = shell(tester).task!;
         final Environment environment = shell(tester).environment!;
         await tap(tester, 'New Session');
@@ -1327,12 +1413,20 @@ bool inspect(String id) => inspectChatActivity(id);
         runIds: fixture.runIds,
       );
       addTearDown(controller.close);
-      final StockChatFrontend frontend = await StockChatFrontend.activate(
+      final frontend = StockChatFrontend(
         extensions: fixture.runtime.extensions,
-        artifactPath: _frontendArtifact.path,
         controllerForSession: (_) => controller,
       );
-      addTearDown(frontend.close);
+      final frontends = ApplicationFrontendBootstrap(
+        extensions: fixture.runtime.extensions,
+        sessionAdapters: {'stock-chat-controller-v1': frontend},
+      );
+      addTearDown(frontends.close);
+      final catalog = await PreparedPluginCatalog.discover(
+        _frontendInstallations.path,
+      );
+      expect(catalog.issues, isEmpty);
+      await frontends.start(catalog);
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
@@ -1346,8 +1440,9 @@ bool inspect(String id) => inspectChatActivity(id);
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), 'Retired submission');
       final VoidCallback retained = action(tester, 'Send')!;
-      final Future<void> closing = frontend.close();
-      expect(frontend.close(), same(closing));
+      final generation = frontends.generations.single;
+      final Future<void> closing = generation.close();
+      expect(generation.close(), same(closing));
       retained();
       await closing;
       await tester.pumpAndSettle();
@@ -1527,13 +1622,23 @@ bool inspect(String id) => inspectChatActivity(id);
     'single apply_patch hosts real Filesystem compact inside stock Chat without authority',
     (tester) async {
       final model = fixture.registerModel();
-      final frontend = (await tester.runAsync(
-        () => StockToolInspectionFrontend.activateFilesystem(
-          extensions: fixture.runtime.extensions,
-          artifactPath: _filesystemFrontendArtifact.path,
-        ),
-      ))!;
+      final frontend = ApplicationFrontendBootstrap(
+        extensions: fixture.runtime.extensions,
+      );
       addTearDown(() => tester.runAsync(frontend.close));
+      await tester.runAsync(() async {
+        final root = await prepareFrontendInstallations(
+          root: Directory(
+            '${_frontendArtifact.parent.path}/filesystem-installed',
+          ),
+          artifacts: {
+            'dev.adele.plugin.filesystem-tools': _filesystemFrontendArtifact,
+          },
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.issues, isEmpty);
+        await frontend.start(catalog);
+      });
       await openChat(tester);
       final controller = chat(tester);
       await send(tester, 'Review one patch before executing it');
@@ -2123,14 +2228,22 @@ bool inspect(String id) => inspectChatActivity(id);
         ),
       );
       addTearDown(compact.close);
-      final frontend = (await tester.runAsync(
-        () => StockChatFrontend.activate(
-          extensions: fixture.runtime.extensions,
-          artifactPath: _frontendArtifact.path,
-          controllerForSession: (_) => controller,
-        ),
-      ))!;
-      addTearDown(() => tester.runAsync(frontend.close));
+      final frontend = StockChatFrontend(
+        extensions: fixture.runtime.extensions,
+        controllerForSession: (_) => controller,
+      );
+      final frontends = ApplicationFrontendBootstrap(
+        extensions: fixture.runtime.extensions,
+        sessionAdapters: {'stock-chat-controller-v1': frontend},
+      );
+      addTearDown(() => tester.runAsync(frontends.close));
+      await tester.runAsync(() async {
+        final catalog = await PreparedPluginCatalog.discover(
+          _frontendInstallations.path,
+        );
+        expect(catalog.issues, isEmpty);
+        await frontends.start(catalog);
+      });
       final presentation = fixture.runtime.extensions
           .discover(sessionPresentationContributions)
           .single
@@ -2311,18 +2424,26 @@ bool inspect(String id) => inspectChatActivity(id);
         final _ModelChannel model = fixture.registerModel();
         final ChatController controller = await fixture.createController();
         final List<(Session, RunId, ModelInvocationId)> inspected = [];
-        final StockChatFrontend frontend = (await tester.runAsync(
-          () => StockChatFrontend.activate(
-            extensions: fixture.runtime.extensions,
-            artifactPath: _frontendArtifact.path,
-            controllerForSession: (_) => controller,
-            inspectActivity: (session, run, invocation) {
-              inspected.add((session, run, invocation));
-              return true;
-            },
-          ),
-        ))!;
-        addTearDown(() => tester.runAsync(frontend.close));
+        final frontend = StockChatFrontend(
+          extensions: fixture.runtime.extensions,
+          controllerForSession: (_) => controller,
+          inspectActivity: (session, run, invocation) {
+            inspected.add((session, run, invocation));
+            return true;
+          },
+        );
+        final frontends = ApplicationFrontendBootstrap(
+          extensions: fixture.runtime.extensions,
+          sessionAdapters: {'stock-chat-controller-v1': frontend},
+        );
+        addTearDown(() => tester.runAsync(frontends.close));
+        await tester.runAsync(() async {
+          final catalog = await PreparedPluginCatalog.discover(
+            _frontendInstallations.path,
+          );
+          expect(catalog.issues, isEmpty);
+          await frontends.start(catalog);
+        });
         final Widget presentation = fixture.runtime.extensions
             .discover(sessionPresentationContributions)
             .single
@@ -2400,7 +2521,7 @@ bool inspect(String id) => inspectChatActivity(id);
           case 'source':
             await tester.pumpWidget(const SizedBox.shrink());
           case 'generation':
-            await tester.runAsync(frontend.close);
+            await tester.runAsync(frontends.generations.single.close);
         }
         retained();
         expect(inspected, hasLength(3));
@@ -2766,23 +2887,22 @@ bool inspect(String id) => inspectChatActivity(id);
           addTearDown(subscription.cancel);
           Future<AppExitResponse>? exiting;
           bool exitCompleted = false;
-          if (exit) {
-            exiting = tester.binding.handleRequestAppExit().then((response) {
-              exitCompleted = true;
-              return response;
-            });
-          } else {
-            await tester.pumpWidget(const SizedBox.shrink());
-          }
+          await tester.runAsync(() async {
+            if (exit) {
+              exiting = tester.binding.handleRequestAppExit().then((response) {
+                exitCompleted = true;
+                return response;
+              });
+            } else {
+              await tester.pumpWidget(const SizedBox.shrink());
+            }
+          });
           expect(controller.submit('Closing duplicate'), isFalse);
           retained();
           await tester.pumpAndSettle();
           expect(exitCompleted, isFalse);
           expect(backendClosingStates, isEmpty);
-          expect(
-            fixture.runtime.plugins.state,
-            ApplicationPluginState.unconfigured,
-          );
+          expect(fixture.runtime.plugins.state, ApplicationPluginState.ready);
           expect(strategy.validate, returnsNormally);
           expect(controller.unavailableReason, contains('closing'));
           expect(controller.snapshot, same(frozen));
@@ -2799,7 +2919,18 @@ bool inspect(String id) => inspectChatActivity(id);
           model.calls.single.settle(fails: fails);
           await tester.pumpAndSettle();
           await active;
-          if (exiting != null) expect(await exiting, AppExitResponse.exit);
+          await tester.runAsync(() async {
+            bool retired() => fixture.runtime.extensions
+                .discover(orchestrationStrategyContributions)
+                .isEmpty;
+            if (!retired()) {
+              await fixture.runtime.extensions.changes
+                  .firstWhere((_) => retired())
+                  .timeout(const Duration(seconds: 10));
+            }
+            if (exiting != null) expect(await exiting, AppExitResponse.exit);
+          });
+          await tester.pumpAndSettle();
           expect(run.state, settlement);
           expect(backendClosingStates, <RunState>[run.state]);
           expect(fixture.runtime.plugins.state, ApplicationPluginState.closed);
@@ -2890,13 +3021,14 @@ bool inspect(String id) => inspectChatActivity(id);
         addTearDown(subscription.cancel);
 
         Future<AppExitResponse>? exiting;
-        if (exit) {
-          exiting = tester.binding.handleRequestAppExit();
-          // Flutter dispatches the lifecycle request asynchronously.
-          await tester.pump();
-        } else {
-          await tester.pumpWidget(const SizedBox.shrink());
-        }
+        await tester.runAsync(() async {
+          if (exit) {
+            exiting = tester.binding.handleRequestAppExit();
+          } else {
+            await tester.pumpWidget(const SizedBox.shrink());
+          }
+        });
+        await tester.pump();
         expect(controller.isClosed, isTrue);
         retainedAllow();
         retainedDeny();
@@ -2907,9 +3039,20 @@ bool inspect(String id) => inspectChatActivity(id);
           isFalse,
         );
         await tester.pumpAndSettle();
+        await tester.runAsync(() async {
+          bool retired() => fixture.runtime.extensions
+              .discover(orchestrationStrategyContributions)
+              .isEmpty;
+          if (!retired()) {
+            await fixture.runtime.extensions.changes
+                .firstWhere((_) => retired())
+                .timeout(const Duration(seconds: 10));
+          }
+          if (exiting != null) expect(await exiting, AppExitResponse.exit);
+        });
+        await tester.pumpAndSettle();
         // Assert application-owned shutdown before any fixture cleanup can close it.
         expect(fixture.runtime.plugins.state, ApplicationPluginState.closed);
-        if (exiting != null) expect(await exiting, AppExitResponse.exit);
         expect(backendClosingStates, <RunState>[RunState.waiting]);
         expect(strategy.validate, throwsA(isA<StaleExtensionBinding>()));
         retainedAllow();
@@ -4254,9 +4397,8 @@ final class _Fixture {
 
   AdeleApplication application({
     StockChatGptConfiguration? configuration = _configuration,
-    String? frontendArtifact,
+    String? installationRoot,
   }) => AdeleApplication(
-    chatFrontendArtifact: frontendArtifact ?? _frontendArtifact.path,
     createRuntime: () {
       runtimeCreations++;
       return runtime;
@@ -4264,6 +4406,9 @@ final class _Fixture {
     bootstrapPlugins: (plugins) async {
       expect(plugins, same(runtime.plugins));
       bootstraps++;
+      await plugins.start(
+        installationRoot: installationRoot ?? _frontendInstallations.path,
+      );
     },
     readChatGptConfiguration: () {
       configurationReads++;

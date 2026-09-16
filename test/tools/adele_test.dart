@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:test/test.dart';
 
 import '../../tools/adele.dart';
+import '../../tools/stock_frontend_descriptors.dart';
 import '../../tools/test_runner.dart';
 
 void main() {
@@ -395,6 +396,51 @@ void main() {
     }
   });
 
+  test(
+    'stock descriptors name existing frontend libraries and entrypoints',
+    () {
+      expect(stockFrontendDescriptors, hasLength(4));
+      final config = File('.dart_tool/package_config.json').absolute;
+      final packages =
+          (jsonDecode(config.readAsStringSync())
+                  as Map<String, dynamic>)['packages']
+              as List<dynamic>;
+      for (final descriptors in stockFrontendDescriptors.values) {
+        expect(descriptors, hasLength(1));
+        for (final descriptor in descriptors) {
+          final library = Uri.parse(descriptor['library']! as String);
+          expect(library.scheme, 'package');
+          final package = packages.cast<Map<String, dynamic>>().singleWhere(
+            (package) => package['name'] == library.pathSegments.first,
+          );
+          final packageRoot = Directory.fromUri(
+            config.uri.resolve(package['rootUri'] as String),
+          );
+          final source = File.fromUri(
+            packageRoot.uri
+                .resolve(package['packageUri'] as String)
+                .resolve(library.pathSegments.skip(1).join('/')),
+          ).readAsStringSync();
+          for (final field in [
+            'entrypoint',
+            'inspectionEntrypoint',
+            'compactEntrypoint',
+          ]) {
+            if (descriptor[field] case final String entrypoint) {
+              expect(
+                source,
+                matches(
+                  RegExp(r'\bWidget\s+' + RegExp.escape(entrypoint) + r'\s*\('),
+                ),
+                reason: '${descriptor['library']}::$entrypoint',
+              );
+            }
+          }
+        }
+      }
+    },
+  );
+
   test('tool frontends are workspace members isolated from headless tools', () {
     final String workspace = File('pubspec.yaml').readAsStringSync();
     for (final String tool in ['filesystem_tools', 'command_tools']) {
@@ -564,10 +610,14 @@ void main() {
     }
     expect(app, isNot(contains('openai_model_provider_backend:')));
     final String activation = File(
-      'app/lib/plugins/stock_openai_activity_frontend.dart',
+      'app/lib/frontend/application_frontend_bootstrap.dart',
     ).readAsStringSync();
-    expect(activation, contains('openAiReasoningSummaryPresentationKind'));
+    expect(activation, contains('PreparedModelNativeActivityPresentation'));
     for (final forbidden in [
+      'openAiReasoningSummaryPresentationKind',
+      ...stockFrontendDescriptors['dev.adele.openai']!.single.entries
+          .where((entry) => entry.key != 'role')
+          .map((entry) => entry.value as String),
       'projectOpenAi',
       'providerNativeMetadata',
       'encrypted_content',

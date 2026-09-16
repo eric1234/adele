@@ -73,14 +73,16 @@ extension ChatFrontendPresentation on PreparedFrontend {
   Widget createChatPresentation({
     required ChatFrontendSource source,
     required bool Function() isActive,
+    String library = chatFrontendLibrary,
+    String entrypoint = 'buildChat',
     Widget? Function(String opaqueId)? buildActivity,
     Key? key,
   }) => KeyedSubtree(
     key: key,
     child: createPresentation(
       key: ValueKey((this, source)),
-      library: chatFrontendLibrary,
-      entrypoint: 'buildChat',
+      library: library,
+      entrypoint: entrypoint,
       createBridge: () => ChatFrontendBridge(
         source: source,
         isActive: isActive,

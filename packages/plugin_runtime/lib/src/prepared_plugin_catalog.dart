@@ -1,7 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_product/adele_product.dart';
 
 /// One prepared installation, without activation, configuration, or source data.
 final class PreparedPluginInstallation {
@@ -9,24 +11,100 @@ final class PreparedPluginInstallation {
     required this.metadata,
     required this.installationDirectory,
     required this.backendArtifactUri,
+    this.frontend,
   });
 
   final PluginMetadata metadata;
   final Directory installationDirectory;
   final Uri? backendArtifactUri;
+  final PreparedFrontendComponent? frontend;
 }
 
-/// An excluded installation. Other, unrelated installations remain discoverable.
+/// Prepared locations and descriptors, without reading or decoding bytecode.
+final class PreparedFrontendComponent {
+  PreparedFrontendComponent({
+    required this.artifactUri,
+    required List<PreparedPresentationDescriptor> presentations,
+  }) : presentations = List.unmodifiable(presentations);
+
+  final Uri artifactUri;
+  final List<PreparedPresentationDescriptor> presentations;
+}
+
+sealed class PreparedPresentationDescriptor {
+  const PreparedPresentationDescriptor({required this.library});
+
+  final String library;
+}
+
+final class PreparedSessionPresentation extends PreparedPresentationDescriptor {
+  const PreparedSessionPresentation({
+    required this.extensionId,
+    required this.strategyId,
+    required this.entrypoint,
+    required this.hostAdapter,
+    required super.library,
+  });
+
+  final ExtensionId extensionId;
+  final OrchestrationStrategyId strategyId;
+  final String entrypoint;
+  final String hostAdapter;
+}
+
+final class PreparedToolActivityPresentation
+    extends PreparedPresentationDescriptor {
+  const PreparedToolActivityPresentation({
+    required this.toolId,
+    required this.inspectionExtensionId,
+    required this.compactExtensionId,
+    required this.inspectionEntrypoint,
+    required this.compactEntrypoint,
+    required super.library,
+  });
+
+  final ToolId toolId;
+  final ExtensionId inspectionExtensionId;
+  final ExtensionId compactExtensionId;
+  final String inspectionEntrypoint;
+  final String compactEntrypoint;
+}
+
+final class PreparedModelNativeActivityPresentation
+    extends PreparedPresentationDescriptor {
+  const PreparedModelNativeActivityPresentation({
+    required this.presentationKind,
+    required this.inspectionExtensionId,
+    required this.compactExtensionId,
+    required this.inspectionEntrypoint,
+    required this.compactEntrypoint,
+    required super.library,
+  });
+
+  final String presentationKind;
+  final ExtensionId inspectionExtensionId;
+  final ExtensionId compactExtensionId;
+  final String inspectionEntrypoint;
+  final String compactEntrypoint;
+}
+
+enum PreparedPluginComponent { backend, frontend }
+
+/// An excluded installation or component. Healthy siblings remain discoverable.
 final class PreparedPluginCatalogIssue {
   const PreparedPluginCatalogIssue({
     required this.installationDirectory,
     required this.message,
     this.pluginId,
+    this.component,
   });
 
   final Directory installationDirectory;
   final String message;
   final PluginId? pluginId;
+
+  /// Null for installation-wide failures, including duplicate identities.
+  final PreparedPluginComponent? component;
 
   @override
   String toString() => '${installationDirectory.path}: $message';
@@ -119,33 +197,57 @@ final class PreparedPluginCatalog {
         );
         final components = _object(document['components'], 'components', {
           'backend',
+          'frontend',
         });
         Uri? backendArtifactUri;
-        if (components.containsKey('backend')) {
-          final backend = _object(components['backend'], 'components.backend', {
-            'artifact',
-          });
-          final artifact = _text(backend['artifact'], 'backend.artifact');
-          // Use a portable relative file path, not URI syntax or platform-
-          // dependent separators. Reject dot segments before any normalization.
-          if (RegExp(r'[:\\%?#<>"|*\x00-\x1f]').hasMatch(artifact) ||
-              artifact
-                  .split('/')
-                  .any((part) => part.isEmpty || part == '.' || part == '..')) {
-            throw const FormatException(
-              'backend.artifact must be a relative file path without traversal.',
+        PreparedFrontendComponent? frontend;
+        for (final component in PreparedPluginComponent.values) {
+          if (!components.containsKey(component.name)) continue;
+          try {
+            switch (component) {
+              case PreparedPluginComponent.backend:
+                final backend = _object(
+                  components['backend'],
+                  'components.backend',
+                  {'artifact'},
+                );
+                backendArtifactUri = await _artifact(
+                  backend['artifact'],
+                  'backend.artifact',
+                  resolvedDirectory,
+                );
+              case PreparedPluginComponent.frontend:
+                frontend = await _frontend(
+                  components['frontend'],
+                  resolvedDirectory,
+                );
+            }
+          } on FormatException catch (error) {
+            issues.add(
+              PreparedPluginCatalogIssue(
+                installationDirectory: directory,
+                pluginId: id,
+                component: component,
+                message: error.message,
+              ),
+            );
+          } on FileSystemException catch (error) {
+            issues.add(
+              PreparedPluginCatalogIssue(
+                installationDirectory: directory,
+                pluginId: id,
+                component: component,
+                message: 'Unable to read ${component.name} component: $error',
+              ),
             );
           }
-          backendArtifactUri = await _confinedFile(
-            File.fromUri(resolvedDirectory.uri.resolveUri(Uri(path: artifact))),
-            resolvedDirectory,
-          );
         }
         installations.add(
           PreparedPluginInstallation(
             metadata: pluginMetadata,
             installationDirectory: directory,
             backendArtifactUri: backendArtifactUri,
+            frontend: frontend,
           ),
         );
       } on FormatException catch (error) {
@@ -187,6 +289,113 @@ final class PreparedPluginCatalog {
       issues: issues,
     );
   }
+}
+
+Future<PreparedFrontendComponent> _frontend(
+  Object? value,
+  Directory directory,
+) async {
+  final frontend = _object(value, 'components.frontend', {
+    'artifact',
+    'presentations',
+  });
+  final presentations = frontend['presentations'];
+  if (presentations is! List<Object?>) {
+    throw const FormatException('frontend.presentations must be an array.');
+  }
+  final descriptors = <PreparedPresentationDescriptor>[
+    for (var index = 0; index < presentations.length; index++)
+      _presentation(presentations[index], 'frontend.presentations[$index]'),
+  ];
+  return PreparedFrontendComponent(
+    artifactUri: await _artifact(
+      frontend['artifact'],
+      'frontend.artifact',
+      directory,
+    ),
+    presentations: descriptors,
+  );
+}
+
+PreparedPresentationDescriptor _presentation(Object? value, String label) {
+  if (value is! Map<String, Object?>) {
+    throw FormatException('$label must be an object.');
+  }
+  String text(String field) => _text(value[field], '$label.$field');
+  switch (text('role')) {
+    case 'session':
+      _object(value, label, {
+        'role',
+        'library',
+        'extensionId',
+        'strategyId',
+        'entrypoint',
+        'hostAdapter',
+      });
+      return PreparedSessionPresentation(
+        extensionId: ExtensionId(text('extensionId')),
+        strategyId: OrchestrationStrategyId(text('strategyId')),
+        entrypoint: text('entrypoint'),
+        hostAdapter: text('hostAdapter'),
+        library: text('library'),
+      );
+    case 'toolActivity':
+      _object(value, label, {
+        'role',
+        'library',
+        'toolId',
+        'inspectionExtensionId',
+        'compactExtensionId',
+        'inspectionEntrypoint',
+        'compactEntrypoint',
+      });
+      return PreparedToolActivityPresentation(
+        toolId: ToolId(text('toolId')),
+        inspectionExtensionId: ExtensionId(text('inspectionExtensionId')),
+        compactExtensionId: ExtensionId(text('compactExtensionId')),
+        inspectionEntrypoint: text('inspectionEntrypoint'),
+        compactEntrypoint: text('compactEntrypoint'),
+        library: text('library'),
+      );
+    case 'modelNativeActivity':
+      _object(value, label, {
+        'role',
+        'library',
+        'presentationKind',
+        'inspectionExtensionId',
+        'compactExtensionId',
+        'inspectionEntrypoint',
+        'compactEntrypoint',
+      });
+      return PreparedModelNativeActivityPresentation(
+        presentationKind: text('presentationKind'),
+        inspectionExtensionId: ExtensionId(text('inspectionExtensionId')),
+        compactExtensionId: ExtensionId(text('compactExtensionId')),
+        inspectionEntrypoint: text('inspectionEntrypoint'),
+        compactEntrypoint: text('compactEntrypoint'),
+        library: text('library'),
+      );
+    default:
+      throw FormatException('$label.role is unsupported.');
+  }
+}
+
+Future<Uri> _artifact(Object? value, String label, Directory directory) async {
+  final artifact = _text(value, label);
+  // Use a portable relative file path, not URI syntax or platform-dependent
+  // separators. Reject dot segments before any normalization.
+  if (RegExp(r'[:\\%?#<>"|*\x00-\x1f]').hasMatch(artifact) ||
+      artifact
+          .split('/')
+          .any((part) => part.isEmpty || part == '.' || part == '..')) {
+    throw FormatException(
+      '$label must be a relative file path without traversal.',
+    );
+  }
+  return _confinedFile(
+    File.fromUri(directory.uri.resolveUri(Uri(path: artifact))),
+    directory,
+  );
 }
 
 Map<String, Object?> _object(Object? value, String label, Set<String> fields) {

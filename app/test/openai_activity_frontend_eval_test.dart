@@ -1,9 +1,8 @@
 import 'dart:io';
 
+import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/model_native_activity_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
-import 'package:adele_desktop/plugins/stock_openai_activity_frontend.dart';
-import 'package:adele_desktop/plugins/stock_tool_inspection_frontends.dart';
 import 'package:adele_desktop/ui/activity/model_native_activity_compact_host.dart';
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
@@ -21,9 +20,11 @@ import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openai_contract/openai_contract.dart'
     show openAiReasoningSummaryPresentationKind;
+import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../tool/openai_activity_frontend_compiler.dart';
 import '../tool/tool_inspection_frontend_compiler.dart';
+import 'support/prepared_frontend_installations.dart';
 
 const String _library = 'package:openai_frontend/openai_frontend.dart';
 const String _secret = 'ENCRYPTED-PRIVATE-SECRET';
@@ -36,10 +37,10 @@ void main() {
   late File filesystemArtifact;
   late File failingArtifact;
   late Program probe;
+  late Directory installations;
   late ExtensionRegistry extensions;
-  late StockOpenAiActivityFrontendActivation openai;
-  late StockToolInspectionFrontend command;
-  late StockToolInspectionFrontend filesystem;
+  late ApplicationFrontendBootstrap frontends;
+  late InstalledFrontendActivation openai;
 
   setUpAll(() async {
     temporary = await Directory.systemTemp.createTemp('adele-openai-activity-');
@@ -82,29 +83,34 @@ Map<String, dynamic> inspect() => readModelNativeActivityData();
 ''',
               },
             });
+    installations = await prepareFrontendInstallations(
+      root: Directory('${temporary.path}/installed'),
+      artifacts: {
+        'dev.adele.openai': artifact,
+        'dev.adele.plugin.command-tools': commandArtifact,
+        'dev.adele.plugin.filesystem-tools': filesystemArtifact,
+      },
+    );
   });
   tearDownAll(() => temporary.delete(recursive: true));
 
   setUp(() async {
     extensions = ExtensionRegistry();
-    openai = await activateStockOpenAiActivityFrontend(
-      extensions: extensions,
-      artifactPath: artifact.path,
+    final catalog = await PreparedPluginCatalog.discover(installations.path);
+    expect(catalog.issues, isEmpty);
+    frontends = ApplicationFrontendBootstrap(extensions: extensions);
+    await frontends.start(catalog);
+    expect(frontends.generations, hasLength(3));
+    expect(
+      frontends.generations.map((generation) => generation.state),
+      everyElement(InstalledFrontendState.active),
     );
-    command = await StockToolInspectionFrontend.activateCommand(
-      extensions: extensions,
-      artifactPath: commandArtifact.path,
-    );
-    filesystem = await StockToolInspectionFrontend.activateFilesystem(
-      extensions: extensions,
-      artifactPath: filesystemArtifact.path,
+    openai = frontends.generations.singleWhere(
+      (generation) =>
+          generation.installation.metadata.id.value == 'dev.adele.openai',
     );
   });
-  tearDown(() async {
-    await openai.close();
-    await command.close();
-    await filesystem.close();
-  });
+  tearDown(() => frontends.close());
 
   ModelNativeActivityPresentationContribution contribution() => extensions
       .discover(modelNativeActivityPresentationContributions)
@@ -190,11 +196,12 @@ Map<String, dynamic> inspect() => readModelNativeActivityData();
         await tester.pumpWidget(
           _host([compact(presentation), richFactory(presentation)]),
         );
-        if (retireCompact) {
-          await openai.retireCompact();
-        } else {
-          await openai.retireInspection();
-        }
+        await openai.retire(
+          retireCompact
+              ? modelNativeActivityCompactPresentationContributions
+              : modelNativeActivityPresentationContributions,
+          retireCompact ? compactBinding.id : richBinding.id,
+        );
         await tester.pumpAndSettle();
         if (retireCompact) {
           expect(
@@ -265,12 +272,23 @@ Map<String, dynamic> inspect() => readModelNativeActivityData();
       await tester.runAsync(() => corrupt.writeAsBytes([1, 2, 3]));
       // failingArtifact deliberately exports only the rich entrypoint.
       for (final file in [failingArtifact, corrupt]) {
-        openai = (await tester.runAsync(
-          () => activateStockOpenAiActivityFrontend(
+        await tester.runAsync(() async {
+          final root = await prepareFrontendInstallations(
+            root: Directory(
+              '${temporary.path}/compact-${file.uri.pathSegments.last}',
+            ),
+            artifacts: {'dev.adele.openai': file},
+          );
+          final catalog = await PreparedPluginCatalog.discover(root.path);
+          expect(catalog.issues, isEmpty);
+          final bootstrap = ApplicationFrontendBootstrap(
             extensions: extensions,
-            artifactPath: file.path,
-          ),
-        ))!;
+          );
+          addTearDown(bootstrap.close);
+          await bootstrap.start(catalog);
+          openai = bootstrap.generations.single;
+          expect(openai.state, InstalledFrontendState.active);
+        });
         final presentation = _presentation(['Healthy OpenAI sibling']);
         await tester.pumpWidget(_host([compact(presentation)]));
         await tester.pumpAndSettle();
@@ -291,18 +309,28 @@ Map<String, dynamic> inspect() => readModelNativeActivityData();
       final registry = ExtensionRegistry();
       final blocker = registry.register(
         point: modelNativeActivityCompactPresentationContributions,
-        id: ExtensionId('dev.adele.plugin.openai.activity-compact'),
+        id: extensions
+            .discover(modelNativeActivityCompactPresentationContributions)
+            .single
+            .id,
         value: ModelNativeActivityCompactPresentationContribution(
           presentationKind: openAiReasoningSummaryPresentationKind,
           createPresentation: (_) => const SizedBox.shrink(),
         ),
       );
-      await expectLater(
-        activateStockOpenAiActivityFrontend(
-          extensions: registry,
-          artifactPath: artifact.path,
-        ),
-        throwsA(isA<ExtensionRegistrationException>()),
+      final root = await prepareFrontendInstallations(
+        root: Directory('${temporary.path}/collision'),
+        artifacts: {'dev.adele.openai': artifact},
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      final bootstrap = ApplicationFrontendBootstrap(extensions: registry);
+      addTearDown(bootstrap.close);
+      await bootstrap.start(catalog);
+      expect(bootstrap.generations.single.state, InstalledFrontendState.failed);
+      expect(
+        bootstrap.generations.single.failure,
+        isA<ExtensionRegistrationException>(),
       );
       expect(
         registry.discover(modelNativeActivityPresentationContributions),
@@ -623,12 +651,19 @@ Map<String, dynamic> inspect() => readModelNativeActivityData();
       expect(find.text('Frontend unavailable.'), findsNWidgets(2));
       expect(tester.element(find.text('Run Command')), same(toolElement));
       expect(source.listening, isTrue);
-      openai = (await tester.runAsync(
-        () => activateStockOpenAiActivityFrontend(
-          extensions: extensions,
-          artifactPath: artifact.path,
-        ),
-      ))!;
+      await tester.runAsync(() async {
+        final root = await prepareFrontendInstallations(
+          root: Directory('${temporary.path}/replacement'),
+          artifacts: {'dev.adele.openai': artifact},
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.issues, isEmpty);
+        final bootstrap = ApplicationFrontendBootstrap(extensions: extensions);
+        addTearDown(bootstrap.close);
+        await bootstrap.start(catalog);
+        openai = bootstrap.generations.single;
+        expect(openai.state, InstalledFrontendState.active);
+      });
       final fresh = _presentation(['Fresh generation']);
       await tester.pumpWidget(
         _host([...views, contribution().createInspection(fresh)]),
@@ -651,21 +686,44 @@ Map<String, dynamic> inspect() => readModelNativeActivityData();
       await tester.pumpWidget(_host([const SizedBox.shrink(), toolView]));
       final toolElement = tester.element(find.text('Run Command'));
       await tester.runAsync(openai.close);
-      for (final path in ['', '${temporary.path}/missing.evc']) {
-        await tester.runAsync(
-          () => expectLater(
-            activateStockOpenAiActivityFrontend(
-              extensions: extensions,
-              artifactPath: path,
-            ),
-            throwsStateError,
-          ),
+      await tester.runAsync(() async {
+        final root = await prepareFrontendInstallations(
+          root: Directory('${temporary.path}/missing-installation'),
+          artifacts: {'dev.adele.openai': artifact},
         );
+        final installedArtifact = File(
+          '${root.path}/dev.adele.openai/frontend.evc',
+        );
+        await installedArtifact.delete();
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.issues, hasLength(1));
         expect(
-          extensions.discover(modelNativeActivityPresentationContributions),
-          isEmpty,
+          catalog.issues.single.component,
+          PreparedPluginComponent.frontend,
         );
-      }
+        expect(catalog.installations.single.frontend, isNull);
+        final bootstrap = ApplicationFrontendBootstrap(extensions: extensions);
+        addTearDown(bootstrap.close);
+        await bootstrap.start(catalog);
+        expect(bootstrap.generations, isEmpty);
+
+        await artifact.copy(installedArtifact.path);
+        final discovered = await PreparedPluginCatalog.discover(root.path);
+        expect(discovered.issues, isEmpty);
+        await installedArtifact.delete();
+        final vanished = ApplicationFrontendBootstrap(extensions: extensions);
+        addTearDown(vanished.close);
+        await vanished.start(discovered);
+        expect(
+          vanished.generations.single.state,
+          InstalledFrontendState.failed,
+        );
+        expect(vanished.generations.single.failure, isA<FileSystemException>());
+      });
+      expect(
+        extensions.discover(modelNativeActivityPresentationContributions),
+        isEmpty,
+      );
       final missing = (await tester.runAsync(
         () => PreparedFrontend.load(File('${temporary.path}/missing.evc')),
       ))!;
@@ -686,12 +744,23 @@ Map<String, dynamic> inspect() => readModelNativeActivityData();
       final corrupt = File('${temporary.path}/corrupt.evc');
       await tester.runAsync(() => corrupt.writeAsBytes([1, 2, 3]));
       for (final file in [corrupt, failingArtifact]) {
-        openai = (await tester.runAsync(
-          () => activateStockOpenAiActivityFrontend(
+        await tester.runAsync(() async {
+          final root = await prepareFrontendInstallations(
+            root: Directory(
+              '${temporary.path}/failed-${file.uri.pathSegments.last}',
+            ),
+            artifacts: {'dev.adele.openai': file},
+          );
+          final catalog = await PreparedPluginCatalog.discover(root.path);
+          expect(catalog.issues, isEmpty);
+          final bootstrap = ApplicationFrontendBootstrap(
             extensions: extensions,
-            artifactPath: file.path,
-          ),
-        ))!;
+          );
+          addTearDown(bootstrap.close);
+          await bootstrap.start(catalog);
+          openai = bootstrap.generations.single;
+          expect(openai.state, InstalledFrontendState.active);
+        });
         final presentation = _presentation(['Not a native fallback']);
         await tester.pumpWidget(
           _host([contribution().createInspection(presentation), toolView]),

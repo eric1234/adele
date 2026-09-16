@@ -67,15 +67,15 @@ retains the provider-approved `compactText` rather than hiding the activity.
 
 ## Composition And Lifetime
 
-`app/lib/plugins/stock_openai_activity_frontend.dart` registers
+Generic `app/lib/frontend/application_frontend_bootstrap.dart` registers
 `ModelNativeActivityPresentationContribution(presentationKind, createInspection)`
 at public `modelNativeActivityPresentationContributions`. The factory has type
 `Widget Function(ModelNativePresentation)` and hosts this EVC through existing
-`PreparedFrontend`. Stock activation imports Contract identity, loads the prepared
-artifact, registers the factory, and retires its registration/resources only. It
-owns no projection, raw interpretation, or display-safety algorithms and is
-explicitly provisional until frontend discovery/profiles replace hard-coded
-selection. Generic Chat and Inspection never parse OpenAI fields.
+`PreparedFrontend`. The installation's data-only `modelNativeActivity` descriptor
+supplies the exact kind, extension IDs, library, and entrypoints. Activation owns
+loading and exact registration/resources, without OpenAI identity imports,
+projection, raw interpretation, or display-safety algorithms. Generic Chat and
+Inspection never parse OpenAI fields.
 
 The activation also registers
 `ModelNativeActivityCompactPresentationContribution` at
@@ -107,9 +107,11 @@ survives follow-up prompts for the controller lifetime, not in canonical history
 
 ## Prepared Artifact
 
-The Linux launcher prepares `openai.evc` as the fourth stock frontend artifact
-alongside Chat, Filesystem Tools, and Command Tools. It passes the absolute path
-as compile-time deployment define `ADELE_OPENAI_ACTIVITY_FRONTEND_ARTIFACT`.
+The Linux launcher prepares the OpenAI EVC alongside Chat, Filesystem Tools, and
+Command Tools. It installs `frontend.evc` alongside `backend.aot` in the one
+`dev.adele.openai` installation, with descriptors from
+`tools/stock_frontend_descriptors.dart`. Runtime discovers both components from
+`ADELE_PLUGIN_INSTALLATION_ROOT`; there is no separate frontend artifact define.
 The build-time entrypoint is `app/tool/compile_openai_activity_frontend.dart`.
 From `app/`, with an existing output parent directory:
 
@@ -124,7 +126,8 @@ model options. The `app/tool` compile harness is checkout tooling standing in fo
 future installation/update preparation, not runtime activation. See
 [app frontend preparation](../../../../app/README.md#prepared-chat-frontend)
 for all four artifacts, the selected Flutter/eval pin, independent activation,
-and source-checkout path limitations. Installation management, frontend discovery,
+and source-checkout path limitations. Descriptors describe prepared execution and
+presentation roles, not profile participation. Profiles, installation management,
 and portable packaging remain deferred.
 
 ## Validation Scope

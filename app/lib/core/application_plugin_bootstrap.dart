@@ -111,6 +111,9 @@ final class ApplicationPluginBootstrap {
     try {
       final PreparedPluginCatalog catalog = _catalog =
           await PreparedPluginCatalog.discover(root);
+      // Publish the shared snapshot before backend work. Presentation activation
+      // must not wait for host startup or depend on backend readiness.
+      _notify();
       _backends.addAll([
         for (final installation in catalog.installations)
           if (installation.backendArtifactUri != null)

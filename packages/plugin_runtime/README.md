@@ -53,15 +53,41 @@ OpenAI's no-fallback and empty-configuration behavior.
 [`PreparedPluginCatalog.discover(rootPath)`](lib/src/prepared_plugin_catalog.dart)
 reads a deterministic startup snapshot of immediate child directories'
 `adele_plugin.installation.json` files, not source `adele_plugin.yaml` manifests.
-It validates metadata and confined prepared artifacts without starting processes,
-compiling source, or watching for changes. The schema and failure rules live in
+It validates metadata and independently optional backend/frontend components with
+confined prepared files, without starting processes, compiling source, loading
+EVC, or watching for changes. `PreparedPluginInstallation` retains optional
+`backendArtifactUri` and `frontend`; `PreparedFrontendComponent` contains the
+artifact URI and immutable presentation descriptors. The sealed, data-only
+`PreparedPresentationDescriptor` variants are `PreparedSessionPresentation`,
+`PreparedToolActivityPresentation`, and `PreparedModelNativeActivityPresentation`.
+They use existing public identity types without importing Flutter, `adele_ui`,
+eval, or concrete plugins. Strict role-specific fields describe executable
+ABI/preparation data, not profile or activation state. The schema and failure rules
+live in
 [`plugin-layout.md`](../../docs/architecture/plugin-layout.md#prepared-installation-snapshot).
 
-Unconfigured, missing, or empty roots succeed empty. Malformed/unreadable children
-produce issues and are excluded; duplicate PluginIds exclude all conflict members
-without version selection. Root I/O failures propagate instead of looking empty.
-The app separately owns the policy of attempting every valid backend; no valid
-backend components means no host process, even with invalid host paths. See
+Unconfigured, missing, or empty roots succeed empty. Malformed/unreadable
+installation envelopes produce installation-wide issues and are excluded. An
+invalid component instead records `PreparedPluginCatalogIssue.component` as
+`PreparedPluginComponent.backend` or `.frontend`, omitting only that component
+while retaining the installation and healthy sibling. Invalid roles/descriptors
+invalidate the frontend component. Readable valid identities are reserved before
+the remaining validation; duplicate PluginIds exclude all conflict members,
+including otherwise invalid manifests, without version selection. Root I/O
+failures propagate instead of looking empty.
+
+File confinement and existence do not establish executable EVC correctness.
+Flutter-side `PreparedFrontend.load` reads immutable bytes once per generation;
+decoding/entrypoint failures, including readable corrupt bytecode, stay per-view.
+The pure-Dart catalog neither decodes nor links frontend code.
+
+The app separately owns the policy of attempting all discovered valid components.
+Its backend bootstrap publishes this same catalog before backend startup, and
+window-owned `ApplicationFrontendBootstrap` consumes it on the existing extension
+registry. There is no second discovery root/catalog or registry. No valid backend
+components means no host process, even with invalid host paths; frontends remain
+independently activatable. Profiles are unimplemented participation policy, not
+descriptor metadata. See
 [`app/README.md`](../../app/README.md#normal-backend-startup) for bootstrap ownership.
 
 ## Ready Capabilities
@@ -78,8 +104,8 @@ provider. See
 [`contracts-and-capabilities.md`](../../docs/architecture/contracts-and-capabilities.md#backend-ready-advertisements).
 
 The runtime knows no Git/OpenAI source paths, credential schemas, or stock exposure
-tables. Startup argv is opaque plugin input. This adds no profile/enable-disable
-management, version solving, frontend discovery, reverse RPC, or hot upgrade.
+tables. Startup argv is opaque plugin input. Prepared frontend discovery adds no
+profile/enable-disable management, version solving, reverse RPC, or hot upgrade.
 
 ## Validated Scope
 
@@ -88,6 +114,7 @@ shared child `dartaotruntime` host, which successfully loads plugin snapshots in
 separate isolate groups under Linux profile mode. Generated unary and streaming
 requests retain exact generation, configuration-context, and service routing;
 the protocol handshake and shutdown/cancellation paths have existing validation.
-That evidence does not establish validation of every F1 catalog/advertisement path.
+That evidence does not establish validation of every F1 catalog/advertisement or
+F2 frontend-discovery/activation path.
 The prepared startup catalog is narrower than an installer, profiles, packaging,
 or production lifecycle, which remain deferred.

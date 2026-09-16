@@ -1,9 +1,15 @@
 import 'dart:io';
 
+import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/model_native_activity_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
+import 'package:adele_desktop/frontend/prepared_session_adapter.dart';
 import 'package:adele_desktop/plugins/chat_frontend_bridge.dart';
+import 'package:adele_desktop/ui/session/session_presentation_host.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_product/adele_product.dart';
+import 'package:adele_ui/adele_ui.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:dart_eval/stdlib/core.dart';
@@ -11,8 +17,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_eval/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../tool/chat_frontend_compiler.dart';
+import 'support/prepared_frontend_installations.dart';
 
 void main() {
   late Directory temporary;
@@ -34,6 +42,89 @@ void main() {
     generation = await PreparedFrontend.load(artifact);
     addTearDown(generation.invalidate);
   });
+
+  testWidgets(
+    'discovered Chat installation renders actual EVC and retires its exact binding',
+    (tester) async {
+      final extensions = ExtensionRegistry();
+      final source = _Source()
+        ..entries.addAll(const [
+          ChatPresentationEntry(role: 'user', content: 'Installed question'),
+          ChatPresentationEntry(role: 'assistant', content: 'Installed answer'),
+        ]);
+      final owner = ApplicationFrontendBootstrap(
+        extensions: extensions,
+        sessionAdapters: {'stock-chat-controller-v1': _SessionAdapter(source)},
+      );
+      addTearDown(() => tester.runAsync(owner.close));
+      final catalog = (await tester.runAsync(() async {
+        final root = await prepareFrontendInstallations(
+          root: Directory('${temporary.path}/installed'),
+          artifacts: {'dev.adele.plugin.chat-strategy': artifact},
+        );
+        return PreparedPluginCatalog.discover(root.path);
+      }))!;
+      expect(catalog.issues, isEmpty);
+      expect(catalog.installations.single.backendArtifactUri, isNull);
+      expect(extensions.discover(sessionPresentationContributions), isEmpty);
+      await tester.runAsync(() => owner.start(catalog));
+      final installed = owner.generations.single;
+      expect(installed.installation, same(catalog.installations.single));
+      expect(installed.state, InstalledFrontendState.active);
+      expect(installed.failure, isNull);
+      final descriptor =
+          installed.installation.frontend!.presentations.single
+              as PreparedSessionPresentation;
+      final session = Session(
+        id: SessionId('installed-chat-session'),
+        taskId: TaskId('installed-chat-task'),
+        strategyId: descriptor.strategyId,
+      );
+      final binding = SessionPresentationResolver(
+        extensions,
+      ).resolve(session.strategyId);
+      expect(binding.id, descriptor.extensionId);
+      final factory = binding.value.createPresentation;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SessionPresentationHost(
+              session: session,
+              extensions: extensions,
+            ),
+          ),
+        ),
+      );
+      expect(find.text('Chat'), findsOneWidget);
+      expect(find.text('Installed question'), findsOneWidget);
+      expect(find.text('Installed answer'), findsOneWidget);
+      await tester.enterText(find.byType(TextField), 'Discovered prompt');
+      await tester.tap(find.text('Send'));
+      await tester.pumpAndSettle();
+      expect(source.submitted, ['Discovered prompt']);
+      expect(find.text('Discovered prompt'), findsOneWidget);
+      expect(_draft(tester), isEmpty);
+      await tester.enterText(find.byType(TextField), 'Retired prompt');
+      final send = tester
+          .widget<TextButton>(find.byType(TextButton))
+          .onPressed!;
+
+      await tester.runAsync(
+        () => installed.retire(sessionPresentationContributions, binding.id),
+      );
+      send();
+      expect(source.submitted, ['Discovered prompt']);
+      expect(binding.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(() => factory(session), throwsStateError);
+      await tester.pumpAndSettle();
+      expect(find.text('Session presentation is unavailable.'), findsOneWidget);
+      expect(find.byType(TextField), findsNothing);
+      expect(source.listening, isFalse);
+      expect(source.entries.last.content, 'Discovered prompt');
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'opaque native slots nest separate EVC runtimes and contain child failures',
@@ -906,6 +997,35 @@ Widget _host(
 
 String _draft(WidgetTester tester) =>
     tester.widget<TextField>(find.byType(TextField)).controller!.text;
+
+// Supplies test data only; the generic owner loads bytes and registers metadata.
+class _SessionAdapter implements PreparedSessionAdapter {
+  _SessionAdapter(this.source);
+
+  final _Source source;
+
+  @override
+  void validate(PreparedSessionPresentation descriptor) {}
+
+  @override
+  Widget createPresentation({
+    required PreparedFrontend generation,
+    required PreparedSessionPresentation descriptor,
+    required Session session,
+    required bool Function() isActive,
+  }) => generation.createChatPresentation(
+    library: descriptor.library,
+    entrypoint: descriptor.entrypoint,
+    source: source,
+    isActive: isActive,
+  );
+
+  @override
+  Future<void> close() async {
+    source.closed = true;
+    source.dispose();
+  }
+}
 
 class _Source extends ChangeNotifier implements ChatFrontendSource {
   final List<ChatPresentationEntry> entries = [];
