@@ -67,6 +67,7 @@ final class PluginBackendHost {
   int _nextRequestId = 1;
   bool _closed = false;
   bool _shuttingDown = false;
+  final Completer<Object> _terminated = Completer<Object>();
   Future<void>? _termination;
 
   static Future<PluginBackendHost> start({
@@ -148,6 +149,11 @@ final class PluginBackendHost {
             host._pending.isEmpty &&
             host._streams.isEmpty) {
           host._closed = true;
+          if (!host._terminated.isCompleted) {
+            host._terminated.complete(
+              const PluginConnectionClosed('The backend host was stopped.'),
+            );
+          }
           return;
         }
         host._failAll(
@@ -171,10 +177,17 @@ final class PluginBackendHost {
   bool get isClosed => _closed;
   int get processId => _process.pid;
 
+  /// Completes with the first closure reason as a value, not a future error.
+  /// This signals closure independently of plugin connections and cleanup.
+  Future<Object> get terminated => _terminated.future;
+
+  /// [startupArgumentsOnly] conveys explicit-configuration intent to the backend.
+  /// It is bootstrap metadata, not process-environment isolation.
   Future<PluginBackendConnection> startPlugin({
     required String pluginId,
     required Uri artifactUri,
     List<String> arguments = const <String>[],
+    bool startupArgumentsOnly = false,
   }) async {
     if (_plugins.containsKey(pluginId)) {
       throw StateError('Plugin $pluginId is already connected.');
@@ -187,6 +200,7 @@ final class PluginBackendHost {
       pluginId: pluginId,
     );
     _startingPlugins[pluginId] = connection;
+    bool readyReceived = false;
     try {
       final Map<String, Object?> response = await _command(
         kind: 'startPlugin',
@@ -194,6 +208,7 @@ final class PluginBackendHost {
         fields: <String, Object?>{
           'artifactUri': artifactUri.toString(),
           'arguments': List<String>.of(arguments, growable: false),
+          'startupArgumentsOnly': startupArgumentsOnly,
           'defaultConfigurationContext':
               connection.defaultConfigurationContext._wireValue,
         },
@@ -201,16 +216,31 @@ final class PluginBackendHost {
       if (response['kind'] != 'pluginReady') {
         throw _remoteFailure(response);
       }
+      readyReceived = true;
       if (connection.isClosed || _startingPlugins[pluginId] != connection) {
         throw const PluginRemoteFailure(
           code: 'plugin_exited',
           message: 'The plugin terminated during startup.',
         );
       }
+      connection._capabilityExposures = AdeleCapabilityExposure.fromReady(
+        response,
+      );
       _startingPlugins.remove(pluginId);
       _plugins[pluginId] = connection;
       return connection;
     } on Object {
+      if (readyReceived && !connection.isClosed) {
+        try {
+          await _stopPlugin(connection).timeout(_shutdownTimeout);
+        } on Object {
+          await _terminateAfterFailure(
+            const PluginConnectionClosed(
+              'Invalid plugin readiness cleanup failed.',
+            ),
+          );
+        }
+      }
       _startingPlugins.remove(pluginId);
       connection._finish(
         const PluginConnectionClosed('The plugin did not finish starting.'),
@@ -754,6 +784,7 @@ final class PluginBackendHost {
   }
 
   void _failAll(Object error) {
+    if (!_terminated.isCompleted) _terminated.complete(error);
     if (_closed && _pending.isEmpty && _streams.isEmpty && _plugins.isEmpty) {
       return;
     }
@@ -837,6 +868,8 @@ final class PluginBackendConnection implements AdeleStreamChannel {
 
   final PluginBackendHost _host;
   final String pluginId;
+  List<AdeleCapabilityExposure> _capabilityExposures = const [];
+  List<AdeleCapabilityExposure> get capabilityExposures => _capabilityExposures;
   late final ConfigurationContextId defaultConfigurationContext =
       ConfigurationContextId._(this, 'default');
   final Completer<Object> _termination = Completer<Object>();
@@ -878,11 +911,7 @@ final class PluginBackendConnection implements AdeleStreamChannel {
   }
 
   ConfigurationContextId configurationContext(String opaqueId) {
-    if (opaqueId.isEmpty ||
-        opaqueId.length > 256 ||
-        opaqueId.runes.any((int rune) => rune < 0x20 || rune == 0x7f)) {
-      throw FormatException('Invalid configuration context ID.', opaqueId);
-    }
+    adeleValidateConfigurationContext(opaqueId);
     return ConfigurationContextId._(this, opaqueId);
   }
 

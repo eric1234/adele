@@ -112,6 +112,13 @@ final class AdeleBackendHost {
         rawArguments.any((Object? value) => value is! String)) {
       throw const FormatException('Plugin arguments must be strings.');
     }
+    final Object? startupArgumentsOnly =
+        message.containsKey('startupArgumentsOnly')
+        ? message['startupArgumentsOnly']
+        : false;
+    if (startupArgumentsOnly is! bool) {
+      throw const FormatException('startupArgumentsOnly must be a boolean.');
+    }
     final _PluginIsolate plugin = await _PluginIsolate.start(
       pluginId: pluginId,
       artifactUri: Uri.parse(artifactUri),
@@ -119,22 +126,37 @@ final class AdeleBackendHost {
           .map((Object? value) => value! as String)
           .toList(growable: false),
       defaultConfigurationContext: defaultConfigurationContext,
+      startupArgumentsOnly: startupArgumentsOnly,
       send: _send,
       diagnostic: _diagnostic,
       onTerminated: _pluginTerminated,
     );
     _plugins[pluginId] = plugin;
-    await Future<void>.delayed(Duration.zero);
-    if (plugin.isTerminated) {
-      _plugins.remove(pluginId);
-      throw StateError('Plugin $pluginId terminated during startup.');
+    try {
+      await Future<void>.delayed(Duration.zero);
+      if (plugin.isTerminated) {
+        throw StateError('Plugin $pluginId terminated during startup.');
+      }
+      if (!_send(<String, Object?>{
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'pluginReady',
+        'requestId': message['requestId'],
+        'pluginId': pluginId,
+        'capabilityExposures': [
+          for (final exposure in plugin.capabilityExposures) exposure.toMap(),
+        ],
+      })) {
+        throw StateError('Could not send plugin readiness.');
+      }
+    } on Object {
+      if (identical(_plugins[pluginId], plugin)) _plugins.remove(pluginId);
+      try {
+        await plugin.stop();
+      } on Object catch (error) {
+        _diagnostic('Plugin $pluginId startup cleanup failed: $error');
+      }
+      rethrow;
     }
-    _send(<String, Object?>{
-      'protocolVersion': backendHostProtocolVersion,
-      'kind': 'pluginReady',
-      'requestId': message['requestId'],
-      'pluginId': pluginId,
-    });
   }
 
   Future<void> _stopPlugin(Map<String, Object?> message) async {
@@ -207,6 +229,7 @@ final class AdeleBackendHost {
 final class _PluginIsolate {
   _PluginIsolate._({
     required this.pluginId,
+    required this.capabilityExposures,
     required Isolate isolate,
     required SendPort commands,
     required ReceivePort responses,
@@ -231,6 +254,7 @@ final class _PluginIsolate {
   }
 
   final String pluginId;
+  final List<AdeleCapabilityExposure> capabilityExposures;
   final Isolate _isolate;
   final SendPort _commands;
   final ReceivePort _responses;
@@ -263,6 +287,7 @@ final class _PluginIsolate {
     required Uri artifactUri,
     required List<String> arguments,
     required String defaultConfigurationContext,
+    required bool startupArgumentsOnly,
     required BackendHostSend send,
     required BackendHostDiagnostic diagnostic,
     required _PluginTerminated onTerminated,
@@ -273,6 +298,7 @@ final class _PluginIsolate {
     final ReceivePort exitPort = ReceivePort();
     final Stream<Object?> errors = errorPort.asBroadcastStream();
     final Stream<Object?> exits = exitPort.asBroadcastStream();
+    Future<Object?>? exited;
     Isolate? isolate;
     try {
       isolate = await Isolate.spawnUri(
@@ -282,16 +308,18 @@ final class _PluginIsolate {
           'bootstrapPort': bootstrap.sendPort,
           'responsePort': responses.sendPort,
           'defaultConfigurationContext': defaultConfigurationContext,
+          'startupArgumentsOnly': startupArgumentsOnly,
         },
         onError: errorPort.sendPort,
         onExit: exitPort.sendPort,
       );
+      exited = exits.first;
       final Object? ready = await Future.any(<Future<Object?>>[
         bootstrap.first,
         errors.first.then<Object?>((Object? error) {
           throw StateError('Plugin failed before handshake: $error');
         }),
-        exits.first.then<Object?>((Object? _) {
+        exited.then<Object?>((Object? _) {
           throw StateError('Plugin exited before handshake.');
         }),
       ]).timeout(const Duration(seconds: 5));
@@ -303,6 +331,7 @@ final class _PluginIsolate {
       }
       final _PluginIsolate plugin = _PluginIsolate._(
         pluginId: pluginId,
+        capabilityExposures: AdeleCapabilityExposure.fromReady(ready),
         isolate: isolate,
         commands: ready['commandPort'] as SendPort,
         responses: responses,
@@ -318,7 +347,14 @@ final class _PluginIsolate {
       );
       return plugin;
     } catch (_) {
-      isolate?.kill(priority: Isolate.immediate);
+      if (isolate != null) {
+        isolate.kill(priority: Isolate.immediate);
+        try {
+          await exited!.timeout(_pluginLifecycleTimeout);
+        } on Object catch (error) {
+          diagnostic('Plugin $pluginId startup exit cleanup failed: $error');
+        }
+      }
       responses.close();
       errorPort.close();
       exitPort.close();

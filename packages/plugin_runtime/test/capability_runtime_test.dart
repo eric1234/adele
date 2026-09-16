@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
@@ -5,6 +6,273 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:test/test.dart';
 
 void main() {
+  final capability = CapabilityKey(
+    id: CapabilityId('dev.adele.resource.inspect'),
+    majorVersion: 1,
+  );
+  const firstExposure = <String, Object?>{
+    'providerId': 'dev.adele.provider.first',
+    'capabilityId': 'dev.adele.resource.inspect',
+    'capabilityMajorVersion': 1,
+    'serviceId': 'resourceInspector',
+    'displayName': 'First provider',
+    'configurationContext': 'opaque-first',
+    'pluginId': 'dev.adele.spoofed',
+  };
+  final secondExposure = <String, Object?>{
+    ...firstExposure,
+    'providerId': 'dev.adele.provider.second',
+    'configurationContext': 'opaque-second',
+    'serviceId': 'otherService',
+    'rank': 3,
+  };
+
+  test(
+    'advertised registration supports missing, zero, one and multiple contexts',
+    () async {
+      for (final fields in <Map<String, Object?>>[
+        {},
+        {'capabilityExposures': []},
+        {
+          'capabilityExposures': [firstExposure],
+        },
+        {
+          'capabilityExposures': [firstExposure, secondExposure],
+        },
+      ]) {
+        final fake = _FakeHost.create(contextEcho: true, readyFields: fields);
+        addTearDown(fake.dispose);
+        final host = await fake.start();
+        addTearDown(host.close);
+        final connection = await host.startPlugin(
+          pluginId: 'dev.adele.actual',
+          artifactUri: Uri.file('/unused.aot'),
+        );
+        final registry = CapabilityRegistry();
+        expect(registry.providersFor(capability), isEmpty);
+        final activation = await PluginCapabilityActivation.registerAdvertised(
+          connection: connection,
+          registry: registry,
+        );
+        final providers = registry.providersFor(capability);
+        expect(providers, hasLength(connection.capabilityExposures.length));
+        for (final exposure in connection.capabilityExposures) {
+          final binding = registry.resolve(
+            capability,
+            providerId: ProviderId(exposure.providerId),
+          );
+          expect(binding.provider.pluginId, connection.pluginId);
+          expect(binding.provider.displayName, exposure.displayName);
+          expect(binding.provider.rank, exposure.rank);
+          final channel = binding.requestChannel;
+          expect(
+            await channel.request('inspect', {
+              'configurationContext': 'spoofed',
+            }),
+            {
+              'configurationContext': exposure.configurationContext,
+              'serviceId': exposure.serviceId,
+              'payload': {'configurationContext': 'spoofed'},
+            },
+          );
+        }
+        if (providers.length == 2) {
+          expect(
+            registry.resolve(capability).provider.id.value,
+            secondExposure['providerId'],
+          );
+        }
+        await activation.close();
+        expect(registry.providersFor(capability), isEmpty);
+        await host.close();
+      }
+    },
+    timeout: const Timeout(Duration(minutes: 1)),
+  );
+
+  test(
+    'advertised registration rolls back only newly registered providers',
+    () async {
+      final fake = _FakeHost.create(
+        readyFields: {
+          'capabilityExposures': [firstExposure, secondExposure],
+        },
+      );
+      addTearDown(fake.dispose);
+      final host = await fake.start();
+      addTearDown(host.close);
+      final connection = await host.startPlugin(
+        pluginId: 'dev.adele.provider',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      final registry = CapabilityRegistry();
+      final existing = await PluginCapabilityActivation.register(
+        connection: connection,
+        registry: registry,
+        exposures: [
+          PluginCapabilityExposure(
+            provider: _provider(
+              capability,
+              secondExposure['providerId']! as String,
+            ),
+            configurationContext: connection.defaultConfigurationContext,
+          ),
+        ],
+      );
+      final retained = registry.resolve(capability);
+      await expectLater(
+        PluginCapabilityActivation.registerAdvertised(
+          connection: connection,
+          registry: registry,
+        ),
+        throwsA(isA<DuplicateProviderRegistration>()),
+      );
+      expect(registry.providersFor(capability).map((provider) => provider.id), [
+        retained.provider.id,
+      ]);
+      expect(() => retained.requestChannel, returnsNormally);
+      await existing.close();
+    },
+  );
+
+  test(
+    'advertised bindings retire on termination and cannot migrate to replacement',
+    () async {
+      final fake = _FakeHost.create(
+        failOnRequest: true,
+        readyFields: {
+          'capabilityExposures': [firstExposure, secondExposure],
+        },
+      );
+      addTearDown(fake.dispose);
+      final host = await fake.start();
+      addTearDown(host.close);
+      final registry = CapabilityRegistry();
+      final first = await host.startPlugin(
+        pluginId: 'dev.adele.provider',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      final firstActivation =
+          await PluginCapabilityActivation.registerAdvertised(
+            connection: first,
+            registry: registry,
+          );
+      final oldBinding = registry.resolve(capability);
+      final oldChannel = oldBinding.requestChannel;
+      final oldContext = first.configurationContext('opaque-first');
+      await expectLater(
+        oldChannel.request('crash', const {}),
+        throwsA(isA<PluginRemoteFailure>()),
+      );
+      await first.terminated;
+      await Future<void>.delayed(Duration.zero);
+      expect(registry.providersFor(capability), isEmpty);
+      final replacement = await host.startPlugin(
+        pluginId: 'dev.adele.provider',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      final replacementActivation =
+          await PluginCapabilityActivation.registerAdvertised(
+            connection: replacement,
+            registry: registry,
+          );
+      await firstActivation.close();
+      expect(replacement.isClosed, isFalse);
+      expect(registry.providersFor(capability), hasLength(2));
+      expect(
+        () => oldBinding.requestChannel,
+        throwsA(isA<ProviderUnavailable>()),
+      );
+      await expectLater(
+        oldChannel.request('after-replacement', const {}),
+        throwsA(isA<PluginConnectionClosed>()),
+      );
+      expect(
+        () => replacement.channelFor(oldContext, 'resourceInspector'),
+        throwsArgumentError,
+      );
+      expect(
+        () => registry.resolve(capability).requestChannel,
+        returnsNormally,
+      );
+      await expectLater(
+        PluginCapabilityActivation.registerAdvertised(
+          connection: first,
+          registry: registry,
+        ),
+        throwsA(isA<InvalidProviderRegistration>()),
+      );
+      await replacementActivation.close();
+    },
+  );
+
+  test(
+    'concurrent advertised retirement joins termination cleanup before identity reuse',
+    () async {
+      final advertisements = [
+        for (int index = 0; index < 20; index++)
+          {
+            ...firstExposure,
+            'providerId': 'dev.adele.provider.instance-$index',
+            'configurationContext': 'context-$index',
+          },
+      ];
+      final fake = _FakeHost.create(
+        failOnRequest: true,
+        readyFields: {'capabilityExposures': advertisements},
+      );
+      addTearDown(fake.dispose);
+      final host = await fake.start();
+      addTearDown(host.close);
+      final connection = await host.startPlugin(
+        pluginId: 'dev.adele.original',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      // A ready replacement avoids a process round trip masking partial cleanup.
+      final replacement = await host.startPlugin(
+        pluginId: 'dev.adele.replacement',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      final registry = CapabilityRegistry();
+      final activation = await PluginCapabilityActivation.registerAdvertised(
+        connection: connection,
+        registry: registry,
+      );
+      final bindings = [
+        for (final provider in registry.providersFor(capability))
+          registry.resolve(capability, providerId: provider.id),
+      ];
+      final replaced = connection.terminated.then((_) async {
+        final retiring = activation.retire();
+        final alsoRetiring = activation.retire();
+        await Future.wait<void>([retiring, alsoRetiring, activation.close()]);
+        final next = await PluginCapabilityActivation.registerAdvertised(
+          connection: replacement,
+          registry: registry,
+        );
+        expect(alsoRetiring, same(retiring));
+        expect(activation.retire(), same(retiring));
+        for (final binding in bindings) {
+          expect(
+            () => binding.requestChannel,
+            throwsA(isA<ProviderUnavailable>()),
+          );
+        }
+        await activation.close();
+        expect(replacement.isClosed, isFalse);
+        expect(registry.providersFor(capability), hasLength(20));
+        await next.close();
+      });
+      await Future.wait<void>([
+        replaced,
+        expectLater(
+          connection.request('crash', const {}),
+          throwsA(isA<PluginRemoteFailure>()),
+        ),
+      ]);
+    },
+  );
+
   test(
     'publishes only ready connections and retires before shutdown',
     () async {
@@ -276,6 +544,7 @@ final class _FakeHost {
   factory _FakeHost.create({
     bool failOnRequest = false,
     bool contextEcho = false,
+    Map<String, Object?> readyFields = const {},
   }) {
     final Directory directory = Directory(
       '${Directory.current.path}/.dart_tool/capability-runtime/'
@@ -292,7 +561,7 @@ void main() {
   stdin.listen((bytes) {
     for (final message in decoder.add(bytes)) {
       if (message['kind'] == 'startPlugin') {
-        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId'], ...${jsonEncode(readyFields)}}));
       } else if (message['kind'] == 'stopPlugin') {
         stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginStopped', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
       } else if (message['kind'] == 'request') {

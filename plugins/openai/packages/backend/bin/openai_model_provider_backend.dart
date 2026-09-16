@@ -22,7 +22,12 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   if (defaultConfigurationContext is! String) {
     throw ArgumentError.value(bootstrapMessage, 'bootstrapMessage');
   }
-  final Map<String, String> environment = _configurationEnvironment(arguments);
+  final bool startupArgumentsOnly =
+      bootstrapMessage['startupArgumentsOnly'] == true;
+  final Map<String, String> environment = _configurationEnvironment(
+    arguments,
+    startupArgumentsOnly: startupArgumentsOnly,
+  );
   String? configured(String name) {
     final String? value = environment[name];
     return value == null || value.trim().isEmpty ? null : value;
@@ -43,10 +48,13 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
     'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE',
   );
   final bool chatGptConfigured =
-      arguments.isNotEmpty ||
+      arguments.length == 2 ||
       configured('ADELE_OPENAI_CHATGPT_CLIENT_ID') != null ||
       environment[openAiExperimentalCodexClientEnvironment] == '1';
-  if (apiKey == null && !chatGptConfigured) {
+  if (!startupArgumentsOnly &&
+      arguments.isEmpty &&
+      apiKey == null &&
+      !chatGptConfigured) {
     throw StateError(
       'The OpenAI backend requires a nonblank OPENAI_API_KEY or an experimental '
       'ChatGPT credential file with an OAuth client ID or explicit Codex client '
@@ -110,53 +118,88 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
     );
   }
   final ReceivePort requests = ReceivePort();
-  final AdeleConfigurationContextRouter router =
-      AdeleConfigurationContextRouter(
-        contexts: <String, Map<String, AdeleBackendDispatcher>>{
-          if (apiKeyProvider != null)
-            defaultConfigurationContext: <String, AdeleBackendDispatcher>{
-              modelProviderServiceId: ModelProviderServiceDispatcher(
-                apiKeyProvider,
-              ),
-            },
-          if (chatGptProvider != null)
-            openAiChatGptConfigurationContext: <String, AdeleBackendDispatcher>{
-              modelProviderServiceId: ModelProviderServiceDispatcher(
-                chatGptProvider,
-              ),
-            },
-        },
-      );
-  bootstrapPort.send(<String, Object?>{
-    'kind': 'ready',
-    'commandPort': requests.sendPort,
-    'pluginBackendProtocolVersion': adelePluginBackendProtocolVersion,
-  });
-  await for (final Object? request in requests) {
-    if (request is! Map) continue;
-    if (request['method'] == 'shutdown' && request['requestId'] is int) {
-      await router.close();
-      apiKeyProvider?.close();
-      chatGptProvider?.close();
-      oauth?.close();
-      responsePort.send(<String, Object?>{
-        'kind': 'response',
-        'requestId': request['requestId'],
-        'ok': true,
-        'payload': <String, Object?>{'stopping': true},
-      });
-      requests.close();
-      continue;
+  try {
+    final AdeleConfigurationContextRouter router =
+        AdeleConfigurationContextRouter(
+          contexts: <String, Map<String, AdeleBackendDispatcher>>{
+            if (apiKeyProvider != null)
+              defaultConfigurationContext: <String, AdeleBackendDispatcher>{
+                modelProviderServiceId: ModelProviderServiceDispatcher(
+                  apiKeyProvider,
+                ),
+              },
+            if (chatGptProvider != null)
+              openAiChatGptConfigurationContext:
+                  <String, AdeleBackendDispatcher>{
+                    modelProviderServiceId: ModelProviderServiceDispatcher(
+                      chatGptProvider,
+                    ),
+                  },
+          },
+        );
+    bootstrapPort.send(<String, Object?>{
+      'kind': 'ready',
+      'commandPort': requests.sendPort,
+      'pluginBackendProtocolVersion': adelePluginBackendProtocolVersion,
+      'capabilityExposures': [
+        if (apiKeyProvider != null)
+          AdeleCapabilityExposure(
+            providerId: openAiApiKeyProviderId,
+            capabilityId: modelProviderCapability.id.value,
+            capabilityMajorVersion: modelProviderCapability.majorVersion,
+            serviceId: modelProviderServiceId,
+            displayName: 'OpenAI API Key',
+            configurationContext: defaultConfigurationContext,
+          ).toMap(),
+        if (chatGptProvider != null)
+          AdeleCapabilityExposure(
+            providerId: openAiChatGptProviderId,
+            capabilityId: modelProviderCapability.id.value,
+            capabilityMajorVersion: modelProviderCapability.majorVersion,
+            serviceId: modelProviderServiceId,
+            displayName: 'Experimental ChatGPT',
+            configurationContext: openAiChatGptConfigurationContext,
+          ).toMap(),
+      ],
+    });
+    await for (final Object? request in requests) {
+      if (request is! Map) continue;
+      if (request['method'] == 'shutdown' && request['requestId'] is int) {
+        await router.close();
+        responsePort.send(<String, Object?>{
+          'kind': 'response',
+          'requestId': request['requestId'],
+          'ok': true,
+          'payload': <String, Object?>{'stopping': true},
+        });
+        requests.close();
+        continue;
+      }
+      unawaited(router.handle(request, responsePort.send));
     }
-    unawaited(router.handle(request, responsePort.send));
+  } finally {
+    requests.close();
+    apiKeyProvider?.close();
+    chatGptProvider?.close();
+    oauth?.close();
   }
 }
 
-Map<String, String> _configurationEnvironment(List<String> arguments) {
-  if (arguments.isEmpty) return Platform.environment;
+Map<String, String> _configurationEnvironment(
+  List<String> arguments, {
+  required bool startupArgumentsOnly,
+}) {
+  if (arguments.isEmpty) {
+    return startupArgumentsOnly
+        ? const <String, String>{}
+        : Platform.environment;
+  }
   try {
     // Plugin-local startup contract: a file path and public configuration only.
     // Supplying any arguments disables environment fallback, including API keys.
+    if (arguments.length == 1 && arguments.single == '--chatgpt-only') {
+      return const <String, String>{};
+    }
     if (arguments.length != 2 || arguments.first != '--chatgpt-only') {
       throw const FormatException();
     }

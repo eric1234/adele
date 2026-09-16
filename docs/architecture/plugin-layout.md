@@ -1,4 +1,4 @@
-# Source Plugin Layout
+# Plugin Source and Installation Layout
 
 ## Canonical form
 
@@ -7,8 +7,8 @@ pipeline derives prepared frontend eval bytecode and native Dart AOT backend
 artifacts from the source components a plugin supplies. A plugin need not supply
 both a frontend and an AOT backend. Normal runtime activation consumes prepared
 artifacts and never compiles source; future installation/update should own that
-preparation. Current checkout tooling is a stand-in, not plugin installation or
-artifact caching.
+preparation. Current checkout tooling assembles fresh prepared installations for
+startup discovery, not a portable installer or artifact cache.
 
 `workspace_demo` establishes the maintained reference repository shape; its name
 is historical fixture terminology and does not establish a first-class ADELE
@@ -29,7 +29,7 @@ plugins/workspace_demo/
 
 The plugin directory is a small Dart workspace in the Dart package-management
 sense. Its root manifest coordinates source packages; `adele_plugin.yaml` is the
-draft ADELE manifest.
+draft ADELE source/build manifest, not the installed runtime manifest.
 
 For development builds, `packages.contract` selects the plugin's transport
 contract package. The builder reads its Dart package name from `pubspec.yaml`,
@@ -37,6 +37,57 @@ derives `lib/<package-name>.dart`, resolves that source to an absolute path, and
 runs `contract_codegen --check --source <path>` after validating Dart but before
 backend compilation. Repository-wide generator configuration is not used to
 choose a requested plugin's contract.
+
+Stock source directories have not been normalized to this fixture's
+`adele_plugin.yaml` layout. In particular, the desktop launcher still knows the
+Git and OpenAI source entrypoints and prepares their installations explicitly.
+Source/build discovery and installed-artifact discovery are separate boundaries.
+
+## Prepared installation snapshot
+
+`plugin_runtime.PreparedPluginCatalog.discover(rootPath)` reads a one-time startup
+snapshot of immediate child installation directories. Each child supplies
+`adele_plugin.installation.json`, independently of any source/build manifest:
+
+```json
+{
+  "manifestVersion": 1,
+  "metadata": {
+    "id": "dev.adele.plugin.git-environment",
+    "version": "0.1.0",
+    "displayName": "Git Worktree Environment"
+  },
+  "components": {
+    "backend": {"artifact": "backend.aot"}
+  }
+}
+```
+
+`metadata` uses the existing `PluginMetadata` value: `id`, opaque `version`,
+`displayName`, and optional `description`. Version is not parsed or used to select
+a winner. `components` may be empty; its only supported optional component is
+`backend`, with an `artifact` relative file path. Artifacts must exist as regular
+files and remain confined to their installation after filesystem resolution;
+absolute paths, traversal, and escaping symlinks are rejected. Unsupported fields
+are rejected. The manifest contains no capability exposures, source paths,
+configuration, credentials, profiles, or activation state.
+
+Discovery sorts child paths deterministically and does not recurse or watch for
+changes. An unconfigured, missing, or empty root is a successful empty catalog.
+A malformed or unreadable child produces a catalog issue and is excluded without
+hiding unrelated installations. Duplicate PluginIds exclude every conflict member,
+including conflicts whose readable valid identity belongs to an otherwise invalid
+manifest; neither discovery order nor version chooses a winner. Root I/O failure
+propagates to generic application bootstrap failure rather than becoming an empty
+catalog. Core in-process functionality remains usable.
+
+Discovery does not start a backend. Normal application bootstrap separately
+attempts every valid backend installation in this snapshot; metadata-only entries
+start nothing. This fixed F1 startup policy does not put activation state in the
+manifest or implement profile activation. Installation and activation remain
+distinct as accepted in ADR 0015. Backend-ready capability advertisements, not
+installed metadata, supply live registrations; see
+[`contracts-and-capabilities.md`](contracts-and-capabilities.md#backend-ready-advertisements).
 
 ## Package split
 
@@ -132,9 +183,9 @@ remains untouched in the backend and full Run evidence.
 `app/lib/plugins/stock_openai_activity_frontend.dart` imports Contract identity,
 loads the prepared artifact, registers the Inspection factory, and retires its
 registration/resources through existing `PreparedFrontend` and registry liveness.
-This app activation is provisional until discovery/profiles replace hard-coded
-stock selection; it does not classify or project raw output. Generic Chat uses
-`ModelNativeOutput.presentation != null` independently of frontend activation.
+This app activation is provisional until frontend discovery/profiles replace
+hard-coded stock selection; it does not classify or project raw output. Generic
+Chat uses `ModelNativeOutput.presentation != null` independently of frontend activation.
 Inspection resolves the exact safe presentation kind through `adele_ui`. Missing
 or failed rich presentation leaves safe activity intact without disabling backend
 execution or substituting a native card. The `app/tool` compile harness remains a
@@ -162,7 +213,7 @@ another:
 | Project/Task/Session/Environment | Core product identities associated with plugin behavior, not plugin/package identity |
 | Runtime resource | Temporary document, terminal, browser session, process, or similar handle |
 
-The draft manifest starts with independent plugin metadata:
+The draft source/build manifest starts with independent plugin metadata:
 
 ```yaml
 manifestVersion: 1
@@ -200,37 +251,54 @@ one runtime—for example Git may provide Environment behavior, review/SCM
 services, Commands, summary contributions, and model tools. Registration into
 multiple extension points does not imply multiple plugin runtimes.
 
-## Normal stock artifact composition
+## Normal prepared composition
 
-Normal composition loads Git and OpenAI backends without linking their
-implementations into Flutter; OpenAI shares Contract identities/schema and supplies
-an interpreted Frontend, while projection stays in Backend. Synchronous, provider-free
-`AdeleRuntime()` owns in-process stock registrations and generic
-`ApplicationPluginBootstrap` on its
-existing capability registry. `AdeleApplication` explicitly invokes async stock
-composition, supplying activation callbacks to that application-lifetime owner
-of one shared backend host. Git is required startup; OpenAI is an additional
-independently failing activation exposing only experimental ChatGPT in normal use.
+Synchronous, provider-free `AdeleRuntime()` owns six unchanged in-process stock
+activations and generic `ApplicationPluginBootstrap` on its existing capability
+registry. `AdeleApplication` explicitly calls `ApplicationPluginBootstrap.start`
+with only an installation root, shared runtime/host paths, and optional generic
+startup arguments. Discovery precedes host startup. If there are no valid backend
+components, startup succeeds without a child process, even with unusable host paths.
 
-`app/lib/plugins/stock_git_environment.dart` centralizes stock Git plugin/provider
-IDs, display name, capability/service exposure, and default configuration-context
-registration for normal and self-hosting paths. It loads an artifact using host
-APIs and public Environment contracts, not backend implementation imports.
-Self-hosting retains its separate larger artifact/host topology.
+Otherwise one shared host independently attempts all valid backends, with no
+required Git or additional-OpenAI tier. A backend start, advertisement, or
+registration failure cleans up only that attempt's partial resources; later
+termination retires only its exact generation. Shared-host failure is global.
+All registrations retire before generations close, then the host closes, then
+the runtime's in-process activations retire. Read-only backend states and catalog
+issues are available without a plugin-management UI.
 
-`app/lib/plugins/stock_openai.dart` owns analogous ChatGPT identity/exposure and
-plugin-local startup arguments. They contain a credential-store path and public
-OAuth configuration, not tokens. API-key and ChatGPT contexts can coexist for other
-consumers, but neither context requires a dummy configuration for the other.
+Git and OpenAI entrypoints own their capability advertisements. Generic
+`PluginCapabilityActivation.registerAdvertised` registers them through the
+existing registry/liveness machinery. Self-hosting uses the same registration
+path but retains its explicit artifact/host/profile topology without requiring
+normal installation discovery.
 
-The app consumes prepared artifacts; source discovery and compilation belong to
-tooling. Missing required host/Git configuration or failed required startup leaves
-Task support unavailable without blocking Project opening and cleans up acquired
-resources. Optional OpenAI activation failure affects only model availability.
+`tools/backend_artifacts.dart` still selects and compiles stock Git/OpenAI source,
+then assembles the fresh installation root. Its separate startup-arguments JSON
+maps PluginId to a string argv list; normal OpenAI always receives `--chatgpt-only`,
+with a second JSON argument only when configured. That argument references the
+credential store and public OAuth/endpoint options, never tokens. Unconfigured
+ChatGPT-only mode advertises zero capabilities rather than inheriting an API key.
+Normal bootstrap also sets `startupArgumentsOnly: true` for every backend,
+independently of that map. OpenAI honors the forwarded flag with no environment
+fallback and zero exposures for empty argv or an absent configuration document,
+so root-only activation has the same protection. Direct/self-hosting callers keep
+the default `false` and their existing environment-based configuration path.
+The flag is temporary deployment metadata, not manifest configuration or general
+settings/profile/credential infrastructure; generic code has no PluginId switch.
+`app/lib/plugins/temporary_chatgpt_selection.dart` retains provisional provider
+identity and model-only configuration, always supplying a default or override
+without a credential-presence gate. Availability comes from the active registry;
+the app inspects no startup OAuth/credential configuration and owns neither
+backend exposure metadata nor configuration argv construction.
+This seam is intended to disappear with general plugin configuration/profiles,
+not to become their schema.
+
 Deployment and build details are maintained in
 [`app/README.md`](../../app/README.md#normal-backend-startup) and the
 [`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
-This is not plugin installation, production packaging, discovery, or profiles.
+Checkout paths are not portable/production packaging, an installer, or a cache.
 
 Normal Chat, Filesystem Tools, Command Tools, and OpenAI activity frontend
 activations independently consume prepared EVCs. Flutter build-time tooling
@@ -248,8 +316,13 @@ requires eval modernization.
 The `workspace_demo` fixture proves local AOT compilation, shared process-hosted
 loading, typed async communication, interpreted rendering, interaction, and
 rebuild/reload on Linux x64 Flutter profile mode. Windows, macOS, release mode,
-packaging, discovery, activation contexts, and broad plugin APIs remain
+packaging, frontend discovery, activation contexts, and broad plugin APIs remain
 unproven.
+
+F1 adds only the prepared startup catalog and backend activation described above.
+Enable/disable management, profiles, version solving, filesystem watching, frontend
+discovery, reverse RPC, and hot upgrade remain deferred. The existing frontend EVC
+plumbing and six in-process activations are not discovered from installed manifests.
 
 Maintained plugin backends additionally prove generated server streaming,
 multiple generation-bound configuration contexts, real HTTP/SSE model-provider

@@ -7,12 +7,11 @@ import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/resource_cleanup.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
-import 'package:adele_desktop/plugins/stock_backend_plugins.dart';
 import 'package:adele_desktop/plugins/stock_chat_execution_status.dart';
 import 'package:adele_desktop/plugins/stock_chat_frontend.dart';
-import 'package:adele_desktop/plugins/stock_openai.dart';
 import 'package:adele_desktop/plugins/stock_openai_activity_frontend.dart';
 import 'package:adele_desktop/plugins/stock_tool_inspection_frontends.dart';
+import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
 import 'package:adele_desktop/ui/chat/chat_controller.dart';
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
@@ -266,10 +265,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       if (widget.bootstrapPlugins case final bootstrap?) {
         await bootstrap(_runtime.plugins);
       } else {
-        await bootstrapStockBackendPlugins(
-          _runtime.plugins,
-          chatGptConfiguration: _chatGptConfiguration,
-        );
+        await _runtime.plugins.start();
       }
     } on Object catch (error) {
       if (mounted && _closing == null) _bootstrapError = error;
@@ -307,8 +303,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         configurationUnavailableReason: _modelConfigurationFailed
             ? 'ChatGPT configuration is invalid. Model execution is unavailable.'
             : configuration == null
-            ? 'ChatGPT is not configured. Set '
-                  'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE before launching ADELE.'
+            ? 'ChatGPT model selection is not configured.'
             : null,
         onChanged: () {
           _frontend?.refresh();

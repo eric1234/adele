@@ -137,7 +137,7 @@ void main() {
     await tester.pumpWidget(AdeleApplication(createRuntime: createRuntime));
     final Project project = await openProject(tester);
     // No deployment defines: an independently registered provider is sufficient.
-    expect(runtime.plugins.state, ApplicationPluginState.unconfigured);
+    expect(runtime.plugins.state, ApplicationPluginState.ready);
     expect(button(tester, 'New Task').onPressed, isNotNull);
     expect(
       find.textContaining('Task Environment support is unavailable'),
@@ -449,7 +449,7 @@ void main() {
           // Closing blocks presentation immediately but must drain establishment
           // before retiring runtime-owned resources.
           expect(exitCompleted, isFalse);
-          expect(runtime.plugins.state, ApplicationPluginState.unconfigured);
+          expect(runtime.plugins.state, ApplicationPluginState.ready);
           expect(stockSelector.validate, returnsNormally);
           expect(registration.isClosed, isFalse);
           expect(runtime.store.tasksFor(project.id), isEmpty);
@@ -532,11 +532,11 @@ void main() {
   }
 
   testWidgets(
-    'unconfigured backend still opens Project with New Task disabled',
+    'empty backend composition still opens Project with New Task disabled',
     (tester) async {
       await tester.pumpWidget(AdeleApplication(createRuntime: createRuntime));
       final Project project = await openProject(tester);
-      expect(runtime.plugins.state, ApplicationPluginState.unconfigured);
+      expect(runtime.plugins.state, ApplicationPluginState.ready);
       expect(
         runtime.registry.providersFor(environmentProviderCapability),
         isEmpty,

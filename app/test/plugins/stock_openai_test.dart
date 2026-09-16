@@ -1,115 +1,66 @@
 @Timeout(Duration(minutes: 2))
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/development/agent/development_self_hosting.dart';
-import 'package:adele_desktop/plugins/stock_openai.dart';
+import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+const String _openAiPluginId = 'dev.adele.openai';
+
 void main() {
   test(
-    'configuration absence does not enable a provider or read credentials',
+    'product selection defaults without interpreting backend configuration',
     () {
       for (final Map<String, String> environment in <Map<String, String>>[
         <String, String>{},
         <String, String>{'OPENAI_API_KEY': 'unrelated-api-key'},
         <String, String>{'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE': ' \t '},
         <String, String>{'ADELE_OPENAI_CHATGPT_ENDPOINT': 'https://[invalid'},
+        <String, String>{'ADELE_OPENAI_CHATGPT_MODEL': ' \t '},
+        <String, String>{'ADELE_OPENAI_CHATGPT_TEST_MODEL': 'selfhosting-only'},
       ]) {
-        expect(StockChatGptConfiguration.fromEnvironment(environment), isNull);
+        expect(
+          StockChatGptConfiguration.fromEnvironment(environment).model,
+          'gpt-6-astra',
+        );
       }
-      final StockChatGptConfiguration configuration =
-          StockChatGptConfiguration.fromEnvironment(const <String, String>{
-            'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE':
-                '/missing/private/file.json',
-            'ADELE_OPENAI_CHATGPT_TEST_MODEL': 'not-the-normal-model',
-            'ADELE_OPENAI_CHATGPT_CLIENT_ID': ' ',
-          })!;
-      expect(configuration.credentialFile, '/missing/private/file.json');
-      expect(configuration.model, 'gpt-6-astra');
-      expect(configuration.clientId, isNull);
-      expect(configuration.instanceId, isNull);
-      expect(configuration.issuer, isNull);
-      expect(configuration.redirectUri, isNull);
-      expect(configuration.endpoint, isNull);
     },
   );
 
-  test('configuration snapshots only the supplied public ChatGPT settings', () {
+  test('product selection snapshots only the requested model', () {
     final Map<String, String> environment = <String, String>{
       'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE': '/private/credential file.json',
       'ADELE_OPENAI_CHATGPT_MODEL': 'explicit-model',
-      'ADELE_OPENAI_CHATGPT_CLIENT_ID': 'authorized-client',
-      'ADELE_OPENAI_CHATGPT_INSTANCE_ID': 'stock-chatgpt',
-      'ADELE_OPENAI_CHATGPT_OAUTH_ISSUER': 'https://auth.example.test',
-      'ADELE_OPENAI_CHATGPT_REDIRECT_URI':
-          'http://localhost:1455/auth/callback',
-      'ADELE_OPENAI_CHATGPT_ENDPOINT':
-          'https://responses.example.test/responses',
+      'ADELE_OPENAI_CHATGPT_CLIENT_ID': 'invalid\nclient',
+      'ADELE_OPENAI_CHATGPT_OAUTH_ISSUER': 'https://[invalid',
+      'ADELE_OPENAI_CHATGPT_REDIRECT_URI': 'https://[invalid',
+      'ADELE_OPENAI_CHATGPT_ENDPOINT': 'https://[invalid',
       'OPENAI_API_KEY': 'not-chatgpt',
       'ADELE_OPENAI_CHATGPT_ACCESS_TOKEN': 'not-public-configuration',
     };
     final StockChatGptConfiguration configuration =
-        StockChatGptConfiguration.fromEnvironment(environment)!;
+        StockChatGptConfiguration.fromEnvironment(environment);
     environment.clear();
-    expect(configuration.credentialFile, '/private/credential file.json');
     expect(configuration.model, 'explicit-model');
-    expect(configuration.clientId, 'authorized-client');
-    expect(configuration.instanceId, 'stock-chatgpt');
-    expect(configuration.issuer, Uri.parse('https://auth.example.test'));
-    expect(
-      configuration.redirectUri,
-      Uri.parse('http://localhost:1455/auth/callback'),
-    );
-    expect(
-      configuration.endpoint,
-      Uri.parse('https://responses.example.test/responses'),
-    );
-  });
-
-  test('malformed environment URIs fail without echoing their contents', () {
-    for (final String suffix in ['OAUTH_ISSUER', 'REDIRECT_URI', 'ENDPOINT']) {
-      expect(
-        () => StockChatGptConfiguration.fromEnvironment(<String, String>{
-          'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE': '/private/credentials.json',
-          'ADELE_OPENAI_CHATGPT_$suffix': 'https://[sensitive-config-canary',
-        }),
-        throwsA(
-          isA<FormatException>().having(
-            (error) => error.toString(),
-            'redacted',
-            isNot(contains('sensitive-config-canary')),
-          ),
-        ),
-      );
-    }
   });
 
   test(
-    'selfhosting shares identities and masks rather than fabricates an API key',
+    'normal and selfhosting selections retain the same ChatGPT identity',
     () {
-      final DevelopmentSelfHostingProviderConfiguration configuration =
-          DevelopmentSelfHostingProviderConfiguration.fromEnvironment(
-            DevelopmentSelfHostingProfile.chatgpt,
-            environment: const <String, String>{
-              'OPENAI_API_KEY': 'inherited-api-key',
-              'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE':
-                  '/private/credentials.json',
-            },
-          );
-      expect(configuration.providerId, stockChatGptProviderId.value);
-      expect(configuration.configuredContext, stockChatGptConfigurationContext);
-      expect(configuration.selectedModel, stockChatGptDefaultModel);
-      expect(configuration.hostEnvironment['OPENAI_API_KEY'], isEmpty);
       expect(
-        configuration
-            .hostEnvironment['ADELE_OPENAI_CHATGPT_EXPERIMENTAL_CODEX_CLIENT'],
-        '1',
+        developmentSelfHostingChatGptProviderId,
+        stockChatGptProviderId.value,
+      );
+      expect(
+        developmentSelfHostingChatGptDefaultModel,
+        stockChatGptDefaultModel,
       );
     },
   );
@@ -175,24 +126,34 @@ void main() {
           final File missingCredential = File(
             '${artifacts.path}/missing-credential.json',
           );
+          final PluginBackendConnection connection = await host.startPlugin(
+            pluginId: _openAiPluginId,
+            artifactUri: pluginArtifact.uri,
+            arguments: [
+              '--chatgpt-only',
+              jsonEncode({
+                'credentialFile': missingCredential.path,
+                if (clientId != null)
+                  'clientId': clientId
+                else
+                  'experimentalCodexClient': true,
+                'instanceId': 'test-instance',
+                'endpoint': 'http://127.0.0.1:1/responses',
+              }),
+            ],
+          );
+          addTearDown(connection.close);
           final PluginCapabilityActivation activation =
-              await activateStockChatGpt(
-                host: host,
+              await PluginCapabilityActivation.registerAdvertised(
+                connection: connection,
                 registry: registry,
-                artifactUri: pluginArtifact.uri,
-                configuration: StockChatGptConfiguration(
-                  credentialFile: missingCredential.path,
-                  clientId: clientId,
-                  instanceId: 'test-instance',
-                  endpoint: Uri.parse('http://127.0.0.1:1/responses'),
-                ),
               );
           addTearDown(activation.close);
           final ProviderDescriptor provider = registry
               .providersFor(modelProviderCapability)
               .single;
           expect(provider.id, stockChatGptProviderId);
-          expect(provider.pluginId, stockOpenAiPluginId);
+          expect(provider.pluginId, _openAiPluginId);
           expect(provider.serviceId, modelProviderServiceId);
           expect(provider.displayName, 'Experimental ChatGPT');
           expect(missingCredential.existsSync(), isFalse);
@@ -237,6 +198,82 @@ void main() {
           expect(host.isClosed, isFalse);
         },
       );
+    }
+
+    for (final fixture in [
+      (
+        profile: DevelopmentSelfHostingProfile.chatgpt,
+        apiKey: false,
+        chatGpt: true,
+      ),
+      (
+        profile: DevelopmentSelfHostingProfile.apiKey,
+        apiKey: true,
+        chatGpt: false,
+      ),
+      (
+        profile: DevelopmentSelfHostingProfile.chatgpt,
+        apiKey: true,
+        chatGpt: true,
+      ),
+      (
+        profile: DevelopmentSelfHostingProfile.apiKey,
+        apiKey: true,
+        chatGpt: true,
+      ),
+    ]) {
+      test('selfhosting ${fixture.profile.cliName} registers online contexts '
+          'apiKey=${fixture.apiKey} chatGpt=${fixture.chatGpt}', () async {
+        final PluginBackendHost host = await PluginBackendHost.start(
+          dartaotruntimeExecutable: runtime,
+          hostArtifactPath: hostArtifact.path,
+          environment: {
+            'OPENAI_API_KEY': fixture.apiKey ? 'fixture-api-key' : '',
+            'ADELE_OPENAI_ENDPOINT': 'http://127.0.0.1:1/responses',
+            'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE':
+                '${artifacts.path}/missing-credential.json',
+            'ADELE_OPENAI_CHATGPT_CLIENT_ID': fixture.chatGpt ? 'fixture' : '',
+            'ADELE_OPENAI_CHATGPT_EXPERIMENTAL_CODEX_CLIENT': '0',
+            'ADELE_OPENAI_CHATGPT_INSTANCE_ID': 'fixture',
+            'ADELE_OPENAI_CHATGPT_OAUTH_ISSUER': 'http://127.0.0.1:1',
+            'ADELE_OPENAI_CHATGPT_REDIRECT_URI':
+                'http://localhost:1455/auth/callback',
+            'ADELE_OPENAI_CHATGPT_ENDPOINT': 'http://127.0.0.1:1/responses',
+          },
+        );
+        addTearDown(host.close);
+        final CapabilityRegistry registry = CapabilityRegistry();
+        final DevelopmentSelfHostingProviderActivation activation =
+            await activateDevelopmentSelfHostingModelProvider(
+              host: host,
+              registry: registry,
+              artifact: pluginArtifact,
+              profile: fixture.profile,
+            );
+        addTearDown(activation.close);
+        expect(
+          registry
+              .providersFor(modelProviderCapability)
+              .map((provider) => provider.id.value),
+          unorderedEquals([
+            if (fixture.apiKey) developmentSelfHostingApiKeyProviderId,
+            if (fixture.chatGpt) developmentSelfHostingChatGptProviderId,
+          ]),
+        );
+        final ProviderBinding selected = registry.resolve(
+          modelProviderCapability,
+          providerId: ProviderId(fixture.profile.providerId),
+        );
+        expect(selected.provider.id.value, fixture.profile.providerId);
+        expect(() => selected.streamChannel, returnsNormally);
+        await activation.close();
+        expect(registry.providersFor(modelProviderCapability), isEmpty);
+        expect(
+          () => selected.streamChannel,
+          throwsA(isA<ProviderUnavailable>()),
+        );
+        expect(host.isClosed, isFalse);
+      });
     }
   });
 }

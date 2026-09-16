@@ -6,6 +6,160 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test(
+    'host termination is observable without live plugin connections',
+    () async {
+      final fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'capabilityExposures': []}));
+      } else if (message['kind'] == 'request') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginFailed', 'pluginId': message['pluginId'], 'requestIds': [message['requestId']], 'error': {'code': 'plugin_exited', 'message': 'Plugin failed but host is alive'}}));
+      }
+    }
+  });
+}
+''');
+      addTearDown(fake.dispose);
+      for (final mode in [
+        'no plugins',
+        'zero exposures',
+        'all plugins failed',
+      ]) {
+        final host = await fake.start();
+        addTearDown(host.close);
+        bool signalled = false;
+        unawaited(host.terminated.then((_) => signalled = true));
+        if (mode != 'no plugins') {
+          final connection = await host.startPlugin(
+            pluginId: 'dev.adele.fixture',
+            artifactUri: Uri.file('/unused.aot'),
+          );
+          expect(connection.capabilityExposures, isEmpty);
+          if (mode == 'all plugins failed') {
+            await expectLater(
+              connection.request('crash', const {}),
+              throwsA(isA<PluginRemoteFailure>()),
+            );
+            await connection.terminated;
+          }
+        }
+        expect(host.isClosed, isFalse);
+        expect(signalled, isFalse);
+        expect(Process.killPid(host.processId), isTrue);
+        final reason = await host.terminated.timeout(
+          const Duration(seconds: 5),
+        );
+        expect(
+          reason,
+          isA<PluginConnectionClosed>().having(
+            (value) => value.message,
+            'message',
+            startsWith('Backend host exited with code '),
+          ),
+        );
+        expect(host.isClosed, isTrue);
+        expect(signalled, isTrue);
+        await host.close();
+        expect(await host.terminated, same(reason));
+      }
+    },
+    timeout: const Timeout(Duration(minutes: 1)),
+  );
+
+  test('normal host close signals termination without an error future', () async {
+    final fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'shutdownHost') {
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostStopped', 'requestId': message['requestId']}));
+        exit(0);
+      }
+    }
+  });
+}
+''');
+    addTearDown(fake.dispose);
+    final host = await fake.start();
+    await host.close();
+    // Attach after closure to verify the reason is retained without an unhandled error.
+    final reason = await host.terminated.timeout(const Duration(seconds: 1));
+    expect(reason, isA<PluginConnectionClosed>());
+    expect(host.isClosed, isTrue);
+    await host.close();
+    expect(await host.terminated, same(reason));
+  });
+
+  test(
+    'invalid advertised readiness stops partial connection before replacement',
+    () async {
+      final fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'hostHello'}));
+  final decoder = BackendHostFrameDecoder();
+  var running = false;
+  var starts = 0;
+  var stops = 0;
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      final response = <String, Object?>{'protocolVersion': backendHostProtocolVersion, 'requestId': message['requestId'], 'pluginId': message['pluginId']};
+      if (message['kind'] == 'startPlugin') {
+        if (running) {
+          response.addAll({'kind': 'error', 'error': {'code': 'still_running', 'message': 'Partial connection leaked'}});
+        } else {
+          running = true;
+          starts++;
+          response.addAll({'kind': 'pluginReady', 'capabilityExposures': starts == 1 ? null : []});
+        }
+      } else if (message['kind'] == 'stopPlugin') {
+        running = false;
+        stops++;
+        response['kind'] = 'pluginStopped';
+      } else if (message['kind'] == 'request') {
+        response.addAll({'kind': 'response', 'ok': true, 'payload': stops});
+      } else if (message['kind'] == 'shutdownHost') {
+        response['kind'] = 'hostStopped';
+        stdout.add(encodeBackendHostFrame(response));
+        exit(0);
+      }
+      stdout.add(encodeBackendHostFrame(response));
+    }
+  });
+}
+''');
+      addTearDown(fake.dispose);
+      final host = await fake.start();
+      addTearDown(host.close);
+      await expectLater(
+        host.startPlugin(
+          pluginId: 'dev.adele.provider',
+          artifactUri: Uri.file('/unused.aot'),
+        ),
+        throwsFormatException,
+      );
+      expect(host.isClosed, isFalse);
+      final replacement = await host.startPlugin(
+        pluginId: 'dev.adele.provider',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      expect(await replacement.request('stops', const {}), 1);
+      await replacement.close();
+    },
+  );
+
   test('rejects mismatched protocol before plugin activation', () async {
     final _FakeHost fake = _FakeHost.create('''
 import 'dart:io';
@@ -58,6 +212,7 @@ void main() {
     );
     await host.close();
     expect(host.isClosed, isTrue);
+    expect(await host.terminated, isA<PluginConnectionClosed>());
     expect(
       diagnostics.any((String value) => value.contains('shutdown failed')),
       isTrue,
@@ -290,6 +445,7 @@ void main() {
         throwsA(isA<PluginConnectionClosed>()),
       );
       expect(await connection.terminated, isA<PluginConnectionClosed>());
+      expect(await host.terminated, same(await connection.terminated));
       expect(host.isClosed, isTrue);
     },
   );
@@ -599,7 +755,18 @@ Future<void> main() async {
     );
     expect(host.isClosed, isTrue);
     expect(connection.isClosed, isTrue);
+    final reason = await host.terminated;
+    expect(
+      reason,
+      isA<PluginConnectionClosed>().having(
+        (value) => value.message,
+        'message',
+        contains('Malformed host output'),
+      ),
+    );
+    expect(await connection.terminated, same(reason));
     await host.close().timeout(const Duration(seconds: 2));
+    expect(await host.terminated, same(reason));
     final ProcessResult alive = await Process.run('kill', <String>[
       '-0',
       '$pid',

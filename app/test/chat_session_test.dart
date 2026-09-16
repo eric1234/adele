@@ -14,9 +14,9 @@ import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/plugins/chat_frontend_bridge.dart';
 import 'package:adele_desktop/plugins/stock_chat_execution_status.dart';
 import 'package:adele_desktop/plugins/stock_chat_frontend.dart';
-import 'package:adele_desktop/plugins/stock_openai.dart';
 import 'package:adele_desktop/plugins/stock_openai_activity_frontend.dart';
 import 'package:adele_desktop/plugins/stock_tool_inspection_frontends.dart';
+import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
 import 'package:adele_desktop/ui/activity/tool_activity_compact_host.dart';
 import 'package:adele_desktop/ui/chat/chat_controller.dart';
 import 'package:adele_desktop/ui/execution/approval_display.dart';
@@ -54,7 +54,6 @@ late File _frontendArtifact;
 late File _filesystemFrontendArtifact;
 
 const StockChatGptConfiguration _configuration = StockChatGptConfiguration(
-  credentialFile: 'fake-unused',
   model: 'gpt-6-astra',
 );
 

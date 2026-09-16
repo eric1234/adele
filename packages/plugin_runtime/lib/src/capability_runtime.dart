@@ -51,7 +51,33 @@ final class PluginCapabilityActivation {
 
   final PluginBackendConnection connection;
   final CapabilityRegistrationGroup registrations;
-  bool _closed = false;
+  Future<void>? _retiring;
+
+  static Future<PluginCapabilityActivation> registerAdvertised({
+    required PluginBackendConnection connection,
+    required CapabilityRegistry registry,
+  }) => register(
+    connection: connection,
+    registry: registry,
+    exposures: connection.capabilityExposures.map(
+      (AdeleCapabilityExposure exposure) => PluginCapabilityExposure(
+        provider: ProviderDescriptor(
+          id: ProviderId(exposure.providerId),
+          capability: CapabilityKey(
+            id: CapabilityId(exposure.capabilityId),
+            majorVersion: exposure.capabilityMajorVersion,
+          ),
+          pluginId: connection.pluginId,
+          displayName: exposure.displayName,
+          serviceId: exposure.serviceId,
+          rank: exposure.rank,
+        ),
+        configurationContext: connection.configurationContext(
+          exposure.configurationContext,
+        ),
+      ),
+    ),
+  );
 
   static Future<PluginCapabilityActivation> register({
     required PluginBackendConnection connection,
@@ -104,11 +130,7 @@ final class PluginCapabilityActivation {
     return activation;
   }
 
-  Future<void> retire() async {
-    if (_closed) return;
-    _closed = true;
-    await registrations.close();
-  }
+  Future<void> retire() => _retiring ??= registrations.close();
 
   Future<void> close() async {
     await retire();

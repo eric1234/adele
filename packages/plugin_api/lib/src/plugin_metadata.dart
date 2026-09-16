@@ -1,8 +1,8 @@
 import 'plugin_id.dart';
 
-/// Source plugin identity and descriptive metadata.
+/// Plugin identity and descriptive metadata, independent of activation.
 ///
-/// [version] remains an opaque string in Phase 0. Semantic version parsing,
+/// [version] remains an opaque string. Semantic version parsing,
 /// comparison, and ranges are deferred.
 final class PluginMetadata {
   const PluginMetadata({

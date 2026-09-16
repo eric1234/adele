@@ -30,7 +30,8 @@ pipeline compiles backend source to native Dart AOT and frontend source to
 Windows and macOS behavior remain future packaging and validation work.
 
 Normal desktop runtime activation never compiles plugin source. The Linux checkout
-launcher prepares shared-host/Git/OpenAI AOT artifacts and four stock frontend
+launcher compiles shared-host/Git/OpenAI AOT artifacts, assembles fresh prepared
+backend installations, and prepares four stock frontend
 EVCs (Chat, Filesystem Tools, Command Tools, and OpenAI activity) before launching
 or building Flutter, using the selected Flutter SDK. `tools/frontend_artifacts.dart` invokes
 `app/tool/compile_chat_frontend.dart`,
@@ -41,6 +42,14 @@ pure-Dart `plugin_builder` dependency graph. Normal activation loads the prepare
 artifacts; missing or invalid artifacts fail the affected support rather than
 triggering compilation or a substitute implementation.
 
+`tools/backend_artifacts.dart` still owns stock source entrypoints and writes
+`adele_plugin.installation.json` beside each installed `backend.aot`. Runtime
+receives `ADELE_PLUGIN_INSTALLATION_ROOT`, the shared runtime/host paths, and the
+temporary generic `ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`, not per-stock backend
+artifact defines or source paths. Installed manifests are distinct from the draft
+`adele_plugin.yaml` source/build manifest; stock source layouts are not normalized
+to it. See [`plugin-layout.md`](plugin-layout.md#prepared-installation-snapshot).
+
 The OpenAI activity compiler takes build-time environment inputs
 `ADELE_REPOSITORY_ROOT` and `ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT`; the launcher
 passes the prepared `openai.evc` path as compile-time deployment define
@@ -50,7 +59,7 @@ independently of model backend support and other frontends. It loads no source
 and substitutes no native card on failure. It imports only OpenAI Contract
 identity to load/register/retire rich presentation, with no raw classification or
 projection algorithms. This stock activation edge is provisional until
-discovery/profiles replace hard-coded selection. These inputs are not model options,
+frontend discovery/profiles replace hard-coded selection. These inputs are not model options,
 credentials, or a general configuration UI.
 
 OpenAI follows `plugins/openai/packages/{contract,backend,frontend}`:
@@ -68,8 +77,9 @@ safe Chat activity without frontend activation are separate regression boundarie
 
 Future installation/update should own source compilation and artifact preparation,
 separate from activation consuming those artifacts. Current repository tooling is
-only a source-checkout stand-in, not installation/discovery, profile management, or
-an artifact cache. Operational preparation inputs and invocations live in
+a source-checkout stand-in that enables a bounded installed-backend startup
+snapshot, not an installer, profile manager, artifact cache, or portable production
+package. Operational preparation inputs and invocations live in
 [`app/README.md`](../../app/README.md#prepared-chat-frontend) and the
 [`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
 

@@ -165,6 +165,36 @@ void main() {
   });
 
   group('test plan', () {
+    test(
+      'catalog and checkout preparation are included in maintained targets',
+      () {
+        final runtime = lookupTestTarget('plugin_runtime');
+        expect(runtime.path, 'packages/plugin_runtime');
+        expect(runtime.executable, 'dart');
+        expect(runtime.argumentsFor(), ['test', '--timeout', '10s']);
+        expect(
+          File(
+            '${runtime.path}/test/prepared_plugin_catalog_test.dart',
+          ).existsSync(),
+          isTrue,
+        );
+        final tools = lookupTestTarget('adele_tools');
+        expect(tools.path, '.');
+        expect(tools.argumentsFor(), ['test', 'test/tools']);
+        expect(
+          File('test/tools/backend_artifacts_test.dart').existsSync(),
+          isTrue,
+        );
+        final plan = jsonDecode(testPlanJson()) as Map<String, Object?>;
+        expect(
+          (plan['include']! as List<Object?>).cast<Map<String, Object?>>().map(
+            (entry) => entry['name'],
+          ),
+          containsAll(['plugin_runtime', 'adele_tools']),
+        );
+      },
+    );
+
     test('contains every unique target exactly once with setup metadata', () {
       final Map<String, Object?> plan =
           jsonDecode(testPlanJson())! as Map<String, Object?>;

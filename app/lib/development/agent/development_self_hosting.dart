@@ -7,8 +7,6 @@ import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/resource_cleanup.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
-import 'package:adele_desktop/plugins/stock_git_environment.dart';
-import 'package:adele_desktop/plugins/stock_openai.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
@@ -21,9 +19,8 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 const String developmentSelfHostingApiKeyProviderId =
     'dev.adele.openai.api-key';
 const String developmentSelfHostingChatGptProviderId =
-    stockChatGptProviderIdValue;
-const String developmentSelfHostingChatGptDefaultModel =
-    stockChatGptDefaultModel;
+    'dev.adele.openai.chatgpt-experimental';
+const String developmentSelfHostingChatGptDefaultModel = 'gpt-6-astra';
 
 typedef DevelopmentSelfHostingLog = void Function(String message);
 
@@ -55,7 +52,7 @@ extension DevelopmentSelfHostingProfileName on DevelopmentSelfHostingProfile {
   };
 
   String get configuredContext => switch (this) {
-    DevelopmentSelfHostingProfile.chatgpt => stockChatGptConfigurationContext,
+    DevelopmentSelfHostingProfile.chatgpt => 'chatgpt-experimental',
     DevelopmentSelfHostingProfile.apiKey => 'default',
   };
 }
@@ -284,12 +281,19 @@ final class DevelopmentSelfHostingTopology {
       final CapabilityRegistry registry = runtime.registry;
       final InMemoryProductStore store = runtime.store;
       final ProductLifecycleCoordinator lifecycle = runtime.lifecycle;
-      final ProviderId environmentProviderId = stockGitEnvironmentProviderId;
-      environmentActivation = await activateStockGitEnvironment(
-        host: host,
-        registry: registry,
-        artifactUri: artifacts.gitEnvironmentArtifact.uri,
+      final ProviderId environmentProviderId = ProviderId(
+        'dev.adele.environment.git-worktree',
       );
+      final PluginBackendConnection environmentConnection = await host
+          .startPlugin(
+            pluginId: 'dev.adele.plugin.git-environment',
+            artifactUri: artifacts.gitEnvironmentArtifact.uri,
+          );
+      environmentActivation =
+          await PluginCapabilityActivation.registerAdvertised(
+            connection: environmentConnection,
+            registry: registry,
+          );
       final ProviderBinding environmentBinding = registry.resolve(
         environmentProviderCapability,
         providerId: environmentProviderId,
@@ -443,35 +447,27 @@ activateDevelopmentSelfHostingModelProvider({
   required DevelopmentSelfHostingProfile profile,
 }) async {
   final PluginBackendConnection connection = await host.startPlugin(
-    pluginId: stockOpenAiPluginId,
+    pluginId: 'dev.adele.openai',
     artifactUri: artifact.uri,
   );
+  PluginCapabilityActivation? activation;
   try {
-    final PluginCapabilityActivation activation =
-        await PluginCapabilityActivation.register(
-          connection: connection,
-          registry: registry,
-          exposures: <PluginCapabilityExposure>[
-            switch (profile) {
-              DevelopmentSelfHostingProfile.chatgpt => stockChatGptExposure(
-                connection,
-              ),
-              DevelopmentSelfHostingProfile.apiKey => PluginCapabilityExposure(
-                provider: ProviderDescriptor(
-                  id: ProviderId(developmentSelfHostingApiKeyProviderId),
-                  capability: modelProviderCapability,
-                  pluginId: stockOpenAiPluginId,
-                  displayName: 'OpenAI API Key',
-                  serviceId: modelProviderServiceId,
-                ),
-                configurationContext: connection.defaultConfigurationContext,
-              ),
-            },
-          ],
-        );
+    activation = await PluginCapabilityActivation.registerAdvertised(
+      connection: connection,
+      registry: registry,
+    );
+    // The profile selects a provider; it does not hide other online contexts.
+    registry.resolve(
+      modelProviderCapability,
+      providerId: ProviderId(profile.providerId),
+    );
     return DevelopmentSelfHostingProviderActivation(activation);
-  } catch (_) {
-    if (!connection.isClosed) await connection.close();
+  } on Object {
+    try {
+      await (activation?.close() ?? connection.close());
+    } on Object {
+      // Preserve activation failure after attempting connection cleanup.
+    }
     rethrow;
   }
 }

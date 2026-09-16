@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:plugin_backend_host/plugin_backend_host.dart';
@@ -45,6 +46,222 @@ void main() {
       repository,
     );
   });
+
+  const Map<String, Object?> exposure = {
+    'providerId': 'dev.adele.fixture.provider',
+    'capabilityId': 'dev.adele.fixture.capability',
+    'capabilityMajorVersion': 1,
+    'serviceId': 'fixtureService',
+    'displayName': 'Fixture',
+    'configurationContext': 'opaque-context',
+    'pluginId': 'dev.adele.spoofed',
+  };
+
+  test('forwards zero, one and multiple validated advertisements', () async {
+    final host = await _startHost(dartaotruntime, hostArtifact);
+    addTearDown(host.close);
+    for (final advertised in [
+      <Object?>[],
+      <Object?>[exposure],
+      <Object?>[
+        exposure,
+        {
+          ...exposure,
+          'providerId': 'dev.adele.fixture.second',
+          'configurationContext': 'second',
+          'rank': 5,
+        },
+      ],
+    ]) {
+      final connection = await host.startPlugin(
+        pluginId: 'dev.adele.actual',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['wait', jsonEncode(advertised)],
+      );
+      expect(connection.pluginId, 'dev.adele.actual');
+      expect(connection.capabilityExposures, hasLength(advertised.length));
+      for (final value in connection.capabilityExposures) {
+        expect(value.toMap(), isNot(contains('pluginId')));
+      }
+      if (advertised.isNotEmpty) {
+        expect(connection.capabilityExposures.first.rank, 0);
+      }
+      if (advertised.length == 2) {
+        expect(connection.capabilityExposures.last.rank, 5);
+      }
+      await connection.close();
+    }
+  });
+
+  test(
+    'forwards generic startup argument mode without changing legacy defaults',
+    () async {
+      final host = await _startHost(dartaotruntime, hostArtifact);
+      addTearDown(host.close);
+      final legacy = await host.startPlugin(
+        pluginId: 'legacy',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['wait'],
+      );
+      expect(await legacy.request('startup-mode', const {}), isFalse);
+      await legacy.close();
+      final prepared = await host.startPlugin(
+        pluginId: 'prepared',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['wait'],
+        startupArgumentsOnly: true,
+      );
+      expect(await prepared.request('startup-mode', const {}), isTrue);
+      await prepared.close();
+    },
+  );
+
+  test('rejects non-boolean startup argument mode before spawning', () async {
+    final emitted = <Map<String, Object?>>[];
+    final host = AdeleBackendHost(
+      send: (message) {
+        emitted.add(message);
+        return true;
+      },
+      diagnostic: (_) {},
+    );
+    addTearDown(() => host.shutdown(notify: false));
+    for (final mode in <Object?>[null, 'true', 1]) {
+      await host.handle({
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'startPlugin',
+        'requestId': 1,
+        'pluginId': 'invalid-startup-mode',
+        'defaultConfigurationContext': 'default',
+        'artifactUri': pluginKernel.uri.toString(),
+        'arguments': ['wait'],
+        'startupArgumentsOnly': mode,
+      });
+      expect(emitted.last['kind'], 'error');
+      expect(
+        (emitted.last['error']! as Map)['message'],
+        contains('must be a boolean'),
+      );
+    }
+  });
+
+  test(
+    'invalid advertisement reaps resources before failure and permits replacement',
+    () async {
+      final host = await _startHost(dartaotruntime, hostArtifact);
+      addTearDown(host.close);
+      final peer = await host.startPlugin(
+        pluginId: 'healthy-peer',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['wait'],
+      );
+      for (final scenario in [
+        for (final advertised in <Object?>[
+          null,
+          {},
+          [
+            {...exposure, 'providerId': 'invalid_provider'},
+          ],
+          [
+            {...exposure, 'capabilityId': 'invalid_capability'},
+          ],
+          [
+            {...exposure, 'capabilityMajorVersion': 0},
+          ],
+          [
+            {...exposure, 'serviceId': 'bad/service'},
+          ],
+          [
+            {...exposure, 'configurationContext': 'bad\ncontext'},
+          ],
+        ])
+          (mode: 'wait', advertised: advertised),
+        for (final field in ['providerId', 'capabilityId'])
+          (mode: 'oversized-$field', advertised: <Object?>[exposure]),
+      ]) {
+        final reservation = await ServerSocket.bind(
+          InternetAddress.loopbackIPv4,
+          0,
+        );
+        final port = reservation.port;
+        await reservation.close();
+        await expectLater(
+          host
+              .startPlugin(
+                pluginId: 'invalid-advertisement',
+                artifactUri: pluginArtifact.uri,
+                arguments: [
+                  scenario.mode,
+                  jsonEncode(scenario.advertised),
+                  '$port',
+                ],
+              )
+              .timeout(const Duration(seconds: 10)),
+          throwsA(
+            isA<PluginRemoteFailure>().having(
+              (error) => error.message.length,
+              'bounded validation error',
+              lessThan(512),
+            ),
+          ),
+        );
+        final reclaimed = await ServerSocket.bind(
+          InternetAddress.loopbackIPv4,
+          port,
+        );
+        await reclaimed.close();
+        final replacement = await host.startPlugin(
+          pluginId: 'invalid-advertisement',
+          artifactUri: pluginArtifact.uri,
+          arguments: ['wait'],
+        );
+        expect(await replacement.request('ping', const {}), {'alive': true});
+        await replacement.close();
+        expect(await peer.request('ping', const {}), {'alive': true});
+      }
+    },
+  );
+
+  test(
+    'failed readiness send closes the started generation before reporting error',
+    () async {
+      final emitted = <Map<String, Object?>>[];
+      bool rejectReady = true;
+      final host = AdeleBackendHost(
+        send: (message) {
+          if (message['kind'] == 'pluginReady' && rejectReady) return false;
+          emitted.add(message);
+          return true;
+        },
+      );
+      addTearDown(() => host.shutdown(notify: false));
+      final reservation = await ServerSocket.bind(
+        InternetAddress.loopbackIPv4,
+        0,
+      );
+      final port = reservation.port;
+      await reservation.close();
+      final start = <String, Object?>{
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'startPlugin',
+        'requestId': 1,
+        'pluginId': 'send-failure',
+        'defaultConfigurationContext': 'default',
+        'artifactUri': pluginKernel.uri.toString(),
+        'arguments': ['wait', '[]', '$port'],
+      };
+      await host.handle(start);
+      expect(emitted.single['kind'], 'error');
+      final reclaimed = await ServerSocket.bind(
+        InternetAddress.loopbackIPv4,
+        port,
+      );
+      await reclaimed.close();
+      rejectReady = false;
+      await host.handle({...start, 'requestId': 2});
+      expect(emitted.last['kind'], 'pluginReady');
+    },
+  );
 
   test('rejects plugin with incompatible backend handshake', () async {
     final PluginBackendHost host = await PluginBackendHost.start(

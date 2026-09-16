@@ -39,6 +39,16 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
     'kind': 'ready',
     'commandPort': requests.sendPort,
     'pluginBackendProtocolVersion': adelePluginBackendProtocolVersion,
+    'capabilityExposures': [
+      AdeleCapabilityExposure(
+        providerId: gitWorktreeEnvironmentProviderId,
+        capabilityId: environmentProviderCapability.id.value,
+        capabilityMajorVersion: environmentProviderCapability.majorVersion,
+        serviceId: environmentProviderServiceId,
+        displayName: 'Git Worktree Environment',
+        configurationContext: defaultConfigurationContext,
+      ).toMap(),
+    ],
   });
 
   await for (final Object? request in requests) {

@@ -71,6 +71,55 @@ void main() {
     },
   );
 
+  test(
+    'ChatGPT profile masks an inherited API key and keeps its own configuration',
+    () {
+      final DevelopmentSelfHostingProviderConfiguration configuration =
+          DevelopmentSelfHostingProviderConfiguration.fromEnvironment(
+            DevelopmentSelfHostingProfile.chatgpt,
+            environment: const {
+              'OPENAI_API_KEY': 'inherited-api-key',
+              'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE':
+                  '/private/credentials.json',
+              'ADELE_OPENAI_CHATGPT_INSTANCE_ID': 'selfhosting',
+              'ADELE_OPENAI_CHATGPT_MODEL': 'normal-product-model',
+            },
+          );
+      expect(configuration.providerId, 'dev.adele.openai.chatgpt-experimental');
+      expect(configuration.configuredContext, 'chatgpt-experimental');
+      expect(configuration.selectedModel, 'gpt-6-astra');
+      expect(configuration.hostEnvironment['OPENAI_API_KEY'], isEmpty);
+      expect(
+        configuration.hostEnvironment['ADELE_OPENAI_CHATGPT_INSTANCE_ID'],
+        'selfhosting',
+      );
+      expect(
+        configuration
+            .hostEnvironment['ADELE_OPENAI_CHATGPT_EXPERIMENTAL_CODEX_CLIENT'],
+        '1',
+      );
+    },
+  );
+
+  test('API-key profile retains its provider identity and explicit model', () {
+    final DevelopmentSelfHostingProviderConfiguration configuration =
+        DevelopmentSelfHostingProviderConfiguration.fromEnvironment(
+          DevelopmentSelfHostingProfile.apiKey,
+          environment: const {
+            'OPENAI_API_KEY': 'fixture-api-key',
+            'ADELE_OPENAI_TEST_MODEL': 'api-model',
+            'ADELE_OPENAI_ENDPOINT': 'http://127.0.0.1:1/responses',
+          },
+        );
+    expect(configuration.providerId, 'dev.adele.openai.api-key');
+    expect(configuration.configuredContext, 'default');
+    expect(configuration.selectedModel, 'api-model');
+    expect(configuration.hostEnvironment, {
+      'OPENAI_API_KEY': 'fixture-api-key',
+      'ADELE_OPENAI_ENDPOINT': 'http://127.0.0.1:1/responses',
+    });
+  });
+
   test('runner-owned Git commands discard inherited Git behavior', () async {
     final Directory container = await Directory.systemTemp.createTemp(
       'adele-self-hosting-git-environment-test-',
