@@ -1,27 +1,29 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
+import 'package:adele_desktop/frontend/prepared_session_adapter.dart';
 import 'package:adele_desktop/plugins/chat_frontend_bridge.dart';
 import 'package:adele_desktop/ui/chat/chat_controller.dart';
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
 import 'package:adele_desktop/ui/inspection/activity_output_presentation.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
-import 'package:adele_ui/adele_ui.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter/material.dart';
+import 'package:plugin_runtime/plugin_runtime.dart';
 
-/// Transitional stock activation over a prepared generation, not discovery or
-/// installation. Neither activation nor presentation compiles frontend source.
-final class StockChatFrontend {
-  StockChatFrontend._(
-    this._generation,
-    this._extensions,
-    this._inspectActivity,
-  );
+/// Bounded native controller adapter; the generic owner loads and registers EVC.
+final class StockChatFrontend implements PreparedSessionAdapter {
+  StockChatFrontend({
+    required ChatController Function(Session) controllerForSession,
+    required ExtensionRegistry extensions,
+    bool Function(Session session, RunId runId, ModelInvocationId invocationId)?
+    inspectActivity,
+  }) : _controllerForSession = controllerForSession,
+       _extensions = extensions,
+       _inspectActivity = inspectActivity;
 
-  final PreparedFrontend _generation;
+  final ChatController Function(Session) _controllerForSession;
   final ExtensionRegistry _extensions;
   final bool Function(
     Session session,
@@ -29,87 +31,71 @@ final class StockChatFrontend {
     ModelInvocationId invocationId,
   )?
   _inspectActivity;
-  late final ExtensionRegistration _registration;
   final Set<_ControllerSource> _sources = {};
   bool _closed = false;
   Future<void>? _closing;
 
-  static Future<StockChatFrontend> activate({
-    required ExtensionRegistry extensions,
-    required String artifactPath,
-    required ChatController Function(Session) controllerForSession,
-    bool Function(Session session, RunId runId, ModelInvocationId invocationId)?
-    inspectActivity,
-  }) async {
-    if (artifactPath.isEmpty) {
-      throw StateError('No prepared stock Chat frontend artifact configured.');
+  @override
+  void validate(PreparedSessionPresentation descriptor) {
+    if (descriptor.strategyId != chatStrategyId) {
+      throw StateError('The stock Chat adapter requires the Chat strategy.');
     }
-    final PreparedFrontend generation = await PreparedFrontend.load(
-      File(artifactPath),
-    );
-    if (generation.failure != null) {
-      generation.invalidate();
-      throw StateError('Could not load the prepared stock Chat frontend.');
-    }
-    final StockChatFrontend frontend = StockChatFrontend._(
-      generation,
-      extensions,
-      inspectActivity,
-    );
-    try {
-      frontend._registration = extensions.register(
-        point: sessionPresentationContributions,
-        id: ExtensionId('dev.adele.plugin.chat-strategy.presentation'),
-        value: SessionPresentationContribution(
-          strategyId: chatStrategyId,
-          createPresentation: (session) {
-            if (!frontend._active) {
-              throw StateError('The stock Chat presentation is retired.');
-            }
-            return _StockChatPresentation(
-              frontend: frontend,
-              controller: controllerForSession(session),
-            );
-          },
-        ),
-      );
-      return frontend;
-    } on Object {
-      generation.invalidate();
-      rethrow;
-    }
+    if (_closed) throw StateError('The stock Chat adapter is closed.');
   }
 
-  bool get _active => !_closed && !_registration.isClosed;
+  @override
+  Widget createPresentation({
+    required PreparedFrontend generation,
+    required PreparedSessionPresentation descriptor,
+    required Session session,
+    required bool Function() isActive,
+  }) {
+    validate(descriptor);
+    if (!isActive()) {
+      throw StateError('The stock Chat presentation is retired.');
+    }
+    return _StockChatPresentation(
+      frontend: this,
+      generation: generation,
+      descriptor: descriptor,
+      controller: _controllerForSession(session),
+      isActive: () => !_closed && isActive(),
+    );
+  }
 
   void refresh() {
-    if (!_active) return;
+    if (_closed) return;
     for (final _ControllerSource source in _sources.toList()) {
       source.refresh();
     }
   }
 
+  @override
   Future<void> close() {
     if (_closing != null) return _closing!;
     _closed = true;
-    final Future<void> retiring = _registration.close();
-    _generation.invalidate();
     for (final _ControllerSource source in _sources.toList()) {
       source.close();
     }
     _sources.clear();
-    return _closing = retiring;
+    return _closing = Future<void>.value();
   }
 }
 
 final class _StockChatPresentation extends StatefulWidget {
   const _StockChatPresentation({
     required this.frontend,
+    required this.generation,
+    required this.descriptor,
     required this.controller,
+    required this.isActive,
   });
 
   final StockChatFrontend frontend;
+  final PreparedFrontend generation;
+  final PreparedSessionPresentation descriptor;
   final ChatController controller;
+  final bool Function() isActive;
 
   @override
   State<_StockChatPresentation> createState() => _StockChatPresentationState();
@@ -125,13 +111,15 @@ final class _StockChatPresentationState extends State<_StockChatPresentation> {
     _source = _ControllerSource(
       widget.controller,
       extensions: widget.frontend._extensions,
-      isActive: () => widget.frontend._active,
+      isActive: widget.isActive,
       inspectActivity: widget.frontend._inspectActivity,
     );
     widget.frontend._sources.add(_source);
-    _presentation = widget.frontend._generation.createChatPresentation(
+    _presentation = widget.generation.createChatPresentation(
+      library: widget.descriptor.library,
+      entrypoint: widget.descriptor.entrypoint,
       source: _source,
-      isActive: () => widget.frontend._active && !_source.closed,
+      isActive: () => widget.isActive() && !_source.closed,
       buildActivity: _source.buildActivity,
     );
   }
@@ -216,7 +204,8 @@ final class _ControllerSource extends ChangeNotifier
   }
 
   @override
-  bool submit(String prompt) => !closed && _controller.submit(prompt);
+  bool submit(String prompt) =>
+      !closed && _isActive() && _controller.submit(prompt);
 
   @override
   bool inspectActivity(String id) {
@@ -252,7 +241,7 @@ final class _ControllerSource extends ChangeNotifier
   }
 
   void refresh() {
-    if (!closed) notifyListeners();
+    if (!closed && _isActive()) notifyListeners();
   }
 
   void close() {

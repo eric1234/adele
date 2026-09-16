@@ -16,7 +16,7 @@ Read-only live Run activity with tool-batch narration and native activity summar
 Plugin-owned compact activity and retained, newest-first Inspection cards
 Per-inference instruction-source capture and immutable context snapshots
 Shared application runtime and six static in-process stock plugins
-Prepared installed-backend discovery and backend-owned capability advertisements
+Prepared backend/frontend discovery and backend-owned capability advertisements
 Typed Project selectors and minimal local-directory Project opening
 Normal title-only Task creation with a real Git primary Environment
 Normal stock Chat Sessions with approval-gated ChatGPT-backed Runs
@@ -33,9 +33,9 @@ multi-provider capability fixture, and `scripted_model` remains deterministic
 model-provider/transport regression infrastructure. These are internal
 reference fixtures, not product UI or product-domain definitions.
 
-F1 implements a bounded prepared installed-backend startup snapshot, not a plugin
-installer or general activation manager. Profiles, enable/disable controls,
-version solving, watching, frontend discovery, reverse RPC, hot upgrade,
+F2 extends F1's bounded prepared startup snapshot to independently optional backend
+and frontend components, not a plugin installer or general activation manager.
+Profiles, enable/disable controls, version solving, watching, reverse RPC, hot upgrade,
 production packaging, configurable permissions, sandboxing, and general
 third-party extension APIs are not yet implemented.
 
@@ -46,25 +46,42 @@ inference context composer, retained Chat plugin, and six static in-process
 activations: Chat, AGENTS.md, Filesystem Tools, Search Tools, Command Tools, and
 Local Directory Project Selector. The reduced smoke composition omits only
 Command Tools. It also owns pure-Dart `ApplicationPluginBootstrap` on the same
-capability registry, without starting it from the constructor.
+capability registry, without starting it from the constructor. These six in-process
+activations are unchanged by F2; their migration remains an F3 follow-up.
 
 Normal `AdeleApplication` explicitly calls `ApplicationPluginBootstrap.start`
 asynchronously with an installation root, shared runtime/host paths, and optional
 generic startup argv. `plugin_runtime.PreparedPluginCatalog.discover(rootPath)`
 first snapshots immediate child directories' `adele_plugin.installation.json`
 files in deterministic order. Version-1 manifests contain `PluginMetadata` and
-optional backend component paths to confined, existing prepared artifacts, not
-source paths, exposures, configuration, or activation state. Versions are opaque.
-Missing/empty roots succeed empty; malformed children are reported and excluded,
-and duplicate IDs exclude all conflicts without a version winner. Root I/O failure
+independently optional backend and frontend components referring to confined,
+existing prepared files, not source paths, exposures, configuration, or activation
+state. A frontend supplies its artifact and strict data-only presentation
+descriptors for `session`, `toolActivity`, or `modelNativeActivity`; these describe
+executable ABI/preparation data, not profile state. Versions are opaque.
+Missing/empty roots succeed empty. Invalid installation envelopes are excluded;
+invalid components record typed component issues and retain any healthy sibling.
+Readable valid identities are reserved even in otherwise invalid manifests, and
+duplicate IDs exclude all conflicts without a version winner. Root I/O failure
 reports generic bootstrap failure while the in-process core remains usable.
+
+Before backend startup, the bootstrap notifies consumers of this same catalog
+snapshot. Window-owned Flutter `ApplicationFrontendBootstrap` activates its valid
+frontends through the existing `ExtensionRegistry` and `PreparedFrontend`, without
+a second root, catalog, registry, or runtime mechanism. Each frontend loads bytes
+once per generation and registers descriptor-selected roles with exact rollback,
+retirement, and close ownership. Catalog validation checks files, not executable
+EVC correctness: `PreparedFrontend.load` retains immutable bytes and decoding stays
+per-view, so readable corrupt bytecode remains presentation-local. Frontend
+availability is independent of backend readiness and credentials.
 
 No valid backends means successful startup without a process, even with invalid
 host paths. Otherwise one shared host attempts all valid backends independently,
 with no required Git or additional-OpenAI tier. Local start/metadata/registration
 failure cleans up only that attempt; later termination retires only its exact
-generation. Shared-host failure is global. Read-only backend states and catalog
-issues are exposed without a plugin-management UI.
+generation. Shared-host failure affects all backends, not independently owned
+frontends. Read-only backend states and catalog issues are exposed without a
+plugin-management UI.
 
 Git and OpenAI entrypoints own their ready `capabilityExposures`. The existing
 isolate-ready -> host `pluginReady` -> exact connection path feeds generic
@@ -234,10 +251,12 @@ in their own prepared runtimes, without plugin-specific Chat parsing.
 Run status and approval cards remain host-owned under
 `app/lib/ui/execution`; execution objects and approval authority never cross that
 bridge. `ChatController` remains provisional in `app/lib/ui/chat`, while generic
-prepared frontend hosting lives in `app/lib/frontend` and stock Chat activation
-and adaptation belong at `app/lib/plugins/stock_chat_frontend.dart`. This is a
-bounded Session presentation API, not production plugin discovery or a general
-workbench extension framework.
+frontend activation and prepared hosting live in `app/lib/frontend`.
+`app/lib/plugins/stock_chat_frontend.dart` remains only a bounded native adapter,
+selected by prepared `hostAdapter: 'stock-chat-controller-v1'` metadata and validating
+the strategy. It does not load, register, or activate frontends. This is not a
+PluginId switch, public universal controller seam, reverse-call mechanism, or
+general workbench extension framework.
 
 Normal Runs expose immutable live activity through public pure-Dart
 `adele_orchestration`, projected by the application host from the internal journal.
@@ -305,11 +324,12 @@ display text, and the OpenAI frontend escapes full text. Raw envelopes,
 compatibility metadata, encrypted content, and execution/approval authority never
 enter that EVC. This is a supplied summary, not hidden chain-of-thought disclosure.
 
-`app/lib/plugins/stock_openai_activity_frontend.dart` imports Contract identity,
-loads the prepared artifact, registers its factory, and retires that registration
-and its resources through `PreparedFrontend` and existing registry liveness. This
-stock activation edge is explicitly provisional until frontend discovery/profiles replace
-hard-coded selection; it owns no projection or display-safety algorithms.
+Generic `ApplicationFrontendBootstrap` consumes OpenAI's prepared
+`modelNativeActivity` descriptor, registers compact and rich factories, and retires
+their exact registrations/resources through `PreparedFrontend` and existing
+registry liveness. Tool activity uses the same metadata-driven owner. The stock
+tool and OpenAI activators are removed; app runtime activation has no stock
+tool/native identity table or projection/display-safety algorithms.
 Missing/corrupt EVC, malformed safe payload, and factory failure remain
 presentation-local without failing the Run or selecting a native fallback.
 Retirement removes the exact-generation view; a replacement
@@ -512,45 +532,48 @@ dart tools/adele.dart build linux
 ```
 
 Normal Linux `run` and `build` compile fresh shared-host, Git, and OpenAI backend AOT
-snapshots and assemble a prepared installation root, plus four frontend EVCs
-(Chat, Filesystem Tools, Command Tools, and OpenAI activity), before the Flutter
-run/build invocation.
-`tools/backend_artifacts.dart` uses `compileAotSnapshot` from `plugin_builder` and
-selects the Dart compiler and `dartaotruntime` from the launching Flutter SDK. It
-still knows stock Git/OpenAI source paths and writes their installed JSON
-manifests; source directories are not normalized to the reference fixture's draft
+snapshots and four frontend EVCs (Chat, Filesystem Tools, Command Tools, and OpenAI
+activity), assembling one prepared installation root before the Flutter run/build
+invocation. `prepareDesktopPluginDefines` in `tools/backend_artifacts.dart` uses
+`compileAotSnapshot` from `plugin_builder` and selects the Dart compiler and
+`dartaotruntime` from the launching Flutter SDK. It still knows stock Git/OpenAI
+source paths and writes installed JSON manifests;
+source directories are not normalized to the reference fixture's draft
 `adele_plugin.yaml` source/build format. Installed manifests and source/build
 manifests are distinct; see `docs/architecture/plugin-layout.md`.
 `tools/frontend_artifacts.dart` invokes the Flutter build-time entrypoints
 `app/tool/compile_chat_frontend.dart`,
 `app/tool/compile_tool_inspection_frontends.dart`, and
 `app/tool/compile_openai_activity_frontend.dart`. Fresh artifacts are retained under
-`.dart_tool/adele/desktop-backends/` and `.dart_tool/adele/desktop-frontends/`.
+`.dart_tool/adele/desktop-plugins/build-*/`. Its one `installations/` root has five
+directories: frontend-only `chat-strategy`, `filesystem-tools`, and `command-tools`,
+backend-only `git-environment`, and one `openai` with both components. Each frontend
+is `frontend.evc`; `tools/stock_frontend_descriptors.dart` is the singular stock
+build-side descriptor table, not an app runtime activation table.
 The launcher passes `ADELE_DARTAOTRUNTIME_EXECUTABLE`,
 `ADELE_BACKEND_HOST_ARTIFACT`, `ADELE_PLUGIN_INSTALLATION_ROOT`,
-`ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`, `ADELE_CHAT_FRONTEND_ARTIFACT`,
-`ADELE_FILESYSTEM_TOOLS_FRONTEND_ARTIFACT`,
-`ADELE_COMMAND_TOOLS_FRONTEND_ARTIFACT`, and
-`ADELE_OPENAI_ACTIVITY_FRONTEND_ARTIFACT` as compile-time deployment-location defines.
-The normal app consumes only prepared locations; runtime activation never compiles
-source. See `app/README.md` for frontend
-preparation inputs and standalone build-time invocations.
+and `ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE` as the only four compile-time
+deployment-location defines. Per-stock frontend artifact fields and defines are
+removed; the catalog supplies those locations. The normal app consumes only
+prepared locations; runtime activation never compiles source. See `app/README.md`
+for frontend preparation inputs and standalone build-time invocations.
 
 These provisional absolute paths make the built app runnable only on the
 source-checkout machine while those artifacts and that SDK remain in place.
 Moving or deleting them breaks the corresponding backend startup or frontend
 loading. This is not artifact caching, an installer, portable/production
-packaging, or profiles. Discovery is only the prepared backend startup snapshot.
-Invoking Flutter directly without the defines
-leaves Task Environment support, Chat presentation, stock tool Inspection, and
-OpenAI activity presentation unavailable independently.
+packaging, or profiles. Discovery is only the prepared backend/frontend startup
+snapshot. Invoking Flutter directly without the defines leaves Task Environment
+support, Chat presentation, stock tool Inspection, and OpenAI activity presentation
+unavailable independently.
 Checkout tooling stands in for future installation/update-time compilation;
 activation consumes prepared artifacts rather than building them.
 
 Recorded B2 Linux profile build, real-host/Git, widget/runtime/bootstrap, tooling,
-and Xvfb startup evidence predates F1 and is not validation of the new catalog or
-advertisement path. See `app/README.md` for bounded validation evidence, maintained
-validation commands, and source-checkout limitations.
+and Xvfb startup evidence predates F1/F2 and is not validation of the catalog,
+advertisement, or frontend-discovery/activation paths. See `app/README.md` for
+bounded validation evidence, maintained validation commands, and source-checkout
+limitations.
 
 The internal Linux profile smoke is explicit and does not alter normal app
 startup:
@@ -681,10 +704,12 @@ arbitrary small stack limit.
 Profiles are not implemented. Normal startup and development/self-hosting reuse
 the implicit in-process stock composition and generic registration of
 backend-owned advertisements, while owning separate backend topologies. Normal
-startup attempts all valid discovered backend installations; self-hosting keeps
-explicit artifact/host/profile selection. Installation itself does not activate
-anything. Deployment-location defines and the temporary argv file are not a
-profile or general configuration API.
+startup attempts all discovered valid backend and frontend components; self-hosting
+keeps explicit artifact/host/profile selection. Installation itself does not activate
+anything. Prepared presentation descriptors are executable ABI/preparation data;
+future profiles separately decide activation participation rather than replacing
+or becoming that metadata. Deployment-location defines and the temporary argv file
+are not a profile or general configuration API.
 
 Activation, ordinary configuration, provider selection, configured capability
 instances, product/runtime state, security/policy, and workbench state remain
@@ -735,8 +760,7 @@ binary operations also remain unimplemented.
 extension materialization/cache framework. Implementation should introduce only
 the concrete boundaries required by working product behavior.
 
-Windows, macOS, release packaging, plugin installation/update management,
-frontend discovery, sandboxing,
+Windows, macOS, release packaging, plugin installation/update management, sandboxing,
 current Flutter compatibility, and eval-stack modernization also remain open.
 See `docs/architecture/overview.md`, ADRs 0030/0031, and the earlier ADRs they
 refine rather than replace wholesale.

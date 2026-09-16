@@ -31,47 +31,64 @@ Filesystem Tools, Command Tools, and OpenAI activity frontend EVCs before launch
 run/build command. Backend compilation runs
 outside Flutter; frontend compilation uses Flutter build-time tooling. This also
 applies to explicit Linux debug/release modes; non-Linux commands and the explicit
-development smoke entry remain unchanged. `tools/backend_artifacts.dart` owns
-backend source paths and stock installation assembly, not the normal app runtime
-or the snapshot primitive. Stock source directories are not required to have the
+development smoke entry remain unchanged. `prepareDesktopPluginDefines` in
+`tools/backend_artifacts.dart` owns backend source paths and unified stock
+installation assembly, not the normal app runtime or the snapshot primitive.
+Stock source directories are not required to have the
 reference fixture's draft `adele_plugin.yaml` source/build manifest.
 
 The launcher inspects its selected Flutter executable and uses that SDK's bundled
 `dart` and sibling `dartaotruntime`, not a potentially unrelated `dart` on PATH.
 It compiles the host first, then Git and OpenAI. `tools/frontend_artifacts.dart`
-then prepares all four stock EVCs with the selected Flutter SDK. Only after preparation
-succeeds does the launcher pass:
+prepares all four stock EVCs in the same installation root with the selected Flutter
+SDK. `tools/stock_frontend_descriptors.dart` is the singular stock build-side
+presentation descriptor table, shared with installation fixtures rather than
+duplicated in app runtime activation. Manifests are written after all component
+preparation succeeds. The launcher passes only four generic deployment defines:
 
 - `ADELE_DARTAOTRUNTIME_EXECUTABLE`: absolute matched runtime path.
 - `ADELE_BACKEND_HOST_ARTIFACT`: absolute shared host `.aot` path.
 - `ADELE_PLUGIN_INSTALLATION_ROOT`: absolute fresh prepared-installations root.
 - `ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`: absolute generic startup-arguments JSON file.
-- `ADELE_CHAT_FRONTEND_ARTIFACT`: absolute Chat frontend `.evc` path.
-- `ADELE_FILESYSTEM_TOOLS_FRONTEND_ARTIFACT`: absolute Filesystem Inspection `.evc` path.
-- `ADELE_COMMAND_TOOLS_FRONTEND_ARTIFACT`: absolute Command Inspection `.evc` path.
-- `ADELE_OPENAI_ACTIVITY_FRONTEND_ARTIFACT`: absolute OpenAI activity `.evc` path.
 
-Backend installation directories are immediate children of the installation root:
+Five installation directories are immediate children of the one installation root;
+OpenAI's backend and frontend share one manifest and PluginId:
 
 ```text
-desktop-backends/build-*/
+desktop-plugins/build-*/
 |-- host.aot
 |-- startup-arguments.json
 `-- installations/
+    |-- chat-strategy/
+    |   |-- adele_plugin.installation.json
+    |   `-- frontend.evc
+    |-- filesystem-tools/
+    |   |-- adele_plugin.installation.json
+    |   `-- frontend.evc
+    |-- command-tools/
+    |   |-- adele_plugin.installation.json
+    |   `-- frontend.evc
     |-- git-environment/
     |   |-- adele_plugin.installation.json
     |   `-- backend.aot
     `-- openai/
         |-- adele_plugin.installation.json
-        `-- backend.aot
+        |-- backend.aot
+        `-- frontend.evc
 ```
 
-Each installed JSON manifest contains a schema version, plugin metadata, and a
-relative prepared backend artifact, not source paths, capability exposures, configuration, or
-activation state. Its runtime schema and catalog failure rules are maintained in
+Each installed JSON manifest contains a schema version, plugin metadata, and
+independently optional `backend` and `frontend` components. Each frontend contains
+a relative artifact and strict presentation descriptors for Session, tool activity,
+or model-native activity roles. Descriptors are executable ABI/preparation data,
+not profile state. Manifests contain no source paths, capability exposures,
+configuration, or activation state. Their runtime schema and catalog failure rules
+are maintained in
 [`plugin-layout.md`](../../docs/architecture/plugin-layout.md#prepared-installation-snapshot).
-The runtime discovers this snapshot before starting a host; it does not run the
-source builder or know Git/OpenAI source layout.
+The runtime discovers this snapshot before starting a host and shares it with the
+Flutter frontend owner; it does not run the source builder or know stock source
+layouts. Catalog validation checks confined existing files, not executable EVC
+correctness. Runtime bytecode decoding remains presentation-local.
 
 The separate temporary startup file is a JSON object mapping PluginId to
 `List<String>` argv. The launcher derives OpenAI's credential-file reference and
@@ -112,14 +129,13 @@ and the normal application startup import graph.
 The OpenAI source split is Contract/Backend/Frontend under
 `plugins/openai/packages/{contract,backend,frontend}`. Contract is pure-Dart
 identities/schema only; raw classification and bounded safe presentation belong
-to Backend, not the frontend compiler or app activation. The app stock activator
-imports Contract identity to load/register/retire prepared presentation and remains
-provisional until frontend discovery/profiles replace hard-coded selection. These
-compile harnesses stand in for future installation/update-time preparation, not
+to Backend, not the frontend compiler or app activation. Generic app frontend
+bootstrap loads/registers/retires its prepared presentation from catalog metadata,
+without a stock OpenAI activator or runtime identity switch. These compile
+harnesses stand in for future installation/update-time preparation, not
 an installer.
 
-Each invocation gets fresh `.dart_tool/adele/desktop-backends/build-*` and
-`.dart_tool/adele/desktop-frontends/build-*` directories.
+Each invocation gets one fresh `.dart_tool/adele/desktop-plugins/build-*` directory.
 Outputs are retained, including partial failed builds, so later invocations do not
 replace artifacts still used by an app or previously built bundle. This is local
 development provisioning, not portable distribution: bundles retain absolute paths,
@@ -148,9 +164,11 @@ Future installation/update should prepare artifacts independently of activation.
 Normal activation only consumes prepared artifacts and never compiles source.
 Current checkout tooling assembles fresh prepared installations for runtime
 discovery as a stand-in for that preparation, not an installer, update manager,
-profile system, or cache. Discovery and activation remain separate; normal F1
-startup attempts all valid installed backends without enable/disable controls,
-version solving, watching, frontend discovery, reverse RPC, or hot upgrade.
+profile system, or cache. Discovery and activation remain separate; normal startup
+attempts all discovered valid backend and frontend components without enable/disable
+controls, version solving, watching, reverse RPC, or hot upgrade. Future profiles
+choose activation participation separately from prepared descriptors. The six
+in-process stock activations remain unchanged and outside this discovery path.
 
 ## Current Scope
 

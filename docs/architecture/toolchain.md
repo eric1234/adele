@@ -30,10 +30,10 @@ pipeline compiles backend source to native Dart AOT and frontend source to
 Windows and macOS behavior remain future packaging and validation work.
 
 Normal desktop runtime activation never compiles plugin source. The Linux checkout
-launcher compiles shared-host/Git/OpenAI AOT artifacts, assembles fresh prepared
-backend installations, and prepares four stock frontend
+launcher compiles shared-host/Git/OpenAI AOT artifacts and four stock frontend
 EVCs (Chat, Filesystem Tools, Command Tools, and OpenAI activity) before launching
-or building Flutter, using the selected Flutter SDK. `tools/frontend_artifacts.dart` invokes
+or building Flutter, using the selected Flutter SDK. All components belong to one
+fresh installation root. `tools/frontend_artifacts.dart` invokes
 `app/tool/compile_chat_frontend.dart`,
 `app/tool/compile_tool_inspection_frontends.dart`, and
 `app/tool/compile_openai_activity_frontend.dart` through the Flutter test runner.
@@ -43,23 +43,22 @@ artifacts; missing or invalid artifacts fail the affected support rather than
 triggering compilation or a substitute implementation.
 
 `tools/backend_artifacts.dart` still owns stock source entrypoints and writes
-`adele_plugin.installation.json` beside each installed `backend.aot`. Runtime
+`adele_plugin.installation.json` beside each installation's independently optional
+`backend.aot` and `frontend.evc`. Runtime
 receives `ADELE_PLUGIN_INSTALLATION_ROOT`, the shared runtime/host paths, and the
 temporary generic `ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`, not per-stock backend
-artifact defines or source paths. Installed manifests are distinct from the draft
+or frontend artifact defines or source paths. Installed manifests are distinct from the draft
 `adele_plugin.yaml` source/build manifest; stock source layouts are not normalized
 to it. See [`plugin-layout.md`](plugin-layout.md#prepared-installation-snapshot).
 
 The OpenAI activity compiler takes build-time environment inputs
-`ADELE_REPOSITORY_ROOT` and `ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT`; the launcher
-passes the prepared `openai.evc` path as compile-time deployment define
-`ADELE_OPENAI_ACTIVITY_FRONTEND_ARTIFACT`. Runtime activation at
-`app/lib/plugins/stock_openai_activity_frontend.dart` reuses `PreparedFrontend`
-independently of model backend support and other frontends. It loads no source
-and substitutes no native card on failure. It imports only OpenAI Contract
-identity to load/register/retire rich presentation, with no raw classification or
-projection algorithms. This stock activation edge is provisional until
-frontend discovery/profiles replace hard-coded selection. These inputs are not model options,
+`ADELE_REPOSITORY_ROOT` and `ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT`. Its output is
+installed as `frontend.evc` alongside the backend in one `dev.adele.openai`
+installation. Generic `ApplicationFrontendBootstrap` consumes prepared presentation
+descriptors from the same catalog snapshot, using `PreparedFrontend` independently
+of model backend support and other frontends. It imports no OpenAI identities,
+loads no source, and substitutes no native card on failure. Descriptors are
+preparation/runtime metadata, not profile participation, model options,
 credentials, or a general configuration UI.
 
 OpenAI follows `plugins/openai/packages/{contract,backend,frontend}`:
@@ -77,7 +76,7 @@ safe Chat activity without frontend activation are separate regression boundarie
 
 Future installation/update should own source compilation and artifact preparation,
 separate from activation consuming those artifacts. Current repository tooling is
-a source-checkout stand-in that enables a bounded installed-backend startup
+a source-checkout stand-in that enables a bounded installed-component startup
 snapshot, not an installer, profile manager, artifact cache, or portable production
 package. Operational preparation inputs and invocations live in
 [`app/README.md`](../../app/README.md#prepared-chat-frontend) and the

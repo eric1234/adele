@@ -4,28 +4,38 @@ import 'dart:io';
 // ignore: avoid_relative_lib_imports
 import '../packages/plugin_builder/lib/plugin_builder.dart';
 
-Future<List<String>> prepareDesktopFrontendDefines({
+Future<Map<String, File>> prepareDesktopFrontendArtifacts({
   required Directory repositoryRoot,
   required String flutterExecutable,
+  required Directory installationRoot,
 }) async {
   final Directory root = repositoryRoot.absolute;
   final Directory app = Directory.fromUri(root.uri.resolve('app/'));
-  final Directory parent = Directory.fromUri(
-    root.uri.resolve('.dart_tool/adele/desktop-frontends/'),
-  );
-  await parent.create(recursive: true);
-  // Retain each invocation: an earlier app or built bundle may still use it.
-  final Directory output = await parent.createTemp('build-');
-  final List<String> defines = <String>[];
+  final artifacts = <String, File>{};
   for (final frontend in const [
-    (name: 'chat', define: 'ADELE_CHAT_FRONTEND_ARTIFACT'),
-    (name: 'filesystem', define: 'ADELE_FILESYSTEM_TOOLS_FRONTEND_ARTIFACT'),
-    (name: 'command', define: 'ADELE_COMMAND_TOOLS_FRONTEND_ARTIFACT'),
-    (name: 'openai', define: 'ADELE_OPENAI_ACTIVITY_FRONTEND_ARTIFACT'),
+    (
+      name: 'chat',
+      directory: 'chat-strategy',
+      pluginId: 'dev.adele.plugin.chat-strategy',
+    ),
+    (
+      name: 'filesystem',
+      directory: 'filesystem-tools',
+      pluginId: 'dev.adele.plugin.filesystem-tools',
+    ),
+    (
+      name: 'command',
+      directory: 'command-tools',
+      pluginId: 'dev.adele.plugin.command-tools',
+    ),
+    (name: 'openai', directory: 'openai', pluginId: 'dev.adele.openai'),
   ]) {
     final File artifact = File.fromUri(
-      output.uri.resolve('${frontend.name}.evc'),
+      installationRoot.absolute.uri.resolve(
+        '${frontend.directory}/frontend.evc',
+      ),
     );
+    await artifact.parent.create(recursive: true);
     final String stage = '${frontend.name}-frontend-compilation';
     final bool chat = frontend.name == 'chat';
     final bool openai = frontend.name == 'openai';
@@ -82,7 +92,7 @@ Future<List<String>> prepareDesktopFrontendDefines({
         diagnostic: diagnostic,
       );
     }
-    defines.add('--dart-define=${frontend.define}=${artifact.path}');
+    artifacts[frontend.pluginId] = artifact;
   }
-  return defines;
+  return artifacts;
 }

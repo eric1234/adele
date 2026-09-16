@@ -6,7 +6,6 @@ import 'dart:math' as math;
 // ignore: avoid_relative_lib_imports
 import '../packages/plugin_builder/lib/plugin_builder.dart';
 import 'backend_artifacts.dart';
-import 'frontend_artifacts.dart';
 import 'test_runner.dart';
 
 const int _maximumDefaultTestJobs = 2;
@@ -424,16 +423,10 @@ Future<void> main(List<String> arguments) async {
             ? _which('flutter')
             : 'flutter';
         final List<String> defines = target == 'linux'
-            ? <String>[
-                ...await prepareDesktopBackendDefines(
-                  repositoryRoot: Directory.current,
-                  flutterExecutable: flutter,
-                ),
-                ...await prepareDesktopFrontendDefines(
-                  repositoryRoot: Directory.current,
-                  flutterExecutable: flutter,
-                ),
-              ]
+            ? await prepareDesktopPluginDefines(
+                repositoryRoot: Directory.current,
+                flutterExecutable: flutter,
+              )
             : const <String>[];
         await _run(
           'adele_desktop $target ${arguments.first}',

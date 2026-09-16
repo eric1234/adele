@@ -1,9 +1,9 @@
 import 'dart:io';
 
+import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/tool_activity_inspection_bridge.dart';
 import 'package:adele_desktop/plugins/chat_frontend_bridge.dart';
-import 'package:adele_desktop/plugins/stock_tool_inspection_frontends.dart';
 import 'package:adele_desktop/ui/activity/tool_activity_compact_host.dart';
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
@@ -17,18 +17,22 @@ import 'package:command_tools_plugin/command_tools_plugin.dart';
 import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../tool/chat_frontend_compiler.dart';
 import '../tool/tool_inspection_frontend_compiler.dart';
+import 'support/prepared_frontend_installations.dart';
 
 void main() {
   late Directory temporary;
   late File filesystemArtifact;
   late File commandArtifact;
   late File chatArtifact;
+  late Directory installations;
   late ExtensionRegistry extensions;
-  late StockToolInspectionFrontend filesystem;
-  late StockToolInspectionFrontend command;
+  late ApplicationFrontendBootstrap frontends;
+  late InstalledFrontendActivation filesystem;
+  late InstalledFrontendActivation command;
 
   setUpAll(() async {
     temporary = await Directory.systemTemp.createTemp('adele-tool-inspection-');
@@ -52,24 +56,39 @@ void main() {
       repositoryRoot: Directory.current.parent,
       artifact: chatArtifact,
     );
+    installations = await prepareFrontendInstallations(
+      root: Directory('${temporary.path}/installed'),
+      artifacts: {
+        'dev.adele.plugin.filesystem-tools': filesystemArtifact,
+        'dev.adele.plugin.command-tools': commandArtifact,
+      },
+    );
   });
   tearDownAll(() => temporary.delete(recursive: true));
 
   setUp(() async {
     extensions = ExtensionRegistry();
-    filesystem = await StockToolInspectionFrontend.activateFilesystem(
-      extensions: extensions,
-      artifactPath: filesystemArtifact.path,
+    final catalog = await PreparedPluginCatalog.discover(installations.path);
+    expect(catalog.issues, isEmpty);
+    frontends = ApplicationFrontendBootstrap(extensions: extensions);
+    await frontends.start(catalog);
+    expect(frontends.generations, hasLength(2));
+    expect(
+      frontends.generations.map((generation) => generation.state),
+      everyElement(InstalledFrontendState.active),
     );
-    command = await StockToolInspectionFrontend.activateCommand(
-      extensions: extensions,
-      artifactPath: commandArtifact.path,
+    filesystem = frontends.generations.singleWhere(
+      (generation) =>
+          generation.installation.metadata.id.value ==
+          'dev.adele.plugin.filesystem-tools',
+    );
+    command = frontends.generations.singleWhere(
+      (generation) =>
+          generation.installation.metadata.id.value ==
+          'dev.adele.plugin.command-tools',
     );
   });
-  tearDown(() async {
-    await filesystem.close();
-    await command.close();
-  });
+  tearDown(() => frontends.close());
 
   Widget presentation(_Source source) => ToolActivityInspectionResolver(
     extensions,
@@ -145,11 +164,12 @@ void main() {
             _host(Column(children: [compact(source), presentation(source)])),
           );
           final frontend = patch ? filesystem : command;
-          if (retireCompact) {
-            await frontend.retireCompact();
-          } else {
-            await frontend.retireInspection();
-          }
+          await frontend.retire(
+            retireCompact
+                ? toolActivityCompactPresentationContributions
+                : toolActivityInspectionContributions,
+            retireCompact ? compactBinding.id : richBinding.id,
+          );
           source.notifyListeners();
           await tester.pumpAndSettle();
           if (retireCompact) {
@@ -318,18 +338,27 @@ void main() {
       final registry = ExtensionRegistry();
       final blocker = registry.register(
         point: toolActivityCompactPresentationContributions,
-        id: ExtensionId('dev.adele.plugin.filesystem-tools.compact'),
+        id: ToolActivityCompactPresentationResolver(
+          extensions,
+        ).resolve(applyPatchToolId).id,
         value: ToolActivityCompactPresentationContribution(
           toolId: applyPatchToolId,
           createPresentation: (_) => const SizedBox.shrink(),
         ),
       );
-      await expectLater(
-        StockToolInspectionFrontend.activateFilesystem(
-          extensions: registry,
-          artifactPath: filesystemArtifact.path,
-        ),
-        throwsA(isA<ExtensionRegistrationException>()),
+      final root = await prepareFrontendInstallations(
+        root: Directory('${temporary.path}/collision'),
+        artifacts: {'dev.adele.plugin.filesystem-tools': filesystemArtifact},
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.issues, isEmpty);
+      final bootstrap = ApplicationFrontendBootstrap(extensions: registry);
+      addTearDown(bootstrap.close);
+      await bootstrap.start(catalog);
+      expect(bootstrap.generations.single.state, InstalledFrontendState.failed);
+      expect(
+        bootstrap.generations.single.failure,
+        isA<ExtensionRegistrationException>(),
       );
       expect(registry.discover(toolActivityInspectionContributions), isEmpty);
       expect(
@@ -622,7 +651,7 @@ void main() {
   );
 
   testWidgets(
-    'stock activations and simultaneous presenters retire independently',
+    'installed activations and simultaneous presenters retire independently',
     (tester) async {
       final backend = const FilesystemToolsPlugin().activate(extensions);
       final commandBackend = const CommandToolsPlugin().activate(extensions);
@@ -977,21 +1006,39 @@ void main() {
     'missing and corrupt EVC are bounded without retiring other plugins',
     (tester) async {
       await tester.runAsync(filesystem.close);
-      await expectLater(
-        StockToolInspectionFrontend.activateFilesystem(
-          extensions: extensions,
-          artifactPath: '',
-        ),
-        throwsStateError,
-      );
       await tester.runAsync(() async {
-        await expectLater(
-          StockToolInspectionFrontend.activateFilesystem(
-            extensions: extensions,
-            artifactPath: '${temporary.path}/missing.evc',
-          ),
-          throwsStateError,
+        final root = await prepareFrontendInstallations(
+          root: Directory('${temporary.path}/missing-installation'),
+          artifacts: {'dev.adele.plugin.filesystem-tools': filesystemArtifact},
         );
+        final installedArtifact = File(
+          '${root.path}/dev.adele.plugin.filesystem-tools/frontend.evc',
+        );
+        await installedArtifact.delete();
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.issues, hasLength(1));
+        expect(
+          catalog.issues.single.component,
+          PreparedPluginComponent.frontend,
+        );
+        expect(catalog.installations.single.frontend, isNull);
+        final bootstrap = ApplicationFrontendBootstrap(extensions: extensions);
+        addTearDown(bootstrap.close);
+        await bootstrap.start(catalog);
+        expect(bootstrap.generations, isEmpty);
+
+        await filesystemArtifact.copy(installedArtifact.path);
+        final discovered = await PreparedPluginCatalog.discover(root.path);
+        expect(discovered.issues, isEmpty);
+        await installedArtifact.delete();
+        final vanished = ApplicationFrontendBootstrap(extensions: extensions);
+        addTearDown(vanished.close);
+        await vanished.start(discovered);
+        expect(
+          vanished.generations.single.state,
+          InstalledFrontendState.failed,
+        );
+        expect(vanished.generations.single.failure, isA<FileSystemException>());
       });
       expect(
         extensions.discover(toolActivityInspectionContributions),
@@ -1000,14 +1047,22 @@ void main() {
       final _Source process = _Source(_activity(patch: false));
       await tester.pumpWidget(_host(presentation(process)));
       expect(find.text('Run Command'), findsOneWidget);
-      filesystem = (await tester.runAsync(() async {
+      await tester.runAsync(() async {
         final File corrupt = File('${temporary.path}/corrupt.evc');
         await corrupt.writeAsBytes([1, 2, 3]);
-        return StockToolInspectionFrontend.activateFilesystem(
-          extensions: extensions,
-          artifactPath: corrupt.path,
+        final root = await prepareFrontendInstallations(
+          root: Directory('${temporary.path}/corrupt-installation'),
+          artifacts: {'dev.adele.plugin.filesystem-tools': corrupt},
         );
-      }))!;
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.issues, isEmpty);
+        final bootstrap = ApplicationFrontendBootstrap(extensions: extensions);
+        addTearDown(bootstrap.close);
+        await bootstrap.start(catalog);
+        filesystem = bootstrap.generations.single;
+        // Bytes are retained at activation; decoding remains presentation-local.
+        expect(filesystem.state, InstalledFrontendState.active);
+      });
       final _Source patch = _Source(_activity());
       await tester.pumpWidget(
         _host(Column(children: [presentation(patch), presentation(process)])),

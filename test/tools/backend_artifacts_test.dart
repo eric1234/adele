@@ -3,6 +3,10 @@ import 'dart:io';
 
 import 'package:test/test.dart';
 
+// ignore: avoid_relative_lib_imports
+import '../../packages/plugin_runtime/lib/plugin_runtime.dart';
+import '../../tools/stock_frontend_descriptors.dart';
+
 const String _hostEntrypoint =
     'packages/plugin_backend_host/bin/adele_backend_host.dart';
 const String _gitEntrypoint =
@@ -31,6 +35,7 @@ void main() {
       'tools/adele.dart',
       'tools/backend_artifacts.dart',
       'tools/frontend_artifacts.dart',
+      'tools/stock_frontend_descriptors.dart',
       'tools/test_runner.dart',
       'packages/plugin_builder/lib/plugin_builder.dart',
       'packages/plugin_builder/lib/src/development_plugin_builder.dart',
@@ -106,6 +111,9 @@ elif [ "\$1" = test ]; then
   fi
   case "\$output" in /*) ;; *) exit 94 ;; esac
   test ! -e "\$output" || exit 93
+  for manifest in "\$(dirname "\$(dirname "\$output")")"/*/adele_plugin.installation.json; do
+    test ! -e "\$manifest" || exit 91
+  done
   printf 'compile|%s\n' "\$label" >> '${commands.path}'
   failure=''
   fail_exit=''
@@ -166,6 +174,18 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
     return File(argument.substring(prefix.length)).readAsStringSync();
   }
 
+  void expectNoPublishedInstallations() {
+    final output = Directory('${root.path}/.dart_tool/adele/desktop-plugins');
+    if (!output.existsSync()) return;
+    expect(
+      output
+          .listSync(recursive: true)
+          .whereType<File>()
+          .where((file) => file.path.endsWith('.json')),
+      isEmpty,
+    );
+  }
+
   test(
     'test-plan runs pre-bootstrap without inspecting or compiling',
     () async {
@@ -188,7 +208,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
   );
 
   test(
-    'run and profile build compile first and provision exact fresh defines',
+    'Linux run and builds prepare one fresh five-installation snapshot',
     () async {
       final Set<String> outputDirectories = <String>{};
       final Map<String, String> retainedArtifacts = <String, String>{};
@@ -201,6 +221,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
       environment['ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT'] = '/wrong-openai';
       for (final List<String> arguments in <List<String>>[
         <String>['run', 'linux'],
+        <String>['build', 'linux'],
         <String>['build', 'linux', '--profile'],
       ]) {
         final ProcessResult result = await invoke(arguments);
@@ -237,7 +258,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           arguments.first,
           if (run) '-d',
           'linux',
-          run ? '--debug' : '--profile',
+          arguments.contains('--profile') ? '--profile' : '--debug',
         ]);
         final Map<String, String> defines = <String, String>{};
         for (final String argument in launched.skip(run ? 4 : 3)) {
@@ -248,7 +269,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             separator + 1,
           );
         }
-        expect(launched, hasLength(run ? 12 : 11));
+        expect(launched, hasLength(run ? 8 : 7));
         expect(
           defines.keys,
           unorderedEquals(<String>[
@@ -256,10 +277,6 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             'ADELE_BACKEND_HOST_ARTIFACT',
             'ADELE_PLUGIN_INSTALLATION_ROOT',
             'ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE',
-            'ADELE_CHAT_FRONTEND_ARTIFACT',
-            'ADELE_FILESYSTEM_TOOLS_FRONTEND_ARTIFACT',
-            'ADELE_COMMAND_TOOLS_FRONTEND_ARTIFACT',
-            'ADELE_OPENAI_ACTIVITY_FRONTEND_ARTIFACT',
           ]),
         );
         expect(
@@ -279,7 +296,9 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
         final File openai = File.fromUri(
           installations.uri.resolve('openai/backend.aot'),
         );
-        final File frontend = File(defines['ADELE_CHAT_FRONTEND_ARTIFACT']!);
+        final File frontend = File.fromUri(
+          installations.uri.resolve('chat-strategy/frontend.evc'),
+        );
         expect(host.uri.isAbsolute, isTrue);
         expect(git.uri.isAbsolute, isTrue);
         expect(openai.uri.isAbsolute, isTrue);
@@ -287,7 +306,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
         expect(host.path, endsWith('/host.aot'));
         expect(git.path, endsWith('/git-environment/backend.aot'));
         expect(openai.path, endsWith('/openai/backend.aot'));
-        expect(frontend.path, endsWith('/chat.evc'));
+        expect(frontend.path, endsWith('/chat-strategy/frontend.evc'));
         expect(frontendEnvironment.readAsLinesSync(), <String>[
           root.path,
           frontend.path,
@@ -304,22 +323,63 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             (entry) =>
                 entry.uri.pathSegments.where((part) => part.isNotEmpty).last,
           ),
-          unorderedEquals(['git-environment', 'openai']),
+          unorderedEquals([
+            'git-environment',
+            'openai',
+            'chat-strategy',
+            'filesystem-tools',
+            'command-tools',
+          ]),
         );
+        final installedIds = <String>{};
         for (final plugin in [
           (
-            artifact: git,
+            directory: 'git-environment',
             id: 'dev.adele.plugin.git-environment',
             name: 'Git Worktree Environment',
+            backend: true,
           ),
-          (artifact: openai, id: 'dev.adele.openai', name: 'OpenAI'),
+          (
+            directory: 'openai',
+            id: 'dev.adele.openai',
+            name: 'OpenAI',
+            backend: true,
+          ),
+          (
+            directory: 'chat-strategy',
+            id: 'dev.adele.plugin.chat-strategy',
+            name: 'Chat',
+            backend: false,
+          ),
+          (
+            directory: 'filesystem-tools',
+            id: 'dev.adele.plugin.filesystem-tools',
+            name: 'Filesystem Tools',
+            backend: false,
+          ),
+          (
+            directory: 'command-tools',
+            id: 'dev.adele.plugin.command-tools',
+            name: 'Command Tools',
+            backend: false,
+          ),
         ]) {
-          final manifest = File.fromUri(
-            plugin.artifact.parent.uri.resolve(
-              'adele_plugin.installation.json',
-            ),
+          final directory = Directory.fromUri(
+            installations.uri.resolve('${plugin.directory}/'),
           );
-          expect(jsonDecode(manifest.readAsStringSync()), {
+          final presentations = stockFrontendDescriptors[plugin.id];
+          final manifest = File.fromUri(
+            directory.uri.resolve('adele_plugin.installation.json'),
+          );
+          final decoded =
+              jsonDecode(manifest.readAsStringSync()) as Map<String, dynamic>;
+          expect(
+            installedIds.add(
+              (decoded['metadata'] as Map<String, dynamic>)['id'] as String,
+            ),
+            isTrue,
+          );
+          expect(decoded, {
             'manifestVersion': 1,
             'metadata': {
               'id': plugin.id,
@@ -327,47 +387,84 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
               'displayName': plugin.name,
             },
             'components': {
-              'backend': {'artifact': 'backend.aot'},
+              if (plugin.backend) 'backend': {'artifact': 'backend.aot'},
+              if (presentations != null)
+                'frontend': {
+                  'artifact': 'frontend.evc',
+                  'presentations': presentations,
+                },
             },
           });
-          expect(plugin.artifact.parent.listSync(), hasLength(2));
-          retainedArtifacts[manifest.path] = manifest.readAsStringSync();
+          expect(
+            directory.listSync(),
+            hasLength(
+              1 + (plugin.backend ? 1 : 0) + (presentations != null ? 1 : 0),
+            ),
+          );
+          if (presentations != null) {
+            final artifact = File.fromUri(
+              directory.uri.resolve('frontend.evc'),
+            );
+            expect(artifact.readAsStringSync(), 'frontend bytecode\n');
+          }
+          for (final file in directory.listSync().cast<File>()) {
+            retainedArtifacts[file.path] = file.readAsStringSync();
+          }
+        }
+        expect(installedIds, hasLength(5));
+        final catalog = await PreparedPluginCatalog.discover(
+          installations.path,
+        );
+        expect(catalog.issues, isEmpty);
+        expect(
+          catalog.installations.map(
+            (installation) => installation.metadata.id.value,
+          ),
+          unorderedEquals(installedIds),
+        );
+        expect(
+          catalog.installations.where(
+            (installation) => installation.backendArtifactUri != null,
+          ),
+          hasLength(2),
+        );
+        expect(
+          catalog.installations.where(
+            (installation) => installation.frontend != null,
+          ),
+          hasLength(4),
+        );
+        for (final installation in catalog.installations) {
+          final descriptors =
+              stockFrontendDescriptors[installation.metadata.id.value];
+          expect(
+            installation.frontend?.presentations.length,
+            descriptors?.length,
+          );
         }
         retainedArtifacts[startupArguments.path] = startupArguments
             .readAsStringSync();
         expect(
           host.parent.path,
-          startsWith('${root.path}/.dart_tool/adele/desktop-backends/build-'),
+          startsWith('${root.path}/.dart_tool/adele/desktop-plugins/build-'),
         );
         expect(outputDirectories.add(host.parent.path), isTrue);
         expect(
-          frontend.parent.path,
-          startsWith('${root.path}/.dart_tool/adele/desktop-frontends/build-'),
+          host.parent.listSync().map(
+            (entry) =>
+                entry.uri.pathSegments.where((part) => part.isNotEmpty).last,
+          ),
+          unorderedEquals([
+            'host.aot',
+            'installations',
+            'startup-arguments.json',
+          ]),
         );
-        expect(outputDirectories.add(frontend.parent.path), isTrue);
         expect(host.readAsStringSync(), 'snapshot $_hostEntrypoint\n');
         expect(git.readAsStringSync(), 'snapshot $_gitEntrypoint\n');
         expect(openai.readAsStringSync(), 'snapshot $_openaiEntrypoint\n');
         expect(frontend.readAsStringSync(), 'frontend bytecode\n');
         retainedArtifacts[host.path] = host.readAsStringSync();
-        retainedArtifacts[git.path] = git.readAsStringSync();
-        retainedArtifacts[openai.path] = openai.readAsStringSync();
-        retainedArtifacts[frontend.path] = frontend.readAsStringSync();
-        for (final tool in const [
-          (
-            name: 'filesystem',
-            define: 'ADELE_FILESYSTEM_TOOLS_FRONTEND_ARTIFACT',
-          ),
-          (name: 'command', define: 'ADELE_COMMAND_TOOLS_FRONTEND_ARTIFACT'),
-          (name: 'openai', define: 'ADELE_OPENAI_ACTIVITY_FRONTEND_ARTIFACT'),
-        ]) {
-          final File artifact = File(defines[tool.define]!);
-          expect(artifact.uri.isAbsolute, isTrue);
-          expect(artifact.path, endsWith('/${tool.name}.evc'));
-          expect(artifact.parent.path, frontend.parent.path);
-          expect(artifact.readAsStringSync(), 'frontend bytecode\n');
-          retainedArtifacts[artifact.path] = artifact.readAsStringSync();
-        }
         for (final MapEntry<String, String> artifact
             in retainedArtifacts.entries) {
           expect(File(artifact.key).readAsStringSync(), artifact.value);
@@ -429,6 +526,37 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             launchArguments.readAsStringSync(),
             isNot(contains(forbidden)),
           );
+        }
+        final output = Directory(
+          '${root.path}/.dart_tool/adele/desktop-plugins',
+        );
+        final manifests = output
+            .listSync(recursive: true)
+            .whereType<File>()
+            .where(
+              (file) => file.path.endsWith('adele_plugin.installation.json'),
+            );
+        expect(manifests, hasLength(5));
+        for (final manifest in manifests) {
+          for (final forbidden in [
+            'secret-',
+            credentials.path,
+            'public-client',
+            'work-instance',
+            'issuer.example.com',
+            'localhost:1455',
+            'model.example.com',
+            'app-model-not-backend-config',
+            '--chatgpt-only',
+          ]) {
+            expect(manifest.readAsStringSync(), isNot(contains(forbidden)));
+            expect(result.stdout, isNot(contains(forbidden)));
+            expect(result.stderr, isNot(contains(forbidden)));
+            expect(
+              launchArguments.readAsStringSync(),
+              isNot(contains(forbidden)),
+            );
+          }
         }
       },
     );
@@ -526,6 +654,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           ],
         ]);
         expect(launchArguments.existsSync(), isFalse);
+        expectNoPublishedInstallations();
       });
     }
   }
@@ -584,6 +713,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
                 'compiled|$_openaiFrontendHarness',
             ]);
             expect(launchArguments.existsSync(), isFalse);
+            expectNoPublishedInstallations();
           },
         );
       }
@@ -617,6 +747,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
     expect(result.stderr, contains('Required SDK executable is missing'));
     expect(commands.readAsLinesSync(), <String>['inspect-sdk']);
     expect(launchArguments.existsSync(), isFalse);
+    expectNoPublishedInstallations();
   });
 
   test('compiler success without a snapshot does not launch Flutter', () async {
@@ -630,6 +761,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
       'compiled|$_hostEntrypoint',
     ]);
     expect(launchArguments.existsSync(), isFalse);
+    expectNoPublishedInstallations();
   });
 }
 

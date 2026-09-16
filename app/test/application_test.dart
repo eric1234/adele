@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
@@ -17,6 +18,8 @@ import 'package:adele_ui/adele_ui.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../../tools/stock_frontend_descriptors.dart';
 
 void main() {
   for (final bool missing in [false, true]) {
@@ -62,6 +65,32 @@ void main() {
         expect(runtime.plugins.catalog!.installations, isEmpty);
         expect(runtime.plugins.catalog!.issues, isEmpty);
         expect(runtime.plugins.backends, isEmpty);
+        expect(
+          runtime.extensions.discover(sessionPresentationContributions),
+          isEmpty,
+        );
+        expect(
+          runtime.extensions.discover(toolActivityInspectionContributions),
+          isEmpty,
+        );
+        expect(
+          runtime.extensions.discover(
+            toolActivityCompactPresentationContributions,
+          ),
+          isEmpty,
+        );
+        expect(
+          runtime.extensions.discover(
+            modelNativeActivityPresentationContributions,
+          ),
+          isEmpty,
+        );
+        expect(
+          runtime.extensions.discover(
+            modelNativeActivityCompactPresentationContributions,
+          ),
+          isEmpty,
+        );
         expect(find.text('ADELE'), findsOneWidget);
         expect(find.text('No Project is open'), findsOneWidget);
         expect(find.text('Open Local Directory...'), findsOneWidget);
@@ -117,64 +146,116 @@ void main() {
     );
   }
 
-  testWidgets('owns optional prepared OpenAI presentation independently', (
-    WidgetTester tester,
-  ) async {
-    final Directory directory = Directory.systemTemp.createTempSync(
-      'openai-activation-',
-    );
-    addTearDown(() => directory.deleteSync(recursive: true));
-    // Loading prepared bytes is independent of per-view decoding and backend work.
-    final File artifact = File('${directory.path}/openai.evc')
-      ..writeAsBytesSync([1, 2, 3]);
-    final AdeleRuntime runtime = AdeleRuntime();
-    await tester.runAsync(() async {
-      final activated = runtime.extensions.changes.firstWhere(
-        (_) => runtime.extensions
-            .discover(modelNativeActivityPresentationContributions)
-            .isNotEmpty,
-      );
-      await tester.pumpWidget(
-        AdeleApplication(
-          createRuntime: () => runtime,
-          openaiActivityFrontendArtifact: artifact.path,
-        ),
-      );
-      await activated.timeout(const Duration(seconds: 10));
-    });
-    await tester.pumpAndSettle();
-    final binding = runtime.extensions
-        .discover(modelNativeActivityPresentationContributions)
-        .single;
-    final compactBinding = runtime.extensions
-        .discover(modelNativeActivityCompactPresentationContributions)
-        .single;
-    expect(binding.validate, returnsNormally);
-    expect(compactBinding.validate, returnsNormally);
-    expect(
-      compactBinding.value.presentationKind,
-      binding.value.presentationKind,
-    );
-    expect(runtime.extensions.discover(modelToolContributions), hasLength(3));
-    expect(find.text('No Project is open'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-    await tester.runAsync(() async {
-      final retired = runtime.extensions.changes.firstWhere(
-        (_) =>
-            runtime.extensions
+  for (final bool backendFailure in [false, true]) {
+    testWidgets(
+      'owns discovered presentation with ${backendFailure ? 'failed' : 'absent'} backend',
+      (WidgetTester tester) async {
+        final Directory directory = Directory.systemTemp.createTempSync(
+          'openai-activation-',
+        );
+        addTearDown(() => directory.deleteSync(recursive: true));
+        // Loading prepared bytes is independent of per-view decoding and backend work.
+        final installation = Directory('${directory.path}/openai')
+          ..createSync();
+        File('${installation.path}/frontend.evc').writeAsBytesSync([1, 2, 3]);
+        if (backendFailure) {
+          File('${installation.path}/backend.aot').writeAsBytesSync([0]);
+        }
+        File(
+          '${installation.path}/adele_plugin.installation.json',
+        ).writeAsStringSync(
+          jsonEncode({
+            'manifestVersion': 1,
+            'metadata': {
+              'id': 'dev.adele.openai',
+              'version': '0.1.0',
+              'displayName': 'OpenAI',
+            },
+            'components': {
+              if (backendFailure) 'backend': {'artifact': 'backend.aot'},
+              'frontend': {
+                'artifact': 'frontend.evc',
+                'presentations': stockFrontendDescriptors['dev.adele.openai'],
+              },
+            },
+          }),
+        );
+        final AdeleRuntime runtime = AdeleRuntime();
+        addTearDown(runtime.close);
+        late Future<void> backendSettled;
+        await tester.runAsync(() async {
+          final activated = runtime.extensions.changes.firstWhere(
+            (_) => runtime.extensions
                 .discover(modelNativeActivityPresentationContributions)
-                .isEmpty &&
-            runtime.extensions
-                .discover(modelNativeActivityCompactPresentationContributions)
-                .isEmpty,
-      );
-      await tester.pumpWidget(const SizedBox.shrink());
-      await retired.timeout(const Duration(seconds: 10));
-    });
-    await tester.pumpAndSettle();
-    expect(binding.validate, throwsA(isA<StaleExtensionBinding>()));
-    expect(compactBinding.validate, throwsA(isA<StaleExtensionBinding>()));
-  });
+                .isNotEmpty,
+          );
+          await tester.pumpWidget(
+            AdeleApplication(
+              createRuntime: () => runtime,
+              bootstrapPlugins: (plugins) {
+                final starting = plugins.start(
+                  installationRoot: directory.path,
+                  dartaotruntimeExecutable: '${directory.path}/missing-runtime',
+                  hostArtifactPath: '${directory.path}/missing-host.aot',
+                );
+                backendSettled = backendFailure
+                    ? expectLater(starting, throwsA(isA<ProcessException>()))
+                    : starting;
+                return starting;
+              },
+            ),
+          );
+          await activated.timeout(const Duration(seconds: 10));
+          await backendSettled;
+        });
+        await tester.pumpAndSettle();
+        final binding = runtime.extensions
+            .discover(modelNativeActivityPresentationContributions)
+            .single;
+        final compactBinding = runtime.extensions
+            .discover(modelNativeActivityCompactPresentationContributions)
+            .single;
+        expect(binding.validate, returnsNormally);
+        expect(compactBinding.validate, returnsNormally);
+        expect(runtime.plugins.catalog!.installations, hasLength(1));
+        expect(runtime.plugins.host, isNull);
+        expect(
+          runtime.plugins.state,
+          backendFailure
+              ? ApplicationPluginState.failed
+              : ApplicationPluginState.ready,
+        );
+        expect(
+          compactBinding.value.presentationKind,
+          binding.value.presentationKind,
+        );
+        expect(
+          runtime.extensions.discover(modelToolContributions),
+          hasLength(3),
+        );
+        expect(find.text('No Project is open'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+        await tester.runAsync(() async {
+          final retired = runtime.extensions.changes.firstWhere(
+            (_) =>
+                runtime.extensions
+                    .discover(modelNativeActivityPresentationContributions)
+                    .isEmpty &&
+                runtime.extensions
+                    .discover(
+                      modelNativeActivityCompactPresentationContributions,
+                    )
+                    .isEmpty,
+          );
+          await tester.pumpWidget(const SizedBox.shrink());
+          await retired.timeout(const Duration(seconds: 10));
+        });
+        await tester.pumpAndSettle();
+        expect(binding.validate, throwsA(isA<StaleExtensionBinding>()));
+        expect(compactBinding.validate, throwsA(isA<StaleExtensionBinding>()));
+      },
+    );
+  }
 
   testWidgets('normal entrypoint renders the pre-Project shell', (
     WidgetTester tester,

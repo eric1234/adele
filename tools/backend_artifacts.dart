@@ -4,8 +4,10 @@ import 'dart:io';
 // Keep the launcher import graph SDK-only so test-plan works before bootstrap.
 // ignore: avoid_relative_lib_imports
 import '../packages/plugin_builder/lib/plugin_builder.dart';
+import 'frontend_artifacts.dart';
+import 'stock_frontend_descriptors.dart';
 
-Future<List<String>> prepareDesktopBackendDefines({
+Future<List<String>> prepareDesktopPluginDefines({
   required Directory repositoryRoot,
   required String flutterExecutable,
   Map<String, String>? environment,
@@ -47,7 +49,7 @@ Future<List<String>> prepareDesktopBackendDefines({
   }
 
   final Directory parent = Directory.fromUri(
-    repositoryRoot.absolute.uri.resolve('.dart_tool/adele/desktop-backends/'),
+    repositoryRoot.absolute.uri.resolve('.dart_tool/adele/desktop-plugins/'),
   );
   await parent.create(recursive: true);
   // Retain each invocation: an earlier app or built bundle may still use it.
@@ -96,16 +98,35 @@ Future<List<String>> prepareDesktopBackendDefines({
       },
     );
   }
+  final frontends = await prepareDesktopFrontendArtifacts(
+    repositoryRoot: repositoryRoot,
+    flutterExecutable: flutterExecutable,
+    installationRoot: installations,
+  );
+  // Publish each installation once, only after all components are prepared.
   for (final plugin in [
     (
-      artifact: git,
+      backend: git,
       id: 'dev.adele.plugin.git-environment',
       displayName: 'Git Worktree Environment',
     ),
-    (artifact: openai, id: 'dev.adele.openai', displayName: 'OpenAI'),
+    (backend: openai, id: 'dev.adele.openai', displayName: 'OpenAI'),
+    (backend: null, id: 'dev.adele.plugin.chat-strategy', displayName: 'Chat'),
+    (
+      backend: null,
+      id: 'dev.adele.plugin.filesystem-tools',
+      displayName: 'Filesystem Tools',
+    ),
+    (
+      backend: null,
+      id: 'dev.adele.plugin.command-tools',
+      displayName: 'Command Tools',
+    ),
   ]) {
+    final frontend = frontends[plugin.id];
+    final directory = (plugin.backend ?? frontend!).parent;
     await File.fromUri(
-      plugin.artifact.parent.uri.resolve('adele_plugin.installation.json'),
+      directory.uri.resolve('adele_plugin.installation.json'),
     ).writeAsString(
       jsonEncode(<String, Object?>{
         'manifestVersion': 1,
@@ -115,7 +136,13 @@ Future<List<String>> prepareDesktopBackendDefines({
           'displayName': plugin.displayName,
         },
         'components': <String, Object?>{
-          'backend': <String, Object?>{'artifact': 'backend.aot'},
+          if (plugin.backend != null)
+            'backend': <String, Object?>{'artifact': 'backend.aot'},
+          if (frontend != null)
+            'frontend': <String, Object?>{
+              'artifact': 'frontend.evc',
+              'presentations': stockFrontendDescriptors[plugin.id]!,
+            },
         },
       }),
     );

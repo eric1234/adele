@@ -79,6 +79,7 @@ void main() {
       expect(runtime.plugins.state, ApplicationPluginState.closed);
       expect(states, [
         ApplicationPluginState.starting,
+        ApplicationPluginState.starting,
         ApplicationPluginState.ready,
         ApplicationPluginState.closing,
         ApplicationPluginState.closed,
@@ -128,6 +129,15 @@ void main() {
         final List<ApplicationPluginState> states = [];
         final subscription = runtime.plugins.changes.listen(states.add);
         addTearDown(subscription.cancel);
+        bool snapshotPublishedBeforeBackendFailure = false;
+        final discoverySubscription = runtime.plugins.changes.listen((state) {
+          if (runtime.plugins.catalog != null &&
+              state == ApplicationPluginState.starting &&
+              runtime.plugins.failure == null) {
+            snapshotPublishedBeforeBackendFailure = true;
+          }
+        });
+        addTearDown(discoverySubscription.cancel);
         final Matcher failure = invalidRoot
             ? isA<FileSystemException>()
             : isA<ProcessException>();
@@ -145,6 +155,7 @@ void main() {
         expect(runtime.plugins.failure, failure);
         expect(runtime.plugins.host, isNull);
         if (!invalidRoot) {
+          expect(snapshotPublishedBeforeBackendFailure, isTrue);
           expect(runtime.plugins.catalog!.installations, hasLength(1));
           expect(
             runtime.plugins.backends.single.state,
@@ -183,6 +194,7 @@ void main() {
         expect(runtime.plugins.failure, same(originalFailure));
         expect(states, [
           ApplicationPluginState.starting,
+          if (!invalidRoot) ApplicationPluginState.starting,
           ApplicationPluginState.failed,
           ApplicationPluginState.closing,
           ApplicationPluginState.closed,
@@ -190,6 +202,54 @@ void main() {
       },
     );
   }
+
+  test(
+    'frontend-only discovery needs no backend infrastructure or rescan',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'adele-frontend-only-',
+      );
+      addTearDown(() => root.delete(recursive: true));
+      final installation = await Directory('${root.path}/frontend').create();
+      await File('${installation.path}/frontend.evc').writeAsBytes([1, 2, 3]);
+      final manifest = File(
+        '${installation.path}/adele_plugin.installation.json',
+      );
+      await manifest.writeAsString(
+        jsonEncode({
+          'manifestVersion': 1,
+          'metadata': {
+            'id': 'dev.adele.test.frontend',
+            'version': '1',
+            'displayName': 'Frontend',
+          },
+          'components': {
+            'frontend': {
+              'artifact': 'frontend.evc',
+              'presentations': <Object?>[],
+            },
+          },
+        }),
+      );
+      final plugins = ApplicationPluginBootstrap(CapabilityRegistry());
+      addTearDown(plugins.close);
+      await plugins.start(
+        installationRoot: root.path,
+        dartaotruntimeExecutable: '${root.path}/missing-runtime',
+        hostArtifactPath: '${root.path}/missing-host.aot',
+        startupArgumentsFile: '${root.path}/missing-argv.json',
+      );
+      final catalog = plugins.catalog!;
+      expect(catalog.installations.single.frontend, isNotNull);
+      expect(catalog.installations.single.backendArtifactUri, isNull);
+      expect(plugins.backends, isEmpty);
+      expect(plugins.host, isNull);
+      expect(plugins.state, ApplicationPluginState.ready);
+      await manifest.delete();
+      expect(plugins.catalog, same(catalog));
+      expect(plugins.catalog!.installations.single.frontend, isNotNull);
+    },
+  );
 
   test(
     'closing an unused bootstrap is terminal and shares completion',

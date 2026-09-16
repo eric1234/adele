@@ -4,15 +4,17 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' show AppExitResponse;
 
+import 'package:adele_core_extensions/adele_core_extensions.dart';
+import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
+import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/plugins/stock_chat_execution_status.dart';
 import 'package:adele_desktop/plugins/stock_chat_frontend.dart';
-import 'package:adele_desktop/plugins/stock_openai_activity_frontend.dart';
-import 'package:adele_desktop/plugins/stock_tool_inspection_frontends.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
 import 'package:adele_desktop/ui/activity/model_native_activity_compact_host.dart';
 import 'package:adele_desktop/ui/activity/tool_activity_compact_host.dart';
@@ -27,6 +29,7 @@ import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:agent_kernel/agent_kernel.dart';
@@ -36,7 +39,9 @@ import 'package:flutter_eval/widgets.dart' show $StatefulWidget$bridge;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openai_contract/openai_contract.dart';
 import 'package:plugin_builder/plugin_builder.dart';
+import 'package:plugin_runtime/plugin_runtime.dart';
 
+import '../../../tools/stock_frontend_descriptors.dart';
 import '../../tool/chat_frontend_compiler.dart';
 import '../../tool/openai_activity_frontend_compiler.dart';
 import '../../tool/tool_inspection_frontend_compiler.dart';
@@ -44,6 +49,9 @@ import '../../tool/tool_inspection_frontend_compiler.dart';
 const String _sourcePath = 'lib/task_answer.dart';
 const String _gitPluginId = 'dev.adele.plugin.git-environment';
 const String _openAiPluginId = 'dev.adele.openai';
+const String _chatPluginId = 'dev.adele.plugin.chat-strategy';
+const String _filesystemPluginId = 'dev.adele.plugin.filesystem-tools';
+const String _commandPluginId = 'dev.adele.plugin.command-tools';
 const String _taskText = 'const taskAnswer = "task-worktree-only";\n';
 const String _patchedText = 'const taskAnswer = "approved-task-value";\n';
 const String _agentsText =
@@ -112,7 +120,13 @@ void main() {
       ),
     ).path;
     installationRoot = await Directory('${artifacts.path}/installed').create();
-    for (final String pluginId in [_gitPluginId, _openAiPluginId]) {
+    for (final String pluginId in [
+      _gitPluginId,
+      _openAiPluginId,
+      _chatPluginId,
+      _filesystemPluginId,
+      _commandPluginId,
+    ]) {
       await Directory('${installationRoot.path}/$pluginId').create();
       await File(
         '${installationRoot.path}/$pluginId/adele_plugin.installation.json',
@@ -125,7 +139,13 @@ void main() {
             'displayName': pluginId,
           },
           'components': {
-            'backend': {'artifact': 'backend.aot'},
+            if (pluginId == _gitPluginId || pluginId == _openAiPluginId)
+              'backend': {'artifact': 'backend.aot'},
+            if (stockFrontendDescriptors[pluginId] case final descriptors?)
+              'frontend': {
+                'artifact': 'frontend.evc',
+                'presentations': descriptors,
+              },
           },
         }),
       );
@@ -135,10 +155,14 @@ void main() {
     openAiArtifact = File(
       '${installationRoot.path}/$_openAiPluginId/backend.aot',
     );
-    evc = File('${artifacts.path}/chat.evc');
-    filesystemEvc = File('${artifacts.path}/filesystem.evc');
-    commandEvc = File('${artifacts.path}/command.evc');
-    openAiEvc = File('${artifacts.path}/openai-activity.evc');
+    evc = File('${installationRoot.path}/$_chatPluginId/frontend.evc');
+    filesystemEvc = File(
+      '${installationRoot.path}/$_filesystemPluginId/frontend.evc',
+    );
+    commandEvc = File(
+      '${installationRoot.path}/$_commandPluginId/frontend.evc',
+    );
+    openAiEvc = File('${installationRoot.path}/$_openAiPluginId/frontend.evc');
     await compileChatFrontend(repositoryRoot: repository, artifact: evc);
     await openAiEvc.writeAsBytes(
       await compileOpenAiActivityFrontend(repositoryRoot: repository),
@@ -184,7 +208,7 @@ void main() {
   });
 
   testWidgets(
-    'E4 real artifacts retain individual and compact group Inspection cards',
+    'F2 discovered real artifacts retain individual and compact group Inspection cards',
     (tester) => tester.runAsync(() async {
       await tester.binding.setSurfaceSize(const Size(1400, 1100));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -629,9 +653,8 @@ void main() {
         },
       );
       addTearDown(controller.close);
-      final frontend = await StockChatFrontend.activate(
+      final frontend = StockChatFrontend(
         extensions: runtime.extensions,
-        artifactPath: evc.path,
         controllerForSession: (presentedSession) {
           expect(presentedSession, same(session));
           return controller;
@@ -666,18 +689,40 @@ void main() {
         },
       );
       refreshFrontend = frontend.refresh;
-      addTearDown(frontend.close);
-      final filesystemFrontend =
-          await StockToolInspectionFrontend.activateFilesystem(
-            extensions: runtime.extensions,
-            artifactPath: filesystemEvc.path,
-          );
-      addTearDown(filesystemFrontend.close);
-      final commandFrontend = await StockToolInspectionFrontend.activateCommand(
+      final frontends = ApplicationFrontendBootstrap(
         extensions: runtime.extensions,
-        artifactPath: commandEvc.path,
+        sessionAdapters: {'stock-chat-controller-v1': frontend},
       );
-      addTearDown(commandFrontend.close);
+      addTearDown(frontends.close);
+      final PreparedPluginCatalog catalog = runtime.plugins.catalog!;
+      await frontends.start(catalog);
+      expect(frontends.catalog, same(catalog));
+      expect(catalog.issues, isEmpty);
+      expect(catalog.installations, hasLength(5));
+      expect(frontends.generations, hasLength(4));
+      for (final generation in frontends.generations) {
+        expect(generation.state, InstalledFrontendState.active);
+        expect(generation.failure, isNull);
+        expect(catalog.installations, contains(same(generation.installation)));
+        expect(
+          generation.installation.installationDirectory.path,
+          startsWith(installationRoot.path),
+        );
+      }
+      final openAiFrontend = frontends.generations.singleWhere(
+        (entry) => entry.installation.metadata.id.value == _openAiPluginId,
+      );
+      expect(
+        openAiFrontend.installation,
+        same(
+          runtime.plugins.backends
+              .singleWhere(
+                (entry) =>
+                    entry.installation.metadata.id.value == _openAiPluginId,
+              )
+              .installation,
+        ),
+      );
       addTearDown(() async {
         updatePresentation = null;
         if (!releaseFinal.isCompleted) releaseFinal.complete();
@@ -914,19 +959,11 @@ void main() {
         find.descendant(of: sessionHost, matching: find.text(_initialAnswer)),
       ]);
 
-      // Real AOT classification and Chat activity precede frontend activation.
+      // Both components of the one OpenAI installation came from the same
+      // startup snapshot. No stock-specific delayed activation is involved.
       final nativeResolver = ModelNativeActivityPresentationResolver(
         runtime.extensions,
       );
-      expect(
-        () => nativeResolver.resolve(openAiReasoningSummaryPresentationKind),
-        throwsA(isA<ModelNativeActivityPresentationUnavailable>()),
-      );
-      final openAiFrontend = await activateStockOpenAiActivityFrontend(
-        extensions: runtime.extensions,
-        artifactPath: openAiEvc.path,
-      );
-      addTearDown(openAiFrontend.close);
       expect(
         nativeResolver
             .resolve(initialNative.presentation!.kind)
@@ -2033,6 +2070,74 @@ void main() {
       expect(outbound, hasLength(4));
       expect(tester.takeException(), isNull);
 
+      // The same installed Command artifact supplies a separate rich role, not
+      // merely its compact row in the retained group.
+      await tester.ensureVisible(commandCompactHost);
+      await tester.tap(
+        find.ancestor(
+          of: commandCompactHost,
+          matching: find.byType(TextButton),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final InspectionCard commandCard = inspection.cards.first;
+      expect(inspection.cards.map((card) => card.id), [
+        commandCard.id,
+        cardB.id,
+        cardA.id,
+      ]);
+      final commandTarget = commandCard.target as ModelOutputInspectionTarget;
+      expect(commandTarget.runId, run.id);
+      expect(commandTarget.modelInvocationId, batch.invocationId);
+      expect(
+        commandTarget.outputSequence,
+        commandSource.snapshot.proposalSequence,
+      );
+      final Finder commandInspection = toolPresentation(
+        commandInterruption.toolInvocationId,
+      );
+      expect(commandInspection, findsOneWidget);
+      expect(
+        tester.widget<$StatefulWidget$bridge>(commandInspection).$runtime,
+        isNot(same(commandRuntime)),
+      );
+      for (final label in [
+        'Run Command',
+        'Program: "git"',
+        '[0]: "diff"',
+        '[1]: "--check"',
+        'Status: Completed',
+        'Tool delivery: success',
+        'Process termination: exited',
+        'Exit code: 0',
+      ]) {
+        expect(
+          find.descendant(of: commandInspection, matching: find.text(label)),
+          findsOneWidget,
+        );
+      }
+      expect(
+        tester
+            .widget<ToolActivityInspectionHost>(
+              toolHost(commandInterruption.toolInvocationId),
+            )
+            .source
+            .snapshot
+            .outcome!
+            .hostData,
+        commandOutcome.hostData,
+      );
+      _expectNoPresentationSecrets(tester, controller);
+      final Finder dismissCommand = find.descendant(
+        of: cardHost(commandCard),
+        matching: find.byTooltip('Dismiss Inspection'),
+      );
+      await tester.ensureVisible(dismissCommand);
+      await tester.tap(dismissCommand);
+      await tester.pumpAndSettle();
+      expect(inspection.cards.map((card) => card.id), [cardB.id, cardA.id]);
+      expect(tester.state(commandPresentation), same(commandState));
+
       expect(initialActivityLink, findsOneWidget);
       expect(controller.activityForRun(initialRun.id), same(initialActivity));
       expect(
@@ -2047,13 +2152,55 @@ void main() {
       _expectNoPresentationSecrets(tester, controller);
       expect(tester.takeException(), isNull);
 
+      // Frontend absence does not remove backend-supplied safe activity or raw
+      // replay. Retire through the generic installed generation, without rescans.
+      final nativeBinding = nativeResolver.resolve(
+        openAiReasoningSummaryPresentationKind,
+      );
+      final compactBinding = ModelNativeActivityCompactPresentationResolver(
+        runtime.extensions,
+      ).resolve(openAiReasoningSummaryPresentationKind);
+      await openAiFrontend.retire(
+        modelNativeActivityPresentationContributions,
+        nativeBinding.id,
+      );
+      await tester.pumpAndSettle();
+      expect(nativeBinding.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(compactBinding.validate, returnsNormally);
+      expect(
+        () => nativeResolver.resolve(openAiReasoningSummaryPresentationKind),
+        throwsA(isA<ModelNativeActivityPresentationUnavailable>()),
+      );
+      expect(
+        find.text('Model native activity rich inspection is unavailable.'),
+        findsOneWidget,
+      );
+      expect(initialActivityLink, findsOneWidget);
+      await openAiFrontend.close();
+      await tester.pumpAndSettle();
+      expect(compactBinding.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(initialActivityLink, findsOneWidget);
+      expect(narratedActivity, findsOneWidget);
+      expect(controller.activitySnapshots, [initialActivity, activity]);
+      expect(controller.snapshot, same(snapshot));
+      expect(run.journal.records.map((record) => record.event), events);
+      expect(
+        initialRun.journal.records.map((record) => record.event),
+        initialEvents,
+      );
+      expect(
+        runtime.registry.providersFor(modelProviderCapability),
+        hasLength(1),
+      );
+      expect(runtime.plugins.catalog, same(catalog));
+      expect(outbound, hasLength(4));
+      _expectNoPresentationSecrets(tester, controller);
+      expect(tester.takeException(), isNull);
+
       await controller.close();
       updatePresentation = null;
       await tester.pumpWidget(const SizedBox.shrink());
-      await openAiFrontend.close();
-      await commandFrontend.close();
-      await filesystemFrontend.close();
-      await frontend.close();
+      await frontends.close();
       await runtime.close();
       expect(runtime.plugins.state, ApplicationPluginState.closed);
       expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
@@ -2069,8 +2216,523 @@ void main() {
         same(authority),
       );
     }),
+    timeout: const Timeout(Duration(seconds: 90)),
+  );
+
+  testWidgets(
+    'F2 normal AdeleApplication opens a real Task and runs discovered Chat and OpenAI EVCs',
+    (tester) => tester.runAsync(() async {
+      await tester.binding.setSurfaceSize(const Size(1400, 1100));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final Directory container = await Directory.systemTemp.createTemp(
+        'adele-f2-product-',
+      );
+      addTearDown(() => container.delete(recursive: true));
+      final Directory source = Directory('${container.path}/project');
+      await Directory('${source.path}/lib').create(recursive: true);
+      await File('${source.path}/$_sourcePath').writeAsString(_taskText);
+      await File('${source.path}/AGENTS.md').writeAsString(_agentsText);
+      await _git(source, ['init', '--initial-branch=main']);
+      await _git(source, ['add', '.']);
+      await _git(source, ['commit', '-m', 'Fixture baseline']);
+      final File credentials = File('${container.path}/credentials.json');
+      await credentials.writeAsString(
+        jsonEncode({
+          'version': 1,
+          'instances': {
+            'fixture': {
+              'revision': 1,
+              'credential': {
+                'idToken': _idToken('f2-product-account'),
+                'accessToken': 'f2-fake-access-token',
+                'refreshToken': 'f2-fake-refresh-never-used',
+                'accountId': 'f2-product-account',
+                'fedRamp': false,
+              },
+            },
+          },
+        }),
+      );
+      const prompt = 'Read the Task source without changing it.';
+      const summary = 'Checking the observed Task source.';
+      const answer = 'Read lib/task_answer.dart from the Task Environment.';
+      final outbound = <Map<String, Object?>>[];
+      final endpointFailures = <(Object, StackTrace)>[];
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        try {
+          expect(request.method, 'POST');
+          expect(request.uri.path, '/backend-api/codex/responses');
+          expect(
+            request.headers.value(HttpHeaders.authorizationHeader),
+            'Bearer f2-fake-access-token',
+          );
+          final body =
+              jsonDecode(await utf8.decoder.bind(request).join())
+                  as Map<String, Object?>;
+          outbound.add(body);
+          expect(body['model'], 'gpt-6-astra');
+          expect(body['instructions'], contains(_agentsText));
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          switch (outbound.length) {
+            case 1:
+              _output(
+                request.response,
+                _call('product-read', 'read_file', {
+                  'relativePath': _sourcePath,
+                }),
+              );
+            case 2:
+              expect(_toolOutput(body, 'product-read'), contains(_taskText));
+              expect(_revision(_toolOutput(body, 'product-read')), isNotEmpty);
+              _output(
+                request.response,
+                _reasoning('product-reasoning', summary, _encryptedInitial),
+              );
+              _output(request.response, _message('product-final', answer));
+            default:
+              fail(
+                'Unexpected product Responses invocation ${outbound.length}.',
+              );
+          }
+          _sse(request.response, {
+            'type': 'response.completed',
+            'response': {
+              'id': 'product-${outbound.length}',
+              'model': 'gpt-6-astra',
+            },
+          });
+        } on Object catch (error, stack) {
+          endpointFailures.add((error, stack));
+        } finally {
+          await request.response.close();
+        }
+      });
+      addTearDown(() async {
+        await subscription.cancel();
+        await server.close(force: true);
+      });
+      final runtime = AdeleRuntime(
+        ids: MonotonicProductIdSource(seed: 'f2-product'),
+      );
+      addTearDown(runtime.close);
+      final selector = runtime.extensions.register(
+        point: projectSelectorContributions,
+        id: ExtensionId('dev.adele.test.f2-project-selector'),
+        value: ProjectSelectorContribution(
+          displayName: 'Open F2 Project',
+          selectProject: () async => source.uri,
+        ),
+      );
+      addTearDown(selector.close);
+      late Future<void> starting;
+      await tester.pumpWidget(
+        AdeleApplication(
+          createRuntime: () => runtime,
+          readChatGptConfiguration: () =>
+              const StockChatGptConfiguration(model: 'gpt-6-astra'),
+          runIds: MonotonicRunIdSource(seed: 'f2-product'),
+          bootstrapPlugins: (plugins) => starting = plugins.start(
+            installationRoot: installationRoot.path,
+            dartaotruntimeExecutable: dartaotruntime,
+            hostArtifactPath: hostArtifact.path,
+            startupArguments: {
+              _openAiPluginId: [
+                '--chatgpt-only',
+                jsonEncode({
+                  'credentialFile': credentials.path,
+                  'clientId': 'fixture',
+                  'instanceId': 'fixture',
+                  'issuer': 'http://${server.address.address}:${server.port}',
+                  'endpoint':
+                      'http://${server.address.address}:${server.port}/backend-api/codex/responses',
+                }),
+              ],
+            },
+          ),
+        ),
+      );
+      addTearDown(() async {
+        await tester.binding.handleRequestAppExit();
+        await tester.pumpWidget(const SizedBox.shrink());
+      });
+      await starting;
+      bool allFrontendsRegistered() =>
+          runtime.extensions
+                  .discover(sessionPresentationContributions)
+                  .length ==
+              1 &&
+          runtime.extensions
+                  .discover(toolActivityInspectionContributions)
+                  .length ==
+              2 &&
+          runtime.extensions
+                  .discover(toolActivityCompactPresentationContributions)
+                  .length ==
+              2 &&
+          runtime.extensions
+                  .discover(modelNativeActivityPresentationContributions)
+                  .length ==
+              1 &&
+          runtime.extensions
+                  .discover(modelNativeActivityCompactPresentationContributions)
+                  .length ==
+              1;
+      if (!allFrontendsRegistered()) {
+        await runtime.extensions.changes
+            .firstWhere((_) => allFrontendsRegistered())
+            .timeout(const Duration(seconds: 10));
+      }
+      await tester.pumpAndSettle();
+      final catalog = runtime.plugins.catalog!;
+      expect(catalog.issues, isEmpty);
+      expect(catalog.installations, hasLength(5));
+      expect(runtime.plugins.backends, hasLength(2));
+      expect(
+        runtime.plugins.backends.every(
+          (entry) => entry.state == InstalledBackendState.active,
+        ),
+        isTrue,
+      );
+      expect(outbound, isEmpty);
+      expect(find.text('No Project is open'), findsOneWidget);
+      await tester.tap(find.text('Open F2 Project'));
+      await tester.pumpAndSettle();
+      AdeleShell shell() => tester.widget<AdeleShell>(find.byType(AdeleShell));
+      final project = shell().project!;
+      expect(runtime.store.project(project.id), same(project));
+      expect(runtime.store.tasksFor(project.id), isEmpty);
+      await tester.tap(find.text('New Task'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byType(TextField),
+        'Read the installed product Task',
+      );
+      await tester.tap(find.text('Create Task'));
+      final deadline = DateTime.now().add(const Duration(seconds: 10));
+      while (shell().task == null && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        await tester.pump();
+      }
+      await tester.pumpAndSettle();
+      expect(shell().task, isNotNull);
+      expect(shell().environmentReady, isTrue);
+      final environment = shell().environment!;
+      expect(
+        runtime.store.primaryEnvironmentFor(shell().task!.id),
+        same(environment),
+      );
+      expect(outbound, isEmpty);
+      await tester.tap(find.text('New Session'));
+      await tester.pumpAndSettle();
+      final sessionHost = find.byType(SessionPresentationHost);
+      final session = tester
+          .widget<SessionPresentationHost>(sessionHost)
+          .session;
+      expect(runtime.store.session(session.id), same(session));
+      expect(session.taskId, shell().task!.id);
+      final controller = tester
+          .widget<StockChatExecutionStatus>(
+            find.byType(StockChatExecutionStatus),
+          )
+          .controller;
+      final promptField = find.descendant(
+        of: sessionHost,
+        matching: find.byType(TextField),
+      );
+      expect(promptField, findsOneWidget);
+      expect(
+        find.descendant(
+          of: sessionHost,
+          matching: find.byWidgetPredicate(
+            (widget) => widget is $StatefulWidget$bridge,
+          ),
+        ),
+        findsOneWidget,
+      );
+      await tester.enterText(promptField, prompt);
+      await tester.ensureVisible(find.text('Send'));
+      await tester.tap(find.text('Send'));
+      final running = controller.activeRunFuture;
+      expect(running, isNotNull);
+      await running!;
+      await tester.pumpAndSettle();
+      if (endpointFailures.isNotEmpty) {
+        final (error, stack) = endpointFailures.first;
+        Error.throwWithStackTrace(error, stack);
+      }
+      expect(outbound, hasLength(2));
+      expect(controller.currentRun!.run.state, RunState.completed);
+      expect(controller.failure, isNull);
+      expect(controller.pendingApproval, isNull);
+      expect(controller.snapshot.entries.map((entry) => entry.content), [
+        prompt,
+        answer,
+      ]);
+      final activity = controller.activitySnapshots.single;
+      expect(activity.tools.single.outcome!.hostData['text'], _taskText);
+      expect(
+        activity.tools.single.outcome!.hostData['environmentId'],
+        environment.id.value,
+      );
+      final native = activity.models.last.outputs
+          .map((output) => output.item)
+          .whereType<ModelNativeOutput>()
+          .single;
+      _expectSafePresentation(
+        native,
+        id: 'product-reasoning',
+        summary: summary,
+        encrypted: _encryptedInitial,
+      );
+      final summaryLink = find.descendant(
+        of: sessionHost,
+        matching: find.text('Reasoning: $summary'),
+      );
+      await tester.ensureVisible(summaryLink);
+      await tester.tap(
+        find.ancestor(of: summaryLink, matching: find.byType(TextButton)),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(InspectionHost), findsOneWidget);
+      expect(find.text('Reasoning summary'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(ModelNativeActivityInspectionHost),
+          matching: find.text(summary),
+        ),
+        findsOneWidget,
+      );
+      _expectNoPresentationSecrets(tester, controller);
+      expect(runtime.plugins.catalog, same(catalog));
+      expect(
+        await File('${source.path}/$_sourcePath').readAsString(),
+        _taskText,
+      );
+      expect(await _git(source, ['status', '--porcelain=v1']), isEmpty);
+      final sessionBinding = runtime.extensions
+          .discover(sessionPresentationContributions)
+          .single;
+      expect(await tester.binding.handleRequestAppExit(), AppExitResponse.exit);
+      expect(runtime.plugins.state, ApplicationPluginState.closed);
+      expect(sessionBinding.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(
+        runtime.extensions.discover(toolActivityInspectionContributions),
+        isEmpty,
+      );
+      expect(
+        runtime.extensions.discover(
+          toolActivityCompactPresentationContributions,
+        ),
+        isEmpty,
+      );
+      expect(
+        runtime.extensions.discover(
+          modelNativeActivityPresentationContributions,
+        ),
+        isEmpty,
+      );
+      expect(
+        runtime.extensions.discover(
+          modelNativeActivityCompactPresentationContributions,
+        ),
+        isEmpty,
+      );
+      expect(runtime.store.session(session.id), same(session));
+      expect(outbound, hasLength(2));
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    }),
     timeout: const Timeout(Duration(seconds: 45)),
   );
+
+  for (final failure in ['frontend load', 'frontend bytecode', 'backend']) {
+    testWidgets(
+      'F2 real OpenAI installation isolates $failure failure from its sibling',
+      (tester) => tester.runAsync(() async {
+        final Directory container = await Directory.systemTemp.createTemp(
+          'adele-component-failure-',
+        );
+        addTearDown(() => container.delete(recursive: true));
+        final Directory root = await Directory(
+          '${container.path}/installed',
+        ).create();
+        for (final id in [_gitPluginId, _openAiPluginId]) {
+          final Directory installed = await Directory(
+            '${root.path}/$id',
+          ).create();
+          await for (final file in Directory(
+            '${installationRoot.path}/$id',
+          ).list()) {
+            await (file as File).copy(
+              '${installed.path}/${file.uri.pathSegments.last}',
+            );
+          }
+        }
+        int requests = 0;
+        final HttpServer server = await HttpServer.bind(
+          InternetAddress.loopbackIPv4,
+          0,
+        );
+        server.listen((request) async {
+          requests++;
+          request.response.statusCode = HttpStatus.internalServerError;
+          await request.response.close();
+        });
+        addTearDown(() async {
+          await server.close(force: true);
+          expect(
+            requests,
+            0,
+            reason: 'Activation must not make model or OAuth calls.',
+          );
+        });
+        final File credentials = File(
+          '${container.path}/never-created-credentials.json',
+        );
+        final AdeleRuntime runtime = AdeleRuntime();
+        addTearDown(runtime.close);
+        await runtime.plugins.start(
+          installationRoot: root.path,
+          dartaotruntimeExecutable: dartaotruntime,
+          hostArtifactPath: hostArtifact.path,
+          startupArguments: {
+            _openAiPluginId: [
+              '--chatgpt-only',
+              jsonEncode({
+                'credentialFile': credentials.path,
+                'clientId': 'fixture',
+                'endpoint': failure == 'backend'
+                    ? 'relative'
+                    : 'http://${server.address.address}:${server.port}/responses',
+              }),
+            ],
+          },
+        );
+        final catalog = runtime.plugins.catalog!;
+        expect(catalog.issues, isEmpty);
+        final backend = runtime.plugins.backends.singleWhere(
+          (entry) => entry.installation.metadata.id.value == _openAiPluginId,
+        );
+        expect(
+          backend.state,
+          failure == 'backend'
+              ? InstalledBackendState.failed
+              : InstalledBackendState.active,
+        );
+        expect(backend.failure, failure == 'backend' ? isNotNull : isNull);
+        final providers = runtime.registry
+            .providersFor(modelProviderCapability)
+            .toList();
+        expect(providers, hasLength(failure == 'backend' ? 0 : 1));
+        expect(
+          runtime.registry.providersFor(environmentProviderCapability),
+          hasLength(1),
+        );
+
+        final File frontendArtifact = File(
+          '${root.path}/$_openAiPluginId/frontend.evc',
+        );
+        if (failure == 'frontend load') {
+          await frontendArtifact.delete();
+        } else if (failure == 'frontend bytecode') {
+          await frontendArtifact.writeAsBytes([1, 2, 3]);
+        }
+        // A fresh discovery would exclude this installation. Frontend startup
+        // must consume the backend's retained catalog, not reread its manifest.
+        await File(
+          '${root.path}/$_openAiPluginId/adele_plugin.installation.json',
+        ).writeAsString('{');
+        final frontends = ApplicationFrontendBootstrap(
+          extensions: runtime.extensions,
+        );
+        addTearDown(frontends.close);
+        await frontends.start(catalog);
+        expect(frontends.catalog, same(catalog));
+        expect(frontends.state, ApplicationFrontendState.ready);
+        final frontend = frontends.generations.single;
+        expect(frontend.installation, same(backend.installation));
+        expect(
+          frontend.state,
+          failure == 'frontend load'
+              ? InstalledFrontendState.failed
+              : InstalledFrontendState.active,
+        );
+        expect(
+          frontend.failure,
+          failure == 'frontend load' ? isNotNull : isNull,
+        );
+        final presentation = ModelNativePresentation(
+          kind: openAiReasoningSummaryPresentationKind,
+          compactText: _initialSummary,
+          data: {
+            'summaryParts': [_initialSummary],
+            'truncated': false,
+          },
+        );
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Column(
+              children: [
+                ModelNativeActivityCompactHost(
+                  extensions: runtime.extensions,
+                  presentation: presentation,
+                  fallback: Text(presentation.compactText),
+                ),
+                ModelNativeActivityInspectionHost(
+                  extensions: runtime.extensions,
+                  presentation: presentation,
+                ),
+              ],
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        if (failure == 'backend') {
+          expect(find.text('Reasoning summary'), findsOneWidget);
+          expect(find.text(_initialSummary), findsOneWidget);
+          expect(find.text('Reasoning: $_initialSummary'), findsOneWidget);
+          expect(find.text('Frontend unavailable.'), findsNothing);
+        } else {
+          expect(find.text('Reasoning summary'), findsNothing);
+          expect(find.textContaining(_initialSummary), findsOneWidget);
+          expect(
+            find.text(
+              failure == 'frontend load'
+                  ? 'Model native activity rich inspection is unavailable.'
+                  : 'Frontend unavailable.',
+            ),
+            findsOneWidget,
+          );
+        }
+        expect(tester.takeException(), isNull);
+        expect(runtime.plugins.state, ApplicationPluginState.ready);
+        expect(runtime.plugins.failure, isNull);
+        expect(runtime.plugins.catalog, same(catalog));
+        expect(
+          runtime.registry.providersFor(modelProviderCapability),
+          providers,
+        );
+        expect(
+          runtime.registry.providersFor(environmentProviderCapability),
+          hasLength(1),
+        );
+        expect(credentials.existsSync(), isFalse);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await frontends.close();
+        expect(
+          runtime.registry.providersFor(modelProviderCapability),
+          providers,
+        );
+        await runtime.close();
+      }),
+      timeout: const Timeout(Duration(seconds: 30)),
+    );
+  }
 }
 
 void _expectSafePresentation(
