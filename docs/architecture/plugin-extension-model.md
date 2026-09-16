@@ -31,14 +31,19 @@ system below.
 Normal Task/primary Environment creation uses existing capability routing and
 product lifecycle, not a new extension point or Task Browser API. Synchronous,
 provider-free `AdeleRuntime()` owns generic application-lifetime backend bootstrap
-on the same capability registry. Explicit async stock composition activates Git
-and independently activates experimental ChatGPT through one shared host, using
-stock exposure code shared with self-hosting. The generic bootstrap owner remains
-plugin-neutral; additional activation failure retires only that plugin, while
-shared-host failure remains global. See
+on the same capability registry. F1 startup first discovers a deterministic prepared
+installation snapshot, then independently attempts every valid backend through
+one shared host. Zero backend components needs no process. Installed metadata
+does not activate plugins or declare exposures; backend entrypoints advertise
+capabilities on the existing ready handshake. Generic `registerAdvertised` reuses
+the existing registry and exact-generation liveness. There is no required Git or
+additional-OpenAI tier: local failure retires only that attempt, while shared-host
+failure remains global. Self-hosting uses the same registration path with its own
+explicit artifact/host/profile topology, without requiring normal discovery. See
 [`dependency-rules.md`](dependency-rules.md#application-backend-composition) for
-ownership and replaceability; profiles, discovery, and production packaging remain
-deferred.
+ownership and replaceability; profiles, enable/disable management, frontend
+discovery, version solving, watching, hot upgrade, and production packaging remain
+deferred. Frontend EVC plumbing and the six in-process activations are unchanged.
 
 See also:
 
@@ -690,7 +695,7 @@ text and the OpenAI frontend for full text, never by stock activation.
 
 Stock OpenAI activation imports Contract identity, loads prepared EVC, registers
 the factory, and retires its resources through `PreparedFrontend`. This edge is
-provisional until discovery/profiles replace hard-coded stock selection;
+provisional until frontend discovery/profiles replace hard-coded stock selection;
 `app/tool` compilation remains a checkout stand-in for installation preparation.
 Chat counts each tool proposal and native output with `presentation != null`
 within each successfully completed model invocation, independently of frontend

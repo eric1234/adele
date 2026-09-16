@@ -2,6 +2,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
@@ -9,9 +10,6 @@ import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
-import 'package:adele_desktop/plugins/stock_backend_plugins.dart';
-import 'package:adele_desktop/plugins/stock_git_environment.dart';
-import 'package:adele_desktop/plugins/stock_openai.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_product/adele_product.dart';
@@ -19,6 +17,15 @@ import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
+
+const String _gitPluginId = 'dev.adele.plugin.git-environment';
+final ProviderId _gitProviderId = ProviderId(
+  'dev.adele.environment.git-worktree',
+);
+const String _openaiPluginId = 'dev.adele.openai';
+final ProviderId _chatGptProviderId = ProviderId(
+  'dev.adele.openai.chatgpt-experimental',
+);
 
 void main() {
   late Directory artifacts;
@@ -40,7 +47,7 @@ void main() {
     hostArtifact = File.fromUri(artifacts.uri.resolve('host.aot'));
     gitArtifact = File.fromUri(artifacts.uri.resolve('git-environment.aot'));
     openaiArtifact = File.fromUri(artifacts.uri.resolve('openai.aot'));
-    // Build each real backend artifact once for every scenario in this suite.
+    // Compile real artifacts once; startup only consumes their installed copies.
     for (final target in [
       (
         entrypoint: 'packages/plugin_backend_host/bin/adele_backend_host.dart',
@@ -70,14 +77,120 @@ void main() {
     }
   });
 
+  late Directory container;
+  late Directory installationRoot;
+  late AdeleRuntime runtime;
+  late File credentialFile;
+  late Map<String, List<String>> startupArguments;
+  late HttpServer server;
+  late int requests;
+
+  setUp(() async {
+    container = await Directory.systemTemp.createTemp('adele-normal-startup-');
+    addTearDown(() => container.delete(recursive: true));
+    installationRoot = await Directory(
+      '${container.path}/installations',
+    ).create();
+    credentialFile = File('${container.path}/never-created-credentials.json');
+    requests = 0;
+    server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((request) async {
+      requests++;
+      request.response.statusCode = HttpStatus.internalServerError;
+      await request.response.close();
+    });
+    addTearDown(() async {
+      await server.close(force: true);
+      expect(
+        requests,
+        0,
+        reason: 'Bootstrap must not make OAuth or model calls.',
+      );
+      expect(await credentialFile.exists(), isFalse);
+    });
+    final String endpoint = 'http://${server.address.address}:${server.port}';
+    startupArguments = {
+      _openaiPluginId: [
+        '--chatgpt-only',
+        jsonEncode({
+          'credentialFile': credentialFile.path,
+          'clientId': 'adele-test-client',
+          'issuer': endpoint,
+          'endpoint': '$endpoint/responses',
+        }),
+      ],
+    };
+    runtime = AdeleRuntime(ids: MonotonicProductIdSource(seed: 'normal'));
+    addTearDown(runtime.close);
+  });
+
+  Future<void> installBackends() async {
+    await _install(installationRoot, '10-git', _gitPluginId, gitArtifact);
+    await _install(
+      installationRoot,
+      '30-openai',
+      _openaiPluginId,
+      openaiArtifact,
+    );
+  }
+
+  Future<void> start({bool argumentsFromFile = true}) async {
+    String argumentsFile = '';
+    if (argumentsFromFile) {
+      argumentsFile = '${container.path}/startup-arguments.json';
+      await File(argumentsFile).writeAsString(jsonEncode(startupArguments));
+    }
+    await runtime.plugins.start(
+      installationRoot: installationRoot.path,
+      dartaotruntimeExecutable: dartaotruntime,
+      hostArtifactPath: hostArtifact.path,
+      startupArgumentsFile: argumentsFile,
+      startupArguments: argumentsFromFile ? null : startupArguments,
+    );
+  }
+
+  InstalledBackendActivation backend(String id) => runtime.plugins.backends
+      .singleWhere((entry) => entry.installation.metadata.id.value == id);
+
+  void expectBothActive() {
+    expect(runtime.plugins.state, ApplicationPluginState.ready);
+    expect(runtime.plugins.failure, isNull);
+    expect(runtime.plugins.registry, same(runtime.registry));
+    expect(runtime.plugins.host!.isClosed, isFalse);
+    expect(runtime.plugins.catalog!.issues, isEmpty);
+    for (final id in [_gitPluginId, _openaiPluginId]) {
+      final InstalledBackendActivation entry = backend(id);
+      expect(entry.state, InstalledBackendState.active);
+      expect(entry.failure, isNull);
+      expect(entry.connection!.isClosed, isFalse);
+      expect(entry.connection!.pluginId, id);
+      expect(
+        runtime.plugins.catalog!.installations,
+        contains(same(entry.installation)),
+      );
+      expect(
+        entry.installation.backendArtifactUri!.path,
+        startsWith(installationRoot.uri.path),
+      );
+    }
+    final ProviderDescriptor git = runtime.registry
+        .providersFor(environmentProviderCapability)
+        .single;
+    expect(git.id, _gitProviderId);
+    expect(git.pluginId, _gitPluginId);
+    final ProviderDescriptor openai = runtime.registry
+        .providersFor(modelProviderCapability)
+        .single;
+    expect(openai.id, _chatGptProviderId);
+    expect(openai.pluginId, _openaiPluginId);
+    expect(requests, 0);
+    expect(credentialFile.existsSync(), isFalse);
+  }
+
   for (final bool dirty in [false, true]) {
     test(
-      'normal bootstrap establishes a nested Task and preserves ${dirty ? 'dirty' : 'clean'} source',
+      'discovered backends establish a Task and preserve ${dirty ? 'dirty' : 'clean'} nested source',
       () async {
-        final Directory container = await Directory.systemTemp.createTemp(
-          'adele-normal-task-',
-        );
-        addTearDown(() => container.delete(recursive: true));
         final Directory repository = Directory('${container.path}/repo');
         final Directory source = Directory(
           '${repository.path}/packages/source',
@@ -121,8 +234,6 @@ void main() {
           '--binary',
         ]);
         expect(status.isNotEmpty, dirty);
-        final AdeleRuntime runtime = AdeleRuntime();
-        addTearDown(runtime.close);
         final Project project = runtime.lifecycle.createProject(source.uri);
         expect(runtime.store.project(project.id), same(project));
         expect(project.sourceLocation, source.uri);
@@ -132,22 +243,14 @@ void main() {
           isEmpty,
         );
 
-        await bootstrapStockBackendPlugins(
-          runtime.plugins,
-          dartaotruntimeExecutable: dartaotruntime,
-          hostArtifactPath: hostArtifact.path,
-          gitEnvironmentArtifactPath: gitArtifact.path,
-        );
-
-        expect(runtime.plugins.state, ApplicationPluginState.ready);
-        expect(runtime.plugins.failure, isNull);
-        expect(runtime.plugins.registry, same(runtime.registry));
+        await installBackends();
+        await start();
+        expectBothActive();
+        expect(runtime.plugins.backends, hasLength(2));
+        expect(runtime.store.tasksFor(project.id), isEmpty);
         final ProviderDescriptor descriptor = runtime.registry
             .providersFor(environmentProviderCapability)
             .single;
-        expect(descriptor.id, stockGitEnvironmentProviderId);
-        expect(descriptor.pluginId, stockGitEnvironmentPluginId);
-        expect(runtime.store.tasksFor(project.id), isEmpty);
         final TaskCreationResult created = await runtime.lifecycle.createTask(
           projectId: project.id,
           title: 'Normal nested Task',
@@ -186,7 +289,7 @@ void main() {
         expect(materialization.providerDescriptor, same(descriptor));
         expect(materialization.validateBinding, returnsNormally);
 
-        // Inspect stock-owned state only here to corroborate the real Git fixture.
+        // Inspect provider-owned state only to corroborate the real Git fixture.
         final Map<String, Object?> state = created.environment.providerState!;
         final Directory worktree = Directory(state['worktreePath']! as String);
         final String sourceRoot = await repository.resolveSymbolicLinks();
@@ -276,6 +379,7 @@ void main() {
           runtime.registry.providersFor(environmentProviderCapability),
           isEmpty,
         );
+        expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
         expect(materialization.validateBinding, throwsA(_staleProvider));
         await expectLater(
           materialization.provider.readFile(
@@ -331,27 +435,18 @@ void main() {
   }
 
   test(
-    'stock provider rejects non-Git Project without Task publication',
+    'discovered Git rejects non-Git Project without Task publication',
     () async {
-      final Directory source = await Directory.systemTemp.createTemp(
-        'adele-not-git-',
-      );
-      addTearDown(() => source.delete(recursive: true));
+      final Directory source = await Directory(
+        '${container.path}/not-git',
+      ).create();
       await File(
         '${source.path}/source.txt',
       ).writeAsString('Not a repository.\n');
-      final AdeleRuntime runtime = AdeleRuntime(
-        ids: MonotonicProductIdSource(seed: 'non-git'),
-      );
-      addTearDown(runtime.close);
       final Project project = runtime.lifecycle.createProject(source.uri);
-      expect(runtime.store.project(project.id), same(project));
-      await bootstrapStockBackendPlugins(
-        runtime.plugins,
-        dartaotruntimeExecutable: dartaotruntime,
-        hostArtifactPath: hostArtifact.path,
-        gitEnvironmentArtifactPath: gitArtifact.path,
-      );
+      await installBackends();
+      await start();
+      expectBothActive();
       await expectLater(
         runtime.lifecycle.createTask(
           projectId: project.id,
@@ -365,22 +460,20 @@ void main() {
           ),
         ),
       );
-      expect(runtime.plugins.state, ApplicationPluginState.ready);
-      expect(runtime.plugins.failure, isNull);
       expect(runtime.store.project(project.id), same(project));
       expect(runtime.store.tasksFor(project.id), isEmpty);
-      expect(runtime.store.task(TaskId('task-non-git-1')), isNull);
+      expect(runtime.store.task(TaskId('task-normal-1')), isNull);
       expect(
-        runtime.store.environment(EnvironmentId('environment-non-git-1')),
+        runtime.store.environment(EnvironmentId('environment-normal-1')),
         isNull,
       );
       expect(
-        runtime.store.primaryEnvironmentFor(TaskId('task-non-git-1')),
+        runtime.store.primaryEnvironmentFor(TaskId('task-normal-1')),
         isNull,
       );
       expect(
         runtime.lifecycle.environmentRuntime.currentMaterialization(
-          EnvironmentId('environment-non-git-1'),
+          EnvironmentId('environment-normal-1'),
         ),
         isNull,
       );
@@ -389,38 +482,39 @@ void main() {
         'Not a repository.\n',
       );
       expect(await Directory('${source.path}/.git').exists(), isFalse);
-      expect(
-        runtime.registry.providersFor(environmentProviderCapability).single.id,
-        stockGitEnvironmentProviderId,
-      );
+      expectBothActive();
     },
   );
 
   test(
-    'missing host artifact leaves visible failure and usable core',
+    'missing shared host artifact fails globally but leaves core usable',
     () async {
-      final AdeleRuntime runtime = AdeleRuntime();
-      addTearDown(runtime.close);
-      final List<ApplicationPluginState> states = [];
-      final subscription = runtime.plugins.changes.listen(states.add);
-      addTearDown(subscription.cancel);
+      await installBackends();
       await expectLater(
-        bootstrapStockBackendPlugins(
-          runtime.plugins,
+        runtime.plugins.start(
+          installationRoot: installationRoot.path,
           dartaotruntimeExecutable: dartaotruntime,
-          hostArtifactPath: '${artifacts.path}/missing-host.aot',
-          gitEnvironmentArtifactPath: gitArtifact.path,
+          hostArtifactPath: '${container.path}/missing-host.aot',
+          startupArguments: startupArguments,
         ),
         throwsA(isA<PluginConnectionClosed>()),
       );
       expect(runtime.plugins.state, ApplicationPluginState.failed);
       expect(runtime.plugins.failure, isA<PluginConnectionClosed>());
+      expect(runtime.plugins.catalog!.installations, hasLength(2));
+      expect(
+        runtime.plugins.backends.every(
+          (entry) => entry.state == InstalledBackendState.failed,
+        ),
+        isTrue,
+      );
       expect(
         runtime.registry.providersFor(environmentProviderCapability),
         isEmpty,
       );
+      expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
       final Project project = runtime.lifecycle.createProject(
-        Uri.parse('https://example.test/core-still-usable'),
+        Uri.parse('https://example.test/usable'),
       );
       expect(runtime.store.project(project.id), same(project));
       expect(
@@ -435,876 +529,515 @@ void main() {
         throwsA(isA<CapabilityUnavailable>()),
       );
       expect(runtime.store.tasksFor(project.id), isEmpty);
-      await runtime.close();
-      expect(states, [
-        ApplicationPluginState.starting,
-        ApplicationPluginState.failed,
-        ApplicationPluginState.closing,
-        ApplicationPluginState.closed,
-      ]);
     },
   );
 
-  test(
-    'runtime close retires capability and closes owned connection and host',
-    () async {
-      final AdeleRuntime runtime = AdeleRuntime();
-      addTearDown(runtime.close);
-      late PluginBackendHost host;
-      late PluginCapabilityActivation activation;
-      final List<ApplicationPluginState> states = [];
-      final subscription = runtime.plugins.changes.listen(states.add);
-      addTearDown(subscription.cancel);
-      await runtime.plugins.start(
-        dartaotruntimeExecutable: dartaotruntime,
-        hostArtifactPath: hostArtifact.path,
-        activate: [
-          (ownedHost, registry) async {
-            host = ownedHost;
-            expect(registry, same(runtime.registry));
-            return activation = await activateStockGitEnvironment(
-              host: host,
-              registry: registry,
-              artifactUri: gitArtifact.uri,
-            );
-          },
-        ],
-      );
-      final ProviderBinding binding = runtime.registry.resolve(
-        environmentProviderCapability,
-      );
-      expect(host.isClosed, isFalse);
-      expect(activation.connection.isClosed, isFalse);
-      final Future<void> closing = runtime.close();
-      expect(runtime.close(), same(closing));
-      await closing;
-      expect(runtime.close(), same(closing));
-      expect(host.isClosed, isTrue);
-      expect(activation.connection.isClosed, isTrue);
-      expect(
-        await activation.connection.terminated,
-        isA<PluginConnectionClosed>(),
-      );
-      expect(
-        runtime.registry.providersFor(environmentProviderCapability),
-        isEmpty,
-      );
-      expect(
-        () => binding.endpointAs<CapabilityEndpoint>(),
-        throwsA(_staleProvider),
-      );
-      expect(runtime.plugins.failure, isNull);
-      expect(states, [
-        ApplicationPluginState.starting,
-        ApplicationPluginState.ready,
-        ApplicationPluginState.closing,
-        ApplicationPluginState.closed,
-      ]);
-    },
-  );
-
-  test(
-    'later activation failure rolls back a successful activation and host',
-    () async {
-      final AdeleRuntime runtime = AdeleRuntime();
-      addTearDown(runtime.close);
-      late PluginBackendHost host;
-      late PluginCapabilityActivation activation;
-      late ProviderBinding binding;
-      final StateError failure = StateError('Second activation failed.');
-      int skippedCalls = 0;
-      await expectLater(
-        runtime.plugins.start(
-          dartaotruntimeExecutable: dartaotruntime,
-          hostArtifactPath: hostArtifact.path,
-          activate: [
-            (ownedHost, registry) async {
-              host = ownedHost;
-              activation = await activateStockGitEnvironment(
-                host: host,
-                registry: registry,
-                artifactUri: gitArtifact.uri,
-              );
-              binding = registry.resolve(environmentProviderCapability);
-              return activation;
-            },
-            (ownedHost, registry) async {
-              expect(ownedHost, same(host));
-              expect(activation.connection.isClosed, isFalse);
-              expect(
-                registry.providersFor(environmentProviderCapability),
-                hasLength(1),
-              );
-              throw failure;
-            },
-            (_, _) async {
-              skippedCalls++;
-              throw StateError('Unreachable activation');
-            },
-          ],
-        ),
-        throwsA(same(failure)),
-      );
-      expect(skippedCalls, 0);
-      expect(runtime.plugins.state, ApplicationPluginState.failed);
-      expect(runtime.plugins.failure, same(failure));
-      expect(host.isClosed, isTrue);
-      expect(activation.connection.isClosed, isTrue);
-      expect(
-        runtime.registry.providersFor(environmentProviderCapability),
-        isEmpty,
-      );
-      expect(
-        () => binding.endpointAs<CapabilityEndpoint>(),
-        throwsA(_staleProvider),
-      );
-      await runtime.close();
-      expect(runtime.plugins.state, ApplicationPluginState.closed);
-      expect(runtime.plugins.failure, same(failure));
-    },
-  );
-
-  test(
-    'stock registration failure closes its connection before host rollback',
-    () async {
-      final AdeleRuntime runtime = AdeleRuntime();
-      addTearDown(runtime.close);
-      final CapabilityRegistration existing = runtime.registry.register(
-        provider: ProviderDescriptor(
-          id: stockGitEnvironmentProviderId,
-          capability: environmentProviderCapability,
-          pluginId: 'dev.adele.plugin.existing-test',
-          displayName: 'Existing provider',
-          serviceId: environmentProviderServiceId,
-        ),
-        endpoint: const _AvailableEndpoint(),
-      );
-      addTearDown(existing.close);
-      final ProviderBinding binding = runtime.registry.resolve(
-        environmentProviderCapability,
-      );
-      late PluginBackendHost host;
-      bool connectionWasReleased = false;
-      await expectLater(
-        runtime.plugins.start(
-          dartaotruntimeExecutable: dartaotruntime,
-          hostArtifactPath: hostArtifact.path,
-          activate: [
-            (ownedHost, registry) async {
-              host = ownedHost;
-              try {
-                return await activateStockGitEnvironment(
-                  host: host,
-                  registry: registry,
-                  artifactUri: gitArtifact.uri,
-                );
-              } on DuplicateProviderRegistration {
-                // Starting the same plugin on this still-open host proves the failed
-                // stock activator released its otherwise inaccessible connection.
-                expect(host.isClosed, isFalse);
-                final PluginBackendConnection replacement = await host
-                    .startPlugin(
-                      pluginId: stockGitEnvironmentPluginId,
-                      artifactUri: gitArtifact.uri,
-                    );
-                connectionWasReleased = true;
-                await replacement.close();
-                rethrow;
-              }
-            },
-          ],
-        ),
-        throwsA(isA<DuplicateProviderRegistration>()),
-      );
-      expect(connectionWasReleased, isTrue);
-      expect(runtime.plugins.state, ApplicationPluginState.failed);
-      expect(runtime.plugins.failure, isA<DuplicateProviderRegistration>());
-      expect(host.isClosed, isTrue);
-      expect(existing.isClosed, isFalse);
-      expect(() => binding.endpointAs<CapabilityEndpoint>(), returnsNormally);
-      await runtime.close();
-      expect(existing.isClosed, isFalse);
-    },
-  );
-
-  test(
-    'close waits for an in-flight activation and skips remaining startup',
-    () async {
-      final AdeleRuntime runtime = AdeleRuntime();
-      addTearDown(runtime.close);
-      final Completer<void> activated = Completer<void>();
-      final Completer<void> release = Completer<void>();
-      // Release before teardown closes the runtime, even if an assertion fails.
-      addTearDown(() {
-        if (!release.isCompleted) release.complete();
-      });
-      late PluginBackendHost host;
-      late PluginCapabilityActivation activation;
-      int skippedCalls = 0;
-      final List<ApplicationPluginState> states = [];
-      final subscription = runtime.plugins.changes.listen(states.add);
-      addTearDown(subscription.cancel);
-      final Future<void> starting = runtime.plugins.start(
-        dartaotruntimeExecutable: dartaotruntime,
-        hostArtifactPath: hostArtifact.path,
-        activate: [
-          (ownedHost, registry) async {
-            host = ownedHost;
-            activation = await activateStockGitEnvironment(
-              host: host,
-              registry: registry,
-              artifactUri: gitArtifact.uri,
-            );
-            activated.complete();
-            await release.future;
-            return activation;
-          },
-          (_, _) async {
-            skippedCalls++;
-            throw StateError('Must not start while closing.');
-          },
-        ],
-      );
-      await activated.future.timeout(const Duration(seconds: 10));
-      expect(runtime.plugins.state, ApplicationPluginState.starting);
-      expect(
-        () => runtime.plugins.activateAdditional((_, _) async {
-          fail('Additional activation must wait for required startup.');
-        }),
-        throwsStateError,
-      );
-      final Future<void> closing = runtime.close();
-      expect(runtime.close(), same(closing));
-      expect(runtime.plugins.state, ApplicationPluginState.closing);
-      expect(host.isClosed, isFalse);
-      expect(activation.connection.isClosed, isFalse);
-      bool closed = false;
-      unawaited(
-        closing.then((_) {
-          closed = true;
-        }),
-      );
-      await Future<void>.delayed(Duration.zero);
-      expect(closed, isFalse);
-      release.complete();
-      await starting;
-      await closing;
-      expect(runtime.close(), same(closing));
-      expect(skippedCalls, 0);
-      expect(host.isClosed, isTrue);
-      expect(activation.connection.isClosed, isTrue);
-      expect(
-        runtime.registry.providersFor(environmentProviderCapability),
-        isEmpty,
-      );
-      expect(runtime.plugins.failure, isNull);
-      expect(states, [
-        ApplicationPluginState.starting,
-        ApplicationPluginState.closing,
-        ApplicationPluginState.closed,
-      ]);
-    },
-  );
-
-  test('termination during a later activation cannot publish ready', () async {
-    final AdeleRuntime runtime = AdeleRuntime();
-    addTearDown(runtime.close);
-    late PluginBackendHost host;
-    final List<PluginCapabilityActivation> activations = [];
-    final List<ProviderBinding> bindings = [];
-    final List<ApplicationPluginState> states = [];
-    final subscription = runtime.plugins.changes.listen(states.add);
-    addTearDown(subscription.cancel);
-    await expectLater(
-      runtime.plugins.start(
-        dartaotruntimeExecutable: dartaotruntime,
-        hostArtifactPath: hostArtifact.path,
-        activate: [
-          (ownedHost, registry) async {
-            host = ownedHost;
-            final PluginCapabilityActivation activation =
-                await activateStockGitEnvironment(
-                  host: host,
-                  registry: registry,
-                  artifactUri: gitArtifact.uri,
-                );
-            activations.add(activation);
-            bindings.add(registry.resolve(environmentProviderCapability));
-            return activation;
-          },
-          (ownedHost, registry) async {
-            expect(runtime.plugins.state, ApplicationPluginState.starting);
-            await ownedHost.stopPlugin(stockGitEnvironmentPluginId);
-            expect(activations.single.connection.isClosed, isTrue);
-            final PluginCapabilityActivation replacement =
-                await activateStockGitEnvironment(
-                  host: ownedHost,
-                  registry: registry,
-                  artifactUri: gitArtifact.uri,
-                );
-            activations.add(replacement);
-            bindings.add(registry.resolve(environmentProviderCapability));
-            return replacement;
-          },
-        ],
-      ),
-      throwsStateError,
-    );
-    expect(activations, hasLength(2));
-    expect(runtime.plugins.state, ApplicationPluginState.failed);
-    expect(runtime.plugins.failure, isA<StateError>());
-    expect(host.isClosed, isTrue);
-    expect(
-      activations.every((activation) => activation.connection.isClosed),
-      isTrue,
-    );
-    expect(
-      runtime.registry.providersFor(environmentProviderCapability),
-      isEmpty,
-    );
-    for (final ProviderBinding binding in bindings) {
-      expect(
-        () => binding.endpointAs<CapabilityEndpoint>(),
-        throwsA(_staleProvider),
-      );
-    }
-    await runtime.close();
-    expect(states, [
-      ApplicationPluginState.starting,
-      ApplicationPluginState.failed,
-      ApplicationPluginState.closing,
-      ApplicationPluginState.closed,
-    ]);
-  });
-
-  test(
-    'out-of-band plugin termination fails startup owner and retires provider',
-    () async {
-      final AdeleRuntime runtime = AdeleRuntime();
-      addTearDown(runtime.close);
-      late PluginBackendHost host;
-      late PluginCapabilityActivation activation;
-      await runtime.plugins.start(
-        dartaotruntimeExecutable: dartaotruntime,
-        hostArtifactPath: hostArtifact.path,
-        activate: [
-          (ownedHost, registry) async {
-            host = ownedHost;
-            return activation = await activateStockGitEnvironment(
-              host: host,
-              registry: registry,
-              artifactUri: gitArtifact.uri,
-            );
-          },
-        ],
-      );
-      final ProviderBinding binding = runtime.registry.resolve(
-        environmentProviderCapability,
-      );
-      final Future<ApplicationPluginState> failed = runtime.plugins.changes
-          .firstWhere((state) => state == ApplicationPluginState.failed)
-          .timeout(const Duration(seconds: 10));
-      await host.stopPlugin(stockGitEnvironmentPluginId);
-      await failed;
-      expect(runtime.plugins.state, ApplicationPluginState.failed);
-      expect(
-        runtime.plugins.failure,
-        same(await activation.connection.terminated),
-      );
-      expect(
-        runtime.registry.providersFor(environmentProviderCapability),
-        isEmpty,
-      );
-      expect(
-        () => binding.endpointAs<CapabilityEndpoint>(),
-        throwsA(_staleProvider),
-      );
-      final Future<void> closing = runtime.close();
-      expect(runtime.close(), same(closing));
-      await closing;
-      expect(host.isClosed, isTrue);
-      expect(activation.connection.isClosed, isTrue);
-      expect(runtime.plugins.state, ApplicationPluginState.closed);
-    },
-  );
-  for (final String scenario in [
-    'success',
-    'missing artifact',
-    'invalid configuration',
+  for (final document in [
+    (name: 'invalid JSON', text: '{'),
+    (name: 'non-object', text: '[]'),
+    (name: 'non-string argv', text: '{"$_openaiPluginId":[42]}'),
   ]) {
-    test('stock ChatGPT $scenario does not disable required Git', () async {
-      final AdeleRuntime runtime = AdeleRuntime();
-      addTearDown(runtime.close);
-      final File credentialFile = File(
-        '${artifacts.path}/unused-credential.json',
+    test(
+      'startup file with ${document.name} fails before host startup',
+      () async {
+        await installBackends();
+        final File arguments = await File(
+          '${container.path}/invalid-startup.json',
+        ).writeAsString(document.text);
+        await expectLater(
+          runtime.plugins.start(
+            installationRoot: installationRoot.path,
+            dartaotruntimeExecutable: dartaotruntime,
+            hostArtifactPath: hostArtifact.path,
+            startupArgumentsFile: arguments.path,
+          ),
+          throwsA(isA<FormatException>()),
+        );
+        expect(runtime.plugins.state, ApplicationPluginState.failed);
+        expect(runtime.plugins.failure, isA<FormatException>());
+        expect(runtime.plugins.catalog!.installations, hasLength(2));
+        expect(runtime.plugins.catalog!.issues, isEmpty);
+        expect(runtime.plugins.host, isNull);
+        for (final entry in runtime.plugins.backends) {
+          expect(entry.state, InstalledBackendState.failed);
+          expect(entry.failure, same(runtime.plugins.failure));
+          expect(entry.connection, isNull);
+        }
+        expect(
+          runtime.registry.providersFor(environmentProviderCapability),
+          isEmpty,
+        );
+        expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+        final Object failure = runtime.plugins.failure!;
+        final Future<void> closing = runtime.close();
+        expect(runtime.close(), same(closing));
+        await closing;
+        expect(runtime.plugins.state, ApplicationPluginState.closed);
+        expect(runtime.plugins.failure, same(failure));
+      },
+    );
+  }
+
+  test(
+    'activation failures before and after Git do not roll back or skip unrelated backends',
+    () async {
+      await installBackends();
+      final File corrupt = await File(
+        '${container.path}/invalid.aot',
+      ).writeAsString('Not an AOT snapshot.');
+      await _install(
+        installationRoot,
+        '00-broken',
+        'dev.adele.test.broken-before',
+        corrupt,
       );
-      final List<Object> failures = [];
-      await bootstrapStockBackendPlugins(
-        runtime.plugins,
-        dartaotruntimeExecutable: dartaotruntime,
-        hostArtifactPath: hostArtifact.path,
-        gitEnvironmentArtifactPath: gitArtifact.path,
-        openaiArtifactPath: scenario == 'missing artifact'
-            ? '${artifacts.path}/missing-openai.aot'
-            : openaiArtifact.path,
-        chatGptConfiguration: StockChatGptConfiguration(
-          credentialFile: credentialFile.path,
-          clientId: 'adele-test-client',
-          endpoint: scenario == 'invalid configuration'
-              ? Uri.parse('relative')
-              : null,
-        ),
-        onModelActivationFailure: (error, _) => failures.add(error),
+      await _install(
+        installationRoot,
+        '20-broken',
+        'dev.adele.test.broken-after',
+        corrupt,
       );
+      await start();
+      expectBothActive();
+      expect(runtime.plugins.backends.map((entry) => entry.state), [
+        InstalledBackendState.failed,
+        InstalledBackendState.active,
+        InstalledBackendState.failed,
+        InstalledBackendState.active,
+      ]);
+      for (final id in [
+        'dev.adele.test.broken-before',
+        'dev.adele.test.broken-after',
+      ]) {
+        expect(backend(id).failure, isNotNull);
+        expect(backend(id).connection, isNull);
+      }
+      final Directory source = await Directory(
+        '${container.path}/repo',
+      ).create();
+      await _git(source, ['init', '--initial-branch=main']);
+      await _git(source, ['commit', '--allow-empty', '-m', 'Fixture baseline']);
+      final Project project = runtime.lifecycle.createProject(source.uri);
+      final TaskCreationResult created = await runtime.lifecycle.createTask(
+        projectId: project.id,
+        title: 'Independent Git survives',
+      );
+      expect(created.environment.providerId, _gitProviderId);
+    },
+  );
+
+  test(
+    'all local activation failures still leave shared bootstrap ready',
+    () async {
+      final File corrupt = await File(
+        '${container.path}/invalid.aot',
+      ).writeAsString('Not AOT.');
+      await _install(
+        installationRoot,
+        'broken',
+        'dev.adele.test.broken',
+        corrupt,
+      );
+      await start();
       expect(runtime.plugins.state, ApplicationPluginState.ready);
       expect(runtime.plugins.failure, isNull);
-      final ProviderBinding git = runtime.registry.resolve(
-        environmentProviderCapability,
-      );
-      expect(git.provider.id, stockGitEnvironmentProviderId);
-      expect(() => git.endpointAs<CapabilityEndpoint>(), returnsNormally);
+      expect(runtime.plugins.host!.isClosed, isFalse);
       expect(
-        runtime.registry
-            .providersFor(modelProviderCapability)
-            .map((provider) => provider.id),
-        scenario == 'success' ? [stockChatGptProviderId] : isEmpty,
+        runtime.plugins.backends.single.state,
+        InstalledBackendState.failed,
       );
-      expect(failures, scenario == 'success' ? isEmpty : hasLength(1));
-      // Startup creates no credentials, OAuth transaction, model request, or Run.
-      expect(await credentialFile.exists(), isFalse);
-      await runtime.close();
+      expect(runtime.plugins.backends.single.failure, isNotNull);
       expect(
         runtime.registry.providersFor(environmentProviderCapability),
         isEmpty,
       );
       expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
-    });
+      final Project project = runtime.lifecycle.createProject(
+        Uri.parse('https://example.test/core'),
+      );
+      expect(runtime.store.project(project.id), same(project));
+      // No successful connection remains to relay the host's failure.
+      final failed = runtime.plugins.changes.firstWhere(
+        (state) => state == ApplicationPluginState.failed,
+      );
+      expect(
+        Process.killPid(runtime.plugins.host!.processId, ProcessSignal.sigkill),
+        isTrue,
+      );
+      await failed.timeout(const Duration(seconds: 10));
+      expect(runtime.plugins.failure, isA<PluginConnectionClosed>());
+    },
+  );
+
+  test(
+    'registration collision closes the partial plugin and preserves exact Git binding',
+    () async {
+      await installBackends();
+      const String collisionId = 'dev.adele.test.git-collision';
+      await _install(
+        installationRoot,
+        '20-collision',
+        collisionId,
+        gitArtifact,
+      );
+      ProviderBinding? retainedGit;
+      final subscription = runtime.plugins.changes.listen((_) {
+        if (retainedGit == null &&
+            runtime.registry
+                .providersFor(environmentProviderCapability)
+                .isNotEmpty) {
+          retainedGit = runtime.registry.resolve(environmentProviderCapability);
+        }
+      });
+      addTearDown(subscription.cancel);
+      await start();
+      expectBothActive();
+      final InstalledBackendActivation failed = backend(collisionId);
+      expect(failed.state, InstalledBackendState.failed);
+      expect(failed.failure, isA<DuplicateProviderRegistration>());
+      expect(failed.connection, isNotNull);
+      expect(failed.connection!.isClosed, isTrue);
+      expect(
+        await failed.connection!.terminated,
+        isA<PluginConnectionClosed>(),
+      );
+      expect(
+        () => retainedGit!.endpointAs<CapabilityEndpoint>(),
+        returnsNormally,
+      );
+      expect(
+        runtime.registry.resolve(environmentProviderCapability).provider,
+        same(retainedGit!.provider),
+      );
+      // The failed activation must release its host identity as well as its registrations.
+      final PluginBackendConnection replacement = await runtime.plugins.host!
+          .startPlugin(
+            pluginId: collisionId,
+            artifactUri: failed.installation.backendArtifactUri!,
+          );
+      try {
+        expect(replacement, isNot(same(failed.connection)));
+        expect(replacement.isClosed, isFalse);
+        expectBothActive();
+      } finally {
+        await replacement.close();
+      }
+    },
+  );
+
+  for (final bool invalidConfiguration in [false, true]) {
+    test(
+      'OpenAI ${invalidConfiguration ? 'invalid' : 'absent'} configuration leaves Git available',
+      () async {
+        await installBackends();
+        startupArguments[_openaiPluginId] = [
+          '--chatgpt-only',
+          if (invalidConfiguration)
+            jsonEncode({
+              'credentialFile': credentialFile.path,
+              'clientId': 'adele-test-client',
+              'endpoint': 'relative',
+            }),
+        ];
+        await start(argumentsFromFile: invalidConfiguration);
+        expect(runtime.plugins.state, ApplicationPluginState.ready);
+        expect(runtime.plugins.failure, isNull);
+        expect(backend(_gitPluginId).state, InstalledBackendState.active);
+        expect(
+          runtime.registry.resolve(environmentProviderCapability).provider.id,
+          _gitProviderId,
+        );
+        final InstalledBackendActivation openai = backend(_openaiPluginId);
+        expect(
+          openai.state,
+          invalidConfiguration
+              ? InstalledBackendState.failed
+              : InstalledBackendState.active,
+        );
+        if (invalidConfiguration) {
+          expect(openai.failure, isNotNull);
+        } else {
+          expect(openai.failure, isNull);
+          expect(openai.connection!.isClosed, isFalse);
+          expect(openai.connection!.capabilityExposures, isEmpty);
+        }
+        expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+      },
+    );
   }
 
-  group('independent additional activation', () {
-    late AdeleRuntime runtime;
-    late PluginBackendHost host;
-    late PluginCapabilityActivation git;
-    late ProviderBinding gitBinding;
-
-    setUp(() async {
-      runtime = AdeleRuntime();
-      addTearDown(runtime.close);
+  test(
+    'root-only startup leaves unconfigured OpenAI empty and Git active',
+    () async {
+      await installBackends();
       await runtime.plugins.start(
+        installationRoot: installationRoot.path,
         dartaotruntimeExecutable: dartaotruntime,
         hostArtifactPath: hostArtifact.path,
-        activate: [
-          (ownedHost, registry) async {
-            host = ownedHost;
-            return git = await activateStockGitEnvironment(
-              host: host,
-              registry: registry,
-              artifactUri: gitArtifact.uri,
-            );
-          },
-        ],
+        startupArgumentsFile: '',
       );
-      gitBinding = runtime.registry.resolve(environmentProviderCapability);
-    });
-
-    Future<PluginCapabilityActivation> activate(
-      PluginBackendHost ownedHost,
-      CapabilityRegistry registry, {
-      String name = 'additional',
-      bool partialFailure = false,
-    }) async {
-      expect(ownedHost, same(host));
-      expect(registry, same(runtime.registry));
-      final String pluginId = 'dev.adele.test.$name';
-      final PluginBackendConnection connection = await ownedHost.startPlugin(
-        pluginId: pluginId,
-        artifactUri: gitArtifact.uri,
+      expect(runtime.plugins.state, ApplicationPluginState.ready);
+      expect(runtime.plugins.failure, isNull);
+      expect(backend(_gitPluginId).state, InstalledBackendState.active);
+      expect(backend(_openaiPluginId).state, InstalledBackendState.active);
+      expect(backend(_openaiPluginId).connection!.capabilityExposures, isEmpty);
+      expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+      expect(
+        runtime.registry.resolve(environmentProviderCapability).provider.id,
+        _gitProviderId,
       );
-      try {
-        return await PluginCapabilityActivation.register(
-          connection: connection,
-          registry: registry,
-          exposures: [
-            for (final ProviderId id in [
-              ProviderId('dev.adele.test.$name'),
-              if (partialFailure) stockGitEnvironmentProviderId,
-            ])
-              PluginCapabilityExposure(
-                provider: ProviderDescriptor(
-                  id: id,
-                  capability: environmentProviderCapability,
-                  pluginId: pluginId,
-                  displayName: 'Independent test backend',
-                  serviceId: environmentProviderServiceId,
-                ),
-                configurationContext: connection.defaultConfigurationContext,
-              ),
-          ],
-        );
-      } on Object {
-        await connection.close();
-        rethrow;
-      }
-    }
+    },
+  );
 
-    void expectGitReady() {
+  test(
+    'OpenAI termination preserves exact Git binding, Session and further Task creation',
+    () async {
+      await installBackends();
+      await start();
+      expectBothActive();
+      final PluginBackendHost host = runtime.plugins.host!;
+      final ProviderBinding git = runtime.registry.resolve(
+        environmentProviderCapability,
+      );
+      final CapabilityEndpoint gitEndpoint = git
+          .endpointAs<CapabilityEndpoint>();
+      final ProviderBinding model = runtime.registry.resolve(
+        modelProviderCapability,
+      );
+      final Directory source = await Directory(
+        '${container.path}/repo',
+      ).create();
+      await _git(source, ['init', '--initial-branch=main']);
+      await _git(source, ['commit', '--allow-empty', '-m', 'Fixture baseline']);
+      final Project project = runtime.lifecycle.createProject(source.uri);
+      final TaskCreationResult first = await runtime.lifecycle.createTask(
+        projectId: project.id,
+        title: 'Before OpenAI termination',
+      );
+      final EnvironmentMaterialization materialization = await runtime
+          .lifecycle
+          .environmentRuntime
+          .materialize(first.environment.id);
+      final Session session = runtime.lifecycle.createSession(
+        taskId: first.task.id,
+        strategyId: chatStrategyId,
+      );
+      final SessionEnvironmentAuthority authority = runtime.store
+          .requireSessionAuthority(session.id);
+      final Future<ApplicationPluginState> retired = runtime.plugins.changes
+          .firstWhere(
+            (_) =>
+                backend(_openaiPluginId).state ==
+                InstalledBackendState.terminated,
+          )
+          .timeout(const Duration(seconds: 10));
+      await host.stopPlugin(_openaiPluginId);
+      await retired;
       expect(runtime.plugins.state, ApplicationPluginState.ready);
       expect(runtime.plugins.failure, isNull);
       expect(host.isClosed, isFalse);
-      expect(git.connection.isClosed, isFalse);
       expect(
-        () => gitBinding.endpointAs<CapabilityEndpoint>(),
-        returnsNormally,
+        backend(_openaiPluginId).failure,
+        same(await backend(_openaiPluginId).connection!.terminated),
       );
-    }
+      expect(backend(_gitPluginId).state, InstalledBackendState.active);
+      expect(backend(_gitPluginId).connection!.isClosed, isFalse);
+      expect(git.endpointAs<CapabilityEndpoint>(), same(gitEndpoint));
+      expect(
+        runtime.registry.resolve(environmentProviderCapability).provider,
+        same(git.provider),
+      );
+      expect(materialization.validateBinding, returnsNormally);
+      expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+      expect(
+        () => model.endpointAs<CapabilityEndpoint>(),
+        throwsA(_staleProvider),
+      );
+      expect(runtime.store.session(session.id), same(session));
+      expect(
+        runtime.store.requireSessionAuthority(session.id),
+        same(authority),
+      );
+      expect(authority.environmentId, first.environment.id);
+      final TaskCreationResult second = await runtime.lifecycle.createTask(
+        projectId: project.id,
+        title: 'After OpenAI termination',
+      );
+      expect(second.task.id, isNot(first.task.id));
+      expect(second.environment.providerId, _gitProviderId);
+      expect(
+        runtime.store.primaryEnvironmentFor(second.task.id),
+        same(second.environment),
+      );
+      expect(runtime.store.tasksFor(project.id), hasLength(2));
+    },
+  );
 
-    test('success shares host and retires all before reverse close', () async {
-      final List<PluginCapabilityActivation> additions = [];
-      for (final String name in ['first', 'second']) {
-        await runtime.plugins.activateAdditional((host, registry) async {
-          final activation = await activate(host, registry, name: name);
-          additions.add(activation);
-          return activation;
-        });
+  test(
+    'SIGKILL of shared host invalidates all exact provider bindings',
+    () async {
+      await installBackends();
+      await start();
+      expectBothActive();
+      final PluginBackendHost host = runtime.plugins.host!;
+      final List<ProviderBinding> bindings = [
+        runtime.registry.resolve(environmentProviderCapability),
+        runtime.registry.resolve(modelProviderCapability),
+      ];
+      final Future<ApplicationPluginState> failed = runtime.plugins.changes
+          .firstWhere((state) => state == ApplicationPluginState.failed)
+          .timeout(const Duration(seconds: 10));
+      expect(Process.killPid(host.processId, ProcessSignal.sigkill), isTrue);
+      await failed;
+      expect(runtime.plugins.state, ApplicationPluginState.failed);
+      expect(runtime.plugins.failure, isA<PluginConnectionClosed>());
+      expect(host.isClosed, isTrue);
+      for (final entry in runtime.plugins.backends) {
+        expect(entry.connection!.isClosed, isTrue);
+        expect(
+          await entry.connection!.terminated,
+          isA<PluginConnectionClosed>(),
+        );
       }
-      expectGitReady();
       expect(
         runtime.registry.providersFor(environmentProviderCapability),
-        hasLength(3),
+        isEmpty,
       );
+      expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+      for (final binding in bindings) {
+        expect(
+          () => binding.endpointAs<CapabilityEndpoint>(),
+          throwsA(_staleProvider),
+        );
+      }
+      final Project project = runtime.lifecycle.createProject(
+        Uri.parse('https://example.test/after-host-failure'),
+      );
+      expect(runtime.store.project(project.id), same(project));
+      await expectLater(
+        runtime.lifecycle.createTask(
+          projectId: project.id,
+          title: 'No fallback',
+        ),
+        throwsA(isA<CapabilityUnavailable>()),
+      );
+      await runtime.close();
+      expect(runtime.plugins.state, ApplicationPluginState.closed);
+    },
+  );
+
+  test(
+    'runtime close retires every binding before stopping connections then host',
+    () async {
+      await installBackends();
+      await start();
+      expectBothActive();
+      final PluginBackendHost host = runtime.plugins.host!;
       final List<ProviderBinding> bindings = [
-        gitBinding,
-        for (final String name in ['first', 'second'])
-          runtime.registry.resolve(
-            environmentProviderCapability,
-            providerId: ProviderId('dev.adele.test.$name'),
-          ),
+        runtime.registry.resolve(environmentProviderCapability),
+        runtime.registry.resolve(modelProviderCapability),
       ];
+      expect(runtime.store.project(ProjectId('project-normal-1')), isNull);
+      expect(runtime.store.task(TaskId('task-normal-1')), isNull);
+      expect(
+        runtime.store.environment(EnvironmentId('environment-normal-1')),
+        isNull,
+      );
+      expect(runtime.store.session(SessionId('session-normal-1')), isNull);
+      final selector = runtime.extensions
+          .discover(projectSelectorContributions)
+          .single;
       final List<String> stopped = [];
       final List<Future<void>> observations = [
-        for (final activation in [git, ...additions])
-          activation.connection.terminated.then((_) {
-            stopped.add(activation.connection.pluginId);
+        for (final entry in runtime.plugins.backends)
+          entry.connection!.terminated.then((_) {
+            stopped.add(entry.connection!.pluginId);
             expect(host.isClosed, isFalse);
+            expect(selector.validate, returnsNormally);
             for (final binding in bindings) {
               expect(
                 () => binding.endpointAs<CapabilityEndpoint>(),
                 throwsA(_staleProvider),
               );
             }
+            expect(
+              runtime.registry.providersFor(environmentProviderCapability),
+              isEmpty,
+            );
+            expect(
+              runtime.registry.providersFor(modelProviderCapability),
+              isEmpty,
+            );
           }),
       ];
-      await runtime.close();
+      final Future<void> closing = runtime.close();
+      expect(runtime.close(), same(closing));
+      await closing;
       await Future.wait(observations);
-      expect(stopped, [
-        'dev.adele.test.second',
-        'dev.adele.test.first',
-        stockGitEnvironmentPluginId,
-      ]);
+      expect(runtime.close(), same(closing));
+      expect(stopped, [_openaiPluginId, _gitPluginId]);
       expect(host.isClosed, isTrue);
-    });
-
-    test('callback failure leaves required Git available', () async {
-      final StateError error = StateError('Optional activation failed.');
-      await expectLater(
-        runtime.plugins.activateAdditional((_, _) async => throw error),
-        throwsA(same(error)),
+      expect(
+        runtime.plugins.backends.every(
+          (entry) => entry.state == InstalledBackendState.closed,
+        ),
+        isTrue,
       );
-      expectGitReady();
+      expect(runtime.plugins.state, ApplicationPluginState.closed);
+      expect(runtime.plugins.failure, isNull);
+      expect(
+        runtime.extensions.discover(projectSelectorContributions),
+        isEmpty,
+      );
+    },
+  );
+
+  test(
+    'close during startup drains acquired backends and skips remaining installations',
+    () async {
+      await installBackends();
+      const String skippedId = 'dev.adele.test.skipped';
+      await _install(installationRoot, '99-skipped', skippedId, gitArtifact);
+      final Completer<void> closeStarted = Completer<void>();
+      late Future<void> shutdown;
+      final List<ApplicationPluginState> states = [];
+      final subscription = runtime.plugins.changes.listen((state) {
+        states.add(state);
+        if (!closeStarted.isCompleted &&
+            runtime.plugins.backends.any(
+              (entry) => entry.state == InstalledBackendState.active,
+            )) {
+          expect(state, ApplicationPluginState.starting);
+          expect(runtime.plugins.host!.isClosed, isFalse);
+          shutdown = runtime.close();
+          closeStarted.complete();
+        }
+      });
+      addTearDown(subscription.cancel);
+      final Future<void> starting = start();
+      await closeStarted.future.timeout(const Duration(seconds: 10));
+      await starting;
+      await shutdown;
+      expect(runtime.close(), same(shutdown));
+      expect(runtime.plugins.state, ApplicationPluginState.closed);
+      expect(runtime.plugins.failure, isNull);
+      expect(runtime.plugins.host!.isClosed, isTrue);
+      expect(backend(_gitPluginId).connection!.isClosed, isTrue);
+      for (final entry in runtime.plugins.backends) {
+        expect(entry.connection == null || entry.connection!.isClosed, isTrue);
+      }
+      expect(backend(skippedId).connection, isNull);
+      expect(backend(skippedId).state, InstalledBackendState.closed);
       expect(
         runtime.registry.providersFor(environmentProviderCapability),
-        hasLength(1),
+        isEmpty,
       );
-    });
-
-    test(
-      'OpenAI termination preserves Session and further Git Task creation',
-      () async {
-        final Directory source = await Directory.systemTemp.createTemp(
-          'adele-openai-termination-project-',
-        );
-        addTearDown(() => source.delete(recursive: true));
-        await _git(source, ['init', '--initial-branch=main']);
-        await _git(source, [
-          'commit',
-          '--allow-empty',
-          '-m',
-          'Fixture baseline',
-        ]);
-        late PluginCapabilityActivation openai;
-        await runtime.plugins.activateAdditional((host, registry) async {
-          return openai = await activateStockChatGpt(
-            host: host,
-            registry: registry,
-            artifactUri: openaiArtifact.uri,
-            configuration: StockChatGptConfiguration(
-              credentialFile: '${artifacts.path}/unread-credentials.json',
-              clientId: 'adele-test-client',
-            ),
-          );
-        });
-        final ProviderBinding model = runtime.registry.resolve(
-          modelProviderCapability,
-          providerId: stockChatGptProviderId,
-        );
-        final Project project = runtime.lifecycle.createProject(source.uri);
-        final TaskCreationResult first = await runtime.lifecycle.createTask(
-          projectId: project.id,
-          title: 'Before OpenAI termination',
-        );
-        final Session session = runtime.lifecycle.createSession(
-          taskId: first.task.id,
-          strategyId: chatStrategyId,
-        );
-        final SessionEnvironmentAuthority authority = runtime.store
-            .requireSessionAuthority(session.id);
-        final Future<ApplicationPluginState> availabilityChanged = runtime
-            .plugins
-            .changes
-            .firstWhere(
-              (state) =>
-                  state == ApplicationPluginState.ready &&
-                  openai.connection.isClosed,
-            );
-        await host.stopPlugin(stockOpenAiPluginId);
-        await availabilityChanged;
-
-        expectGitReady();
-        expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
-        expect(
-          () => model.endpointAs<CapabilityEndpoint>(),
-          throwsA(_staleProvider),
-        );
-        expect(runtime.store.session(session.id), same(session));
-        expect(
-          runtime.store.requireSessionAuthority(session.id),
-          same(authority),
-        );
-        expect(authority.environmentId, first.environment.id);
-        final TaskCreationResult second = await runtime.lifecycle.createTask(
-          projectId: project.id,
-          title: 'After OpenAI termination',
-        );
-        expect(second.task.id, isNot(first.task.id));
-        expect(second.environment.providerId, stockGitEnvironmentProviderId);
-        expect(
-          runtime.store.primaryEnvironmentFor(second.task.id),
-          same(second.environment),
-        );
-        expect(runtime.store.tasksFor(project.id), hasLength(2));
-        await runtime.close();
-        expect(host.isClosed, isTrue);
-        expect(git.connection.isClosed, isTrue);
-      },
-    );
-
-    test(
-      'partial registration failure releases only its own resources',
-      () async {
-        await expectLater(
-          runtime.plugins.activateAdditional(
-            (host, registry) => activate(host, registry, partialFailure: true),
-          ),
-          throwsA(isA<DuplicateProviderRegistration>()),
-        );
-        expectGitReady();
-        expect(
-          runtime.registry.providersFor(environmentProviderCapability),
-          hasLength(1),
-        );
-        // Reusing both identities proves neither connection nor registration leaked.
-        await runtime.plugins.activateAdditional(activate);
-        expectGitReady();
-        expect(
-          runtime.registry.providersFor(environmentProviderCapability),
-          hasLength(2),
-        );
-      },
-    );
-
-    for (final bool duringActivation in [false, true]) {
-      test(
-        'termination ${duringActivation ? 'during' : 'after'} activation stays local',
-        () async {
-          late PluginCapabilityActivation additional;
-          late ProviderBinding binding;
-          final Future<void> activating = runtime.plugins.activateAdditional((
-            host,
-            registry,
-          ) async {
-            additional = await activate(host, registry);
-            binding = registry.resolve(
-              environmentProviderCapability,
-              providerId: ProviderId('dev.adele.test.additional'),
-            );
-            if (duringActivation) await additional.connection.close();
-            return additional;
-          });
-          if (duringActivation) {
-            await expectLater(activating, throwsStateError);
-          } else {
-            await activating;
-            final Future<ApplicationPluginState> availabilityChanged = runtime
-                .plugins
-                .changes
-                .firstWhere(
-                  (state) =>
-                      state == ApplicationPluginState.ready &&
-                      additional.connection.isClosed,
-                );
-            await host.stopPlugin(additional.connection.pluginId);
-            await availabilityChanged;
-          }
-          await additional.connection.terminated;
-          expectGitReady();
-          expect(additional.connection.isClosed, isTrue);
-          expect(
-            () => binding.endpointAs<CapabilityEndpoint>(),
-            throwsA(_staleProvider),
-          );
-          await runtime.plugins.activateAdditional(activate);
-          expectGitReady();
-        },
-      );
-    }
-
-    test(
-      'host failure globally invalidates required and additional providers',
-      () async {
-        late PluginCapabilityActivation additional;
-        await runtime.plugins.activateAdditional((host, registry) async {
-          return additional = await activate(host, registry);
-        });
-        final Future<ApplicationPluginState> failed = runtime.plugins.changes
-            .firstWhere((state) => state == ApplicationPluginState.failed);
-        expect(Process.killPid(host.processId, ProcessSignal.sigkill), isTrue);
-        await failed;
-        expect(runtime.plugins.failure, isA<PluginConnectionClosed>());
-        expect(
-          runtime.registry.providersFor(environmentProviderCapability),
-          isEmpty,
-        );
-        expect(git.connection.isClosed, isTrue);
-        expect(additional.connection.isClosed, isTrue);
-        await runtime.close();
-        expect(host.isClosed, isTrue);
-      },
-    );
-
-    for (final String outcome in ['success', 'failure', 'termination']) {
-      test('close drains all pending additions, including $outcome', () async {
-        final List<Completer<void>> releases = [
-          Completer<void>(),
-          Completer<void>(),
-        ];
-        addTearDown(() {
-          for (final release in releases) {
-            if (!release.isCompleted) release.complete();
-          }
-        });
-        final List<PluginCapabilityActivation> additions = [];
-        final List<Future<void>> results = [];
-        for (int index = 0; index < 2; index++) {
-          final Completer<void> acquired = Completer<void>();
-          final Future<void> activating = runtime.plugins.activateAdditional((
-            host,
-            registry,
-          ) async {
-            final additional = await activate(
-              host,
-              registry,
-              name: 'pending-$index',
-            );
-            additions.add(additional);
-            acquired.complete();
-            await releases[index].future;
-            if (outcome == 'failure') {
-              await additional.close();
-              throw StateError('Partial activation failed while closing.');
-            }
-            if (outcome == 'termination') await additional.connection.close();
-            return additional;
-          });
-          results.add(
-            outcome != 'success'
-                ? expectLater(activating, throwsStateError)
-                : activating,
-          );
-          await acquired.future;
-        }
-        bool closed = false;
-        final Future<void> closing = runtime.close().then((_) => closed = true);
-        expect(runtime.plugins.state, ApplicationPluginState.closing);
-        expect(
-          () => runtime.plugins.activateAdditional(activate),
-          throwsStateError,
-        );
-        releases[1].complete();
-        await results[1];
-        await Future<void>.delayed(Duration.zero);
-        expect(closed, isFalse);
-        expect(host.isClosed, isFalse);
-        expect(git.connection.isClosed, isFalse);
-        releases[0].complete();
-        await results[0];
-        await closing;
-        expect(host.isClosed, isTrue);
-        expect(additions.every((value) => value.connection.isClosed), isTrue);
-        expect(
-          runtime.registry.providersFor(environmentProviderCapability),
-          isEmpty,
-        );
-        expect(runtime.plugins.failure, isNull);
-      });
-    }
-
-    for (final bool hostFailure in [false, true]) {
-      test(
-        '${hostFailure ? 'host' : 'required Git'} failure drains late ownership before teardown',
-        () async {
-          final Completer<void> acquired = Completer<void>();
-          final Completer<void> release = Completer<void>();
-          addTearDown(() {
-            if (!release.isCompleted) release.complete();
-          });
-          late PluginCapabilityActivation additional;
-          final Future<void> activating = runtime.plugins.activateAdditional((
-            host,
-            registry,
-          ) async {
-            additional = await activate(host, registry);
-            acquired.complete();
-            await release.future;
-            return additional;
-          });
-          final Future<void> result = expectLater(activating, throwsStateError);
-          await acquired.future;
-          final Future<ApplicationPluginState> failed = runtime.plugins.changes
-              .firstWhere((state) => state == ApplicationPluginState.failed);
-          if (hostFailure) {
-            expect(
-              Process.killPid(host.processId, ProcessSignal.sigkill),
-              isTrue,
-            );
-          } else {
-            await host.stopPlugin(stockGitEnvironmentPluginId);
-          }
-          await failed;
-          final Future<void> closing = runtime.close();
-          release.complete();
-          await result;
-          await closing;
-          expect(additional.connection.isClosed, isTrue);
-          expect(host.isClosed, isTrue);
-          expect(
-            runtime.registry.providersFor(environmentProviderCapability),
-            isEmpty,
-          );
-          expect(runtime.plugins.failure, isA<PluginConnectionClosed>());
-        },
-      );
-    }
-  });
+      expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+      expect(states, isNot(contains(ApplicationPluginState.ready)));
+      expect(states, isNot(contains(ApplicationPluginState.failed)));
+      expect(states.last, ApplicationPluginState.closed);
+    },
+  );
 }
 
 final Matcher _staleProvider = isA<ProviderUnavailable>().having(
@@ -1313,14 +1046,23 @@ final Matcher _staleProvider = isA<ProviderUnavailable>().having(
   isTrue,
 );
 
-final class _AvailableEndpoint implements CapabilityEndpoint {
-  const _AvailableEndpoint();
-
-  @override
-  String get serviceId => environmentProviderServiceId;
-
-  @override
-  bool get isAvailable => true;
+Future<void> _install(
+  Directory root,
+  String name,
+  String id,
+  File artifact,
+) async {
+  final Directory directory = await Directory('${root.path}/$name').create();
+  await artifact.copy('${directory.path}/backend.aot');
+  await File('${directory.path}/adele_plugin.installation.json').writeAsString(
+    jsonEncode({
+      'manifestVersion': 1,
+      'metadata': {'id': id, 'version': '1.0.0', 'displayName': name},
+      'components': {
+        'backend': {'artifact': 'backend.aot'},
+      },
+    }),
+  );
 }
 
 Future<String> _git(Directory directory, List<String> arguments) async {

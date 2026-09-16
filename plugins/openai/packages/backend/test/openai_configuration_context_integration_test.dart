@@ -137,6 +137,21 @@ void main() {
             artifactUri: pluginArtifact.uri,
           );
       final CapabilityRegistry apiOnlyRegistry = CapabilityRegistry();
+      final advertisedApiOnly =
+          await PluginCapabilityActivation.registerAdvertised(
+            connection: apiOnlyConnection,
+            registry: apiOnlyRegistry,
+          );
+      expect(
+        apiOnlyRegistry
+            .providersFor(modelProviderCapability)
+            .map((provider) => provider.id.value),
+        [openAiApiKeyProviderId],
+      );
+      expect(
+        apiOnlyConnection.capabilityExposures.single.configurationContext,
+        'default',
+      );
       final ProviderId unavailableChatGptProvider = ProviderId(
         openAiChatGptProviderId,
       );
@@ -167,6 +182,7 @@ void main() {
         ),
       );
       await unavailableChatGptActivation.close();
+      await advertisedApiOnly.close();
       await apiOnlyConnection.close();
       await apiOnlyHost.close();
 
@@ -188,6 +204,14 @@ void main() {
       addTearDown(() async {
         if (!host.isClosed) await host.close(graceful: false);
       });
+      final preparedWithoutArguments = await host.startPlugin(
+        pluginId: openAiPluginId,
+        artifactUri: pluginArtifact.uri,
+        startupArgumentsOnly: true,
+      );
+      expect(preparedWithoutArguments.capabilityExposures, isEmpty);
+      await preparedWithoutArguments.close();
+      // The same host still supports direct/self-hosting environment configuration.
       final PluginBackendConnection connection = await host.startPlugin(
         pluginId: openAiPluginId,
         artifactUri: pluginArtifact.uri,
@@ -200,21 +224,17 @@ void main() {
       final ProviderId apiKeyProvider = ProviderId(openAiApiKeyProviderId);
       final ProviderId chatGptProvider = ProviderId(openAiChatGptProviderId);
       final PluginCapabilityActivation activation =
-          await PluginCapabilityActivation.register(
+          await PluginCapabilityActivation.registerAdvertised(
             connection: connection,
             registry: registry,
-            exposures: <PluginCapabilityExposure>[
-              PluginCapabilityExposure(
-                provider: _descriptor(apiKeyProvider),
-                configurationContext: apiKeyContext,
-              ),
-              PluginCapabilityExposure(
-                provider: _descriptor(chatGptProvider),
-                configurationContext: chatGptContext,
-              ),
-            ],
           );
       addTearDown(activation.close);
+      expect(
+        registry
+            .providersFor(modelProviderCapability)
+            .map((provider) => provider.id.value),
+        [openAiApiKeyProviderId, openAiChatGptProviderId],
+      );
 
       final List<ModelProviderEvent> apiKeyEvents = await _client(
         registry,
@@ -281,6 +301,7 @@ void main() {
         final PluginBackendConnection chatOnly = await chatOnlyHost.startPlugin(
           pluginId: openAiPluginId,
           artifactUri: pluginArtifact.uri,
+          startupArgumentsOnly: mode.startup,
           arguments: mode.startup
               ? <String>[
                   '--chatgpt-only',
@@ -295,6 +316,22 @@ void main() {
                   }),
                 ]
               : const <String>[],
+        );
+        final chatOnlyRegistry = CapabilityRegistry();
+        final chatOnlyActivation =
+            await PluginCapabilityActivation.registerAdvertised(
+              connection: chatOnly,
+              registry: chatOnlyRegistry,
+            );
+        expect(
+          chatOnlyRegistry
+              .providersFor(modelProviderCapability)
+              .map((provider) => provider.id.value),
+          [openAiChatGptProviderId],
+        );
+        expect(
+          chatOnly.capabilityExposures.single.configurationContext,
+          openAiChatGptConfigurationContext,
         );
         await expectLater(
           ModelProviderServiceClient(
@@ -325,8 +362,64 @@ void main() {
         expect(captured.last.accountId, 'account-aot');
         expect(captured.last.model, 'gpt-6-astra');
         await chatOnly.close();
+        await chatOnlyActivation.close();
         await chatOnlyHost.close();
       }
+
+      final unconfiguredHost = await PluginBackendHost.start(
+        dartaotruntimeExecutable: runtime,
+        hostArtifactPath: hostArtifact.path,
+        environment: <String, String>{
+          'OPENAI_API_KEY': 'inherited-key-must-not-be-used',
+          'ADELE_OPENAI_ENDPOINT': 'invalid-inherited-api-endpoint',
+          'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE': credentials.path,
+          'ADELE_OPENAI_CHATGPT_CLIENT_ID': 'inherited-client',
+          'ADELE_OPENAI_CHATGPT_EXPERIMENTAL_CODEX_CLIENT': '1',
+          'ADELE_OPENAI_CHATGPT_ENDPOINT': 'invalid-inherited-chatgpt-endpoint',
+        },
+      );
+      addTearDown(unconfiguredHost.close);
+      for (final mode in [
+        (arguments: const <String>[], startupArgumentsOnly: true),
+        (arguments: const ['--chatgpt-only'], startupArgumentsOnly: false),
+        (arguments: const ['--chatgpt-only'], startupArgumentsOnly: true),
+      ]) {
+        final unconfigured = await unconfiguredHost.startPlugin(
+          pluginId: openAiPluginId,
+          artifactUri: pluginArtifact.uri,
+          arguments: mode.arguments,
+          startupArgumentsOnly: mode.startupArgumentsOnly,
+        );
+        final emptyRegistry = CapabilityRegistry();
+        final emptyActivation =
+            await PluginCapabilityActivation.registerAdvertised(
+              connection: unconfigured,
+              registry: emptyRegistry,
+            );
+        expect(unconfigured.capabilityExposures, isEmpty);
+        expect(emptyRegistry.providersFor(modelProviderCapability), isEmpty);
+        final capturedBefore = captured.length;
+        for (final context in ['default', openAiChatGptConfigurationContext]) {
+          await expectLater(
+            ModelProviderServiceClient(
+              unconfigured.channelFor(
+                unconfigured.configurationContext(context),
+                modelProviderServiceId,
+              ),
+            ).invoke(_request('not-called')).toList(),
+            throwsA(
+              isA<PluginRemoteFailure>().having(
+                (failure) => failure.code,
+                'code',
+                'configuration_context_unavailable',
+              ),
+            ),
+          );
+        }
+        expect(captured, hasLength(capturedBefore));
+        await emptyActivation.close();
+      }
+      await unconfiguredHost.close();
 
       final List<String> diagnostics = <String>[];
       final PluginBackendHost invalidHost = await PluginBackendHost.start(

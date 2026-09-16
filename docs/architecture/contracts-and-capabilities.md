@@ -115,6 +115,51 @@ resolved binding
 
 An already-resolved model/tool operation must not silently migrate to a restarted provider. A new generation can participate only in a new resolution/materialization cycle.
 
+## Backend-ready advertisements
+
+F1 keeps installed metadata separate from active capability registration.
+`adele_plugin.installation.json` identifies prepared components; it declares no
+providers or configuration contexts and is not proof of readiness. The owning
+backend entrypoint supplies optional `capabilityExposures` on its existing isolate
+`ready` message. The shared host forwards that list on `pluginReady`, and runtime
+retains it on the exact `PluginBackendConnection`. Omission means zero capabilities,
+not a stock fallback or a failed handshake.
+
+Public pure-Dart `adele_contract.AdeleCapabilityExposure` carries:
+
+| Field | Meaning |
+| --- | --- |
+| `providerId` | Stable public provider identity |
+| `capabilityId` | Public capability identity |
+| `capabilityMajorVersion` | Positive exact-match capability major |
+| `serviceId` | Generated contract service routed by the endpoint |
+| `displayName` | Nonblank provider display name |
+| `configurationContext` | Explicit context token scoped to this connection generation |
+| `rank` | Optional integer, default zero; existing deterministic selection semantics |
+
+Plugin identity is deliberately absent: the installation/connection is authoritative
+and the advertisement cannot replace it. Malformed advertisements fail that backend
+attempt. `PluginCapabilityActivation.registerAdvertised` maps advertisements to
+existing `PluginCapabilityExposure` values and delegates to `register`, preserving
+registry validation, registration-group rollback, scoped channels, and exact
+generation liveness. A registration failure rolls back that attempt's partial
+registrations, not unrelated providers. Termination retires only the owning
+generation; stale bindings never move to a replacement.
+
+Git and OpenAI entrypoints own their advertisements rather than app-side exposure
+helpers. Normal startup discovers prepared installations and attempts all valid
+backends independently. Self-hosting uses the same generic registration path with
+its own explicit artifact/host/profile topology, without requiring normal discovery.
+It configures the backend through its own profile environment, registers all
+advertised online contexts, and explicitly resolves the selected profile's provider
+ID. Both OpenAI contexts may be registered when configured; selection does not
+filter advertisements or imply a fallback to another provider.
+Ready metadata is neither a new registry nor reverse RPC or a general dynamic
+configuration protocol. It preserves the distinctions accepted in ADRs 0015,
+0021, 0027, and 0028. See
+[`plugin-layout.md`](plugin-layout.md#prepared-installation-snapshot) for catalog
+semantics and [`app/README.md`](../../app/README.md#normal-backend-startup) for ownership.
+
 ## Configured capability instances
 
 One plugin runtime may expose multiple named configurations of the same capability:
@@ -129,7 +174,12 @@ Accounts, providers, clusters, connections, endpoints, and devices are configure
 
 Active capability endpoints are bound to one opaque, generation-specific configuration context. Several provider descriptors and services may share one context, while one plugin generation may host several contexts. Context and the endpoint's exact service ID are transport metadata supplied by the scoped endpoint channel, not semantic contract data or provider identity. Request and stream-open carry them separately from generated method payloads; later stream control remains request-ID based.
 
-ADELE does not yet have a generic host-wide configured-instance persistence, account, or secrets framework. The OpenAI plugin has a private experimental credential implementation for its ChatGPT proof; that implementation does not define a generic capability contract. Generic configured-instance discovery, selection, persistence, and profile-aware lifecycle remain deferred.
+ADELE does not yet have a generic host-wide configured-instance persistence,
+account, or secrets framework. The OpenAI plugin has a private experimental
+credential implementation for its ChatGPT proof; that implementation does not
+define a generic capability contract. Ready advertisements expose callable
+providers with live context tokens, not a general configured-instance catalog,
+management/selection UI, persistence model, or profile-aware lifecycle.
 
 The retired DevelopmentSource plugin historically illustrated the distinction between a sustained capability and model tools: application composition projected its generation-bound read/search Service into source-search and source-read tools. Phase V-A replaced that provisional path with stock plugin-contributed tools over Session-authorized Environment access; neither design makes each model tool a separate ADELE capability.
 

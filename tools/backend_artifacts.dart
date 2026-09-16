@@ -8,7 +8,11 @@ import '../packages/plugin_builder/lib/plugin_builder.dart';
 Future<List<String>> prepareDesktopBackendDefines({
   required Directory repositoryRoot,
   required String flutterExecutable,
+  Map<String, String>? environment,
 }) async {
+  final startupArguments = _stockStartupArguments(
+    environment ?? Platform.environment,
+  );
   final ProcessResult machine = await Process.run(
     flutterExecutable,
     const <String>['--version', '--machine'],
@@ -49,8 +53,15 @@ Future<List<String>> prepareDesktopBackendDefines({
   // Retain each invocation: an earlier app or built bundle may still use it.
   final Directory output = await parent.createTemp('build-');
   final File host = File.fromUri(output.uri.resolve('host.aot'));
-  final File git = File.fromUri(output.uri.resolve('git-environment.aot'));
-  final File openai = File.fromUri(output.uri.resolve('openai.aot'));
+  final Directory installations = Directory.fromUri(
+    output.uri.resolve('installations/'),
+  );
+  final File git = File.fromUri(
+    installations.uri.resolve('git-environment/backend.aot'),
+  );
+  final File openai = File.fromUri(
+    installations.uri.resolve('openai/backend.aot'),
+  );
   for (final ({String entrypoint, File artifact, String stage}) target
       in <({String entrypoint, File artifact, String stage})>[
         (
@@ -85,10 +96,73 @@ Future<List<String>> prepareDesktopBackendDefines({
       },
     );
   }
+  for (final plugin in [
+    (
+      artifact: git,
+      id: 'dev.adele.plugin.git-environment',
+      displayName: 'Git Worktree Environment',
+    ),
+    (artifact: openai, id: 'dev.adele.openai', displayName: 'OpenAI'),
+  ]) {
+    await File.fromUri(
+      plugin.artifact.parent.uri.resolve('adele_plugin.installation.json'),
+    ).writeAsString(
+      jsonEncode(<String, Object?>{
+        'manifestVersion': 1,
+        'metadata': <String, Object?>{
+          'id': plugin.id,
+          'version': '0.1.0',
+          'displayName': plugin.displayName,
+        },
+        'components': <String, Object?>{
+          'backend': <String, Object?>{'artifact': 'backend.aot'},
+        },
+      }),
+    );
+  }
+  final File argumentsFile = File.fromUri(
+    output.uri.resolve('startup-arguments.json'),
+  );
+  await argumentsFile.writeAsString(jsonEncode(startupArguments));
   return <String>[
     '--dart-define=ADELE_DARTAOTRUNTIME_EXECUTABLE=${runtime.path}',
     '--dart-define=ADELE_BACKEND_HOST_ARTIFACT=${host.path}',
-    '--dart-define=ADELE_GIT_ENVIRONMENT_ARTIFACT=${git.path}',
-    '--dart-define=ADELE_OPENAI_ARTIFACT=${openai.path}',
+    '--dart-define=ADELE_PLUGIN_INSTALLATION_ROOT=${installations.path}',
+    '--dart-define=ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE=${argumentsFile.path}',
   ];
+}
+
+// Temporary until general plugin configuration exists. Forward public references
+// only; the backend owns validation and credential loading, not the launcher.
+Map<String, List<String>> _stockStartupArguments(
+  Map<String, String> environment,
+) {
+  String? configured(String suffix) {
+    final value = environment['ADELE_OPENAI_CHATGPT_$suffix'];
+    return value == null || value.trim().isEmpty ? null : value;
+  }
+
+  final credentialFile = configured('CREDENTIAL_FILE');
+  final clientId = configured('CLIENT_ID');
+  return <String, List<String>>{
+    'dev.adele.openai': <String>[
+      '--chatgpt-only',
+      if (credentialFile != null)
+        jsonEncode(<String, Object?>{
+          'credentialFile': credentialFile,
+          if (clientId != null)
+            'clientId': clientId
+          else
+            'experimentalCodexClient': true,
+          if (configured('INSTANCE_ID') case final String instanceId)
+            'instanceId': instanceId,
+          if (configured('OAUTH_ISSUER') case final String issuer)
+            'issuer': issuer,
+          if (configured('REDIRECT_URI') case final String redirectUri)
+            'redirectUri': redirectUri,
+          if (configured('ENDPOINT') case final String endpoint)
+            'endpoint': endpoint,
+        }),
+    ],
+  };
 }

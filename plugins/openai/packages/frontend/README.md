@@ -74,8 +74,8 @@ at public `modelNativeActivityPresentationContributions`. The factory has type
 `PreparedFrontend`. Stock activation imports Contract identity, loads the prepared
 artifact, registers the factory, and retires its registration/resources only. It
 owns no projection, raw interpretation, or display-safety algorithms and is
-explicitly provisional until discovery/profiles replace hard-coded selection.
-Generic Chat and Inspection never parse OpenAI fields.
+explicitly provisional until frontend discovery/profiles replace hard-coded
+selection. Generic Chat and Inspection never parse OpenAI fields.
 
 The activation also registers
 `ModelNativeActivityCompactPresentationContribution` at
@@ -124,8 +124,8 @@ model options. The `app/tool` compile harness is checkout tooling standing in fo
 future installation/update preparation, not runtime activation. See
 [app frontend preparation](../../../../app/README.md#prepared-chat-frontend)
 for all four artifacts, the selected Flutter/eval pin, independent activation,
-and source-checkout path limitations. Installation/discovery and portable
-packaging remain deferred.
+and source-checkout path limitations. Installation management, frontend discovery,
+and portable packaging remain deferred.
 
 ## Validation Scope
 

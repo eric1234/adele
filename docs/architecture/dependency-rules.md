@@ -44,7 +44,7 @@ workbench UI APIs remain architectural direction.
 
 | Package | Surface | Allowed dependencies | Prohibited dependencies |
 | --- | --- | --- | --- |
-| `adele_contract` | Experimental plugin-facing | Dart SDK; other lightweight public packages only if a concrete need emerges | Flutter, internal host packages, application code, analyzer/compiler internals, `build_runner` |
+| `adele_contract` | Experimental plugin-facing | Dart SDK and `adele_plugin_api` for public identity validation and shared values | Flutter, internal host packages, application code, analyzer/compiler internals, `build_runner` |
 | `adele_capabilities` | Experimental plugin-facing | Dart SDK and lightweight public contract types when required | Flutter, internal host packages, application code |
 | `adele_plugin_api` | Experimental plugin-facing, pure Dart | Dart SDK and lightweight public packages when required | Flutter, internal host packages, application code |
 | `adele_core_extensions` | Experimental plugin-facing, pure Dart; narrow core-owned extension contracts | Dart SDK and `adele_plugin_api` | Flutter, internal host packages, application code, concrete plugins |
@@ -87,36 +87,73 @@ Existing ownership remains singular:
 
 ### Application backend composition
 
-`AdeleRuntime()` synchronously registers in-process stock contributions and remains
-provider-free. Its pure-Dart `ApplicationPluginBootstrap` owns application-lifetime
-backend resources on the same `CapabilityRegistry` used by lifecycle. Normal
-`AdeleApplication` explicitly invokes async stock bootstrap. The generic owner
-uses `plugin_runtime` to own one shared backend host and callback-created activations;
-stock selection belongs to `app/lib/plugins/stock_backend_plugins.dart`, not
-generic runtime infrastructure. Future discovery/profile activation can replace
-that selection without changing downstream capability, extension, or lifecycle
-semantics.
+`AdeleRuntime()` synchronously registers six in-process stock contributions and
+remains provider-free. Its pure-Dart `ApplicationPluginBootstrap` owns
+application-lifetime backend resources on the same `CapabilityRegistry` used by
+lifecycle. Normal `AdeleApplication` explicitly calls `start` with an installation
+root, shared runtime/host paths, and optional generic startup argv. There is no
+stock callback table, required Git backend, or additional-OpenAI activation tier.
 
-`app/lib/plugins/stock_git_environment.dart` owns the normal/self-hosting stock
-Git identities, display/service exposure, and configuration-context registration.
-It depends on public Environment contracts and host activation APIs, never Git
-backend implementation code. Generic Task presentation submits through product
-lifecycle and never parses opaque `providerState`; Environment providers own
-source validation.
+`plugin_runtime` owns `PreparedPluginCatalog.discover(rootPath)`, a deterministic
+startup snapshot of immediate child installed manifests. It uses public
+`PluginMetadata`, not builder source manifests or plugin implementations. Installed
+metadata contains identity and prepared component locations, not exposures,
+configuration, activation, or source paths. Discovery precedes host creation;
+zero valid backends needs no process even with invalid host paths. Child issues
+and duplicate-ID exclusion are catalog concerns; root I/O failure becomes generic
+bootstrap failure without disabling the in-process core. See
+[`plugin-layout.md`](plugin-layout.md#prepared-installation-snapshot).
 
-Normal bootstrap consumes prepared artifacts; source discovery and compilation
-belong to repository tooling and `plugin_builder`, outside the app startup import
-graph. Operational details live in [`app/README.md`](../../app/README.md#normal-backend-startup)
-and the [`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
-Self-hosting shares stock Git activation code but retains its
-independent artifact/host topology and does not consume normal configuration.
-These boundaries add no public API package, profile system, plugin discovery, or
-production packaging mechanism.
+The app attempts all valid backend installations independently. A local startup,
+advertisement, or registration failure releases only that attempt's resources;
+termination retires only its exact generation. Shared-host failure is global.
+Read-only per-backend states and catalog issues do not imply a management UI.
+Close retires all registrations before generations, then the host, then in-process
+activations. Generic Task presentation submits through product lifecycle and never
+parses opaque `providerState`; Environment providers own source validation.
 
-The same generic backend owner accepts independent additional activations after
-required startup. `app/lib/plugins/stock_openai.dart` owns provisional ChatGPT
-identity/exposure and plugin-local configuration references. OpenAI failure does
-not retire Git; shared-host failure remains global. The normal model adapter lives
+Backend entrypoints, including Git and OpenAI, own ready `capabilityExposures`.
+Public `adele_contract` owns the lightweight advertisement value/validation; the
+existing isolate-ready/host-`pluginReady` path transfers it to the exact connection.
+`PluginCapabilityActivation.registerAdvertised` delegates to existing `register`:
+plugin identity comes from installation/connection and registry validation,
+configuration-context routing, and exact-generation liveness stay unchanged.
+Plugins need no internal host imports, second registry, or reverse RPC to advertise.
+
+Source selection/compilation and stock installation assembly belong to repository
+tooling and `plugin_builder`, outside the app startup import graph. The launcher
+still knows Git/OpenAI source paths; stock source layouts need not use
+`adele_plugin.yaml`. Its separate temporary JSON file maps PluginId to string argv
+lists, outside installed manifests. The launcher derives OpenAI credential-file
+references and public OAuth/endpoint options, never tokens, and always uses
+`--chatgpt-only`, adding a configuration JSON argument only when configured. The
+app forwards argv without interpreting it and always sets
+`startupArgumentsOnly: true`. The shared host forwards the flag without a PluginId
+switch; OpenAI owns parsing, credentials, and advertisements. In this mode OpenAI
+never falls back to environment configuration: empty argv or an absent configuration
+document advertises zero capabilities, including root-only normal activation
+without the launcher's map. Direct/self-hosting callers keep the flag's default
+`false` and existing environment configuration path. This is temporary deployment
+plumbing intended to disappear with general configuration/profiles, not a settings
+schema, environment scrubber, or sandbox.
+
+`app/lib/plugins/temporary_chatgpt_selection.dart` retains selected provider
+identity and model-only configuration, not startup or exposures. `fromEnvironment`
+always returns the model default/override without inspecting credential presence
+or startup OAuth configuration. Provider availability comes from the active
+registry. General provider/model configuration remains deferred. Operational details
+live in [`app/README.md`](../../app/README.md#normal-backend-startup) and the
+[`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
+Self-hosting uses generic `registerAdvertised` but keeps its explicit
+artifact/host/profile topology without requiring normal discovery or configuration.
+Its own profile environment configures the backend; it registers all advertised
+contexts, potentially both OpenAI contexts, then explicitly resolves the selected
+profile's provider ID without filtering advertisements.
+Frontend EVC activation and in-process plugins remain unchanged. These boundaries
+add no public API package, profile/enable-disable system, version solving, watching,
+frontend discovery, hot upgrade, or production packaging mechanism.
+
+The normal model adapter lives
 in `app/lib/core/model_provider_host.dart`, separate from development-only resource
 adapters. Session lifecycle remains strategy-neutral and Run hosting remains
 provider-neutral; normal Chat presentation composes each Run's model, tools, and
@@ -246,9 +283,9 @@ bounds do not alter canonical history or add persistence.
 `app/lib/plugins/stock_openai_activity_frontend.dart` imports Contract identity
 only for stock registration: it loads prepared EVC, registers the factory, and
 retires registration/resources through `PreparedFrontend`. It owns no OpenAI
-algorithms. This composition edge is explicitly provisional until discovery and
-profiles replace hard-coded selection. Activation is independent of model backend
-readiness and other frontends. Malformed safe payload and factory/EVC failures
+algorithms. This composition edge is explicitly provisional until frontend
+discovery and profiles replace hard-coded selection. Activation is independent of
+model backend readiness and other frontends. Malformed safe payload and factory/EVC failures
 leave rich presentation unavailable without failing Runs or selecting a native
 fallback. Summary requests remain provider-local; generic inference and UI code
 neither assert all-model support nor select reasoning options. See the

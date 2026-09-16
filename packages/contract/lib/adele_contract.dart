@@ -5,8 +5,101 @@ library;
 import 'dart:async';
 import 'dart:collection';
 
+import 'package:adele_plugin_api/adele_plugin_api.dart';
+
 const int _adeleJsonMaxDepth = 64;
 const int adelePluginBackendProtocolVersion = 1;
+
+/// One callable provider advertised by a ready backend generation.
+/// Plugin identity is deliberately absent: the host owns that identity.
+final class AdeleCapabilityExposure {
+  AdeleCapabilityExposure({
+    required this.providerId,
+    required this.capabilityId,
+    required this.capabilityMajorVersion,
+    required this.serviceId,
+    required this.displayName,
+    required this.configurationContext,
+    this.rank = 0,
+  }) {
+    try {
+      validateAdelePublicId(providerId, label: 'provider ID');
+      validateAdelePublicId(capabilityId, label: 'capability ID');
+    } on FormatException {
+      // Readiness arrives over an isolate port, before framed size limits apply.
+      throw const FormatException(
+        'Invalid advertised provider or capability ID.',
+      );
+    }
+    if (capabilityMajorVersion <= 0) {
+      throw const FormatException('Capability major version must be positive.');
+    }
+    if (!RegExp(r'^[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*$').hasMatch(serviceId)) {
+      throw const FormatException('Invalid advertised service ID.');
+    }
+    if (displayName.trim().isEmpty) {
+      throw const FormatException('Advertised display name must not be blank.');
+    }
+    adeleValidateConfigurationContext(configurationContext);
+  }
+
+  final String providerId;
+  final String capabilityId;
+  final int capabilityMajorVersion;
+  final String serviceId;
+  final String displayName;
+  final String configurationContext;
+  final int rank;
+
+  static List<AdeleCapabilityExposure> fromReady(Map<Object?, Object?> ready) {
+    if (!ready.containsKey('capabilityExposures')) return const [];
+    final Object? raw = ready['capabilityExposures'];
+    if (raw is! List) {
+      throw const FormatException('Capability exposures must be a list.');
+    }
+    return List<AdeleCapabilityExposure>.unmodifiable(
+      raw.map((Object? value) {
+        if (value is! Map ||
+            value['providerId'] is! String ||
+            value['capabilityId'] is! String ||
+            value['capabilityMajorVersion'] is! int ||
+            value['serviceId'] is! String ||
+            value['displayName'] is! String ||
+            value['configurationContext'] is! String ||
+            (value.containsKey('rank') && value['rank'] is! int)) {
+          throw const FormatException('Malformed capability exposure.');
+        }
+        return AdeleCapabilityExposure(
+          providerId: value['providerId'] as String,
+          capabilityId: value['capabilityId'] as String,
+          capabilityMajorVersion: value['capabilityMajorVersion'] as int,
+          serviceId: value['serviceId'] as String,
+          displayName: value['displayName'] as String,
+          configurationContext: value['configurationContext'] as String,
+          rank: value.containsKey('rank') ? value['rank'] as int : 0,
+        );
+      }),
+    );
+  }
+
+  Map<String, Object?> toMap() => <String, Object?>{
+    'providerId': providerId,
+    'capabilityId': capabilityId,
+    'capabilityMajorVersion': capabilityMajorVersion,
+    'serviceId': serviceId,
+    'displayName': displayName,
+    'configurationContext': configurationContext,
+    'rank': rank,
+  };
+}
+
+void adeleValidateConfigurationContext(String value) {
+  if (value.isEmpty ||
+      value.length > 256 ||
+      value.runes.any((int rune) => rune < 0x20 || rune == 0x7f)) {
+    throw const FormatException('Invalid configuration context ID.');
+  }
+}
 
 Map<String, Object?> adeleSnapshotJsonMap(Map<String, Object?> source) =>
     _adeleSnapshotJsonValue(source, 0, HashSet<Object>.identity())!
@@ -125,17 +218,16 @@ final class AdeleConfigurationContextRouter {
                    ),
              ),
            ) {
-    if (_contexts.isEmpty ||
-        _contexts.entries.any(
-          (entry) =>
-              entry.key.isEmpty ||
-              entry.value.isEmpty ||
-              entry.value.keys.any((String serviceId) => serviceId.isEmpty),
-        )) {
+    if (_contexts.entries.any(
+      (entry) =>
+          entry.key.isEmpty ||
+          entry.value.isEmpty ||
+          entry.value.keys.any((String serviceId) => serviceId.isEmpty),
+    )) {
       throw ArgumentError.value(
         contexts,
         'contexts',
-        'Configuration contexts and services must be non-empty.',
+        'Configured context IDs and service maps must be non-empty.',
       );
     }
   }

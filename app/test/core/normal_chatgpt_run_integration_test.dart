@@ -9,13 +9,11 @@ import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
-import 'package:adele_desktop/plugins/stock_backend_plugins.dart';
 import 'package:adele_desktop/plugins/stock_chat_execution_status.dart';
 import 'package:adele_desktop/plugins/stock_chat_frontend.dart';
-import 'package:adele_desktop/plugins/stock_git_environment.dart';
-import 'package:adele_desktop/plugins/stock_openai.dart';
 import 'package:adele_desktop/plugins/stock_openai_activity_frontend.dart';
 import 'package:adele_desktop/plugins/stock_tool_inspection_frontends.dart';
+import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
 import 'package:adele_desktop/ui/activity/model_native_activity_compact_host.dart';
 import 'package:adele_desktop/ui/activity/tool_activity_compact_host.dart';
 import 'package:adele_desktop/ui/chat/chat_controller.dart';
@@ -44,6 +42,8 @@ import '../../tool/openai_activity_frontend_compiler.dart';
 import '../../tool/tool_inspection_frontend_compiler.dart';
 
 const String _sourcePath = 'lib/task_answer.dart';
+const String _gitPluginId = 'dev.adele.plugin.git-environment';
+const String _openAiPluginId = 'dev.adele.openai';
 const String _taskText = 'const taskAnswer = "task-worktree-only";\n';
 const String _patchedText = 'const taskAnswer = "approved-task-value";\n';
 const String _agentsText =
@@ -89,6 +89,7 @@ const Map<String, Object?> _commandArguments = {
 
 void main() {
   late Directory artifacts;
+  late Directory installationRoot;
   late String dartaotruntime;
   late File hostArtifact;
   late File gitArtifact;
@@ -110,9 +111,30 @@ void main() {
         Platform.isWindows ? 'dartaotruntime.exe' : 'dartaotruntime',
       ),
     ).path;
+    installationRoot = await Directory('${artifacts.path}/installed').create();
+    for (final String pluginId in [_gitPluginId, _openAiPluginId]) {
+      await Directory('${installationRoot.path}/$pluginId').create();
+      await File(
+        '${installationRoot.path}/$pluginId/adele_plugin.installation.json',
+      ).writeAsString(
+        jsonEncode({
+          'manifestVersion': 1,
+          'metadata': {
+            'id': pluginId,
+            'version': '1.0.0',
+            'displayName': pluginId,
+          },
+          'components': {
+            'backend': {'artifact': 'backend.aot'},
+          },
+        }),
+      );
+    }
     hostArtifact = File('${artifacts.path}/host.aot');
-    gitArtifact = File('${artifacts.path}/git-environment.aot');
-    openAiArtifact = File('${artifacts.path}/openai.aot');
+    gitArtifact = File('${installationRoot.path}/$_gitPluginId/backend.aot');
+    openAiArtifact = File(
+      '${installationRoot.path}/$_openAiPluginId/backend.aot',
+    );
     evc = File('${artifacts.path}/chat.evc');
     filesystemEvc = File('${artifacts.path}/filesystem.evc');
     commandEvc = File('${artifacts.path}/command.evc');
@@ -477,25 +499,23 @@ void main() {
         ids: MonotonicProductIdSource(seed: 'c2-fixture'),
       );
       addTearDown(runtime.close);
-      await bootstrapStockBackendPlugins(
-        runtime.plugins,
+      await runtime.plugins.start(
+        installationRoot: installationRoot.path,
         dartaotruntimeExecutable: dartaotruntime,
         hostArtifactPath: hostArtifact.path,
-        gitEnvironmentArtifactPath: gitArtifact.path,
-        openaiArtifactPath: openAiArtifact.path,
-        chatGptConfiguration: StockChatGptConfiguration(
-          credentialFile: credentials.path,
-          model: 'gpt-6-astra',
-          clientId: 'fixture',
-          instanceId: 'fixture',
-          issuer: Uri.parse(
-            'http://${responses.address.address}:${responses.port}',
-          ),
-          endpoint: Uri.parse(
-            'http://${responses.address.address}:${responses.port}/backend-api/codex/responses',
-          ),
-        ),
-        onModelActivationFailure: Error.throwWithStackTrace,
+        startupArguments: {
+          _openAiPluginId: [
+            '--chatgpt-only',
+            jsonEncode({
+              'credentialFile': credentials.path,
+              'clientId': 'fixture',
+              'instanceId': 'fixture',
+              'issuer': 'http://${responses.address.address}:${responses.port}',
+              'endpoint':
+                  'http://${responses.address.address}:${responses.port}/backend-api/codex/responses',
+            }),
+          ],
+        },
       );
       expect(runtime.plugins.state, ApplicationPluginState.ready);
       expect(runtime.plugins.failure, isNull);
@@ -505,8 +525,12 @@ void main() {
         stockChatGptProviderId,
       );
       expect(
-        runtime.registry.providersFor(environmentProviderCapability).single.id,
-        stockGitEnvironmentProviderId,
+        runtime.registry
+            .providersFor(environmentProviderCapability)
+            .single
+            .id
+            .value,
+        'dev.adele.environment.git-worktree',
       );
       expect(outbound, isEmpty);
       final Project project = runtime.lifecycle.createProject(source.uri);

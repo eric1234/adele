@@ -922,6 +922,8 @@ Future<void> runGeneratedFixture(
   final lib = Directory(p.join(fixture.directory.path, 'lib'))..createSync();
   final sourceFile = File(p.join(lib.path, 'fixture.dart'));
   await fixture.source.rename(sourceFile.path);
+  // These executable fixtures resolve outside the workspace. Keep the direct and
+  // transitive plugin API dependencies on the same repository-local source.
   await File(p.join(fixture.directory.path, 'pubspec.yaml')).writeAsString('''
 name: generated_contract_fixture
 publish_to: none
@@ -930,6 +932,9 @@ environment:
 dependencies:
   adele_contract:
     path: ${p.join(repository.path, 'packages/contract')}
+  adele_plugin_api:
+    path: ${p.join(repository.path, 'packages/plugin_api')}
+dependency_overrides:
   adele_plugin_api:
     path: ${p.join(repository.path, 'packages/plugin_api')}
 dev_dependencies:

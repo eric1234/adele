@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'dart:isolate';
 
 import 'package:adele_contract/adele_contract.dart';
@@ -9,19 +11,33 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   final SendPort bootstrapPort = bootstrap['bootstrapPort']! as SendPort;
   final SendPort responsePort = bootstrap['responsePort']! as SendPort;
   final ReceivePort commands = ReceivePort();
-  final ReceivePort? keepAlive = arguments.single == 'acknowledge-hang'
+  final ReceivePort? keepAlive = arguments.first == 'acknowledge-hang'
       ? ReceivePort()
+      : null;
+  final ServerSocket? resource = arguments.length > 2
+      ? await ServerSocket.bind(
+          InternetAddress.loopbackIPv4,
+          int.parse(arguments[2]),
+        )
       : null;
   final Map<int, String> streams = <int, String>{};
   final Map<int, int> sequences = <int, int>{};
   int streamCancels = 0;
+  final Object? advertised = arguments.length > 1
+      ? jsonDecode(arguments[1])
+      : null;
+  if (arguments.first.startsWith('oversized-')) {
+    ((advertised! as List).single as Map)[arguments.first.substring(10)] =
+        '!' * (8 * 1024 * 1024 + 1);
+  }
   bootstrapPort.send(<String, Object?>{
     'kind': 'ready',
     'commandPort': commands.sendPort,
-    if (arguments.single != 'incompatible-handshake')
+    if (arguments.first != 'incompatible-handshake')
       'pluginBackendProtocolVersion': adelePluginBackendProtocolVersion,
+    if (arguments.length > 1) 'capabilityExposures': advertised,
   });
-  if (arguments.single == 'exit-immediately') {
+  if (arguments.first == 'exit-immediately') {
     await Future<void>.delayed(const Duration(milliseconds: 100));
     commands.close();
     return;
@@ -202,6 +218,14 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
         'payload': <String, Object?>{'alive': true},
       });
     }
+    if (message['method'] == 'startup-mode') {
+      responsePort.send(<String, Object?>{
+        'kind': 'response',
+        'requestId': message['requestId'],
+        'ok': true,
+        'payload': bootstrap['startupArgumentsOnly'],
+      });
+    }
     if (message['method'] == 'stream-cancel-count') {
       responsePort.send(<String, Object?>{
         'kind': 'response',
@@ -211,6 +235,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       });
     }
     if (message['method'] == 'shutdown') {
+      await resource?.close();
       responsePort.send(<String, Object?>{
         'kind': 'response',
         'requestId': message['requestId'],

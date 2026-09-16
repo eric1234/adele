@@ -68,6 +68,16 @@ void main() {
     frontendEnvironment = File('${root.path}/frontend-environment.txt');
     environment = <String, String>{
       'PATH': '${bin.path}:${Platform.environment['PATH']}',
+      for (final suffix in [
+        'CREDENTIAL_FILE',
+        'CLIENT_ID',
+        'INSTANCE_ID',
+        'OAUTH_ISSUER',
+        'REDIRECT_URI',
+        'ENDPOINT',
+        'MODEL',
+      ])
+        'ADELE_OPENAI_CHATGPT_$suffix': '',
     };
     _script(File('${bin.path}/flutter'), '''
 if [ "\$1" = "--version" ]; then
@@ -148,6 +158,14 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
     environment: environment,
   );
 
+  String readStartupArguments() {
+    const prefix = '--dart-define=ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE=';
+    final argument = launchArguments.readAsLinesSync().singleWhere(
+      (value) => value.startsWith(prefix),
+    );
+    return File(argument.substring(prefix.length)).readAsStringSync();
+  }
+
   test(
     'test-plan runs pre-bootstrap without inspecting or compiling',
     () async {
@@ -162,7 +180,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
         (plan['include']! as List<Object?>).cast<Map<String, Object?>>().map(
           (Map<String, Object?> item) => item['name'],
         ),
-        contains('adele_ui'),
+        containsAll(['adele_ui', 'plugin_runtime', 'adele_tools']),
       );
       expect(commands.existsSync(), isFalse);
       expect(Directory('${root.path}/.dart_tool').existsSync(), isFalse);
@@ -236,8 +254,8 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           unorderedEquals(<String>[
             'ADELE_DARTAOTRUNTIME_EXECUTABLE',
             'ADELE_BACKEND_HOST_ARTIFACT',
-            'ADELE_GIT_ENVIRONMENT_ARTIFACT',
-            'ADELE_OPENAI_ARTIFACT',
+            'ADELE_PLUGIN_INSTALLATION_ROOT',
+            'ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE',
             'ADELE_CHAT_FRONTEND_ARTIFACT',
             'ADELE_FILESYSTEM_TOOLS_FRONTEND_ARTIFACT',
             'ADELE_COMMAND_TOOLS_FRONTEND_ARTIFACT',
@@ -249,23 +267,74 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           '${sdkBin.path}/dartaotruntime',
         );
         final File host = File(defines['ADELE_BACKEND_HOST_ARTIFACT']!);
-        final File git = File(defines['ADELE_GIT_ENVIRONMENT_ARTIFACT']!);
-        final File openai = File(defines['ADELE_OPENAI_ARTIFACT']!);
+        final Directory installations = Directory(
+          defines['ADELE_PLUGIN_INSTALLATION_ROOT']!,
+        );
+        final File startupArguments = File(
+          defines['ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE']!,
+        );
+        final File git = File.fromUri(
+          installations.uri.resolve('git-environment/backend.aot'),
+        );
+        final File openai = File.fromUri(
+          installations.uri.resolve('openai/backend.aot'),
+        );
         final File frontend = File(defines['ADELE_CHAT_FRONTEND_ARTIFACT']!);
         expect(host.uri.isAbsolute, isTrue);
         expect(git.uri.isAbsolute, isTrue);
         expect(openai.uri.isAbsolute, isTrue);
         expect(frontend.uri.isAbsolute, isTrue);
         expect(host.path, endsWith('/host.aot'));
-        expect(git.path, endsWith('/git-environment.aot'));
-        expect(openai.path, endsWith('/openai.aot'));
+        expect(git.path, endsWith('/git-environment/backend.aot'));
+        expect(openai.path, endsWith('/openai/backend.aot'));
         expect(frontend.path, endsWith('/chat.evc'));
         expect(frontendEnvironment.readAsLinesSync(), <String>[
           root.path,
           frontend.path,
         ]);
-        expect(host.parent.path, git.parent.path);
-        expect(host.parent.path, openai.parent.path);
+        expect(installations.uri.isAbsolute, isTrue);
+        expect(installations.parent.path, host.parent.path);
+        expect(startupArguments.uri.isAbsolute, isTrue);
+        expect(startupArguments.parent.path, host.parent.path);
+        expect(jsonDecode(startupArguments.readAsStringSync()), {
+          'dev.adele.openai': ['--chatgpt-only'],
+        });
+        expect(
+          installations.listSync().map(
+            (entry) =>
+                entry.uri.pathSegments.where((part) => part.isNotEmpty).last,
+          ),
+          unorderedEquals(['git-environment', 'openai']),
+        );
+        for (final plugin in [
+          (
+            artifact: git,
+            id: 'dev.adele.plugin.git-environment',
+            name: 'Git Worktree Environment',
+          ),
+          (artifact: openai, id: 'dev.adele.openai', name: 'OpenAI'),
+        ]) {
+          final manifest = File.fromUri(
+            plugin.artifact.parent.uri.resolve(
+              'adele_plugin.installation.json',
+            ),
+          );
+          expect(jsonDecode(manifest.readAsStringSync()), {
+            'manifestVersion': 1,
+            'metadata': {
+              'id': plugin.id,
+              'version': '0.1.0',
+              'displayName': plugin.name,
+            },
+            'components': {
+              'backend': {'artifact': 'backend.aot'},
+            },
+          });
+          expect(plugin.artifact.parent.listSync(), hasLength(2));
+          retainedArtifacts[manifest.path] = manifest.readAsStringSync();
+        }
+        retainedArtifacts[startupArguments.path] = startupArguments
+            .readAsStringSync();
         expect(
           host.parent.path,
           startsWith('${root.path}/.dart_tool/adele/desktop-backends/build-'),
@@ -305,6 +374,126 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
         }
         commands.deleteSync();
       }
+    },
+  );
+
+  for (final explicitClient in [false, true]) {
+    test(
+      'writes only public OpenAI startup config, explicit client=$explicitClient',
+      () async {
+        final credentials = File('${root.path}/credentials.json')
+          ..writeAsStringSync(
+            jsonEncode({
+              'accessToken': 'secret-access-token',
+              'refreshToken': 'secret-refresh-token',
+            }),
+          );
+        environment.addAll({
+          'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE': credentials.path,
+          'ADELE_OPENAI_CHATGPT_CLIENT_ID': explicitClient
+              ? 'public-client'
+              : '  ',
+          'ADELE_OPENAI_CHATGPT_INSTANCE_ID': 'work-instance',
+          'ADELE_OPENAI_CHATGPT_OAUTH_ISSUER': 'https://issuer.example.com',
+          'ADELE_OPENAI_CHATGPT_REDIRECT_URI': 'http://localhost:1455/callback',
+          'ADELE_OPENAI_CHATGPT_ENDPOINT':
+              'https://model.example.com/responses',
+          'ADELE_OPENAI_CHATGPT_MODEL': 'app-model-not-backend-config',
+          'ADELE_OPENAI_CHATGPT_ACCESS_TOKEN': 'secret-env-access-token',
+          'ADELE_OPENAI_CHATGPT_REFRESH_TOKEN': 'secret-env-refresh-token',
+          'OPENAI_API_KEY': 'secret-api-key',
+        });
+        final result = await invoke(['run', 'linux']);
+        expect(result.exitCode, 0, reason: result.stderr.toString());
+        final serialized = readStartupArguments();
+        final arguments = jsonDecode(serialized) as Map<String, Object?>;
+        expect(arguments.keys, ['dev.adele.openai']);
+        final openai = (arguments['dev.adele.openai']! as List<Object?>)
+            .cast<String>();
+        expect(openai, hasLength(2));
+        expect(openai.first, '--chatgpt-only');
+        expect(jsonDecode(openai.last), {
+          'credentialFile': credentials.path,
+          if (explicitClient)
+            'clientId': 'public-client'
+          else
+            'experimentalCodexClient': true,
+          'instanceId': 'work-instance',
+          'issuer': 'https://issuer.example.com',
+          'redirectUri': 'http://localhost:1455/callback',
+          'endpoint': 'https://model.example.com/responses',
+        });
+        for (final forbidden in ['secret-', 'app-model-not-backend-config']) {
+          expect(serialized, isNot(contains(forbidden)));
+          expect(
+            launchArguments.readAsStringSync(),
+            isNot(contains(forbidden)),
+          );
+        }
+      },
+    );
+  }
+
+  test(
+    'credential references need not exist and blank public overrides are omitted',
+    () async {
+      final credentialPath = '${root.path}/not-created.json';
+      environment['ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE'] = credentialPath;
+      environment['ADELE_OPENAI_CHATGPT_INSTANCE_ID'] = '  ';
+      environment['ADELE_OPENAI_CHATGPT_OAUTH_ISSUER'] = '  ';
+      final result = await invoke(['build', 'linux']);
+      expect(result.exitCode, 0, reason: result.stderr.toString());
+      final serialized = readStartupArguments();
+      expect(jsonDecode(serialized), {
+        'dev.adele.openai': [
+          '--chatgpt-only',
+          jsonEncode({
+            'credentialFile': credentialPath,
+            'experimentalCodexClient': true,
+          }),
+        ],
+      });
+      expect(File(credentialPath).existsSync(), isFalse);
+    },
+  );
+
+  test(
+    'without credentials OpenAI stays chatgpt-only and ignores other config',
+    () async {
+      environment.addAll({
+        'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE': '  ',
+        'ADELE_OPENAI_CHATGPT_CLIENT_ID': 'unused-client',
+        'ADELE_OPENAI_CHATGPT_OAUTH_ISSUER': 'https://[invalid',
+        'OPENAI_API_KEY': 'must-not-enable-api-key-context',
+      });
+      final result = await invoke(['run', 'linux']);
+      expect(result.exitCode, 0, reason: result.stderr.toString());
+      final serialized = readStartupArguments();
+      expect(jsonDecode(serialized), {
+        'dev.adele.openai': ['--chatgpt-only'],
+      });
+    },
+  );
+
+  test(
+    'invalid public URI is forwarded for backend-local validation',
+    () async {
+      environment.addAll({
+        'ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE': '/not-read.json',
+        'ADELE_OPENAI_CHATGPT_OAUTH_ISSUER': 'https://[invalid-private-value',
+      });
+      final result = await invoke(['run', 'linux']);
+      expect(result.exitCode, 0, reason: result.stderr.toString());
+      final arguments =
+          jsonDecode(readStartupArguments()) as Map<String, dynamic>;
+      final openai = arguments['dev.adele.openai'] as List<dynamic>;
+      expect(jsonDecode(openai[1] as String), {
+        'credentialFile': '/not-read.json',
+        'experimentalCodexClient': true,
+        'issuer': 'https://[invalid-private-value',
+      });
+      expect(result.stderr, isNot(contains('invalid-private-value')));
+      expect(launchArguments.existsSync(), isTrue);
     },
   );
 

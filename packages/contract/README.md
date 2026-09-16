@@ -6,6 +6,14 @@ transport-neutral `AdeleRequestChannel` and `AdeleStreamChannel`, abstract `Adel
 with an optional declared failure type identifier, and
 `AdeleProtocolException` for malformed generated-protocol values.
 
+Public [`AdeleCapabilityExposure`](lib/adele_contract.dart) defines and validates
+optional backend-ready `capabilityExposures`. Plugin identity belongs to the
+installation/connection, not this value; an omitted list means zero capabilities.
+This is ready-handshake metadata, not an installed manifest, generated semantic
+method payload, active registry, or reverse RPC mechanism. Field definitions and
+registration semantics live in
+[`contracts-and-capabilities.md`](../../docs/architecture/contracts-and-capabilities.md#backend-ready-advertisements).
+
 Generated clients use `AdeleProtocolException` for local request preflight and
 malformed responses. Generated dispatchers classify malformed request values as
 `invalid_request`; constructor failures are opaque at both boundaries, including

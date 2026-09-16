@@ -39,6 +39,13 @@ The following remain largely or entirely unimplemented:
 
 Public plugin-facing APIs remain experimental.
 
+F1 adds a prepared installed-backend startup snapshot, independent activation
+attempts, and backend-owned ready capability advertisements. It is not an
+installer, production packaging, profile/enable-disable manager, version solver,
+filesystem watcher, frontend discovery system, reverse RPC, or hot-upgrade path.
+The existing frontend EVC plumbing and six static in-process activations are
+unchanged.
+
 The normal shell supports Project opening, title-only Task creation with a real
 Git primary Environment, and one stock Chat Session with sequential approval-gated
 Runs through the experimental ChatGPT subscription-backed ModelProvider. A narrow
@@ -62,33 +69,64 @@ It owns one `CapabilityRegistry`, `ExtensionRegistry`, `InMemoryProductStore`,
 Filesystem Tools, Search Tools, Command Tools, and Local Directory Project
 Selector in process, all on the same extension registry. The selector is the
 sixth owned activation; the reduced composition omits only Command Tools. This
-is an implicit stock composition, not plugin discovery or a profile/configuration
-API. Construction is synchronous and provider-free. The runtime also owns
-pure-Dart `ApplicationPluginBootstrap` on that same `CapabilityRegistry`, without
+is an implicit in-process composition, outside backend discovery and not a
+profile/configuration API. Construction is synchronous and provider-free. The
+runtime also owns pure-Dart `ApplicationPluginBootstrap` on that same `CapabilityRegistry`, without
 starting backend work in its constructor.
 
 The normal Stateful `AdeleApplication` constructs its runtime once synchronously
-in `initState`, not during rebuilds, then explicitly calls the async
-`bootstrapStockBackendPlugins`. Stock composition supplies activator callbacks to
-the generic application-lifetime bootstrap owner, which starts one shared
-`PluginBackendHost`. Required startup failure cleans up acquired resources before
-reporting the original error and leaves Task support unavailable without preventing
-Project opening. After required Git startup, the same owner accepts independently
-failing additional activations. OpenAI activation failure or plugin termination
-retires only its own contribution; shared-host failure invalidates all backends.
+in `initState`, not during rebuilds, then explicitly calls async
+`ApplicationPluginBootstrap.start`. Inputs are only the installation root, shared
+runtime/host locations, and optional generic startup argv. There are no stock
+activator callbacks or required-Git/additional-OpenAI tiers.
 
-`app/lib/plugins/stock_git_environment.dart` owns the stock plugin/provider IDs,
-display name, service exposure, and default configuration-context registration
-for both normal and self-hosting composition. It uses public Environment
-contracts and internal host APIs, not Git backend implementation imports.
+`plugin_runtime.PreparedPluginCatalog.discover(rootPath)` reads a deterministic
+startup snapshot from immediate child directories' `adele_plugin.installation.json`
+files before host creation. The version-1 JSON schema contains `PluginMetadata`
+(`id`, opaque `version`, `displayName`, optional `description`) and `components`,
+with an optional backend artifact such as `backend.aot`. Artifact paths must be
+relative, confined, and existing. There are no source paths, capability exposures,
+configuration, or activation state in this manifest; the source/build
+`adele_plugin.yaml` has a different purpose. Stock source layouts are not normalized
+to it. See [`plugin-layout.md`](plugin-layout.md#prepared-installation-snapshot).
 
-`app/lib/plugins/stock_openai.dart` similarly owns provisional ChatGPT provider
-identity, exposure, model selection, and plugin-local startup configuration. Normal
-composition exposes only the experimental subscription-backed context, not the
-maintained API-key context. The generic backend owner remains OpenAI-neutral;
-provider resolution still uses the capability registry. Configuration references
-the existing OpenAI-owned credential store, never token contents in deployment
-defines or startup arguments. This is ownership separation, not process sandboxing.
+An unconfigured, missing, or empty root succeeds with an empty catalog. Malformed
+children are reported as issues and excluded independently. Duplicate IDs exclude
+all conflict members, without selecting a version winner. Root I/O failure reports
+generic bootstrap failure, not successful emptiness; core in-process functionality
+and Project opening remain usable. There is no watching or rescan lifecycle.
+
+With no valid backend components, bootstrap succeeds without spawning a host even
+if runtime/host paths are invalid. Otherwise it starts one shared
+`PluginBackendHost` and independently attempts every valid backend. Local start,
+advertisement, or registration failure cleans up only that attempt's partial
+resources. Later termination retires only its own exact generation; shared-host
+failure invalidates all backends. The bootstrap exposes read-only per-backend
+states and catalog issues, not a plugin-management UI. Overall `ready` means
+startup settled, not that every backend succeeded or a model is usable.
+
+Git and OpenAI entrypoints own their ready capability advertisements. The generic
+`PluginCapabilityActivation.registerAdvertised` path preserves existing registry
+validation, configuration contexts, and exact-generation liveness. There is no
+app-owned backend exposure table. `app/lib/plugins/temporary_chatgpt_selection.dart`
+retains the selected provider identity and model-only `StockChatGptConfiguration`.
+`fromEnvironment` always supplies a model default or override, with no credential
+field or presence gate. Provider availability comes from the active registry;
+the app does not inspect startup OAuth/credential configuration. The helper owns
+neither backend startup nor exposures. The launcher supplies OpenAI's credential-file
+reference and public OAuth/endpoint options through a separate temporary generic
+argv file, never token contents. It always selects `--chatgpt-only`: no configured
+reference means successful zero capabilities, not inherited API-key activation.
+Normal bootstrap independently sets `startupArgumentsOnly: true` on every
+`startPlugin` call; the shared host forwards it to the backend startup message.
+OpenAI disables environment fallback in this mode and advertises zero capabilities
+for empty argv or an absent configuration document, so root-only normal activation
+cannot inherit an API-key exposure even without the launcher map. Generic code
+uses no PluginId switch. This temporary mode is not environment scrubbing or
+settings/profile/credential infrastructure.
+General provider/model configuration remains deferred; this seam is intended
+to disappear with general plugin configuration/profiles. Runtime and shared host
+remain OpenAI-unaware. This is ownership separation, not process sandboxing.
 
 Application close synchronously blocks window actions and notifications and drains
 in-flight Task establishment and only the currently advancing Run start/resume
@@ -109,9 +147,9 @@ one button per contribution in deterministic registry registration order. Zero
 selectors is an explicit unavailable state; one or multiple contributions are
 independent actions, not a chooser/default-provider framework.
 
-Normal stock activation consumes prepared backend and frontend artifacts, not
-source paths or a compiler. Missing required backend artifact configuration leaves
-Task Environment support unavailable; missing Chat, Filesystem Tools, Command
+Normal activation consumes prepared backend installations and frontend artifacts,
+not source paths or a compiler. No active Environment capability leaves Task
+Environment support unavailable; missing Chat, Filesystem Tools, Command
 Tools, or OpenAI activity EVC leaves the corresponding presentation unavailable
 independently of the other frontends and model backend support.
 Artifact preparation belongs to repository/build-time tooling, not app startup;
@@ -120,12 +158,13 @@ deployment inputs and source-checkout limitations are documented in
 [`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
 Checkout preparation stands in for future installation/update-time compilation;
 activation only consumes prepared artifacts. Caching, plugin management,
-production packaging, discovery, and profiles remain deferred.
+production packaging, frontend discovery, and profiles remain deferred.
 
-Flutter startup reads only stock configuration references; credential loading
-belongs to the OpenAI backend. Startup creates no Project, Task, Environment, or
-Session, builds no tool catalog, and starts no Run. Explicit user actions enter
-product lifecycle and Run composition. General provider/model configuration,
+Flutter bootstrap reads and forwards only generic plugin argv; configuration
+interpretation and credential loading belong to the owning backend. Startup
+creates no Project, Task, Environment, or Session, builds no tool catalog, and
+starts no Run. Explicit user actions enter product lifecycle and Run composition.
+General provider/model configuration,
 Task Browser, persistence, and richer workbench UI remain deferred.
 
 Development/self-hosting owns an `AdeleRuntime` instance instead of duplicating
@@ -134,9 +173,14 @@ topology/runner retains its independent AOT artifacts and host ownership, provid
 activation, isolated Git source, Project/Task/Environment/Session establishment,
 tool catalog, model selection, development IDs, execution, and evidence. The generic
 model capability adapter lives in `app/lib/core/model_provider_host.dart`; normal
-composition has no dependency on development code. Self-hosting reuses stock Git
-and OpenAI exposure code but does not consume normal bootstrap configuration or
-start its backend owner.
+composition has no dependency on development code. Self-hosting uses generic
+`registerAdvertised` for backend-owned exposures but keeps its explicit
+artifact/host/profile topology. It does not require normal catalog discovery,
+consume normal bootstrap configuration, or start its backend owner. Its own
+profile environment configures the backend with the default
+`startupArgumentsOnly: false`; registration includes all advertised
+online contexts, potentially both OpenAI contexts. It then explicitly resolves
+the selected profile's provider ID rather than filtering registrations by profile.
 
 The selector's native picker uses a conditional Flutter-only import so shared
 runtime composition preserves the real plain-Dart self-hosting CLI import graph.
@@ -147,7 +191,7 @@ Host implementations are split into small pure-Dart packages where Flutter is no
 
 | Package | Maintained/planned responsibility |
 | --- | --- |
-| `plugin_runtime` | Plugin lifecycle/runtime coordination, backend connections, and active capability routing adapters |
+| `plugin_runtime` | Prepared installation catalog, plugin lifecycle/runtime coordination, backend connections, and active capability routing adapters |
 | `plugin_builder` | Source resolution, contract checks/generation coordination, backend/frontend builds, diagnostics, provenance, and caching |
 | `plugin_backend_host` | Shared child-process entrypoint and one external AOT isolate group per active plugin backend |
 | `agent_kernel` | Provider-neutral Run/model/tool semantics, interruptions, policy boundary, structured outcomes, and typed execution observation |
@@ -218,6 +262,18 @@ Implemented capability resolution is one-to-many. Several plugins may provide th
 The rank-based default is a deterministic development fallback, not the final preference system. ADELE owns preferred-provider selection; future profile/project/user policy may select contextual defaults and expose explicit alternatives.
 
 Configured capability instances such as `OpenAI Work` and `OpenAI Personal` are distinct from plugin installations/runtime instances. Temporary documents, terminals, browser sessions, and processes are runtime resources rather than configured providers.
+
+Backend startup carries optional `capabilityExposures` from isolate `ready` through
+host `pluginReady` to the exact connection. Each advertisement has `providerId`,
+`capabilityId`, `capabilityMajorVersion`, `serviceId`, `displayName`,
+`configurationContext`, and optional `rank` (default zero). Plugin identity comes
+authoritatively from installation/connection, never the advertisement. An omitted
+list is zero capabilities. `registerAdvertised` maps this metadata into existing
+`PluginCapabilityActivation.register`, not a new registry or RPC mechanism.
+Installed metadata does not establish readiness; only active registrations enter
+provider resolution. ADRs 0015, 0021, 0027, and 0028 retain the distinctions between
+installation, activation, active provider selection, generation-bound contexts,
+and plugin-owned credentials.
 
 See [`contracts-and-capabilities.md`](contracts-and-capabilities.md).
 
@@ -495,7 +551,7 @@ cards are simultaneously accessible through an independent scroll area and are
 read-only; only common host approval UI offers Allow/Deny for the exact
 interruption. Arbitrary plugin drill-down beyond group-to-individual activity,
 Source/Diff/Console navigation, terminal/PTY and
-full-output views, persistence, and discovery remain deferred.
+full-output views, persistence, and frontend discovery remain deferred.
 
 ### Model-native activity presentation
 
@@ -571,7 +627,7 @@ a new canonical Chat entry, and summaries are not hidden chain of thought.
 loads the prepared artifact, registers the factory, and retires its exact
 registration/resources using existing `PreparedFrontend` hosting. It performs no
 projection, raw interpretation, or display escaping. This activation edge is
-explicitly provisional until discovery/profiles replace hard-coded stock
+explicitly provisional until frontend discovery/profiles replace hard-coded stock
 selection. The `app/tool` compile harness remains checkout tooling standing in for
 future installation/update-time preparation, not runtime activation.
 Frontend readiness is independent of the model backend and other frontends.
@@ -784,7 +840,13 @@ exist yet.
 
 Profiles are accepted as sparse named composition layers. One context may eventually use an ordered stack such as `Developer + Work`. They may contribute activation decisions, ordinary configuration overrides, provider availability, and provider preferences.
 
-Normal startup and development/self-hosting reuse the implicit in-process stock composition and stock Git/OpenAI activation metadata, while owning separate backend topologies. Prepared artifact locations are deployment inputs, not a profile API. ChatGPT is provisional normal stock ModelProvider composition; general profile/configuration persistence, UI, and provider preference resolution are not implemented.
+Normal startup and development/self-hosting reuse the implicit in-process stock
+composition and generic registration of backend-owned advertisements, while owning
+separate backend topologies. Normal startup discovers prepared installations;
+self-hosting retains explicit artifact/host/profile selection. Prepared locations
+and the temporary generic argv file are deployment inputs, not a profile API.
+ChatGPT is provisional normal ModelProvider selection; general profile/configuration
+persistence, UI, and provider preference resolution are not implemented.
 
 Activation, ordinary configuration, provider preference, security/policy, workbench state, configured capability instances, and runtime state remain distinct domains.
 
@@ -848,11 +910,11 @@ self-hosting.
 | Rebuild/reload | Proven for three cycles without orphan host processes. |
 | General recursive extension system | Accepted architecture; not implemented. |
 | B1 Project opening/native picker | Typed selector composition, cancellation/failure handling, canonical Project opening, and window lifetime are tested. Native picker adapters use fakes in CI. The recorded B1 Linux profile build passed with generated native registration; the minimum macOS `com.apple.security.files.user-selected.read-only` entitlement is present. Interactive OS picking and macOS/Windows builds remain unvalidated. The maintained tooling target guards the plain-Dart self-hosting import graph with CLI `--help`, without provider calls. |
-| Normal backend bootstrap and Task creation | Implemented through generic bootstrap and Task lifecycle; operational setup and validation scope are maintained in [`app/README.md`](../../app/README.md#b2-validation-paths). |
+| Normal backend bootstrap and Task creation | F1 discovers a prepared installation snapshot and independently attempts backends; Task lifecycle still uses live capability resolution. Operational setup is maintained in [`app/README.md`](../../app/README.md#normal-backend-startup); recorded B2 validation is not new F1 validation evidence. |
 | Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, Session-authorized read/mutation/process facets, bounded create/patch/delete text-file mutation, and generated foreground process streaming through the Git provider are proven; persistence and complete lifecycle remain unimplemented. |
 | Session-bound strategy execution | Canonical immutable Session creation, atomic publication with separate Environment authority, executable contributions, explicit unavailable/ambiguous resolution, and exact binding validation across Run operations/resume/settlement are implemented and deterministically validated. Headless Chat uses the public facade with validated state, sequencing, and application integration. Persistent strategy state, child Sessions, and disk persistence remain deferred. |
 | Inference context | Instruction-only source discovery, exact-binding capture, immutable snapshots, current adapter rendering, and the stock root AGENTS.md source activated by the shared runtime are implemented; other sources, broader material, provider-aware projection/cache planning, budgets, and compaction remain deferred. |
-| Production orchestration/UI/Commands | Stock Chat, minimal Project/Task/Environment presentation, prepared mixed Chat timeline/composer, plugin-owned compact activity, retained window-local Inspection cards with group-to-individual drill-down, interpreted Apply Patch/Run Command/OpenAI bodies, and host-owned approval-gated Runs are implemented; configurable permissions, reasoning deltas, compaction UI, arbitrary plugin drill-down, Source/Diff/Console and terminal/PTY/full-output views, Task Browser, rich workbench UI, Commands, and plugin discovery remain directional. Hidden chain-of-thought and encrypted reasoning are never user-presented. |
+| Production orchestration/UI/Commands | Stock Chat, minimal Project/Task/Environment presentation, prepared mixed Chat timeline/composer, plugin-owned compact activity, retained window-local Inspection cards with group-to-individual drill-down, interpreted Apply Patch/Run Command/OpenAI bodies, and host-owned approval-gated Runs are implemented; configurable permissions, reasoning deltas, compaction UI, arbitrary plugin drill-down, Source/Diff/Console and terminal/PTY/full-output views, Task Browser, rich workbench UI, Commands, and frontend discovery remain directional. Hidden chain-of-thought and encrypted reasoning are never user-presented. |
 | Cross-platform/release | Unproven on Windows, macOS, and release mode. |
 | Packaging/sandboxing | Unproven; process isolation is not a sandbox. |
 

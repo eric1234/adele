@@ -49,7 +49,7 @@ display text. Generic Chat escapes compact display text and derives activity
 presence from non-null presentation, independently of rich frontend activation.
 Stock app activation imports Contract identity only to load/register/retire the
 prepared presentation; it owns no provider algorithms and remains provisional
-until discovery/profiles replace hard-coded selection.
+until frontend discovery/profiles replace hard-coded selection.
 
 Raw `nativeMetadata` remains exact and the only native replay source. Safe
 presentation is never replayed, added to canonical Chat history, or persisted by

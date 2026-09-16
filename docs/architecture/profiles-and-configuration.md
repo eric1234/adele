@@ -4,6 +4,12 @@
 
 ADELE profiles and general configuration management are accepted architectural direction but are not yet implemented. The maintained development runtime uses one implicit default development profile. There is no profile manager, selector, persistence model, profile-aware router, generic configuration service, or production workbench-state store.
 
+F1 normal startup discovers a prepared installation snapshot and separately
+attempts every valid backend. That bounded policy is not profile activation or
+enable/disable management. Installed metadata contains neither configuration nor
+activation state; the temporary generic PluginId-to-argv startup file is outside
+the manifest and is intended to disappear with general configuration/profiles.
+
 This document records intended product and architecture direction beyond the immediate implementation horizon. ADR 0031 now defines `Project` as an abstract core identity and `Environment` as the practical filesystem/source + process context for Task work; the earlier Project/Workspace identity question is no longer intentionally open.
 
 A profile is a named, sparse operating-mode layer. Profiles may contribute plugin activation decisions, configuration overrides, provider availability/preferences, and other profile-scoped behavior. Profiles are not plugin installations, provider configurations, accounts, runtime instances, Projects, Tasks, Sessions, or Environments.
@@ -161,7 +167,10 @@ When a plugin is effectively inactive in a context, its normal product surface s
 
 Disabling a plugin must not delete its persisted configuration. Re-enabling should restore its contributions using previously stored values. From the user's perspective, however, an inactive plugin should largely cease to exist in that context rather than leave settings clutter.
 
-ADELE still needs installation/activation metadata available without activating the plugin so host-owned plugin/profile management can show installed plugins and enable/disable them.
+The F1 prepared catalog makes installation metadata available without starting
+plugins. Host-owned plugin/profile management, contextual activation decisions,
+and enable/disable controls remain deferred; see
+[`plugin-layout.md`](plugin-layout.md#prepared-installation-snapshot).
 
 Plugins should not silently activate arbitrary other plugin implementations. Complementary behavior should normally use public typed interfaces and runtime discovery. Missing compatible providers/extensions should be diagnosable or simply make an affordance unavailable according to that extension contract.
 
@@ -218,13 +227,26 @@ The same host-owned default-selection concept may eventually apply to interchang
 
 Credentials/secrets are not ordinary configuration values. Ordinary configuration should reference a managed credential/configured instance rather than serialize the secret itself. Exact secure storage remains deferred.
 
-Normal stock composition provisionally uses experimental ChatGPT with the existing
-OpenAI credential store. Application-local configuration selects a model and passes
-only the store path and public OAuth configuration to the OpenAI plugin generation.
-Artifact defines contain deployment locations, not credentials or model selection.
-No profile, settings, or provider preference system is implied. Each new normal Run
-resolves its provider/tools and uses the narrow approval-gated policy; per-invocation
-approval is not persisted permission configuration. Session validity does not
+Normal selection provisionally uses experimental ChatGPT with the existing OpenAI
+credential store. Checkout tooling snapshots only the store reference and public
+OAuth/endpoint options into a separate generic startup-argv file, never tokens.
+The app forwards argv without interpreting OpenAI configuration. The launcher
+always supplies `--chatgpt-only`, adding a JSON argument only when configured;
+unconfigured mode advertises zero capabilities, not an inherited API-key provider.
+Normal bootstrap independently sends `startupArgumentsOnly: true`, forwarded to
+backend startup without plugin-specific switching. OpenAI then forbids environment
+fallback even when argv is empty or no configuration document is supplied, so
+OpenAI advertises zero capabilities in root-only normal activation. Direct/self-hosting
+callers keep the default `false` and their environment configuration path. This
+temporary deployment rule is not settings/profile/credential infrastructure.
+The backend owns configuration interpretation, credentials, and ready exposures.
+The app retains provisional selected provider identity and model-only configuration:
+the environment reader always supplies a model default or override, with no
+credential-presence gate or startup OAuth/credential inspection. Provider
+availability comes from the active registry. Defines contain deployment locations, not credentials or
+model values. No profile, settings, or provider preference system is implied. Each
+new normal Run resolves its provider/tools and uses the narrow approval-gated
+policy; per-invocation approval is not persisted permission configuration. Session validity does not
 depend on model availability.
 
 ## Persistence, portability, and schema evolution

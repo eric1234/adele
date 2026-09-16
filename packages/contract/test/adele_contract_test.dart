@@ -4,6 +4,122 @@ import 'package:adele_contract/adele_contract.dart';
 import 'package:test/test.dart';
 
 void main() {
+  const Map<String, Object?> exposure = {
+    'providerId': 'dev.adele.fixture.provider',
+    'capabilityId': 'dev.adele.fixture.capability',
+    'capabilityMajorVersion': 1,
+    'serviceId': 'fixtureService',
+    'displayName': 'Fixture',
+    'configurationContext': 'opaque-context',
+  };
+  test(
+    'ready advertisement accepts absent, zero, one and multiple exposures',
+    () {
+      expect(AdeleCapabilityExposure.fromReady(const {}), isEmpty);
+      expect(
+        AdeleCapabilityExposure.fromReady(const {'capabilityExposures': []}),
+        isEmpty,
+      );
+      final raw = <Object?>[
+        {...exposure, 'pluginId': 'spoofed'},
+      ];
+      final one = AdeleCapabilityExposure.fromReady({
+        'capabilityExposures': raw,
+      });
+      raw.clear();
+      expect(one.single.rank, 0);
+      expect(one.single.toMap(), {...exposure, 'rank': 0});
+      expect(() => one.clear(), throwsUnsupportedError);
+      final multiple = AdeleCapabilityExposure.fromReady({
+        'capabilityExposures': [
+          exposure,
+          {...exposure, 'configurationContext': 'other-context', 'rank': -2},
+        ],
+      });
+      expect(multiple.map((value) => value.configurationContext), [
+        'opaque-context',
+        'other-context',
+      ]);
+      expect(multiple.last.rank, -2);
+    },
+  );
+
+  test('ready advertisement rejects malformed lists and required fields', () {
+    for (final raw in <Object?>[
+      null,
+      {},
+      'invalid',
+      [null],
+      [1],
+    ]) {
+      expect(
+        () => AdeleCapabilityExposure.fromReady({'capabilityExposures': raw}),
+        throwsFormatException,
+      );
+    }
+    for (final field in exposure.keys) {
+      final missing = {...exposure}..remove(field);
+      expect(
+        () => AdeleCapabilityExposure.fromReady({
+          'capabilityExposures': [missing],
+        }),
+        throwsFormatException,
+        reason: field,
+      );
+      expect(
+        () => AdeleCapabilityExposure.fromReady({
+          'capabilityExposures': [
+            {...exposure, field: null},
+          ],
+        }),
+        throwsFormatException,
+        reason: field,
+      );
+    }
+  });
+
+  for (final entry in <String, List<Object?>>{
+    'providerId': ['', 'UPPER.invalid', 'dev.adele.bad_id'],
+    'capabilityId': ['', 'UPPER.invalid', 'dev.adele.bad_id'],
+    'capabilityMajorVersion': [0, -1, 1.5, '1'],
+    'serviceId': ['', ' ', 'bad/service', 'bad\nservice'],
+    'displayName': ['', ' \t'],
+    'configurationContext': ['', 'x' * 257, 'bad\ncontext', 'bad\u007fcontext'],
+    'rank': [null, '0', 0.5],
+  }.entries) {
+    test('ready advertisement validates ${entry.key}', () {
+      for (final value in entry.value) {
+        expect(
+          () => AdeleCapabilityExposure.fromReady({
+            'capabilityExposures': [
+              {...exposure, entry.key: value},
+            ],
+          }),
+          throwsFormatException,
+        );
+      }
+    });
+  }
+
+  test(
+    'empty configuration router rejects calls without adding a context',
+    () async {
+      final router = AdeleConfigurationContextRouter(contexts: const {});
+      final events = <Map<String, Object?>>[];
+      await router.handle({
+        'kind': 'request',
+        'requestId': 1,
+        'configurationContext': 'default',
+        'serviceId': 'fixture',
+      }, events.add);
+      expect(
+        (events.single['error']! as Map)['code'],
+        'configuration_context_unavailable',
+      );
+      await router.close();
+    },
+  );
+
   test('JSON snapshots are deep immutable construction-time values', () {
     final Map<String, Object?> nested = <String, Object?>{'value': 'original'};
     final List<Object?> items = <Object?>['original'];
