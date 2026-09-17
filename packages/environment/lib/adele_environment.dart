@@ -349,11 +349,31 @@ abstract interface class EnvironmentProviderService {
   );
 }
 
-/// File reads over authority already bound by the host invocation context.
+@AdeleValue('environment.authorizedIdentity')
+final class AuthorizedEnvironmentIdentity {
+  AuthorizedEnvironmentIdentity({
+    required this.sessionId,
+    required this.environmentId,
+  }) {
+    product.SessionId(sessionId);
+    product.EnvironmentId(environmentId);
+  }
+
+  final String sessionId;
+  final String environmentId;
+}
+
+/// Read access over authority already bound by the host invocation context.
 @AdeleService('authorizedEnvironmentRead')
 abstract interface class AuthorizedEnvironmentReadService {
+  @AdeleMethod('authority')
+  Future<AuthorizedEnvironmentIdentity> authority();
+
   @AdeleMethod('readFile')
   Future<EnvironmentTextFile> readFile(String relativePath);
+
+  @AdeleMethod('readDirectory')
+  Future<EnvironmentDirectoryListing> readDirectory(String relativePath);
 }
 
 @AdeleFailure('environment.failure')

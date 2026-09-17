@@ -287,6 +287,14 @@ final class _Files implements AuthorizedEnvironmentReadService {
   final paths = <String>[];
 
   @override
+  Future<AuthorizedEnvironmentIdentity> authority() =>
+      throw StateError('Root instructions do not need authority identity.');
+
+  @override
+  Future<EnvironmentDirectoryListing> readDirectory(String relativePath) =>
+      throw StateError('Root instructions must not scan directories.');
+
+  @override
   Future<EnvironmentTextFile> readFile(String relativePath) async {
     paths.add(relativePath);
     if (failure case final failure?) throw failure;

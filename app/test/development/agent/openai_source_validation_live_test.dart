@@ -149,8 +149,8 @@ Future<void> _runSourceValidation({
       'apply_patch',
       'create_file',
       'delete_file',
-      'search',
       'run_command',
+      'search',
     ],
   );
   final SourceCodingLiveProviderActivation model = await startProvider(harness);

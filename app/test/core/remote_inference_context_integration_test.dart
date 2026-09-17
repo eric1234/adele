@@ -381,6 +381,110 @@ void main() {
     });
   }
 
+  test(
+    'authority and directory reads share the lazy captured Session facet',
+    () async {
+      await start(
+        probeArtifact,
+        _probeId,
+        sourceId: _probeSource,
+        probeOptions: {'inspectReadAuthority': true},
+      );
+      expect(context.requested, isEmpty);
+      expect(files.directoryPaths, isEmpty);
+      final release = Completer<void>();
+      context.releaseAcquisition = release;
+      addTearDown(() {
+        if (!release.isCompleted) release.complete();
+      });
+      final snapshot = compose();
+      await context.acquisitionEntered.future.timeout(_bound);
+      // Acquisition already captured the original facet. No subsequent operation
+      // may replace it even if a fresh host lookup would return another facet.
+      final replacement = _Files();
+      context.files = replacement;
+      release.complete();
+      final materials = (await snapshot).sourceResults.single.materials;
+      expect(_receipt(materials, 'authority')['payload'], {
+        'sessionId': context.session.id.value,
+        'environmentId': files.environmentId.value,
+      });
+      expect(_receipt(materials, 'directory')['payload'], {
+        'relativePath': 'lib',
+        'entries': [
+          {
+            'name': 'main.dart',
+            'relativePath': 'lib/main.dart',
+            'kind': 'file',
+          },
+        ],
+      });
+      expect(context.requested, [AuthorizedEnvironmentFileReadFacet]);
+      expect(files.directoryPaths, ['lib']);
+      expect(files.paths, ['AGENTS.md']);
+      expect(replacement.directoryPaths, isEmpty);
+      expect(replacement.paths, isEmpty);
+    },
+  );
+
+  test('authority and directory access reject a wrong-Session facet', () async {
+    await start(
+      probeArtifact,
+      _probeId,
+      sourceId: _probeSource,
+      probeOptions: {'inspectReadAuthority': true},
+    );
+    files.sessionId = SessionId('another-session');
+    final materials = (await compose()).sourceResults.single.materials;
+    for (final key in ['authority', 'directory', 'read']) {
+      _expectDenied(_receipt(materials, key), 'internal_error');
+    }
+    expect(files.directoryPaths, isEmpty);
+    expect(files.paths, isEmpty);
+    expect(context.requested, [AuthorizedEnvironmentFileReadFacet]);
+  });
+
+  for (final failDirectory in [false, true]) {
+    test('directory settlement rejects retired authority on '
+        '${failDirectory ? 'failure' : 'success'}', () async {
+      await start(
+        probeArtifact,
+        _probeId,
+        sourceId: _probeSource,
+        probeOptions: {'inspectReadAuthority': true},
+      );
+      files.release = Completer<void>();
+      addTearDown(files.unblock);
+      if (failDirectory) {
+        files.failure = const EnvironmentFailure(
+          code: 'not_found',
+          message: 'Directory absent',
+          details: {},
+        );
+      }
+      final failed = expectLater(
+        compose(),
+        throwsA(
+          isA<InferenceContextSourceFailed>()
+              .having((error) => error.sourceId.value, 'sourceId', _probeSource)
+              .having(
+                (error) => error.cause,
+                'cause',
+                isA<AuthorizedEnvironmentBindingStale>(),
+              ),
+        ),
+      );
+      await files.entered.future.timeout(_bound);
+      expect(files.directoryPaths, ['lib']);
+      files.stale = true;
+      files.unblock();
+      await failed;
+      expect(files.paths, isEmpty);
+      expect(files.validations, 5);
+      expect(context.requested, [AuthorizedEnvironmentFileReadFacet]);
+    });
+  }
+
   test('probe cannot turn semantic IDs, service names or an invented token '
       'into authority; captured read remains usable', () async {
     final activation = await start(
@@ -809,6 +913,7 @@ final class _Files implements AuthorizedEnvironmentFileReadFacet {
   bool stale = false;
   int validations = 0;
   final paths = <String>[];
+  final directoryPaths = <String>[];
   final entered = Completer<void>();
   final settled = Completer<void>();
   Completer<void>? release;
@@ -857,13 +962,38 @@ final class _Files implements AuthorizedEnvironmentFileReadFacet {
   }
 
   @override
-  Future<EnvironmentDirectoryListing> readDirectory(String relativePath) =>
-      throw StateError('A root instruction source must not scan directories.');
+  Future<EnvironmentDirectoryListing> readDirectory(String relativePath) async {
+    directoryPaths.add(relativePath);
+    if (!entered.isCompleted) entered.complete();
+    await release?.future;
+    if (failure case final Object error) throw error;
+    return EnvironmentDirectoryListing(
+      relativePath: relativePath,
+      entries: [
+        EnvironmentDirectoryEntry(
+          name: 'main.dart',
+          relativePath: '$relativePath/main.dart',
+          kind: EnvironmentDirectoryEntryKind.file,
+        ),
+      ],
+    );
+  }
 }
 
 final class _ReadService implements AuthorizedEnvironmentReadService {
   const _ReadService(this.files);
   final _Files files;
+
+  @override
+  Future<AuthorizedEnvironmentIdentity> authority() async =>
+      AuthorizedEnvironmentIdentity(
+        sessionId: files.sessionId.value,
+        environmentId: files.environmentId.value,
+      );
+
+  @override
+  Future<EnvironmentDirectoryListing> readDirectory(String relativePath) =>
+      files.readDirectory(relativePath);
 
   @override
   Future<EnvironmentTextFile> readFile(String relativePath) =>

@@ -30,13 +30,14 @@ pipeline compiles backend source to native Dart AOT and frontend source to
 Windows and macOS behavior remain future packaging and validation work.
 
 Normal desktop runtime activation never compiles plugin source. The Linux checkout
-launcher compiles the shared host and three backend AOT artifacts (Git, OpenAI,
-and AGENTS.md) plus four stock frontend EVCs (Chat, Filesystem Tools, Command Tools,
-and OpenAI activity) before launching or building Flutter, using the selected SDK.
-The six prepared installations share one fresh installation root; the host
-snapshot is beside that root. AGENTS.md uses backend-only `agents-md/backend.aot`
-without configuration or additional deployment defines. Both host and plugin
-protocols are currently version 2: prepared hosts and backends must be rebuilt
+launcher compiles the shared host and four backend AOT artifacts (Git, OpenAI,
+AGENTS.md, and Search) plus four stock frontend EVCs (Chat, Filesystem Tools, Command
+Tools, and OpenAI activity) before launching or building Flutter, using the selected SDK.
+The seven prepared installations share one fresh installation root; the host
+snapshot is beside that root. AGENTS.md and Search use backend-only
+`agents-md/backend.aot` and `search-tools/backend.aot` without configuration or
+additional deployment defines. Both host and plugin protocols are currently
+version 2: prepared hosts and backends must be rebuilt
 together, and mixed protocol versions are unsupported. The installed manifest
 remains version 1; see [contract compatibility](contracts-and-capabilities.md#contracts).
 `tools/frontend_artifacts.dart` invokes

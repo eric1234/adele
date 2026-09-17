@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:agent_kernel/agent_kernel.dart';
 
 final class TestExecutable implements ToolExecutable {
@@ -5,11 +7,14 @@ final class TestExecutable implements ToolExecutable {
     this.provider = 'generation-a',
     this.plainFormatFailure = false,
     this.descriptionFailure = false,
+    this.validator,
   });
 
   final String provider;
   final bool plainFormatFailure;
   final bool descriptionFailure;
+  final FutureOr<CanonicalToolArguments> Function(Map<String, Object?>)?
+  validator;
   bool active = true;
   int descriptions = 0;
   int executions = 0;
@@ -51,9 +56,10 @@ final class TestExecutable implements ToolExecutable {
   }
 
   @override
-  CanonicalToolArguments validateAndNormalize(
+  FutureOr<CanonicalToolArguments> validateAndNormalize(
     Map<String, Object?> proposedArguments,
   ) {
+    if (validator != null) return validator!(proposedArguments);
     if (plainFormatFailure) {
       throw const FormatException('plain format failure');
     }
@@ -113,13 +119,13 @@ ToolRegistration testRegistration(
   executable: executable,
 );
 
-ToolInvocation testInvocation(
+Future<ToolInvocation> testInvocation(
   TestExecutable executable, {
   String invocationId = 'tool-1',
-}) {
+}) async {
   final ToolCatalog catalog = ToolCatalog()
     ..register(testRegistration(executable));
-  final ToolProposalResolution resolution = const ToolInvocationResolver()
+  final ToolProposalResolution resolution = await const ToolInvocationResolver()
       .resolve(
         invocationId: ToolInvocationId(invocationId),
         proposal: ProviderToolProposal(

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
@@ -693,7 +694,7 @@ final class _AfterToolExecutable implements ToolExecutable {
   }
 
   @override
-  CanonicalToolArguments validateAndNormalize(
+  FutureOr<CanonicalToolArguments> validateAndNormalize(
     Map<String, Object?> proposedArguments,
   ) => delegate.validateAndNormalize(proposedArguments);
 

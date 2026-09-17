@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:test/test.dart';
@@ -73,9 +75,174 @@ void main() {
   });
 
   group('proposal resolution', () {
-    test('known alias and valid arguments create a ToolInvocation', () {
+    test('awaits canonical validation before creating an invocation', () async {
+      final Completer<void> validating = Completer<void>();
+      final Completer<CanonicalToolArguments> validation =
+          Completer<CanonicalToolArguments>();
+      final TestExecutable executable = TestExecutable(
+        validator: (arguments) {
+          expect(arguments, {'uri': 'file:///tmp/example.dart'});
+          validating.complete();
+          return validation.future;
+        },
+      );
+      bool resolved = false;
+      final Future<ToolInvocation> pending = testInvocation(executable).then((
+        invocation,
+      ) {
+        resolved = true;
+        return invocation;
+      });
+      await validating.future;
+      expect(resolved, isFalse);
+      expect(executable.descriptions, 0);
+      expect(executable.executions, 0);
+      final CanonicalToolArguments canonical = CanonicalToolArguments({
+        'uri': 'file:///tmp/normalized.dart',
+      });
+      validation.complete(canonical);
+      final ToolInvocation invocation = await pending;
+      expect(invocation.arguments, same(canonical));
+      expect(invocation.canonicalArguments, canonical.snapshot);
+      expect(invocation.tool.executable, same(executable));
+      expect(executable.descriptions, 0);
+      expect(executable.executions, 0);
+    });
+
+    for (final bool asynchronous in [false, true]) {
+      for (final fixture in [
+        (
+          error: const FormatException('plain failure'),
+          kind: ToolProposalFailureKind.invalidArguments,
+          message: 'plain failure',
+        ),
+        (
+          error: const FormatException('  '),
+          kind: ToolProposalFailureKind.invalidArguments,
+          message: 'The proposed tool arguments are invalid.',
+        ),
+        (
+          error: const ToolArgumentValidationException('typed failure'),
+          kind: ToolProposalFailureKind.invalidArguments,
+          message: 'typed failure',
+        ),
+        (
+          error: const ToolArgumentValidationException(''),
+          kind: ToolProposalFailureKind.invalidArguments,
+          message: 'The proposed tool arguments are invalid.',
+        ),
+        (
+          error: const StaleToolBindingException('retired during validation'),
+          kind: ToolProposalFailureKind.staleBinding,
+          message: 'The proposed tool binding is stale.',
+        ),
+        (
+          error: const ToolBindingUnavailableException(
+            'unavailable during validation',
+          ),
+          kind: ToolProposalFailureKind.bindingUnavailable,
+          message: 'The proposed tool binding is unavailable.',
+        ),
+      ]) {
+        test(
+          '${asynchronous ? 'async' : 'sync'} validator maps ${fixture.error}',
+          () async {
+            final TestExecutable executable = TestExecutable(
+              validator: (_) {
+                if (asynchronous) {
+                  return Future<CanonicalToolArguments>.microtask(
+                    () => throw fixture.error,
+                  );
+                }
+                throw fixture.error;
+              },
+            );
+            final ToolProposalResolution resolution =
+                await const ToolInvocationResolver().resolve(
+                  invocationId: ToolInvocationId('validation'),
+                  proposal: ProviderToolProposal(
+                    providerCallId: 'validation-call',
+                    alias: 'inspect_resource',
+                    arguments: {},
+                  ),
+                  tools: (ToolCatalog()..register(testRegistration(executable)))
+                      .materialize(),
+                  context: testExecutionContext(),
+                );
+            final ToolProposalFailure failure =
+                (resolution as RejectedToolProposal).failure;
+            expect(failure.kind, fixture.kind);
+            expect(failure.message, fixture.message);
+            expect(failure.cause, same(fixture.error));
+            expect(failure.providerCallId, 'validation-call');
+            expect(failure.alias, 'inspect_resource');
+            expect(executable.descriptions, 0);
+            expect(executable.executions, 0);
+          },
+        );
+      }
+
+      test(
+        '${asynchronous ? 'async' : 'sync'} infrastructure failure is not invalid arguments',
+        () async {
+          final StateError error = StateError('validation transport failed');
+          final TestExecutable executable = TestExecutable(
+            validator: (_) {
+              if (asynchronous) {
+                return Future<CanonicalToolArguments>.microtask(
+                  () => throw error,
+                );
+              }
+              throw error;
+            },
+          );
+          await expectLater(testInvocation(executable), throwsA(same(error)));
+          expect(executable.descriptions, 0);
+          expect(executable.executions, 0);
+        },
+      );
+    }
+
+    test('rechecks the exact binding after asynchronous validation', () async {
+      final ToolCatalog catalog = ToolCatalog();
+      final TestExecutable replacement = TestExecutable(
+        provider: 'replacement',
+      );
+      late final TestExecutable executable;
+      executable = TestExecutable(
+        validator: (arguments) async {
+          executable.active = false;
+          catalog.register(testRegistration(replacement));
+          return CanonicalToolArguments(arguments);
+        },
+      );
+      catalog.register(testRegistration(executable));
+      final MaterializedToolSet tools = catalog.materialize();
+      final ToolProposalResolution resolution =
+          await const ToolInvocationResolver().resolve(
+            invocationId: ToolInvocationId('retired-validation'),
+            proposal: ProviderToolProposal(
+              providerCallId: 'retired-call',
+              alias: 'inspect_resource',
+              arguments: {},
+            ),
+            tools: tools,
+            context: testExecutionContext(),
+          );
+      expect(
+        (resolution as RejectedToolProposal).failure.kind,
+        ToolProposalFailureKind.staleBinding,
+      );
+      expect(tools.tools.single.executable, same(executable));
+      expect(catalog.materialize().tools.single.executable, same(replacement));
+      expect(executable.descriptions, 0);
+      expect(executable.executions, 0);
+      expect(replacement.executions, 0);
+    });
+
+    test('known alias and valid arguments create a ToolInvocation', () async {
       final TestExecutable executable = TestExecutable();
-      final ToolInvocation invocation = testInvocation(executable);
+      final ToolInvocation invocation = await testInvocation(executable);
 
       expect(invocation.toolId, ToolId('dev.adele.tool.resource-inspection'));
       expect(invocation.proposal.providerCallId, 'provider-1');
@@ -91,9 +258,9 @@ void main() {
       );
     });
 
-    test('unknown alias does not create a fake ToolInvocation', () {
-      final ToolProposalResolution resolution = const ToolInvocationResolver()
-          .resolve(
+    test('unknown alias does not create a fake ToolInvocation', () async {
+      final ToolProposalResolution resolution =
+          await const ToolInvocationResolver().resolve(
             invocationId: ToolInvocationId('tool-1'),
             proposal: ProviderToolProposal(
               providerCallId: 'provider-1',
@@ -112,10 +279,10 @@ void main() {
       );
     });
 
-    test('invalid arguments do not create or execute an invocation', () {
+    test('invalid arguments do not create or execute an invocation', () async {
       final TestExecutable executable = TestExecutable();
-      final ToolProposalResolution resolution = const ToolInvocationResolver()
-          .resolve(
+      final ToolProposalResolution resolution =
+          await const ToolInvocationResolver().resolve(
             invocationId: ToolInvocationId('tool-1'),
             proposal: ProviderToolProposal(
               providerCallId: 'provider-1',
@@ -136,30 +303,33 @@ void main() {
       expect(executable.executions, 0);
     });
 
-    test('plain FormatException is a typed invalid-arguments failure', () {
-      final TestExecutable executable = TestExecutable(
-        plainFormatFailure: true,
-      );
-      final ToolProposalResolution resolution = const ToolInvocationResolver()
-          .resolve(
-            invocationId: ToolInvocationId('tool-1'),
-            proposal: ProviderToolProposal(
-              providerCallId: 'provider-1',
-              alias: 'inspect_resource',
-              arguments: const <String, Object?>{
-                'uri': 'file:///tmp/example.dart',
-              },
-            ),
-            tools: (ToolCatalog()..register(testRegistration(executable)))
-                .materialize(),
-            context: testExecutionContext(),
-          );
+    test(
+      'plain FormatException is a typed invalid-arguments failure',
+      () async {
+        final TestExecutable executable = TestExecutable(
+          plainFormatFailure: true,
+        );
+        final ToolProposalResolution resolution =
+            await const ToolInvocationResolver().resolve(
+              invocationId: ToolInvocationId('tool-1'),
+              proposal: ProviderToolProposal(
+                providerCallId: 'provider-1',
+                alias: 'inspect_resource',
+                arguments: const <String, Object?>{
+                  'uri': 'file:///tmp/example.dart',
+                },
+              ),
+              tools: (ToolCatalog()..register(testRegistration(executable)))
+                  .materialize(),
+              context: testExecutionContext(),
+            );
 
-      expect(
-        (resolution as RejectedToolProposal).failure.kind,
-        ToolProposalFailureKind.invalidArguments,
-      );
-    });
+        expect(
+          (resolution as RejectedToolProposal).failure.kind,
+          ToolProposalFailureKind.invalidArguments,
+        );
+      },
+    );
 
     test('tool proposal failure rejects empty model-facing messages', () {
       for (final String message in <String>['', '  ']) {
@@ -186,9 +356,9 @@ void main() {
             expected: 'Specific validation.',
           ),
         ]) {
-      test('normalizes validator message ${fixture.expected}', () {
-        final ToolProposalResolution resolution = const ToolInvocationResolver()
-            .resolve(
+      test('normalizes validator message ${fixture.expected}', () async {
+        final ToolProposalResolution resolution =
+            await const ToolInvocationResolver().resolve(
               invocationId: ToolInvocationId('tool-1'),
               proposal: ProviderToolProposal(
                 providerCallId: 'provider-1',
@@ -208,7 +378,7 @@ void main() {
       });
     }
 
-    test('binding lifecycle failures reject without ToolInvocation', () {
+    test('binding lifecycle failures reject without ToolInvocation', () async {
       for (final ({ToolBindingException error, ToolProposalFailureKind kind})
           fixture
           in <({ToolBindingException error, ToolProposalFailureKind kind})>[
@@ -223,8 +393,8 @@ void main() {
               kind: ToolProposalFailureKind.bindingUnavailable,
             ),
           ]) {
-        final ToolProposalResolution resolution = const ToolInvocationResolver()
-            .resolve(
+        final ToolProposalResolution resolution =
+            await const ToolInvocationResolver().resolve(
               invocationId: ToolInvocationId('tool-lifecycle'),
               proposal: ProviderToolProposal(
                 providerCallId: 'provider-lifecycle',
@@ -255,7 +425,7 @@ void main() {
     test('allow authorizes execution without interruption', () async {
       final TestExecutable executable = TestExecutable();
       final ToolPolicyGateResult result = await const ToolPolicyGate().evaluate(
-        invocation: testInvocation(executable),
+        invocation: await testInvocation(executable),
         policy: const DecisionPolicy(ToolPolicyDecision.allow),
         interruptionId: RunInterruptionId('unused-approval'),
       );
@@ -281,7 +451,7 @@ void main() {
     test('deny is terminal without execution or interruption', () async {
       final TestExecutable executable = TestExecutable();
       final ToolPolicyGateResult result = await const ToolPolicyGate().evaluate(
-        invocation: testInvocation(executable),
+        invocation: await testInvocation(executable),
         policy: const DecisionPolicy(ToolPolicyDecision.deny),
         interruptionId: RunInterruptionId('unused-approval'),
       );
@@ -297,7 +467,7 @@ void main() {
     test('ask interrupts and rejection executes nothing', () async {
       final TestExecutable executable = TestExecutable();
       final ToolPolicyGateResult result = await const ToolPolicyGate().evaluate(
-        invocation: testInvocation(executable),
+        invocation: await testInvocation(executable),
         policy: const DecisionPolicy(ToolPolicyDecision.ask),
         interruptionId: RunInterruptionId('approval-1'),
       );
@@ -331,7 +501,7 @@ void main() {
       );
       final ToolApprovalRequired required =
           await const ToolPolicyGate().evaluate(
-                invocation: testInvocation(generationA),
+                invocation: await testInvocation(generationA),
                 policy: const DecisionPolicy(ToolPolicyDecision.ask),
                 interruptionId: RunInterruptionId('approval-1'),
               )
@@ -372,7 +542,9 @@ void main() {
     test('effect-description and policy failures remain distinct', () async {
       await expectLater(
         const ToolPolicyGate().evaluate(
-          invocation: testInvocation(TestExecutable(descriptionFailure: true)),
+          invocation: await testInvocation(
+            TestExecutable(descriptionFailure: true),
+          ),
           policy: const DecisionPolicy(ToolPolicyDecision.allow),
           interruptionId: RunInterruptionId('approval-1'),
         ),
@@ -380,7 +552,7 @@ void main() {
       );
       await expectLater(
         const ToolPolicyGate().evaluate(
-          invocation: testInvocation(TestExecutable()),
+          invocation: await testInvocation(TestExecutable()),
           policy: const ThrowingPolicy(),
           interruptionId: RunInterruptionId('approval-1'),
         ),
@@ -459,6 +631,74 @@ void main() {
   });
 
   group('model-tool contributions', () {
+    for (final bool retire in [false, true]) {
+      test(
+        'async contribution validation ${retire ? 'rejects retirement' : 'resolves'}',
+        () async {
+          final ExtensionRegistry extensions = ExtensionRegistry();
+          final Completer<void> validating = Completer<void>();
+          final Completer<CanonicalToolArguments> validation =
+              Completer<CanonicalToolArguments>();
+          final TestExecutable executable = TestExecutable(
+            validator: (_) {
+              validating.complete();
+              return validation.future;
+            },
+          );
+          final ExtensionId id = ExtensionId('dev.adele.test.tools.async');
+          final ExtensionRegistration registration = extensions.register(
+            point: modelToolContributions,
+            id: id,
+            value: _Contribution('async', 'async_tool', executable: executable),
+          );
+          addTearDown(registration.close);
+          final MaterializedToolSet tools = (await ModelToolComposer(
+            extensions,
+          ).materialize(_HostContext(SessionId('session-1')))).materialize();
+          final Future<ToolProposalResolution> pending =
+              const ToolInvocationResolver().resolve(
+                invocationId: ToolInvocationId('async-tool'),
+                proposal: ProviderToolProposal(
+                  providerCallId: 'async-call',
+                  alias: 'async_tool',
+                  arguments: {},
+                ),
+                tools: tools,
+                context: testExecutionContext(),
+              );
+          await validating.future;
+          if (retire) {
+            await registration.close();
+            final ExtensionRegistration replacement = extensions.register(
+              point: modelToolContributions,
+              id: id,
+              value: const _Contribution('replacement', 'async_tool'),
+            );
+            addTearDown(replacement.close);
+          }
+          final CanonicalToolArguments canonical = CanonicalToolArguments({
+            'uri': 'file:///normalized.dart',
+          });
+          validation.complete(canonical);
+          final ToolProposalResolution result = await pending;
+          if (retire) {
+            expect(
+              (result as RejectedToolProposal).failure.kind,
+              ToolProposalFailureKind.staleBinding,
+            );
+          } else {
+            expect(
+              (result as ResolvedToolProposal).invocation.arguments,
+              same(canonical),
+            );
+            expect(result.invocation.tool, same(tools.tools.single));
+          }
+          expect(executable.descriptions, 0);
+          expect(executable.executions, 0);
+        },
+      );
+    }
+
     test(
       'multiple contributors compose for supplied Session context',
       () async {
@@ -573,17 +813,18 @@ final class _HostContext implements ModelToolHostContext {
 }
 
 final class _Contribution implements ModelToolContribution {
-  const _Contribution(this.generation, this.alias);
+  const _Contribution(this.generation, this.alias, {this.executable});
 
   final String generation;
   final String alias;
+  final TestExecutable? executable;
 
   @override
   Future<Iterable<ToolRegistration>> materialize(
     ModelToolHostContext context,
   ) async => <ToolRegistration>[
     testRegistration(
-      TestExecutable(provider: generation),
+      executable ?? TestExecutable(provider: generation),
       id: 'dev.adele.test.tool.$generation',
       alias: alias,
       description: 'Tool for ${context.sessionId}.',

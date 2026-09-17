@@ -3113,9 +3113,7 @@ bool inspect(String id) => inspectChatActivity(id);
     await disposeApplication(tester);
   });
 
-  testWidgets('stock read and search continue automatically without approval', (
-    tester,
-  ) async {
+  testWidgets('stock reads proceed without installed Search', (tester) async {
     final _ModelChannel model = fixture.registerModel();
     await openChat(tester);
     final ChatController controller = chat(tester);
@@ -3143,14 +3141,14 @@ bool inspect(String id) => inspectChatActivity(id);
       _events(
         run,
       ).whereType<ToolPolicyEvaluated>().map((event) => event.decision),
-      <ToolPolicyDecision>[ToolPolicyDecision.allow, ToolPolicyDecision.allow],
+      <ToolPolicyDecision>[ToolPolicyDecision.allow],
     );
-    expect(fixture.environment.directories.single['relativePath'], 'lib');
+    expect(fixture.environment.directories, isEmpty);
     expect(
       fixture.environment.reads.where(
         (read) => read['relativePath'] == _EnvironmentChannel.sourcePath,
       ),
-      hasLength(2),
+      hasLength(1),
     );
     expect(fixture.environment.replacements, isEmpty);
     expect(fixture.environment.processes, isEmpty);
@@ -3158,18 +3156,25 @@ bool inspect(String id) => inspectChatActivity(id);
       model.calls.last.outcomes.map(
         (outcome) => (outcome['callId'], outcome['status']),
       ),
-      <(String, String)>[('read-1', 'success'), ('search-1', 'success')],
+      <(String, String)>[('read-1', 'success'), ('search-1', 'failed')],
     );
     expect(
       model.calls.last.outcomes.first['content'],
       contains('source-revision-0'),
     );
-    expect(model.calls.last.outcomes.last['content'], contains('before'));
+    expect(
+      _events(run).whereType<ToolProposalRejected>().single.failure.kind,
+      ToolProposalFailureKind.unknownAlias,
+    );
+    expect(
+      model.calls.last.outcomes.last['content'],
+      'The proposed model tool alias is not available.',
+    );
     expect(
       controller.snapshot.entries.single.content,
       'Read and search the source',
     );
-    model.calls.last.output('Read and search complete.');
+    model.calls.last.output('Read complete; Search is not installed.');
     model.calls.last.settle();
     await tester.pumpAndSettle();
     await active;
@@ -3180,7 +3185,7 @@ bool inspect(String id) => inspectChatActivity(id);
     expect(controller.failure, isNull);
     expect(controller.snapshot.entries.map((entry) => entry.content), <String>[
       'Read and search the source',
-      'Read and search complete.',
+      'Read complete; Search is not installed.',
     ]);
     await disposeApplication(tester);
   });

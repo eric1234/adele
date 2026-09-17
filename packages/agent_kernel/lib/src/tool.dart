@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_orchestration/adele_orchestration.dart'
     show ProviderToolProposal, ToolProposalFailure, ToolProposalFailureKind;
@@ -92,7 +94,7 @@ final class _ExtensionBoundExecutable implements ToolExecutable {
   final ToolExecutable _delegate;
 
   @override
-  CanonicalToolArguments validateAndNormalize(
+  FutureOr<CanonicalToolArguments> validateAndNormalize(
     Map<String, Object?> proposedArguments,
   ) {
     _validateContribution();
@@ -208,12 +210,12 @@ final class RejectedToolProposal extends ToolProposalResolution {
 final class ToolInvocationResolver {
   const ToolInvocationResolver();
 
-  ToolProposalResolution resolve({
+  Future<ToolProposalResolution> resolve({
     required ToolInvocationId invocationId,
     required ProviderToolProposal proposal,
     required MaterializedToolSet tools,
     required ToolExecutionContext context,
-  }) {
+  }) async {
     final MaterializedTool? tool = tools.byAlias(proposal.alias);
     if (tool == null) {
       return RejectedToolProposal(
@@ -227,12 +229,16 @@ final class ToolInvocationResolver {
     }
     try {
       tool.executable.validateBinding();
+      final CanonicalToolArguments arguments = await tool.executable
+          .validateAndNormalize(proposal.arguments);
+      // Validation may await plugin code; retain the exact live binding.
+      tool.executable.validateBinding();
       return ResolvedToolProposal(
         ToolInvocation._(
           id: invocationId,
           proposal: proposal,
           tool: tool,
-          arguments: tool.executable.validateAndNormalize(proposal.arguments),
+          arguments: arguments,
           context: context,
         ),
       );

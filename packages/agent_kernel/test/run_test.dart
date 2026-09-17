@@ -118,7 +118,7 @@ void main() {
 
   test('interruption waiting and exact resolution are correlated', () async {
     final TestExecutable executable = TestExecutable();
-    final ToolInvocation invocation = testInvocation(executable);
+    final ToolInvocation invocation = await testInvocation(executable);
     final EffectDescription effects = await executable.describe(
       invocation.arguments,
       testExecutionContext(),
@@ -253,11 +253,11 @@ void main() {
     'Run remains waiting until every outstanding interruption resolves',
     () async {
       final TestExecutable executable = TestExecutable();
-      final ToolInvocation first = testInvocation(
+      final ToolInvocation first = await testInvocation(
         executable,
         invocationId: 'tool-1',
       );
-      final ToolInvocation second = testInvocation(
+      final ToolInvocation second = await testInvocation(
         executable,
         invocationId: 'tool-2',
       );
@@ -306,7 +306,7 @@ void main() {
 
   test('Run rejects a tool interruption owned by another Run', () async {
     final TestExecutable executable = TestExecutable();
-    final ToolInvocation invocation = testInvocation(executable);
+    final ToolInvocation invocation = await testInvocation(executable);
     final EffectDescription effects = await executable.describe(
       invocation.arguments,
       invocation.context,

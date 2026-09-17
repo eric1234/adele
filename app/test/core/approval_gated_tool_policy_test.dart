@@ -70,7 +70,7 @@ void main() {
     'run_command': ToolEffect.processExecution,
   }.entries) {
     test('evaluates stock ${entry.key} described effects', () async {
-      final ToolInvocation invocation = _resolve(
+      final ToolInvocation invocation = await _resolve(
         catalog.materialize(),
         context,
         entry.key,
@@ -109,13 +109,13 @@ void main() {
 
   test(
     'evaluates every effect set and uncertainty without alias authority',
-    () {
+    () async {
       final MaterializedTool read = catalog.materialize().byAlias('read_file')!;
       for (final String alias in <String>[
         ..._stockArguments.keys,
         'unfamiliar_alias',
       ]) {
-        final ToolInvocation invocation = _resolve(
+        final ToolInvocation invocation = await _resolve(
           MaterializedToolSet(<MaterializedTool>[
             MaterializedTool(
               definition: read.definition,
@@ -176,13 +176,13 @@ void main() {
   );
 }
 
-ToolInvocation _resolve(
+Future<ToolInvocation> _resolve(
   MaterializedToolSet tools,
   ToolExecutionContext context,
   String alias,
   Map<String, Object?> arguments,
-) {
-  final ToolProposalResolution resolution = const ToolInvocationResolver()
+) async {
+  final ToolProposalResolution resolution = await const ToolInvocationResolver()
       .resolve(
         invocationId: ToolInvocationId('invocation-$alias'),
         proposal: ProviderToolProposal(

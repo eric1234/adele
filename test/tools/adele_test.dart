@@ -303,7 +303,7 @@ void main() {
       expect(target.ciTestConcurrency, isNull);
     });
 
-    test('discovers remote extension support and AGENTS backend targets', () {
+    test('discovers remote extension support and stock backend targets', () {
       final workspace = File('pubspec.yaml').readAsStringSync();
       for (final expected in [
         (
@@ -311,6 +311,10 @@ void main() {
           path: 'packages/plugin_backend_support',
         ),
         (name: 'agents_md_backend', path: 'plugins/agents_md/packages/backend'),
+        (
+          name: 'search_tools_backend',
+          path: 'plugins/search_tools/packages/backend',
+        ),
       ]) {
         final target = lookupTestTarget(expected.name);
         expect(target.path, expected.path);
@@ -333,6 +337,26 @@ void main() {
         File('app/lib/core/adele_runtime.dart').readAsStringSync(),
         isNot(contains('AgentsMdPlugin')),
       );
+      final app = File('app/pubspec.yaml').readAsStringSync();
+      expect(
+        app.split('dev_dependencies:').first,
+        isNot(contains('search_tools')),
+      );
+      expect(
+        app.split('dev_dependencies:').last,
+        contains('search_tools_plugin:'),
+      );
+      for (final path in [
+        'app/lib/core/adele_runtime.dart',
+        'app/lib/core/application_plugin_bootstrap.dart',
+        'app/lib/development/agent/development_self_hosting.dart',
+      ]) {
+        expect(
+          File(path).readAsStringSync(),
+          isNot(contains('package:search_tools')),
+          reason: path,
+        );
+      }
     });
 
     test('discovers the UI API with the Flutter runner policy', () {
@@ -575,6 +599,7 @@ void main() {
         'git_environment_backend|dart|plugins/git_environment/packages/backend|test --timeout 4m',
         'filesystem_tools_plugin|dart|plugins/filesystem_tools|test',
         'search_tools_plugin|dart|plugins/search_tools|test',
+        'search_tools_backend|dart|plugins/search_tools/packages/backend|test',
         'command_tools_plugin|dart|plugins/command_tools|test',
         'agents_md_plugin|dart|plugins/agents_md|test',
         'agents_md_backend|dart|plugins/agents_md/packages/backend|test',

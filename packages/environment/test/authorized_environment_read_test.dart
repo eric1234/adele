@@ -17,6 +17,52 @@ void main() {
   tearDown(() => dispatcher.close());
 
   test(
+    'authority returns validated captured product IDs without arguments',
+    () async {
+      final identity = await client.authority();
+      expect(channel.method, 'authorizedEnvironmentRead.authority');
+      expect(channel.payload, isEmpty);
+      expect(identity.sessionId, 'session-1');
+      expect(identity.environmentId, 'environment-1');
+      expect(identity, isNot(same(service.identity)));
+    },
+  );
+
+  test('authority identity requires valid Session and Environment IDs', () {
+    for (final invalid in ['', ' ', ' leading', 'trailing ']) {
+      expect(
+        () => AuthorizedEnvironmentIdentity(
+          sessionId: invalid,
+          environmentId: 'environment-1',
+        ),
+        throwsFormatException,
+      );
+      expect(
+        () => AuthorizedEnvironmentIdentity(
+          sessionId: 'session-1',
+          environmentId: invalid,
+        ),
+        throwsFormatException,
+      );
+    }
+  });
+
+  test(
+    'directory reads reuse immutable existing listing and entry DTOs',
+    () async {
+      final listing = await client.readDirectory('lib');
+      expect(channel.method, 'authorizedEnvironmentRead.readDirectory');
+      expect(channel.payload, {'relativePath': 'lib'});
+      expect(service.path, 'lib');
+      expect(listing.relativePath, 'lib');
+      expect(listing.entries.single.name, 'main.dart');
+      expect(listing.entries.single.relativePath, 'lib/main.dart');
+      expect(listing.entries.single.kind, EnvironmentDirectoryEntryKind.file);
+      expect(() => listing.entries.clear(), throwsUnsupportedError);
+    },
+  );
+
+  test(
     'authorized read roundtrips the existing text-file DTO with only a path',
     () async {
       final EnvironmentTextFile file = await client.readFile('AGENTS.md');
@@ -124,7 +170,6 @@ void main() {
       }
       for (final String method in <String>[
         environmentProviderServiceReadFileId,
-        'authorizedEnvironmentRead.readDirectory',
         'authorizedEnvironmentRead.replaceExistingTextFile',
         'authorizedEnvironmentRead.runForegroundProcess',
       ]) {
@@ -139,6 +184,77 @@ void main() {
       expect(service.path, isNull);
     },
   );
+
+  test(
+    'authority and directory reads reject supplied authority selectors',
+    () async {
+      for (final method in [
+        authorizedEnvironmentReadServiceAuthorityId,
+        authorizedEnvironmentReadServiceReadDirectoryId,
+      ]) {
+        for (final field in [
+          'sessionId',
+          'environmentId',
+          'hostInvocationContext',
+        ]) {
+          final response = await dispatcher.dispatch(
+            _request(method, {
+              if (method == authorizedEnvironmentReadServiceReadDirectoryId)
+                'relativePath': 'lib',
+              field: 'forged',
+            }),
+          );
+          expect((response['error']! as Map)['code'], 'invalid_request');
+        }
+      }
+      expect(service.path, isNull);
+    },
+  );
+
+  test(
+    'new read operations preserve declared and opaque failure boundaries',
+    () async {
+      for (final invoke in <Future<Object> Function()>[
+        client.authority,
+        () => client.readDirectory('lib'),
+      ]) {
+        service.failure = const EnvironmentFailure(
+          code: 'permission_denied',
+          message: 'Read rejected.',
+          details: {},
+        );
+        await expectLater(invoke(), throwsA(isA<EnvironmentFailure>()));
+        service.failure = StateError('private authority detail');
+        await expectLater(
+          invoke(),
+          throwsA(
+            isA<AdeleRemoteFailure>().having(
+              (failure) => failure.code,
+              'code',
+              'internal_error',
+            ),
+          ),
+        );
+      }
+    },
+  );
+
+  test('authority client rejects invalid IDs and malformed fields', () async {
+    for (final payload in <Map<String, Object?>>[
+      {'sessionId': '', 'environmentId': 'environment'},
+      {'sessionId': 'session', 'environmentId': ' environment'},
+      {'sessionId': 'session'},
+      {'sessionId': 'session', 'environmentId': 1},
+      {'sessionId': 'session', 'environmentId': 'environment', 'extra': true},
+    ]) {
+      await expectLater(
+        AuthorizedEnvironmentReadServiceClient(
+          _ResponseChannel(payload),
+        ).authority(),
+        throwsA(isA<AdeleProtocolException>()),
+      );
+    }
+  });
 }
 
 Map<Object?, Object?> _request(String method, Map<String, Object?> payload) =>
@@ -150,6 +266,10 @@ Map<Object?, Object?> _request(String method, Map<String, Object?> payload) =>
     };
 
 final class _ReadService implements AuthorizedEnvironmentReadService {
+  final identity = AuthorizedEnvironmentIdentity(
+    sessionId: 'session-1',
+    environmentId: 'environment-1',
+  );
   final EnvironmentTextFile file = const EnvironmentTextFile(
     relativePath: 'AGENTS.md',
     text: '  instruction\n',
@@ -158,6 +278,28 @@ final class _ReadService implements AuthorizedEnvironmentReadService {
   );
   String? path;
   Object? failure;
+
+  @override
+  Future<AuthorizedEnvironmentIdentity> authority() async {
+    if (failure case final Object error) throw error;
+    return identity;
+  }
+
+  @override
+  Future<EnvironmentDirectoryListing> readDirectory(String relativePath) async {
+    path = relativePath;
+    if (failure case final Object error) throw error;
+    return EnvironmentDirectoryListing(
+      relativePath: relativePath,
+      entries: [
+        EnvironmentDirectoryEntry(
+          name: 'main.dart',
+          relativePath: '$relativePath/main.dart',
+          kind: EnvironmentDirectoryEntryKind.file,
+        ),
+      ],
+    );
+  }
 
   @override
   Future<EnvironmentTextFile> readFile(String relativePath) async {
@@ -187,6 +329,15 @@ final class _Channel implements AdeleRequestChannel {
     }
     return response['payload'];
   }
+}
+
+final class _ResponseChannel implements AdeleRequestChannel {
+  const _ResponseChannel(this.response);
+  final Object? response;
+
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) async =>
+      response;
 }
 
 final class _RemoteFailure implements AdeleRemoteFailure {

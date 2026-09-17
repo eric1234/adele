@@ -9,6 +9,10 @@ import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 
 final PluginId searchToolsPluginId = PluginId('dev.adele.plugin.search-tools');
+final ExtensionId searchToolsExtensionId = ExtensionId(
+  'dev.adele.plugin.search-tools.model-tools',
+);
+final ToolId searchToolId = ToolId('dev.adele.plugin.search-tools.search');
 
 final class SearchToolsPlugin {
   const SearchToolsPlugin();
@@ -16,7 +20,7 @@ final class SearchToolsPlugin {
   ExtensionRegistration activate(ExtensionRegistry extensions) =>
       extensions.register(
         point: modelToolContributions,
-        id: ExtensionId('dev.adele.plugin.search-tools.model-tools'),
+        id: searchToolsExtensionId,
         value: _SearchModelTools(),
       );
 }
@@ -31,14 +35,18 @@ final class _SearchModelTools implements ModelToolContribution {
     if (fileSystem.sessionId != context.sessionId) {
       throw StateError('The filesystem authority belongs to another Session.');
     }
-    return <ToolRegistration>[_SearchExecutable(fileSystem).registration];
+    return <ToolRegistration>[SearchExecutable(fileSystem).registration];
   }
 }
 
-final class _SearchExecutable implements ToolExecutable {
-  const _SearchExecutable(this._fileSystem);
+/// The same Search semantics for in-process and operation-bound backend use.
+final class SearchExecutable implements ToolExecutable {
+  const SearchExecutable(AuthorizedEnvironmentFileReadFacet fileSystem)
+    : _boundFileSystem = fileSystem;
 
-  static final ToolId _toolId = ToolId('dev.adele.plugin.search-tools.search');
+  /// Metadata and argument validation require no Environment authority.
+  const SearchExecutable.unbound() : _boundFileSystem = null;
+
   static const int _maxMatches = 100;
   static const int _maxEntries = 10000;
   static const int _maxSearchedBytes = 16 * 1024 * 1024;
@@ -54,11 +62,17 @@ final class _SearchExecutable implements ToolExecutable {
   static bool _isExcludedDirectory(String name) =>
       _excludedDirectories.contains(name.toLowerCase());
 
-  final AuthorizedEnvironmentFileReadFacet _fileSystem;
+  final AuthorizedEnvironmentFileReadFacet? _boundFileSystem;
+
+  AuthorizedEnvironmentFileReadFacet get _fileSystem =>
+      _boundFileSystem ??
+      (throw StateError(
+        'Search requires an authorized Environment read facet.',
+      ));
 
   ToolRegistration get registration => ToolRegistration(
     definition: ToolDefinition(
-      id: _toolId,
+      id: searchToolId,
       description: 'Search text files in the current Session Environment.',
     ),
     modelDefinition: ModelToolDefinition(
@@ -508,15 +522,15 @@ String _boundedSnippet(
   required int matchStart,
   required int matchLength,
 }) {
-  if (line.length <= _SearchExecutable._maxSnippetCodeUnits) return line;
+  if (line.length <= SearchExecutable._maxSnippetCodeUnits) return line;
   final int context =
-      (_SearchExecutable._maxSnippetCodeUnits - matchLength) ~/ 2;
+      (SearchExecutable._maxSnippetCodeUnits - matchLength) ~/ 2;
   int start = math.max(0, matchStart - context);
   int end = math.min(
     line.length,
-    start + _SearchExecutable._maxSnippetCodeUnits,
+    start + SearchExecutable._maxSnippetCodeUnits,
   );
-  start = math.max(0, end - _SearchExecutable._maxSnippetCodeUnits);
+  start = math.max(0, end - SearchExecutable._maxSnippetCodeUnits);
   if (start > 0 && _isLowSurrogate(line.codeUnitAt(start))) start++;
   if (end < line.length && _isHighSurrogate(line.codeUnitAt(end - 1))) end--;
   return line.substring(start, end);

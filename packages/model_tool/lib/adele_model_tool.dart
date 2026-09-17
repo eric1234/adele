@@ -62,7 +62,7 @@ final class ToolExecutionContext {
 }
 
 abstract interface class ToolExecutable {
-  CanonicalToolArguments validateAndNormalize(
+  FutureOr<CanonicalToolArguments> validateAndNormalize(
     Map<String, Object?> proposedArguments,
   );
 

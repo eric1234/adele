@@ -46,7 +46,7 @@ final class RemoteExtensionContext {
   final PluginBackendConnection connection;
   final AdeleExtensionExposure exposure;
   final ConfigurationContextId configurationContext;
-  final Set<PluginHostInvocation> _invocations = {};
+  final Map<PluginHostInvocation, void Function()> _invocations = {};
   ExtensionRegistration? _registration;
   bool _retired = false;
 
@@ -68,7 +68,7 @@ final class RemoteExtensionContext {
   ) async {
     validate();
     final invocation = connection.openHostInvocation(services);
-    _invocations.add(invocation);
+    _invocations[invocation] = invocation.close;
     try {
       final result = await operation(invocation);
       validate();
@@ -79,10 +79,102 @@ final class RemoteExtensionContext {
     }
   }
 
+  /// Grants authority on listen, until done, the first error, or cancellation.
+  ///
+  /// The stream is single-subscription and remains tied to this registration.
+  /// Retirement also fails an idle or paused stream; it never selects a replacement.
+  /// Dispatchers remain caller-owned, as with [invoke].
+  Stream<T> invokeStream<T>(
+    Map<String, AdeleBackendDispatcher> services,
+    Stream<T> Function(PluginHostInvocation invocation) operation,
+  ) {
+    late final StreamController<T> controller;
+    PluginHostInvocation? invocation;
+    StreamSubscription<T>? subscription;
+    Future<void>? cancellation;
+    var terminated = false;
+    var failed = false;
+
+    void revoke() {
+      terminated = true;
+      invocation?.close();
+      _invocations.remove(invocation);
+    }
+
+    Future<void> cancel() {
+      // Release nested unary calls before waiting for producer cancellation.
+      revoke();
+      final current = subscription;
+      if (current == null) return Future<void>.value();
+      final pending = cancellation ??= Future<void>.sync(current.cancel);
+      return failed ? pending.catchError((Object _) {}) : pending;
+    }
+
+    void fail(Object error, StackTrace stackTrace) {
+      if (terminated) return;
+      // Cleanup failure must not replace the operation's primary failure.
+      failed = true;
+      unawaited(cancel());
+      controller.addError(error, stackTrace);
+      unawaited(controller.close());
+    }
+
+    controller = StreamController<T>(
+      sync: true,
+      onListen: () {
+        try {
+          validate();
+          final opened = connection.openHostInvocation(services);
+          invocation = opened;
+          _invocations[opened] = () => fail(
+            StaleExtensionBinding(ExtensionId(exposure.extensionId)),
+            StackTrace.current,
+          );
+          final source = operation(opened);
+          if (terminated) return;
+          validate();
+          subscription = source.listen(
+            (item) {
+              if (terminated) return;
+              try {
+                validate();
+                controller.add(item);
+              } on Object catch (error, stackTrace) {
+                fail(error, stackTrace);
+              }
+            },
+            onError: fail,
+            onDone: () {
+              if (terminated) return;
+              try {
+                validate();
+                revoke();
+                unawaited(controller.close());
+              } on Object catch (error, stackTrace) {
+                fail(error, stackTrace);
+              }
+            },
+          );
+          if (terminated) {
+            unawaited(cancel());
+          } else if (controller.isPaused) {
+            subscription!.pause();
+          }
+        } on Object catch (error, stackTrace) {
+          fail(error, stackTrace);
+        }
+      },
+      onPause: () => subscription?.pause(),
+      onResume: () => subscription?.resume(),
+      onCancel: cancel,
+    );
+    return controller.stream;
+  }
+
   void _retire() {
     _retired = true;
-    for (final invocation in _invocations) {
-      invocation.close();
+    for (final retire in _invocations.values.toList()) {
+      retire();
     }
     _invocations.clear();
   }

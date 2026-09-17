@@ -13,6 +13,113 @@ import '../support/orchestration_test_lifecycle.dart';
 
 void main() {
   test(
+    'async validation settles before preparation, policy and approval',
+    () async {
+      final _StrategyFixture fixture = await _fixture(ToolPolicyDecision.ask);
+      final Completer<void> validating = Completer<void>();
+      final Completer<CanonicalToolArguments> validation =
+          Completer<CanonicalToolArguments>();
+      fixture.executable.validator = (_) {
+        validating.complete();
+        return validation.future;
+      };
+      int descriptions = 0;
+      fixture.executable.beforeDescribe = () async {
+        descriptions++;
+      };
+      final Future<void> starting = fixture.strategy.start();
+      await validating.future;
+      expect(fixture.strategy.lastToolInvocation, isNull);
+      expect(fixture.strategy.activity.snapshot.tools, isEmpty);
+      expect(fixture.run.interruptions, isEmpty);
+      expect(descriptions, 0);
+      expect(fixture.executable.executions, 0);
+      final CanonicalToolArguments canonical = CanonicalToolArguments({
+        'uri': 'file:///normalized.dart',
+      });
+      validation.complete(canonical);
+      await starting;
+      expect(fixture.run.state, RunState.waiting);
+      expect(fixture.strategy.lastToolInvocation!.arguments, same(canonical));
+      expect(descriptions, 1);
+      expect(fixture.executable.executions, 0);
+      await fixture.strategy.resolveApproval(_approval(fixture.run));
+      expect(fixture.run.state, RunState.completed);
+      expect(fixture.executable.executions, 1);
+      expect(fixture.model.sawCorrelatedContinuation, isTrue);
+    },
+  );
+
+  for (final Object error in [
+    const FormatException('async local format failure'),
+    const ToolArgumentValidationException('async local validation failure'),
+    StateError('async validation infrastructure failure'),
+  ]) {
+    test(
+      'async validation preserves orchestration failure boundary: $error',
+      () async {
+        final _StrategyFixture fixture = await _fixture(
+          ToolPolicyDecision.allow,
+        );
+        fixture.executable.validator = (_) =>
+            Future<CanonicalToolArguments>.microtask(() => throw error);
+        int descriptions = 0;
+        fixture.executable.beforeDescribe = () async {
+          descriptions++;
+        };
+        if (error is FormatException) {
+          await fixture.strategy.start();
+          expect(fixture.run.state, RunState.completed);
+          final ToolProposalFailure failure = fixture.model.requests.last.input
+              .whereType<SemanticToolProposalFailureInput>()
+              .single
+              .failure;
+          expect(failure.kind, ToolProposalFailureKind.invalidArguments);
+          expect(failure.message, error.message);
+          expect(failure.cause, same(error));
+        } else {
+          await expectLater(fixture.strategy.start(), throwsA(same(error)));
+          expect(fixture.run.state, RunState.failed);
+          expect(fixture.run.failure, same(error));
+          expect(fixture.model.invocations, 1);
+          expect(
+            fixture.run.journal.records
+                .map((record) => record.event)
+                .whereType<ToolProposalRejected>(),
+            isEmpty,
+          );
+        }
+        expect(fixture.strategy.lastToolInvocation, isNull);
+        expect(descriptions, 0);
+        expect(fixture.executable.executions, 0);
+      },
+    );
+  }
+
+  test(
+    'strategy retirement during validation prevents effect preflight',
+    () async {
+      final _StrategyFixture fixture = await _fixture(ToolPolicyDecision.allow);
+      fixture.executable.validator = (arguments) async {
+        await fixture.strategyRegistration.close();
+        return CanonicalToolArguments(arguments);
+      };
+      int descriptions = 0;
+      fixture.executable.beforeDescribe = () async {
+        descriptions++;
+      };
+      await expectLater(
+        fixture.strategy.start(),
+        throwsA(isA<StaleExtensionBinding>()),
+      );
+      expect(fixture.run.state, RunState.failed);
+      expect(fixture.strategy.lastToolInvocation, isNull);
+      expect(descriptions, 0);
+      expect(fixture.executable.executions, 0);
+    },
+  );
+
+  test(
     'activity is live through held model, preflight, approval and tool progress',
     () async {
       final ToolProgress progress = ToolProgress(
@@ -3110,7 +3217,8 @@ Future<_StrategyFixture> _fixture(
 }) async {
   final ExtensionRegistry extensions = ExtensionRegistry();
   final ChatStrategyPlugin chat = ChatStrategyPlugin();
-  addTearDown(chat.activate(extensions).close);
+  final ExtensionRegistration strategyRegistration = chat.activate(extensions);
+  addTearDown(strategyRegistration.close);
   final OrchestrationTestLifecycle topology =
       await OrchestrationTestLifecycle.create(
         extensions,
@@ -3131,6 +3239,7 @@ Future<_StrategyFixture> _fixture(
   final ToolCatalog catalog = _catalog(executable);
   return _StrategyFixture(
     extensions: extensions,
+    strategyRegistration: strategyRegistration,
     session: session,
     history: history,
     model: model,
@@ -3150,6 +3259,7 @@ Future<_StrategyFixture> _fixture(
 final class _StrategyFixture {
   const _StrategyFixture({
     required this.extensions,
+    required this.strategyRegistration,
     required this.session,
     required this.history,
     required this.model,
@@ -3159,6 +3269,7 @@ final class _StrategyFixture {
 
   AgentRun get run => strategy.run;
   final ExtensionRegistry extensions;
+  final ExtensionRegistration strategyRegistration;
   final Session session;
   final ChatSessionState history;
   final _Model model;
@@ -3309,6 +3420,7 @@ final class _Executable implements ToolExecutable {
 
   final List<ToolProgress> progress;
   int executions = 0;
+  FutureOr<CanonicalToolArguments> Function(Map<String, Object?>)? validator;
   Future<void> Function()? beforeDescribe;
   Future<void> Function()? beforeTerminal;
   ToolOutcome? outcome;
@@ -3349,9 +3461,11 @@ final class _Executable implements ToolExecutable {
   }
 
   @override
-  CanonicalToolArguments validateAndNormalize(
+  FutureOr<CanonicalToolArguments> validateAndNormalize(
     Map<String, Object?> proposedArguments,
-  ) => CanonicalToolArguments(proposedArguments);
+  ) =>
+      validator?.call(proposedArguments) ??
+      CanonicalToolArguments(proposedArguments);
 
   @override
   void validateBinding() {}

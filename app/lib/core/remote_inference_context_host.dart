@@ -4,9 +4,12 @@ import 'package:adele_orchestration/remote_inference_context.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import 'remote_model_tool_host.dart';
+
 RemoteExtensionAdapterRegistry createRemoteExtensionAdapters() =>
     RemoteExtensionAdapterRegistry([
       const RemoteInferenceContextSourceAdapter(),
+      const RemoteModelToolAdapter(),
     ]);
 
 /// Transport adaptation only; composition policy stays in the public composer.
@@ -96,8 +99,7 @@ final class _InferenceEnvironmentRead
     _resolved?.validateBinding();
   }
 
-  @override
-  Future<EnvironmentTextFile> readFile(String relativePath) async {
+  Future<AuthorizedEnvironmentFileReadFacet> _requireFiles() async {
     _validateInvocation();
     final files = await (_files ??= _context
         .requireHostService<AuthorizedEnvironmentFileReadFacet>());
@@ -106,11 +108,39 @@ final class _InferenceEnvironmentRead
       throw StateError('The filesystem authority belongs to another Session.');
     }
     _resolved = files;
-    files.validateBinding();
+    return files;
+  }
+
+  @override
+  Future<AuthorizedEnvironmentIdentity> authority() async {
+    final files = await _requireFiles();
+    validateResolvedBinding();
+    return AuthorizedEnvironmentIdentity(
+      sessionId: files.sessionId.value,
+      environmentId: files.environmentId.value,
+    );
+  }
+
+  @override
+  Future<EnvironmentTextFile> readFile(String relativePath) async {
+    final files = await _requireFiles();
+    validateResolvedBinding();
     try {
       return await files.readFile(relativePath);
     } finally {
       // Even not_found is accepted only from the still-authoritative generation.
+      _validateInvocation();
+      files.validateBinding();
+    }
+  }
+
+  @override
+  Future<EnvironmentDirectoryListing> readDirectory(String relativePath) async {
+    final files = await _requireFiles();
+    validateResolvedBinding();
+    try {
+      return await files.readDirectory(relativePath);
+    } finally {
       _validateInvocation();
       files.validateBinding();
     }

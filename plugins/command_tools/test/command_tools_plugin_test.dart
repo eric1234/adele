@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
@@ -48,7 +50,7 @@ void main() {
         process,
       );
       final Stream<ToolExecutionEvent> deferred = tool.executable.execute(
-        _canonical(tool, const <String, Object?>{'program': 'git'}),
+        await _canonical(tool, const <String, Object?>{'program': 'git'}),
         _executionContext(),
       );
 
@@ -140,7 +142,9 @@ void main() {
       final MaterializedTool tool = await _tool(_ProcessFacet());
 
       expect(
-        _canonical(tool, const <String, Object?>{'program': 'git'}).snapshot,
+        (await _canonical(tool, const <String, Object?>{
+          'program': 'git',
+        })).snapshot,
         <String, Object?>{
           'program': 'git',
           'arguments': <Object?>[],
@@ -163,7 +167,7 @@ void main() {
       ];
 
       final CanonicalToolArguments canonical =
-          _canonical(tool, const <String, Object?>{
+          await _canonical(tool, const <String, Object?>{
             'program': ' sh ',
             'arguments': literalArguments,
             'workingDirectory': 'packages/./foo',
@@ -206,10 +210,10 @@ void main() {
         'packages/./foo': 'packages/foo',
       }.entries) {
         expect(
-          _canonical(tool, <String, Object?>{
+          (await _canonical(tool, <String, Object?>{
             'program': 'git',
             'workingDirectory': fixture.key,
-          }).snapshot['workingDirectory'],
+          })).snapshot['workingDirectory'],
           fixture.value,
         );
       }
@@ -218,7 +222,7 @@ void main() {
         'packages/../foo',
         '/absolute',
       ]) {
-        expect(
+        await expectLater(
           () => _canonical(tool, <String, Object?>{
             'program': 'git',
             'workingDirectory': invalid,
@@ -248,7 +252,7 @@ void main() {
         <String, Object?>{'program': 'git', 'timeoutSeconds': 0},
         <String, Object?>{'program': 'git', 'timeoutSeconds': 601},
       ]) {
-        expect(
+        await expectLater(
           () => _canonical(tool, invalid),
           throwsA(isA<ToolArgumentValidationException>()),
         );
@@ -275,7 +279,7 @@ void main() {
         },
         <String, Object?>{'program': 'git', 'workingDirectory': malformed},
       ]) {
-        expect(
+        await expectLater(
           () => _canonical(tool, invalid),
           throwsA(isA<ToolArgumentValidationException>()),
         );
@@ -289,7 +293,7 @@ void main() {
       () async {
         final _ProcessFacet process = _ProcessFacet();
         final MaterializedTool tool = await _tool(process);
-        final CanonicalToolArguments canonical = _canonical(
+        final CanonicalToolArguments canonical = await _canonical(
           tool,
           const <String, Object?>{
             'program': 'git',
@@ -324,7 +328,7 @@ void main() {
 
       await expectLater(
         tool.executable.describe(
-          _canonical(tool, const <String, Object?>{'program': 'git'}),
+          await _canonical(tool, const <String, Object?>{'program': 'git'}),
           ToolExecutionContext(
             runId: RunId('run-command'),
             sessionId: SessionId('another-session'),
@@ -658,7 +662,7 @@ void main() {
       () async {
         final _ProcessFacet process = _ProcessFacet();
         final MaterializedTool tool = await _tool(process);
-        final ToolInvocation invocation = _resolveInvocation(
+        final ToolInvocation invocation = await _resolveInvocation(
           tool,
           const <String, Object?>{'program': 'git'},
         );
@@ -716,9 +720,10 @@ void main() {
       final MaterializedTool tool = await _tool(process);
       final ToolExecutionDenied denied =
           await const ToolPolicyGate().evaluate(
-                invocation: _resolveInvocation(tool, const <String, Object?>{
-                  'program': 'git',
-                }),
+                invocation: await _resolveInvocation(
+                  tool,
+                  const <String, Object?>{'program': 'git'},
+                ),
                 policy: const _DecisionPolicy(ToolPolicyDecision.deny),
                 interruptionId: RunInterruptionId('unused-command-approval'),
               )
@@ -747,7 +752,7 @@ Future<MaterializedTool> _materializedTool(
   extensions,
 ).materialize(_Context(process))).materialize().tools.single;
 
-CanonicalToolArguments _canonical(
+FutureOr<CanonicalToolArguments> _canonical(
   MaterializedTool tool,
   Map<String, Object?> arguments,
 ) => tool.executable.validateAndNormalize(arguments);
@@ -755,8 +760,11 @@ CanonicalToolArguments _canonical(
 Future<ToolExecutionObservation> _execute(
   MaterializedTool tool,
   Map<String, Object?> arguments,
-) => collectToolExecution(
-  tool.executable.execute(_canonical(tool, arguments), _executionContext()),
+) async => collectToolExecution(
+  tool.executable.execute(
+    await _canonical(tool, arguments),
+    _executionContext(),
+  ),
 );
 
 ToolExecutionContext _executionContext() => ToolExecutionContext(
@@ -764,11 +772,11 @@ ToolExecutionContext _executionContext() => ToolExecutionContext(
   sessionId: SessionId('session-command'),
 );
 
-ToolInvocation _resolveInvocation(
+Future<ToolInvocation> _resolveInvocation(
   MaterializedTool tool,
   Map<String, Object?> arguments,
-) =>
-    (const ToolInvocationResolver().resolve(
+) async =>
+    (await const ToolInvocationResolver().resolve(
               invocationId: ToolInvocationId('tool-command'),
               proposal: ProviderToolProposal(
                 providerCallId: 'provider-command',

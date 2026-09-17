@@ -40,7 +40,7 @@ choose a requested plugin's contract.
 
 Stock source directories have not been normalized to this fixture's
 `adele_plugin.yaml` layout. In particular, the desktop launcher still knows the
-Git, OpenAI, and AGENTS.md source entrypoints and prepares their installations
+Git, OpenAI, AGENTS.md, and Search source entrypoints and prepares their installations
 explicitly.
 Source/build discovery and installed-artifact discovery are separate boundaries.
 
@@ -188,6 +188,29 @@ without requiring a normal installation root. See [the plugin README](../../plug
 Advertisement and operation-scoped host-call semantics are specified in
 [`contracts-and-capabilities.md`](contracts-and-capabilities.md#extension-advertisements).
 
+### Stock Search split
+
+`plugins/search_tools` retains pure-Dart `search_tools_plugin` semantics; its
+`packages/backend` package, `search_tools_backend`, reuses that implementation
+through public generated model-tool and Environment read contracts plus
+`adele_plugin_backend_support`. Its entrypoint is
+`packages/backend/bin/search_tools_backend.dart`. Traversal, path validation,
+exclusions, bounds, and result construction stay in the root implementation.
+The app has no production Search dependency/import or static activation; the
+root package remains a development-only app test dependency. Both packages are
+workspace members and maintained analysis/test targets.
+
+The backend-only installation is `search-tools/backend.aot`, with no frontend,
+startup argv, Search configuration, or extra deployment define. Readiness advertises
+one extension at `dev.adele.extension.model-tools`, using existing registration
+`dev.adele.plugin.search-tools.model-tools`, `remoteModelToolServiceId`, the default
+configuration context, and exactly `hostServices: ['authorizedEnvironmentRead']`.
+There are no capability exposures. Its PluginId remains
+`dev.adele.plugin.search-tools`; invocation authority comes from host-captured
+Session bindings, not metadata or transported IDs. Explicit self-hosting supplies
+`searchToolsArtifact` on its same host through generic adapter activation, without
+a normal installation root. See [remote model tools](contracts-and-capabilities.md#remote-model-tools).
+
 ### Stock tool frontend split
 
 `plugins/filesystem_tools` and `plugins/command_tools` retain their pure-Dart
@@ -314,8 +337,8 @@ multiple extension points does not imply multiple plugin runtimes.
 
 ## Normal prepared composition
 
-Synchronous, provider-free `AdeleRuntime()` owns five in-process stock activations
-(Chat, Filesystem Tools, Search Tools, Command Tools, and Local Directory Project
+Synchronous, provider-free `AdeleRuntime()` owns four in-process stock activations
+(Chat, Filesystem Tools, Command Tools, and Local Directory Project
 Selector) and generic `ApplicationPluginBootstrap` on its existing capability and
 extension registries. `AdeleApplication` explicitly calls `ApplicationPluginBootstrap.start`
 with only an installation root, shared runtime/host paths, and optional generic
@@ -342,21 +365,22 @@ All backend registrations retire before backend generations close, then the host
 closes, then the runtime's in-process activations retire. Read-only backend states and catalog
 issues are available without a plugin-management UI.
 
-Git/OpenAI entrypoints own capability advertisements; AGENTS.md owns its extension
-advertisement. `PluginBackendActivation.registerAdvertised` owns both capability
-and adapted extension registration with coherent rollback/retirement through the
-existing registries. Self-hosting uses the same generic source activation but
-retains its explicit artifact/host/profile topology without normal discovery.
+Git/OpenAI entrypoints own capability advertisements; AGENTS.md and Search own their
+extension advertisements. `PluginBackendActivation.registerAdvertised` owns both
+capability and adapted extension registration with coherent rollback/retirement
+through the existing registries. Self-hosting uses the same generic remote extension
+activation but retains its explicit artifact/host/profile topology without normal discovery.
 
 `prepareDesktopPluginDefines` in `tools/backend_artifacts.dart` selects and compiles
-stock Git/OpenAI/AGENTS.md source plus the shared host and invokes
-`tools/frontend_artifacts.dart` for four EVCs. In total, preparation produces three
+stock Git/OpenAI/AGENTS.md/Search source plus the shared host and invokes
+`tools/frontend_artifacts.dart` for four EVCs. In total, preparation produces four
 backend snapshots, one host snapshot, and four frontend artifacts. It assembles
-six installation directories under one fresh
+seven installation directories under one fresh
 `.dart_tool/adele/desktop-plugins/build-*/installations/`: frontend-only
 `chat-strategy`, `filesystem-tools`, and `command-tools`, backend-only
-`git-environment` and `agents-md`, and one combined `openai`. The singular build-side presentation
-table is `tools/stock_frontend_descriptors.dart`. Its separate startup-arguments JSON
+`git-environment`, `agents-md`, and `search-tools`, and one combined `openai`.
+The singular build-side presentation table is `tools/stock_frontend_descriptors.dart`.
+Its separate startup-arguments JSON
 maps PluginId to a string argv list; normal OpenAI always receives `--chatgpt-only`,
 with a second JSON argument only when configured. That argument references the
 credential store and public OAuth/endpoint options, never tokens. Unconfigured
@@ -400,7 +424,7 @@ packaging, activation contexts, and broad plugin APIs remain unproven.
 
 The prepared startup catalog supports independently optional frontends and
 metadata-driven presentation registration, alongside backend capability/extension
-activation and operation-scoped unary host reads for AGENTS.md. Five stock
+activation and operation-scoped unary host reads for AGENTS.md and Search. Four stock
 activations remain static and outside installed discovery. Host and backend
 artifacts require matching protocol versions, separately from installed-manifest
 versioning; see [contract compatibility](contracts-and-capabilities.md#contracts).
