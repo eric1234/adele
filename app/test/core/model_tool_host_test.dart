@@ -233,7 +233,7 @@ void main() {
         'startLine',
         'lineCount',
       ]);
-      final CanonicalToolArguments arguments = tool.executable
+      final CanonicalToolArguments arguments = await tool.executable
           .validateAndNormalize(const <String, Object?>{
             'relativePath': 'source.dart',
           });

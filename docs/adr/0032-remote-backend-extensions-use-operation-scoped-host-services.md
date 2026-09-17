@@ -2,8 +2,8 @@
 
 ## Status
 
-Accepted; unary host calls and remote inference-context sources implemented,
-broader extension adaptation and reverse streaming deferred
+Accepted; unary host calls, remote inference-context sources, and remote model tools
+implemented; broader extension adaptation and reverse streaming deferred
 
 ## Context
 
@@ -54,8 +54,8 @@ registry or moving host authority into plugins.
    supplies services from that context rather than reconstructing authority from
    plugin-supplied identifiers.
 7. Invocation authority is revoked when the operation settles, whether it succeeds
-   or fails, and on registration or connection retirement. Revocation is
-   idempotent; expired, foreign-generation, and unapproved-service calls fail.
+   or fails, on stream cancellation, and on registration or connection retirement.
+   Revocation is idempotent; expired, foreign-generation, and unapproved-service calls fail.
    Revocation does not promise rollback or cancellation of effects already in
    flight.
 8. The initial backend-to-host transport is unary and reuses the existing backend
@@ -86,17 +86,35 @@ granted only for the host operation that requires them.
 
 ## Implementation status
 
-AGENTS.md is the first implemented remote extension consumer. Its backend-only
+AGENTS.md is an implemented remote extension consumer. Its backend-only
 installation advertises an inference-context source at readiness. A host proxy
-uses the normal inference composer and supplies only an authorized Environment
-text-file read service during each snapshot. The canonical Session Environment
-authority remains host-owned; there is no static AGENTS.md activation in
-`AdeleRuntime`.
+uses the normal inference composer and supplies an authorized Environment
+read service during each snapshot. The source uses its text-file read. The canonical
+Session Environment authority remains host-owned; there is no static AGENTS.md
+activation in `AdeleRuntime`.
 
-This implements one remote extension point, not the complete recursive extension
-system. Other statically composed stock plugins remain eligible for incremental
-migration. Reverse streaming and Profiles remain unimplemented. Normal prepared
-startup currently attempts valid discovered components; that startup policy does
+Search's backend-only installation advertises a model-tool contribution and reuses
+the pure-Dart root Search implementation. Public `adele_model_tool` owns generated
+materialize, validation, effect-description, and server-streaming execution
+transport; the generic app adapter registers proxies in the existing registry.
+Its exact `hostServices` metadata permits only no services or authorized Environment
+reads. This is a dependency request, not an authority grant or profile definition.
+Materialization captures the Session-bound read facet and exact remote/Environment
+generations. Synchronous binding validation never reselects either generation.
+Opaque executable route IDs are generation-bound, not persistent handles.
+
+Materialize/describe receive fresh operation contexts when reads are requested;
+execute receives stream-lifetime authority only on listen, revoked on done, error,
+cancellation, or retirement. Argument validation has no host authority. The shared
+read service exposes no-argument `authority()` for the bound Session/Environment
+identity, `readFile(path)`, and `readDirectory(path)`, without authority-selection
+IDs, mutation, or process methods. Reverse calls remain unary and both transport
+protocol versions remain 2. Immutable execution snapshots carry no exception causes.
+
+These two remote extension points do not implement the complete recursive extension
+system. Chat, Filesystem Tools, Command Tools, and Local Directory Project Selector
+remain statically composed. Reverse streaming and Profiles remain unimplemented.
+Normal prepared startup currently attempts valid discovered components; that startup policy does
 not define profile participation or grant invocation authority.
 
 ## Consequences

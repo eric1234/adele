@@ -67,6 +67,9 @@ Future<List<String>> prepareDesktopPluginDefines({
   final File agentsMd = File.fromUri(
     installations.uri.resolve('agents-md/backend.aot'),
   );
+  final File searchTools = File.fromUri(
+    installations.uri.resolve('search-tools/backend.aot'),
+  );
   for (final ({String entrypoint, File artifact, String stage}) target
       in <({String entrypoint, File artifact, String stage})>[
         (
@@ -92,6 +95,12 @@ Future<List<String>> prepareDesktopPluginDefines({
               'plugins/agents_md/packages/backend/bin/agents_md_backend.dart',
           artifact: agentsMd,
           stage: 'agents-md-compilation',
+        ),
+        (
+          entrypoint:
+              'plugins/search_tools/packages/backend/bin/search_tools_backend.dart',
+          artifact: searchTools,
+          stage: 'search-tools-compilation',
         ),
       ]) {
     stdout.writeln('==> ${target.stage}');
@@ -124,6 +133,11 @@ Future<List<String>> prepareDesktopPluginDefines({
       backend: agentsMd,
       id: 'dev.adele.plugin.agents-md',
       displayName: 'AGENTS.md',
+    ),
+    (
+      backend: searchTools,
+      id: 'dev.adele.plugin.search-tools',
+      displayName: 'Search Tools',
     ),
     (backend: null, id: 'dev.adele.plugin.chat-strategy', displayName: 'Chat'),
     (

@@ -101,7 +101,7 @@ void main() {
         expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
         expect(
           runtime.extensions.discover(modelToolContributions),
-          hasLength(3),
+          hasLength(2),
         );
         expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
 
@@ -228,7 +228,7 @@ void main() {
         );
         expect(
           runtime.extensions.discover(modelToolContributions),
-          hasLength(3),
+          hasLength(2),
         );
         expect(find.text('No Project is open'), findsOneWidget);
         expect(tester.takeException(), isNull);
@@ -294,7 +294,7 @@ void main() {
       isEmpty,
     );
     expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
-    expect(runtime.extensions.discover(modelToolContributions), hasLength(3));
+    expect(runtime.extensions.discover(modelToolContributions), hasLength(2));
     expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
     final ExtensionBinding<ProjectSelectorContribution> selector = runtime
         .extensions

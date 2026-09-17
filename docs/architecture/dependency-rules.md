@@ -53,7 +53,7 @@ workbench UI APIs remain architectural direction.
 | `adele_core_extensions` | Experimental plugin-facing, pure Dart; narrow core-owned extension contracts | Dart SDK and `adele_plugin_api` | Flutter, internal host packages, application code, concrete plugins |
 | `adele_model_provider` | Experimental plugin-facing | Dart SDK, `adele_contract`, and `adele_capabilities` | Flutter, internal host packages, application code, concrete providers |
 | `adele_product` | Experimental plugin-facing, pure Dart | Dart SDK and `adele_capabilities` | Flutter, internal host packages, application code, `adele_orchestration`, `adele_plugin_api`, `adele_core_extensions` |
-| `adele_model_tool` | Experimental plugin-facing, pure Dart | Dart SDK, `adele_plugin_api`, and `adele_product` | Flutter, internal host packages, application code, concrete tools |
+| `adele_model_tool` | Experimental plugin-facing, pure Dart; native tool API and generated remote transport | Dart SDK, `adele_contract`, `adele_plugin_api`, and `adele_product` | Flutter, internal host packages, application code, concrete tools |
 | `adele_orchestration` | Experimental plugin-facing, pure Dart | Dart SDK, `adele_contract`, `adele_product`, `adele_plugin_api`, and `adele_model_tool` | Flutter, `agent_kernel`, other internal host packages, application code, concrete strategies or sources |
 | `adele_environment` | Experimental plugin-facing, pure Dart; provider/facet and generated authorized-read contracts | Dart SDK, `adele_contract`, `adele_capabilities`, and `adele_product` | Flutter, internal host packages, application code, concrete providers |
 | `adele_ui` | Experimental plugin-facing, Flutter; semantic Session, tool Inspection, and model-native activity presentation | Flutter, `adele_plugin_api`, `adele_product`, `adele_orchestration`, and `adele_model_tool` | Internal host packages, application code, concrete plugins |
@@ -93,12 +93,14 @@ Existing ownership remains singular:
 
 ### Application backend composition
 
-`AdeleRuntime()` synchronously registers five in-process stock contributions and
+`AdeleRuntime()` synchronously registers four in-process stock contributions and
 remains provider-free. Its pure-Dart `ApplicationPluginBootstrap` owns
 application-lifetime backend resources on the same capability and extension
-registries used by lifecycle/composition. Chat, Filesystem Tools, Search Tools,
-Command Tools, and Local Directory Project Selector remain static. AGENTS.md is
-an AOT backend, with no direct app dependency/import or static activation.
+registries used by lifecycle/composition. Chat, Filesystem Tools, Command Tools,
+and Local Directory Project Selector remain static; the reduced composition omits
+only Command Tools. AGENTS.md and Search are AOT backends, with no production app
+dependency/import or static activation. Search remains a development-only app test
+dependency.
 Normal `AdeleApplication` explicitly calls `start` with an installation
 root, shared runtime/host paths, and optional generic startup argv. There is no
 stock callback table, required Git backend, or additional-OpenAI activation tier.
@@ -135,16 +137,25 @@ Internal `plugin_runtime` owns `PluginExtensionActivation`,
 plus extension rollback/retirement. Adapters are host implementations of known
 public contracts, not another contribution registry or public plugin API.
 Contributions still enter the existing `ExtensionRegistry` with exact liveness.
-The app owns `RemoteInferenceContextSourceAdapter` and its point-specific metadata
-validation; runtime has no AGENTS.md logic.
+The app owns `RemoteInferenceContextSourceAdapter`, `RemoteModelToolAdapter`, and
+their point-specific metadata validation; runtime has no AGENTS.md or Search logic.
 
 Public `adele_orchestration` owns generated `RemoteInferenceContextSourceService`
-and `RemoteInferenceInstruction`; public `adele_environment` owns generated
-`AuthorizedEnvironmentReadService` and its existing file and failure values. The
-app captures canonical `InferenceContextSourceContext` and supplies only its
-authorized file-read facet, never authority derived from transported Session/Run
-IDs. Internal runtime/host code owns exact-generation routing and operation-scoped
-service authorization and revocation, not domain composition or source semantics.
+and `RemoteInferenceInstruction`; public `adele_model_tool/remote_model_tool.dart`
+owns generated remote tool materialize/validation/description/execution transport
+and immutable descriptor/event/outcome snapshots, without exception causes.
+Public `adele_environment` owns generated `AuthorizedEnvironmentReadService`, its
+already-bound Session/Environment identity, and existing file/directory/failure
+values. The app captures canonical `InferenceContextSourceContext` and supplies only its
+authorized read facet, or captures that facet during model-tool materialization,
+never authority derived from transported Session/Run IDs. Model-tool metadata is
+exactly `hostServices: []` or `hostServices: ['authorizedEnvironmentRead']`, requesting
+dependencies rather than granting authority or defining Profiles. The adapter
+retains exact remote and Environment bindings, not reusable invocation tokens.
+Internal runtime/host code owns exact-generation routing and operation-scoped
+service authorization/revocation, including execute-stream lifetime, not domain
+composition or source/tool semantics. Reverse host calls remain unary; mutation
+and process host services are absent.
 The detailed advertisement and host-call specification is in
 [`contracts-and-capabilities.md`](contracts-and-capabilities.md#backend-ready-advertisements).
 
@@ -152,12 +163,15 @@ The detailed advertisement and host-call specification is in
 `AdeleHostRequestMultiplexer` using only `adele_contract`, with no internal host or
 Flutter dependency. `plugins/agents_md` remains the semantic `agents_md_plugin`;
 its own `packages/backend` (`agents_md_backend`) reuses those semantics and the
-public generated contracts/support package. This is same-plugin implementation
-reuse, not permission for other plugins to import AGENTS.md internals.
+public generated contracts/support package. Likewise, `search_tools_backend` under
+`plugins/search_tools/packages/backend` reuses the pure-Dart root Search semantics,
+without duplicating validation/traversal algorithms or importing host packages.
+This is same-plugin implementation reuse, not permission for other plugins to
+import their internals.
 
 Source selection/compilation and stock installation assembly belong to repository
 tooling and `plugin_builder`, outside the app startup import graph. The launcher
-still knows Git/OpenAI/AGENTS.md source paths; stock source layouts need not use
+still knows Git/OpenAI/AGENTS.md/Search source paths; stock source layouts need not use
 `adele_plugin.yaml`. Its separate temporary JSON file maps PluginId to string argv
 lists, outside installed manifests. The launcher derives OpenAI credential-file
 references and public OAuth/endpoint options, never tokens, and always uses
@@ -180,12 +194,13 @@ registry. General provider/model configuration remains deferred. Operational det
 live in [`app/README.md`](../../app/README.md#normal-backend-startup) and the
 [`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
 Self-hosting uses generic `registerAdvertised` but keeps its explicit
-artifact/host/profile topology, including `agentsMdArtifact` on the same host via
-the same remote-source adapter activation, without a normal installation root.
+artifact/host/profile topology, including `agentsMdArtifact` and `searchToolsArtifact`
+on the same host via the same generic remote adapter activation, without a normal
+installation root.
 Its own profile environment configures the backend; it registers all advertised
 contexts, potentially both OpenAI contexts, then explicitly resolves the selected
 profile's provider ID without filtering advertisements.
-The frontend owner consumes this same catalog, as described below; the five
+The frontend owner consumes this same catalog, as described below; the four
 in-process activations remain outside installed-component discovery.
 These boundaries add no profile/enable-disable system, version solving, watching,
 reverse streaming, general symmetric RPC, hot upgrade, or production packaging.
@@ -356,11 +371,12 @@ neither assert all-model support nor select reasoning options. See the
 Flutter build-time tooling compiles frontend source; normal runtime activation
 only consumes prepared artifacts. Checkout preparation is a stand-in for future
 installation/update compilation, not a cache or implemented plugin management
-system. The Linux launcher assembles six installations in one root: frontend-only
-Chat, Filesystem Tools, and Command Tools, backend-only Git and AGENTS.md, and one
-combined OpenAI. It prepares three backend snapshots plus the host and four EVCs.
+system. The Linux launcher assembles seven installations in one root: frontend-only
+Chat, Filesystem Tools, and Command Tools, backend-only Git, AGENTS.md, and Search,
+and one combined OpenAI. It prepares four backend snapshots plus the host and four
+EVCs.
 It supplies only the four generic root/host/runtime/startup-argv defines, not
-per-stock frontend artifact fields/defines or AGENTS-specific configuration.
+per-stock frontend artifact fields/defines or AGENTS-/Search-specific configuration.
 Flutter/eval dependencies do not enter the shared headless runtime or the pure-Dart
 `plugin_builder` package.
 

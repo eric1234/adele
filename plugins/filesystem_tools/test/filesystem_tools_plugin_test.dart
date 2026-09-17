@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:adele_environment/adele_environment.dart';
@@ -37,7 +38,7 @@ void main() {
           true,
           <String, Object?>{'startLine': 1},
         ]) {
-          expect(
+          await expectLater(
             () => tool.validateAndNormalize(<String, Object?>{
               'relativePath': 'a',
               field: value,
@@ -46,10 +47,10 @@ void main() {
           );
         }
         expect(
-          tool.validateAndNormalize(<String, Object?>{
+          (await tool.validateAndNormalize(<String, Object?>{
             'relativePath': './a',
             field: 1,
-          }).snapshot,
+          })).snapshot,
           <String, Object?>{'relativePath': 'a', field: 1},
         );
       }
@@ -61,7 +62,7 @@ void main() {
         'count',
         'environmentId',
       ]) {
-        expect(
+        await expectLater(
           () => tool.validateAndNormalize(<String, Object?>{
             'relativePath': 'a',
             field: 1,
@@ -108,7 +109,7 @@ void main() {
                     effective - 1 + selected.length < lines.length
                 ? effective + selected.length
                 : null;
-            final CanonicalToolArguments args = tool
+            final CanonicalToolArguments args = await tool
                 .validateAndNormalize(<String, Object?>{
                   'relativePath': './source.dart',
                   'startLine': ?start,
@@ -205,7 +206,7 @@ void main() {
   test('Ranged reads retain Session and provider failure boundaries', () async {
     final _FileSystem fs = _FileSystem();
     final ToolExecutable tool = await _tool(fs, 'read_file');
-    final CanonicalToolArguments args = tool.validateAndNormalize(
+    final CanonicalToolArguments args = await tool.validateAndNormalize(
       <String, Object?>{
         'relativePath': 'source.dart',
         'startLine': 100,
@@ -295,7 +296,7 @@ void main() {
     );
     final ToolExecutable executable = await _tool(fileSystem, 'read_file');
 
-    expect(
+    await expectLater(
       () => executable.validateAndNormalize(const <String, Object?>{
         'relativePath': 'source.dart',
         'environmentId': 'forbidden',
@@ -331,9 +332,10 @@ void main() {
       reportedRelativePath: 'provider/alternate.dart',
     );
     final ToolExecutable executable = await _tool(fileSystem, 'read_file');
-    final CanonicalToolArguments arguments = executable.validateAndNormalize(
-      const <String, Object?>{'relativePath': 'dir//./source.dart'},
-    );
+    final CanonicalToolArguments arguments = await executable
+        .validateAndNormalize(const <String, Object?>{
+          'relativePath': 'dir//./source.dart',
+        });
 
     expect(arguments.snapshot['relativePath'], 'dir/source.dart');
     final EffectDescription effects = await executable.describe(
@@ -359,9 +361,10 @@ void main() {
   test('Read File describes effects and preserves failure classes', () async {
     final _FileSystem fileSystem = _FileSystem();
     final ToolExecutable executable = await _tool(fileSystem, 'read_file');
-    final CanonicalToolArguments arguments = executable.validateAndNormalize(
-      const <String, Object?>{'relativePath': 'source.dart'},
-    );
+    final CanonicalToolArguments arguments = await executable
+        .validateAndNormalize(const <String, Object?>{
+          'relativePath': 'source.dart',
+        });
     final EffectDescription effects = await executable.describe(
       arguments,
       _execution(fileSystem.sessionId),
@@ -449,16 +452,16 @@ void main() {
       'content',
     ]);
     expect(schema['additionalProperties'], isFalse);
-    expect(executable.validateAndNormalize(valid).snapshot, valid);
+    expect((await executable.validateAndNormalize(valid)).snapshot, valid);
     for (final String field in valid.keys) {
-      expect(
+      await expectLater(
         () => executable.validateAndNormalize(
           Map<String, Object?>.of(valid)..remove(field),
         ),
         throwsA(isA<ToolArgumentValidationException>()),
       );
     }
-    expect(
+    await expectLater(
       () => executable.validateAndNormalize(<String, Object?>{
         ...valid,
         'environmentId': 'forbidden',
@@ -506,7 +509,7 @@ void main() {
           'content': '',
           fixture.field: fixture.value,
         };
-        expect(
+        await expectLater(
           () => malformed.validateAndNormalize(arguments),
           throwsA(isA<ToolArgumentValidationException>()),
         );
@@ -525,9 +528,11 @@ void main() {
         ]) {
       final _FileSystem fileSystem = _FileSystem(postCreateRevision: 'R-new');
       final ToolExecutable executable = await _tool(fileSystem, 'create_file');
-      final CanonicalToolArguments arguments = executable.validateAndNormalize(
-        <String, Object?>{'relativePath': fixture.spelling, 'content': ''},
-      );
+      final CanonicalToolArguments arguments = await executable
+          .validateAndNormalize(<String, Object?>{
+            'relativePath': fixture.spelling,
+            'content': '',
+          });
       final EffectDescription effects = await executable.describe(
         arguments,
         _execution(fileSystem.sessionId),
@@ -646,19 +651,22 @@ void main() {
       'expectedRevision',
     ]);
     expect(schema['additionalProperties'], isFalse);
-    expect(executable.validateAndNormalize(valid).snapshot, <String, Object?>{
-      'relativePath': 'source.dart',
-      'expectedRevision': opaqueRevision,
-    });
+    expect(
+      (await executable.validateAndNormalize(valid)).snapshot,
+      <String, Object?>{
+        'relativePath': 'source.dart',
+        'expectedRevision': opaqueRevision,
+      },
+    );
     for (final String field in valid.keys) {
-      expect(
+      await expectLater(
         () => executable.validateAndNormalize(
           Map<String, Object?>.of(valid)..remove(field),
         ),
         throwsA(isA<ToolArgumentValidationException>()),
       );
     }
-    expect(
+    await expectLater(
       () => executable.validateAndNormalize(<String, Object?>{
         ...valid,
         'environmentId': 'forbidden',
@@ -692,12 +700,11 @@ void main() {
     () async {
       final _FileSystem fileSystem = _FileSystem(revision: 'opaque R1');
       final ToolExecutable executable = await _tool(fileSystem, 'delete_file');
-      final CanonicalToolArguments arguments = executable.validateAndNormalize(
-        const <String, Object?>{
-          'relativePath': 'dir//./source.dart',
-          'expectedRevision': 'opaque R1',
-        },
-      );
+      final CanonicalToolArguments arguments = await executable
+          .validateAndNormalize(const <String, Object?>{
+            'relativePath': 'dir//./source.dart',
+            'expectedRevision': 'opaque R1',
+          });
       final EffectDescription effects = await executable.describe(
         arguments,
         _execution(fileSystem.sessionId),
@@ -836,16 +843,16 @@ void main() {
         <String, Object?>{'search': 'source', 'replace': ''},
       ],
     };
-    expect(executable.validateAndNormalize(valid).snapshot, valid);
+    expect((await executable.validateAndNormalize(valid)).snapshot, valid);
     for (final String field in valid.keys) {
-      expect(
+      await expectLater(
         () => executable.validateAndNormalize(
           Map<String, Object?>.of(valid)..remove(field),
         ),
         throwsA(isA<ToolArgumentValidationException>()),
       );
     }
-    expect(
+    await expectLater(
       () => executable.validateAndNormalize(<String, Object?>{
         ...valid,
         'environmentId': 'forbidden',
@@ -864,7 +871,7 @@ void main() {
       <String, Object?>{...valid, 'relativePath': 1},
       <String, Object?>{...valid, 'expectedRevision': 1},
     ]) {
-      expect(
+      await expectLater(
         () => executable.validateAndNormalize(invalid),
         throwsA(isA<ToolArgumentValidationException>()),
       );
@@ -903,7 +910,7 @@ void main() {
         <String, Object?>{'search': 'new'},
       ],
     ]) {
-      expect(
+      await expectLater(
         () => executable.validateAndNormalize(<String, Object?>{
           ...valid,
           'edits': invalidEdits,
@@ -913,10 +920,10 @@ void main() {
       );
     }
     expect(
-      executable.validateAndNormalize(<String, Object?>{
+      (await executable.validateAndNormalize(<String, Object?>{
         ...valid,
         'expectedRevision': '',
-      }).snapshot['expectedRevision'],
+      })).snapshot['expectedRevision'],
       '',
     );
   });
@@ -936,13 +943,12 @@ void main() {
         first,
         <String, Object?>{'search': 'B', 'replace': 'C'},
       ];
-      final CanonicalToolArguments arguments = executable.validateAndNormalize(
-        <String, Object?>{
-          'relativePath': 'dir//./source.dart',
-          'expectedRevision': 'R1',
-          'edits': edits,
-        },
-      );
+      final CanonicalToolArguments arguments = await executable
+          .validateAndNormalize(<String, Object?>{
+            'relativePath': 'dir//./source.dart',
+            'expectedRevision': 'R1',
+            'edits': edits,
+          });
       first['replace'] = 'modified';
       edits.clear();
       expect(arguments.snapshot, <String, Object?>{
@@ -988,7 +994,7 @@ void main() {
           ],
         };
 
-        expect(
+        await expectLater(
           () => executable.validateAndNormalize(proposed),
           throwsA(isA<ToolArgumentValidationException>()),
         );
@@ -1015,7 +1021,7 @@ void main() {
           malformedPath,
         );
 
-        expect(
+        await expectLater(
           () => executable.validateAndNormalize(proposed),
           throwsA(isA<ToolArgumentValidationException>()),
         );
@@ -1036,7 +1042,7 @@ void main() {
         revision: opaqueRevision,
       );
       final ToolExecutable executable = await _tool(fileSystem, 'apply_patch');
-      final CanonicalToolArguments arguments = _patchArguments(
+      final CanonicalToolArguments arguments = await _patchArguments(
         executable,
         expectedRevision: opaqueRevision,
         edits: <Map<String, Object?>>[
@@ -1064,7 +1070,7 @@ void main() {
     final _FileSystem fileSystem = _FileSystem();
     final ToolExecutable executable = await _tool(fileSystem, 'apply_patch');
     final EffectDescription effects = await executable.describe(
-      _patchArguments(executable),
+      await _patchArguments(executable),
       _execution(fileSystem.sessionId),
     );
 
@@ -1086,7 +1092,7 @@ void main() {
       postWriteRevision: 'R2',
     );
     final ToolExecutable executable = await _tool(fileSystem, 'apply_patch');
-    final CanonicalToolArguments arguments = _patchArguments(
+    final CanonicalToolArguments arguments = await _patchArguments(
       executable,
       relativePath: 'dir//./source.dart',
     );
@@ -1133,7 +1139,7 @@ void main() {
         final ToolExecutable executable = await _tool(fileSystem, alias);
         final Map<String, Object?> proposed = _argumentsFor(alias, path);
 
-        expect(
+        await expectLater(
           () => executable.validateAndNormalize(proposed),
           throwsA(isA<ToolArgumentValidationException>()),
         );
@@ -1197,7 +1203,7 @@ void main() {
         postWriteRevision: 'opaque:result',
       );
       final ToolExecutable executable = await _tool(fileSystem, 'apply_patch');
-      final CanonicalToolArguments arguments = _patchArguments(
+      final CanonicalToolArguments arguments = await _patchArguments(
         executable,
         expectedRevision: 'opaque:observed',
         edits: const <Map<String, Object?>>[
@@ -1789,7 +1795,7 @@ Future<List<ToolRegistration>> _registrations(_FileSystem fileSystem) async {
       .toList(growable: false);
 }
 
-CanonicalToolArguments _patchArguments(
+FutureOr<CanonicalToolArguments> _patchArguments(
   ToolExecutable executable, {
   String relativePath = 'source.dart',
   String expectedRevision = 'R1',
@@ -1807,10 +1813,10 @@ ToolExecutionContext _execution(SessionId sessionId) =>
 
 Future<ToolOutcome> _execute(
   ToolExecutable executable,
-  CanonicalToolArguments arguments,
+  FutureOr<CanonicalToolArguments> arguments,
   SessionId sessionId,
 ) async =>
-    (await executable.execute(arguments, _execution(sessionId)).single
+    (await executable.execute(await arguments, _execution(sessionId)).single
             as ToolExecutionTerminal)
         .outcome;
 

@@ -17,7 +17,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 void main() {
-  test('startup only composes five stock contributions and a shared graph', () {
+  test('startup only composes four stock contributions and a shared graph', () {
     final _RecordingIds ids = _RecordingIds();
     final AdeleRuntime runtime = AdeleRuntime(ids: ids);
     addTearDown(runtime.close);
@@ -47,13 +47,15 @@ void main() {
       unorderedEquals(<String>[
         'dev.adele.plugin.chat-strategy.orchestration',
         'dev.adele.plugin.filesystem-tools.model-tools',
-        'dev.adele.plugin.search-tools.model-tools',
         'dev.adele.plugin.command-tools.model-tools',
         'dev.adele.plugin.local-directory-project-selector.project-selector',
       ]),
     );
     expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
     expect(runtime.plugins.extensions, same(runtime.extensions));
+    expect(runtime.plugins.host, isNull);
+    expect(runtime.plugins.catalog, isNull);
+    expect(runtime.plugins.backends, isEmpty);
     expect(
       runtime.extensions
           .discover(projectSelectorContributions)
@@ -84,7 +86,6 @@ void main() {
         unorderedEquals(<String>[
           'dev.adele.plugin.chat-strategy.orchestration',
           'dev.adele.plugin.filesystem-tools.model-tools',
-          'dev.adele.plugin.search-tools.model-tools',
           'dev.adele.plugin.local-directory-project-selector.project-selector',
         ]),
       );
@@ -96,7 +97,7 @@ void main() {
   );
 
   test(
-    'bare runtime powers retained Chat and tools without implicit AGENTS reads',
+    'bare runtime powers retained Chat without implicit Search or AGENTS reads',
     () async {
       final _RecordingIds ids = _RecordingIds();
       final AdeleRuntime runtime = AdeleRuntime(ids: ids);
@@ -223,7 +224,6 @@ void main() {
           'apply_patch',
           'create_file',
           'delete_file',
-          'search',
           'run_command',
         ]),
       );

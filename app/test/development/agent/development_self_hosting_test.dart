@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/development/agent/development_self_hosting.dart';
 import 'package:adele_desktop/development/agent/development_self_hosting_report.dart';
 import 'package:adele_desktop/development/agent/development_self_hosting_runner.dart';
@@ -14,7 +15,7 @@ import 'chat_test_topology.dart';
 
 void main() {
   test(
-    'self-hosting prepares and owns an explicit remote AGENTS backend',
+    'self-hosting prepares and owns remote AGENTS and Search on one host',
     () async {
       final container = await Directory.systemTemp.createTemp(
         'adele-self-hosting-backends-',
@@ -28,6 +29,8 @@ void main() {
       );
       expect(artifacts.agentsMdArtifact.path, endsWith('/agents-md.aot'));
       expect(await artifacts.agentsMdArtifact.length(), greaterThan(0));
+      expect(artifacts.searchToolsArtifact.path, endsWith('/search-tools.aot'));
+      expect(await artifacts.searchToolsArtifact.length(), greaterThan(0));
       expect(
         compiled.where((line) => line.startsWith('Compiling ')),
         unorderedEquals([
@@ -35,6 +38,7 @@ void main() {
           'Compiling plugins/openai/packages/backend/bin/openai_model_provider_backend.dart.',
           'Compiling plugins/git_environment/packages/backend/bin/git_environment_backend.dart.',
           'Compiling plugins/agents_md/packages/backend/bin/agents_md_backend.dart.',
+          'Compiling plugins/search_tools/packages/backend/bin/search_tools_backend.dart.',
         ]),
       );
       final git = await _createGitFixture(container);
@@ -48,6 +52,18 @@ void main() {
       addTearDown(topology.close);
       expect(topology.runtime.plugins.host, isNull);
       expect(topology.runtime.plugins.backends, isEmpty);
+      expect(
+        topology.catalog.materialize().tools.map(
+          (tool) => tool.modelDefinition.alias,
+        ),
+        developmentSelfHostingToolAliases,
+      );
+      final search = topology.runtime.extensions
+          .discover(modelToolContributions)
+          .singleWhere(
+            (binding) =>
+                binding.id.value == 'dev.adele.plugin.search-tools.model-tools',
+          );
       final source = topology.runtime.extensions
           .discover(inferenceContextSources)
           .single;
@@ -85,6 +101,51 @@ void main() {
         isEmpty,
       );
       expect(source.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(search.validate, throwsA(isA<StaleExtensionBinding>()));
+
+      final reduced = await DevelopmentSelfHostingTopology.start(
+        artifacts: artifacts,
+        projectSource: git.project,
+        hostEnvironment: const {},
+        identity: 'remote-reduced',
+        taskTitle: 'Search without Command Tools',
+        includeCommandTools: false,
+      );
+      addTearDown(reduced.close);
+      expect(
+        reduced.catalog.materialize().tools.map(
+          (tool) => tool.modelDefinition.alias,
+        ),
+        developmentSelfHostingToolAliases.where(
+          (alias) => alias != 'run_command',
+        ),
+      );
+      final reducedSearch = reduced.runtime.extensions
+          .discover(modelToolContributions)
+          .singleWhere((binding) => binding.id == search.id);
+      final retired = reduced.runtime.extensions.changes.firstWhere(
+        (_) => !reduced.runtime.extensions
+            .discover(modelToolContributions)
+            .any((binding) => binding.id == search.id),
+      );
+      await reduced.host.stopPlugin('dev.adele.plugin.search-tools');
+      await retired.timeout(const Duration(seconds: 10));
+      expect(reduced.host.isClosed, isFalse);
+      expect(reducedSearch.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(
+        reduced.runtime.extensions.discover(inferenceContextSources),
+        hasLength(1),
+      );
+      final remaining = await buildModelToolCatalogForSession(
+        sessionId: reduced.sessionId,
+        environmentRuntime: reduced.lifecycle.environmentRuntime,
+        extensions: reduced.runtime.extensions,
+      );
+      expect(
+        remaining.materialize().tools.map((tool) => tool.modelDefinition.alias),
+        ['read_file', 'apply_patch', 'create_file', 'delete_file'],
+        reason: 'Search termination must not enable an in-process fallback.',
+      );
     },
     timeout: const Timeout(Duration(minutes: 4)),
   );

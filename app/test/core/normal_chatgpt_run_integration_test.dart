@@ -53,6 +53,7 @@ const String _openAiPluginId = 'dev.adele.openai';
 const String _chatPluginId = 'dev.adele.plugin.chat-strategy';
 const String _filesystemPluginId = 'dev.adele.plugin.filesystem-tools';
 const String _commandPluginId = 'dev.adele.plugin.command-tools';
+const String _searchPluginId = 'dev.adele.plugin.search-tools';
 const String _taskText = 'const taskAnswer = "task-worktree-only";\n';
 const String _patchedText = 'const taskAnswer = "approved-task-value";\n';
 const String _agentsText =
@@ -104,6 +105,7 @@ void main() {
   late File hostArtifact;
   late File gitArtifact;
   late File agentsMdArtifact;
+  late File searchArtifact;
   late File openAiArtifact;
   late File evc;
   late File filesystemEvc;
@@ -126,6 +128,7 @@ void main() {
     for (final String pluginId in [
       _gitPluginId,
       _agentsMdPluginId,
+      _searchPluginId,
       _openAiPluginId,
       _chatPluginId,
       _filesystemPluginId,
@@ -150,6 +153,7 @@ void main() {
           'components': {
             if (pluginId == _gitPluginId ||
                 pluginId == _agentsMdPluginId ||
+                pluginId == _searchPluginId ||
                 pluginId == _openAiPluginId)
               'backend': {'artifact': 'backend.aot'},
             if (stockFrontendDescriptors[pluginId] case final descriptors?)
@@ -164,6 +168,9 @@ void main() {
     hostArtifact = File('${artifacts.path}/host.aot');
     gitArtifact = File('${installationRoot.path}/$_gitPluginId/backend.aot');
     agentsMdArtifact = File('${installationRoot.path}/agents-md/backend.aot');
+    searchArtifact = File(
+      '${installationRoot.path}/$_searchPluginId/backend.aot',
+    );
     openAiArtifact = File(
       '${installationRoot.path}/$_openAiPluginId/backend.aot',
     );
@@ -210,6 +217,12 @@ void main() {
       ),
       (
         entrypoint:
+            'plugins/search_tools/packages/backend/bin/search_tools_backend.dart',
+        artifact: searchArtifact,
+        stage: 'normal-chatgpt-search',
+      ),
+      (
+        entrypoint:
             'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart',
         artifact: openAiArtifact,
         stage: 'normal-chatgpt-openai',
@@ -224,6 +237,583 @@ void main() {
       );
     }
   });
+
+  test('F3b installed Search starts without Git, AGENTS or OpenAI', () async {
+    final container = await Directory.systemTemp.createTemp(
+      'adele-search-only-',
+    );
+    addTearDown(() => container.delete(recursive: true));
+    final installed = await Directory(
+      '${container.path}/search-tools',
+    ).create();
+    await searchArtifact.copy('${installed.path}/backend.aot');
+    await File(
+      '${installationRoot.path}/$_searchPluginId/adele_plugin.installation.json',
+    ).copy('${installed.path}/adele_plugin.installation.json');
+    final runtime = AdeleRuntime();
+    addTearDown(runtime.close);
+    await runtime.plugins.start(
+      installationRoot: container.path,
+      dartaotruntimeExecutable: dartaotruntime,
+      hostArtifactPath: hostArtifact.path,
+    );
+    expect(runtime.plugins.state, ApplicationPluginState.ready);
+    expect(runtime.plugins.failure, isNull);
+    expect(runtime.plugins.catalog!.issues, isEmpty);
+    final backend = runtime.plugins.backends.single;
+    expect(backend.installation.metadata.id.value, _searchPluginId);
+    expect(backend.state, InstalledBackendState.active);
+    expect(backend.failure, isNull);
+    expect(
+      runtime.extensions
+          .discover(modelToolContributions)
+          .map((binding) => binding.id.value),
+      unorderedEquals([
+        '$_filesystemPluginId.model-tools',
+        '$_commandPluginId.model-tools',
+        '$_searchPluginId.model-tools',
+      ]),
+    );
+    expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
+    expect(
+      runtime.registry.providersFor(environmentProviderCapability),
+      isEmpty,
+    );
+    expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+  });
+
+  test(
+    'F3b Search startup failure preserves sibling backends and Task creation',
+    () async {
+      final container = await Directory.systemTemp.createTemp(
+        'adele-search-startup-failure-',
+      );
+      addTearDown(() => container.delete(recursive: true));
+      final runtime = AdeleRuntime(
+        ids: MonotonicProductIdSource(seed: 'f3b-search-failure'),
+      );
+      addTearDown(runtime.close);
+      final staticTools = runtime.extensions.discover(modelToolContributions);
+      expect(
+        staticTools.map((binding) => binding.id.value),
+        unorderedEquals([
+          '$_filesystemPluginId.model-tools',
+          '$_commandPluginId.model-tools',
+        ]),
+      );
+      await runtime.plugins.start(
+        installationRoot: installationRoot.path,
+        dartaotruntimeExecutable: dartaotruntime,
+        hostArtifactPath: hostArtifact.path,
+        // The real Search entrypoint rejects argv before advertising extensions.
+        startupArguments: {
+          _searchPluginId: ['unexpected-test-argument'],
+        },
+      );
+      expect(runtime.plugins.state, ApplicationPluginState.ready);
+      expect(runtime.plugins.failure, isNull);
+      expect(runtime.plugins.host!.isClosed, isFalse);
+      expect(runtime.plugins.catalog!.issues, isEmpty);
+      expect(runtime.plugins.backends, hasLength(4));
+      final search = runtime.plugins.backends.singleWhere(
+        (entry) => entry.installation.metadata.id.value == _searchPluginId,
+      );
+      expect(search.installation.backendArtifactUri, searchArtifact.uri);
+      expect(search.state, InstalledBackendState.failed);
+      expect(search.failure, isNotNull);
+      expect(search.connection, isNull);
+      for (final id in [_gitPluginId, _agentsMdPluginId, _openAiPluginId]) {
+        final backend = runtime.plugins.backends.singleWhere(
+          (entry) => entry.installation.metadata.id.value == id,
+        );
+        expect(backend.state, InstalledBackendState.active);
+        expect(backend.failure, isNull);
+        expect(backend.connection!.isClosed, isFalse);
+        if (id == _openAiPluginId) {
+          expect(backend.connection!.capabilityExposures, isEmpty);
+        }
+      }
+      expect(
+        runtime.extensions
+            .discover(modelToolContributions)
+            .map((binding) => binding.id.value),
+        unorderedEquals(staticTools.map((binding) => binding.id.value)),
+      );
+      for (final binding in staticTools) {
+        expect(binding.validate, returnsNormally);
+      }
+      final agents = runtime.extensions
+          .discover(inferenceContextSources)
+          .single;
+      expect(agents.id.value, '$_agentsMdPluginId.instructions');
+      expect(agents.validate, returnsNormally);
+      expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+      expect(
+        runtime.registry
+            .providersFor(environmentProviderCapability)
+            .single
+            .id
+            .value,
+        'dev.adele.environment.git-worktree',
+      );
+
+      final source = Directory('${container.path}/project');
+      await Directory('${source.path}/lib').create(recursive: true);
+      await File('${source.path}/$_sourcePath').writeAsString(_taskText);
+      await _git(source, ['init', '--initial-branch=main']);
+      await _git(source, ['add', '.']);
+      await _git(source, ['commit', '-m', 'Fixture baseline']);
+      final project = runtime.lifecycle.createProject(source.uri);
+      final created = await runtime.lifecycle.createTask(
+        projectId: project.id,
+        title: 'Task after Search startup failure',
+      );
+      final session = runtime.lifecycle.createSession(
+        taskId: created.task.id,
+        strategyId: chatStrategyId,
+      );
+      expect(runtime.store.project(project.id), same(project));
+      expect(runtime.store.task(created.task.id), same(created.task));
+      expect(runtime.store.session(session.id), same(session));
+      expect(session.taskId, created.task.id);
+      expect(
+        runtime.store.requireSessionAuthority(session.id).environmentId,
+        created.environment.id,
+      );
+      final materialization = await runtime.lifecycle.environmentRuntime
+          .materialize(created.environment.id);
+      expect(materialization.validateBinding, returnsNormally);
+      final read = await materialization.provider.readFile(
+        created.environment.id,
+        _sourcePath,
+      );
+      expect(read.text, _taskText);
+      expect(read.revision, isNotEmpty);
+      expect(runtime.plugins.host!.isClosed, isFalse);
+    },
+  );
+
+  testWidgets(
+    'F3b installed remote Search runs in the authorized Task and retires independently',
+    (tester) => tester.runAsync(() async {
+      final Directory container = await Directory.systemTemp.createTemp(
+        'adele-normal-search-run-',
+      );
+      addTearDown(() => container.delete(recursive: true));
+      final Directory source = Directory('${container.path}/project');
+      await Directory('${source.path}/lib').create(recursive: true);
+      await File('${source.path}/$_sourcePath').writeAsString(_taskText);
+      await File('${source.path}/AGENTS.md').writeAsString(_baselineAgentsText);
+      await _git(source, ['init', '--initial-branch=main']);
+      await _git(source, ['add', '.']);
+      await _git(source, ['commit', '-m', 'Fixture baseline']);
+
+      // Private fake credentials and a loopback endpoint keep this deterministic.
+      final File credentials = File('${container.path}/credentials.json');
+      await credentials.writeAsString(
+        jsonEncode({
+          'version': 1,
+          'instances': {
+            'fixture': {
+              'revision': 1,
+              'credential': {
+                'idToken': _idToken('f3b-search-account'),
+                'accessToken': 'f3b-fake-access-token',
+                'refreshToken': 'f3b-fake-refresh-never-used',
+                'accountId': 'f3b-search-account',
+                'fedRamp': false,
+              },
+            },
+          },
+        }),
+      );
+      const String query = 'f3b-search-needle';
+      const String taskText = 'const taskAnswer = "$query-task-only";\n';
+      const String projectText =
+          'const projectAnswer = "$query-project-only";\n';
+      const String prompt = 'Search the Task for $query.';
+      const String answer = 'Search found $query-task-only in $_sourcePath.';
+      const String followUp = 'Read the Task source after Search stops.';
+      const String followUpAnswer = 'The same Task source is still readable.';
+      const String laterGuidance =
+          'AGENTS remains active after Search stops.\n';
+      final Map<String, Object?> match = {
+        'relativePath': _sourcePath,
+        'lineNumber': 1,
+        'snippet': taskText.trimRight(),
+      };
+      final outbound = <Map<String, Object?>>[];
+      final endpointFailures = <(Object, StackTrace)>[];
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        try {
+          expect(request.method, 'POST');
+          expect(request.uri.path, '/backend-api/codex/responses');
+          expect(
+            request.headers.value(HttpHeaders.authorizationHeader),
+            'Bearer f3b-fake-access-token',
+          );
+          expect(
+            request.headers.value('ChatGPT-Account-ID'),
+            'f3b-search-account',
+          );
+          final body =
+              jsonDecode(await utf8.decoder.bind(request).join())
+                  as Map<String, Object?>;
+          outbound.add(body);
+          expect(body['model'], 'gpt-6-astra');
+          expect(body['instructions'], contains(_agentsText));
+          expect(body['instructions'], isNot(contains(_baselineAgentsText)));
+          expect(body['instructions'], isNot(contains(_projectAgentsText)));
+          final tools = (body['tools']! as List<Object?>)
+              .cast<Map<String, Object?>>();
+          expect(
+            tools.map((tool) => tool['name']),
+            unorderedEquals([
+              if (outbound.length <= 2) 'search',
+              'read_file',
+              'apply_patch',
+              'create_file',
+              'delete_file',
+              'run_command',
+            ]),
+          );
+          for (final forbidden in [
+            'environmentId',
+            'taskId',
+            'providerId',
+            'worktreePath',
+          ]) {
+            expect(jsonEncode(tools), isNot(contains(forbidden)));
+          }
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          switch (outbound.length) {
+            case 1:
+              _output(
+                request.response,
+                _call('search-task', 'search', {'query': query}),
+              );
+            case 2:
+              final output = _toolOutput(body, 'search-task');
+              expect(output, 'Search results:\n${jsonEncode(match)}');
+              expect(output, isNot(contains('project-only')));
+              _output(request.response, _message('search-final', answer));
+            case 3:
+              expect(body['instructions'], contains(laterGuidance));
+              expect(jsonEncode(body['input']), contains(answer));
+              expect(
+                (body['input']! as List<Object?>)
+                    .cast<Map<String, Object?>>()
+                    .where((item) => item['type'] == 'function_call_output'),
+                isEmpty,
+              );
+              _output(
+                request.response,
+                _call('after-search-read', 'read_file', {
+                  'relativePath': _sourcePath,
+                }),
+              );
+            case 4:
+              expect(body['instructions'], contains(laterGuidance));
+              final output = _toolOutput(body, 'after-search-read');
+              expect(output, contains(taskText));
+              expect(output, isNot(contains('project-only')));
+              expect(_revision(output), isNotEmpty);
+              _output(request.response, _message('read-final', followUpAnswer));
+            default:
+              fail(
+                'Unexpected Search Responses invocation ${outbound.length}.',
+              );
+          }
+          _sse(request.response, {
+            'type': 'response.completed',
+            'response': {
+              'id': 'search-${outbound.length}',
+              'model': 'gpt-6-astra',
+            },
+          });
+        } on Object catch (error, stack) {
+          endpointFailures.add((error, stack));
+        } finally {
+          await request.response.close();
+        }
+      });
+      addTearDown(() async {
+        await subscription.cancel();
+        await server.close(force: true);
+      });
+
+      final runtime = AdeleRuntime(
+        ids: MonotonicProductIdSource(seed: 'f3b-search'),
+      );
+      addTearDown(runtime.close);
+      final staticTools = runtime.extensions.discover(modelToolContributions);
+      expect(
+        staticTools.map((binding) => binding.id.value),
+        unorderedEquals([
+          '$_filesystemPluginId.model-tools',
+          '$_commandPluginId.model-tools',
+        ]),
+      );
+      expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
+      expect(
+        runtime.registry.providersFor(environmentProviderCapability),
+        isEmpty,
+      );
+      expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+      await runtime.plugins.start(
+        installationRoot: installationRoot.path,
+        dartaotruntimeExecutable: dartaotruntime,
+        hostArtifactPath: hostArtifact.path,
+        startupArguments: {
+          _openAiPluginId: [
+            '--chatgpt-only',
+            jsonEncode({
+              'credentialFile': credentials.path,
+              'clientId': 'fixture',
+              'instanceId': 'fixture',
+              'issuer': 'http://${server.address.address}:${server.port}',
+              'endpoint':
+                  'http://${server.address.address}:${server.port}/backend-api/codex/responses',
+            }),
+          ],
+        },
+      );
+      expect(runtime.plugins.state, ApplicationPluginState.ready);
+      expect(runtime.plugins.failure, isNull);
+      expect(runtime.plugins.catalog!.issues, isEmpty);
+      expect(runtime.plugins.backends, hasLength(4));
+      for (final backend in runtime.plugins.backends) {
+        expect(
+          backend.failure,
+          isNull,
+          reason: 'Backend ${backend.installation.metadata.id} must start.',
+        );
+        expect(backend.state, InstalledBackendState.active);
+      }
+      final searchBackend = runtime.plugins.backends.singleWhere(
+        (entry) => entry.installation.metadata.id.value == _searchPluginId,
+      );
+      expect(searchBackend.installation.backendArtifactUri, searchArtifact.uri);
+      expect(searchBackend.installation.frontend, isNull);
+      expect(searchBackend.connection!.pluginId, _searchPluginId);
+      expect(searchBackend.connection!.capabilityExposures, isEmpty);
+      final exposure = searchBackend.connection!.extensionExposures.single;
+      expect(exposure.extensionPointId, 'dev.adele.extension.model-tools');
+      expect(exposure.extensionId, '$_searchPluginId.model-tools');
+      final tools = runtime.extensions.discover(modelToolContributions);
+      expect(
+        tools.map((binding) => binding.id.value),
+        unorderedEquals([
+          '$_filesystemPluginId.model-tools',
+          '$_commandPluginId.model-tools',
+          '$_searchPluginId.model-tools',
+        ]),
+      );
+      final searchBinding = tools.singleWhere(
+        (binding) => binding.id.value == exposure.extensionId,
+      );
+      expect(searchBinding.validate, returnsNormally);
+      final agentsBinding = runtime.extensions
+          .discover(inferenceContextSources)
+          .single;
+      final gitBinding = runtime.registry.resolve(
+        environmentProviderCapability,
+      );
+      final modelBinding = runtime.registry.resolve(
+        modelProviderCapability,
+        providerId: stockChatGptProviderId,
+      );
+      expect(outbound, isEmpty);
+
+      final project = runtime.lifecycle.createProject(source.uri);
+      final created = await runtime.lifecycle.createTask(
+        projectId: project.id,
+        title: 'Search the installed product Task',
+      );
+      final session = runtime.lifecycle.createSession(
+        taskId: created.task.id,
+        strategyId: chatStrategyId,
+      );
+      final authority = runtime.store.requireSessionAuthority(session.id);
+      expect(authority.taskId, created.task.id);
+      expect(authority.environmentId, created.environment.id);
+      // Only fixture corroboration uses the path; the tool receives Session authority.
+      final worktree = Directory(
+        created.environment.providerState!['worktreePath']! as String,
+      );
+      expect(worktree.path, isNot(source.path));
+      expect(await File('${worktree.path}/.git').exists(), isTrue);
+      await File('${worktree.path}/$_sourcePath').writeAsString(taskText);
+      await File('${source.path}/$_sourcePath').writeAsString(projectText);
+      await File('${worktree.path}/AGENTS.md').writeAsString(_agentsText);
+      await File('${source.path}/AGENTS.md').writeAsString(_projectAgentsText);
+      final projectBefore = await _sourceSnapshot(source);
+      final taskBefore = await _sourceSnapshot(worktree);
+      final controller = ChatController(
+        runtime: runtime,
+        session: session,
+        providerId: stockChatGptProviderId,
+        model: 'gpt-6-astra',
+        runIds: MonotonicRunIdSource(seed: 'f3b-search'),
+      );
+      addTearDown(controller.close);
+      expect(controller.submit(prompt), isTrue);
+      await controller.activeRunFuture!;
+      await tester.pumpAndSettle();
+      if (endpointFailures.isNotEmpty) {
+        final (error, stack) = endpointFailures.first;
+        Error.throwWithStackTrace(error, stack);
+      }
+      expect(outbound, hasLength(2));
+      expect(controller.failure, isNull);
+      expect(controller.pendingApproval, isNull);
+      final run = controller.currentRun!.run;
+      expect(run.sessionId, session.id);
+      expect(run.state, RunState.completed);
+      expect(run.failure, isNull);
+      expect(run.interruptions, isEmpty);
+      expect(controller.snapshot.entries.map((entry) => entry.content), [
+        prompt,
+        answer,
+      ]);
+      final events = run.journal.records.map((record) => record.event).toList();
+      expect(events.whereType<ModelInvocationStarted>(), hasLength(2));
+      for (final settlement in events.whereType<ModelInvocationSettled>()) {
+        expect(settlement.settlement, ModelSettlement.completed);
+        expect(settlement.metadata.effectiveModel, 'gpt-6-astra');
+      }
+      final invocation = events
+          .whereType<ToolInvocationPrepared>()
+          .single
+          .invocation;
+      expect(invocation.tool.definition.id.value, '$_searchPluginId.search');
+      expect(invocation.tool.modelDefinition.alias, 'search');
+      expect(invocation.canonicalArguments, {'query': query, 'path': ''});
+      final policy = events.whereType<ToolPolicyEvaluated>().single;
+      expect(policy.invocationId, invocation.id);
+      expect(policy.decision, ToolPolicyDecision.allow);
+      expect(policy.effects.effects, {ToolEffect.sourceRead});
+      expect(policy.effects.uncertainty, EffectUncertainty.none);
+      expect(policy.effects.targets.map((target) => target.uri.toString()), [
+        'adele-environment:/${authority.environmentId.value}/',
+      ]);
+      expect(
+        events.whereType<ToolExecutionStarted>().single.invocationId,
+        invocation.id,
+      );
+      final completed = events.whereType<ToolExecutionCompleted>().single;
+      expect(completed.invocationId, invocation.id);
+      expect(completed.outcome.disposition, ToolOutcomeDisposition.success);
+      expect(completed.outcome.effectCertainty, EffectCertainty.knownOccurred);
+      expect(
+        completed.outcome.hostData['environmentId'],
+        authority.environmentId.value,
+      );
+      expect(completed.outcome.hostData['matches'], [match]);
+      expect(completed.outcome.hostData['truncated'], isFalse);
+      expect(completed.outcome.hostData['incomplete'], isFalse);
+      expect(
+        completed.outcome.modelContent,
+        _toolOutput(outbound.last, 'search-task'),
+      );
+      expect(
+        events.indexOf(completed),
+        lessThan(
+          events.lastIndexWhere((event) => event is ModelInvocationStarted),
+        ),
+      );
+      expect(await _sourceSnapshot(source), projectBefore);
+      expect(await _sourceSnapshot(worktree), taskBefore);
+
+      final retired = runtime.plugins.changes
+          .firstWhere(
+            (_) => searchBackend.state == InstalledBackendState.terminated,
+          )
+          .timeout(const Duration(seconds: 10));
+      await runtime.plugins.host!.stopPlugin(_searchPluginId);
+      await retired;
+      expect(searchBackend.connection!.isClosed, isTrue);
+      expect(searchBinding.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(
+        invocation.tool.executable.validateBinding,
+        throwsA(isA<StaleToolBindingException>()),
+      );
+      expect(
+        runtime.extensions
+            .discover(modelToolContributions)
+            .map((binding) => binding.id.value),
+        unorderedEquals(staticTools.map((binding) => binding.id.value)),
+      );
+      for (final binding in [...staticTools, agentsBinding]) {
+        expect(binding.validate, returnsNormally);
+      }
+      expect(runtime.plugins.host!.isClosed, isFalse);
+      expect(runtime.plugins.state, ApplicationPluginState.ready);
+      expect(runtime.plugins.failure, isNull);
+      for (final backend in runtime.plugins.backends.where(
+        (entry) => entry != searchBackend,
+      )) {
+        expect(backend.state, InstalledBackendState.active);
+        expect(backend.connection!.isClosed, isFalse);
+      }
+      expect(
+        runtime.registry.resolve(environmentProviderCapability).provider,
+        same(gitBinding.provider),
+      );
+      expect(
+        runtime.registry.resolve(modelProviderCapability).provider,
+        same(modelBinding.provider),
+      );
+      expect(
+        runtime.store.requireSessionAuthority(session.id),
+        same(authority),
+      );
+
+      // Fresh normal Chat composition omits Search, while AGENTS, Git reads and
+      // OpenAI continuation remain usable through their original generations.
+      await File(
+        '${worktree.path}/AGENTS.md',
+      ).writeAsString('$_agentsText$laterGuidance');
+      final taskAfterGuidance = await _sourceSnapshot(worktree);
+      expect(controller.submit(followUp), isTrue);
+      await controller.activeRunFuture!;
+      await tester.pumpAndSettle();
+      if (endpointFailures.isNotEmpty) {
+        final (error, stack) = endpointFailures.first;
+        Error.throwWithStackTrace(error, stack);
+      }
+      expect(outbound, hasLength(4));
+      expect(controller.failure, isNull);
+      expect(controller.pendingApproval, isNull);
+      expect(controller.currentRun!.run.id, isNot(run.id));
+      expect(controller.currentRun!.run.state, RunState.completed);
+      expect(controller.snapshot.entries.map((entry) => entry.content), [
+        prompt,
+        answer,
+        followUp,
+        followUpAnswer,
+      ]);
+      final read = controller
+          .activityForRun(controller.currentRun!.run.id)!
+          .tools
+          .single;
+      expect(read.outcome!.disposition, ToolOutcomeDisposition.success);
+      expect(
+        read.outcome!.hostData['environmentId'],
+        authority.environmentId.value,
+      );
+      expect(read.outcome!.hostData['text'], taskText);
+      expect(await _sourceSnapshot(source), projectBefore);
+      expect(await _sourceSnapshot(worktree), taskAfterGuidance);
+      expect(tester.takeException(), isNull);
+    }),
+    timeout: const Timeout(Duration(seconds: 45)),
+  );
 
   testWidgets(
     'F3a discovered AGENTS and real artifacts retain individual and compact group Inspection cards',
@@ -564,7 +1154,7 @@ void main() {
       expect(runtime.plugins.state, ApplicationPluginState.ready);
       expect(runtime.plugins.failure, isNull);
       expect(runtime.plugins.registry, same(runtime.registry));
-      expect(runtime.plugins.backends, hasLength(3));
+      expect(runtime.plugins.backends, hasLength(4));
       for (final backend in runtime.plugins.backends) {
         expect(
           backend.failure,
@@ -745,12 +1335,12 @@ void main() {
       await frontends.start(catalog);
       expect(frontends.catalog, same(catalog));
       expect(catalog.issues, isEmpty);
-      expect(catalog.installations, hasLength(6));
+      expect(catalog.installations, hasLength(7));
       expect(
         catalog.installations.where(
           (entry) => entry.backendArtifactUri != null,
         ),
-        hasLength(3),
+        hasLength(4),
       );
       expect(
         catalog.installations.where((entry) => entry.frontend != null),
@@ -2473,8 +3063,8 @@ void main() {
       await tester.pumpAndSettle();
       final catalog = runtime.plugins.catalog!;
       expect(catalog.issues, isEmpty);
-      expect(catalog.installations, hasLength(6));
-      expect(runtime.plugins.backends, hasLength(3));
+      expect(catalog.installations, hasLength(7));
+      expect(runtime.plugins.backends, hasLength(4));
       expect(
         catalog.installations.where((entry) => entry.frontend != null),
         hasLength(4),
@@ -2712,8 +3302,17 @@ void main() {
         );
         final catalog = runtime.plugins.catalog!;
         expect(catalog.issues, isEmpty);
-        // This root deliberately omits AGENTS; startup must not substitute it.
+        // This root omits AGENTS and Search; startup must not substitute them.
         expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
+        expect(
+          runtime.extensions
+              .discover(modelToolContributions)
+              .map((binding) => binding.id.value),
+          unorderedEquals([
+            '$_filesystemPluginId.model-tools',
+            '$_commandPluginId.model-tools',
+          ]),
+        );
         final backend = runtime.plugins.backends.singleWhere(
           (entry) => entry.installation.metadata.id.value == _openAiPluginId,
         );

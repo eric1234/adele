@@ -26,9 +26,9 @@ compiler share this primitive.
 ## Desktop Tooling
 
 Normal `dart tools/adele.dart run linux` and `build linux --profile` prepare the
-shared host AOT snapshot, three backend AOT snapshots (Git Environment, OpenAI,
-and AGENTS.md), and four frontend EVCs (Chat, Filesystem Tools, Command Tools, and
-OpenAI activity) before launching the Flutter run/build command. Backend compilation
+shared host AOT snapshot, four backend AOT snapshots (Git Environment, OpenAI,
+AGENTS.md, and Search), and four frontend EVCs (Chat, Filesystem Tools, Command Tools,
+and OpenAI activity) before launching the Flutter run/build command. Backend compilation
 runs outside Flutter; frontend compilation uses Flutter build-time tooling. This also
 applies to explicit Linux debug/release modes; non-Linux commands and the explicit
 development smoke entry remain unchanged. `prepareDesktopPluginDefines` in
@@ -39,7 +39,7 @@ reference fixture's draft `adele_plugin.yaml` source/build manifest.
 
 The launcher inspects its selected Flutter executable and uses that SDK's bundled
 `dart` and sibling `dartaotruntime`, not a potentially unrelated `dart` on PATH.
-It compiles the host first, then Git, OpenAI, and AGENTS.md.
+It compiles the host first, then Git, OpenAI, AGENTS.md, and Search.
 `tools/frontend_artifacts.dart` prepares all four stock EVCs in the same installation root with the selected Flutter
 SDK. `tools/stock_frontend_descriptors.dart` is the singular stock build-side
 presentation descriptor table, shared with installation fixtures rather than
@@ -51,7 +51,7 @@ preparation succeeds. The launcher passes only four generic deployment defines:
 - `ADELE_PLUGIN_INSTALLATION_ROOT`: absolute fresh prepared-installations root.
 - `ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`: absolute generic startup-arguments JSON file.
 
-Six installation directories are immediate children of the one installation root;
+Seven installation directories are immediate children of the one installation root;
 OpenAI's backend and frontend share one manifest and PluginId:
 
 ```text
@@ -74,6 +74,9 @@ desktop-plugins/build-*/
     |-- agents-md/
     |   |-- adele_plugin.installation.json
     |   `-- backend.aot
+    |-- search-tools/
+    |   |-- adele_plugin.installation.json
+    |   `-- backend.aot
     `-- openai/
         |-- adele_plugin.installation.json
         |-- backend.aot
@@ -93,11 +96,11 @@ Flutter frontend owner; it does not run the source builder or know stock source
 layouts. Catalog validation checks confined existing files, not executable EVC
 correctness. Runtime bytecode decoding remains presentation-local.
 
-AGENTS.md needs no configuration/startup arguments or extra deployment defines.
-Its entrypoint owns the ready extension advertisement; the app uses generic
-remote-source activation rather than linking the semantic plugin. Both host and
-plugin-backend protocols use version 2, so all host/backend artifacts must be
-rebuilt together. The installed manifest uses version 1.
+AGENTS.md and Search need no configuration/startup arguments or extra deployment
+defines. Their entrypoints own ready extension advertisements; the app uses generic
+remote extension activation rather than linking their semantic plugins in production.
+Both host and plugin-backend protocols use version 2, so all host/backend artifacts
+must be rebuilt together. The installed manifest uses version 1.
 
 The separate temporary startup file is a JSON object mapping PluginId to
 `List<String>` argv. The launcher derives OpenAI's credential-file reference and
@@ -177,7 +180,8 @@ profile system, or cache. Discovery and activation remain separate; normal start
 attempts all discovered valid backend and frontend components without enable/disable
 controls, version solving, watching, or hot upgrade. Future profiles choose
 activation participation separately from prepared descriptors. The remote AGENTS.md
-source uses narrow unary host reads; reverse streaming and general symmetric RPC
+source and Search tools use narrow unary host reads; Search execution uses existing
+host-to-backend server streaming. Reverse streaming and general symmetric RPC
 are unimplemented. In-process stock activations are outside this discovery path.
 
 ## Current Scope

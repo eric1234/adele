@@ -2,7 +2,7 @@
 
 ## Status
 
-Generated typed unary and server-streaming/cancellation transport, active one-to-many capability routing, exact generation bindings, configured OpenAI provider contexts, and the common ModelProvider capability are implemented in the maintained development foundation. Backend-ready extension advertisements, host adapters over the existing extension registry, and operation-scoped unary backend-to-host calls support remote inference sources. This is not general symmetric RPC or reverse streaming.
+Generated typed unary and server-streaming/cancellation transport, active one-to-many capability routing, exact generation bindings, configured OpenAI provider contexts, and the common ModelProvider capability are implemented in the maintained development foundation. Backend-ready extension advertisements, host adapters over the existing extension registry, and operation-scoped unary backend-to-host calls support remote inference sources and model tools. Model-tool execution uses host-to-backend server streaming, not reverse streaming or general symmetric RPC.
 
 The broader recursive extension model described in [`plugin-extension-model.md`](plugin-extension-model.md) is accepted architecture but mostly unimplemented. Capabilities should therefore be understood as one specialized callable part of that future extension architecture rather than as a universal registry for every kind of plugin participation.
 
@@ -209,14 +209,17 @@ nullable `revision`. Its only metadata is `failureMode: 'required'` or
 `'optional'`; other keys/values fail activation. Composer ordering, validation,
 required/optional failure, and immutable capture semantics are unchanged.
 
-For each snapshot operation, the host creates a cryptographically random opaque
+For each authorized operation, the host creates a cryptographically random opaque
 `hostInvocationContext` and a service allowlist tied to the exact connection and
 registration. This token is distinct from the backend's `configurationContext`.
-The sole supplied service is generated Environment
-`AuthorizedEnvironmentReadService.readFile(relativePath) -> EnvironmentTextFile`,
-preserving declared `EnvironmentFailure`, including `not_found`. Its signature
-contains no Session, Task, Environment, provider, or other authority IDs and offers
-no directory, mutation, or process operations.
+The supplied generated Environment `AuthorizedEnvironmentReadService` exposes
+`authority() -> AuthorizedEnvironmentIdentity`, `readFile(relativePath) ->
+EnvironmentTextFile`, and `readDirectory(relativePath) -> EnvironmentDirectoryListing`
+as unary operations. `authority()` takes no arguments and returns the already-bound
+`sessionId` and `environmentId`; it does not select authority. Reads preserve declared
+`EnvironmentFailure`, including `not_found`. No method accepts Session, Task,
+Environment, provider, or other authority-selection IDs. Mutation and process
+operations are absent from this host service.
 
 The dispatcher captures the canonical `InferenceContextSourceContext` supplied by
 the composer and obtains its `AuthorizedEnvironmentFileReadFacet`. It never
@@ -231,11 +234,16 @@ host-issued exact connection generation from the owning isolate, not plugin inpu
 replies route back to that captured generation. Runtime checks invocation liveness
 and the service allowlist before dispatch, then rechecks liveness after asynchronous
 settlement.
-`RemoteExtensionContext.invoke` revokes the token in `finally`; registration
-retirement, connection shutdown, and termination also revoke it and settle pending
-calls without waiting for arbitrary host service code. Late results cannot revive
-authority or reach a replacement generation. Revocation is not cancellation or
-rollback of an already-started read.
+`RemoteExtensionContext.invoke` revokes the token in `finally`.
+`RemoteExtensionContext.invokeStream` is single-subscription and creates authority
+only on listen. It retains that authority across the host-to-backend stream and
+revokes it on done, first error, cancellation, or retirement, before waiting for
+producer cancellation. Registration retirement, connection shutdown, and termination
+also revoke contexts and settle pending host calls without waiting for arbitrary
+host service code, including while the outer stream is idle or paused. Late results
+cannot revive authority or reach a replacement generation. Revocation is not
+cancellation or rollback of an already-started read. These lifetimes reuse the
+existing protocol; both protocol versions remain 2 and reverse calls remain unary.
 
 Public pure-Dart `adele_plugin_backend_support` supplies only the reusable
 `AdeleHostRequestMultiplexer` and bound `AdeleRequestChannel` needed by generated
@@ -243,6 +251,54 @@ clients. Its only production package dependency is `adele_contract`, with no int
 host or Flutter imports. It does not mint authority, grant service access, or
 implement general symmetric RPC. Reverse streaming, profiles,
 and general plugin configuration remain deferred; this boundary is not a sandbox.
+
+### Remote model tools
+
+Public `adele_model_tool/remote_model_tool.dart` declares generated
+`RemoteModelToolService` (`remoteModelToolServiceId`): unary `materialize`,
+`validateAndNormalize`, and `describe`, plus server-streaming `execute`. Immutable
+descriptors carry semantic tool identity/description, model alias/description/schema,
+and an opaque `routeId`. Canonical arguments, effect descriptions, progress, and
+terminal outcomes cross as immutable snapshots. Outcome classification, effect
+certainty, model content, structured `hostData`, and diagnostic text are preserved;
+arbitrary exception `cause` objects are not transported. Route IDs identify backend
+executables only within the captured connection generation. They are not persistent
+handles, model aliases, or authority tokens.
+
+The app's `RemoteModelToolAdapter` registers `ModelToolContribution` proxies through
+the existing adapter and extension registries. It requires the generated service ID
+and exactly one metadata key: `hostServices`, whose only valid values are `[]` and
+`['authorizedEnvironmentRead']`. Unknown keys, services, or duplicates fail
+activation. These are dependency requests, not permission grants or Profiles.
+Materialization captures the host's Session-bound read facet when requested and
+its exact Environment-provider binding, alongside the exact remote registration.
+The existing composer still owns zero-or-many tools, duplicate Tool IDs, and alias
+collisions; the adapter adds no provider selection or tool registry.
+
+Materialize and describe receive fresh operation contexts when reads are requested;
+execute receives a fresh stream-lifetime context on listen. The executable retains
+host-side bindings, never a reusable invocation token. Argument validation receives
+no host authority. Synchronous `validateBinding()` checks both the remote generation
+and captured Environment binding; transported Session/Run IDs cannot rebind either.
+Retirement fails old work rather than selecting a replacement.
+
+Local `ToolExecutable.validateAndNormalize` returns
+`FutureOr<CanonicalToolArguments>`, preserving synchronous local validators.
+`ToolInvocationResolver.resolve` returns a Future, awaited by normal proposal
+processing, and checks exact binding around validation. Unknown alias, invalid
+arguments, stale binding, and unavailable binding remain distinct. Only declared
+`RemoteToolArgumentValidationFailure` is translated to local argument-validation
+failure; malformed transport and other backend/protocol failures are not relabeled
+as invalid model arguments. Host effect description, policy, approval, execution
+collection, and continuation remain on the normal path.
+
+Stock Search uses this point without a capability exposure: its backend advertises
+one `dev.adele.extension.model-tools` extension with the existing
+`dev.adele.plugin.search-tools.model-tools` registration ID, generated service ID,
+default configuration context, and read-service metadata. Its backend reuses the
+pure-Dart root Search semantics instead of duplicating traversal or validation.
+Filesystem/Command mutation and process host services, remote Chat orchestration,
+and reverse streaming are not implemented by this boundary.
 
 ## Configured capability instances
 

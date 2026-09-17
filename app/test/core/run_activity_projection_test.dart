@@ -14,7 +14,7 @@ void main() {
         id: RunId('live-burst'),
         sessionId: SessionId('s'),
       )..start();
-      final ToolInvocationId id = _recordTool(run, 'active');
+      final ToolInvocationId id = await _recordTool(run, 'active');
       final RunActivitySource source = RunActivityProjection(run).source;
       final RunActivitySnapshot before = source.snapshot;
       int notifications = 0;
@@ -51,13 +51,13 @@ void main() {
   for (final int count in [16000, 32000]) {
     test(
       '$count buffered progress records freeze once without changing old snapshots',
-      () {
+      () async {
         final AgentRun run = AgentRun(
           id: RunId('burst-$count'),
           sessionId: SessionId('s'),
         )..start();
-        final ToolInvocationId id = _recordTool(run, 'active');
-        _recordTool(run, 'untouched');
+        final ToolInvocationId id = await _recordTool(run, 'active');
+        await _recordTool(run, 'untouched');
         final RunActivitySource source = RunActivityProjection(run).source;
         final RunActivitySnapshot before = source.snapshot;
         final ToolInvocationActivity oldTool = before.tools.first;
@@ -190,13 +190,13 @@ void main() {
 
   test(
     'repeated small reads freeze only changed entities and keep old prefixes',
-    () {
+    () async {
       final AgentRun run = AgentRun(
         id: RunId('small-reads'),
         sessionId: SessionId('s'),
       )..start();
-      final ToolInvocationId toolId = _recordTool(run, 'active');
-      _recordTool(run, 'untouched');
+      final ToolInvocationId toolId = await _recordTool(run, 'active');
+      await _recordTool(run, 'untouched');
       final ModelInvocationId modelId = ModelInvocationId('live-model');
       run.record(ModelInvocationStarted(modelId));
       final RunActivitySource source = RunActivityProjection(run).source;
@@ -528,7 +528,7 @@ void main() {
   });
 }
 
-ToolInvocationId _recordTool(AgentRun run, String suffix) {
+Future<ToolInvocationId> _recordTool(AgentRun run, String suffix) async {
   final ModelInvocationId modelId = ModelInvocationId('model-$suffix');
   run.record(ModelInvocationStarted(modelId));
   final ProviderToolProposal proposal = ProviderToolProposal(
@@ -555,7 +555,7 @@ ToolInvocationId _recordTool(AgentRun run, String suffix) {
     ),
   );
   final ToolInvocation invocation =
-      (const ToolInvocationResolver().resolve(
+      (await const ToolInvocationResolver().resolve(
                 invocationId: ToolInvocationId('tool-$suffix'),
                 proposal: proposal,
                 tools: MaterializedToolSet([

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:adele_environment/adele_environment.dart';
@@ -9,6 +10,35 @@ import 'package:test/test.dart';
 
 void main() {
   group('activation and contract', () {
+    test(
+      'unbound executable shares metadata and validation, not authority',
+      () async {
+        const SearchExecutable unbound = SearchExecutable.unbound();
+        final ToolRegistration bound = SearchExecutable(
+          _FileSystem(),
+        ).registration;
+        expect(unbound.registration.definition.id, bound.definition.id);
+        expect(
+          unbound.registration.modelDefinition.argumentsSchema,
+          bound.modelDefinition.argumentsSchema,
+        );
+        final CanonicalToolArguments arguments = unbound.validateAndNormalize({
+          'query': 'needle',
+          'path': './src//./',
+        });
+        expect(arguments.snapshot, {'query': 'needle', 'path': 'src'});
+        expect(unbound.validateBinding, throwsStateError);
+        await expectLater(
+          unbound.describe(arguments, _execution(SessionId('session-1'))),
+          throwsStateError,
+        );
+        await expectLater(
+          unbound.execute(arguments, _execution(SessionId('session-1'))),
+          emitsError(isStateError),
+        );
+      },
+    );
+
     test('contributes one independently bound search tool', () async {
       final ExtensionRegistry extensions = ExtensionRegistry();
       final ExtensionRegistration generationA = const SearchToolsPlugin()
@@ -83,15 +113,15 @@ void main() {
         const <String, Object?>{'query': 'x', 'path': 'a/../b'},
         const <String, Object?>{'query': 'x', 'path': 'a\u0000b'},
       ]) {
-        expect(
+        await expectLater(
           () => tool.validateAndNormalize(invalid),
           throwsA(isA<ToolArgumentValidationException>()),
         );
       }
       expect(
-        tool.validateAndNormalize(const <String, Object?>{
+        (await tool.validateAndNormalize(const <String, Object?>{
           'query': r'a.*[literal]',
-        }).snapshot,
+        })).snapshot,
         const <String, Object?>{'query': r'a.*[literal]', 'path': ''},
       );
     });
@@ -99,7 +129,7 @@ void main() {
     test('describes a source read against the Environment root', () async {
       final _FileSystem fileSystem = _FileSystem();
       final ToolExecutable tool = await _search(fileSystem);
-      final CanonicalToolArguments arguments = _arguments(tool, 'needle');
+      final CanonicalToolArguments arguments = await _arguments(tool, 'needle');
       final EffectDescription description = await tool.describe(
         arguments,
         _execution(fileSystem.sessionId),
@@ -139,7 +169,7 @@ void main() {
         './bad\uD800/./',
       ]) {
         // Validation itself must reject, without describe/execute or encoding.
-        expect(
+        await expectLater(
           () => tool.validateAndNormalize(<String, Object?>{
             'query': 'needle',
             'path': path,
@@ -201,7 +231,7 @@ void main() {
             },
           );
           final ToolExecutable tool = await _search(fs);
-          final CanonicalToolArguments args = tool.validateAndNormalize(
+          final CanonicalToolArguments args = await tool.validateAndNormalize(
             <String, Object?>{'query': 'needle', 'path': './$scope//./'},
           );
           expect(args.snapshot['path'], scope);
@@ -382,7 +412,7 @@ void main() {
           },
         );
         final ToolExecutable tool = await _search(fs);
-        final CanonicalToolArguments args = tool.validateAndNormalize(
+        final CanonicalToolArguments args = await tool.validateAndNormalize(
           <String, Object?>{'query': 'a.*[x]', 'path': './src//café.txt'},
         );
         final EffectDescription effect = await tool.describe(
@@ -1022,8 +1052,10 @@ Future<ToolExecutable> _search(_FileSystem fileSystem) async {
       .executable;
 }
 
-CanonicalToolArguments _arguments(ToolExecutable tool, String query) =>
-    tool.validateAndNormalize(<String, Object?>{'query': query});
+FutureOr<CanonicalToolArguments> _arguments(
+  ToolExecutable tool,
+  String query,
+) => tool.validateAndNormalize(<String, Object?>{'query': query});
 
 ToolExecutionContext _execution(SessionId sessionId) =>
     ToolExecutionContext(runId: RunId('run-1'), sessionId: sessionId);
@@ -1043,10 +1075,10 @@ Future<ToolOutcome> _run(
 
 Future<ToolOutcome> _execute(
   ToolExecutable tool,
-  CanonicalToolArguments arguments,
+  FutureOr<CanonicalToolArguments> arguments,
   SessionId sessionId,
 ) async =>
-    (await tool.execute(arguments, _execution(sessionId)).single
+    (await tool.execute(await arguments, _execution(sessionId)).single
             as ToolExecutionTerminal)
         .outcome;
 

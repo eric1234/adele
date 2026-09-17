@@ -79,6 +79,14 @@ equivalent value does not authorize a plugin-authored approval. The authorizatio
 is consumed on resolution and cleared when the resume call ends. These checks
 preserve host authority while Chat chooses proposal order and continuation timing.
 
+Proposal processing awaits the internal `ToolInvocationResolver.resolve`, including
+`ToolExecutable.validateAndNormalize`'s `FutureOr<CanonicalToolArguments>` result.
+Synchronous local validators and remote validators use the same path, with exact
+binding checks around validation. Unknown alias, invalid arguments, stale binding,
+and unavailable binding remain separate proposal failures; remote protocol failures
+are not treated as invalid arguments. Remote tool transport belongs to
+`adele_model_tool`, not this strategy facade.
+
 Application composition in `app/lib/core/orchestration_host.dart` resolves a
 canonical Session by `SessionId`, resolves its stored strategy exactly once per
 Run, and materializes it against `KernelOrchestrationHost`.
@@ -237,8 +245,10 @@ composer retains all capture, ordering, duplicate-key, and required/optional rul
 
 For each snapshot the host captures the canonical `InferenceContextSourceContext`,
 then grants a secure opaque invocation context with only generated Environment
-`AuthorizedEnvironmentReadService.readFile(relativePath)` allowlisted. Its
-`EnvironmentTextFile` result and declared `EnvironmentFailure` are preserved.
+`AuthorizedEnvironmentReadService` allowlisted. It offers no-argument `authority()`
+for the already-bound Session/Environment identity, `readFile(relativePath)`, and
+`readDirectory(relativePath)`, preserving existing DTOs and declared
+`EnvironmentFailure`. AGENTS.md uses only the file read.
 Session/Run strings are semantic context, never authority to select or reconstruct
 a Session or Environment. The read service has no authority-ID parameters,
 mutation, or process surface; the app obtains its captured context's

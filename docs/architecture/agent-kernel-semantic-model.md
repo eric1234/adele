@@ -470,7 +470,10 @@ The current stock projections apply this distinction to Session-authorized
 Environment facets: Filesystem Tools owns `read_file`, `apply_patch`,
 `create_file`, and `delete_file`, Search Tools owns `search`, and Command Tools
 owns direct-argv `run_command` over the foreground process facet. No separate
-Command or Shell capability is introduced.
+Command, Shell, or Search capability is introduced. Search runs as an installed AOT
+backend through the generic remote model-tool adapter; its pure-Dart root package
+still owns validation, traversal, exclusions, and result semantics. Filesystem and
+Command Tools remain in process.
 
 ## Tool definitions and catalog
 
@@ -493,6 +496,16 @@ relevant provider/connection generation
 
 The next model invocation may rematerialize the set. A protocol requiring catalog continuity across native continuation may impose that as a provider constraint; the generic architecture does not require a Run-global immutable tool list.
 
+Remote model tools use public `adele_model_tool/remote_model_tool.dart` transport
+and the app's `RemoteModelToolAdapter`, not kernel transport or a second registry.
+Materialization captures the exact remote registration and requested Session-bound
+Environment read facet. Descriptors carry an opaque backend route ID, not a
+persistent handle or authority token. Synchronous `validateBinding()` checks both
+captured generations; replacements require fresh resolution. Materialize/describe
+use fresh read-authority contexts, and execute retains one only for its stream
+lifetime. Argument validation has no host authority. See
+[`contracts-and-capabilities.md`](contracts-and-capabilities.md#remote-model-tools).
+
 ## Provider proposal versus ToolInvocation
 
 A provider may propose a tool by provider call ID, model-visible name, and arguments.
@@ -504,6 +517,16 @@ A resolved `ToolInvocation` should be created only after:
 3. arguments are authoritatively validated/normalized.
 
 An unknown model-visible tool is a model/protocol-correlated unavailable/invalid proposal. It must not create a fake ToolInvocation bound to an unrelated tool.
+
+`ToolExecutable.validateAndNormalize` returns
+`FutureOr<CanonicalToolArguments>` so local implementations may remain synchronous.
+The internal `ToolInvocationResolver.resolve` is asynchronous; normal proposal
+processing awaits validation and checks the exact binding before and after it.
+Unknown alias, invalid arguments, stale binding, and unavailable binding preserve
+their separate failure categories. The remote adapter maps only declared
+`RemoteToolArgumentValidationFailure` to argument-validation failure. Protocol,
+malformed-response, and other backend failures are not invalid model arguments.
+Policy and approval begin only after successful canonical resolution.
 
 A ToolInvocation conceptually carries:
 
@@ -571,7 +594,7 @@ ToolProgress*
 exactly one ToolOutcome
 ```
 
-The current internal Dart API is a stream of `ToolExecutionEvent` values with zero or more progress observations and exactly one terminal outcome. This is not a stable public API, but it preserves the invariant that one execution does not require separate effectful `execute()` and `outcome()` operations.
+The experimental public `adele_model_tool` API is a stream of `ToolExecutionEvent` values with zero or more progress observations and exactly one terminal outcome, collected by the internal kernel. It preserves the invariant that one execution does not require separate effectful `execute()` and `outcome()` operations. Remote execution uses generated server streaming with immutable event/outcome snapshots, without transporting exception `cause` objects. Host policy, approval, collection, and continuation are unchanged.
 
 Progress is nonterminal observation. The current minimal `ToolProgress` shape distinguishes `status`, `stdout`, and `stderr` content while stream order supplies ordering. Future transport/persistence may choose which progress is durable or lossy.
 

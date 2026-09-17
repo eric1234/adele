@@ -14,8 +14,8 @@ const List<String> developmentSelfHostingToolAliases = <String>[
   'apply_patch',
   'create_file',
   'delete_file',
-  'search',
   'run_command',
+  'search',
 ];
 
 final class DevelopmentSelfHostingEvidenceContext {

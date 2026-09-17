@@ -5,6 +5,7 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_desktop/core/remote_inference_context_host.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
 import 'package:adele_desktop/development/agent/development_self_hosting.dart';
 import 'package:adele_environment/adele_environment.dart';
@@ -17,7 +18,6 @@ import 'package:command_tools_plugin/command_tools_plugin.dart';
 import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
-import 'package:search_tools_plugin/search_tools_plugin.dart';
 
 import 'source_read_evidence_test_support.dart';
 
@@ -36,6 +36,7 @@ void main() {
   late File hostArtifact;
   late File gitEnvironmentArtifact;
   late File agentsMdArtifact;
+  late File searchToolsArtifact;
 
   setUpAll(() async {
     repository = Directory.current.parent.path;
@@ -48,6 +49,7 @@ void main() {
     hostArtifact = File('${artifacts.path}/host.aot');
     gitEnvironmentArtifact = File('${artifacts.path}/git-environment.aot');
     agentsMdArtifact = File('${artifacts.path}/agents-md.aot');
+    searchToolsArtifact = File('${artifacts.path}/search-tools.aot');
     await Future.wait<void>(<Future<void>>[
       _compile(
         dart,
@@ -68,11 +70,17 @@ void main() {
         agentsMdArtifact.path,
         repository,
       ),
+      _compile(
+        dart,
+        '$repository/plugins/search_tools/packages/backend/bin/search_tools_backend.dart',
+        searchToolsArtifact.path,
+        repository,
+      ),
     ]);
   });
 
   test(
-    'F3a self-hosting topology retains remote AGENTS and canonical Session authority',
+    'F3b self-hosting retains remote AGENTS and Search with canonical Session authority',
     () async {
       final Directory container = await Directory.systemTemp.createTemp(
         'adele-self-hosting-topology-',
@@ -95,6 +103,7 @@ void main() {
               ),
               gitEnvironmentArtifact: gitEnvironmentArtifact,
               agentsMdArtifact: agentsMdArtifact,
+              searchToolsArtifact: searchToolsArtifact,
             ),
             projectSource: source,
             hostEnvironment: const <String, String>{},
@@ -147,8 +156,8 @@ void main() {
           'apply_patch',
           'create_file',
           'delete_file',
-          'search',
           'run_command',
+          'search',
         ],
       );
 
@@ -269,7 +278,7 @@ void main() {
   );
 
   test(
-    'agent searches then reads real source through Environment generations',
+    'agent searches then reads real source through remote Search and Environment generations',
     () async {
       final Directory container = await Directory.systemTemp.createTemp(
         'adele-session-environment-read-',
@@ -331,8 +340,17 @@ void main() {
       final ExtensionRegistration filesystemActivation =
           const FilesystemToolsPlugin().activate(extensions);
       addTearDown(filesystemActivation.close);
-      final ExtensionRegistration searchGenerationA = const SearchToolsPlugin()
-          .activate(extensions);
+      final PluginBackendActivation searchGenerationA =
+          await PluginBackendActivation.registerAdvertised(
+            connection: await host.startPlugin(
+              pluginId: 'dev.adele.plugin.search-tools',
+              artifactUri: searchToolsArtifact.uri,
+            ),
+            capabilities: registry,
+            extensions: extensions,
+            adapters: createRemoteExtensionAdapters(),
+          );
+      addTearDown(searchGenerationA.close);
       final ToolCatalog catalogA = await buildModelToolCatalogForSession(
         sessionId: sessionId,
         environmentRuntime: lifecycle.environmentRuntime,
@@ -376,6 +394,8 @@ void main() {
       );
 
       await searchGenerationA.close();
+      expect(searchGenerationA.connection.isClosed, isTrue);
+      expect(host.isClosed, isFalse);
       expect(
         searchA.executable.validateBinding,
         throwsA(isA<StaleToolBindingException>()),
@@ -393,9 +413,21 @@ void main() {
         <String>['read_file', 'apply_patch', 'create_file', 'delete_file'],
       );
 
-      final ExtensionRegistration searchGenerationB = const SearchToolsPlugin()
-          .activate(extensions);
+      final PluginBackendActivation searchGenerationB =
+          await PluginBackendActivation.registerAdvertised(
+            connection: await host.startPlugin(
+              pluginId: 'dev.adele.plugin.search-tools',
+              artifactUri: searchToolsArtifact.uri,
+            ),
+            capabilities: registry,
+            extensions: extensions,
+            adapters: createRemoteExtensionAdapters(),
+          );
       addTearDown(searchGenerationB.close);
+      expect(
+        searchGenerationB.connection,
+        isNot(same(searchGenerationA.connection)),
+      );
       final ToolCatalog pluginGenerationBCatalog =
           await buildModelToolCatalogForSession(
             sessionId: sessionId,
@@ -1669,9 +1701,11 @@ Future<ToolOutcome> _executeSearch(
   SessionId sessionId, {
   String path = 'plugins/chat_strategy/lib',
 }) async {
-  final CanonicalToolArguments arguments = tool.executable.validateAndNormalize(
-    <String, Object?>{'query': 'final class ChatSessionState', 'path': path},
-  );
+  final CanonicalToolArguments arguments = await tool.executable
+      .validateAndNormalize(<String, Object?>{
+        'query': 'final class ChatSessionState',
+        'path': path,
+      });
   return (await tool.executable
               .execute(
                 arguments,

@@ -117,12 +117,15 @@ void main() {
       relativePath: _path,
       revision: _revision,
     );
-    final SourceCodingToolAttempt read = _readAttempt(
-      arguments: {'relativePath': _path, ...selection.arguments},
-      outcome: outcome(),
-      sequence: reads.length * 2,
-    );
-    reads[selection.name] = read;
+    late final SourceCodingToolAttempt read;
+    setUpAll(() async {
+      read = await _readAttempt(
+        arguments: {'relativePath': _path, ...selection.arguments},
+        outcome: outcome(),
+        sequence: reads.length * 2,
+      );
+      reads[selection.name] = read;
+    });
     test('accepts accurate ${selection.name} envelope', () {
       check(outcome());
     });
@@ -200,9 +203,9 @@ void main() {
       );
     }
   });
-  test('failed reads cannot provide target observation', () {
+  test('failed reads cannot provide target observation', () async {
     final SourceCodingToolAttempt read = reads['interior finite reread']!;
-    final SourceCodingToolAttempt failed = _readAttempt(
+    final SourceCodingToolAttempt failed = await _readAttempt(
       arguments: read.prepared.invocation.canonicalArguments,
       outcome: ToolOutcome(
         disposition: ToolOutcomeDisposition.failure,
@@ -225,13 +228,13 @@ void main() {
   });
 }
 
-SourceCodingToolAttempt _readAttempt({
+Future<SourceCodingToolAttempt> _readAttempt({
   required Map<String, Object?> arguments,
   required ToolOutcome outcome,
   int sequence = 0,
-}) {
+}) async {
   final ResolvedToolProposal resolved =
-      const ToolInvocationResolver().resolve(
+      await const ToolInvocationResolver().resolve(
             invocationId: ToolInvocationId('read-$sequence'),
             proposal: ProviderToolProposal(
               providerCallId: 'read-$sequence',

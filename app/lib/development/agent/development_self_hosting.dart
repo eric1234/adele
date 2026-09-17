@@ -113,6 +113,7 @@ final class DevelopmentSelfHostingArtifacts {
     required this.openAiArtifact,
     required this.gitEnvironmentArtifact,
     required this.agentsMdArtifact,
+    required this.searchToolsArtifact,
   });
 
   final Directory repository;
@@ -122,6 +123,7 @@ final class DevelopmentSelfHostingArtifacts {
   final File openAiArtifact;
   final File gitEnvironmentArtifact;
   final File agentsMdArtifact;
+  final File searchToolsArtifact;
 
   static Future<DevelopmentSelfHostingArtifacts> compile({
     required Directory repository,
@@ -143,6 +145,7 @@ final class DevelopmentSelfHostingArtifacts {
             '${outputDirectory.path}/git-environment.aot',
           ),
           agentsMdArtifact: File('${outputDirectory.path}/agents-md.aot'),
+          searchToolsArtifact: File('${outputDirectory.path}/search-tools.aot'),
         );
     await Future.wait(<Future<void>>[
       _compileAot(
@@ -176,6 +179,14 @@ final class DevelopmentSelfHostingArtifacts {
         entrypoint:
             'plugins/agents_md/packages/backend/bin/agents_md_backend.dart',
         output: artifacts.agentsMdArtifact,
+        log: log,
+      ),
+      _compileAot(
+        dart: dart,
+        repository: repository,
+        entrypoint:
+            'plugins/search_tools/packages/backend/bin/search_tools_backend.dart',
+        output: artifacts.searchToolsArtifact,
         log: log,
       ),
     ]);
@@ -247,8 +258,10 @@ final class DevelopmentSelfHostingTopology {
     required this.projectSource,
     required PluginCapabilityActivation environmentActivation,
     required PluginBackendActivation agentsMdActivation,
+    required PluginBackendActivation searchToolsActivation,
   }) : _environmentActivation = environmentActivation,
-       _agentsMdActivation = agentsMdActivation;
+       _agentsMdActivation = agentsMdActivation,
+       _searchToolsActivation = searchToolsActivation;
 
   final PluginBackendHost host;
   final AdeleRuntime runtime;
@@ -267,6 +280,7 @@ final class DevelopmentSelfHostingTopology {
   final Directory projectSource;
   final PluginCapabilityActivation _environmentActivation;
   final PluginBackendActivation _agentsMdActivation;
+  final PluginBackendActivation _searchToolsActivation;
   Future<void>? _closing;
 
   SessionId get sessionId => session.id;
@@ -289,6 +303,7 @@ final class DevelopmentSelfHostingTopology {
     AdeleRuntime? runtime;
     PluginCapabilityActivation? environmentActivation;
     PluginBackendActivation? agentsMdActivation;
+    PluginBackendActivation? searchToolsActivation;
     try {
       runtime = AdeleRuntime(
         ids: _DevelopmentSelfHostingIds(identity),
@@ -316,6 +331,17 @@ final class DevelopmentSelfHostingTopology {
       );
       agentsMdActivation = await PluginBackendActivation.registerAdvertised(
         connection: agentsMdConnection,
+        capabilities: registry,
+        extensions: runtime.extensions,
+        adapters: createRemoteExtensionAdapters(),
+      );
+      final PluginBackendConnection searchToolsConnection = await host
+          .startPlugin(
+            pluginId: 'dev.adele.plugin.search-tools',
+            artifactUri: artifacts.searchToolsArtifact.uri,
+          );
+      searchToolsActivation = await PluginBackendActivation.registerAdvertised(
+        connection: searchToolsConnection,
         capabilities: registry,
         extensions: runtime.extensions,
         adapters: createRemoteExtensionAdapters(),
@@ -389,6 +415,7 @@ final class DevelopmentSelfHostingTopology {
             projectSource: projectSource,
             environmentActivation: environmentActivation,
             agentsMdActivation: agentsMdActivation,
+            searchToolsActivation: searchToolsActivation,
           );
       log?.call('Project source: ${topology.projectSource.path}');
       log?.call('Task worktree: ${topology.taskWorktreePath}');
@@ -396,6 +423,7 @@ final class DevelopmentSelfHostingTopology {
     } catch (error, stackTrace) {
       try {
         await closeResources(<Future<void> Function()>[
+          if (searchToolsActivation != null) searchToolsActivation.close,
           if (agentsMdActivation != null) agentsMdActivation.close,
           if (environmentActivation != null) environmentActivation.close,
           if (!host.isClosed) () => host.close(graceful: false),
@@ -425,8 +453,10 @@ final class DevelopmentSelfHostingTopology {
   String get baselineCommit => _requiredProviderStateString('baselineCommit');
 
   Future<void> close() => _closing ??= closeResources(<Future<void> Function()>[
+    _searchToolsActivation.retire,
     _agentsMdActivation.retire,
     _environmentActivation.retire,
+    _searchToolsActivation.close,
     _agentsMdActivation.close,
     _environmentActivation.close,
     if (!host.isClosed) host.close,

@@ -20,6 +20,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
     failSnapshot: options['failSnapshot'] == true,
     holdSnapshot: options['holdSnapshot'] == true,
     detachedReads: options['detachedReads'] == true,
+    inspectReadAuthority: options['inspectReadAuthority'] == true,
   );
   final router = AdeleConfigurationContextRouter.single(
     configurationContext: configuration,
@@ -86,12 +87,14 @@ final class _Probe implements RemoteInferenceContextSourceService {
     required this.failSnapshot,
     required this.holdSnapshot,
     required this.detachedReads,
+    required this.inspectReadAuthority,
   });
 
   final SendPort responses;
   final bool failSnapshot;
   final bool holdSnapshot;
   final bool detachedReads;
+  final bool inspectReadAuthority;
   final snapshotReady = Completer<void>();
   final snapshotRelease = Completer<void>();
   final detachedResults = <Future<Map<String, Object?>>>[];
@@ -169,6 +172,18 @@ final class _Probe implements RemoteInferenceContextSourceService {
     }
     final checks = <String, Object?>{
       'semanticIds': {'sessionId': sessionId, 'runId': runId},
+      if (inspectReadAuthority) ...{
+        'authority': await call(
+          hostInvocationContext,
+          method: authorizedEnvironmentReadServiceAuthorityId,
+          payload: const {},
+        ),
+        'directory': await call(
+          hostInvocationContext,
+          method: authorizedEnvironmentReadServiceReadDirectoryId,
+          payload: const {'relativePath': 'lib'},
+        ),
+      },
       'forgedSession': await call(
         hostInvocationContext,
         payload: {

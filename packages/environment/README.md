@@ -32,19 +32,27 @@ remains responsible for the model-facing `create_file`, `apply_patch`, and
 Command Tools consumes only the process facet for `run_command`.
 
 Generated unary `AuthorizedEnvironmentReadService` is declared alongside the
-provider service in `lib/adele_environment.dart`. Its sole operation is
-`readFile(String relativePath) -> Future<EnvironmentTextFile>`, reusing the same
-file DTO and declared `EnvironmentFailure` rather than flattening `not_found` or
-other domain failures into generic transport errors. It has no authority-ID
-arguments, directory reads, mutation, or process methods and is not a separately
-selected provider capability.
+provider service in `lib/adele_environment.dart`. It exposes `authority() ->
+Future<AuthorizedEnvironmentIdentity>`, `readFile(String relativePath) ->
+Future<EnvironmentTextFile>`, and `readDirectory(String relativePath) ->
+Future<EnvironmentDirectoryListing>`. It reuses the existing file/directory DTOs
+and declared `EnvironmentFailure` rather than flattening `not_found` or other
+domain failures into generic transport errors. `authority()` takes no arguments
+and returns the already-bound `sessionId` and `environmentId`. No method accepts
+authority-selection IDs or exposes mutation/process operations; this service is
+not a separately selected provider capability.
 
 For remote inference sources, the app captures canonical
 `InferenceContextSourceContext`, obtains its `AuthorizedEnvironmentFileReadFacet`,
 and validates exact authority around each read. A secure opaque per-operation host
 context allowlists this service on the exact connection generation; transported
 Session/Run IDs never select authority. Calls use the existing ports/framed host
-and are revoked at operation settlement, retirement, and termination. See
+and are revoked at operation settlement, retirement, and termination. Remote model
+tools capture the same Session-bound read facet during materialization and use
+fresh contexts for materialize/describe and the execute stream, never argument
+validation. Stream authority starts on listen and ends on done, error,
+cancellation, or retirement. Stock Search's AOT backend composes these directory
+and file reads using its existing pure-Dart semantics. See
 [operation-scoped host calls](../../docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls).
 This unary read channel supports neither reverse streaming nor general symmetric
 RPC and is not a sandbox.

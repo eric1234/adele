@@ -5,7 +5,6 @@ import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:command_tools_plugin/command_tools_plugin.dart';
 import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:local_directory_project_selector_plugin/local_directory_project_selector_plugin.dart';
-import 'package:search_tools_plugin/search_tools_plugin.dart';
 
 import 'application_plugin_bootstrap.dart';
 import 'product_lifecycle.dart';
@@ -26,7 +25,6 @@ final class AdeleRuntime {
     _activations = <ExtensionRegistration>[
       chat.activate(extensions),
       const FilesystemToolsPlugin().activate(extensions),
-      const SearchToolsPlugin().activate(extensions),
       // Retain the existing reduced live-smoke composition, not a profile API.
       if (includeCommandTools) const CommandToolsPlugin().activate(extensions),
       const LocalDirectoryProjectSelectorPlugin().activate(extensions),

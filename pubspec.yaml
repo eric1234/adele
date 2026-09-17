@@ -31,6 +31,7 @@ workspace:
   - plugins/filesystem_tools
   - plugins/filesystem_tools/packages/frontend
   - plugins/search_tools
+  - plugins/search_tools/packages/backend
   - plugins/command_tools
   - plugins/command_tools/packages/frontend
   - plugins/agents_md

@@ -118,9 +118,10 @@ point-specific metadata, and collisions fail activation with exact rollback.
 extension phases. Failure rolls back both and closes that attempt's connection;
 retirement removes both sets before connection close. Local failure and later
 termination do not remove unrelated registrations or replacements. The app supplies
-the inference-source adapter; runtime owns no orchestration-specific metadata rules.
+the inference-source and model-tool adapters; runtime owns neither point's metadata
+or composition rules.
 
-The runtime knows no Git/OpenAI/AGENTS.md source paths, credential schemas, or stock
+The runtime knows no Git/OpenAI/AGENTS.md/Search source paths, credential schemas, or stock
 exposure tables. Startup argv is opaque plugin input. Profiles/enable-disable
 management, version solving, watching, and hot upgrade remain deferred.
 
@@ -133,13 +134,25 @@ connection. `RemoteExtensionContext.invoke` brackets the operation and revokes i
 in `finally`, on registration retirement, and on connection shutdown/termination.
 Revocation settles pending host calls without awaiting arbitrary service code.
 
+`RemoteExtensionContext.invokeStream` supplies the same operation ownership for a
+host-to-backend stream. It is single-subscription and lazy: neither the context nor
+the operation starts before listen. Authority is revoked on done, first error,
+cancellation, or exact registration/connection retirement, before awaiting producer
+cancellation. Retirement also fails idle or paused streams. Pause/resume propagates
+to the producer; late events cannot revive authority or migrate to a replacement.
+This adds no wire messages or protocol-version change and does not make reverse
+host calls streaming.
+
 `hostRequest`/`hostResponse` reuse the same isolate ports and framed shared host.
 The shared host stamps connection generation and plugin identity from the owning
 isolate, and the runtime validates generation, invocation liveness, and the service
 allowlist before dispatch and after settlement. Late responses cannot migrate to
 a replacement. Semantic Session/Run identifiers do not confer authority.
 Generated dispatchers preserve declared failures; the app captures canonical
-inference-source context to supply only the authorized Environment file-read service.
+inference-source context or a materialized tool's Session-bound read facet to supply
+the authorized Environment read service. Its no-argument authority query and
+file/directory reads cannot select a different Environment; mutation and process
+host services are absent.
 See [the host-call contract](../../docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls).
 
 Plugins use public `adele_plugin_backend_support`, not this package, for their

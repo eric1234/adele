@@ -320,7 +320,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
     final int proposalSequence = tools._proposals
         .removeAt(proposalIndex)
         .sequence;
-    final ToolProposalResolution resolution = _resolver.resolve(
+    final ToolProposalResolution resolution = await _resolver.resolve(
       invocationId: ToolInvocationId(
         '${id.value}-tool-${_nextToolInvocation++}',
       ),
@@ -328,6 +328,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
       tools: tools._tools,
       context: ToolExecutionContext(runId: id, sessionId: sessionId),
     );
+    validateBinding();
     switch (resolution) {
       case RejectedToolProposal(:final failure):
         _run.record(
