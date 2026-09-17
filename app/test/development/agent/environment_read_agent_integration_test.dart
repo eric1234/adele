@@ -23,6 +23,7 @@ import 'source_read_evidence_test_support.dart';
 
 const String _gitEnvironmentPluginId = 'dev.adele.plugin.git-environment';
 const String _gitEnvironmentProviderId = 'dev.adele.environment.git-worktree';
+const String _agentsMdPluginId = 'dev.adele.plugin.agents-md';
 const String _sourceRelativePath =
     'plugins/chat_strategy/lib/chat_strategy_plugin.dart';
 const String _transientSourceRelativePath =
@@ -34,6 +35,7 @@ void main() {
   late String dartaotruntime;
   late File hostArtifact;
   late File gitEnvironmentArtifact;
+  late File agentsMdArtifact;
 
   setUpAll(() async {
     repository = Directory.current.parent.path;
@@ -45,6 +47,7 @@ void main() {
         '${File(dart).parent.path}/${Platform.isWindows ? 'dartaotruntime.exe' : 'dartaotruntime'}';
     hostArtifact = File('${artifacts.path}/host.aot');
     gitEnvironmentArtifact = File('${artifacts.path}/git-environment.aot');
+    agentsMdArtifact = File('${artifacts.path}/agents-md.aot');
     await Future.wait<void>(<Future<void>>[
       _compile(
         dart,
@@ -59,11 +62,17 @@ void main() {
         gitEnvironmentArtifact.path,
         repository,
       ),
+      _compile(
+        dart,
+        '$repository/plugins/agents_md/packages/backend/bin/agents_md_backend.dart',
+        agentsMdArtifact.path,
+        repository,
+      ),
     ]);
   });
 
   test(
-    'self-hosting topology stores its canonical Session strategy and authority',
+    'F3a self-hosting topology retains remote AGENTS and canonical Session authority',
     () async {
       final Directory container = await Directory.systemTemp.createTemp(
         'adele-self-hosting-topology-',
@@ -85,6 +94,7 @@ void main() {
                 '${hostArtifact.parent.path}/unused-openai.aot',
               ),
               gitEnvironmentArtifact: gitEnvironmentArtifact,
+              agentsMdArtifact: agentsMdArtifact,
             ),
             projectSource: source,
             hostEnvironment: const <String, String>{},
@@ -98,6 +108,18 @@ void main() {
       expect(topology.store, same(topology.runtime.store));
       expect(topology.contextComposer, same(topology.runtime.contextComposer));
       expect(topology.chat, same(topology.runtime.chat));
+      // Self-hosting uses its existing host, not normal installation bootstrap.
+      expect(topology.runtime.plugins.host, isNull);
+      expect(topology.runtime.plugins.catalog, isNull);
+      final agentsMdBinding = topology.runtime.extensions
+          .discover(inferenceContextSources)
+          .single;
+      expect(agentsMdBinding.id.value, '$_agentsMdPluginId.instructions');
+      expect(agentsMdBinding.validate, returnsNormally);
+      expect(
+        agentsMdBinding.value.failureMode,
+        InferenceContextFailureMode.required,
+      );
       expect(topology.sessionId, SessionId('session-topology'));
       expect(topology.sessionId, topology.session.id);
       expect(topology.session.taskId, topology.task.id);
@@ -166,13 +188,49 @@ void main() {
       for (final SemanticModelRequest request in model.requests) {
         final InferenceContextSourceResult source =
             request.context.sourceResults.single;
-        expect(
-          source.sourceId.value,
-          'dev.adele.plugin.agents-md.instructions',
-        );
+        expect(source.sourceId, agentsMdBinding.id);
+        expect(source.failureMode, InferenceContextFailureMode.required);
+        expect(source.status, InferenceContextSourceStatus.contributed);
         expect(source.materials.last.text, taskGuidance);
         expect(source.materials.last.revision, guidance.revision);
+        expect(
+          renderInferenceInstructions(request.context),
+          isNot(contains('Wrong Project guidance.')),
+        );
       }
+
+      // Registration retirement follows the asynchronous termination signal.
+      final agentsMdRetired = topology.runtime.extensions.changes.firstWhere(
+        (_) => topology.runtime.extensions
+            .discover(inferenceContextSources)
+            .isEmpty,
+      );
+      await topology.host.stopPlugin(_agentsMdPluginId);
+      await agentsMdRetired.timeout(const Duration(seconds: 10));
+      expect(topology.host.isClosed, isFalse);
+      expect(agentsMdBinding.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(
+        () => agentsMdBinding.value,
+        throwsA(isA<StaleExtensionBinding>()),
+      );
+      expect(
+        topology.runtime.extensions.discover(inferenceContextSources),
+        isEmpty,
+        reason:
+            'A terminated backend must not activate an in-process fallback.',
+      );
+      expect(strategy.validateBinding, returnsNormally);
+      for (final MaterializedTool tool in tools.tools) {
+        expect(tool.executable.validateBinding, returnsNormally);
+      }
+      expect(
+        topology.registry.providersFor(environmentProviderCapability),
+        hasLength(1),
+      );
+      expect(
+        model.requests.last.context.sourceResults.single.materials.last.text,
+        taskGuidance,
+      );
 
       await topology.close();
 
@@ -189,6 +247,7 @@ void main() {
         topology.runtime.extensions.discover(inferenceContextSources),
         isEmpty,
       );
+      expect(agentsMdBinding.validate, throwsA(isA<StaleExtensionBinding>()));
       expect(strategy.validateBinding, throwsA(isA<StaleExtensionBinding>()));
       for (final MaterializedTool tool in tools.tools) {
         expect(

@@ -27,13 +27,13 @@ void main() {
     );
   });
 
-  test('rejects multiple services in the Phase II transport', () async {
+  test('rejects duplicate stable IDs across services', () async {
     await expectDiagnostic(
       minimalContract(namedValue: true).replaceFirst(
         "@AdeleFailure('fixture.failure')",
-        "@AdeleService('fixture.second')\nabstract interface class SecondService {\n  @AdeleMethod('ping') Future<String> ping(String value);\n}\n@AdeleFailure('fixture.failure')",
+        "@AdeleService('fixture.service')\nabstract interface class SecondService {\n  @AdeleMethod('ping') Future<String> ping(String value);\n}\n@AdeleFailure('fixture.failure')",
       ),
-      'exactly one @AdeleService',
+      'Duplicate stable ID',
     );
   });
 

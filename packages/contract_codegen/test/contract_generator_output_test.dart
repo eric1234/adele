@@ -75,16 +75,21 @@ void main() {
     });
   }
 
-  test('apply check is non-mutating and write creates final output', () async {
-    final fixture = await createFixture(minimalContract(namedValue: true));
-    final generator = const ContractGenerator();
-    final generated = await generator.generate(fixture.source);
-    expect(await generator.apply(fixture.source, check: true), isFalse);
-    expect(File(generated.path).existsSync(), isFalse);
-    expect(await generator.apply(fixture.source, check: false), isFalse);
-    expect(await File(generated.path).readAsString(), generated.contents);
-    expect(await generator.apply(fixture.source, check: true), isTrue);
-  });
+  test(
+    'apply check is non-mutating and write creates final output',
+    () async {
+      final fixture = await createFixture(minimalContract(namedValue: true));
+      final generator = const ContractGenerator();
+      final generated = await generator.generate(fixture.source);
+      expect(await generator.apply(fixture.source, check: true), isFalse);
+      expect(File(generated.path).existsSync(), isFalse);
+      expect(await generator.apply(fixture.source, check: false), isFalse);
+      expect(await File(generated.path).readAsString(), generated.contents);
+      expect(await generator.apply(fixture.source, check: true), isTrue);
+    },
+    // Each generate/apply call creates a fresh analyzer resolution context.
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 
   for (final part in <String>[
     'other.g.dart',

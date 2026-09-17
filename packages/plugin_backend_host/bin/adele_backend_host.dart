@@ -14,7 +14,13 @@ Future<void> main() async {
       try {
         for (final Map<String, Object?> message in decoder.add(bytes)) {
           host.noteStreamCancelRequested(message);
-          messages.add(message);
+          // Reverse replies must reach their captured isolate even while the
+          // lifecycle queue waits for that isolate to finish shutting down.
+          if (message['kind'] == 'hostResponse') {
+            unawaited(host.handle(message));
+          } else {
+            messages.add(message);
+          }
         }
       } on Object catch (error, stackTrace) {
         stderr.writeln('backend-host protocol failure: $error\n$stackTrace');

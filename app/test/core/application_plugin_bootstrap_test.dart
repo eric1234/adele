@@ -8,6 +8,8 @@ import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -38,6 +40,8 @@ void main() {
       );
 
       expect(runtime.plugins.registry, same(runtime.registry));
+      expect(runtime.plugins.extensions, same(runtime.extensions));
+      expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
       expect(runtime.plugins.state, ApplicationPluginState.ready);
       expect(runtime.plugins.failure, isNull);
       expect(runtime.plugins.catalog!.installations, isEmpty);
@@ -168,6 +172,7 @@ void main() {
           isEmpty,
         );
         expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+        expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
         final Project project = runtime.lifecycle.createProject(
           Uri.parse('https://example.test/after-start-failure'),
         );
@@ -231,7 +236,10 @@ void main() {
           },
         }),
       );
-      final plugins = ApplicationPluginBootstrap(CapabilityRegistry());
+      final plugins = ApplicationPluginBootstrap(
+        CapabilityRegistry(),
+        ExtensionRegistry(),
+      );
       addTearDown(plugins.close);
       await plugins.start(
         installationRoot: root.path,
@@ -256,6 +264,7 @@ void main() {
     () async {
       final ApplicationPluginBootstrap plugins = ApplicationPluginBootstrap(
         CapabilityRegistry(),
+        ExtensionRegistry(),
       );
       final Future<void> closing = plugins.close();
       expect(plugins.close(), same(closing));

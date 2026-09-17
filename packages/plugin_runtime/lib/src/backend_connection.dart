@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:adele_contract/adele_contract.dart';
 
@@ -195,6 +196,11 @@ final class PluginBackendHost {
     if (_startingPlugins.containsKey(pluginId)) {
       throw StateError('Plugin $pluginId is already starting.');
     }
+    if (_stoppingPlugins.keys.any(
+      (connection) => connection.pluginId == pluginId,
+    )) {
+      throw StateError('Plugin $pluginId is still stopping.');
+    }
     final PluginBackendConnection connection = PluginBackendConnection._(
       host: this,
       pluginId: pluginId,
@@ -207,6 +213,7 @@ final class PluginBackendHost {
         pluginId: pluginId,
         fields: <String, Object?>{
           'artifactUri': artifactUri.toString(),
+          'generation': connection._generation,
           'arguments': List<String>.of(arguments, growable: false),
           'startupArgumentsOnly': startupArgumentsOnly,
           'defaultConfigurationContext':
@@ -224,6 +231,9 @@ final class PluginBackendHost {
         );
       }
       connection._capabilityExposures = AdeleCapabilityExposure.fromReady(
+        response,
+      );
+      connection._extensionExposures = AdeleExtensionExposure.fromReady(
         response,
       );
       _startingPlugins.remove(pluginId);
@@ -271,6 +281,8 @@ final class PluginBackendHost {
   }
 
   Future<void> _stopPlugin(PluginBackendConnection connection) async {
+    connection._closing = true;
+    connection._revokeHostInvocations();
     final String pluginId = connection.pluginId;
     final PluginConnectionClosed stopped = PluginConnectionClosed(
       'Plugin $pluginId was stopped.',
@@ -293,6 +305,10 @@ final class PluginBackendHost {
     if (_closed) {
       await _termination;
       return;
+    }
+    _shuttingDown = true;
+    for (final connection in [..._plugins.values, ..._startingPlugins.values]) {
+      connection._revokeHostInvocations();
     }
     if (graceful) {
       try {
@@ -528,6 +544,10 @@ final class PluginBackendHost {
   }
 
   void _handleMessage(Map<String, Object?> message) {
+    if (message['kind'] == 'hostRequest') {
+      unawaited(_handleHostRequest(message));
+      return;
+    }
     if (message['kind'] == 'diagnostic') {
       _onDiagnostic?.call(
         '${message['stage'] ?? 'backend-host'}: ${message['message']}',
@@ -571,6 +591,121 @@ final class PluginBackendHost {
       return;
     }
     completer.complete(message);
+  }
+
+  Future<void> _handleHostRequest(Map<String, Object?> message) async {
+    if (message.length != 9 ||
+        message['protocolVersion'] != backendHostProtocolVersion ||
+        message['requestId'] is! int ||
+        message['pluginId'] is! String ||
+        message['generation'] is! String ||
+        message['hostInvocationContext'] is! String ||
+        message['serviceId'] is! String ||
+        message['method'] is! String ||
+        !_isStringKeyedMap(message['payload'])) {
+      _hostProtocolViolation('Malformed host request from shared host.');
+      return;
+    }
+    final connection = _plugins[message['pluginId']];
+    final invocation =
+        connection?._hostInvocations[message['hostInvocationContext']];
+    bool isLive() =>
+        !_closed &&
+        !_shuttingDown &&
+        connection != null &&
+        !connection.isClosed &&
+        _plugins[connection.pluginId] == connection &&
+        connection._generation == message['generation'] &&
+        invocation != null &&
+        !invocation.isClosed;
+    if (!isLive()) {
+      _sendHostResponse(message, _hostInvocationRevoked);
+      return;
+    }
+    final dispatcher = invocation!._services[message['serviceId']];
+    if (dispatcher == null) {
+      _sendHostResponse(
+        message,
+        _hostFailure(
+          'service_unavailable',
+          'The service is not approved for this invocation.',
+        ),
+      );
+      return;
+    }
+    final requestId = message['requestId'] as int;
+    if (invocation._pending.containsKey(requestId)) {
+      _hostProtocolViolation('Duplicate active host request from shared host.');
+      return;
+    }
+    void settle(Map<String, Object?> response) =>
+        _sendHostResponse(message, response);
+    invocation._pending[requestId] = settle;
+    Map<String, Object?> response;
+    try {
+      response = await dispatcher.dispatch(<Object?, Object?>{
+        'kind': 'request',
+        'requestId': requestId,
+        'method': message['method'],
+        'payload': message['payload'],
+      });
+      if (response['kind'] != 'response' ||
+          response['requestId'] != requestId ||
+          (response['ok'] != true && response['ok'] != false) ||
+          (response['ok'] == true
+              ? !response.containsKey('payload')
+              : !_validRemoteError(response['error']))) {
+        response = _hostFailure(
+          'internal_error',
+          'Invalid host dispatcher response.',
+        );
+      }
+    } on Object {
+      response = _hostFailure(
+        'internal_error',
+        'Host service dispatch failed.',
+      );
+    }
+    // Revocation already settled and removed this response, independently of host code.
+    if (invocation._pending.remove(requestId) == null) return;
+    settle(isLive() ? response : _hostInvocationRevoked);
+  }
+
+  void _sendHostResponse(
+    Map<String, Object?> request,
+    Map<String, Object?> response,
+  ) {
+    if (_closed) return;
+    final envelope = <String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'hostResponse',
+      'requestId': request['requestId'],
+      'pluginId': request['pluginId'],
+      'generation': request['generation'],
+      'ok': response['ok'],
+      if (response['ok'] == true)
+        'payload': response['payload']
+      else
+        'error': response['error'],
+    };
+    try {
+      _send(envelope);
+    } on Object {
+      try {
+        _send(
+          envelope
+            ..remove('payload')
+            ..addAll(
+              _hostFailure(
+                'response_encoding_failed',
+                'Host response could not be transported.',
+              ),
+            ),
+        );
+      } on Object {
+        _hostProtocolViolation('Failed to send host response.');
+      }
+    }
   }
 
   bool _isHostStreamKind(Object? kind) => switch (kind) {
@@ -868,15 +1003,44 @@ final class PluginBackendConnection implements AdeleStreamChannel {
 
   final PluginBackendHost _host;
   final String pluginId;
+  final String _generation = _opaqueHostId();
   List<AdeleCapabilityExposure> _capabilityExposures = const [];
   List<AdeleCapabilityExposure> get capabilityExposures => _capabilityExposures;
+  List<AdeleExtensionExposure> _extensionExposures = const [];
+  List<AdeleExtensionExposure> get extensionExposures => _extensionExposures;
+  final Map<String, PluginHostInvocation> _hostInvocations = {};
   late final ConfigurationContextId defaultConfigurationContext =
       ConfigurationContextId._(this, 'default');
   final Completer<Object> _termination = Completer<Object>();
   bool _closed = false;
+  bool _closing = false;
 
-  bool get isClosed => _closed || _host.isClosed;
+  bool get isClosed => _closed || _closing || _host.isClosed;
   Future<Object> get terminated => _termination.future;
+
+  /// Grants only these services to this exact connection until synchronous close.
+  /// Dispatchers remain caller-owned; their cleanup need not block revocation.
+  PluginHostInvocation openHostInvocation(
+    Map<String, AdeleBackendDispatcher> services,
+  ) {
+    if (isClosed || _host._shuttingDown || _host._plugins[pluginId] != this) {
+      throw const PluginConnectionClosed(
+        'The plugin connection generation is closed.',
+      );
+    }
+    for (final serviceId in services.keys) {
+      adeleValidateServiceId(serviceId);
+    }
+    final invocation = PluginHostInvocation._(this, services);
+    _hostInvocations[invocation.id] = invocation;
+    return invocation;
+  }
+
+  void _revokeHostInvocations() {
+    for (final invocation in _hostInvocations.values.toList()) {
+      invocation.close();
+    }
+  }
 
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) {
@@ -939,9 +1103,54 @@ final class PluginBackendConnection implements AdeleStreamChannel {
 
   void _finish(Object reason) {
     _closed = true;
+    _revokeHostInvocations();
     if (!_termination.isCompleted) _termination.complete(reason);
   }
 }
+
+final class PluginHostInvocation {
+  PluginHostInvocation._(
+    this._owner,
+    Map<String, AdeleBackendDispatcher> services,
+  ) : _services = Map.of(services);
+
+  final PluginBackendConnection _owner;
+  final String id = _opaqueHostId();
+  final Map<String, AdeleBackendDispatcher> _services;
+  final Map<int, void Function(Map<String, Object?>)> _pending = {};
+  bool _closed = false;
+  bool get isClosed => _closed;
+
+  /// Immediately revokes authority and settles pending responses, without waiting
+  /// for arbitrary service code or taking ownership of dispatcher cleanup.
+  void close() {
+    if (_closed) return;
+    _closed = true;
+    _owner._hostInvocations.remove(id);
+    _services.clear();
+    final pending = _pending.values.toList();
+    _pending.clear();
+    for (final settle in pending) {
+      settle(_hostInvocationRevoked);
+    }
+  }
+}
+
+final Random _hostRandom = Random.secure();
+String _opaqueHostId() => List.generate(
+  32,
+  (_) => _hostRandom.nextInt(256).toRadixString(16).padLeft(2, '0'),
+).join();
+
+Map<String, Object?> _hostFailure(String code, String message) => {
+  'ok': false,
+  'error': <String, Object?>{'code': code, 'message': message},
+};
+
+final Map<String, Object?> _hostInvocationRevoked = _hostFailure(
+  'host_invocation_unavailable',
+  'The host invocation is not active for this connection generation.',
+);
 
 final class _ConfigurationContextChannel implements AdeleStreamChannel {
   const _ConfigurationContextChannel(

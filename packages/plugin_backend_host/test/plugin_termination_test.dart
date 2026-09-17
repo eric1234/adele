@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:adele_contract/adele_contract.dart';
 import 'package:plugin_backend_host/plugin_backend_host.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:test/test.dart';
@@ -56,6 +57,687 @@ void main() {
     'configurationContext': 'opaque-context',
     'pluginId': 'dev.adele.spoofed',
   };
+
+  const extension = <String, Object?>{
+    'extensionPointId': 'dev.adele.fixture.point',
+    'extensionId': 'dev.adele.fixture.extension',
+    'serviceId': 'fixtureService',
+    'configurationContext': 'fixture-context',
+    'metadata': <String, Object?>{
+      'label': 'Fixture',
+      'nested': <Object?>[
+        true,
+        <String, Object?>{
+          'child': <Object?>[null, 7, 2.5, 'text', false],
+        },
+      ],
+    },
+  };
+
+  test('extension readiness reaches only its exact connection', () async {
+    final host = await _startHost(dartaotruntime, hostArtifact);
+    addTearDown(host.close);
+    final peer = await host.startPlugin(
+      pluginId: 'extension-peer',
+      artifactUri: pluginArtifact.uri,
+      arguments: ['wait'],
+    );
+    expect(peer.extensionExposures, isEmpty);
+    for (final advertisements in [
+      <Object?>[],
+      [extension],
+      [
+        extension,
+        {...extension, 'extensionId': 'dev.adele.fixture.second'},
+      ],
+    ]) {
+      for (final mode in ['extensions', 'extensions-serialized']) {
+        final connection = await host.startPlugin(
+          pluginId: 'extensions',
+          artifactUri: pluginArtifact.uri,
+          arguments: [mode, jsonEncode(advertisements)],
+        );
+        expect(
+          connection.extensionExposures.map((value) => value.toMap()).toList(),
+          advertisements,
+        );
+        expect(
+          () => connection.extensionExposures.clear(),
+          throwsUnsupportedError,
+        );
+        await connection.close();
+      }
+    }
+    for (final invalid in <Object?>[
+      null,
+      {},
+      [
+        {...extension, 'pluginId': 'spoofed'},
+      ],
+      [
+        {...extension, 'extra': true},
+      ],
+      [
+        {...extension, 'metadata': <Object?>[]},
+      ],
+    ]) {
+      await expectLater(
+        host.startPlugin(
+          pluginId: 'extensions',
+          artifactUri: pluginArtifact.uri,
+          arguments: ['extensions', jsonEncode(invalid)],
+        ),
+        throwsA(isA<PluginRemoteFailure>()),
+      );
+      expect(await peer.request('ping', const {}), {'alive': true});
+    }
+  });
+
+  test(
+    'reverse requests preserve envelopes, domain failures and invocation allowlists',
+    () async {
+      final host = await _startHost(dartaotruntime, hostArtifact);
+      addTearDown(host.close);
+      final plugin = await host.startPlugin(
+        pluginId: 'reverse',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['wait'],
+      );
+      final peer = await host.startPlugin(
+        pluginId: 'reverse-peer',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['wait'],
+      );
+      final dispatcher = _HostDispatcher((request) async {
+        expect(request.keys.toSet(), {
+          'kind',
+          'requestId',
+          'method',
+          'payload',
+        });
+        expect(request['kind'], 'request');
+        return {
+          'kind': 'response',
+          'requestId': request['requestId'],
+          if (request['method'] == 'fixture.failure') ...{
+            'ok': false,
+            'error': {
+              'code': 'not_found',
+              'message': 'Missing file',
+              'declaredFailureType': 'fixture.failure',
+              'details': {'path': 'missing.txt'},
+            },
+          } else ...{
+            'ok': true,
+            'payload': request['payload'],
+          },
+        };
+      });
+      final services = <String, AdeleBackendDispatcher>{
+        'fixtureService': dispatcher,
+      };
+      final invocation = plugin.openHostInvocation(services);
+      services.clear();
+      expect(invocation.id, matches(RegExp(r'^[0-9a-f]{64}$')));
+      final other = plugin.openHostInvocation({});
+      expect(other.id, isNot(invocation.id));
+      final result =
+          await plugin.request('reverse', {
+                'context': invocation.id,
+                'payload': {'value': 17},
+              })
+              as Map;
+      expect(result['kind'], 'hostResponse');
+      expect(result['ok'], isTrue);
+      expect(result['payload'], {'value': 17});
+      expect(result.keys.toSet(), {'kind', 'requestId', 'ok', 'payload'});
+      final failure =
+          await plugin.request('reverse', {
+                'context': invocation.id,
+                'method': 'fixture.failure',
+              })
+              as Map;
+      expect(failure['error'], {
+        'code': 'not_found',
+        'message': 'Missing file',
+        'declaredFailureType': 'fixture.failure',
+        'details': {'path': 'missing.txt'},
+      });
+      for (final attempt in [
+        (
+          connection: plugin,
+          context: 'unknown',
+          service: 'fixtureService',
+          code: 'host_invocation_unavailable',
+        ),
+        (
+          connection: peer,
+          context: invocation.id,
+          service: 'fixtureService',
+          code: 'host_invocation_unavailable',
+        ),
+        (
+          connection: plugin,
+          context: invocation.id,
+          service: 'unapproved',
+          code: 'service_unavailable',
+        ),
+        (
+          connection: plugin,
+          context: other.id,
+          service: 'fixtureService',
+          code: 'service_unavailable',
+        ),
+      ]) {
+        final response =
+            await attempt.connection.request('reverse', {
+                  'context': attempt.context,
+                  'service': attempt.service,
+                })
+                as Map;
+        expect((response['error'] as Map)['code'], attempt.code);
+      }
+      expect(dispatcher.calls, 2);
+      invocation.close();
+      invocation.close();
+      expect(invocation.isClosed, isTrue);
+      final replay =
+          await plugin.request('reverse', {'context': invocation.id}) as Map;
+      expect((replay['error'] as Map)['code'], 'host_invocation_unavailable');
+      await plugin.close();
+      expect(other.isClosed, isTrue);
+      expect(
+        () => plugin.openHostInvocation({}),
+        throwsA(isA<PluginConnectionClosed>()),
+      );
+      final replacement = await host.startPlugin(
+        pluginId: 'reverse',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['wait'],
+      );
+      final stale =
+          await replacement.request('reverse', {'context': invocation.id})
+              as Map;
+      expect((stale['error'] as Map)['code'], 'host_invocation_unavailable');
+      expect(dispatcher.calls, 2);
+    },
+  );
+
+  test(
+    'revocation settles pending reverse calls without awaiting host code',
+    () async {
+      final host = await _startHost(dartaotruntime, hostArtifact);
+      addTearDown(host.close);
+      final plugin = await host.startPlugin(
+        pluginId: 'pending-reverse',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['wait'],
+      );
+      final entered = Completer<void>();
+      final release = Completer<void>();
+      final dispatcher = _HostDispatcher((request) async {
+        entered.complete();
+        await release.future;
+        return {
+          'kind': 'response',
+          'requestId': request['requestId'],
+          'ok': true,
+          'payload': 'late',
+        };
+      });
+      final invocation = plugin.openHostInvocation({
+        'fixtureService': dispatcher,
+      });
+      final pending = plugin.request('reverse', {'context': invocation.id});
+      await entered.future;
+      invocation.close();
+      final response = await pending.timeout(const Duration(seconds: 1)) as Map;
+      expect((response['error'] as Map)['code'], 'host_invocation_unavailable');
+      expect(invocation.isClosed, isTrue);
+      release.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(await plugin.request('unexpected-host-responses', const {}), 0);
+      expect(await plugin.request('ping', const {}), {'alive': true});
+    },
+  );
+
+  for (final termination in ['close', 'crash', 'host-close']) {
+    test(
+      '$termination revokes pending host invocations without dispatcher cleanup',
+      () async {
+        final host = await _startHost(dartaotruntime, hostArtifact);
+        addTearDown(host.close);
+        final plugin = await host.startPlugin(
+          pluginId: 'retiring-reverse',
+          artifactUri: pluginArtifact.uri,
+          arguments: ['wait'],
+        );
+        final entered = Completer<void>();
+        final dispatcher = _HostDispatcher((request) {
+          entered.complete();
+          return Completer<Map<String, Object?>>().future;
+        });
+        final invocation = plugin.openHostInvocation({
+          'fixtureService': dispatcher,
+        });
+        final pending = plugin.request('reverse', {'context': invocation.id});
+        final settled = pending.then<void>((_) {}, onError: (Object _) {});
+        await entered.future;
+        if (termination == 'close') {
+          final stopping = plugin.close();
+          expect(invocation.isClosed, isTrue);
+          await stopping.timeout(const Duration(seconds: 3));
+        } else if (termination == 'crash') {
+          await expectLater(
+            plugin.request('crash', const {}),
+            throwsA(isA<PluginRemoteFailure>()),
+          );
+        } else {
+          final stopping = host.close();
+          expect(invocation.isClosed, isTrue);
+          await stopping.timeout(const Duration(seconds: 3));
+        }
+        await settled.timeout(const Duration(seconds: 1));
+        expect(invocation.isClosed, isTrue);
+        expect(dispatcher.closes, 0);
+      },
+    );
+  }
+
+  test('malformed reverse framing retires only its plugin', () async {
+    final host = await _startHost(dartaotruntime, hostArtifact);
+    addTearDown(host.close);
+    final peer = await host.startPlugin(
+      pluginId: 'malformed-peer',
+      artifactUri: pluginArtifact.uri,
+      arguments: ['wait'],
+    );
+    final dispatcher = _HostDispatcher(
+      (_) => throw StateError('Must not dispatch'),
+    );
+    for (final malformed in <Map<String, Object?>>[
+      for (final field in [
+        'requestId',
+        'hostInvocationContext',
+        'serviceId',
+        'method',
+        'payload',
+      ])
+        {'omit': field},
+      {
+        'extra': {'pluginId': 'malformed-peer'},
+      },
+      {
+        'extra': {'generation': 'spoofed'},
+      },
+      {
+        'extra': {'unknown': true},
+      },
+      {
+        'extra': {'requestId': 'invalid'},
+      },
+      {
+        'extra': {'payload': <Object?>[]},
+      },
+      {
+        'extra': {'method': ''},
+      },
+      {
+        'extra': {'serviceId': 'bad/service'},
+      },
+    ]) {
+      final plugin = await host.startPlugin(
+        pluginId: 'malformed-reverse',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['wait'],
+      );
+      final invocation = plugin.openHostInvocation({
+        'fixtureService': dispatcher,
+      });
+      await expectLater(
+        plugin
+            .request('reverse', {'context': invocation.id, ...malformed})
+            .timeout(const Duration(seconds: 3)),
+        throwsA(isA<PluginRemoteFailure>()),
+      );
+      expect(invocation.isClosed, isTrue);
+      expect(await peer.request('ping', const {}), {'alive': true});
+    }
+    expect(dispatcher.calls, 0);
+  });
+
+  test(
+    'compact DAG metadata and reverse payload fail only their generation',
+    () async {
+      final host = await _startHost(dartaotruntime, hostArtifact);
+      addTearDown(host.close);
+      final peer = await host.startPlugin(
+        pluginId: 'dag-peer',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['wait'],
+      );
+      await expectLater(
+        host
+            .startPlugin(
+              pluginId: 'dag-plugin',
+              artifactUri: pluginArtifact.uri,
+              arguments: [
+                'extensions-dag',
+                jsonEncode([extension]),
+              ],
+            )
+            .timeout(const Duration(seconds: 3)),
+        throwsA(
+          isA<PluginRemoteFailure>().having(
+            (error) => error.message,
+            'message',
+            contains('node budget'),
+          ),
+        ),
+      );
+      expect(
+        await peer
+            .request('ping', const {})
+            .timeout(const Duration(seconds: 1)),
+        {'alive': true},
+      );
+      final plugin = await host.startPlugin(
+        pluginId: 'dag-plugin',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['wait'],
+      );
+      final dispatcher = _HostDispatcher(
+        (_) => throw StateError('Must not dispatch'),
+      );
+      final invocation = plugin.openHostInvocation({
+        'fixtureService': dispatcher,
+      });
+      await expectLater(
+        plugin
+            .request('reverse', {'context': invocation.id, 'compactDag': true})
+            .timeout(const Duration(seconds: 3)),
+        throwsA(isA<PluginRemoteFailure>()),
+      );
+      expect(dispatcher.calls, 0);
+      expect(invocation.isClosed, isTrue);
+      expect(
+        await peer
+            .request('ping', const {})
+            .timeout(const Duration(seconds: 1)),
+        {'alive': true},
+      );
+      final replacement = await host.startPlugin(
+        pluginId: 'dag-plugin',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['wait'],
+      );
+      expect(await replacement.request('ping', const {}), {'alive': true});
+    },
+  );
+
+  test(
+    'shared host stamps generations and never replies to replacement isolates',
+    () async {
+      final events = StreamController<Map<String, Object?>>();
+      final host = AdeleBackendHost(
+        send: (message) {
+          events.add(message);
+          return true;
+        },
+        diagnostic: (_) {},
+      );
+      final iterator = StreamIterator(events.stream);
+      addTearDown(() async {
+        await host.shutdown(notify: false);
+        await iterator.cancel();
+        await events.close();
+      });
+      Future<Map<String, Object?>> next(String kind) async {
+        while (await iterator.moveNext().timeout(const Duration(seconds: 3))) {
+          if (iterator.current['kind'] == kind) return iterator.current;
+        }
+        throw StateError('Missing $kind');
+      }
+
+      Future<void> start(String generation) async {
+        await host.handle({
+          'protocolVersion': backendHostProtocolVersion,
+          'kind': 'startPlugin',
+          'requestId': 1,
+          'pluginId': 'captured',
+          'generation': generation,
+          'defaultConfigurationContext': 'default',
+          'artifactUri': pluginKernel.uri.toString(),
+          'arguments': ['wait'],
+        });
+        await next('pluginReady');
+      }
+
+      Future<Map<String, Object?>> reverse() async {
+        await host.handle({
+          'protocolVersion': backendHostProtocolVersion,
+          'kind': 'request',
+          'requestId': 2,
+          'pluginId': 'captured',
+          'configurationContext': 'default',
+          'serviceId': 'fixture',
+          'method': 'reverse',
+          'payload': {'context': 'opaque'},
+        });
+        return next('hostRequest');
+      }
+
+      await start('generation-one');
+      final first = await reverse();
+      expect(first['pluginId'], 'captured');
+      expect(first['generation'], 'generation-one');
+      Map<String, Object?> response(Map<String, Object?> request) => {
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'hostResponse',
+        'requestId': request['requestId'],
+        'pluginId': request['pluginId'],
+        'generation': request['generation'],
+        'ok': true,
+        'payload': 'result',
+      };
+      await host.handle({...response(first), 'generation': 'wrong-generation'});
+      await host.handle({...response(first), 'pluginId': 'wrong-owner'});
+      await host.handle(response(first));
+      expect(((await next('response'))['payload'] as Map)['payload'], 'result');
+      final stale = await reverse();
+      await host.handle({
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'stopPlugin',
+        'requestId': 3,
+        'pluginId': 'captured',
+      });
+      await next('pluginStopped');
+      await start('generation-two');
+      final current = await reverse();
+      expect(current['generation'], 'generation-two');
+      expect(current['requestId'], isNot(stale['requestId']));
+      await host.handle(response(stale));
+      await host.handle(response(current));
+      expect(((await next('response'))['payload'] as Map)['payload'], 'result');
+      await host.handle({
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': 'request',
+        'requestId': 4,
+        'pluginId': 'captured',
+        'configurationContext': 'default',
+        'serviceId': 'fixture',
+        'method': 'unexpected-host-responses',
+        'payload': {},
+      });
+      expect((await next('response'))['payload'], 0);
+    },
+  );
+
+  for (final scenario in [
+    (name: 'negative ID', accepted: <int>[], rejected: -1),
+    (name: 'settled replay', accepted: [0, 4], rejected: 4),
+    (name: 'earlier replay', accepted: [0, 4], rejected: 0),
+    (name: 'unseen out-of-order ID', accepted: [0, 4], rejected: 2),
+  ]) {
+    test('reverse ${scenario.name} rejection is generation-local', () async {
+      final host = await _startHost(dartaotruntime, hostArtifact);
+      addTearDown(host.close);
+      final plugin = await host.startPlugin(
+        pluginId: 'ordered-reverse',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['wait'],
+      );
+      final peer = await host.startPlugin(
+        pluginId: 'ordered-peer',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['wait'],
+      );
+      final dispatcher = _HostDispatcher(
+        (request) async => {
+          'kind': 'response',
+          'requestId': request['requestId'],
+          'ok': true,
+          'payload': 'accepted',
+        },
+      );
+      final invocation = plugin.openHostInvocation({
+        'fixtureService': dispatcher,
+      });
+      final peerInvocation = peer.openHostInvocation({
+        'fixtureService': dispatcher,
+      });
+      for (final id in scenario.accepted) {
+        final response =
+            await plugin.request('reverse', {
+                  'context': invocation.id,
+                  'hostRequestId': id,
+                })
+                as Map;
+        expect(response['payload'], 'accepted');
+      }
+      await expectLater(
+        plugin
+            .request('reverse', {
+              'context': invocation.id,
+              'hostRequestId': scenario.rejected,
+            })
+            .timeout(const Duration(seconds: 3)),
+        throwsA(isA<PluginRemoteFailure>()),
+      );
+      expect(dispatcher.calls, scenario.accepted.length);
+      expect(plugin.isClosed, isTrue);
+      expect(invocation.isClosed, isTrue);
+      final peerResponse =
+          await peer.request('reverse', {
+                'context': peerInvocation.id,
+                'hostRequestId': 0,
+              })
+              as Map;
+      expect(peerResponse['payload'], 'accepted');
+      expect(peerInvocation.isClosed, isFalse);
+      final replacement = await host.startPlugin(
+        pluginId: 'ordered-reverse',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['wait'],
+      );
+      final replacementInvocation = replacement.openHostInvocation({
+        'fixtureService': dispatcher,
+      });
+      final replacementResponse =
+          await replacement.request('reverse', {
+                'context': replacementInvocation.id,
+                'hostRequestId': 0,
+              })
+              as Map;
+      expect(replacementResponse['payload'], 'accepted');
+    });
+  }
+
+  test(
+    'reverse response demux bypasses another plugin lifecycle wait',
+    () async {
+      final host = await _startHost(dartaotruntime, hostArtifact);
+      addTearDown(host.close);
+      final blocked = await host.startPlugin(
+        pluginId: 'lifecycle-wait',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['acknowledge-hang'],
+      );
+      final caller = await host.startPlugin(
+        pluginId: 'lifecycle-caller',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['wait'],
+      );
+      final entered = Completer<void>();
+      final release = Completer<void>();
+      final invocation = caller.openHostInvocation({
+        'fixtureService': _HostDispatcher((request) async {
+          entered.complete();
+          await release.future;
+          return {
+            'kind': 'response',
+            'requestId': request['requestId'],
+            'ok': true,
+            'payload': 'unblocked',
+          };
+        }),
+      });
+      final pending = caller.request('reverse', {'context': invocation.id});
+      await entered.future;
+      bool stopped = false;
+      final stopping = blocked.close().then((_) => stopped = true);
+      // The host is waiting for an isolate which acknowledges but does not exit.
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      release.complete();
+      final response = await pending.timeout(const Duration(seconds: 1)) as Map;
+      expect(response['payload'], 'unblocked');
+      expect(stopped, isFalse);
+      await stopping;
+    },
+  );
+
+  test(
+    'host dispatcher failures remain structured and preserve sibling calls',
+    () async {
+      final host = await _startHost(dartaotruntime, hostArtifact);
+      addTearDown(host.close);
+      final plugin = await host.startPlugin(
+        pluginId: 'host-failures',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['wait'],
+      );
+      final invocation = plugin.openHostInvocation({
+        'fixtureService': _HostDispatcher((request) async {
+          if (request['method'] == 'throw') {
+            throw StateError('private host details');
+          }
+          if (request['method'] == 'malformed') return {'ok': true};
+          return {
+            'kind': 'response',
+            'requestId': request['requestId'],
+            'ok': true,
+            'payload': Object(),
+          };
+        }),
+      });
+      for (final method in ['throw', 'malformed', 'unencodable']) {
+        final result =
+            await plugin.request('reverse', {
+                  'context': invocation.id,
+                  'method': method,
+                })
+                as Map;
+        expect(
+          (result['error'] as Map)['code'],
+          method == 'unencodable'
+              ? 'response_encoding_failed'
+              : 'internal_error',
+        );
+        expect(result.toString(), isNot(contains('private host details')));
+      }
+      expect(await plugin.request('ping', const {}), {'alive': true});
+    },
+  );
 
   test('forwards zero, one and multiple validated advertisements', () async {
     final host = await _startHost(dartaotruntime, hostArtifact);
@@ -132,6 +814,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 1,
         'pluginId': 'invalid-startup-mode',
+        'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
         'artifactUri': pluginKernel.uri.toString(),
         'arguments': ['wait'],
@@ -246,6 +929,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 1,
         'pluginId': 'send-failure',
+        'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
         'artifactUri': pluginKernel.uri.toString(),
         'arguments': ['wait', '[]', '$port'],
@@ -1024,6 +1708,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 1,
         'pluginId': 'invalid-credit',
+        'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
         'artifactUri': pluginArtifact.uri.toString(),
         'arguments': <String>['wait'],
@@ -1112,6 +1797,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 1,
         'pluginId': 'double-send-failure',
+        'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
         'artifactUri': pluginKernel.uri.toString(),
         'arguments': <String>['wait'],
@@ -1121,6 +1807,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 2,
         'pluginId': 'healthy-peer',
+        'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
         'artifactUri': pluginKernel.uri.toString(),
         'arguments': <String>['wait'],
@@ -1236,6 +1923,7 @@ void main() {
       'kind': 'startPlugin',
       'requestId': 30,
       'pluginId': 'cancel-forwarding',
+      'generation': 'test-generation',
       'defaultConfigurationContext': 'default',
       'artifactUri': pluginKernel.uri.toString(),
       'arguments': <String>['wait'],
@@ -1301,6 +1989,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 40,
         'pluginId': 'ingress-cancel',
+        'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
         'artifactUri': pluginKernel.uri.toString(),
         'arguments': <String>['wait'],
@@ -1376,6 +2065,7 @@ void main() {
       'kind': 'startPlugin',
       'requestId': 50,
       'pluginId': 'pre-admission-cancel',
+      'generation': 'test-generation',
       'defaultConfigurationContext': 'default',
       'artifactUri': pluginKernel.uri.toString(),
       'arguments': <String>['wait'],
@@ -1475,6 +2165,7 @@ void main() {
       'kind': 'startPlugin',
       'requestId': 60,
       'pluginId': 'discard-cancel',
+      'generation': 'test-generation',
       'defaultConfigurationContext': 'default',
       'artifactUri': pluginKernel.uri.toString(),
       'arguments': <String>['wait'],
@@ -1533,6 +2224,30 @@ Future<PluginBackendHost> _startHost(String dartaotruntime, File hostArtifact) {
     dartaotruntimeExecutable: dartaotruntime,
     hostArtifactPath: hostArtifact.path,
   );
+}
+
+final class _HostDispatcher implements AdeleBackendDispatcher {
+  _HostDispatcher(this._dispatch);
+  final Future<Map<String, Object?>> Function(Map<Object?, Object?>) _dispatch;
+  int calls = 0;
+  int closes = 0;
+
+  @override
+  Future<Map<String, Object?>> dispatch(Map<Object?, Object?> request) {
+    calls++;
+    return _dispatch(request);
+  }
+
+  @override
+  Future<void> handle(
+    Map<Object?, Object?> command,
+    void Function(Map<String, Object?>) send,
+  ) => throw StateError('Reverse unary requests must use dispatch.');
+
+  @override
+  Future<void> close() async {
+    closes++;
+  }
 }
 
 Future<void> _compile(

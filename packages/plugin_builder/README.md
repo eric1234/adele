@@ -26,8 +26,8 @@ compiler share this primitive.
 ## Desktop Tooling
 
 Normal `dart tools/adele.dart run linux` and `build linux --profile` prepare the
-shared host, Git Environment, and OpenAI backend AOT snapshots plus Chat,
-Filesystem Tools, Command Tools, and OpenAI activity frontend EVCs before launching the Flutter
+shared host and three backend AOT snapshots (Git Environment, OpenAI, and AGENTS.md)
+plus Chat, Filesystem Tools, Command Tools, and OpenAI activity frontend EVCs before launching the Flutter
 run/build command. Backend compilation runs
 outside Flutter; frontend compilation uses Flutter build-time tooling. This also
 applies to explicit Linux debug/release modes; non-Linux commands and the explicit
@@ -39,8 +39,8 @@ reference fixture's draft `adele_plugin.yaml` source/build manifest.
 
 The launcher inspects its selected Flutter executable and uses that SDK's bundled
 `dart` and sibling `dartaotruntime`, not a potentially unrelated `dart` on PATH.
-It compiles the host first, then Git and OpenAI. `tools/frontend_artifacts.dart`
-prepares all four stock EVCs in the same installation root with the selected Flutter
+It compiles the host first, then Git, OpenAI, and AGENTS.md.
+`tools/frontend_artifacts.dart` prepares all four stock EVCs in the same installation root with the selected Flutter
 SDK. `tools/stock_frontend_descriptors.dart` is the singular stock build-side
 presentation descriptor table, shared with installation fixtures rather than
 duplicated in app runtime activation. Manifests are written after all component
@@ -51,7 +51,7 @@ preparation succeeds. The launcher passes only four generic deployment defines:
 - `ADELE_PLUGIN_INSTALLATION_ROOT`: absolute fresh prepared-installations root.
 - `ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`: absolute generic startup-arguments JSON file.
 
-Five installation directories are immediate children of the one installation root;
+Six installation directories are immediate children of the one installation root;
 OpenAI's backend and frontend share one manifest and PluginId:
 
 ```text
@@ -71,6 +71,9 @@ desktop-plugins/build-*/
     |-- git-environment/
     |   |-- adele_plugin.installation.json
     |   `-- backend.aot
+    |-- agents-md/
+    |   |-- adele_plugin.installation.json
+    |   `-- backend.aot
     `-- openai/
         |-- adele_plugin.installation.json
         |-- backend.aot
@@ -81,7 +84,7 @@ Each installed JSON manifest contains a schema version, plugin metadata, and
 independently optional `backend` and `frontend` components. Each frontend contains
 a relative artifact and strict presentation descriptors for Session, tool activity,
 or model-native activity roles. Descriptors are executable ABI/preparation data,
-not profile state. Manifests contain no source paths, capability exposures,
+not profile state. Manifests contain no source paths, capability/extension exposures,
 configuration, or activation state. Their runtime schema and catalog failure rules
 are maintained in
 [`plugin-layout.md`](../../docs/architecture/plugin-layout.md#prepared-installation-snapshot).
@@ -89,6 +92,12 @@ The runtime discovers this snapshot before starting a host and shares it with th
 Flutter frontend owner; it does not run the source builder or know stock source
 layouts. Catalog validation checks confined existing files, not executable EVC
 correctness. Runtime bytecode decoding remains presentation-local.
+
+AGENTS.md needs no configuration/startup arguments or extra deployment defines.
+Its entrypoint owns the ready extension advertisement; the app uses generic
+remote-source activation rather than linking the semantic plugin. F3a bumps both
+host/plugin protocol versions to 2, so all host/backend artifacts must be rebuilt
+together. The installed manifest remains version 1.
 
 The separate temporary startup file is a JSON object mapping PluginId to
 `List<String>` argv. The launcher derives OpenAI's credential-file reference and
@@ -166,9 +175,10 @@ Current checkout tooling assembles fresh prepared installations for runtime
 discovery as a stand-in for that preparation, not an installer, update manager,
 profile system, or cache. Discovery and activation remain separate; normal startup
 attempts all discovered valid backend and frontend components without enable/disable
-controls, version solving, watching, reverse RPC, or hot upgrade. Future profiles
-choose activation participation separately from prepared descriptors. The six
-in-process stock activations remain unchanged and outside this discovery path.
+controls, version solving, watching, or hot upgrade. Future profiles choose
+activation participation separately from prepared descriptors. F3a adds narrow
+unary host reads for the remote AGENTS.md source, not reverse streaming or general
+symmetric RPC. Five other in-process stock activations remain outside discovery.
 
 ## Current Scope
 

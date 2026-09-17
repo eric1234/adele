@@ -19,6 +19,7 @@ workspace:
   - packages/orchestration
   - packages/plugin_api
   - packages/plugin_backend_host
+  - packages/plugin_backend_support
   - packages/plugin_builder
   - packages/plugin_runtime
   - packages/product
@@ -33,6 +34,7 @@ workspace:
   - plugins/command_tools
   - plugins/command_tools/packages/frontend
   - plugins/agents_md
+  - plugins/agents_md/packages/backend
   - plugins/chat_strategy
   - plugins/chat_strategy/packages/frontend
   - plugins/local_directory_project_selector

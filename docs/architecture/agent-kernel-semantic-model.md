@@ -284,7 +284,27 @@ independent Environment selection. All other service requests fail, including
 mutation/process facets and broader Environment authority/filesystem types.
 Context capture may inspect authorized state, not acquire tool effect authority;
 mutation and foreground processes retain their existing tool/policy/execution
-owners. This is an API ownership boundary, not an in-process plugin sandbox.
+owners. This is an API ownership boundary, not a plugin sandbox.
+
+F3a's remote source adapter remains outside the kernel. Generated orchestration
+`RemoteInferenceContextSourceService.snapshot(sessionId, runId,
+hostInvocationContext)` returns `RemoteInferenceInstruction(key, text, nullable
+revision)`. The app converts these into the existing contribution/material types;
+its only accepted metadata is `failureMode: 'required'` or `'optional'`. Internal
+`PluginExtensionActivation` uses host adapters and the existing `ExtensionRegistry`,
+not a second registry or universal remote extension semantics.
+
+The app captures the canonical `InferenceContextSourceContext` and exposes only
+generated Environment `AuthorizedEnvironmentReadService.readFile(relativePath)`
+through its `AuthorizedEnvironmentFileReadFacet`, preserving `EnvironmentTextFile`
+and `EnvironmentFailure`. Transported Session/Run identifiers are not authority;
+the read service accepts no authority IDs and offers no mutation/process methods.
+Secure opaque per-operation contexts and service allowlists are tied to exact
+host-stamped connection generations over existing isolate ports/framing. `finally`,
+retirement, and termination revoke them. The backend's public pure-Dart channel
+multiplexer lives in `adele_plugin_backend_support`; routing and authorization
+never become kernel mechanics. This is unary host access, not reverse streaming,
+general symmetric RPC, profiles, or sandboxing.
 
 The sealed `InferenceContextMaterial` root currently has only final
 `InferenceInstructionMaterial`: a nonblank source-local `String key`, nonblank
@@ -326,10 +346,12 @@ After safe capture, source material is immutable data independent of the live
 binding. Retirement during the provider call does not invalidate the captured
 request; the next inference discovers any replacement. Executable strategy/tool
 bindings still require their existing exact-generation checks and never migrate.
-Chat activates no source and remains AGENTS-unaware. Shared normal and
-development/self-hosting composition activates stock `agents_md_plugin`: each snapshot rereads root
-`AGENTS.md` through `AuthorizedEnvironmentFileReadFacet` in the Session-authorized
-Environment. `not_found` and blank files succeed empty; other read/service/authority
+Chat activates no source and remains AGENTS-unaware. Normal prepared startup and
+explicit development/self-hosting activate stock `agents_md_backend` through the
+same generic adapter, reusing pure-Dart `agents_md_plugin` semantics instead of a
+static app registration. Each snapshot rereads root `AGENTS.md` through generated
+authorized reads backed by the captured Session's `AuthorizedEnvironmentFileReadFacet`.
+`not_found` and blank files succeed empty; other read/service/authority
 errors fail the required source. Nonblank exact text and its Environment revision
 form one material, separate from stable plugin-owned semantics giving explicit
 user instructions and direct requests precedence over AGENTS.md guidance.

@@ -2,7 +2,7 @@
 
 `adele_orchestration` is the experimental public provider-neutral registration,
 binding, execution, live activity observation, and inference-context boundary for orchestration. It is pure
-Dart and depends only on public `adele_product`, `adele_plugin_api`, and
+Dart and depends only on public `adele_contract`, `adele_product`, `adele_plugin_api`, and
 `adele_model_tool`. Its API is not stable. Neither this package nor its stock
 Chat consumer depends on `agent_kernel` or the application.
 
@@ -215,6 +215,43 @@ text or revision changes.
 No Reference/Observation variants, roles, repository maps, or placeholder public
 APIs are supplied.
 
+### Remote Source Transport
+
+`lib/remote_inference_context.dart` owns the generated F3a transport contract,
+separate from native contribution/context types. Unary
+`RemoteInferenceContextSourceService.snapshot(String sessionId, String runId,
+String hostInvocationContext)` returns `List<RemoteInferenceInstruction>`, whose
+required fields are `key`, `text`, and nullable `revision`. The generated key for
+revision remains required even when its value is null. Source and configuration
+identity come from ready advertisements, not this result.
+This library declares no `@AdeleFailure` type and adds no domain-specific failure;
+the generator supports zero declared failures and preserves unrecognized remote
+failures as transport failures.
+
+The app's `RemoteInferenceContextSourceAdapter` converts those values into native
+`InferenceInstructionMaterial` and registers a contribution through internal
+`PluginExtensionActivation` on the same `ExtensionRegistry`. The only accepted
+point metadata is `failureMode: 'required'` or `'optional'`; no priority or stock
+identity switch is added. Unsupported fields and values fail activation. The
+composer retains all capture, ordering, duplicate-key, and required/optional rules.
+
+For each snapshot the host captures the canonical `InferenceContextSourceContext`,
+then grants a secure opaque invocation context with only generated Environment
+`AuthorizedEnvironmentReadService.readFile(relativePath)` allowlisted. Its
+`EnvironmentTextFile` result and declared `EnvironmentFailure` are preserved.
+Session/Run strings are semantic context, never authority to select or reconstruct
+a Session or Environment. The read service has no authority-ID parameters,
+mutation, or process surface; the app obtains its captured context's
+`AuthorizedEnvironmentFileReadFacet` and validates exact binding around the read.
+
+Unary host requests reuse the isolate ports and framed shared host, with host-stamped
+exact connection generations. Invocation contexts are revoked in `finally`, on
+retirement, and on termination. Public pure-Dart `adele_plugin_backend_support`
+supplies the backend channel multiplexer without importing internal runtime or
+Flutter. This package defines transport values, not host routing/authorization.
+Both host/plugin protocols are version 2; reverse streaming and general symmetric
+RPC remain deferred. See [host calls](../../docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls).
+
 ### Snapshot And Rendering
 
 `InferenceContextSnapshot` retains immutable `input`, `instructionGroups`, and
@@ -239,7 +276,7 @@ snapshot's strategy group remains present. Whitespace-only strategy text is
 preserved. Successful empty and omitted sources produce no source instruction
 group. With zero sources, the exact strategy instruction
 bytes, including the empty-string case, are unchanged. Semantic input is not
-rewritten by rendering; no provider contract or generated transport changes.
+rewritten by rendering; the ModelProvider contract and transport are unchanged.
 
 Each `InferenceContextSourceResult` retains `sourceId`, `failureMode`, immutable
 `materials`, and optional `failure`. Its `InferenceContextSourceStatus` is
@@ -282,10 +319,11 @@ development dependencies.
 Chat contributes no context source and does not discover sources
 itself. It owns history, instructions (including automatic batch-narration
 guidance), Run-local replay, and bounded sequencing; tools, policy, and model
-controls remain separate. Shared normal and development/self-hosting composition
-activates the independent stock
-[`agents_md_plugin`](../../plugins/agents_md/README.md); Chat remains AGENTS-unaware.
-That source rereads root `AGENTS.md` through the Session-authorized
+controls remain separate. Normal prepared startup and explicit development/self-hosting
+activate the independent stock [`agents_md_backend`](../../plugins/agents_md/README.md)
+through the same generic remote-source adapter; Chat remains AGENTS-unaware.
+The backend reuses pure-Dart `agents_md_plugin` semantics and rereads root `AGENTS.md`
+through generated authorized reads backed by the captured Session's
 `AuthorizedEnvironmentFileReadFacet` each snapshot. Missing (`not_found`) or blank
 files are successful empty results; other read/service/authority errors fail the
 required source. Nonblank exact text and its opaque Environment revision are
@@ -293,8 +331,9 @@ retained as `AGENTS.md` material, separate from stable `semantics` material stat
 that explicit user instructions and direct requests take precedence. This is
 plugin-owned guidance, not a generic precedence or repository-instructions API.
 
-There are no kernel, Flutter, app, or plugin-runtime imports. Scheduling,
-production discovery, broader Chat UI and nested Inspection, persistence, profiles,
+There are no kernel, Flutter, app, or plugin-runtime imports. F3a's remote-source
+contract and activation do not imply new validation evidence. Scheduling,
+general plugin management, broader Chat UI, persistence, profiles,
 and child Sessions remain deferred. The generic context contract remains instruction-only. Nested/scoped
 AGENTS.md, aliases/overrides, global/home files, imports, and AGENTS.md caching are
 deferred; time, Skills, roles, and repository maps remain independent, unimplemented

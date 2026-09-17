@@ -1,7 +1,6 @@
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
-import 'package:agents_md_plugin/agents_md_plugin.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:command_tools_plugin/command_tools_plugin.dart';
 import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
@@ -16,7 +15,7 @@ import 'resource_cleanup.dart';
 /// Providers and product operations are established separately by callers.
 final class AdeleRuntime {
   AdeleRuntime({ProductIdSource? ids, bool includeCommandTools = true}) {
-    plugins = ApplicationPluginBootstrap(registry);
+    plugins = ApplicationPluginBootstrap(registry, extensions);
     lifecycle = ProductLifecycleCoordinator.generated(
       store: store,
       registry: registry,
@@ -26,7 +25,6 @@ final class AdeleRuntime {
     contextComposer = InferenceContextComposer(extensions);
     _activations = <ExtensionRegistration>[
       chat.activate(extensions),
-      const AgentsMdPlugin().activate(extensions),
       const FilesystemToolsPlugin().activate(extensions),
       const SearchToolsPlugin().activate(extensions),
       // Retain the existing reduced live-smoke composition, not a profile API.

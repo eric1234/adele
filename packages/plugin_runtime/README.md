@@ -4,7 +4,8 @@
 It owns the semantic process-host connection, deterministic framed
 IPC, request correlation, plugin routing, structured remote failures,
 exit/stderr monitoring, and shutdown cleanup. It also owns the prepared installation
-catalog and active capability registration adapters. Process and framing objects
+catalog, active capability/extension registration adapters, and operation-scoped
+unary host-call routing. Process and framing objects
 do not escape its API.
 
 ## Dependencies
@@ -31,6 +32,8 @@ Stopping a plugin fails its outstanding requests. Malformed host output closes
 all connections and kills and reaps the child process.
 `PluginBackendConnection.close()` has one supported behavior: bounded semantic
 plugin shutdown.
+The PluginId remains reserved until that stop completes; a concurrent same-ID
+start fails explicitly instead of racing old-generation cleanup.
 
 ## Startup Arguments
 
@@ -90,7 +93,7 @@ independently activatable. Profiles are unimplemented participation policy, not
 descriptor metadata. See
 [`app/README.md`](../../app/README.md#normal-backend-startup) for bootstrap ownership.
 
-## Ready Capabilities
+## Ready Registrations
 
 Backend-owned `capabilityExposures` travel on the existing isolate-ready and host
 `pluginReady` path and are retained on the exact connection. Omission means zero
@@ -103,9 +106,45 @@ stale-binding semantics remain unchanged; installed metadata never registers a
 provider. See
 [`contracts-and-capabilities.md`](../../docs/architecture/contracts-and-capabilities.md#backend-ready-advertisements).
 
-The runtime knows no Git/OpenAI source paths, credential schemas, or stock exposure
-tables. Startup argv is opaque plugin input. Prepared frontend discovery adds no
-profile/enable-disable management, version solving, reverse RPC, or hot upgrade.
+`extensionExposures` follows the same path using public `AdeleExtensionExposure`;
+omission means zero extensions. `PluginExtensionActivation.registerAdvertised`
+selects a host `RemoteExtensionAdapter` by extension-point ID and registers its
+exact-generation proxy in the existing `ExtensionRegistry`.
+`RemoteExtensionAdapterRegistry` is an internal host adapter facility, not another
+contribution registry or a plugin-facing API. Unsupported points, invalid
+point-specific metadata, and collisions fail activation with exact rollback.
+
+`PluginBackendActivation.registerAdvertised` coherently owns both capability and
+extension phases. Failure rolls back both and closes that attempt's connection;
+retirement removes both sets before connection close. Local failure and later
+termination do not remove unrelated registrations or replacements. The app supplies
+the inference-source adapter; runtime owns no orchestration-specific metadata rules.
+
+The runtime knows no Git/OpenAI/AGENTS.md source paths, credential schemas, or stock
+exposure tables. Startup argv is opaque plugin input. Profiles/enable-disable
+management, version solving, watching, and hot upgrade remain deferred.
+
+## Unary Host Calls
+
+Both host and plugin-backend protocols are version 2; rebuild prepared artifacts
+together. `PluginBackendConnection.openHostInvocation` grants an opaque secure
+per-operation context with an explicit service-dispatcher allowlist on that exact
+connection. `RemoteExtensionContext.invoke` brackets the operation and revokes it
+in `finally`, on registration retirement, and on connection shutdown/termination.
+Revocation settles pending host calls without awaiting arbitrary service code.
+
+`hostRequest`/`hostResponse` reuse the same isolate ports and framed shared host.
+The shared host stamps connection generation and plugin identity from the owning
+isolate, and the runtime validates generation, invocation liveness, and the service
+allowlist before dispatch and after settlement. Late responses cannot migrate to
+a replacement. Semantic Session/Run identifiers do not confer authority.
+Generated dispatchers preserve declared failures; the app captures canonical
+inference-source context to supply only the authorized Environment file-read service.
+See [the host-call contract](../../docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls).
+
+Plugins use public `adele_plugin_backend_support`, not this package, for their
+request-channel multiplexer. This is unary operation-scoped access, not general
+symmetric RPC, reverse streaming, cancellation of arbitrary host code, or a sandbox.
 
 ## Validated Scope
 
@@ -114,7 +153,13 @@ shared child `dartaotruntime` host, which successfully loads plugin snapshots in
 separate isolate groups under Linux profile mode. Generated unary and streaming
 requests retain exact generation, configuration-context, and service routing;
 the protocol handshake and shutdown/cancellation paths have existing validation.
-That evidence does not establish validation of every F1 catalog/advertisement or
-F2 frontend-discovery/activation path.
+That evidence does not establish validation of every F1 catalog/advertisement,
+F2 frontend-discovery/activation, or F3a remote-extension/host-call path. The Linux
+profile build has since passed with the shared host, three backend snapshots, and
+four EVCs; this is preparation/build evidence, not a new full-suite or live-service
+result. See [normal backend startup](../../app/README.md#normal-backend-startup).
+The app's focused real-AOT remote inference suite separately validates scoped
+authority, declared failures, pending-call cleanup, and exact-generation source
+retirement; see [inference hosting](../../app/README.md#orchestration-hosting).
 The prepared startup catalog is narrower than an installer, profiles, packaging,
 or production lifecycle, which remain deferred.

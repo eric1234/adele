@@ -349,6 +349,13 @@ abstract interface class EnvironmentProviderService {
   );
 }
 
+/// File reads over authority already bound by the host invocation context.
+@AdeleService('authorizedEnvironmentRead')
+abstract interface class AuthorizedEnvironmentReadService {
+  @AdeleMethod('readFile')
+  Future<EnvironmentTextFile> readFile(String relativePath);
+}
+
 @AdeleFailure('environment.failure')
 final class EnvironmentFailure implements Exception {
   const EnvironmentFailure({

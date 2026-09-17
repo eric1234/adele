@@ -40,7 +40,8 @@ choose a requested plugin's contract.
 
 Stock source directories have not been normalized to this fixture's
 `adele_plugin.yaml` layout. In particular, the desktop launcher still knows the
-Git and OpenAI source entrypoints and prepares their installations explicitly.
+Git, OpenAI, and AGENTS.md source entrypoints and prepares their installations
+explicitly.
 Source/build discovery and installed-artifact discovery are separate boundaries.
 
 ## Prepared installation snapshot
@@ -97,7 +98,7 @@ read or decode bytecode, resolve entrypoints, or validate a host adapter's runti
 compatibility. `PreparedFrontend.load` later retains immutable bytes once per
 generation; decoding and entrypoint execution remain per-view. Readable corrupt
 EVC therefore fails locally when presented, not during catalog discovery.
-The manifest contains no capability exposures, source paths, configuration,
+The manifest contains no capability or extension exposures, source paths, configuration,
 credentials, profiles, or activation state.
 
 Discovery sorts child paths deterministically and does not recurse or watch for
@@ -119,8 +120,8 @@ Discovery activates neither component. Normal application bootstrap separately
 attempts all discovered valid components from this same snapshot; metadata-only
 entries start nothing. This fixed startup policy does not put activation state in
 the manifest or implement profiles. Installation and activation remain distinct
-as accepted in ADR 0015. Backend-ready capability advertisements, not installed
-metadata, supply live capability registrations; see
+as accepted in ADR 0015. Backend-ready capability/extension advertisements, not
+installed metadata, supply live registrations through host adapters; see
 [`contracts-and-capabilities.md`](contracts-and-capabilities.md#backend-ready-advertisements).
 
 ## Package split
@@ -166,6 +167,23 @@ execution objects, and approval authority stay outside the evaluated package.
 The narrow primitive bridge and
 host-owned execution presentation are described in
 [`overview.md`](overview.md#session-presentation).
+
+### Stock AGENTS.md split
+
+`plugins/agents_md` retains pure-Dart `agents_md_plugin` for root-file instruction
+semantics and focused tests. Its `packages/backend` package, `agents_md_backend`,
+reuses those semantics and implements generated orchestration source transport.
+It uses public `adele_plugin_backend_support` and generated Environment authorized
+reads, not internal host or Flutter imports. The app no longer imports or directly
+depends on either AGENTS.md implementation package or statically activates it.
+
+The backend-only installation is `agents-md/backend.aot`. Its ready
+`extensionExposures`, not its installed manifest, declare the source at
+`inferenceContextSources` with only `failureMode: 'required'` metadata. There is
+no AGENTS.md frontend, configuration, startup argv, or extra deployment define.
+Normal startup and explicit self-hosting use the same generic remote extension
+adapter; self-hosting supplies its own `agentsMdArtifact` on its same shared host,
+without requiring a normal installation root. See [the plugin README](../../plugins/agents_md/README.md).
 
 ### Stock tool frontend split
 
@@ -293,9 +311,10 @@ multiple extension points does not imply multiple plugin runtimes.
 
 ## Normal prepared composition
 
-Synchronous, provider-free `AdeleRuntime()` owns six unchanged in-process stock
-activations and generic `ApplicationPluginBootstrap` on its existing capability
-registry. `AdeleApplication` explicitly calls `ApplicationPluginBootstrap.start`
+Synchronous, provider-free `AdeleRuntime()` owns five in-process stock activations
+(Chat, Filesystem Tools, Search Tools, Command Tools, and Local Directory Project
+Selector) and generic `ApplicationPluginBootstrap` on its existing capability and
+extension registries. `AdeleApplication` explicitly calls `ApplicationPluginBootstrap.start`
 with only an installation root, shared runtime/host paths, and optional generic
 startup arguments. Discovery precedes host startup. If there are no valid backend
 components, startup succeeds without a child process, even with unusable host paths.
@@ -320,18 +339,20 @@ All backend registrations retire before backend generations close, then the host
 closes, then the runtime's in-process activations retire. Read-only backend states and catalog
 issues are available without a plugin-management UI.
 
-Git and OpenAI entrypoints own their capability advertisements. Generic
-`PluginCapabilityActivation.registerAdvertised` registers them through the
-existing registry/liveness machinery. Self-hosting uses the same registration
-path but retains its explicit artifact/host/profile topology without requiring
-normal installation discovery.
+Git/OpenAI entrypoints own capability advertisements; AGENTS.md owns its extension
+advertisement. `PluginBackendActivation.registerAdvertised` owns both capability
+and adapted extension registration with coherent rollback/retirement through the
+existing registries. Self-hosting uses the same generic source activation but
+retains its explicit artifact/host/profile topology without normal discovery.
 
 `prepareDesktopPluginDefines` in `tools/backend_artifacts.dart` selects and compiles
-stock Git/OpenAI source and invokes `tools/frontend_artifacts.dart` for four EVCs.
-It assembles five installation directories under one fresh
+stock Git/OpenAI/AGENTS.md source plus the shared host and invokes
+`tools/frontend_artifacts.dart` for four EVCs. In total, preparation produces three
+backend snapshots, one host snapshot, and four frontend artifacts. It assembles
+six installation directories under one fresh
 `.dart_tool/adele/desktop-plugins/build-*/installations/`: frontend-only
 `chat-strategy`, `filesystem-tools`, and `command-tools`, backend-only
-`git-environment`, and one combined `openai`. The singular build-side presentation
+`git-environment` and `agents-md`, and one combined `openai`. The singular build-side presentation
 table is `tools/stock_frontend_descriptors.dart`. Its separate startup-arguments JSON
 maps PluginId to a string argv list; normal OpenAI always receives `--chatgpt-only`,
 with a second JSON argument only when configured. That argument references the
@@ -375,11 +396,16 @@ rebuild/reload on Linux x64 Flutter profile mode. Windows, macOS, release mode,
 packaging, activation contexts, and broad plugin APIs remain unproven.
 
 F2 extends F1's prepared startup catalog to independently optional frontends and
-metadata-driven presentation registration. Enable/disable management, profiles,
-version solving, filesystem watching, reverse RPC, and hot upgrade remain deferred.
-The six in-process activations are unchanged and are not discovered from installed
-manifests; their migration is an F3 follow-up. Earlier fixture/build evidence does
-not establish validation of these F2 discovery and activation paths.
+metadata-driven presentation registration. F3a adds backend extension activation
+and operation-scoped unary host reads for AGENTS.md; five other activations remain
+static and outside installed discovery. Both host/plugin protocols are version 2,
+so prepared host/backends must be rebuilt together; installed manifests remain
+version 1. Enable/disable management, profiles, version solving, filesystem
+watching, reverse streaming, general symmetric RPC, and hot upgrade remain deferred.
+The Linux profile build has passed with the shared host, three backend snapshots,
+and four EVCs. That confirms preparation/build integration, not full behavioral or
+live-runtime validation of F2/F3a paths; see
+[normal backend startup](../../app/README.md#normal-backend-startup).
 
 Maintained plugin backends additionally prove generated server streaming,
 multiple generation-bound configuration contexts, real HTTP/SSE model-provider

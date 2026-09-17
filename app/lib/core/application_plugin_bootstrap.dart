@@ -6,6 +6,7 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import 'remote_inference_context_host.dart';
 import 'resource_cleanup.dart';
 
 enum ApplicationPluginState {
@@ -34,6 +35,7 @@ final class InstalledBackendActivation {
   InstalledBackendState _state = InstalledBackendState.pending;
   Object? _failure;
   PluginBackendConnection? _connection;
+  PluginBackendActivation? _activation;
 
   InstalledBackendState get state => _state;
   Object? get failure => _failure;
@@ -43,13 +45,15 @@ final class InstalledBackendActivation {
 /// Discovers a prepared startup snapshot and independently attempts every backend.
 /// Installation metadata is not an active capability registry.
 final class ApplicationPluginBootstrap {
-  ApplicationPluginBootstrap(this.registry);
+  ApplicationPluginBootstrap(this.registry, this.extensions);
 
   final CapabilityRegistry registry;
+  final ExtensionRegistry extensions;
+  final RemoteExtensionAdapterRegistry _adapters =
+      createRemoteExtensionAdapters();
   final StreamController<ApplicationPluginState> _changes =
       StreamController<ApplicationPluginState>.broadcast();
   final List<InstalledBackendActivation> _backends = [];
-  final List<PluginCapabilityActivation> _activations = [];
   final Map<PluginBackendConnection, Future<void>> _retiring = {};
   PreparedPluginCatalog? _catalog;
   PluginBackendHost? _host;
@@ -145,12 +149,13 @@ final class ApplicationPluginBootstrap {
                     startup[backend.installation.metadata.id.value] ?? const [],
                 startupArgumentsOnly: true,
               );
-          final PluginCapabilityActivation activation =
-              await PluginCapabilityActivation.registerAdvertised(
+          final PluginBackendActivation activation = backend._activation =
+              await PluginBackendActivation.registerAdvertised(
                 connection: connection,
-                registry: registry,
+                capabilities: registry,
+                extensions: extensions,
+                adapters: _adapters,
               );
-          _activations.add(activation);
           if (connection.isClosed) {
             throw StateError('Backend terminated during activation.');
           }
@@ -165,12 +170,7 @@ final class ApplicationPluginBootstrap {
           backend._failure = error;
           if (backend.connection case final connection?) {
             final Future<void> retiring = _retiring[connection] =
-                closeResources([
-                  for (final activation in _activations)
-                    if (identical(activation.connection, connection))
-                      activation.retire,
-                  connection.close,
-                ]);
+                backend._activation?.close() ?? connection.close();
             try {
               await retiring;
             } on Object {
@@ -234,7 +234,7 @@ final class ApplicationPluginBootstrap {
 
   Future<void> _pluginTerminated(
     InstalledBackendActivation backend,
-    PluginCapabilityActivation activation,
+    PluginBackendActivation activation,
     Object error,
   ) async {
     if (_state == ApplicationPluginState.closing ||
@@ -291,10 +291,14 @@ final class ApplicationPluginBootstrap {
 
   Future<void> _closeResources() => _cleanup ??= closeResources([
     // Retire every registration before stopping any owned generation or host.
-    for (final activation in _activations.reversed) activation.retire,
+    for (final backend in _backends.reversed)
+      if (backend._activation case final activation?) activation.retire,
     for (final backend in _backends.reversed)
       if (backend.connection case final connection?)
-        () => _retiring[connection] ?? connection.close(),
+        () =>
+            _retiring[connection] ??
+            backend._activation?.close() ??
+            connection.close(),
     if (_host case final PluginBackendHost host) () => host.close(),
   ]);
 

@@ -23,6 +23,9 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   final Map<int, String> streams = <int, String>{};
   final Map<int, int> sequences = <int, int>{};
   int streamCancels = 0;
+  int nextHostRequestId = 0;
+  final hostRequests = <int, int>{};
+  int unexpectedHostResponses = 0;
   final Object? advertised = arguments.length > 1
       ? jsonDecode(arguments[1])
       : null;
@@ -30,12 +33,29 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
     ((advertised! as List).single as Map)[arguments.first.substring(10)] =
         '!' * (8 * 1024 * 1024 + 1);
   }
+  if (arguments.first == 'extensions-dag') {
+    ((advertised! as List).single as Map)['metadata'] = <String, Object?>{
+      'dag': _compactDag(),
+    };
+  }
+  final Object? transported = arguments.first == 'extensions-serialized'
+      ? <Object?>[
+          for (final exposure in AdeleExtensionExposure.fromReady({
+            'extensionExposures': advertised,
+          }))
+            exposure.toMap(),
+        ]
+      : advertised;
   bootstrapPort.send(<String, Object?>{
     'kind': 'ready',
     'commandPort': commands.sendPort,
     if (arguments.first != 'incompatible-handshake')
       'pluginBackendProtocolVersion': adelePluginBackendProtocolVersion,
-    if (arguments.length > 1) 'capabilityExposures': advertised,
+    if (arguments.length > 1)
+      (arguments.first.startsWith('extensions')
+              ? 'extensionExposures'
+              : 'capabilityExposures'):
+          transported,
   });
   if (arguments.first == 'exit-immediately') {
     await Future<void>.delayed(const Duration(milliseconds: 100));
@@ -44,6 +64,49 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   }
   await for (final Object? raw in commands) {
     final Map<Object?, Object?> message = raw! as Map<Object?, Object?>;
+    if (message['kind'] == 'hostResponse') {
+      final outerId = hostRequests.remove(message['requestId']);
+      if (outerId == null) {
+        unexpectedHostResponses++;
+      } else {
+        responsePort.send({
+          'kind': 'response',
+          'requestId': outerId,
+          'ok': true,
+          'payload': message,
+        });
+      }
+      continue;
+    }
+    if (message['method'] == 'reverse') {
+      final payload = message['payload'] as Map;
+      final id = payload['hostRequestId'] as int? ?? nextHostRequestId++;
+      hostRequests[id] = message['requestId'] as int;
+      final request = <String, Object?>{
+        'kind': 'hostRequest',
+        'requestId': id,
+        'hostInvocationContext': payload['context'],
+        'serviceId': payload['service'] ?? 'fixtureService',
+        'method': payload['method'] ?? 'fixture.invoke',
+        'payload': payload['compactDag'] == true
+            ? <String, Object?>{'dag': _compactDag()}
+            : payload['payload'] ?? <String, Object?>{},
+        ...Map<String, Object?>.from(payload['extra'] as Map? ?? {}),
+      };
+      if (payload['omit'] is String) request.remove(payload['omit']);
+      responsePort.send(request);
+      if (payload['duplicate'] == true) responsePort.send(request);
+      continue;
+    }
+    if (message['method'] == 'unexpected-host-responses') {
+      responsePort.send({
+        'kind': 'response',
+        'requestId': message['requestId'],
+        'ok': true,
+        'payload': unexpectedHostResponses,
+      });
+      continue;
+    }
     if (message['kind'] == 'streamOpen') {
       final int id = message['requestId']! as int;
       streams[id] = message['method']! as String;
@@ -246,4 +309,12 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       if (keepAlive == null) return;
     }
   }
+}
+
+Object? _compactDag() {
+  Object? value;
+  for (int depth = 0; depth < 30; depth++) {
+    value = <Object?>[value, value];
+  }
+  return value;
 }

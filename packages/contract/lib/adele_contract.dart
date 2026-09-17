@@ -8,7 +8,89 @@ import 'dart:collection';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 
 const int _adeleJsonMaxDepth = 64;
-const int adelePluginBackendProtocolVersion = 1;
+const int adelePluginBackendProtocolVersion = 2;
+
+/// Expanded JSON node limit for extension metadata and reverse request payloads.
+const int adelePluginBackendJsonMaxNodes = 100000;
+
+/// A data-only extension advertised by one ready backend generation.
+/// Plugin identity is supplied exclusively by the owning connection.
+final class AdeleExtensionExposure {
+  AdeleExtensionExposure({
+    required this.extensionPointId,
+    required this.extensionId,
+    required this.serviceId,
+    required this.configurationContext,
+    required Map<String, Object?> metadata,
+  }) : metadata = adeleSnapshotJsonMap(
+         metadata,
+         maxNodes: adelePluginBackendJsonMaxNodes,
+       ) {
+    try {
+      validateAdelePublicId(extensionPointId, label: 'extension point ID');
+      validateAdelePublicId(extensionId, label: 'extension ID');
+    } on FormatException {
+      throw const FormatException('Invalid advertised extension identity.');
+    }
+    adeleValidateServiceId(serviceId);
+    adeleValidateConfigurationContext(configurationContext);
+  }
+
+  final String extensionPointId;
+  final String extensionId;
+  final String serviceId;
+  final String configurationContext;
+  final Map<String, Object?> metadata;
+
+  static List<AdeleExtensionExposure> fromReady(Map<Object?, Object?> ready) {
+    if (!ready.containsKey('extensionExposures')) return const [];
+    final Object? raw = ready['extensionExposures'];
+    if (raw is! List) {
+      throw const FormatException('Extension exposures must be a list.');
+    }
+    return List<AdeleExtensionExposure>.unmodifiable(
+      raw.map((Object? value) {
+        if (value is! Map ||
+            value.length != 5 ||
+            value['extensionPointId'] is! String ||
+            value['extensionId'] is! String ||
+            value['serviceId'] is! String ||
+            value['configurationContext'] is! String ||
+            value['metadata'] is! Map<String, Object?>) {
+          throw const FormatException('Malformed extension exposure.');
+        }
+        return AdeleExtensionExposure(
+          extensionPointId: value['extensionPointId'] as String,
+          extensionId: value['extensionId'] as String,
+          serviceId: value['serviceId'] as String,
+          configurationContext: value['configurationContext'] as String,
+          metadata: value['metadata'] as Map<String, Object?>,
+        );
+      }),
+    );
+  }
+
+  Map<String, Object?> toMap() => <String, Object?>{
+    'extensionPointId': extensionPointId,
+    'extensionId': extensionId,
+    'serviceId': serviceId,
+    'configurationContext': configurationContext,
+    'metadata': _adeleTransportJsonValue(metadata),
+  };
+}
+
+// Separate AOT isolate groups cannot receive unmodifiable collection wrappers.
+// The snapshot is already validated; only its container representation changes.
+Object? _adeleTransportJsonValue(Object? value) => switch (value) {
+  final Map<String, Object?> map => <String, Object?>{
+    for (final entry in map.entries)
+      entry.key: _adeleTransportJsonValue(entry.value),
+  },
+  final List<Object?> list => <Object?>[
+    for (final item in list) _adeleTransportJsonValue(item),
+  ],
+  _ => value,
+};
 
 /// One callable provider advertised by a ready backend generation.
 /// Plugin identity is deliberately absent: the host owns that identity.
@@ -34,9 +116,7 @@ final class AdeleCapabilityExposure {
     if (capabilityMajorVersion <= 0) {
       throw const FormatException('Capability major version must be positive.');
     }
-    if (!RegExp(r'^[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*$').hasMatch(serviceId)) {
-      throw const FormatException('Invalid advertised service ID.');
-    }
+    adeleValidateServiceId(serviceId);
     if (displayName.trim().isEmpty) {
       throw const FormatException('Advertised display name must not be blank.');
     }
@@ -93,6 +173,12 @@ final class AdeleCapabilityExposure {
   };
 }
 
+void adeleValidateServiceId(String value) {
+  if (!RegExp(r'^[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*$').hasMatch(value)) {
+    throw const FormatException('Invalid advertised service ID.');
+  }
+}
+
 void adeleValidateConfigurationContext(String value) {
   if (value.isEmpty ||
       value.length > 256 ||
@@ -101,9 +187,40 @@ void adeleValidateConfigurationContext(String value) {
   }
 }
 
-Map<String, Object?> adeleSnapshotJsonMap(Map<String, Object?> source) =>
-    _adeleSnapshotJsonValue(source, 0, HashSet<Object>.identity())!
-        as Map<String, Object?>;
+/// [maxNodes] optionally bounds expanded value/container occurrences, counting
+/// shared DAG children on every visit, before allocating the immutable snapshot.
+Map<String, Object?> adeleSnapshotJsonMap(
+  Map<String, Object?> source, {
+  int? maxNodes,
+}) {
+  if (maxNodes != null) {
+    if (maxNodes < 1) throw ArgumentError.value(maxNodes, 'maxNodes');
+    int remaining = maxNodes;
+    void visit(Object? value, int depth) {
+      if (remaining-- == 0) {
+        throw const FormatException(
+          'JSON-compatible value exceeds node budget.',
+        );
+      }
+      if (value is! List && value is! Map) return;
+      if (depth >= _adeleJsonMaxDepth) {
+        throw const FormatException(
+          'JSON-compatible value exceeds maximum depth 64.',
+        );
+      }
+      final Iterable<Object?> children = value is Map
+          ? value.values
+          : value as List;
+      for (final child in children) {
+        visit(child, depth + 1);
+      }
+    }
+
+    visit(source, 0);
+  }
+  return _adeleSnapshotJsonValue(source, 0, HashSet<Object>.identity())!
+      as Map<String, Object?>;
+}
 
 Object? _adeleSnapshotJsonValue(Object? value, int depth, Set<Object> active) {
   if (value == null || value is bool || value is String || value is int) {

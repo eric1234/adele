@@ -41,11 +41,12 @@ Public plugin-facing APIs remain experimental.
 
 F2 extends F1's prepared startup snapshot and backend-owned ready capability
 advertisements with independently optional frontend components and metadata-driven
-presentation registration. It is not an installer, production packaging,
-profile/enable-disable manager, version solver, filesystem watcher, reverse RPC,
-or hot-upgrade path. Existing prepared EVC execution and per-view decoding are
-reused; the six static in-process activations are unchanged, with their migration
-left to F3.
+presentation registration. F3a adds ready extension advertisements, generic host
+adapters, and narrow unary host calls, moving AGENTS.md into an AOT backend while
+five other plugins remain static. These slices are not an installer, production
+packaging, profile/enable-disable manager, version solver, filesystem watcher,
+general symmetric RPC, reverse-streaming, or hot-upgrade path. Existing registries,
+isolate ports/framing, prepared EVC execution, and per-view decoding are reused.
 
 The normal shell supports Project opening, title-only Task creation with a real
 Git primary Environment, and one stock Chat Session with sequential approval-gated
@@ -66,14 +67,16 @@ ADELE has one Flutter desktop application, `adele_desktop`, under `app/`. The ap
 It owns one `CapabilityRegistry`, `ExtensionRegistry`, `InMemoryProductStore`,
 `ProductLifecycleCoordinator.generated` wired to those same registries and store,
 `InferenceContextComposer` over the same extension registry, and retained
-`ChatStrategyPlugin`. By default it statically activates Chat, root-level AGENTS.md,
+`ChatStrategyPlugin`. By default it statically activates Chat,
 Filesystem Tools, Search Tools, Command Tools, and Local Directory Project
 Selector in process, all on the same extension registry. The selector is the
-sixth owned activation; the reduced composition omits only Command Tools. This
+fifth owned activation; the reduced composition omits only Command Tools. This
 is an implicit in-process composition, outside installed-component discovery and
 not a profile/configuration API. Construction is synchronous and provider-free. The
-runtime also owns pure-Dart `ApplicationPluginBootstrap` on that same `CapabilityRegistry`, without
-starting backend work in its constructor.
+runtime also owns pure-Dart `ApplicationPluginBootstrap` on those same capability
+and extension registries, without starting backend work in its constructor.
+AGENTS.md has no direct app dependency/import or static activation; its prepared
+backend supplies the source through generic remote extension activation.
 
 The normal Stateful `AdeleApplication` constructs its runtime once synchronously
 in `initState`, not during rebuilds, then explicitly calls async
@@ -90,7 +93,7 @@ artifact such as `backend.aot`; frontend supplies an artifact such as `frontend.
 and strict presentation descriptors with roles `session`, `toolActivity`, or
 `modelNativeActivity`. Artifact paths must be relative, confined, and existing.
 Descriptors are data-only executable ABI/preparation metadata, not profile state.
-There are no source paths, capability exposures, configuration, or activation state
+There are no source paths, capability/extension exposures, configuration, or activation state
 in this manifest; the source/build
 `adele_plugin.yaml` has a different purpose. Stock source layouts are not normalized
 to it. See [`plugin-layout.md`](plugin-layout.md#prepared-installation-snapshot).
@@ -131,9 +134,13 @@ failure invalidates all backends. The bootstrap exposes read-only per-backend
 states and catalog issues, not a plugin-management UI. Overall `ready` means
 startup settled, not that every backend succeeded or a model is usable.
 
-Git and OpenAI entrypoints own their ready capability advertisements. The generic
-`PluginCapabilityActivation.registerAdvertised` path preserves existing registry
-validation, configuration contexts, and exact-generation liveness. There is no
+Git and OpenAI entrypoints own their ready capability advertisements; AGENTS.md
+owns its ready extension advertisement. Generic
+`PluginBackendActivation.registerAdvertised` coherently owns both capability and
+extension registration, rollback, and retirement through the existing registries.
+Internal `RemoteExtensionAdapterRegistry` selects host adapters for known public
+extension points; it is not another contribution registry or PluginId switch.
+Unsupported points and malformed metadata fail that backend attempt. There is no
 app-owned backend exposure table. `app/lib/plugins/temporary_chatgpt_selection.dart`
 retains the selected provider identity and model-only `StockChatGptConfiguration`.
 `fromEnvironment` always supplies a model default or override, with no credential
@@ -163,8 +170,8 @@ awaits the complete close; detach/dispose initiate the same cleanup and report
 runtime cleanup failures through `FlutterError`. Frontend cleanup runs even if
 runtime cleanup fails, retiring exact registrations and invalidating bridges after
 pending activation settles. Runtime close shares one completion across
-callers: all backend capability registrations retire before their connections
-close, then the host closes, then in-process activations retire in reverse order.
+callers: all backend capability and extension registrations retire before their
+connections close, then the host closes, then in-process activations retire in reverse order.
 `app/lib/core/resource_cleanup.dart` supplies `closeResources`, shared with
 development teardown: every action is attempted before the first error is
 rethrown with its stack.
@@ -186,10 +193,12 @@ deployment inputs and source-checkout limitations are documented in
 [`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
 Checkout preparation stands in for future installation/update-time compilation;
 activation only consumes prepared artifacts. Caching, plugin management,
-production packaging, and profiles remain deferred. Linux tooling prepares five
+production packaging, and profiles remain deferred. Linux tooling prepares six
 installations in one `.dart_tool/adele/desktop-plugins/build-*/installations/` root:
-frontend-only Chat, Filesystem Tools, and Command Tools, backend-only Git, and one
-combined OpenAI. `tools/stock_frontend_descriptors.dart` is the singular stock
+frontend-only Chat, Filesystem Tools, and Command Tools, backend-only Git and
+AGENTS.md (`agents-md/backend.aot`), and one combined OpenAI. Preparation produces
+three backend snapshots plus the host and four EVCs, with no AGENTS-specific
+configuration. `tools/stock_frontend_descriptors.dart` is the singular stock
 build-side descriptor table; app runtime activation has no stock tool/native
 identity table. Only the four generic root/host/runtime/startup-argv defines remain.
 
@@ -208,7 +217,9 @@ tool catalog, model selection, development IDs, execution, and evidence. The gen
 model capability adapter lives in `app/lib/core/model_provider_host.dart`; normal
 composition has no dependency on development code. Self-hosting uses generic
 `registerAdvertised` for backend-owned exposures but keeps its explicit
-artifact/host/profile topology. It does not require normal catalog discovery,
+artifact/host/profile topology, adding `agentsMdArtifact` on the same shared host
+through `PluginBackendActivation` and the same remote-source adapter. It does not
+require a normal installation root or catalog discovery,
 consume normal bootstrap configuration, or start its backend owner. Its own
 profile environment configures the backend with the default
 `startupArgumentsOnly: false`; registration includes all advertised
@@ -224,12 +235,16 @@ Host implementations are split into small pure-Dart packages where Flutter is no
 
 | Package | Maintained/planned responsibility |
 | --- | --- |
-| `plugin_runtime` | Prepared installation catalog, plugin lifecycle/runtime coordination, backend connections, and active capability routing adapters |
+| `plugin_runtime` | Prepared installation catalog, backend connections, capability/extension activation adapters, and operation-scoped unary host routing |
 | `plugin_builder` | Source resolution, contract checks/generation coordination, backend/frontend builds, diagnostics, provenance, and caching |
 | `plugin_backend_host` | Shared child-process entrypoint and one external AOT isolate group per active plugin backend |
 | `agent_kernel` | Provider-neutral Run/model/tool semantics, interruptions, policy boundary, structured outcomes, and typed execution observation |
 
 These are internal packages. Plugins must not import them.
+
+Public pure-Dart `adele_plugin_backend_support` is separate: its only production
+dependency is `adele_contract`, and its reusable `AdeleHostRequestMultiplexer`
+provides generated unary request channels without internal host or Flutter imports.
 
 The source-plugin runtime shape is:
 
@@ -307,6 +322,32 @@ Installed metadata does not establish readiness; only active registrations enter
 provider resolution. ADRs 0015, 0021, 0027, and 0028 retain the distinctions between
 installation, activation, active provider selection, generation-bound contexts,
 and plugin-owned credentials.
+
+F3a adds independent optional `extensionExposures` with exactly `extensionPointId`,
+`extensionId`, `serviceId`, `configurationContext`, and recursively immutable JSON
+`metadata`. Unknown keys fail, omission means zero extensions, and there is no
+PluginId or priority in the exposure. `PluginExtensionActivation` adapts known
+points into the existing `ExtensionRegistry`; `PluginBackendActivation` rolls back
+capabilities and extensions together when either registration phase fails.
+
+The app's `RemoteInferenceContextSourceAdapter` implements the first remote point.
+Generated orchestration `RemoteInferenceContextSourceService.snapshot(sessionId,
+runId, hostInvocationContext)` returns `RemoteInferenceInstruction` values with
+key, text, and required nullable revision. Metadata accepts only `failureMode`
+with `required`/`optional`, leaving composition policy with the public composer.
+Generated Environment `AuthorizedEnvironmentReadService.readFile(relativePath)`
+returns `EnvironmentTextFile` and preserves declared `EnvironmentFailure`, with no
+authority-ID parameters, directory reads, mutation, or process operations.
+
+The app captures canonical `InferenceContextSourceContext` to obtain its read
+facet, never reconstructing authority from transported Session/Run IDs. Secure
+opaque per-operation contexts allowlist services on the exact connection.
+Unary `hostRequest`/`hostResponse` reuse existing isolate ports and framed shared
+host, which stamps the owning generation; liveness checks bracket asynchronous
+dispatch. `finally`, retirement, shutdown, and termination revoke contexts and
+settle pending calls. Late results cannot migrate to replacements. Host and plugin
+protocol versions are both 2, requiring coherent artifact rebuilds. This is narrow
+host-read access, not reverse streaming, general symmetric RPC, or a sandbox.
 
 See [`contracts-and-capabilities.md`](contracts-and-capabilities.md).
 
@@ -827,10 +868,12 @@ The current `ModelProviderCapabilityAdapter` calls orchestration's
 string, preserving zero-source bytes. Model/tool/policy and Environment selection
 are unchanged; Chat activates no source and remains AGENTS-unaware.
 
-`AdeleRuntime` activates the first stock source, `agents_md_plugin` under
-`plugins/agents_md`, in normal startup and development/self-hosting. Activation
-alone does not read a file. Each snapshot rereads root `AGENTS.md`
-through `AuthorizedEnvironmentFileReadFacet` in the Session-authorized Environment.
+The first stock source retains pure-Dart `agents_md_plugin` semantics under
+`plugins/agents_md`, with `agents_md_backend` in `packages/backend` supplying AOT
+execution. Normal discovery and explicit self-hosting use generic remote adapter
+activation, not a static app registration. Activation alone does not read a file.
+Each snapshot rereads root `AGENTS.md` through the generated authorized-read
+service backed by the captured Session's `AuthorizedEnvironmentFileReadFacet`.
 Missing (`not_found`) and blank files are successful empty results; other
 read/service/authority errors abort the required source. Nonblank exact text and
 its opaque Environment revision remain one material, separate from stable
@@ -860,7 +903,7 @@ The default development UX is expected to be produced by a stock plugin/configur
 - Agent Configuration/Policy;
 - Model Routing/Control;
 - Context Monitoring/Compaction;
-- AGENTS.md instruction source (root-only, activated by the shared runtime today);
+- AGENTS.md instruction source (root-only, supplied by a prepared AOT backend);
 - Accounting/Usage/Quota;
 - Filesystem/Search/Command/TODO/Plan tools;
 - Diff/Review;
@@ -917,8 +960,8 @@ revision provenance and final Task/Project/checkout isolation. Generation
 coverage checks that fresh tools replace retired Search-tool and
 Environment-provider bindings while old tools remain stale.
 
-The normal product regression scope additionally uses real host/Git/OpenAI
-artifacts and prepared frontend EVCs against local fake Responses: direct reasoning
+The normal product regression scope uses real host/Git/OpenAI artifacts, now with
+the AGENTS.md backend, and prepared frontend EVCs against local fake Responses: direct reasoning
 activity followed by mixed groups, retained newest-first cards, compact group rows,
 individual rich cards, independent collapse/dismiss, and separate tool approvals.
 It checks live evidence and safe display projection
@@ -951,10 +994,10 @@ self-hosting.
 | Rebuild/reload | Proven for three cycles without orphan host processes. |
 | General recursive extension system | Accepted architecture; not implemented. |
 | B1 Project opening/native picker | Typed selector composition, cancellation/failure handling, canonical Project opening, and window lifetime are tested. Native picker adapters use fakes in CI. The recorded B1 Linux profile build passed with generated native registration; the minimum macOS `com.apple.security.files.user-selected.read-only` entitlement is present. Interactive OS picking and macOS/Windows builds remain unvalidated. The maintained tooling target guards the plain-Dart self-hosting import graph with CLI `--help`, without provider calls. |
-| Normal plugin bootstrap and Task creation | F2 extends F1's one prepared installation snapshot to independently optional backend/frontend components and generic presentation activation; Task lifecycle still uses live capability resolution. Operational setup is maintained in [`app/README.md`](../../app/README.md#normal-backend-startup); recorded B2 and earlier fixture validation is not F1/F2 validation evidence. |
+| Normal plugin bootstrap and Task creation | F2 supplies independently optional backend/frontend components and generic presentation activation; F3a adds backend extension activation and the AGENTS.md AOT source. The Linux profile build passed with the shared host, three backend snapshots, and four EVCs. This is build/preparation evidence, not full behavioral or live-runtime validation. Task lifecycle still uses live capability resolution; operational setup is maintained in [`app/README.md`](../../app/README.md#normal-backend-startup). |
 | Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, Session-authorized read/mutation/process facets, bounded create/patch/delete text-file mutation, and generated foreground process streaming through the Git provider are proven; persistence and complete lifecycle remain unimplemented. |
 | Session-bound strategy execution | Canonical immutable Session creation, atomic publication with separate Environment authority, executable contributions, explicit unavailable/ambiguous resolution, and exact binding validation across Run operations/resume/settlement are implemented and deterministically validated. Headless Chat uses the public facade with validated state, sequencing, and application integration. Persistent strategy state, child Sessions, and disk persistence remain deferred. |
-| Inference context | Instruction-only source discovery, exact-binding capture, immutable snapshots, current adapter rendering, and the stock root AGENTS.md source activated by the shared runtime are implemented; other sources, broader material, provider-aware projection/cache planning, budgets, and compaction remain deferred. |
+| Inference context | Instruction-only source discovery, exact-binding capture, immutable snapshots, and adapter rendering are implemented. F3a supplies root AGENTS.md through remote source activation and scoped generated host reads. The confirmed profile build includes its backend but does not establish behavioral validation of every host-call path or live-provider execution. Other sources, broader material, provider-aware projection/cache planning, budgets, and compaction remain deferred. |
 | Production orchestration/UI/Commands | Stock Chat, minimal Project/Task/Environment presentation, prepared mixed Chat timeline/composer, plugin-owned compact activity, retained window-local Inspection cards with group-to-individual drill-down, interpreted Apply Patch/Run Command/OpenAI bodies, and host-owned approval-gated Runs are implemented; configurable permissions, reasoning deltas, compaction UI, arbitrary plugin drill-down, Source/Diff/Console and terminal/PTY/full-output views, Task Browser, rich workbench UI, and Commands remain directional. Hidden chain-of-thought and encrypted reasoning are never user-presented. |
 | Cross-platform/release | Unproven on Windows, macOS, and release mode. |
 | Packaging/sandboxing | Unproven; process isolation is not a sandbox. |

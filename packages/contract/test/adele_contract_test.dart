@@ -4,6 +4,190 @@ import 'package:adele_contract/adele_contract.dart';
 import 'package:test/test.dart';
 
 void main() {
+  const extension = <String, Object?>{
+    'extensionPointId': 'dev.adele.fixture.point',
+    'extensionId': 'dev.adele.fixture.extension',
+    'serviceId': 'fixtureService',
+    'configurationContext': 'opaque-context',
+    'metadata': <String, Object?>{'label': 'Fixture'},
+  };
+  test('extension readiness is strict, immutable and identity-free', () {
+    expect(adelePluginBackendProtocolVersion, 2);
+    expect(AdeleExtensionExposure.fromReady(const {}), isEmpty);
+    final metadata = <String, Object?>{
+      'values': <Object?>[true],
+    };
+    final values = AdeleExtensionExposure.fromReady({
+      'extensionExposures': [
+        {...extension, 'metadata': metadata},
+        extension,
+      ],
+    });
+    (metadata['values'] as List).clear();
+    expect(values.first.metadata, {
+      'values': [true],
+    });
+    expect(values.last.toMap(), extension);
+    expect(() => values.clear(), throwsUnsupportedError);
+    expect(() => values.first.metadata.clear(), throwsUnsupportedError);
+    expect(
+      () => (values.first.metadata['values'] as List).clear(),
+      throwsUnsupportedError,
+    );
+    for (final key in ['pluginId', 'generation', 'unknown', 'rank']) {
+      expect(
+        () => AdeleExtensionExposure.fromReady({
+          'extensionExposures': [
+            {...extension, key: 'forbidden'},
+          ],
+        }),
+        throwsFormatException,
+        reason: key,
+      );
+    }
+  });
+  test(
+    'extension serialization copies nested metadata into plain containers',
+    () {
+      const metadata = <String, Object?>{
+        'nested': <String, Object?>{
+          'items': <Object?>[
+            null,
+            true,
+            7,
+            2.5,
+            'text',
+            <String, Object?>{'value': 'original'},
+            <Object?>[false],
+          ],
+        },
+      };
+      final value = AdeleExtensionExposure.fromReady({
+        'extensionExposures': [
+          {...extension, 'metadata': metadata},
+        ],
+      }).single;
+      final serialized = value.toMap();
+      expect(serialized['metadata'], metadata);
+      final wireMetadata = serialized['metadata']! as Map<String, Object?>;
+      final wireNested = wireMetadata['nested']! as Map<String, Object?>;
+      final wireItems = wireNested['items']! as List<Object?>;
+      (wireItems[5]! as Map<String, Object?>)['value'] = 'changed';
+      (wireItems[6]! as List<Object?>).add(true);
+      wireItems.add('added');
+      wireNested['added'] = true;
+      wireMetadata['added'] = true;
+      expect(value.metadata, metadata);
+      expect(value.toMap()['metadata'], metadata);
+      final snapshotNested = value.metadata['nested']! as Map<String, Object?>;
+      final snapshotItems = snapshotNested['items']! as List<Object?>;
+      expect(() => snapshotNested.clear(), throwsUnsupportedError);
+      expect(() => snapshotItems.clear(), throwsUnsupportedError);
+      expect(() => (snapshotItems[5]! as Map).clear(), throwsUnsupportedError);
+      expect(() => (snapshotItems[6]! as List).clear(), throwsUnsupportedError);
+    },
+  );
+
+  test('optional JSON node budget counts every expanded DAG occurrence', () {
+    final shared = <String, Object?>{'value': true};
+    final source = <String, Object?>{'left': shared, 'right': shared};
+    expect(adeleSnapshotJsonMap(source, maxNodes: 5), source);
+    expect(
+      () => adeleSnapshotJsonMap(source, maxNodes: 4),
+      throwsFormatException,
+    );
+    expect(
+      () => adeleSnapshotJsonMap(source, maxNodes: 0),
+      throwsArgumentError,
+    );
+    final wide = <String, Object?>{
+      'items': List<Object?>.filled(adelePluginBackendJsonMaxNodes, null),
+    };
+    expect(
+      (adeleSnapshotJsonMap(wide)['items']! as List).length,
+      adelePluginBackendJsonMaxNodes,
+    );
+    expect(
+      () =>
+          adeleSnapshotJsonMap(wide, maxNodes: adelePluginBackendJsonMaxNodes),
+      throwsFormatException,
+    );
+  });
+
+  test('extension metadata rejects compact exponential DAG before copying', () {
+    Object? dag;
+    for (int depth = 0; depth < 30; depth++) {
+      dag = <Object?>[dag, dag];
+    }
+    final metadata = <String, Object?>{'dag': dag};
+    expect(
+      () => AdeleExtensionExposure.fromReady({
+        'extensionExposures': [
+          {...extension, 'metadata': metadata},
+        ],
+      }),
+      throwsA(
+        isA<FormatException>().having(
+          (error) => error.message,
+          'message',
+          contains('node budget'),
+        ),
+      ),
+    );
+  });
+
+  test('extension readiness validates every field and JSON metadata', () {
+    for (final raw in <Object?>[
+      null,
+      {},
+      1,
+      [null],
+    ]) {
+      expect(
+        () => AdeleExtensionExposure.fromReady({'extensionExposures': raw}),
+        throwsFormatException,
+      );
+    }
+    for (final key in extension.keys) {
+      expect(
+        () => AdeleExtensionExposure.fromReady({
+          'extensionExposures': [
+            {...extension}..remove(key),
+          ],
+        }),
+        throwsFormatException,
+        reason: key,
+      );
+    }
+    final cyclic = <String, Object?>{};
+    cyclic['self'] = cyclic;
+    for (final entry in <String, List<Object?>>{
+      'extensionPointId': [null, '', 'UPPER.invalid', 'dev.bad_id'],
+      'extensionId': [null, '', 'bad', 'dev.bad_id'],
+      'serviceId': [null, '', 'bad/service'],
+      'configurationContext': [null, '', 'bad\ncontext', 'x' * 257],
+      'metadata': [
+        null,
+        [],
+        {1: true},
+        {'value': double.nan},
+        {'value': Object()},
+        cyclic,
+      ],
+    }.entries) {
+      for (final value in entry.value) {
+        expect(
+          () => AdeleExtensionExposure.fromReady({
+            'extensionExposures': [
+              {...extension, entry.key: value},
+            ],
+          }),
+          throwsFormatException,
+          reason: entry.key,
+        );
+      }
+    }
+  });
   const Map<String, Object?> exposure = {
     'providerId': 'dev.adele.fixture.provider',
     'capabilityId': 'dev.adele.fixture.capability',
