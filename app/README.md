@@ -27,8 +27,8 @@ Directory Project Selector, all using the same `ExtensionRegistry`. This is
 implicit in-process stock composition, outside installed-component discovery and
 not a profile API. The existing `includeCommandTools` flag only preserves the
 reduced live-smoke harness composition; it omits only Command Tools, not the selector. Normal startup
-includes all five. F3a removes AGENTS.md's direct app import/dependency and static
-activation; its source now comes from a prepared AOT backend.
+includes all five. AGENTS.md's source comes from its installed AOT backend, with
+no direct app import/dependency, static activation, or in-process fallback.
 Construction remains provider-free: it starts no backend host or compiler, loads
 no credentials, and performs no product operation. It also owns
 pure-Dart `ApplicationPluginBootstrap` in `lib/core/application_plugin_bootstrap.dart`,
@@ -102,14 +102,14 @@ continue. Later plugin termination retires only its own exact generation.
 Shared-host failure invalidates all backends globally. Task Environment support
 depends on live Environment capability registration, not on required Git startup.
 
-Ready backends advertise `capabilityExposures` and `extensionExposures` through the
-existing isolate-ready message, host `pluginReady`, and exact
+Ready backends supply `capabilityExposures` and `extensionExposures` on their exact
 `PluginBackendConnection`. `PluginBackendActivation.registerAdvertised` owns both
 registration phases with coherent rollback/retirement through the existing
 capability and extension registries. Internal `RemoteExtensionAdapterRegistry`
 selects host adapters by extension-point identity, not PluginId. Unsupported points
-and malformed metadata fail the whole backend attempt without dropping unrelated
-backends. The installation/connection supplies authoritative plugin identity.
+and malformed metadata fail the whole backend attempt, rolling back both kinds of
+registration without leaving a partially active generation or dropping unrelated
+backends. The installation/connection supplies authoritative `PluginId`.
 Git/OpenAI own capability exposures; AGENTS.md owns its source extension exposure.
 Each omitted list means zero registrations of that kind. Installed metadata alone
 never registers a provider or source. Advertisement fields and
@@ -174,20 +174,14 @@ independently.
 Future installation/update should own artifact preparation; current activation
 already consumes prepared installations through the same registry/lifecycle
 semantics. Checkout tooling is only a stand-in, not an installer, general build
-graph, or activation-management system. F2 adds prepared frontend discovery and
-F3a adds remote source activation, but no enable/disable controls, profiles,
-version solving, watching, reverse streaming, general symmetric RPC, or hot
-upgrade. Normal startup attempts all discovered valid components; future profiles
+graph, or activation-management system. Prepared frontend and remote-source
+activation provide no enable/disable controls, profiles, version solving, watching,
+reverse streaming, general symmetric RPC, hot upgrade, or sandboxing.
+Normal startup attempts all discovered valid components; future profiles
 are a separate activation-participation policy, not descriptor metadata. Five
 static in-process activations remain outside backend discovery.
 Normal artifact provisioning is currently limited to the Linux launcher; other
 desktop targets retain their existing launch behavior without these defines.
-
-The Linux profile build has passed with the shared host, all three backend AOT
-snapshots (Git, OpenAI, and AGENTS.md), and all four frontend EVCs prepared before
-the Flutter build. This confirms the maintained build/preparation path, not a new
-claim of full test-suite, interactive runtime, live-provider, or cross-platform
-validation.
 
 Normal startup creates no Project, Task, Environment, Session, tool catalog, or
 Run. The app forwards generic argv, while the OpenAI backend owns interpretation
@@ -1014,50 +1008,37 @@ empty strategy text; whitespace-only strategy text is preserved. Zero-source beh
 byte-for-byte unchanged. Source sorting grants no semantic authority or numeric
 priority, and semantic input is unchanged. Chat activates no source and remains
 AGENTS-unaware. Normal bootstrap and explicit self-hosting activate
-`agents_md_backend` through the same generic remote-source adapter, not `AgentsMdPlugin.activate` in
-`AdeleRuntime`. Activation alone does not read a file; the source rereads root
-`AGENTS.md` through generated authorized reads backed by the captured Session's
-`AuthorizedEnvironmentFileReadFacet` each snapshot. `not_found` and blank files
-produce successful empty output; other read/service/authority errors fail the
-required source. Nonblank exact file text and its Environment revision form one
-material, separate from stable plugin-owned explicit-user-precedence semantics.
+`agents_md_backend` through the same generic remote-source adapter, not a static
+activation in `AdeleRuntime`. Activation alone does not read a file; each snapshot
+rereads only root `AGENTS.md` through authorized reads backed by the captured
+Session's `AuthorizedEnvironmentFileReadFacet`. `not_found` and blank or
+whitespace-only files produce successful empty output; other read/service/authority
+errors fail composition as a required source. Nonblank exact file text and its
+opaque Environment revision form one material, separate from stable semantics
+giving explicit user instructions and direct requests precedence over AGENTS.md.
+These semantics are plugin-owned, not Chat- or kernel-owned.
 
 `lib/core/remote_inference_context_host.dart` supplies
-`RemoteInferenceContextSourceAdapter`, adapting generated orchestration
-`RemoteInferenceContextSourceService.snapshot(sessionId, runId,
-hostInvocationContext)` and `RemoteInferenceInstruction(key, text, revision)` to
-the unchanged public composer contract. Revision is required nullable transport
-data. The adapter accepts exactly `failureMode: 'required'` or `'optional'`
-metadata, with no priority or AGENTS-specific identity/behavior.
-
-For each snapshot, it captures the canonical `InferenceContextSourceContext` and
-allowlists only generated `AuthorizedEnvironmentReadService.readFile(relativePath)`.
-That dispatcher obtains the captured context's `AuthorizedEnvironmentFileReadFacet`
-and validates its Session and exact binding before/after reads, including failures.
-`EnvironmentTextFile` and declared `EnvironmentFailure` cross generated transport;
-there are no authority-ID arguments, directory reads, mutation, or process methods.
-Transported Session/Run strings never reconstruct authority.
-
-Internal runtime grants a secure opaque per-operation context, tied to the exact
-connection generation and revoked in `finally`, on retirement, and on termination.
-Unary `hostRequest`/`hostResponse` use the same isolate ports and framed shared host,
-which stamps the generation from the owning isolate. Public pure-Dart
-`adele_plugin_backend_support` provides the backend's reusable request-channel
-multiplexer, not authorization or host adapters. Both protocol versions are 2;
-prepared host/backends must be rebuilt together. This is neither general symmetric
-RPC nor reverse streaming, and grants no sandbox guarantee. The confirmed Linux
-profile build is documented under [normal backend startup](#normal-backend-startup);
-it does not establish behavioral or live-service validation of every host-call path.
+`RemoteInferenceContextSourceAdapter` for the existing `inferenceContextSources`
+point. It adapts the generated remote service to the public composer contract and
+validates point-specific required/optional failure metadata, without AGENTS-specific
+identity or behavior. Each snapshot uses operation-scoped unary host services for
+file reads through its captured canonical `InferenceContextSourceContext` and
+exact Session-authorized Environment binding. Transported Session/Run IDs do not
+grant authority. Access ends when the operation settles or its registration or
+connection retires. The read service provides no directory, mutation, or process
+access. See [operation-scoped host calls](../docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls)
+for the generated contracts, metadata schema, transport, and lifetime rules.
 
 `test/core/remote_inference_context_integration_test.dart` separately exercises the
-real shared host and AGENTS AOT backend through the normal composer. Its 20-case
-deterministic suite covers fresh root instructions, blank/missing files, declared
+real shared host and AGENTS AOT backend through the normal composer. Deterministic
+coverage includes fresh root instructions, blank/missing files, declared
 Environment failures, exact source/provider retirement, forged semantic IDs,
 unapproved services, expired/cross-generation tokens, pending-call cleanup, and
 deferred reads after operation settlement. The normal Chat/OpenAI product and
 development Environment integrations also use the real AGENTS artifact with the
 real Git Environment backend, rather than activating its semantic package in process.
-Run the focused authority proof from `app/` with:
+Run the focused integration tests from `app/` with:
 
 ```sh
 flutter test --no-pub test/core/remote_inference_context_integration_test.dart
@@ -1158,7 +1139,7 @@ remained clean. This is source-layout isolation, not a command sandbox.
 
 `DevelopmentSelfHostingTopology` owns an `AdeleRuntime` instance rather than
 duplicating its registries, store, lifecycle coordinator, context composer,
-Chat plugin, and five static activations. `DevelopmentSelfHostingArtifacts` adds
+Chat plugin, and five static activations. `DevelopmentSelfHostingArtifacts` contains
 `agentsMdArtifact` (`agents-md.aot`) alongside host, Git, and OpenAI snapshots.
 The topology starts AGENTS.md on its same shared host and registers it through
 `PluginBackendActivation` with `createRemoteExtensionAdapters`, just like normal

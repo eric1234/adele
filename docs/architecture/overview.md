@@ -4,7 +4,7 @@
 
 ADELE's maintained Linux x64 foundation includes source compilation, generated unary and server-streaming/cancellation transport, interpreted frontend execution, active capability routing, configured provider contexts, bounded agent/source-inspection, conditional Environment mutation, foreground-process execution, and create/delete tooling. It includes the real OpenAI `ModelProvider`, an explicitly experimental ChatGPT configured instance, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, generic extension/model-tool composition, executable strategy contributions, a Git Environment provider, and independent stock Filesystem Tools, Search Tools, and Command Tools that own Session-authorized `read_file`, `apply_patch`, `create_file`, `delete_file`, `search`, and `run_command`. Headless stock Chat owns conversation state and sequencing through a narrow public execution facade backed internally by the kernel.
 
-The maintained source-inspection topology routes the canonical Session through core strategy resolution and Chat materialization, generic model-tool extension composition, plugin-owned Search, Session-authorized Environment access, plugin-owned Read File, maintained ADELE source, and model continuation. Search is bounded native Dart traversal over authorized Environment directory/file reads, not an Environment provider method. Focused deterministic validation passes for public orchestration, kernel model/run/tool mechanics, Chat, and maintained application lifecycle, model-tool hosting, self-hosting, Environment, OpenAI fixture, and provider-adapter integration. This implements neither ADELE's complete product/domain model nor the general recursive extension system.
+The maintained source-inspection topology routes the canonical Session through core strategy resolution and Chat materialization, generic model-tool extension composition, plugin-owned Search, Session-authorized Environment access, plugin-owned Read File, maintained ADELE source, and model continuation. Search is bounded native Dart traversal over authorized Environment directory/file reads, not an Environment provider method. This implements neither ADELE's complete product/domain model nor the general recursive extension system.
 
 Environment exposes provider-neutral opaque file revisions and conditional replacement of existing bounded UTF-8 text files. The Git Worktree provider serializes ADELE replacements within each live Environment and detects practical out-of-band changes immediately before promotion, but cannot provide portable atomic compare-and-replace against arbitrary external processes. Coherent read and mutation facets share one Session-authorized filesystem authority. Filesystem Tools' exact-unique `apply_patch` lowers localized model edits to complete-file conditional replacement. Deterministic real-Git integration covers Read-to-Revision-to-Patch continuation. Opt-in OpenAI API-key and experimental ChatGPT tests cover real-model revision flow, Task-worktree-only mutation, post-write observation, and continuation; recorded live results remain bounded interoperability evidence rather than a stable contract.
 
@@ -39,14 +39,15 @@ The following remain largely or entirely unimplemented:
 
 Public plugin-facing APIs remain experimental.
 
-F2 extends F1's prepared startup snapshot and backend-owned ready capability
-advertisements with independently optional frontend components and metadata-driven
-presentation registration. F3a adds ready extension advertisements, generic host
-adapters, and narrow unary host calls, moving AGENTS.md into an AOT backend while
-five other plugins remain static. These slices are not an installer, production
-packaging, profile/enable-disable manager, version solver, filesystem watcher,
-general symmetric RPC, reverse-streaming, or hot-upgrade path. Existing registries,
-isolate ports/framing, prepared EVC execution, and per-view decoding are reused.
+Normal startup consumes a prepared installation snapshot with independently
+optional backend and frontend components. Backends advertise ready capabilities
+and extensions; frontends use metadata-driven presentation registration. Generic
+host adapters and operation-scoped unary host calls support the AGENTS.md AOT
+backend, while five stock plugins remain statically composed in process. This
+reuses existing registries, isolate ports/framing, prepared EVC execution, and
+per-view decoding. Plugin installation, production packaging, profile/enable-disable
+management, version solving, filesystem watching, general symmetric RPC, reverse
+streaming, and hot upgrade remain unimplemented.
 
 The normal shell supports Project opening, title-only Task creation with a real
 Git primary Environment, and one stock Chat Session with sequential approval-gated
@@ -200,7 +201,9 @@ AGENTS.md (`agents-md/backend.aot`), and one combined OpenAI. Preparation produc
 three backend snapshots plus the host and four EVCs, with no AGENTS-specific
 configuration. `tools/stock_frontend_descriptors.dart` is the singular stock
 build-side descriptor table; app runtime activation has no stock tool/native
-identity table. Only the four generic root/host/runtime/startup-argv defines remain.
+identity table. Deployment uses only `ADELE_PLUGIN_INSTALLATION_ROOT`,
+`ADELE_BACKEND_HOST_ARTIFACT`, `ADELE_DARTAOTRUNTIME_EXECUTABLE`, and
+`ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`, with no additional stock-specific defines.
 
 Flutter bootstrap reads and forwards only generic plugin argv; configuration
 interpretation and credential loading belong to the owning backend. Startup
@@ -217,7 +220,7 @@ tool catalog, model selection, development IDs, execution, and evidence. The gen
 model capability adapter lives in `app/lib/core/model_provider_host.dart`; normal
 composition has no dependency on development code. Self-hosting uses generic
 `registerAdvertised` for backend-owned exposures but keeps its explicit
-artifact/host/profile topology, adding `agentsMdArtifact` on the same shared host
+artifact/host/profile topology, including `agentsMdArtifact` on the same shared host
 through `PluginBackendActivation` and the same remote-source adapter. It does not
 require a normal installation root or catalog discovery,
 consume normal bootstrap configuration, or start its backend owner. Its own
@@ -323,33 +326,24 @@ provider resolution. ADRs 0015, 0021, 0027, and 0028 retain the distinctions bet
 installation, activation, active provider selection, generation-bound contexts,
 and plugin-owned credentials.
 
-F3a adds independent optional `extensionExposures` with exactly `extensionPointId`,
-`extensionId`, `serviceId`, `configurationContext`, and recursively immutable JSON
-`metadata`. Unknown keys fail, omission means zero extensions, and there is no
-PluginId or priority in the exposure. `PluginExtensionActivation` adapts known
-points into the existing `ExtensionRegistry`; `PluginBackendActivation` rolls back
-capabilities and extensions together when either registration phase fails.
+Independent optional extension advertisements are adapted into exact-generation
+contributions in the existing `ExtensionRegistry`. `PluginBackendActivation` owns
+capability and extension registration together, including rollback and retirement;
+the adapter registry holds host implementations of known public points, not another
+plugin contribution registry.
 
-The app's `RemoteInferenceContextSourceAdapter` implements the first remote point.
-Generated orchestration `RemoteInferenceContextSourceService.snapshot(sessionId,
-runId, hostInvocationContext)` returns `RemoteInferenceInstruction` values with
-key, text, and required nullable revision. Metadata accepts only `failureMode`
-with `required`/`optional`, leaving composition policy with the public composer.
-Generated Environment `AuthorizedEnvironmentReadService.readFile(relativePath)`
-returns `EnvironmentTextFile` and preserves declared `EnvironmentFailure`, with no
-authority-ID parameters, directory reads, mutation, or process operations.
+The app's `RemoteInferenceContextSourceAdapter` connects remote instruction sources
+to public orchestration composition. Host-created operation contexts expose only
+allowlisted services backed by captured canonical Session authority, not authority
+chosen by transported Session/Run identifiers. For inference sources this is a
+narrow Environment file-read service. Contexts are generation-bound and revoked
+when the operation or owning registration/connection ends; late results cannot
+migrate to replacements. Process separation is not a sandbox.
 
-The app captures canonical `InferenceContextSourceContext` to obtain its read
-facet, never reconstructing authority from transported Session/Run IDs. Secure
-opaque per-operation contexts allowlist services on the exact connection.
-Unary `hostRequest`/`hostResponse` reuse existing isolate ports and framed shared
-host, which stamps the owning generation; liveness checks bracket asynchronous
-dispatch. `finally`, retirement, shutdown, and termination revoke contexts and
-settle pending calls. Late results cannot migrate to replacements. Host and plugin
-protocol versions are both 2, requiring coherent artifact rebuilds. This is narrow
-host-read access, not reverse streaming, general symmetric RPC, or a sandbox.
-
-See [`contracts-and-capabilities.md`](contracts-and-capabilities.md).
+[`contracts-and-capabilities.md`](contracts-and-capabilities.md) is the detailed
+specification for advertisements, point metadata, host-call authority, transport,
+and protocol compatibility. See also
+[ADR 0032: Remote backend extensions use operation-scoped host services](../adr/0032-remote-backend-extensions-use-operation-scoped-host-services.md).
 
 ## Core product-domain direction
 
@@ -960,8 +954,8 @@ revision provenance and final Task/Project/checkout isolation. Generation
 coverage checks that fresh tools replace retired Search-tool and
 Environment-provider bindings while old tools remain stale.
 
-The normal product regression scope uses real host/Git/OpenAI artifacts, now with
-the AGENTS.md backend, and prepared frontend EVCs against local fake Responses: direct reasoning
+The normal product regression scope uses real shared-host, Git, OpenAI, and
+AGENTS.md backend artifacts and prepared frontend EVCs against local fake Responses: direct reasoning
 activity followed by mixed groups, retained newest-first cards, compact group rows,
 individual rich cards, independent collapse/dismiss, and separate tool approvals.
 It checks live evidence and safe display projection
@@ -994,10 +988,10 @@ self-hosting.
 | Rebuild/reload | Proven for three cycles without orphan host processes. |
 | General recursive extension system | Accepted architecture; not implemented. |
 | B1 Project opening/native picker | Typed selector composition, cancellation/failure handling, canonical Project opening, and window lifetime are tested. Native picker adapters use fakes in CI. The recorded B1 Linux profile build passed with generated native registration; the minimum macOS `com.apple.security.files.user-selected.read-only` entitlement is present. Interactive OS picking and macOS/Windows builds remain unvalidated. The maintained tooling target guards the plain-Dart self-hosting import graph with CLI `--help`, without provider calls. |
-| Normal plugin bootstrap and Task creation | F2 supplies independently optional backend/frontend components and generic presentation activation; F3a adds backend extension activation and the AGENTS.md AOT source. The Linux profile build passed with the shared host, three backend snapshots, and four EVCs. This is build/preparation evidence, not full behavioral or live-runtime validation. Task lifecycle still uses live capability resolution; operational setup is maintained in [`app/README.md`](../../app/README.md#normal-backend-startup). |
+| Normal plugin bootstrap and Task creation | Prepared discovery supports independently optional backend/frontend components, generic presentation activation, and backend capability/extension activation, including the AGENTS.md AOT source. Task lifecycle uses live capability resolution; operational setup is maintained in [`app/README.md`](../../app/README.md#normal-backend-startup). |
 | Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, Session-authorized read/mutation/process facets, bounded create/patch/delete text-file mutation, and generated foreground process streaming through the Git provider are proven; persistence and complete lifecycle remain unimplemented. |
 | Session-bound strategy execution | Canonical immutable Session creation, atomic publication with separate Environment authority, executable contributions, explicit unavailable/ambiguous resolution, and exact binding validation across Run operations/resume/settlement are implemented and deterministically validated. Headless Chat uses the public facade with validated state, sequencing, and application integration. Persistent strategy state, child Sessions, and disk persistence remain deferred. |
-| Inference context | Instruction-only source discovery, exact-binding capture, immutable snapshots, and adapter rendering are implemented. F3a supplies root AGENTS.md through remote source activation and scoped generated host reads. The confirmed profile build includes its backend but does not establish behavioral validation of every host-call path or live-provider execution. Other sources, broader material, provider-aware projection/cache planning, budgets, and compaction remain deferred. |
+| Inference context | Instruction-only source discovery, exact-binding capture, immutable snapshots, and adapter rendering are implemented. Root AGENTS.md is supplied through remote source activation and operation-scoped generated host reads. Other sources, broader material, provider-aware projection/cache planning, budgets, and compaction remain deferred. |
 | Production orchestration/UI/Commands | Stock Chat, minimal Project/Task/Environment presentation, prepared mixed Chat timeline/composer, plugin-owned compact activity, retained window-local Inspection cards with group-to-individual drill-down, interpreted Apply Patch/Run Command/OpenAI bodies, and host-owned approval-gated Runs are implemented; configurable permissions, reasoning deltas, compaction UI, arbitrary plugin drill-down, Source/Diff/Console and terminal/PTY/full-output views, Task Browser, rich workbench UI, and Commands remain directional. Hidden chain-of-thought and encrypted reasoning are never user-presented. |
 | Cross-platform/release | Unproven on Windows, macOS, and release mode. |
 | Packaging/sandboxing | Unproven; process isolation is not a sandbox. |

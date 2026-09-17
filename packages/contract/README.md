@@ -9,7 +9,7 @@ with an optional declared failure type identifier, and
 Public [`AdeleCapabilityExposure`](lib/adele_contract.dart) defines and validates
 optional backend-ready `capabilityExposures`. Plugin identity belongs to the
 installation/connection, not this value; an omitted list means zero capabilities.
-F3a adds `AdeleExtensionExposure` for optional ready `extensionExposures`, with
+`AdeleExtensionExposure` defines optional ready `extensionExposures`, with
 exactly `extensionPointId`, `extensionId`, `serviceId`, `configurationContext`, and
 `metadata`. Unknown keys are rejected; metadata is recursively copied into
 immutable JSON-compatible containers. It has no PluginId or priority, and omission
@@ -17,8 +17,8 @@ means zero extensions. Point-specific metadata validation belongs to host adapte
 Extension metadata and reverse-request payloads also enforce
 `adelePluginBackendJsonMaxNodes` before copying or encoding. The budget counts
 every expanded visit to shared containers, preventing compact acyclic graphs from
-causing exponential host-side expansion. Other existing JSON snapshot callers
-retain their previous behavior unless they opt into `maxNodes`.
+causing exponential host-side expansion. Other JSON snapshot callers enforce a
+node budget only when they supply `maxNodes`.
 `toMap()` reifies immutable metadata into plain sendable containers for separate
 AOT isolate groups without changing the immutable public value.
 This is ready-handshake metadata, not an installed manifest, generated semantic

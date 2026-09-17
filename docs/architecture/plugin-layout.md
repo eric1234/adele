@@ -174,8 +174,9 @@ host-owned execution presentation are described in
 semantics and focused tests. Its `packages/backend` package, `agents_md_backend`,
 reuses those semantics and implements generated orchestration source transport.
 It uses public `adele_plugin_backend_support` and generated Environment authorized
-reads, not internal host or Flutter imports. The app no longer imports or directly
-depends on either AGENTS.md implementation package or statically activates it.
+reads, not internal host or Flutter imports. The app neither imports nor directly
+depends on either AGENTS.md implementation package, and it does not statically
+activate the plugin.
 
 The backend-only installation is `agents-md/backend.aot`. Its ready
 `extensionExposures`, not its installed manifest, declare the source at
@@ -184,6 +185,8 @@ no AGENTS.md frontend, configuration, startup argv, or extra deployment define.
 Normal startup and explicit self-hosting use the same generic remote extension
 adapter; self-hosting supplies its own `agentsMdArtifact` on its same shared host,
 without requiring a normal installation root. See [the plugin README](../../plugins/agents_md/README.md).
+Advertisement and operation-scoped host-call semantics are specified in
+[`contracts-and-capabilities.md`](contracts-and-capabilities.md#extension-advertisements).
 
 ### Stock tool frontend split
 
@@ -395,17 +398,14 @@ loading, typed async communication, interpreted rendering, interaction, and
 rebuild/reload on Linux x64 Flutter profile mode. Windows, macOS, release mode,
 packaging, activation contexts, and broad plugin APIs remain unproven.
 
-F2 extends F1's prepared startup catalog to independently optional frontends and
-metadata-driven presentation registration. F3a adds backend extension activation
-and operation-scoped unary host reads for AGENTS.md; five other activations remain
-static and outside installed discovery. Both host/plugin protocols are version 2,
-so prepared host/backends must be rebuilt together; installed manifests remain
-version 1. Enable/disable management, profiles, version solving, filesystem
-watching, reverse streaming, general symmetric RPC, and hot upgrade remain deferred.
-The Linux profile build has passed with the shared host, three backend snapshots,
-and four EVCs. That confirms preparation/build integration, not full behavioral or
-live-runtime validation of F2/F3a paths; see
-[normal backend startup](../../app/README.md#normal-backend-startup).
+The prepared startup catalog supports independently optional frontends and
+metadata-driven presentation registration, alongside backend capability/extension
+activation and operation-scoped unary host reads for AGENTS.md. Five stock
+activations remain static and outside installed discovery. Host and backend
+artifacts require matching protocol versions, separately from installed-manifest
+versioning; see [contract compatibility](contracts-and-capabilities.md#contracts).
+Enable/disable management, profiles, version solving, filesystem watching, reverse
+streaming, general symmetric RPC, and hot upgrade remain deferred.
 
 Maintained plugin backends additionally prove generated server streaming,
 multiple generation-bound configuration contexts, real HTTP/SSE model-provider

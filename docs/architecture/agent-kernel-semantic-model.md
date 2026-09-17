@@ -286,25 +286,15 @@ Context capture may inspect authorized state, not acquire tool effect authority;
 mutation and foreground processes retain their existing tool/policy/execution
 owners. This is an API ownership boundary, not a plugin sandbox.
 
-F3a's remote source adapter remains outside the kernel. Generated orchestration
-`RemoteInferenceContextSourceService.snapshot(sessionId, runId,
-hostInvocationContext)` returns `RemoteInferenceInstruction(key, text, nullable
-revision)`. The app converts these into the existing contribution/material types;
-its only accepted metadata is `failureMode: 'required'` or `'optional'`. Internal
-`PluginExtensionActivation` uses host adapters and the existing `ExtensionRegistry`,
-not a second registry or universal remote extension semantics.
-
-The app captures the canonical `InferenceContextSourceContext` and exposes only
-generated Environment `AuthorizedEnvironmentReadService.readFile(relativePath)`
-through its `AuthorizedEnvironmentFileReadFacet`, preserving `EnvironmentTextFile`
-and `EnvironmentFailure`. Transported Session/Run identifiers are not authority;
-the read service accepts no authority IDs and offers no mutation/process methods.
-Secure opaque per-operation contexts and service allowlists are tied to exact
-host-stamped connection generations over existing isolate ports/framing. `finally`,
-retirement, and termination revoke them. The backend's public pure-Dart channel
-multiplexer lives in `adele_plugin_backend_support`; routing and authorization
-never become kernel mechanics. This is unary host access, not reverse streaming,
-general symmetric RPC, profiles, or sandboxing.
+Remote source hosting remains outside the kernel. The app's
+`RemoteInferenceContextSourceAdapter` converts generated source results into the
+existing contribution/material types, preserving public composer semantics and
+the existing `ExtensionRegistry`. It captures canonical
+`InferenceContextSourceContext` to supply authorized file reads; transported
+Session/Run identifiers cannot select authority. Runtime/host code owns
+operation-scoped service access, exact-generation routing, and revocation, not
+kernel mechanics. The detailed transport and authorization specification is in
+[`contracts-and-capabilities.md`](contracts-and-capabilities.md#operation-scoped-host-calls).
 
 The sealed `InferenceContextMaterial` root currently has only final
 `InferenceInstructionMaterial`: a nonblank source-local `String key`, nonblank

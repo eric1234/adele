@@ -31,7 +31,7 @@ remains responsible for the model-facing `create_file`, `apply_patch`, and
 `delete_file` contracts, while Search Tools consumes only the read facet and
 Command Tools consumes only the process facet for `run_command`.
 
-F3a also defines generated unary `AuthorizedEnvironmentReadService` alongside the
+Generated unary `AuthorizedEnvironmentReadService` is declared alongside the
 provider service in `lib/adele_environment.dart`. Its sole operation is
 `readFile(String relativePath) -> Future<EnvironmentTextFile>`, reusing the same
 file DTO and declared `EnvironmentFailure` rather than flattening `not_found` or
@@ -46,7 +46,8 @@ context allowlists this service on the exact connection generation; transported
 Session/Run IDs never select authority. Calls use the existing ports/framed host
 and are revoked at operation settlement, retirement, and termination. See
 [operation-scoped host calls](../../docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls).
-This adds neither reverse streaming nor a sandbox.
+This unary read channel supports neither reverse streaming nor general symmetric
+RPC and is not a sandbox.
 
 `runForegroundProcess` accepts a non-empty program, an immutable ordered
 argument vector, an Environment-relative working directory, and a required

@@ -184,8 +184,8 @@ activity presentation, reasoning deltas, arbitrary plugin drill-down, persistenc
 child Sessions, state migration, and concurrent
 conversation editing are not implemented. State retention is in-memory and scoped
 to the supplied store, not durable product Session storage.
-Frontend discovery, installation/update management, and artifact caching
-are also deferred. Checkout preparation stands in for future installation/update
-compilation, separate from activation consuming prepared artifacts. The current
-SDK/eval pin does not establish a broad third-party UI API; eval modernization
-remains necessary for that wider surface and is outside this presentation slice.
+Prepared frontend discovery and activation are implemented; installation/update
+management and artifact caching remain deferred. Checkout preparation stands in
+for future installation/update compilation, separate from activation consuming
+prepared artifacts. The current SDK/eval pin does not establish a broad third-party
+UI API; eval modernization remains necessary for that wider surface.

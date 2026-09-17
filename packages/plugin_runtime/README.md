@@ -146,20 +146,20 @@ Plugins use public `adele_plugin_backend_support`, not this package, for their
 request-channel multiplexer. This is unary operation-scoped access, not general
 symmetric RPC, reverse streaming, cancellation of arbitrary host code, or a sandbox.
 
-## Validated Scope
+## Maintenance And Limits
 
-Direct Flutter `Isolate.spawnUri` remains disproven. The continuation starts one
-shared child `dartaotruntime` host, which successfully loads plugin snapshots in
-separate isolate groups under Linux profile mode. Generated unary and streaming
-requests retain exact generation, configuration-context, and service routing;
-the protocol handshake and shutdown/cancellation paths have existing validation.
-That evidence does not establish validation of every F1 catalog/advertisement,
-F2 frontend-discovery/activation, or F3a remote-extension/host-call path. The Linux
-profile build has since passed with the shared host, three backend snapshots, and
-four EVCs; this is preparation/build evidence, not a new full-suite or live-service
-result. See [normal backend startup](../../app/README.md#normal-backend-startup).
-The app's focused real-AOT remote inference suite separately validates scoped
-authority, declared failures, pending-call cleanup, and exact-generation source
-retirement; see [inference hosting](../../app/README.md#orchestration-hosting).
+Backend AOT snapshots run in separate isolate groups within one shared child
+`dartaotruntime` host, not directly in Flutter. Generated unary and server-streaming
+requests retain exact connection-generation, configuration-context, and service
+routing.
+
+Maintained [package tests](test/) cover framing, connection lifecycle, prepared
+catalog validation, and capability/extension activation and retirement. The app's
+[real-AOT remote inference suite](../../app/test/core/remote_inference_context_integration_test.dart)
+covers scoped authority, declared failures, pending-call cleanup, and
+exact-generation source retirement. See
+[inference hosting](../../app/README.md#orchestration-hosting) for the integration
+boundary and focused maintenance command.
+
 The prepared startup catalog is narrower than an installer, profiles, packaging,
 or production lifecycle, which remain deferred.

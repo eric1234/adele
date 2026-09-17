@@ -2,7 +2,7 @@
 
 ## Status
 
-Generated typed unary and server-streaming/cancellation transport, active one-to-many capability routing, exact generation bindings, configured OpenAI provider contexts, and the common ModelProvider capability are implemented in the maintained development foundation. F3a adds backend-ready extension advertisements, host adapters over the existing extension registry, and operation-scoped unary backend-to-host calls for remote inference sources. This is not general symmetric RPC or reverse streaming.
+Generated typed unary and server-streaming/cancellation transport, active one-to-many capability routing, exact generation bindings, configured OpenAI provider contexts, and the common ModelProvider capability are implemented in the maintained development foundation. Backend-ready extension advertisements, host adapters over the existing extension registry, and operation-scoped unary backend-to-host calls support remote inference sources. This is not general symmetric RPC or reverse streaming.
 
 The broader recursive extension model described in [`plugin-extension-model.md`](plugin-extension-model.md) is accepted architecture but mostly unimplemented. Capabilities should therefore be understood as one specialized callable part of that future extension architecture rather than as a universal registry for every kind of plugin participation.
 
@@ -50,7 +50,12 @@ Supported core and async types are checked by exact semantic library identity, n
 
 Committed transport is checked in normal CI. Development plugin preparation also checks the requested plugin independently: the manifest-selected contract package's `pubspec.yaml` name determines `lib/<package-name>.dart`, and that absolute source is passed explicitly to `contract_codegen --check --source`. This keeps stale transport failure local to the plugin and ahead of compilation.
 
-Server-streaming uses the existing shared backend-host path. Generated clients open lazily and decode ordered typed items. Generated dispatchers hide producer iteration, cancellation, and terminal failure mapping. The fixed one-item credit window is unchanged: paused consumers stop producer advancement after the already-granted item and cancellation reaches the producer iterator. Streams remain bound to their exact provider generation and fail rather than migrating when that generation disappears. F3a bumps both `backendHostProtocolVersion` and `adelePluginBackendProtocolVersion` to 2; prepared hosts and backends must be rebuilt together. This does not change capability majors or the version-1 installed manifest.
+Server-streaming uses the existing shared backend-host path. Generated clients open lazily and decode ordered typed items. Generated dispatchers hide producer iteration, cancellation, and terminal failure mapping. A fixed one-item credit window means paused consumers stop producer advancement after the already-granted item and cancellation reaches the producer iterator. Streams remain bound to their exact provider generation and fail rather than migrating when that generation disappears.
+
+Both `backendHostProtocolVersion` and `adelePluginBackendProtocolVersion` are
+currently 2. Prepared hosts and backends must use matching protocols and be rebuilt
+together; mixed protocol versions are unsupported. These transport versions are
+separate from capability majors and the version-1 installed manifest.
 
 ## Capability semantics
 
@@ -162,7 +167,7 @@ semantics and [`app/README.md`](../../app/README.md#normal-backend-startup) for 
 
 ### Extension advertisements
 
-F3a adds optional `extensionExposures` to the same isolate `ready` -> host
+Optional `extensionExposures` follow the same isolate `ready` -> host
 `pluginReady` -> exact connection path. Public pure-Dart
 `adele_contract.AdeleExtensionExposure` has exactly these required fields:
 
@@ -182,7 +187,7 @@ Omitting `extensionExposures` means zero extensions, independently of capabiliti
 
 Internal `plugin_runtime.PluginExtensionActivation` uses
 `RemoteExtensionAdapterRegistry` to find the host adapter for an advertised point,
-build an exact-generation contribution, and register it in the existing
+build an exact-generation proxy contribution, and register it in the existing
 `ExtensionRegistry`. The adapter registry holds host implementations of known
 contracts, not plugin contributions or another public discovery system.
 Unsupported points, invalid metadata, and registration collisions fail that
@@ -192,6 +197,9 @@ registration phases, rolls back both on failure, and retires their exact
 registrations before connection close. Termination cannot retarget old bindings.
 
 ## Operation-scoped host calls
+
+The hosting decision is recorded in
+[ADR 0032: Remote backend extensions use operation-scoped host services](../adr/0032-remote-backend-extensions-use-operation-scoped-host-services.md).
 
 The app's `RemoteInferenceContextSourceAdapter` adapts the generated orchestration
 `RemoteInferenceContextSourceService.snapshot(sessionId, runId,
@@ -220,8 +228,9 @@ Unary `hostRequest`/`hostResponse` messages reuse the existing isolate ports and
 framed shared-host transport. Successful `hostResponse` messages carry `ok: true`
 and `payload`, not `result`. The shared host stamps plugin identity and the
 host-issued exact connection generation from the owning isolate, not plugin input;
-replies route back to that captured generation. Runtime checks the live invocation
-and service allowlist before dispatch and after asynchronous settlement.
+replies route back to that captured generation. Runtime checks invocation liveness
+and the service allowlist before dispatch, then rechecks liveness after asynchronous
+settlement.
 `RemoteExtensionContext.invoke` revokes the token in `finally`; registration
 retirement, connection shutdown, and termination also revoke it and settle pending
 calls without waiting for arbitrary host service code. Late results cannot revive
@@ -230,8 +239,9 @@ rollback of an already-started read.
 
 Public pure-Dart `adele_plugin_backend_support` supplies only the reusable
 `AdeleHostRequestMultiplexer` and bound `AdeleRequestChannel` needed by generated
-clients. It imports no internal host package or Flutter. It does not mint authority,
-select services, or implement general symmetric RPC. Reverse streaming, profiles,
+clients. Its only production package dependency is `adele_contract`, with no internal
+host or Flutter imports. It does not mint authority, grant service access, or
+implement general symmetric RPC. Reverse streaming, profiles,
 and general plugin configuration remain deferred; this boundary is not a sandbox.
 
 ## Configured capability instances

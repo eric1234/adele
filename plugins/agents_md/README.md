@@ -1,11 +1,11 @@
 # AGENTS.md stock plugin
 
-`agents_md_plugin` remains the pure-Dart semantic package, including
-`agentsMdInstructions` and the in-process `AgentsMdPlugin.activate` seam used by
-focused tests. Normal application startup and development/self-hosting instead
-load [`agents_md_backend`](packages/backend/README.md) from `packages/backend` as
-AOT on their shared backend host. The app no longer imports/depends on the semantic
-package or statically activates it; five other static plugins remain.
+`agents_md_plugin` is the pure-Dart semantic package for the stock root-level
+AGENTS.md instruction source. It provides `agentsMdInstructions` and the in-process
+`AgentsMdPlugin.activate` seam used by focused tests. Normal application startup
+and development/self-hosting load [`agents_md_backend`](packages/backend/README.md)
+from `packages/backend` as AOT on their shared backend host. The app does not import
+or depend on either plugin package; activation uses the generic remote-source adapter.
 
 The backend advertises one `extensionExposures` entry for
 `dev.adele.extension.inference-context-sources`, with extension ID
@@ -18,11 +18,11 @@ startup arguments. Generic `PluginBackendActivation` and the app's
 existing `ExtensionRegistry`; there is no AGENTS-specific activation table or fallback.
 Activation alone does not read a file or require a Project or Session.
 
-This is the initial **root-level AGENTS.md implementation**, not complete
+This is a **root-level AGENTS.md implementation**, not complete
 AGENTS.md-standard compatibility or a generic repository-instructions framework.
 Each new inference snapshot reads only canonical `AGENTS.md` at the root of the
 Session-authorized Environment through generated
-`AuthorizedEnvironmentReadService.readFile(relativePath)`. The host adapter captures
+`AuthorizedEnvironmentReadService.readFile('AGENTS.md')`. The host adapter captures
 the canonical `InferenceContextSourceContext` and obtains its
 `AuthorizedEnvironmentFileReadFacet`; transported Session/Run strings never grant
 authority. The service preserves `EnvironmentTextFile` and declared `EnvironmentFailure`,
@@ -53,16 +53,13 @@ Nested/path-scoped files, overrides, alternate names, home/global files, imports
 Skills, Agent Roles, maps, memory, and other context mechanisms are not supported.
 Those other mechanisms remain independent plugin concerns.
 
-Normal Linux preparation adds backend-only `agents-md/backend.aot` to the six
-installations, alongside the existing four EVCs and two other backend snapshots.
-The shared host snapshot is separate. The same four generic deployment defines
-are used, with no AGENTS configuration. Self-hosting supplies its explicit
-`agentsMdArtifact` on the same host through the same adapter activation, without
-requiring a normal installation root. Both host/plugin protocol versions are 2.
+Normal Linux preparation installs backend-only `agents-md/backend.aot` under the
+prepared installation root. Shared-host artifacts and generic deployment inputs
+are described in [desktop tooling](../../packages/plugin_builder/README.md#desktop-tooling).
+Self-hosting supplies its explicit `agentsMdArtifact` on the same host through the
+same adapter activation, without requiring a normal installation root. Both
+host/plugin protocol versions are 2.
 
 The semantic package, backend, and support package are workspace members with
 maintained analysis/test discovery. Focused semantic validation uses
 `dart tools/adele.dart test --target agents_md_plugin` from the repository root.
-The Linux profile build has passed with this backend, the other two backends,
-the shared host, and four EVCs. This is build evidence, not a new test-suite or
-live-service result; see [normal backend startup](../../app/README.md#normal-backend-startup).

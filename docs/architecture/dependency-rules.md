@@ -127,10 +127,7 @@ parses opaque `providerState`; Environment providers own source validation.
 
 Backend entrypoints own ready `capabilityExposures` and `extensionExposures`.
 Public `adele_contract` owns the lightweight advertisement values/validation;
-the existing isolate-ready/host-`pluginReady` path transfers them to the exact
-connection. `AdeleExtensionExposure` has exactly `extensionPointId`, `extensionId`,
-`serviceId`, `configurationContext`, and immutable JSON `metadata`, not PluginId
-or priority. Unknown keys fail; omitted lists mean zero registrations of that kind.
+the existing readiness path transfers them to the exact connection.
 Plugin identity comes from installation/connection, not an advertisement.
 
 Internal `plugin_runtime` owns `PluginExtensionActivation`,
@@ -138,18 +135,18 @@ Internal `plugin_runtime` owns `PluginExtensionActivation`,
 plus extension rollback/retirement. Adapters are host implementations of known
 public contracts, not another contribution registry or public plugin API.
 Contributions still enter the existing `ExtensionRegistry` with exact liveness.
-The app owns `RemoteInferenceContextSourceAdapter` and its strict, sole
-`failureMode: 'required'/'optional'` metadata rule; runtime has no AGENTS.md logic.
+The app owns `RemoteInferenceContextSourceAdapter` and its point-specific metadata
+validation; runtime has no AGENTS.md logic.
 
 Public `adele_orchestration` owns generated `RemoteInferenceContextSourceService`
 and `RemoteInferenceInstruction`; public `adele_environment` owns generated
-`AuthorizedEnvironmentReadService.readFile(relativePath)` and its existing file
-and failure values. The app captures canonical `InferenceContextSourceContext`
-and supplies only its `AuthorizedEnvironmentFileReadFacet`, never authority derived
-from transported Session/Run IDs. No authority-ID arguments, mutation, or process
-operations enter the read service. Host-stamped exact generations and secure opaque
-per-operation contexts/allowlists protect unary host calls over the existing ports
-and framing; `finally`, retirement, and termination revoke them. This is not a sandbox.
+`AuthorizedEnvironmentReadService` and its existing file and failure values. The
+app captures canonical `InferenceContextSourceContext` and supplies only its
+authorized file-read facet, never authority derived from transported Session/Run
+IDs. Internal runtime/host code owns exact-generation routing and operation-scoped
+service authorization and revocation, not domain composition or source semantics.
+The detailed advertisement and host-call specification is in
+[`contracts-and-capabilities.md`](contracts-and-capabilities.md#backend-ready-advertisements).
 
 `packages/plugin_backend_support` supplies public pure-Dart
 `AdeleHostRequestMultiplexer` using only `adele_contract`, with no internal host or
@@ -188,9 +185,8 @@ the same remote-source adapter activation, without a normal installation root.
 Its own profile environment configures the backend; it registers all advertised
 contexts, potentially both OpenAI contexts, then explicitly resolves the selected
 profile's provider ID without filtering advertisements.
-F2's frontend owner consumes this same catalog, as described below. F3a moves only
-AGENTS.md out of the static composition and adds the narrow public support package;
-five in-process activations remain. Both host/plugin protocol versions are 2.
+The frontend owner consumes this same catalog, as described below; the five
+in-process activations remain outside installed-component discovery.
 These boundaries add no profile/enable-disable system, version solving, watching,
 reverse streaming, general symmetric RPC, hot upgrade, or production packaging.
 Normal startup attempts all discovered valid components. Profiles remain a separate,

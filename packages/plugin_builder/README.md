@@ -26,10 +26,10 @@ compiler share this primitive.
 ## Desktop Tooling
 
 Normal `dart tools/adele.dart run linux` and `build linux --profile` prepare the
-shared host and three backend AOT snapshots (Git Environment, OpenAI, and AGENTS.md)
-plus Chat, Filesystem Tools, Command Tools, and OpenAI activity frontend EVCs before launching the Flutter
-run/build command. Backend compilation runs
-outside Flutter; frontend compilation uses Flutter build-time tooling. This also
+shared host AOT snapshot, three backend AOT snapshots (Git Environment, OpenAI,
+and AGENTS.md), and four frontend EVCs (Chat, Filesystem Tools, Command Tools, and
+OpenAI activity) before launching the Flutter run/build command. Backend compilation
+runs outside Flutter; frontend compilation uses Flutter build-time tooling. This also
 applies to explicit Linux debug/release modes; non-Linux commands and the explicit
 development smoke entry remain unchanged. `prepareDesktopPluginDefines` in
 `tools/backend_artifacts.dart` owns backend source paths and unified stock
@@ -95,9 +95,9 @@ correctness. Runtime bytecode decoding remains presentation-local.
 
 AGENTS.md needs no configuration/startup arguments or extra deployment defines.
 Its entrypoint owns the ready extension advertisement; the app uses generic
-remote-source activation rather than linking the semantic plugin. F3a bumps both
-host/plugin protocol versions to 2, so all host/backend artifacts must be rebuilt
-together. The installed manifest remains version 1.
+remote-source activation rather than linking the semantic plugin. Both host and
+plugin-backend protocols use version 2, so all host/backend artifacts must be
+rebuilt together. The installed manifest uses version 1.
 
 The separate temporary startup file is a JSON object mapping PluginId to
 `List<String>` argv. The launcher derives OpenAI's credential-file reference and
@@ -176,9 +176,9 @@ discovery as a stand-in for that preparation, not an installer, update manager,
 profile system, or cache. Discovery and activation remain separate; normal startup
 attempts all discovered valid backend and frontend components without enable/disable
 controls, version solving, watching, or hot upgrade. Future profiles choose
-activation participation separately from prepared descriptors. F3a adds narrow
-unary host reads for the remote AGENTS.md source, not reverse streaming or general
-symmetric RPC. Five other in-process stock activations remain outside discovery.
+activation participation separately from prepared descriptors. The remote AGENTS.md
+source uses narrow unary host reads; reverse streaming and general symmetric RPC
+are unimplemented. In-process stock activations are outside this discovery path.
 
 ## Current Scope
 

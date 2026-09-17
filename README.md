@@ -34,11 +34,12 @@ multi-provider capability fixture, and `scripted_model` remains deterministic
 model-provider/transport regression infrastructure. These are internal
 reference fixtures, not product UI or product-domain definitions.
 
-F2 extends F1's bounded prepared startup snapshot to independently optional backend
-and frontend components. F3a moves AGENTS.md to an AOT backend through generic
-extension adapters and narrow unary host calls, not a plugin installer or general
-activation manager. Profiles, enable/disable controls, version solving, watching,
-reverse streaming, general symmetric RPC, hot upgrade,
+Normal startup discovers a bounded snapshot of prepared installations with
+independently optional backend and frontend components. AGENTS.md runs as an AOT
+backend through generic extension adapters and operation-scoped unary host services.
+This is not a plugin installer or general activation manager. Profiles,
+enable/disable controls, version solving, watching, reverse streaming,
+general symmetric RPC, hot upgrade,
 production packaging, configurable permissions, sandboxing, and general
 third-party extension APIs are not yet implemented.
 
@@ -50,8 +51,9 @@ activations: Chat, Filesystem Tools, Search Tools, Command Tools, and
 Local Directory Project Selector. The reduced smoke composition omits only
 Command Tools. It also owns pure-Dart `ApplicationPluginBootstrap` on the same
 capability and extension registries, without starting it from the constructor.
-AGENTS.md is no longer an app import, dependency, or static activation; the five
-remaining in-process plugins are outside prepared backend discovery.
+AGENTS.md is supplied by its installed AOT backend, with no direct app import,
+dependency, static activation, or in-process fallback. The five in-process plugins
+are outside prepared backend discovery.
 
 Normal `AdeleApplication` explicitly calls `ApplicationPluginBootstrap.start`
 asynchronously with an installation root, shared runtime/host paths, and optional
@@ -88,13 +90,15 @@ frontends. Read-only backend states and catalog issues are exposed without a
 plugin-management UI.
 
 Git and OpenAI entrypoints own their ready `capabilityExposures`; AGENTS.md owns
-its ready `extensionExposures`. The existing isolate-ready -> host `pluginReady`
--> exact connection path feeds `PluginBackendActivation.registerAdvertised`,
-coherently registering capabilities and adapted extensions through the existing
-registries with rollback and exact-generation retirement. Each omitted list means
-zero registrations of that kind; installation/connection identity is authoritative.
-The app has no backend exposure table. The launcher supplies a temporary separate
-PluginId-to-argv JSON file; OpenAI receives `--chatgpt-only` plus a configuration JSON argument when
+its ready `extensionExposures` and point-specific metadata. `PluginId` comes from
+the installation/connection, not the advertisements.
+`PluginBackendActivation.registerAdvertised` uses the existing capability and
+extension registries with coherent rollback and exact-generation retirement.
+Unknown extension points or malformed metadata fail only that backend attempt,
+leaving no partially registered generation. Each omitted list means zero
+registrations of that kind; the app has no backend exposure table.
+The launcher supplies a temporary separate PluginId-to-argv JSON file;
+OpenAI receives `--chatgpt-only` plus a configuration JSON argument when
 configured, containing only a credential-file reference and public OAuth/endpoint
 options, never tokens. Normal bootstrap always sets `startupArgumentsOnly: true`;
 OpenAI disables environment fallback and advertises zero capabilities for
@@ -363,29 +367,16 @@ generic refresh API. Chat activates no context source and remains AGENTS-unaware
 tools, policy, model controls, and Environment authority retain their existing
 owners. See `packages/orchestration/README.md` for capture and rendering semantics.
 
-The stock `agents_md_plugin` under `plugins/agents_md` remains the pure-Dart
-semantic implementation; `packages/backend` supplies `agents_md_backend`, loaded
-as AOT in normal startup and explicit development/self-hosting. Generic
-`PluginExtensionActivation` uses internal `RemoteExtensionAdapterRegistry` and
-the app's `RemoteInferenceContextSourceAdapter` to register it in the same
-`ExtensionRegistry`. Public `AdeleExtensionExposure` contains exactly
-`extensionPointId`, `extensionId`, `serviceId`, `configurationContext`, and immutable
-JSON `metadata`, with no PluginId or priority. Unknown keys fail; the source adapter
-accepts only `failureMode: 'required'` or `'optional'` metadata.
-
-Generated orchestration `RemoteInferenceContextSourceService.snapshot(sessionId,
-runId, hostInvocationContext)` returns instructions with key, exact text, and
-nullable revision. Generated Environment `AuthorizedEnvironmentReadService.readFile`
-preserves `EnvironmentTextFile` and `EnvironmentFailure` without authority IDs,
-mutation, or process access. The app captures the canonical
-`InferenceContextSourceContext` and supplies its `AuthorizedEnvironmentFileReadFacet`,
-never deriving authority from transported Session/Run IDs. Unary
-`hostRequest`/`hostResponse` reuse the isolate ports and framed shared host, which
-stamps the exact connection generation. Secure opaque per-operation contexts
-allowlist services and are revoked in `finally`, on retirement, and on termination.
-Public pure-Dart `adele_plugin_backend_support` supplies the reusable request-channel
-multiplexer without internal host or Flutter dependencies. Both host/plugin
-protocol versions are 2; hosts and backends must be rebuilt together.
+The stock `agents_md_plugin` under `plugins/agents_md` owns the pure-Dart semantics;
+`plugins/agents_md/packages/backend` supplies `agents_md_backend`, loaded as AOT in
+normal startup and explicit development/self-hosting. A generic host adapter
+registers its remote instruction source in the existing `ExtensionRegistry`.
+Operation-scoped unary host services supply authorized file reads from the captured
+canonical Session context, not authority derived from transported Session/Run IDs.
+See [operation-scoped host calls](docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls)
+for the contract and lifetime rules, and
+[ADR 0032: Remote backend extensions use operation-scoped host services](docs/adr/0032-remote-backend-extensions-use-operation-scoped-host-services.md)
+for the architectural decision.
 
 Activation alone does not read a file. Each snapshot rereads root `AGENTS.md` in
 the Session-authorized Environment through that narrow generated read service.
@@ -394,8 +385,8 @@ read/service/authority errors fail composition as a required source. Exact nonbl
 file text and its opaque Environment revision are retained in one material,
 separate from stable plugin-owned semantics stating that explicit user
 instructions and direct requests take precedence over AGENTS.md guidance.
-This adds a concrete source, not generic context infrastructure or a
-repository-instructions owner for Skills, Agent Roles, or repository maps.
+These semantics belong to the AGENTS.md plugin, not Chat or the kernel. The source
+does not own Skills, Agent Roles, or repository maps.
 
 Filesystem Tools owns the model-facing
 `apply_patch(relativePath, expectedRevision, edits)` grammar. Its non-empty
@@ -599,14 +590,9 @@ activity presentation unavailable independently.
 Checkout tooling stands in for future installation/update-time compilation;
 activation consumes prepared artifacts rather than building them.
 
-Recorded B2 Linux profile build, real-host/Git, widget/runtime/bootstrap, tooling,
-and Xvfb startup evidence predates F1/F2 and is not validation of the catalog,
-advertisement, frontend-discovery/activation, or F3a remote-source/host-call paths.
-The current Linux profile build has passed with the shared host, three backend
-snapshots (Git, OpenAI, and AGENTS.md), and four frontend EVCs. This establishes
-build/preparation evidence, not a new full-suite, interactive runtime, or
-live-provider result. See `app/README.md` for bounded validation evidence,
-maintained validation commands, and source-checkout limitations.
+See [the app README](app/README.md#normal-backend-startup) for source-checkout
+limitations and [remote-source coverage](app/README.md#orchestration-hosting)
+for deterministic integration scope and its focused validation command.
 
 The internal Linux profile smoke is explicit and does not alter normal app
 startup:
@@ -626,8 +612,8 @@ reports every failed package after all targets settle. `check` verifies
 formatting, analysis, and all implemented tests, including committed
 generated-output freshness.
 
-The workspace retains `plugins/chat_strategy` and semantic `plugins/agents_md`,
-and adds `plugins/agents_md/packages/backend` and `packages/plugin_backend_support`.
+The workspace includes `plugins/chat_strategy`, semantic `plugins/agents_md`,
+`plugins/agents_md/packages/backend`, and `packages/plugin_backend_support`.
 The app depends on Chat, not `agents_md_plugin` or `agents_md_backend`. The driver
 includes the semantic plugin, backend, and support package in analysis/test
 discovery and `test-plan --json`. Run the semantic plugins' pure-Dart tests with

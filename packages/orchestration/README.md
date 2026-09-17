@@ -217,22 +217,22 @@ APIs are supplied.
 
 ### Remote Source Transport
 
-`lib/remote_inference_context.dart` owns the generated F3a transport contract,
+`lib/remote_inference_context.dart` owns the generated transport contract,
 separate from native contribution/context types. Unary
 `RemoteInferenceContextSourceService.snapshot(String sessionId, String runId,
 String hostInvocationContext)` returns `List<RemoteInferenceInstruction>`, whose
 required fields are `key`, `text`, and nullable `revision`. The generated key for
 revision remains required even when its value is null. Source and configuration
 identity come from ready advertisements, not this result.
-This library declares no `@AdeleFailure` type and adds no domain-specific failure;
+This library declares no `@AdeleFailure` type or domain-specific failure;
 the generator supports zero declared failures and preserves unrecognized remote
 failures as transport failures.
 
 The app's `RemoteInferenceContextSourceAdapter` converts those values into native
 `InferenceInstructionMaterial` and registers a contribution through internal
 `PluginExtensionActivation` on the same `ExtensionRegistry`. The only accepted
-point metadata is `failureMode: 'required'` or `'optional'`; no priority or stock
-identity switch is added. Unsupported fields and values fail activation. The
+point metadata is `failureMode: 'required'` or `'optional'`; there is no priority or
+stock identity switch. Unsupported fields and values fail activation. The
 composer retains all capture, ordering, duplicate-key, and required/optional rules.
 
 For each snapshot the host captures the canonical `InferenceContextSourceContext`,
@@ -331,8 +331,7 @@ retained as `AGENTS.md` material, separate from stable `semantics` material stat
 that explicit user instructions and direct requests take precedence. This is
 plugin-owned guidance, not a generic precedence or repository-instructions API.
 
-There are no kernel, Flutter, app, or plugin-runtime imports. F3a's remote-source
-contract and activation do not imply new validation evidence. Scheduling,
+There are no kernel, Flutter, app, or plugin-runtime imports. Scheduling,
 general plugin management, broader Chat UI, persistence, profiles,
 and child Sessions remain deferred. The generic context contract remains instruction-only. Nested/scoped
 AGENTS.md, aliases/overrides, global/home files, imports, and AGENTS.md caching are
