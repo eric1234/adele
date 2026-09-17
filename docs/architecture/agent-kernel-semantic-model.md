@@ -284,7 +284,17 @@ independent Environment selection. All other service requests fail, including
 mutation/process facets and broader Environment authority/filesystem types.
 Context capture may inspect authorized state, not acquire tool effect authority;
 mutation and foreground processes retain their existing tool/policy/execution
-owners. This is an API ownership boundary, not an in-process plugin sandbox.
+owners. This is an API ownership boundary, not a plugin sandbox.
+
+Remote source hosting remains outside the kernel. The app's
+`RemoteInferenceContextSourceAdapter` converts generated source results into the
+existing contribution/material types, preserving public composer semantics and
+the existing `ExtensionRegistry`. It captures canonical
+`InferenceContextSourceContext` to supply authorized file reads; transported
+Session/Run identifiers cannot select authority. Runtime/host code owns
+operation-scoped service access, exact-generation routing, and revocation, not
+kernel mechanics. The detailed transport and authorization specification is in
+[`contracts-and-capabilities.md`](contracts-and-capabilities.md#operation-scoped-host-calls).
 
 The sealed `InferenceContextMaterial` root currently has only final
 `InferenceInstructionMaterial`: a nonblank source-local `String key`, nonblank
@@ -326,10 +336,12 @@ After safe capture, source material is immutable data independent of the live
 binding. Retirement during the provider call does not invalidate the captured
 request; the next inference discovers any replacement. Executable strategy/tool
 bindings still require their existing exact-generation checks and never migrate.
-Chat activates no source and remains AGENTS-unaware. Shared normal and
-development/self-hosting composition activates stock `agents_md_plugin`: each snapshot rereads root
-`AGENTS.md` through `AuthorizedEnvironmentFileReadFacet` in the Session-authorized
-Environment. `not_found` and blank files succeed empty; other read/service/authority
+Chat activates no source and remains AGENTS-unaware. Normal prepared startup and
+explicit development/self-hosting activate stock `agents_md_backend` through the
+same generic adapter, reusing pure-Dart `agents_md_plugin` semantics instead of a
+static app registration. Each snapshot rereads root `AGENTS.md` through generated
+authorized reads backed by the captured Session's `AuthorizedEnvironmentFileReadFacet`.
+`not_found` and blank files succeed empty; other read/service/authority
 errors fail the required source. Nonblank exact text and its Environment revision
 form one material, separate from stable plugin-owned semantics giving explicit
 user instructions and direct requests precedence over AGENTS.md guidance.

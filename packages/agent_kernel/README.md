@@ -85,9 +85,12 @@ executable strategy/tool binding checks. Source freshness is source-owned, witho
 a generic refresh API. The kernel owns neither source discovery nor Session
 service authority; see `../orchestration/README.md` for the capture contract.
 
-The independent stock `agents_md_plugin` is activated only in development/self-hosting
-composition, not by Chat or the kernel; it rereads root `AGENTS.md` through the
-Session-authorized Environment read facet for each snapshot. See
+The independent stock AGENTS.md source is supplied by `agents_md_backend` in normal
+prepared startup and explicit development/self-hosting, not activated by Chat or
+the kernel. It reuses pure-Dart `agents_md_plugin` semantics and rereads root
+`AGENTS.md` through generated authorized reads backed by the captured Session's
+Environment read facet. Generic remote adapter activation and operation-scoped
+unary host authorization stay outside the kernel. See
 [`plugins/agents_md`](../../plugins/agents_md/README.md) for its bounded source semantics.
 
 Concrete model providers, concrete tools, editors, Git, terminals, Environment

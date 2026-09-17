@@ -64,6 +64,9 @@ Future<List<String>> prepareDesktopPluginDefines({
   final File openai = File.fromUri(
     installations.uri.resolve('openai/backend.aot'),
   );
+  final File agentsMd = File.fromUri(
+    installations.uri.resolve('agents-md/backend.aot'),
+  );
   for (final ({String entrypoint, File artifact, String stage}) target
       in <({String entrypoint, File artifact, String stage})>[
         (
@@ -83,6 +86,12 @@ Future<List<String>> prepareDesktopPluginDefines({
               'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart',
           artifact: openai,
           stage: 'openai-compilation',
+        ),
+        (
+          entrypoint:
+              'plugins/agents_md/packages/backend/bin/agents_md_backend.dart',
+          artifact: agentsMd,
+          stage: 'agents-md-compilation',
         ),
       ]) {
     stdout.writeln('==> ${target.stage}');
@@ -111,6 +120,11 @@ Future<List<String>> prepareDesktopPluginDefines({
       displayName: 'Git Worktree Environment',
     ),
     (backend: openai, id: 'dev.adele.openai', displayName: 'OpenAI'),
+    (
+      backend: agentsMd,
+      id: 'dev.adele.plugin.agents-md',
+      displayName: 'AGENTS.md',
+    ),
     (backend: null, id: 'dev.adele.plugin.chat-strategy', displayName: 'Chat'),
     (
       backend: null,

@@ -20,6 +20,8 @@ final class AdeleBackendHost {
   final BackendHostSend _send;
   final BackendHostDiagnostic _diagnostic;
   final Map<String, _PluginIsolate> _plugins = <String, _PluginIsolate>{};
+  final Map<int, (_PluginIsolate, int)> _hostRequests = {};
+  int _nextHostRequestId = 1;
   bool _shutDown = false;
 
   void noteStreamCancelRequested(Map<String, Object?> message) {
@@ -45,7 +47,12 @@ final class AdeleBackendHost {
       return true;
     }
     try {
+      if (_shutDown && message['kind'] != 'hostResponse') {
+        throw StateError('The backend host is shutting down.');
+      }
       switch (message['kind']) {
+        case 'hostResponse':
+          _forwardHostResponse(message);
         case 'startPlugin':
           await _startPlugin(message);
         case 'stopPlugin':
@@ -85,6 +92,7 @@ final class AdeleBackendHost {
     if (_shutDown) return;
     _shutDown = true;
     for (final _PluginIsolate plugin in _plugins.values.toList()) {
+      _revokeHostRequests(plugin);
       await plugin.stop();
     }
     _plugins.clear();
@@ -103,6 +111,7 @@ final class AdeleBackendHost {
       throw StateError('Plugin $pluginId is already running.');
     }
     final String artifactUri = _requireString(message, 'artifactUri');
+    final String generation = _requireString(message, 'generation');
     final String defaultConfigurationContext = _requireString(
       message,
       'defaultConfigurationContext',
@@ -121,6 +130,7 @@ final class AdeleBackendHost {
     }
     final _PluginIsolate plugin = await _PluginIsolate.start(
       pluginId: pluginId,
+      generation: generation,
       artifactUri: Uri.parse(artifactUri),
       arguments: rawArguments
           .map((Object? value) => value! as String)
@@ -130,11 +140,12 @@ final class AdeleBackendHost {
       send: _send,
       diagnostic: _diagnostic,
       onTerminated: _pluginTerminated,
+      onHostRequest: _forwardHostRequest,
     );
     _plugins[pluginId] = plugin;
     try {
       await Future<void>.delayed(Duration.zero);
-      if (plugin.isTerminated) {
+      if (_shutDown || plugin.isTerminated) {
         throw StateError('Plugin $pluginId terminated during startup.');
       }
       if (!_send(<String, Object?>{
@@ -144,6 +155,9 @@ final class AdeleBackendHost {
         'pluginId': pluginId,
         'capabilityExposures': [
           for (final exposure in plugin.capabilityExposures) exposure.toMap(),
+        ],
+        'extensionExposures': [
+          for (final exposure in plugin.extensionExposures) exposure.toMap(),
         ],
       })) {
         throw StateError('Could not send plugin readiness.');
@@ -163,6 +177,7 @@ final class AdeleBackendHost {
     final String pluginId = _requireString(message, 'pluginId');
     final _PluginIsolate? plugin = _plugins.remove(pluginId);
     if (plugin == null) throw StateError('Plugin $pluginId is not running.');
+    _revokeHostRequests(plugin);
     await plugin.stop();
     _send(<String, Object?>{
       'protocolVersion': backendHostProtocolVersion,
@@ -193,14 +208,82 @@ final class AdeleBackendHost {
     plugin.streamControl(message, kind);
   }
 
+  void _forwardHostRequest(
+    _PluginIsolate plugin,
+    Map<Object?, Object?> request,
+  ) {
+    if (_shutDown || !identical(_plugins[plugin.pluginId], plugin)) {
+      plugin.hostResponse(request['requestId'] as int, {
+        'ok': false,
+        'error': {
+          'code': 'host_invocation_unavailable',
+          'message': 'Plugin generation is not active.',
+        },
+      });
+      return;
+    }
+    final id = _nextHostRequestId++;
+    _hostRequests[id] = (plugin, request['requestId'] as int);
+    final message = <String, Object?>{
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': 'hostRequest',
+      'requestId': id,
+      'pluginId': plugin.pluginId,
+      'generation': plugin.generation,
+      'hostInvocationContext': request['hostInvocationContext'],
+      'serviceId': request['serviceId'],
+      'method': request['method'],
+      'payload': request['payload'],
+    };
+    if (!_send(message)) {
+      _hostRequests.remove(id);
+      plugin.hostResponse(request['requestId'] as int, {
+        'ok': false,
+        'error': {
+          'code': 'host_request_encoding_failed',
+          'message': 'Host request could not be transported.',
+        },
+      });
+    }
+  }
+
+  void _forwardHostResponse(Map<String, Object?> message) {
+    final pending = _hostRequests[message['requestId']];
+    if (pending == null) return;
+    final (plugin, requestId) = pending;
+    // The captured isolate, not the current plugin with the same ID, owns the reply.
+    if (message['pluginId'] != plugin.pluginId ||
+        message['generation'] != plugin.generation) {
+      return;
+    }
+    _hostRequests.remove(message['requestId']);
+    plugin.hostResponse(requestId, message);
+  }
+
+  void _revokeHostRequests(_PluginIsolate plugin) {
+    for (final entry in _hostRequests.entries.toList()) {
+      if (!identical(entry.value.$1, plugin)) continue;
+      _hostRequests.remove(entry.key);
+      plugin.hostResponse(entry.value.$2, {
+        'ok': false,
+        'error': {
+          'code': 'host_invocation_unavailable',
+          'message': 'Plugin generation is stopping.',
+        },
+      });
+    }
+  }
+
   void _pluginTerminated(
-    String pluginId,
+    _PluginIsolate plugin,
     List<int> requestIds,
     String code,
     String message,
   ) {
-    final _PluginIsolate? removed = _plugins.remove(pluginId);
-    if (removed == null) return;
+    _hostRequests.removeWhere((_, request) => identical(request.$1, plugin));
+    final String pluginId = plugin.pluginId;
+    if (!identical(_plugins[pluginId], plugin)) return;
+    _plugins.remove(pluginId);
     _send(<String, Object?>{
       'protocolVersion': backendHostProtocolVersion,
       'kind': 'pluginFailed',
@@ -229,7 +312,9 @@ final class AdeleBackendHost {
 final class _PluginIsolate {
   _PluginIsolate._({
     required this.pluginId,
+    required this.generation,
     required this.capabilityExposures,
+    required this.extensionExposures,
     required Isolate isolate,
     required SendPort commands,
     required ReceivePort responses,
@@ -239,6 +324,7 @@ final class _PluginIsolate {
     required BackendHostSend send,
     required BackendHostDiagnostic diagnostic,
     required _PluginTerminated onTerminated,
+    required void Function(_PluginIsolate, Map<Object?, Object?>) onHostRequest,
   }) : _isolate = isolate,
        _commands = commands,
        _responses = responses,
@@ -247,14 +333,17 @@ final class _PluginIsolate {
        _closeLifecyclePorts = closeLifecyclePorts,
        _send = send,
        _diagnostic = diagnostic,
-       _onTerminated = onTerminated {
+       _onTerminated = onTerminated,
+       _onHostRequest = onHostRequest {
     _responseSubscription = _responses.listen(_handleResponse);
     _errorSubscription = _errors.listen(_handleError);
     _exitSubscription = _exits.listen(_handleExit);
   }
 
   final String pluginId;
+  final String generation;
   final List<AdeleCapabilityExposure> capabilityExposures;
+  final List<AdeleExtensionExposure> extensionExposures;
   final Isolate _isolate;
   final SendPort _commands;
   final ReceivePort _responses;
@@ -264,6 +353,10 @@ final class _PluginIsolate {
   final BackendHostSend _send;
   final BackendHostDiagnostic _diagnostic;
   final _PluginTerminated _onTerminated;
+  final void Function(_PluginIsolate, Map<Object?, Object?>) _onHostRequest;
+  // Reverse IDs are nonnegative and strictly increasing per generation in
+  // SendPort order, so replay rejection needs only a constant-space watermark.
+  int _lastHostRequestId = -1;
   final Map<int, int> _outerRequestIds = <int, int>{};
   final Map<int, _HostPluginStream> _streams = <int, _HostPluginStream>{};
   final Map<int, int> _pluginStreamIdsByOuter = <int, int>{};
@@ -284,6 +377,7 @@ final class _PluginIsolate {
 
   static Future<_PluginIsolate> start({
     required String pluginId,
+    required String generation,
     required Uri artifactUri,
     required List<String> arguments,
     required String defaultConfigurationContext,
@@ -291,6 +385,7 @@ final class _PluginIsolate {
     required BackendHostSend send,
     required BackendHostDiagnostic diagnostic,
     required _PluginTerminated onTerminated,
+    required void Function(_PluginIsolate, Map<Object?, Object?>) onHostRequest,
   }) async {
     final ReceivePort bootstrap = ReceivePort();
     final ReceivePort responses = ReceivePort();
@@ -327,11 +422,13 @@ final class _PluginIsolate {
           ready['commandPort'] is! SendPort ||
           ready['pluginBackendProtocolVersion'] !=
               adelePluginBackendProtocolVersion) {
-        throw StateError('Invalid plugin handshake: $ready');
+        throw StateError('Invalid plugin handshake.');
       }
       final _PluginIsolate plugin = _PluginIsolate._(
         pluginId: pluginId,
+        generation: generation,
         capabilityExposures: AdeleCapabilityExposure.fromReady(ready),
+        extensionExposures: AdeleExtensionExposure.fromReady(ready),
         isolate: isolate,
         commands: ready['commandPort'] as SendPort,
         responses: responses,
@@ -344,6 +441,7 @@ final class _PluginIsolate {
         send: send,
         diagnostic: diagnostic,
         onTerminated: onTerminated,
+        onHostRequest: onHostRequest,
       );
       return plugin;
     } catch (_) {
@@ -543,11 +641,13 @@ final class _PluginIsolate {
   }
 
   void _handleResponse(Object? raw) {
+    if (raw is Map && raw['kind'] == 'hostRequest') {
+      _handleHostRequest(raw);
+      return;
+    }
     if (raw is! Map || raw['requestId'] is! int) {
-      _diagnostic('Malformed response from $pluginId: $raw');
-      if (raw is Map && _isPluginStreamResponseKind(raw['kind'])) {
-        _isolate.kill(priority: Isolate.immediate);
-      }
+      _diagnostic('Malformed response from $pluginId.');
+      _isolate.kill(priority: Isolate.immediate);
       return;
     }
     final int pluginRequestId = raw['requestId'] as int;
@@ -603,6 +703,49 @@ final class _PluginIsolate {
         _diagnostic('Failed to send response failure for $pluginId.');
       }
     }
+  }
+
+  void _handleHostRequest(Map<Object?, Object?> raw) {
+    try {
+      if (raw.length != 6 ||
+          raw['requestId'] is! int ||
+          raw['hostInvocationContext'] is! String ||
+          raw['method'] is! String ||
+          (raw['method'] as String).isEmpty ||
+          raw['serviceId'] is! String ||
+          !_isStringKeyedMap(raw['payload'])) {
+        throw const FormatException('Malformed host request.');
+      }
+      adeleValidateServiceId(raw['serviceId'] as String);
+      adeleValidateConfigurationContext(raw['hostInvocationContext'] as String);
+      adeleSnapshotJsonMap(
+        (raw['payload'] as Map).cast<String, Object?>(),
+        maxNodes: adelePluginBackendJsonMaxNodes,
+      );
+      final int requestId = raw['requestId'] as int;
+      if (requestId < 0 || requestId <= _lastHostRequestId) {
+        throw const FormatException('Host request IDs must strictly increase.');
+      }
+      _lastHostRequestId = requestId;
+    } on Object {
+      _diagnostic('Plugin $pluginId sent a malformed host request.');
+      _isolate.kill(priority: Isolate.immediate);
+      return;
+    }
+    _onHostRequest(this, raw);
+  }
+
+  void hostResponse(int requestId, Map<String, Object?> response) {
+    if (_terminated || _cleanedUp) return;
+    _commands.send(<String, Object?>{
+      'kind': 'hostResponse',
+      'requestId': requestId,
+      'ok': response['ok'],
+      if (response['ok'] == true)
+        'payload': response['payload']
+      else
+        'error': response['error'],
+    });
   }
 
   bool _isPluginStreamResponseKind(Object? kind) => switch (kind) {
@@ -881,7 +1024,7 @@ final class _PluginIsolate {
     _pendingConsumerCancellationOuterIds.clear();
     final String? uncaughtError = _uncaughtError;
     _onTerminated(
-      pluginId,
+      this,
       pending,
       uncaughtError == null ? 'plugin_exited' : 'plugin_failed',
       uncaughtError == null
@@ -920,7 +1063,7 @@ enum _StreamCancelOrigin { consumer, pluginStop, hostAbort }
 
 typedef _PluginTerminated =
     void Function(
-      String pluginId,
+      _PluginIsolate plugin,
       List<int> requestIds,
       String code,
       String message,

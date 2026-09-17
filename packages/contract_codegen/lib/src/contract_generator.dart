@@ -290,15 +290,6 @@ final class _Extractor {
     if (services.isEmpty) {
       _fail(result.unit, 'No @AdeleService service was found.');
     }
-    if (services.length != 1) {
-      _fail(
-        result.unit,
-        'Phase II contract libraries must declare exactly one @AdeleService service.',
-      );
-    }
-    if (failures.isEmpty) {
-      _fail(result.unit, 'At least one @AdeleFailure type is required.');
-    }
     _rejectValueCycles(values);
     _validateImports(usesResourceRef: _usesExternalTypes(services, values));
     _rejectGeneratedSymbolCollisions(services, values, enums, failures);
@@ -1403,6 +1394,14 @@ final class DartContractEmitter {
       _client(out, service, model.failures);
       _dispatcher(out, service, model.failures);
     }
+    _dispatcherHelpers(
+      out,
+      hasStreams: model.services.any(
+        (ServiceModel service) => service.methods.any(
+          (MethodModel method) => method.kind == MethodKind.serverStream,
+        ),
+      ),
+    );
     for (final FailureModel failure in model.failures) {
       out.writeln(
         'const String ${_lower(failure.name)}TypeId = ${_literal(failure.id)};',
@@ -1611,18 +1610,24 @@ final class DartContractEmitter {
         );
       }
       out.writeln(
-        "_ => throw const _ContractUnknownMethod(), }; _adeleSend1({'kind': 'streamItem', 'requestId': _adeleState0.requestId, 'payload': _adeleEncoded4}); } on Object { _adeleFailAndCancel(_adeleState0, _adeleSend1, _contractStreamFailure(_adeleState0.requestId, null, 'backend_contract_violation', 'The backend violated its generated contract.', const {})); return; } } } finally { _adeleState0.pumping = false; if (!_adeleState0.done && _adeleState0.credit > 0 && _adeleState0.iterator != null) _adelePump(_adeleState0, _adeleSend1); } } void _adeleFinish(_ContractStreamState _adeleState0, void Function(Map<String, Object?>) _adeleSend1, Map<String, Object?> _adeleTerminal2) { if (_adeleState0.done || _adeleStreams.remove(_adeleState0.requestId) != _adeleState0) return; _adeleState0.done = true; _adeleSend1(_adeleTerminal2); } void _adeleFailAndCancel(_ContractStreamState _adeleState0, void Function(Map<String, Object?>) _adeleSend1, Map<String, Object?> _adeleTerminal2) { if (_adeleState0.done || _adeleStreams.remove(_adeleState0.requestId) != _adeleState0) return; _adeleState0.done = true; _adeleTrackCancellation(_adeleState0, onSettled: () => _adeleSend1(_adeleTerminal2)); } Future<void> _adeleCancelAndAcknowledge(int _adeleRequestId0, void Function(Map<String, Object?>) _adeleSend1) async { if (await _adeleCancel(_adeleRequestId0)) _adeleSend1({'kind': 'streamCancelled', 'requestId': _adeleRequestId0}); } Future<void> _adeleTrackCancellation(_ContractStreamState _adeleState0, {void Function()? onSettled}) { late final Future<void> _adeleCancellation1; _adeleCancellation1 = (() async { await _adeleState0.openingSettled.future; try { await _adeleState0.iterator?.cancel(); } on Object { return; } })().then<void>((_) => onSettled?.call()).whenComplete(() => _adeleCancellations.remove(_adeleCancellation1)); _adeleCancellations.add(_adeleCancellation1); return _adeleCancellation1; } Future<bool> _adeleCancel(int _adeleRequestId0) { final _adeleState1 = _adeleStreams.remove(_adeleRequestId0); if (_adeleState1 == null || _adeleState1.done) return Future<bool>.value(false); _adeleState1.done = true; return _adeleTrackCancellation(_adeleState1).then((_) => true); } @override Future<void> close() => _adeleCloseFuture ??= _adeleClose(); Future<void> _adeleClose() async { _adeleClosed = true; final _adeleIds0 = _adeleStreams.keys.toList(growable: false); await Future.wait<bool>(_adeleIds0.map(_adeleCancel)); await Future.wait<void>(_adeleOperations.toList(growable: false)); await Future.wait<void>(_adeleCancellations.toList(growable: false)); } } String _decodeContractEnvelope(Map<Object?, Object?> _adeleRequest0, String _adeleKind1) { _contractFields(_adeleRequest0, const {'kind', 'requestId', 'method', 'payload'}, 'request envelope'); if (_adeleRequest0['requestId'] is! int || _adeleRequest0['kind'] != _adeleKind1 || _adeleRequest0['method'] is! String) throw const AdeleProtocolException('Malformed request envelope.'); return _adeleRequest0['method'] as String; } final class _ContractUnknownMethod implements Exception { const _ContractUnknownMethod(); } final class _ContractStreamState { _ContractStreamState.opening(this.requestId); final int requestId; final AdeleCompleter<void> openingSettled = AdeleCompleter<void>(); String? method; AdeleStreamIterator<Object?>? iterator; int credit = 0; bool pumping = false; bool done = false; } ",
+        "_ => throw const _ContractUnknownMethod(), }; _adeleSend1({'kind': 'streamItem', 'requestId': _adeleState0.requestId, 'payload': _adeleEncoded4}); } on Object { _adeleFailAndCancel(_adeleState0, _adeleSend1, _contractStreamFailure(_adeleState0.requestId, null, 'backend_contract_violation', 'The backend violated its generated contract.', const {})); return; } } } finally { _adeleState0.pumping = false; if (!_adeleState0.done && _adeleState0.credit > 0 && _adeleState0.iterator != null) _adelePump(_adeleState0, _adeleSend1); } } void _adeleFinish(_ContractStreamState _adeleState0, void Function(Map<String, Object?>) _adeleSend1, Map<String, Object?> _adeleTerminal2) { if (_adeleState0.done || _adeleStreams.remove(_adeleState0.requestId) != _adeleState0) return; _adeleState0.done = true; _adeleSend1(_adeleTerminal2); } void _adeleFailAndCancel(_ContractStreamState _adeleState0, void Function(Map<String, Object?>) _adeleSend1, Map<String, Object?> _adeleTerminal2) { if (_adeleState0.done || _adeleStreams.remove(_adeleState0.requestId) != _adeleState0) return; _adeleState0.done = true; _adeleTrackCancellation(_adeleState0, onSettled: () => _adeleSend1(_adeleTerminal2)); } Future<void> _adeleCancelAndAcknowledge(int _adeleRequestId0, void Function(Map<String, Object?>) _adeleSend1) async { if (await _adeleCancel(_adeleRequestId0)) _adeleSend1({'kind': 'streamCancelled', 'requestId': _adeleRequestId0}); } Future<void> _adeleTrackCancellation(_ContractStreamState _adeleState0, {void Function()? onSettled}) { late final Future<void> _adeleCancellation1; _adeleCancellation1 = (() async { await _adeleState0.openingSettled.future; try { await _adeleState0.iterator?.cancel(); } on Object { return; } })().then<void>((_) => onSettled?.call()).whenComplete(() => _adeleCancellations.remove(_adeleCancellation1)); _adeleCancellations.add(_adeleCancellation1); return _adeleCancellation1; } Future<bool> _adeleCancel(int _adeleRequestId0) { final _adeleState1 = _adeleStreams.remove(_adeleRequestId0); if (_adeleState1 == null || _adeleState1.done) return Future<bool>.value(false); _adeleState1.done = true; return _adeleTrackCancellation(_adeleState1).then((_) => true); } @override Future<void> close() => _adeleCloseFuture ??= _adeleClose(); Future<void> _adeleClose() async { _adeleClosed = true; final _adeleIds0 = _adeleStreams.keys.toList(growable: false); await Future.wait<bool>(_adeleIds0.map(_adeleCancel)); await Future.wait<void>(_adeleOperations.toList(growable: false)); await Future.wait<void>(_adeleCancellations.toList(growable: false)); } }",
       );
     }
-    if (streams.isEmpty) {
+  }
+
+  void _dispatcherHelpers(StringBuffer out, {required bool hasStreams}) {
+    out.writeln(
+      "String _decodeContractEnvelope(Map<Object?, Object?> _adeleRequest0, String _adeleKind1) { _contractFields(_adeleRequest0, const {'kind', 'requestId', 'method', 'payload'}, 'request envelope'); if (_adeleRequest0['requestId'] is! int || _adeleRequest0['kind'] != _adeleKind1 || _adeleRequest0['method'] is! String) throw const AdeleProtocolException('Malformed request envelope.'); return _adeleRequest0['method'] as String; } final class _ContractUnknownMethod implements Exception { const _ContractUnknownMethod(); }",
+    );
+    if (hasStreams) {
       out.writeln(
-        "String _decodeContractEnvelope(Map<Object?, Object?> _adeleRequest0, String _adeleKind1) { _contractFields(_adeleRequest0, const {'kind', 'requestId', 'method', 'payload'}, 'request envelope'); if (_adeleRequest0['requestId'] is! int || _adeleRequest0['kind'] != _adeleKind1 || _adeleRequest0['method'] is! String) throw const AdeleProtocolException('Malformed request envelope.'); return _adeleRequest0['method'] as String; } final class _ContractUnknownMethod implements Exception { const _ContractUnknownMethod(); }",
+        'final class _ContractStreamState { _ContractStreamState.opening(this.requestId); final int requestId; final AdeleCompleter<void> openingSettled = AdeleCompleter<void>(); String? method; AdeleStreamIterator<Object?>? iterator; int credit = 0; bool pumping = false; bool done = false; }',
       );
     }
     out.writeln(
       "Map<String, Object?> _contractFailure(Object? _adeleRequestId0, String? _adeleDeclaredFailureType1, String _adeleCode2, String _adeleMessage3, Map<String, Object?> _adeleDetails4) => {'kind': 'response', if(_adeleRequestId0 is int) 'requestId': _adeleRequestId0, 'ok': false, 'error': {if(_adeleDeclaredFailureType1 != null) 'declaredFailureType': _adeleDeclaredFailureType1, 'code': _adeleCode2, 'message': _adeleMessage3, 'details': _adeleDetails4}};",
     );
-    if (streams.isNotEmpty) {
+    if (hasStreams) {
       out.writeln(
         "Map<String, Object?> _contractStreamFailure(Object? _adeleRequestId0, String? _adeleDeclaredFailureType1, String _adeleCode2, String _adeleMessage3, Map<String, Object?> _adeleDetails4) => {'kind': 'streamFailure', if(_adeleRequestId0 is int) 'requestId': _adeleRequestId0, 'error': {if(_adeleDeclaredFailureType1 != null) 'declaredFailureType': _adeleDeclaredFailureType1, 'code': _adeleCode2, 'message': _adeleMessage3, 'details': _adeleDetails4}};",
       );

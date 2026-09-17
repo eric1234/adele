@@ -17,7 +17,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 void main() {
-  test('startup only composes six stock contributions and a shared graph', () {
+  test('startup only composes five stock contributions and a shared graph', () {
     final _RecordingIds ids = _RecordingIds();
     final AdeleRuntime runtime = AdeleRuntime(ids: ids);
     addTearDown(runtime.close);
@@ -46,13 +46,14 @@ void main() {
       _contributions(runtime).map((binding) => binding.id.value),
       unorderedEquals(<String>[
         'dev.adele.plugin.chat-strategy.orchestration',
-        'dev.adele.plugin.agents-md.instructions',
         'dev.adele.plugin.filesystem-tools.model-tools',
         'dev.adele.plugin.search-tools.model-tools',
         'dev.adele.plugin.command-tools.model-tools',
         'dev.adele.plugin.local-directory-project-selector.project-selector',
       ]),
     );
+    expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
+    expect(runtime.plugins.extensions, same(runtime.extensions));
     expect(
       runtime.extensions
           .discover(projectSelectorContributions)
@@ -82,7 +83,6 @@ void main() {
         _contributions(runtime).map((binding) => binding.id.value),
         unorderedEquals(<String>[
           'dev.adele.plugin.chat-strategy.orchestration',
-          'dev.adele.plugin.agents-md.instructions',
           'dev.adele.plugin.filesystem-tools.model-tools',
           'dev.adele.plugin.search-tools.model-tools',
           'dev.adele.plugin.local-directory-project-selector.project-selector',
@@ -96,7 +96,7 @@ void main() {
   );
 
   test(
-    'later generated provider powers retained Chat, AGENTS and retired tools',
+    'bare runtime powers retained Chat and tools without implicit AGENTS reads',
     () async {
       final _RecordingIds ids = _RecordingIds();
       final AdeleRuntime runtime = AdeleRuntime(ids: ids);
@@ -214,22 +214,8 @@ void main() {
             .instructions,
         '$chatToolNarrationGuidance\n\nRuntime-owned Chat instructions.',
       );
-      final InferenceContextSourceResult source =
-          request.context.sourceResults.single;
-      expect(source.sourceId.value, 'dev.adele.plugin.agents-md.instructions');
-      expect(source.failureMode, InferenceContextFailureMode.required);
-      expect(source.status, InferenceContextSourceStatus.contributed);
-      final InferenceInstructionMaterial agents = source.materials.singleWhere(
-        (material) => material.key == 'AGENTS.md',
-      );
-      expect(agents.text, _EnvironmentChannel.agentsText);
-      expect(agents.revision, 'agents-revision');
-      expect(channel.calls, hasLength(2));
-      expect(channel.calls.last.method, environmentProviderServiceReadFileId);
-      expect(channel.calls.last.payload, <String, Object?>{
-        'environmentId': created.environment.id.value,
-        'relativePath': 'AGENTS.md',
-      });
+      expect(request.context.sourceResults, isEmpty);
+      expect(channel.calls, hasLength(1));
       expect(
         request.tools.tools.map((tool) => tool.modelDefinition.alias),
         unorderedEquals(<String>[
@@ -271,7 +257,7 @@ void main() {
       // The caller owns provider registration; runtime closes only its extensions.
       expect(provider.isClosed, isFalse);
       materialization.validateBinding();
-      expect(channel.calls, hasLength(2));
+      expect(channel.calls, hasLength(1));
     },
   );
 }
@@ -312,7 +298,6 @@ final class _RecordingIds implements ProductIdSource {
 }
 
 final class _EnvironmentChannel implements AdeleRequestChannel {
-  static const String agentsText = 'Use the Session Environment.\n';
   final List<({String method, Map<String, Object?> payload})> calls = [];
 
   @override
@@ -321,12 +306,6 @@ final class _EnvironmentChannel implements AdeleRequestChannel {
     return switch (method) {
       environmentProviderServiceEstablishId => <String, Object?>{
         'providerState': <String, Object?>{'transport': 'established'},
-      },
-      environmentProviderServiceReadFileId => <String, Object?>{
-        'relativePath': payload['relativePath'],
-        'text': agentsText,
-        'sizeBytes': agentsText.length,
-        'revision': 'agents-revision',
       },
       _ => throw StateError('Unexpected Environment operation: $method'),
     };

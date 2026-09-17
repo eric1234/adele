@@ -1,0 +1,15 @@
+name: adele_plugin_backend_support
+description: Narrow unary host-call support for ADELE plugin backends.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+
+resolution: workspace
+
+dependencies:
+  adele_contract: ^0.1.0
+
+dev_dependencies:
+  test: ^1.26.3

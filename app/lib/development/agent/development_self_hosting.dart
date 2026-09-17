@@ -5,6 +5,7 @@ import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_desktop/core/remote_inference_context_host.dart';
 import 'package:adele_desktop/core/resource_cleanup.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
 import 'package:adele_environment/adele_environment.dart';
@@ -111,6 +112,7 @@ final class DevelopmentSelfHostingArtifacts {
     required this.hostArtifact,
     required this.openAiArtifact,
     required this.gitEnvironmentArtifact,
+    required this.agentsMdArtifact,
   });
 
   final Directory repository;
@@ -119,6 +121,7 @@ final class DevelopmentSelfHostingArtifacts {
   final File hostArtifact;
   final File openAiArtifact;
   final File gitEnvironmentArtifact;
+  final File agentsMdArtifact;
 
   static Future<DevelopmentSelfHostingArtifacts> compile({
     required Directory repository,
@@ -139,6 +142,7 @@ final class DevelopmentSelfHostingArtifacts {
           gitEnvironmentArtifact: File(
             '${outputDirectory.path}/git-environment.aot',
           ),
+          agentsMdArtifact: File('${outputDirectory.path}/agents-md.aot'),
         );
     await Future.wait(<Future<void>>[
       _compileAot(
@@ -164,6 +168,14 @@ final class DevelopmentSelfHostingArtifacts {
             'plugins/git_environment/packages/backend/bin/'
             'git_environment_backend.dart',
         output: artifacts.gitEnvironmentArtifact,
+        log: log,
+      ),
+      _compileAot(
+        dart: dart,
+        repository: repository,
+        entrypoint:
+            'plugins/agents_md/packages/backend/bin/agents_md_backend.dart',
+        output: artifacts.agentsMdArtifact,
         log: log,
       ),
     ]);
@@ -234,7 +246,9 @@ final class DevelopmentSelfHostingTopology {
     required this.catalog,
     required this.projectSource,
     required PluginCapabilityActivation environmentActivation,
-  }) : _environmentActivation = environmentActivation;
+    required PluginBackendActivation agentsMdActivation,
+  }) : _environmentActivation = environmentActivation,
+       _agentsMdActivation = agentsMdActivation;
 
   final PluginBackendHost host;
   final AdeleRuntime runtime;
@@ -252,6 +266,7 @@ final class DevelopmentSelfHostingTopology {
   final ToolCatalog catalog;
   final Directory projectSource;
   final PluginCapabilityActivation _environmentActivation;
+  final PluginBackendActivation _agentsMdActivation;
   Future<void>? _closing;
 
   SessionId get sessionId => session.id;
@@ -273,6 +288,7 @@ final class DevelopmentSelfHostingTopology {
     );
     AdeleRuntime? runtime;
     PluginCapabilityActivation? environmentActivation;
+    PluginBackendActivation? agentsMdActivation;
     try {
       runtime = AdeleRuntime(
         ids: _DevelopmentSelfHostingIds(identity),
@@ -294,6 +310,16 @@ final class DevelopmentSelfHostingTopology {
             connection: environmentConnection,
             registry: registry,
           );
+      final PluginBackendConnection agentsMdConnection = await host.startPlugin(
+        pluginId: 'dev.adele.plugin.agents-md',
+        artifactUri: artifacts.agentsMdArtifact.uri,
+      );
+      agentsMdActivation = await PluginBackendActivation.registerAdvertised(
+        connection: agentsMdConnection,
+        capabilities: registry,
+        extensions: runtime.extensions,
+        adapters: createRemoteExtensionAdapters(),
+      );
       final ProviderBinding environmentBinding = registry.resolve(
         environmentProviderCapability,
         providerId: environmentProviderId,
@@ -362,6 +388,7 @@ final class DevelopmentSelfHostingTopology {
             catalog: catalog,
             projectSource: projectSource,
             environmentActivation: environmentActivation,
+            agentsMdActivation: agentsMdActivation,
           );
       log?.call('Project source: ${topology.projectSource.path}');
       log?.call('Task worktree: ${topology.taskWorktreePath}');
@@ -369,9 +396,10 @@ final class DevelopmentSelfHostingTopology {
     } catch (error, stackTrace) {
       try {
         await closeResources(<Future<void> Function()>[
-          if (runtime != null) runtime.close,
+          if (agentsMdActivation != null) agentsMdActivation.close,
           if (environmentActivation != null) environmentActivation.close,
           if (!host.isClosed) () => host.close(graceful: false),
+          if (runtime != null) runtime.close,
         ]);
       } on Object {
         // Preserve the setup failure after attempting every cleanup action.
@@ -397,9 +425,12 @@ final class DevelopmentSelfHostingTopology {
   String get baselineCommit => _requiredProviderStateString('baselineCommit');
 
   Future<void> close() => _closing ??= closeResources(<Future<void> Function()>[
-    runtime.close,
+    _agentsMdActivation.retire,
+    _environmentActivation.retire,
+    _agentsMdActivation.close,
     _environmentActivation.close,
     if (!host.isClosed) host.close,
+    runtime.close,
   ]);
 
   String _requiredProviderStateString(String name) {

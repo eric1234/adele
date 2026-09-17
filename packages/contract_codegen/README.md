@@ -33,10 +33,15 @@ experimental `ResourceRef` scalar. Unsupported declarations fail with source
 path and one-based line and column `ContractDiagnostic` locations attached to
 the most precise relevant import, declaration, member, parameter, or type node.
 
-Phase II is a deliberately constrained IDL embedded in Dart. It supports unary
-`Future<T>` and server-streaming `Stream<T>` methods and remains local to one declaration library, with exactly one
-non-empty service. Services may contain only abstract instance methods. Annotated
-schema cannot be imported or recursively cycle through nullable values or lists.
+The generator accepts a deliberately constrained IDL embedded in Dart. It supports unary
+`Future<T>` and server-streaming `Stream<T>` methods and remains local to one
+declaration library. One or more local `@AdeleService` declarations are required,
+each with at least one method. Multiple services share local DTO/failure codecs;
+Environment's provider and authorized-read services reuse the same value/failure
+schema. Each service has its own generated client/dispatcher, with shared codecs
+emitted once in the generated part. This is not cross-library schema composition
+or general symmetric RPC. Services may contain only abstract instance methods.
+Annotated schema cannot be imported or recursively cycle through nullable values or lists.
 Values require final fields and matching exact-type required named constructor
 parameters. Nullable fields are semantically optional values, not optional
 constructor arguments or wire keys: generated maps include the key with `null`,
@@ -47,9 +52,13 @@ ordinary parameters only through
 `List<T>.unmodifiable(parameter)` initializers; canonical `Map<String, Object?>`
 fields may do so only through the exported
 `adeleSnapshotJsonMap(parameter)` initializer. All other fields remain
-field-formal. Failure constructors have the corresponding fixed
-reconstructible shape. URI values must be absolute and parseable, and wire IDs
-use ASCII alphanumeric segments separated by single dots, hyphens, or
+field-formal. Declared `@AdeleFailure` types are optional: zero declared failures
+is valid. The remote inference-source contract declares instruction DTOs and a
+service without inventing a domain-specific failure. Clients preserve unrecognized
+`AdeleRemoteFailure` values; undeclared service exceptions retain opaque
+`internal_error` transport semantics. When declared, failure constructors require
+the corresponding fixed reconstructible shape. URI values must be absolute and
+parseable, and wire IDs use ASCII alphanumeric segments separated by single dots, hyphens, or
 underscores. Generic annotated declarations are rejected. The generated part URI
 must be exactly `<source-basename>.g.dart`; output remains beside its source.
 Every top-level declaration and every unconditional or conditional emitted

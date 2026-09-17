@@ -103,10 +103,7 @@ void main() {
           runtime.extensions.discover(modelToolContributions),
           hasLength(3),
         );
-        expect(
-          runtime.extensions.discover(inferenceContextSources),
-          hasLength(1),
-        );
+        expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
 
         await tester.tap(find.text('Open Test Project'));
         await tester.pumpAndSettle();
@@ -298,7 +295,7 @@ void main() {
     );
     expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
     expect(runtime.extensions.discover(modelToolContributions), hasLength(3));
-    expect(runtime.extensions.discover(inferenceContextSources), hasLength(1));
+    expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
     final ExtensionBinding<ProjectSelectorContribution> selector = runtime
         .extensions
         .discover(projectSelectorContributions)

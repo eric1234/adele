@@ -38,6 +38,12 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
+    name: 'adele_plugin_backend_support',
+    path: 'packages/plugin_backend_support',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
     name: 'adele_product',
     path: 'packages/product',
     executable: 'dart',
@@ -147,6 +153,12 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
+    name: 'agents_md_backend',
+    path: 'plugins/agents_md/packages/backend',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
     name: 'chat_strategy_plugin',
     path: 'plugins/chat_strategy',
     executable: 'dart',
@@ -207,6 +219,11 @@ const List<({String name, String path, bool flutter})>
 analysisTargets = <({String name, String path, bool flutter})>[
   (name: 'adele_desktop', path: 'app', flutter: true),
   (name: 'adele_plugin_api', path: 'packages/plugin_api', flutter: false),
+  (
+    name: 'adele_plugin_backend_support',
+    path: 'packages/plugin_backend_support',
+    flutter: false,
+  ),
   (name: 'adele_product', path: 'packages/product', flutter: false),
   (
     name: 'adele_core_extensions',
@@ -264,6 +281,11 @@ analysisTargets = <({String name, String path, bool flutter})>[
     flutter: true,
   ),
   (name: 'agents_md_plugin', path: 'plugins/agents_md', flutter: false),
+  (
+    name: 'agents_md_backend',
+    path: 'plugins/agents_md/packages/backend',
+    flutter: false,
+  ),
   (name: 'chat_strategy_plugin', path: 'plugins/chat_strategy', flutter: false),
   (
     name: 'chat_strategy_frontend',

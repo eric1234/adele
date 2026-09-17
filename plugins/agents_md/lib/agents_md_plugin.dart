@@ -38,20 +38,27 @@ final class AgentsMdPlugin {
       return const <InferenceContextMaterial>[];
     }
     files.validateBinding();
-    if (file.text.trim().isEmpty) return const <InferenceContextMaterial>[];
-    return <InferenceContextMaterial>[
-      InferenceInstructionMaterial(
-        key: 'semantics',
-        text:
-            'The following AGENTS.md material is project guidance from the '
-            'Session Environment root. Explicit user instructions and direct '
-            'user requests take precedence over AGENTS.md guidance.',
-      ),
-      InferenceInstructionMaterial(
-        key: 'AGENTS.md',
-        text: file.text,
-        revision: file.revision,
-      ),
-    ];
+    return agentsMdInstructions(file);
   }
+}
+
+/// Renders one authorized root AGENTS.md read, preserving exact text/revision.
+List<InferenceInstructionMaterial> agentsMdInstructions(
+  EnvironmentTextFile file,
+) {
+  if (file.text.trim().isEmpty) return const <InferenceInstructionMaterial>[];
+  return <InferenceInstructionMaterial>[
+    InferenceInstructionMaterial(
+      key: 'semantics',
+      text:
+          'The following AGENTS.md material is project guidance from the '
+          'Session Environment root. Explicit user instructions and direct '
+          'user requests take precedence over AGENTS.md guidance.',
+    ),
+    InferenceInstructionMaterial(
+      key: 'AGENTS.md',
+      text: file.text,
+      revision: file.revision,
+    ),
+  ];
 }

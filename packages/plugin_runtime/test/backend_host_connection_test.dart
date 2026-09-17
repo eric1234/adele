@@ -2,10 +2,112 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:adele_contract/adele_contract.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test(
+    'runtime rejects wrong stamped generation and settles revoked host requests once',
+    () async {
+      expect(backendHostProtocolVersion, 2);
+      final fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  void send(Map<String, Object?> message) => stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, ...message}));
+  send({'kind': 'hostHello'});
+  final decoder = BackendHostFrameDecoder();
+  final generations = <String, String>{};
+  final pending = <int, Map<String, Object?>>{};
+  var responses = 0;
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      final kind = message['kind'];
+      if (kind == 'startPlugin') {
+        generations[message['pluginId'] as String] = message['generation'] as String;
+        send({'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']});
+      } else if (kind == 'stopPlugin') {
+        send({'kind': 'pluginStopped', 'requestId': message['requestId'], 'pluginId': message['pluginId']});
+      } else if (kind == 'request') {
+        if (message['method'] == 'count' || message['method'] == 'generation') {
+          send({'kind': 'response', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'ok': true,
+            'payload': message['method'] == 'count' ? responses : generations[message['pluginId']]});
+          continue;
+        }
+        final payload = message['payload'] as Map;
+        pending[message['requestId'] as int] = message;
+        send({'kind': 'hostRequest', 'requestId': message['requestId'], 'pluginId': message['pluginId'],
+          'generation': payload['generation'] ?? generations[message['pluginId']],
+          'hostInvocationContext': payload['context'], 'serviceId': 'fixture', 'method': 'fixture.invoke', 'payload': {}});
+      } else if (kind == 'hostResponse') {
+        responses++;
+        final original = pending.remove(message['requestId']);
+        if (original != null) send({'kind': 'response', 'requestId': original['requestId'], 'pluginId': original['pluginId'], 'ok': true, 'payload': message});
+      } else if (kind == 'shutdownHost') {
+        send({'kind': 'hostStopped', 'requestId': message['requestId']});
+        exit(0);
+      }
+    }
+  });
+}
+''');
+      addTearDown(fake.dispose);
+      final host = await fake.start();
+      addTearDown(host.close);
+      final connection = await host.startPlugin(
+        pluginId: 'owner',
+        artifactUri: Uri.file('/unused'),
+      );
+      final oldGeneration = await connection.request('generation', const {});
+      final dispatcher = _PendingHostDispatcher();
+      final invocation = connection.openHostInvocation({'fixture': dispatcher});
+      final wrong =
+          await connection.request('reverse', {
+                'context': invocation.id,
+                'generation': 'wrong',
+              })
+              as Map;
+      expect((wrong['error'] as Map)['code'], 'host_invocation_unavailable');
+      expect(dispatcher.calls, 0);
+      final pending = connection.request('reverse', {'context': invocation.id});
+      await dispatcher.entered.future;
+      invocation.close();
+      final revoked = await pending.timeout(const Duration(seconds: 1)) as Map;
+      expect((revoked['error'] as Map)['code'], 'host_invocation_unavailable');
+      dispatcher.result.complete({
+        'kind': 'response',
+        'requestId': dispatcher.requestId,
+        'ok': true,
+        'payload': 'late',
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(await connection.request('count', const {}), 2);
+      await connection.close();
+      final replacement = await host.startPlugin(
+        pluginId: 'owner',
+        artifactUri: Uri.file('/unused'),
+      );
+      expect(
+        await replacement.request('generation', const {}),
+        isNot(oldGeneration),
+      );
+      final replacementInvocation = replacement.openHostInvocation({
+        'fixture': dispatcher,
+      });
+      final stale =
+          await replacement.request('reverse', {
+                'context': replacementInvocation.id,
+                'generation': oldGeneration,
+              })
+              as Map;
+      expect((stale['error'] as Map)['code'], 'host_invocation_unavailable');
+      expect(dispatcher.calls, 1);
+      await host.close();
+      expect(replacementInvocation.isClosed, isTrue);
+    },
+  );
+
   test(
     'host termination is observable without live plugin connections',
     () async {
@@ -1753,8 +1855,10 @@ Future<void> main() async {
     await host.close().timeout(const Duration(seconds: 2));
   });
 
-  test('cancellation timeout joins exact in-flight plugin stop', () async {
-    final _FakeHost fake = _FakeHost.create('''
+  test(
+    'in-flight plugin stop reserves identity and joins cancellation',
+    () async {
+      final _FakeHost fake = _FakeHost.create('''
 import 'dart:io';
 import 'package:plugin_runtime/plugin_runtime.dart';
 void main() {
@@ -1789,45 +1893,85 @@ void main() {
   });
 }
 ''');
-    addTearDown(fake.dispose);
-    final stopStarted = Completer<void>();
-    final host = await fake.start(
-      shutdownTimeout: const Duration(milliseconds: 50),
-      onDiagnostic: (message) {
-        if (message.contains('stop-started') && !stopStarted.isCompleted) {
-          stopStarted.complete();
-        }
-      },
-    );
-    final generationA = await host.startPlugin(
-      pluginId: 'joining-stop',
-      artifactUri: Uri.file('/unused.aot'),
-    );
-    final release = await host.startPlugin(
-      pluginId: 'release',
-      artifactUri: Uri.file('/unused.aot'),
-    );
-    final subscription = generationA.stream('events', const {}).listen((_) {});
-    bool cancellationDone = false;
-    final cancelling = subscription.cancel().then(
-      (_) => cancellationDone = true,
-    );
-    final stopping = host.stopPlugin('joining-stop', expected: generationA);
-    await stopStarted.future;
-    await Future<void>.delayed(const Duration(milliseconds: 75));
-    expect(cancellationDone, isFalse);
-    await release.request('release-stop', const {});
-    await Future.wait<void>(<Future<void>>[cancelling, stopping]);
-    final generationB = await host.startPlugin(
-      pluginId: 'joining-stop',
-      artifactUri: Uri.file('/unused.aot'),
-    );
-    await generationA.close();
-    expect(await generationB.request('ping', const {}), 'alive');
-    await generationB.close();
-    await release.close();
-    await host.close();
-  });
+      addTearDown(fake.dispose);
+      final stopStarted = Completer<void>();
+      final host = await fake.start(
+        shutdownTimeout: const Duration(milliseconds: 50),
+        onDiagnostic: (message) {
+          if (message.contains('stop-started') && !stopStarted.isCompleted) {
+            stopStarted.complete();
+          }
+        },
+      );
+      final generationA = await host.startPlugin(
+        pluginId: 'joining-stop',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      final release = await host.startPlugin(
+        pluginId: 'release',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      final subscription = generationA
+          .stream('events', const {})
+          .listen((_) {});
+      bool cancellationDone = false;
+      final cancelling = subscription.cancel().then(
+        (_) => cancellationDone = true,
+      );
+      final stopping = host.stopPlugin('joining-stop', expected: generationA);
+      await stopStarted.future;
+      await Future<void>.delayed(const Duration(milliseconds: 75));
+      expect(cancellationDone, isFalse);
+      await expectLater(
+        host
+            .startPlugin(
+              pluginId: 'joining-stop',
+              artifactUri: Uri.file('/unused.aot'),
+            )
+            .timeout(const Duration(seconds: 1)),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            contains('still stopping'),
+          ),
+        ),
+      );
+      await release.request('release-stop', const {});
+      await Future.wait<void>(<Future<void>>[cancelling, stopping]);
+      final generationB = await host.startPlugin(
+        pluginId: 'joining-stop',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      await generationA.close();
+      expect(await generationB.request('ping', const {}), 'alive');
+      await generationB.close();
+      await release.close();
+      await host.close();
+    },
+  );
+}
+
+final class _PendingHostDispatcher implements AdeleBackendDispatcher {
+  final entered = Completer<void>();
+  final result = Completer<Map<String, Object?>>();
+  Object? requestId;
+  int calls = 0;
+  @override
+  Future<Map<String, Object?>> dispatch(Map<Object?, Object?> request) {
+    calls++;
+    requestId = request['requestId'];
+    entered.complete();
+    return result.future;
+  }
+
+  @override
+  Future<void> handle(
+    Map<Object?, Object?> command,
+    void Function(Map<String, Object?>) send,
+  ) => throw UnimplementedError();
+  @override
+  Future<void> close() async {}
 }
 
 final class _FakeHost {

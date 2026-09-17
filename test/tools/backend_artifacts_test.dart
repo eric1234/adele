@@ -13,6 +13,8 @@ const String _gitEntrypoint =
     'plugins/git_environment/packages/backend/bin/git_environment_backend.dart';
 const String _openaiEntrypoint =
     'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart';
+const String _agentsMdEntrypoint =
+    'plugins/agents_md/packages/backend/bin/agents_md_backend.dart';
 const String _frontendHarness = 'tool/compile_chat_frontend.dart';
 const String _toolFrontendHarness =
     'tool/compile_tool_inspection_frontends.dart';
@@ -58,6 +60,7 @@ void main() {
       _hostEntrypoint,
       _gitEntrypoint,
       _openaiEntrypoint,
+      _agentsMdEntrypoint,
     ]) {
       final File source = File('${root.path}/$entrypoint');
       source.parent.createSync(recursive: true);
@@ -200,7 +203,13 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
         (plan['include']! as List<Object?>).cast<Map<String, Object?>>().map(
           (Map<String, Object?> item) => item['name'],
         ),
-        containsAll(['adele_ui', 'plugin_runtime', 'adele_tools']),
+        containsAll([
+          'adele_ui',
+          'plugin_runtime',
+          'adele_tools',
+          'adele_plugin_backend_support',
+          'agents_md_backend',
+        ]),
       );
       expect(commands.existsSync(), isFalse);
       expect(Directory('${root.path}/.dart_tool').existsSync(), isFalse);
@@ -208,7 +217,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
   );
 
   test(
-    'Linux run and builds prepare one fresh five-installation snapshot',
+    'Linux run and builds prepare one fresh six-installation snapshot',
     () async {
       final Set<String> outputDirectories = <String>{};
       final Map<String, String> retainedArtifacts = <String, String>{};
@@ -234,6 +243,8 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           'compiled|$_gitEntrypoint',
           'compile|$_openaiEntrypoint',
           'compiled|$_openaiEntrypoint',
+          'compile|$_agentsMdEntrypoint',
+          'compiled|$_agentsMdEntrypoint',
           'compile|$_frontendHarness',
           'compiled|$_frontendHarness',
           'compile|$_toolFrontendHarness|filesystem',
@@ -296,16 +307,21 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
         final File openai = File.fromUri(
           installations.uri.resolve('openai/backend.aot'),
         );
+        final File agentsMd = File.fromUri(
+          installations.uri.resolve('agents-md/backend.aot'),
+        );
         final File frontend = File.fromUri(
           installations.uri.resolve('chat-strategy/frontend.evc'),
         );
         expect(host.uri.isAbsolute, isTrue);
         expect(git.uri.isAbsolute, isTrue);
         expect(openai.uri.isAbsolute, isTrue);
+        expect(agentsMd.uri.isAbsolute, isTrue);
         expect(frontend.uri.isAbsolute, isTrue);
         expect(host.path, endsWith('/host.aot'));
         expect(git.path, endsWith('/git-environment/backend.aot'));
         expect(openai.path, endsWith('/openai/backend.aot'));
+        expect(agentsMd.path, endsWith('/agents-md/backend.aot'));
         expect(frontend.path, endsWith('/chat-strategy/frontend.evc'));
         expect(frontendEnvironment.readAsLinesSync(), <String>[
           root.path,
@@ -326,6 +342,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           unorderedEquals([
             'git-environment',
             'openai',
+            'agents-md',
             'chat-strategy',
             'filesystem-tools',
             'command-tools',
@@ -343,6 +360,12 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             directory: 'openai',
             id: 'dev.adele.openai',
             name: 'OpenAI',
+            backend: true,
+          ),
+          (
+            directory: 'agents-md',
+            id: 'dev.adele.plugin.agents-md',
+            name: 'AGENTS.md',
             backend: true,
           ),
           (
@@ -411,7 +434,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             retainedArtifacts[file.path] = file.readAsStringSync();
           }
         }
-        expect(installedIds, hasLength(5));
+        expect(installedIds, hasLength(6));
         final catalog = await PreparedPluginCatalog.discover(
           installations.path,
         );
@@ -426,7 +449,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.backendArtifactUri != null,
           ),
-          hasLength(2),
+          hasLength(3),
         );
         expect(
           catalog.installations.where(
@@ -463,6 +486,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
         expect(host.readAsStringSync(), 'snapshot $_hostEntrypoint\n');
         expect(git.readAsStringSync(), 'snapshot $_gitEntrypoint\n');
         expect(openai.readAsStringSync(), 'snapshot $_openaiEntrypoint\n');
+        expect(agentsMd.readAsStringSync(), 'snapshot $_agentsMdEntrypoint\n');
         expect(frontend.readAsStringSync(), 'frontend bytecode\n');
         retainedArtifacts[host.path] = host.readAsStringSync();
         for (final MapEntry<String, String> artifact
@@ -536,7 +560,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             .where(
               (file) => file.path.endsWith('adele_plugin.installation.json'),
             );
-        expect(manifests, hasLength(5));
+        expect(manifests, hasLength(6));
         for (final manifest in manifests) {
           for (final forbidden in [
             'secret-',
@@ -629,6 +653,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
     _hostEntrypoint,
     _gitEntrypoint,
     _openaiEntrypoint,
+    _agentsMdEntrypoint,
   ]) {
     for (final String command in <String>['run', 'build']) {
       test('$command never launches after $failedEntrypoint fails', () async {
@@ -648,9 +673,14 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             'compiled|$_hostEntrypoint',
             'compile|$_gitEntrypoint',
           ],
-          if (failedEntrypoint == _openaiEntrypoint) ...<String>[
+          if (failedEntrypoint == _openaiEntrypoint ||
+              failedEntrypoint == _agentsMdEntrypoint) ...<String>[
             'compiled|$_gitEntrypoint',
             'compile|$_openaiEntrypoint',
+          ],
+          if (failedEntrypoint == _agentsMdEntrypoint) ...<String>[
+            'compiled|$_openaiEntrypoint',
+            'compile|$_agentsMdEntrypoint',
           ],
         ]);
         expect(launchArguments.existsSync(), isFalse);
@@ -696,6 +726,8 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
               'compiled|$_gitEntrypoint',
               'compile|$_openaiEntrypoint',
               'compiled|$_openaiEntrypoint',
+              'compile|$_agentsMdEntrypoint',
+              'compiled|$_agentsMdEntrypoint',
               'compile|$_frontendHarness',
               if (kind != 'chat' || failure != 'exit')
                 'compiled|$_frontendHarness',

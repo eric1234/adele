@@ -2,13 +2,22 @@
 
 ## Status
 
-ADELE profiles and general configuration management are accepted architectural direction but are not yet implemented. The maintained development runtime uses one implicit default development profile. There is no profile manager, selector, persistence model, profile-aware router, generic configuration service, or production workbench-state store.
+ADELE profiles and general configuration management are accepted architectural direction but are not yet implemented. Normal startup and explicit development/self-hosting use separate fixed compositions; the self-hosting CLI's provider-selection profiles are not the composition layers described here. There is no profile manager, selector, persistence model, profile-aware router, generic configuration service, or production workbench-state store.
 
-F1 normal startup discovers a prepared installation snapshot and separately
-attempts every valid backend. That bounded policy is not profile activation or
+Normal startup discovers one prepared installation snapshot and separately
+attempts every valid backend and frontend component, including the AGENTS.md AOT
+instruction source. Five stock plugins are statically composed outside that
+discovery. This fixed participation policy is not profile activation or
 enable/disable management. Installed metadata contains neither configuration nor
 activation state; the temporary generic PluginId-to-argv startup file is outside
 the manifest and is intended to disappear with general configuration/profiles.
+
+Backend-ready exposure metadata describes live contributions, not activation
+participation or permission grants. Host-created operation contexts allow access
+only to explicitly supplied services for one operation and exact generation;
+they are not profiles or general permissions. AGENTS.md requires no configuration.
+See [`contracts-and-capabilities.md`](contracts-and-capabilities.md#operation-scoped-host-calls)
+for the host-call authority boundary.
 
 This document records intended product and architecture direction beyond the immediate implementation horizon. ADR 0031 now defines `Project` as an abstract core identity and `Environment` as the practical filesystem/source + process context for Task work; the earlier Project/Workspace identity question is no longer intentionally open.
 

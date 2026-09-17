@@ -48,6 +48,7 @@ import '../../tool/tool_inspection_frontend_compiler.dart';
 
 const String _sourcePath = 'lib/task_answer.dart';
 const String _gitPluginId = 'dev.adele.plugin.git-environment';
+const String _agentsMdPluginId = 'dev.adele.plugin.agents-md';
 const String _openAiPluginId = 'dev.adele.openai';
 const String _chatPluginId = 'dev.adele.plugin.chat-strategy';
 const String _filesystemPluginId = 'dev.adele.plugin.filesystem-tools';
@@ -56,6 +57,7 @@ const String _taskText = 'const taskAnswer = "task-worktree-only";\n';
 const String _patchedText = 'const taskAnswer = "approved-task-value";\n';
 const String _agentsText =
     'C2 Task guidance: inspect source before proposing an edit and validation.\n';
+const String _baselineAgentsText = 'Committed guidance must be reread.\n';
 const String _projectText = 'const projectAnswer = "project-source-only"; \t\n';
 const String _projectAgentsText = 'Project-only guidance must not be used.\n';
 const String _prompt =
@@ -101,6 +103,7 @@ void main() {
   late String dartaotruntime;
   late File hostArtifact;
   late File gitArtifact;
+  late File agentsMdArtifact;
   late File openAiArtifact;
   late File evc;
   late File filesystemEvc;
@@ -122,14 +125,20 @@ void main() {
     installationRoot = await Directory('${artifacts.path}/installed').create();
     for (final String pluginId in [
       _gitPluginId,
+      _agentsMdPluginId,
       _openAiPluginId,
       _chatPluginId,
       _filesystemPluginId,
       _commandPluginId,
     ]) {
-      await Directory('${installationRoot.path}/$pluginId').create();
+      final String directoryName = pluginId == _agentsMdPluginId
+          ? 'agents-md'
+          : pluginId;
+      final Directory installed = await Directory(
+        '${installationRoot.path}/$directoryName',
+      ).create();
       await File(
-        '${installationRoot.path}/$pluginId/adele_plugin.installation.json',
+        '${installed.path}/adele_plugin.installation.json',
       ).writeAsString(
         jsonEncode({
           'manifestVersion': 1,
@@ -139,7 +148,9 @@ void main() {
             'displayName': pluginId,
           },
           'components': {
-            if (pluginId == _gitPluginId || pluginId == _openAiPluginId)
+            if (pluginId == _gitPluginId ||
+                pluginId == _agentsMdPluginId ||
+                pluginId == _openAiPluginId)
               'backend': {'artifact': 'backend.aot'},
             if (stockFrontendDescriptors[pluginId] case final descriptors?)
               'frontend': {
@@ -152,6 +163,7 @@ void main() {
     }
     hostArtifact = File('${artifacts.path}/host.aot');
     gitArtifact = File('${installationRoot.path}/$_gitPluginId/backend.aot');
+    agentsMdArtifact = File('${installationRoot.path}/agents-md/backend.aot');
     openAiArtifact = File(
       '${installationRoot.path}/$_openAiPluginId/backend.aot',
     );
@@ -192,6 +204,12 @@ void main() {
       ),
       (
         entrypoint:
+            'plugins/agents_md/packages/backend/bin/agents_md_backend.dart',
+        artifact: agentsMdArtifact,
+        stage: 'normal-chatgpt-agents-md',
+      ),
+      (
+        entrypoint:
             'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart',
         artifact: openAiArtifact,
         stage: 'normal-chatgpt-openai',
@@ -208,7 +226,7 @@ void main() {
   });
 
   testWidgets(
-    'F2 discovered real artifacts retain individual and compact group Inspection cards',
+    'F3a discovered AGENTS and real artifacts retain individual and compact group Inspection cards',
     (tester) => tester.runAsync(() async {
       await tester.binding.setSurfaceSize(const Size(1400, 1100));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -220,7 +238,7 @@ void main() {
       await Directory('${source.path}/lib').create(recursive: true);
       final File sourceFile = File('${source.path}/$_sourcePath');
       await sourceFile.writeAsString(_taskText);
-      await File('${source.path}/AGENTS.md').writeAsString(_agentsText);
+      await File('${source.path}/AGENTS.md').writeAsString(_baselineAgentsText);
       await _git(source, ['init', '--initial-branch=main']);
       await _git(source, ['add', '.']);
       await _git(source, ['commit', '-m', 'Fixture baseline']);
@@ -292,6 +310,7 @@ void main() {
             expect(body, isNot(contains('max_output_tokens')));
             expect(body, isNot(contains('previous_response_id')));
             expect(body['instructions'], contains(_agentsText));
+            expect(body['instructions'], isNot(contains(_baselineAgentsText)));
             expect(body['instructions'], contains(chatToolNarrationGuidance));
             expect(body['instructions'], isNot(contains(_projectAgentsText)));
             // Raw supplied summaries replay normally; their separate safe
@@ -523,6 +542,7 @@ void main() {
         ids: MonotonicProductIdSource(seed: 'c2-fixture'),
       );
       addTearDown(runtime.close);
+      expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
       await runtime.plugins.start(
         installationRoot: installationRoot.path,
         dartaotruntimeExecutable: dartaotruntime,
@@ -544,6 +564,32 @@ void main() {
       expect(runtime.plugins.state, ApplicationPluginState.ready);
       expect(runtime.plugins.failure, isNull);
       expect(runtime.plugins.registry, same(runtime.registry));
+      expect(runtime.plugins.backends, hasLength(3));
+      for (final backend in runtime.plugins.backends) {
+        expect(
+          backend.failure,
+          isNull,
+          reason: 'Backend ${backend.installation.metadata.id} must start.',
+        );
+        expect(backend.state, InstalledBackendState.active);
+      }
+      final agentsMdBackend = runtime.plugins.backends.singleWhere(
+        (entry) => entry.installation.metadata.id.value == _agentsMdPluginId,
+      );
+      expect(
+        agentsMdBackend.installation.backendArtifactUri,
+        agentsMdArtifact.uri,
+      );
+      expect(agentsMdBackend.installation.frontend, isNull);
+      final agentsMdBinding = runtime.extensions
+          .discover(inferenceContextSources)
+          .single;
+      expect(agentsMdBinding.id.value, '$_agentsMdPluginId.instructions');
+      expect(agentsMdBinding.validate, returnsNormally);
+      expect(
+        agentsMdBinding.value.failureMode,
+        InferenceContextFailureMode.required,
+      );
       expect(
         runtime.registry.providersFor(modelProviderCapability).single.id,
         stockChatGptProviderId,
@@ -598,6 +644,7 @@ void main() {
       await _git(source, ['add', _sourcePath]);
       await sourceFile.writeAsString(_projectText);
       await File('${source.path}/AGENTS.md').writeAsString(_projectAgentsText);
+      await File('${worktree.path}/AGENTS.md').writeAsString(_agentsText);
       await File(
         '${source.path}/scratch.txt',
       ).writeAsString('Project scratch.\n');
@@ -698,7 +745,17 @@ void main() {
       await frontends.start(catalog);
       expect(frontends.catalog, same(catalog));
       expect(catalog.issues, isEmpty);
-      expect(catalog.installations, hasLength(5));
+      expect(catalog.installations, hasLength(6));
+      expect(
+        catalog.installations.where(
+          (entry) => entry.backendArtifactUri != null,
+        ),
+        hasLength(3),
+      );
+      expect(
+        catalog.installations.where((entry) => entry.frontend != null),
+        hasLength(4),
+      );
       expect(frontends.generations, hasLength(4));
       for (final generation in frontends.generations) {
         expect(generation.state, InstalledFrontendState.active);
@@ -1679,7 +1736,10 @@ void main() {
       for (final String key in ['head', 'branch', 'staged']) {
         expect(taskAfterPatch[key], taskBefore[key], reason: key);
       }
-      expect(await _git(worktree, ['diff', '--name-only']), '$_sourcePath\n');
+      expect(
+        await _git(worktree, ['diff', '--name-only']),
+        'AGENTS.md\n$_sourcePath\n',
+      );
       expect(await _sourceSnapshot(source), projectBefore);
 
       await tester.ensureVisible(allowOnce);
@@ -2197,12 +2257,34 @@ void main() {
       _expectNoPresentationSecrets(tester, controller);
       expect(tester.takeException(), isNull);
 
+      // Stop only the installed AGENTS generation while the host remains live.
+      // A retained binding must fail rather than use an in-process fallback.
+      await agentsMdBackend.connection!.close();
+      await agentsMdBackend.connection!.terminated;
+      expect(agentsMdBackend.state, InstalledBackendState.terminated);
+      expect(agentsMdBinding.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(
+        () => agentsMdBinding.value,
+        throwsA(isA<StaleExtensionBinding>()),
+      );
+      expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
+      expect(runtime.plugins.host!.isClosed, isFalse);
+      expect(runtime.plugins.state, ApplicationPluginState.ready);
+      expect(
+        runtime.plugins.backends
+            .where((entry) => entry != agentsMdBackend)
+            .map((entry) => entry.state),
+        everyElement(InstalledBackendState.active),
+      );
+
       await controller.close();
       updatePresentation = null;
       await tester.pumpWidget(const SizedBox.shrink());
       await frontends.close();
       await runtime.close();
       expect(runtime.plugins.state, ApplicationPluginState.closed);
+      expect(agentsMdBinding.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
       expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
       expect(
         runtime.registry.providersFor(environmentProviderCapability),
@@ -2220,7 +2302,7 @@ void main() {
   );
 
   testWidgets(
-    'F2 normal AdeleApplication opens a real Task and runs discovered Chat and OpenAI EVCs',
+    'F3a normal AdeleApplication opens a real Task with installed AGENTS, Chat and OpenAI EVCs',
     (tester) => tester.runAsync(() async {
       await tester.binding.setSurfaceSize(const Size(1400, 1100));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -2320,6 +2402,7 @@ void main() {
         ids: MonotonicProductIdSource(seed: 'f2-product'),
       );
       addTearDown(runtime.close);
+      expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
       final selector = runtime.extensions.register(
         point: projectSelectorContributions,
         id: ExtensionId('dev.adele.test.f2-project-selector'),
@@ -2390,14 +2473,25 @@ void main() {
       await tester.pumpAndSettle();
       final catalog = runtime.plugins.catalog!;
       expect(catalog.issues, isEmpty);
-      expect(catalog.installations, hasLength(5));
-      expect(runtime.plugins.backends, hasLength(2));
+      expect(catalog.installations, hasLength(6));
+      expect(runtime.plugins.backends, hasLength(3));
       expect(
-        runtime.plugins.backends.every(
-          (entry) => entry.state == InstalledBackendState.active,
-        ),
-        isTrue,
+        catalog.installations.where((entry) => entry.frontend != null),
+        hasLength(4),
       );
+      for (final backend in runtime.plugins.backends) {
+        expect(
+          backend.failure,
+          isNull,
+          reason: 'Backend ${backend.installation.metadata.id} must start.',
+        );
+        expect(backend.state, InstalledBackendState.active);
+      }
+      final agentsMdBinding = runtime.extensions
+          .discover(inferenceContextSources)
+          .single;
+      expect(agentsMdBinding.id.value, '$_agentsMdPluginId.instructions');
+      expect(agentsMdBinding.validate, returnsNormally);
       expect(outbound, isEmpty);
       expect(find.text('No Project is open'), findsOneWidget);
       await tester.tap(find.text('Open F2 Project'));
@@ -2520,6 +2614,8 @@ void main() {
       expect(await tester.binding.handleRequestAppExit(), AppExitResponse.exit);
       expect(runtime.plugins.state, ApplicationPluginState.closed);
       expect(sessionBinding.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(agentsMdBinding.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
       expect(
         runtime.extensions.discover(toolActivityInspectionContributions),
         isEmpty,
@@ -2596,6 +2692,7 @@ void main() {
         );
         final AdeleRuntime runtime = AdeleRuntime();
         addTearDown(runtime.close);
+        expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
         await runtime.plugins.start(
           installationRoot: root.path,
           dartaotruntimeExecutable: dartaotruntime,
@@ -2615,6 +2712,8 @@ void main() {
         );
         final catalog = runtime.plugins.catalog!;
         expect(catalog.issues, isEmpty);
+        // This root deliberately omits AGENTS; startup must not substitute it.
+        expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
         final backend = runtime.plugins.backends.singleWhere(
           (entry) => entry.installation.metadata.id.value == _openAiPluginId,
         );

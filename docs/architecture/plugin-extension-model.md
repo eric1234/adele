@@ -6,7 +6,7 @@
 
 This document defines ADELE's long-term composition model for plugins and plugin-defined extension ecosystems. It records architectural boundaries rather than a frozen Dart API. Implemented APIs such as `ExtensionPoint` remain experimental; other example interfaces below remain directional until concrete implementation requires them.
 
-The maintained repository includes source plugins, interpreted frontend execution, AOT backend execution, generated typed transport, active capability registration/resolution, configured provider contexts, provider-neutral agent execution, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, and generic registration/liveness. The registry supports typed extension points, activation-scoped registrations, exact-generation bindings, public contextual model-tool contributions, executable orchestration-strategy contributions, instruction-only inference-context sources, and B1 Project selector contributions. Statically composed stock Filesystem Tools, Search Tools, and Command Tools own `read_file`/`apply_patch`/`create_file`/`delete_file`, `search`, and `run_command`. Headless stock Chat uses the public `adele_orchestration` execution facade and the same in-process activation conventions; this is not production plugin discovery. Shared `AdeleRuntime` activates the independent root-level `agents_md_plugin` source and Local Directory Project Selector in normal startup and development/self-hosting. B1 adds minimal host-rendered Project opening, not a general UI API. ADELE does **not** yet implement the broader recursive extension system described here, production plugin-facing UI composition, generic commands/keybindings, product/Chat persistence, broader inference material or other context sources, or most of the expected stock plugin topology.
+The maintained repository includes source plugins, interpreted frontend execution, AOT backend execution, generated typed transport, active capability registration/resolution, configured provider contexts, provider-neutral agent execution, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, and generic registration/liveness. The registry supports typed extension points, activation-scoped registrations, exact-generation bindings, public contextual model-tool contributions, executable orchestration-strategy contributions, instruction-only inference-context sources, and Project selector contributions. Statically composed stock Filesystem Tools, Search Tools, and Command Tools own `read_file`/`apply_patch`/`create_file`/`delete_file`, `search`, and `run_command`. Headless stock Chat uses public `adele_orchestration` and remains in process alongside those tools and Local Directory Project Selector: five static activations in shared `AdeleRuntime`. The root-level AGENTS.md source runs through a prepared `agents_md_backend`, reusing pure-Dart `agents_md_plugin` semantics without an app import/dependency or static activation. Host-rendered Project opening is minimal, not a general UI API. ADELE does **not** yet implement the broader recursive extension system described here, general plugin-facing workbench composition, generic commands/keybindings, product/Chat persistence, broader inference material or other context sources, or most of the expected stock plugin topology.
 
 The generic registry deliberately defines only registration, discovery, retirement, and binding liveness. Model-tool composition defines its own zero-or-many composition and alias-collision semantics. Strategy resolution requires exactly one current contribution for an explicit semantic ID, with unavailable/ambiguous errors rather than defaults or tie-breaking. Instruction-context composition defines its own zero-or-many capture, deterministic identity ordering, and required/optional source failure behavior; it has no numeric priority. Generic priority, applicability languages, and universal ordering/failure rules are not supplied by the registry. `EnvironmentRuntime` remains a provisional application/domain implementation rather than a template for extension runtimes.
 
@@ -31,22 +31,36 @@ system below.
 Normal Task/primary Environment creation uses existing capability routing and
 product lifecycle, not a new extension point or Task Browser API. Synchronous,
 provider-free `AdeleRuntime()` owns generic application-lifetime backend bootstrap
-on the same capability registry. F1 startup first discovers a deterministic prepared
+on the same capability and extension registries. Startup first discovers a deterministic prepared
 installation snapshot, then independently attempts every valid backend through
 one shared host. Zero backend components needs no process. Installed metadata
 does not activate plugins or declare exposures; backend entrypoints advertise
-capabilities on the existing ready handshake. Generic `registerAdvertised` reuses
-the existing registry and exact-generation liveness. There is no required Git or
+capabilities and extensions on the existing ready handshake. Generic
+`PluginBackendActivation.registerAdvertised` coherently registers/rolls back/retires
+both through the existing registries and exact-generation liveness. There is no required Git or
 additional-OpenAI tier: local failure retires only that attempt, while shared-host
 failure remains global. Self-hosting uses the same registration path with its own
 explicit artifact/host/profile topology, without requiring normal discovery. See
 [`dependency-rules.md`](dependency-rules.md#application-backend-composition) for
-ownership and replaceability; profiles, enable/disable management, frontend
-discovery, version solving, watching, hot upgrade, and production packaging remain
-deferred. Frontend EVC plumbing and the six in-process activations are unchanged.
+ownership and replaceability. The frontend owner consumes that same catalog and
+registers strict prepared presentation descriptors independently of backend
+readiness. Profiles, enable/disable management, version solving, watching, hot
+upgrade, and production packaging remain deferred.
+
+Internal `RemoteExtensionAdapterRegistry` supplies host adapters for known public
+points, not plugin contributions or a second public registry.
+`PluginExtensionActivation` registers exact-generation proxy contributions in the
+existing `ExtensionRegistry`; unsupported points and invalid point-specific
+metadata fail the backend attempt. The app's remote inference-source adapter
+preserves the public point's composition semantics rather than defining a
+universal callback/object transport framework. Section 9 summarizes this boundary;
+[`contracts-and-capabilities.md`](contracts-and-capabilities.md#extension-advertisements)
+specifies advertisements, metadata, scoped host calls, and protocol compatibility.
+Reverse streaming and general symmetric RPC remain deferred.
 
 See also:
 
+- [ADR 0032: Remote backend extensions use operation-scoped host services](../adr/0032-remote-backend-extensions-use-operation-scoped-host-services.md) for remote hosting and authority ownership;
 - [`contracts-and-capabilities.md`](contracts-and-capabilities.md) for implemented contract and capability boundaries;
 - [`profiles-and-configuration.md`](profiles-and-configuration.md) for contextual activation, configuration, and provider preference;
 - [`agent-kernel-semantic-model.md`](agent-kernel-semantic-model.md) for Run/model/tool execution semantics;
@@ -312,7 +326,7 @@ The stock Local Directory Project Selector uses the existing in-process
 [`stock-plugin-direction.md`](stock-plugin-direction.md#31-local-directory-project-selector)
 for its native-picker and headless import boundaries.
 
-`AdeleRuntime` owns this sixth stock activation on its existing registry and
+`AdeleRuntime` owns this fifth static stock activation on its existing registry and
 retires it with the others in reverse order. Reduced composition omits only
 Command Tools. `AdeleApplication` discovers selectors in `build`, invokes the
 chosen contribution, then calls `runtime.lifecycle.createProject` for a non-null
@@ -475,6 +489,17 @@ including mutation/process facets and broader Environment authority/filesystem
 interfaces. Context sources inspect state; mutation and process execution remain
 with the existing tool/policy/execution mechanisms.
 
+The app's `RemoteInferenceContextSourceAdapter` maps generated remote source
+results to those same native contributions. It captures canonical
+`InferenceContextSourceContext` and exposes only its authorized file-read service
+for that operation. Transported Session/Run identifiers and ready metadata do not
+grant authority or select another Environment. Runtime/host code owns exact-generation
+routing and revocable service allowlists; the backend uses public generated
+contracts and `adele_plugin_backend_support`, without internal host imports.
+Remote hosting does not change composer ordering, required/optional failure, or
+immutable capture semantics, and is not a sandbox. Wire and lifetime details are
+specified in [`contracts-and-capabilities.md`](contracts-and-capabilities.md#operation-scoped-host-calls).
+
 The sealed `InferenceContextMaterial` root currently supports only final
 `InferenceInstructionMaterial(key, text, revision?)`: source-local nonblank string
 keys stable across captures of the same logical material, nonblank exact-byte text,
@@ -500,10 +525,11 @@ At the current app `ModelProviderCapabilityAdapter`, orchestration's
 `ModelProviderRequest.instructions` string with blank-line separation and unchanged
 zero-source bytes. Tools, policy, model controls, and Environment selection
 retain their existing owners. Chat registers no context source and remains
-AGENTS-unaware. Shared `AdeleRuntime` composition activates the independent stock
-`agents_md_plugin` in normal startup and development/self-hosting, rereading root
-`AGENTS.md` through the Session-authorized
-`AuthorizedEnvironmentFileReadFacet` each snapshot. Missing (`not_found`) and blank
+AGENTS-unaware. Normal discovery and explicit development/self-hosting activate the
+independent `agents_md_backend` through the same generic remote adapter, retaining
+`agents_md_plugin` as its pure-Dart semantic implementation. Each snapshot rereads
+root `AGENTS.md` through generated authorized reads backed by the captured Session's
+`AuthorizedEnvironmentFileReadFacet`. Missing (`not_found`) and blank
 files succeed empty; other read/service/authority errors fail the required source.
 Exact file text and its revision form one material, separate from stable
 plugin-owned explicit-user-precedence semantics, not generic ordering authority.
@@ -589,7 +615,7 @@ Examples:
 - A mandatory security/policy participant failing may make it unsafe to continue.
 - Implemented inference-context sources explicitly declare required or optional failure behavior: required failure aborts preparation, optional failure omits the whole source with diagnostics, and successful empty output remains distinct.
 - B1 Project selectors return `null` for cancellation; selector/lifecycle failure is an inline app error with no fallback or change to the presented Project.
-- Required host/Git startup failure cleans up acquired resources and leaves Task support visibly unavailable without blocking Project opening; optional OpenAI activation failure affects model availability only. Task establishment failure publishes no new Task/Environment and substitutes no provider.
+- Local backend startup/advertisement/registration failure rolls back that attempt, including both capability and extension registrations; shared-host failure affects all backends. No live Environment provider leaves Task support unavailable without blocking Project opening; no active source contributes no instructions. An active required source that fails capture aborts preparation. Task establishment failure publishes no new Task/Environment and substitutes no provider.
 - Missing, ambiguous, failed, or retired Session/tool presentation is visibly unavailable without invalidating headless execution. Independent prepared frontends do not substitute native views or compile source on failure.
 - Native output without backend-supplied safe presentation stays opaque and omitted. Safe activity with no matching rich presenter remains visible, with rich Inspection unavailable; duplicate exact safe-kind registrations are explicitly ambiguous. Malformed summary input produces no presentation, and factory/EVC failures remain presentation-local without changing Run settlement or exact replay. No priority, raw-envelope rendering, or native fallback is introduced.
 
@@ -693,10 +719,11 @@ is never replayed. This is provider-supplied summary presentation, not hidden
 chain-of-thought recovery. Display controls are escaped by generic Chat for compact
 text and the OpenAI frontend for full text, never by stock activation.
 
-Stock OpenAI activation imports Contract identity, loads prepared EVC, registers
-the factory, and retires its resources through `PreparedFrontend`. This edge is
-provisional until frontend discovery/profiles replace hard-coded stock selection;
-`app/tool` compilation remains a checkout stand-in for installation preparation.
+Generic frontend activation consumes OpenAI's prepared `modelNativeActivity`
+descriptor from the same catalog, loads its EVC, and registers/retires exact
+resources through `PreparedFrontend`, without stock identity imports or a PluginId
+switch. Profiles remain separate and unimplemented; `app/tool` compilation remains
+a checkout stand-in for installation preparation.
 Chat counts each tool proposal and native output with `presentation != null`
 within each successfully completed model invocation, independently of frontend
 activation. Narration and opaque native outputs do not count. One occurrence uses

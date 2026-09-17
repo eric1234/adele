@@ -303,6 +303,38 @@ void main() {
       expect(target.ciTestConcurrency, isNull);
     });
 
+    test('discovers remote extension support and AGENTS backend targets', () {
+      final workspace = File('pubspec.yaml').readAsStringSync();
+      for (final expected in [
+        (
+          name: 'adele_plugin_backend_support',
+          path: 'packages/plugin_backend_support',
+        ),
+        (name: 'agents_md_backend', path: 'plugins/agents_md/packages/backend'),
+      ]) {
+        final target = lookupTestTarget(expected.name);
+        expect(target.path, expected.path);
+        expect(target.executable, 'dart');
+        expect(target.argumentsFor(ci: true), ['test']);
+        expect(target.linuxDesktopDeps, isFalse);
+        final analysis = analysisTargets.singleWhere(
+          (target) => target.name == expected.name,
+        );
+        expect(analysis.path, expected.path);
+        expect(analysis.flutter, isFalse);
+        expect(workspace, contains('  - ${expected.path}\n'));
+      }
+      expect(workspace, contains('  - plugins/agents_md\n'));
+      expect(
+        File('app/pubspec.yaml').readAsStringSync(),
+        isNot(contains('  agents_md_plugin:')),
+      );
+      expect(
+        File('app/lib/core/adele_runtime.dart').readAsStringSync(),
+        isNot(contains('AgentsMdPlugin')),
+      );
+    });
+
     test('discovers the UI API with the Flutter runner policy', () {
       final TestTarget target = lookupTestTarget('adele_ui');
 
@@ -526,6 +558,7 @@ void main() {
         'adele_contract|dart|packages/contract|test',
         'contract_codegen|dart|packages/contract_codegen|test --concurrency 2',
         'adele_plugin_api|dart|packages/plugin_api|test',
+        'adele_plugin_backend_support|dart|packages/plugin_backend_support|test',
         'adele_product|dart|packages/product|test',
         'adele_core_extensions|dart|packages/core_extensions|test',
         'adele_ui|flutter|packages/ui|test',
@@ -544,6 +577,7 @@ void main() {
         'search_tools_plugin|dart|plugins/search_tools|test',
         'command_tools_plugin|dart|plugins/command_tools|test',
         'agents_md_plugin|dart|plugins/agents_md|test',
+        'agents_md_backend|dart|plugins/agents_md/packages/backend|test',
         'chat_strategy_plugin|dart|plugins/chat_strategy|test',
         'local_directory_project_selector_plugin|flutter|plugins/local_directory_project_selector|test',
         'scripted_model_contract|dart|plugins/scripted_model/packages/contract|test --timeout 4m',

@@ -89,8 +89,8 @@ void main() {
     );
   });
 
-  test('rejects multiple annotated services in one contract library', () async {
-    await expectDiagnostic(
+  test('accepts multiple annotated services in one contract library', () async {
+    final String generated = await generateContract(
       minimalContract(namedValue: true).replaceFirst(
         "@AdeleFailure('fixture.failure')",
         '''
@@ -101,8 +101,10 @@ abstract interface class OtherService {
 }
 @AdeleFailure('fixture.failure')''',
       ),
-      'exactly one @AdeleService',
     );
+    expect(generated, contains('FixtureServiceClient'));
+    expect(generated, contains('OtherServiceClient'));
+    expect(generated, contains('OtherServiceDispatcher'));
   });
 
   test('parses annotated value declarations', () async {

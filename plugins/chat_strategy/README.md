@@ -91,9 +91,11 @@ neither registers nor discovers context sources in production. The host's
 `InferenceContextComposer` discovers current sources through the existing
 `ExtensionRegistry` on every new inference, including Chat continuation, and
 captures instruction material without changing
-Chat's semantic input. Shared normal and development/self-hosting composition
-activates the independent stock [`agents_md_plugin`](../agents_md/README.md), which rereads root
-`AGENTS.md` through the Session-authorized Environment read facet each snapshot.
+Chat's semantic input. Normal prepared startup and explicit development/self-hosting
+activate the independent stock [`agents_md_backend`](../agents_md/README.md) through
+generic remote-source adapters, reusing `agents_md_plugin` semantics. It rereads
+root `AGENTS.md` through generated authorized reads backed by the captured Session's
+Environment read facet each snapshot, without a direct app plugin dependency.
 Chat remains AGENTS-unaware and activates no source. Independent source material
 composes normally after Chat's strategy instructions; zero-source rendering
 retains the exact bytes of Chat's composed instructions.
@@ -182,8 +184,8 @@ activity presentation, reasoning deltas, arbitrary plugin drill-down, persistenc
 child Sessions, state migration, and concurrent
 conversation editing are not implemented. State retention is in-memory and scoped
 to the supplied store, not durable product Session storage.
-Frontend discovery, installation/update management, and artifact caching
-are also deferred. Checkout preparation stands in for future installation/update
-compilation, separate from activation consuming prepared artifacts. The current
-SDK/eval pin does not establish a broad third-party UI API; eval modernization
-remains necessary for that wider surface and is outside this presentation slice.
+Prepared frontend discovery and activation are implemented; installation/update
+management and artifact caching remain deferred. Checkout preparation stands in
+for future installation/update compilation, separate from activation consuming
+prepared artifacts. The current SDK/eval pin does not establish a broad third-party
+UI API; eval modernization remains necessary for that wider surface.

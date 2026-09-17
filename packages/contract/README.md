@@ -9,10 +9,28 @@ with an optional declared failure type identifier, and
 Public [`AdeleCapabilityExposure`](lib/adele_contract.dart) defines and validates
 optional backend-ready `capabilityExposures`. Plugin identity belongs to the
 installation/connection, not this value; an omitted list means zero capabilities.
+`AdeleExtensionExposure` defines optional ready `extensionExposures`, with
+exactly `extensionPointId`, `extensionId`, `serviceId`, `configurationContext`, and
+`metadata`. Unknown keys are rejected; metadata is recursively copied into
+immutable JSON-compatible containers. It has no PluginId or priority, and omission
+means zero extensions. Point-specific metadata validation belongs to host adapters.
+Extension metadata and reverse-request payloads also enforce
+`adelePluginBackendJsonMaxNodes` before copying or encoding. The budget counts
+every expanded visit to shared containers, preventing compact acyclic graphs from
+causing exponential host-side expansion. Other JSON snapshot callers enforce a
+node budget only when they supply `maxNodes`.
+`toMap()` reifies immutable metadata into plain sendable containers for separate
+AOT isolate groups without changing the immutable public value.
 This is ready-handshake metadata, not an installed manifest, generated semantic
-method payload, active registry, or reverse RPC mechanism. Field definitions and
+method payload, active registry, or host-call authorization. Field definitions and
 registration semantics live in
 [`contracts-and-capabilities.md`](../../docs/architecture/contracts-and-capabilities.md#backend-ready-advertisements).
+
+`adelePluginBackendProtocolVersion` is 2, matched by internal shared-host protocol
+version 2. Generated unary clients can use operation-scoped host channels supplied
+by public `adele_plugin_backend_support`; this contract package does not own the
+multiplexer, host authorization, or runtime adapter registry. Reverse streaming
+and general symmetric RPC are not implemented.
 
 Generated clients use `AdeleProtocolException` for local request preflight and
 malformed responses. Generated dispatchers classify malformed request values as

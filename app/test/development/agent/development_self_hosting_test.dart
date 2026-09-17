@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:adele_desktop/development/agent/development_self_hosting.dart';
 import 'package:adele_desktop/development/agent/development_self_hosting_report.dart';
 import 'package:adele_desktop/development/agent/development_self_hosting_runner.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -11,6 +13,82 @@ import 'package:flutter_test/flutter_test.dart';
 import 'chat_test_topology.dart';
 
 void main() {
+  test(
+    'self-hosting prepares and owns an explicit remote AGENTS backend',
+    () async {
+      final container = await Directory.systemTemp.createTemp(
+        'adele-self-hosting-backends-',
+      );
+      addTearDown(() => container.delete(recursive: true));
+      final compiled = <String>[];
+      final artifacts = await DevelopmentSelfHostingArtifacts.compile(
+        repository: Directory.current.parent,
+        outputDirectory: Directory('${container.path}/artifacts'),
+        log: compiled.add,
+      );
+      expect(artifacts.agentsMdArtifact.path, endsWith('/agents-md.aot'));
+      expect(await artifacts.agentsMdArtifact.length(), greaterThan(0));
+      expect(
+        compiled.where((line) => line.startsWith('Compiling ')),
+        unorderedEquals([
+          'Compiling packages/plugin_backend_host/bin/adele_backend_host.dart.',
+          'Compiling plugins/openai/packages/backend/bin/openai_model_provider_backend.dart.',
+          'Compiling plugins/git_environment/packages/backend/bin/git_environment_backend.dart.',
+          'Compiling plugins/agents_md/packages/backend/bin/agents_md_backend.dart.',
+        ]),
+      );
+      final git = await _createGitFixture(container);
+      final topology = await DevelopmentSelfHostingTopology.start(
+        artifacts: artifacts,
+        projectSource: git.project,
+        hostEnvironment: const {},
+        identity: 'remote-context',
+        taskTitle: 'Explicit backend composition',
+      );
+      addTearDown(topology.close);
+      expect(topology.runtime.plugins.host, isNull);
+      expect(topology.runtime.plugins.backends, isEmpty);
+      final source = topology.runtime.extensions
+          .discover(inferenceContextSources)
+          .single;
+      expect(source.id.value, 'dev.adele.plugin.agents-md.instructions');
+      const guidance = 'Read guidance from the isolated Task Environment.\n';
+      await File(
+        '${topology.taskWorktreePath}/AGENTS.md',
+      ).writeAsString(guidance);
+      await File(
+        '${git.project.path}/AGENTS.md',
+      ).writeAsString('Project guidance is not Task guidance.\n');
+      final requests = <SemanticModelRequest>[];
+      final result = await executeDevelopmentSelfHostingRun(
+        identity: 'remote-context',
+        lifecycle: topology.lifecycle,
+        contextComposer: topology.contextComposer,
+        sessions: topology.chat.sessions,
+        sessionId: topology.sessionId,
+        prompt: 'Complete.',
+        instructions: 'Respond.',
+        model: _FinalModel(requests: requests),
+        catalog: topology.catalog,
+        maxModelInvocations: 1,
+      );
+      expect(result.succeeded, isTrue);
+      expect(requests.single.context.sourceResults.single.sourceId, source.id);
+      expect(requests.single.instructions, contains(guidance));
+      expect(requests.single.instructions, isNot(contains('Project guidance')));
+      final closing = topology.close();
+      expect(topology.close(), same(closing));
+      await closing;
+      expect(topology.host.isClosed, isTrue);
+      expect(
+        topology.runtime.extensions.discover(inferenceContextSources),
+        isEmpty,
+      );
+      expect(source.validate, throwsA(isA<StaleExtensionBinding>()));
+    },
+    timeout: const Timeout(Duration(minutes: 4)),
+  );
+
   test('parses explicit runner inputs and rejects a nonpositive ceiling', () {
     final DevelopmentSelfHostingOptions options =
         DevelopmentSelfHostingOptions.parse(<String>[

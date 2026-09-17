@@ -4363,6 +4363,28 @@ final class _Fixture {
       ),
     );
     registerEnvironment(environment);
+    // Widget/controller tests supply their own gated source. Remote AGENTS.md
+    // activation is exercised separately through prepared backend integration.
+    _contextSource = runtime.extensions.register(
+      point: inferenceContextSources,
+      id: ExtensionId('dev.adele.test.chat-context'),
+      value: InferenceContextSourceContribution(
+        failureMode: InferenceContextFailureMode.required,
+        snapshot: (context) async {
+          final files = await context
+              .requireHostService<AuthorizedEnvironmentFileReadFacet>();
+          final file = await files.readFile('AGENTS.md');
+          files.validateBinding();
+          return [
+            InferenceInstructionMaterial(
+              key: 'fixture-instructions',
+              text: file.text,
+              revision: file.revision,
+            ),
+          ];
+        },
+      ),
+    );
   }
 
   final _ProductIds ids = _ProductIds();
@@ -4372,6 +4394,7 @@ final class _Fixture {
   final List<_ModelChannel> models = <_ModelChannel>[];
   late final AdeleRuntime runtime;
   late final ExtensionRegistration _selector;
+  late final ExtensionRegistration _contextSource;
   int runtimeCreations = 0;
   int bootstraps = 0;
   int configurationReads = 0;
@@ -4487,6 +4510,7 @@ final class _Fixture {
       await environment.registration.close();
     }
     await _selector.close();
+    await _contextSource.close();
     await runtime.close();
   }
 }
