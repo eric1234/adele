@@ -29,6 +29,7 @@ workspace:
   - plugins/scripted_model
   - plugins/openai
   - plugins/filesystem_tools
+  - plugins/filesystem_tools/packages/backend
   - plugins/filesystem_tools/packages/frontend
   - plugins/search_tools
   - plugins/search_tools/packages/backend

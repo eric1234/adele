@@ -15,7 +15,6 @@ import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:command_tools_plugin/command_tools_plugin.dart';
-import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
@@ -37,6 +36,7 @@ void main() {
   late File gitEnvironmentArtifact;
   late File agentsMdArtifact;
   late File searchToolsArtifact;
+  late File filesystemToolsArtifact;
 
   setUpAll(() async {
     repository = Directory.current.parent.path;
@@ -50,6 +50,7 @@ void main() {
     gitEnvironmentArtifact = File('${artifacts.path}/git-environment.aot');
     agentsMdArtifact = File('${artifacts.path}/agents-md.aot');
     searchToolsArtifact = File('${artifacts.path}/search-tools.aot');
+    filesystemToolsArtifact = File('${artifacts.path}/filesystem-tools.aot');
     await Future.wait<void>(<Future<void>>[
       _compile(
         dart,
@@ -76,11 +77,17 @@ void main() {
         searchToolsArtifact.path,
         repository,
       ),
+      _compile(
+        dart,
+        '$repository/plugins/filesystem_tools/packages/backend/bin/filesystem_tools_backend.dart',
+        filesystemToolsArtifact.path,
+        repository,
+      ),
     ]);
   });
 
   test(
-    'F3b self-hosting retains remote AGENTS and Search with canonical Session authority',
+    'F3c self-hosting retains remote AGENTS, Search and Filesystem with canonical Session authority',
     () async {
       final Directory container = await Directory.systemTemp.createTemp(
         'adele-self-hosting-topology-',
@@ -104,6 +111,7 @@ void main() {
               gitEnvironmentArtifact: gitEnvironmentArtifact,
               agentsMdArtifact: agentsMdArtifact,
               searchToolsArtifact: searchToolsArtifact,
+              filesystemToolsArtifact: filesystemToolsArtifact,
             ),
             projectSource: source,
             hostEnvironment: const <String, String>{},
@@ -152,12 +160,12 @@ void main() {
       expect(
         tools.tools.map((MaterializedTool tool) => tool.modelDefinition.alias),
         <String>[
+          'run_command',
+          'search',
           'read_file',
           'apply_patch',
           'create_file',
           'delete_file',
-          'run_command',
-          'search',
         ],
       );
 
@@ -337,8 +345,16 @@ void main() {
       final SessionId sessionId = session.id;
       final SessionEnvironmentAuthority authority = store
           .requireSessionAuthority(sessionId);
-      final ExtensionRegistration filesystemActivation =
-          const FilesystemToolsPlugin().activate(extensions);
+      final PluginBackendActivation filesystemActivation =
+          await PluginBackendActivation.registerAdvertised(
+            connection: await host.startPlugin(
+              pluginId: 'dev.adele.plugin.filesystem-tools',
+              artifactUri: filesystemToolsArtifact.uri,
+            ),
+            capabilities: registry,
+            extensions: extensions,
+            adapters: createRemoteExtensionAdapters(),
+          );
       addTearDown(filesystemActivation.close);
       final PluginBackendActivation searchGenerationA =
           await PluginBackendActivation.registerAdvertised(
@@ -598,7 +614,7 @@ void main() {
   );
 
   test(
-    'agent applies ordered edits then validates source in its Session Environment',
+    'F3c real-AOT Filesystem reads, patches and validates isolated Git source',
     () async {
       final Directory container = await Directory.systemTemp.createTemp(
         'adele-session-environment-patch-',
@@ -655,8 +671,16 @@ void main() {
       final SessionId sessionId = session.id;
       final SessionEnvironmentAuthority authority = store
           .requireSessionAuthority(sessionId);
-      final ExtensionRegistration filesystemActivation =
-          const FilesystemToolsPlugin().activate(extensions);
+      final PluginBackendActivation filesystemActivation =
+          await PluginBackendActivation.registerAdvertised(
+            connection: await host.startPlugin(
+              pluginId: 'dev.adele.plugin.filesystem-tools',
+              artifactUri: filesystemToolsArtifact.uri,
+            ),
+            capabilities: registry,
+            extensions: extensions,
+            adapters: createRemoteExtensionAdapters(),
+          );
       addTearDown(filesystemActivation.close);
       final ExtensionRegistration commandActivation = const CommandToolsPlugin()
           .activate(extensions);
@@ -920,7 +944,7 @@ void main() {
   );
 
   test(
-    'agent creates reads and deletes a transient Environment source file',
+    'F3c real-AOT Filesystem creates, reads and deletes isolated Git source',
     () async {
       final Directory container = await Directory.systemTemp.createTemp(
         'adele-session-environment-create-delete-',
@@ -983,8 +1007,16 @@ void main() {
       final SessionId sessionId = session.id;
       final SessionEnvironmentAuthority authority = store
           .requireSessionAuthority(sessionId);
-      final ExtensionRegistration filesystemActivation =
-          const FilesystemToolsPlugin().activate(extensions);
+      final PluginBackendActivation filesystemActivation =
+          await PluginBackendActivation.registerAdvertised(
+            connection: await host.startPlugin(
+              pluginId: 'dev.adele.plugin.filesystem-tools',
+              artifactUri: filesystemToolsArtifact.uri,
+            ),
+            capabilities: registry,
+            extensions: extensions,
+            adapters: createRemoteExtensionAdapters(),
+          );
       addTearDown(filesystemActivation.close);
       final ToolCatalog catalog = await buildModelToolCatalogForSession(
         sessionId: sessionId,

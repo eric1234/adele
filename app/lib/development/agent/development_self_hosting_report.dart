@@ -10,12 +10,12 @@ import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 const int developmentSelfHostingReportSchemaVersion = 1;
 
 const List<String> developmentSelfHostingToolAliases = <String>[
+  'run_command',
+  'search',
   'read_file',
   'apply_patch',
   'create_file',
   'delete_file',
-  'run_command',
-  'search',
 ];
 
 final class DevelopmentSelfHostingEvidenceContext {

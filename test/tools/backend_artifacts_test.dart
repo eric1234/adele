@@ -17,6 +17,8 @@ const String _agentsMdEntrypoint =
     'plugins/agents_md/packages/backend/bin/agents_md_backend.dart';
 const String _searchToolsEntrypoint =
     'plugins/search_tools/packages/backend/bin/search_tools_backend.dart';
+const String _filesystemToolsEntrypoint =
+    'plugins/filesystem_tools/packages/backend/bin/filesystem_tools_backend.dart';
 const String _frontendHarness = 'tool/compile_chat_frontend.dart';
 const String _toolFrontendHarness =
     'tool/compile_tool_inspection_frontends.dart';
@@ -64,6 +66,7 @@ void main() {
       _openaiEntrypoint,
       _agentsMdEntrypoint,
       _searchToolsEntrypoint,
+      _filesystemToolsEntrypoint,
     ]) {
       final File source = File('${root.path}/$entrypoint');
       source.parent.createSync(recursive: true);
@@ -213,6 +216,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           'adele_plugin_backend_support',
           'agents_md_backend',
           'search_tools_backend',
+          'filesystem_tools_backend',
         ]),
       );
       expect(commands.existsSync(), isFalse);
@@ -251,6 +255,8 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           'compiled|$_agentsMdEntrypoint',
           'compile|$_searchToolsEntrypoint',
           'compiled|$_searchToolsEntrypoint',
+          'compile|$_filesystemToolsEntrypoint',
+          'compiled|$_filesystemToolsEntrypoint',
           'compile|$_frontendHarness',
           'compiled|$_frontendHarness',
           'compile|$_toolFrontendHarness|filesystem',
@@ -319,6 +325,9 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
         final File searchTools = File.fromUri(
           installations.uri.resolve('search-tools/backend.aot'),
         );
+        final File filesystemTools = File.fromUri(
+          installations.uri.resolve('filesystem-tools/backend.aot'),
+        );
         final File frontend = File.fromUri(
           installations.uri.resolve('chat-strategy/frontend.evc'),
         );
@@ -327,12 +336,14 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
         expect(openai.uri.isAbsolute, isTrue);
         expect(agentsMd.uri.isAbsolute, isTrue);
         expect(searchTools.uri.isAbsolute, isTrue);
+        expect(filesystemTools.uri.isAbsolute, isTrue);
         expect(frontend.uri.isAbsolute, isTrue);
         expect(host.path, endsWith('/host.aot'));
         expect(git.path, endsWith('/git-environment/backend.aot'));
         expect(openai.path, endsWith('/openai/backend.aot'));
         expect(agentsMd.path, endsWith('/agents-md/backend.aot'));
         expect(searchTools.path, endsWith('/search-tools/backend.aot'));
+        expect(filesystemTools.path, endsWith('/filesystem-tools/backend.aot'));
         expect(frontend.path, endsWith('/chat-strategy/frontend.evc'));
         expect(frontendEnvironment.readAsLinesSync(), <String>[
           root.path,
@@ -396,7 +407,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             directory: 'filesystem-tools',
             id: 'dev.adele.plugin.filesystem-tools',
             name: 'Filesystem Tools',
-            backend: false,
+            backend: true,
           ),
           (
             directory: 'command-tools',
@@ -467,7 +478,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.backendArtifactUri != null,
           ),
-          hasLength(4),
+          hasLength(5),
         );
         expect(
           catalog.installations.where(
@@ -508,6 +519,10 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
         expect(
           searchTools.readAsStringSync(),
           'snapshot $_searchToolsEntrypoint\n',
+        );
+        expect(
+          filesystemTools.readAsStringSync(),
+          'snapshot $_filesystemToolsEntrypoint\n',
         );
         expect(frontend.readAsStringSync(), 'frontend bytecode\n');
         retainedArtifacts[host.path] = host.readAsStringSync();
@@ -677,6 +692,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
     _openaiEntrypoint,
     _agentsMdEntrypoint,
     _searchToolsEntrypoint,
+    _filesystemToolsEntrypoint,
   ]) {
     for (final String command in <String>['run', 'build']) {
       test('$command never launches after $failedEntrypoint fails', () async {
@@ -698,18 +714,25 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           ],
           if (failedEntrypoint == _openaiEntrypoint ||
               failedEntrypoint == _agentsMdEntrypoint ||
-              failedEntrypoint == _searchToolsEntrypoint) ...<String>[
+              failedEntrypoint == _searchToolsEntrypoint ||
+              failedEntrypoint == _filesystemToolsEntrypoint) ...<String>[
             'compiled|$_gitEntrypoint',
             'compile|$_openaiEntrypoint',
           ],
           if (failedEntrypoint == _agentsMdEntrypoint ||
-              failedEntrypoint == _searchToolsEntrypoint) ...<String>[
+              failedEntrypoint == _searchToolsEntrypoint ||
+              failedEntrypoint == _filesystemToolsEntrypoint) ...<String>[
             'compiled|$_openaiEntrypoint',
             'compile|$_agentsMdEntrypoint',
           ],
-          if (failedEntrypoint == _searchToolsEntrypoint) ...<String>[
+          if (failedEntrypoint == _searchToolsEntrypoint ||
+              failedEntrypoint == _filesystemToolsEntrypoint) ...<String>[
             'compiled|$_agentsMdEntrypoint',
             'compile|$_searchToolsEntrypoint',
+          ],
+          if (failedEntrypoint == _filesystemToolsEntrypoint) ...<String>[
+            'compiled|$_searchToolsEntrypoint',
+            'compile|$_filesystemToolsEntrypoint',
           ],
         ]);
         expect(launchArguments.existsSync(), isFalse);
@@ -759,6 +782,8 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
               'compiled|$_agentsMdEntrypoint',
               'compile|$_searchToolsEntrypoint',
               'compiled|$_searchToolsEntrypoint',
+              'compile|$_filesystemToolsEntrypoint',
+              'compiled|$_filesystemToolsEntrypoint',
               'compile|$_frontendHarness',
               if (kind != 'chat' || failure != 'exit')
                 'compiled|$_frontendHarness',

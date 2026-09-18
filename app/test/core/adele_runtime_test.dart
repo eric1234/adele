@@ -17,63 +17,65 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 void main() {
-  test('startup only composes four stock contributions and a shared graph', () {
-    final _RecordingIds ids = _RecordingIds();
-    final AdeleRuntime runtime = AdeleRuntime(ids: ids);
-    addTearDown(runtime.close);
+  test(
+    'startup only composes three stock contributions and a shared graph',
+    () {
+      final _RecordingIds ids = _RecordingIds();
+      final AdeleRuntime runtime = AdeleRuntime(ids: ids);
+      addTearDown(runtime.close);
 
-    expect(ids.calls, isEmpty);
-    expect(
-      runtime.registry.providersFor(environmentProviderCapability),
-      isEmpty,
-    );
-    expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
-    expect(runtime.store.project(ProjectId('project-1')), isNull);
-    expect(runtime.store.tasksFor(ProjectId('project-1')), isEmpty);
-    expect(runtime.store.task(TaskId('task-1')), isNull);
-    expect(runtime.store.environment(EnvironmentId('environment-1')), isNull);
-    expect(runtime.store.session(SessionId('session-1')), isNull);
-    expect(runtime.store.sessionAuthority(SessionId('session-1')), isNull);
-    expect(runtime.lifecycle.store, same(runtime.store));
-    expect(runtime.lifecycle.environmentRuntime.store, same(runtime.store));
-    expect(
-      runtime.lifecycle.environmentRuntime.currentMaterialization(
-        EnvironmentId('environment-1'),
-      ),
-      isNull,
-    );
-    expect(
-      _contributions(runtime).map((binding) => binding.id.value),
-      unorderedEquals(<String>[
-        'dev.adele.plugin.chat-strategy.orchestration',
-        'dev.adele.plugin.filesystem-tools.model-tools',
-        'dev.adele.plugin.command-tools.model-tools',
-        'dev.adele.plugin.local-directory-project-selector.project-selector',
-      ]),
-    );
-    expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
-    expect(runtime.plugins.extensions, same(runtime.extensions));
-    expect(runtime.plugins.host, isNull);
-    expect(runtime.plugins.catalog, isNull);
-    expect(runtime.plugins.backends, isEmpty);
-    expect(
-      runtime.extensions
-          .discover(projectSelectorContributions)
-          .single
-          .value
-          .displayName,
-      'Open Local Directory...',
-    );
-    expect(
-      runtime.lifecycle.strategyResolver.resolve(chatStrategyId).contribution,
-      same(
+      expect(ids.calls, isEmpty);
+      expect(
+        runtime.registry.providersFor(environmentProviderCapability),
+        isEmpty,
+      );
+      expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+      expect(runtime.store.project(ProjectId('project-1')), isNull);
+      expect(runtime.store.tasksFor(ProjectId('project-1')), isEmpty);
+      expect(runtime.store.task(TaskId('task-1')), isNull);
+      expect(runtime.store.environment(EnvironmentId('environment-1')), isNull);
+      expect(runtime.store.session(SessionId('session-1')), isNull);
+      expect(runtime.store.sessionAuthority(SessionId('session-1')), isNull);
+      expect(runtime.lifecycle.store, same(runtime.store));
+      expect(runtime.lifecycle.environmentRuntime.store, same(runtime.store));
+      expect(
+        runtime.lifecycle.environmentRuntime.currentMaterialization(
+          EnvironmentId('environment-1'),
+        ),
+        isNull,
+      );
+      expect(
+        _contributions(runtime).map((binding) => binding.id.value),
+        unorderedEquals(<String>[
+          'dev.adele.plugin.chat-strategy.orchestration',
+          'dev.adele.plugin.command-tools.model-tools',
+          'dev.adele.plugin.local-directory-project-selector.project-selector',
+        ]),
+      );
+      expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
+      expect(runtime.plugins.extensions, same(runtime.extensions));
+      expect(runtime.plugins.host, isNull);
+      expect(runtime.plugins.catalog, isNull);
+      expect(runtime.plugins.backends, isEmpty);
+      expect(
         runtime.extensions
-            .discover(orchestrationStrategyContributions)
+            .discover(projectSelectorContributions)
             .single
-            .value,
-      ),
-    );
-  });
+            .value
+            .displayName,
+        'Open Local Directory...',
+      );
+      expect(
+        runtime.lifecycle.strategyResolver.resolve(chatStrategyId).contribution,
+        same(
+          runtime.extensions
+              .discover(orchestrationStrategyContributions)
+              .single
+              .value,
+        ),
+      );
+    },
+  );
 
   test(
     'default IDs are optional and reduced composition omits only commands',
@@ -85,7 +87,6 @@ void main() {
         _contributions(runtime).map((binding) => binding.id.value),
         unorderedEquals(<String>[
           'dev.adele.plugin.chat-strategy.orchestration',
-          'dev.adele.plugin.filesystem-tools.model-tools',
           'dev.adele.plugin.local-directory-project-selector.project-selector',
         ]),
       );
@@ -97,7 +98,7 @@ void main() {
   );
 
   test(
-    'bare runtime powers retained Chat without implicit Search or AGENTS reads',
+    'bare runtime powers retained Chat without implicit Filesystem, Search or AGENTS',
     () async {
       final _RecordingIds ids = _RecordingIds();
       final AdeleRuntime runtime = AdeleRuntime(ids: ids);
@@ -219,13 +220,7 @@ void main() {
       expect(channel.calls, hasLength(1));
       expect(
         request.tools.tools.map((tool) => tool.modelDefinition.alias),
-        unorderedEquals(<String>[
-          'read_file',
-          'apply_patch',
-          'create_file',
-          'delete_file',
-          'run_command',
-        ]),
+        unorderedEquals(<String>['run_command']),
       );
       for (final MaterializedTool tool in request.tools.tools) {
         tool.executable.validateBinding();

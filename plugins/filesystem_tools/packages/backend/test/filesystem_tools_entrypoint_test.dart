@@ -4,14 +4,15 @@ import 'dart:isolate';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_tool/remote_model_tool.dart';
-import 'package:search_tools_plugin/search_tools_plugin.dart';
 import 'package:test/test.dart';
 
-import '../bin/search_tools_backend.dart' as entrypoint;
+import '../bin/filesystem_tools_backend.dart' as entrypoint;
+
+const _createRoute = 'dev.adele.plugin.filesystem-tools.create-file';
 
 void main() {
   test(
-    'ready advertises one model-tools extension and no capabilities',
+    'ready exposes one default modelTool extension and no capability',
     () async {
       final backend = await _RunningBackend.start();
       addTearDown(backend.close);
@@ -23,93 +24,109 @@ void main() {
       expect(backend.ready['extensionExposures'], [
         {
           'extensionPointId': 'dev.adele.extension.model-tools',
-          'extensionId': 'dev.adele.plugin.search-tools.model-tools',
-          'serviceId': remoteModelToolServiceId,
+          'extensionId': 'dev.adele.plugin.filesystem-tools.model-tools',
+          'serviceId': 'modelTool',
           'configurationContext': 'configured-default',
           'metadata': {
-            'hostServices': ['authorizedEnvironmentRead'],
+            'hostServices': [
+              'authorizedEnvironmentRead',
+              'authorizedEnvironmentMutation',
+            ],
           },
         },
       ]);
       backend.request(remoteModelToolServiceMaterializeId, {
         'sessionId': 'session',
       });
-      final materialized = await backend.next();
-      expect(materialized['ok'], isTrue);
-      final descriptor = (materialized['payload']! as List).single! as Map;
-      expect(descriptor['toolId'], searchToolId.value);
-      expect(descriptor['modelAlias'], 'search');
-      expect(descriptor['routeId'], searchToolId.value);
-      expect(descriptor['executionHostServices'], [
-        authorizedEnvironmentReadServiceId,
+      final response = await backend.next();
+      expect(response['kind'], 'response');
+      expect(response['ok'], isTrue);
+      final descriptors = (response['payload']! as List)
+          .cast<Map<Object?, Object?>>();
+      expect(descriptors.map((tool) => tool['modelAlias']), [
+        'read_file',
+        'apply_patch',
+        'create_file',
+        'delete_file',
       ]);
-      expect(descriptor.keys.toSet(), {
-        'toolId',
-        'toolDescription',
-        'modelAlias',
-        'modelDescription',
-        'argumentsSchema',
-        'routeId',
-        'executionHostServices',
-      });
+      expect(descriptors.map((tool) => tool['executionHostServices']), [
+        ['authorizedEnvironmentRead'],
+        ['authorizedEnvironmentRead', 'authorizedEnvironmentMutation'],
+        ['authorizedEnvironmentMutation'],
+        ['authorizedEnvironmentRead', 'authorizedEnvironmentMutation'],
+      ]);
       backend.request(remoteModelToolServiceValidateAndNormalizeId, {
-        'routeId': searchToolId.value,
-        'proposedArguments': {'query': 'needle', 'path': './src//./'},
+        'routeId': _createRoute,
+        'proposedArguments': {
+          'relativePath': './dir//source.dart',
+          'content': 'new\n',
+        },
       });
       expect((await backend.next())['payload'], {
-        'snapshot': {'query': 'needle', 'path': 'src'},
+        'snapshot': {'relativePath': 'dir/source.dart', 'content': 'new\n'},
       });
       await backend.shutdown();
     },
   );
 
   test(
-    'describe returns effects from captured identity without any host request',
+    'describe is pure data and wrappers reject invocation authority',
     () async {
       final backend = await _RunningBackend.start();
       addTearDown(backend.close);
-      backend.request(remoteModelToolServiceDescribeId, _operationPayload());
+      backend.request(remoteModelToolServiceDescribeId, _descriptionPayload());
       final response = await backend.next();
       expect(response['kind'], 'response');
       expect(response['ok'], isTrue);
       expect(response['payload'], {
-        'effects': ['sourceRead'],
-        'targetUris': ['adele-environment:/captured-environment/'],
-        'summary': 'Search the authorized Environment root.',
+        'effects': ['sourceMutation'],
+        'targetUris': ['adele-environment:/environment-data/dir/source.dart'],
+        'summary': 'Create Environment file dir/source.dart.',
         'uncertainty': 'none',
       });
+      for (final (method, payload) in [
+        (
+          remoteModelToolServiceMaterializeId,
+          <String, Object?>{'sessionId': 'session'},
+        ),
+        (remoteModelToolServiceDescribeId, _descriptionPayload()),
+      ]) {
+        backend.request(method, {
+          ...payload,
+          'hostInvocationContext': 'forbidden',
+        });
+        final response = await backend.next();
+        expect(response['kind'], 'response');
+        expect(response['ok'], isFalse);
+        final error = response['error']! as Map;
+        expect(error['code'], 'invalid_request');
+        expect(error.containsKey('declaredFailureType'), isFalse);
+      }
       await backend.shutdown();
     },
   );
 
   for (final cancel in [false, true]) {
     test(
-      'execute streams a semantic terminal and supports ${cancel ? 'cancel' : 'completion'}',
+      'create executes with mutation only and ${cancel ? 'cancels' : 'completes'} its stream',
       () async {
         final backend = await _RunningBackend.start();
         addTearDown(backend.close);
         backend.execute(credit: cancel ? 1 : 2);
-        final directory = await backend.next();
-        _expectHostRequest(
-          directory,
-          authorizedEnvironmentReadServiceReadDirectoryId,
-          {'relativePath': ''},
-        );
-        backend.respond(directory, {
-          'relativePath': '',
-          'entries': [
-            {'name': 'file.txt', 'relativePath': 'file.txt', 'kind': 'file'},
-          ],
+        final request = await backend.next();
+        expect(request, {
+          'kind': 'hostRequest',
+          'requestId': isA<int>(),
+          'hostInvocationContext': 'opaque-invocation',
+          'serviceId': authorizedEnvironmentMutationServiceId,
+          'method': authorizedEnvironmentMutationServiceCreateTextFileId,
+          'payload': {'relativePath': 'dir/source.dart', 'text': 'new\n'},
         });
-        final file = await backend.next();
-        _expectHostRequest(file, authorizedEnvironmentReadServiceReadFileId, {
-          'relativePath': 'file.txt',
-        });
-        backend.respond(file, {
-          'relativePath': 'file.txt',
-          'text': 'Needle\nneedle',
-          'sizeBytes': 13,
-          'revision': 'opaque-revision',
+        backend.commands.send({
+          'kind': 'hostResponse',
+          'requestId': request['requestId'],
+          'ok': true,
+          'payload': {'revision': 'created-revision'},
         });
         final event = await backend.next();
         expect(event['kind'], 'streamItem');
@@ -122,13 +139,11 @@ void main() {
         expect(outcome['failureKind'], isNull);
         expect(outcome['effectCertainty'], 'knownOccurred');
         expect(outcome.containsKey('cause'), isFalse);
-        expect(
-          (outcome['hostData']! as Map)['environmentId'],
-          'captured-environment',
-        );
-        expect((outcome['hostData']! as Map)['matches'], [
-          {'relativePath': 'file.txt', 'lineNumber': 2, 'snippet': 'needle'},
-        ]);
+        expect(outcome['hostData'], {
+          'environmentId': 'environment-data',
+          'relativePath': 'dir/source.dart',
+          'revision': 'created-revision',
+        });
         if (cancel) {
           backend.commands.send({'kind': 'streamCancel', 'requestId': 7});
         }
@@ -142,83 +157,50 @@ void main() {
   }
 
   test(
-    'execute protocol and authority errors remain stream failures',
+    'route, identity and protocol errors are stream failures, not domain outcomes',
     () async {
       final backend = await _RunningBackend.start();
       addTearDown(backend.close);
-      for (final token in <String?>[null, '']) {
-        backend.execute(
-          payload: {..._operationPayload(), 'hostInvocationContext': token},
-        );
+      for (final override in <Map<String, Object?>>[
+        {'routeId': 'create_file'},
+        {'environmentId': null},
+        {'hostInvocationContext': null},
+        {'hostInvocationContext': ''},
+        {
+          'arguments': {'snapshot': 'bad'},
+        },
+      ]) {
+        backend.execute(payload: {..._executionPayload(), ...override});
         final response = await backend.next();
         expect(response['kind'], 'streamFailure');
         final error = response['error']! as Map;
-        expect(error['code'], 'internal_error');
+        expect(
+          error['code'],
+          override.containsKey('arguments')
+              ? 'invalid_request'
+              : 'internal_error',
+        );
         expect(error.containsKey('declaredFailureType'), isFalse);
       }
-      backend.execute(
-        payload: {
-          ..._operationPayload(execute: true),
-          'arguments': {'snapshot': 'bad'},
-        },
-      );
-      final response = await backend.next();
-      expect(response['kind'], 'streamFailure');
-      expect((response['error']! as Map)['code'], 'invalid_request');
       await backend.shutdown();
-    },
-  );
-
-  test(
-    'shutdown settles a blocked execution read before draining the stream',
-    () async {
-      final backend = await _RunningBackend.start();
-      addTearDown(backend.close);
-      backend.execute();
-      _expectHostRequest(
-        await backend.next(),
-        authorizedEnvironmentReadServiceReadDirectoryId,
-        {'relativePath': ''},
-      );
-      backend.commands.send({
-        'kind': 'request',
-        'requestId': 99,
-        'method': 'shutdown',
-        'payload': <String, Object?>{},
-      });
-      expect(await backend.next(), {
-        'kind': 'response',
-        'requestId': 99,
-        'ok': true,
-        'payload': {'stopping': true},
-      });
     },
   );
 }
 
-Map<String, Object?> _operationPayload({bool execute = false}) => {
-  'routeId': searchToolId.value,
+Map<String, Object?> _descriptionPayload() => {
+  'routeId': _createRoute,
   'arguments': {
-    'snapshot': {'query': 'needle', 'path': ''},
+    'snapshot': {'relativePath': 'dir/source.dart', 'content': 'new\n'},
   },
-  'sessionId': 'session',
-  'runId': 'semantic-run-only',
-  'environmentId': 'captured-environment',
-  if (execute) 'hostInvocationContext': 'opaque-operation-token',
+  'sessionId': 'session-data',
+  'runId': 'run-data',
+  'environmentId': 'environment-data',
 };
 
-void _expectHostRequest(
-  Map<String, Object?> request,
-  String method,
-  Map<String, Object?> payload,
-) => expect(request, {
-  'kind': 'hostRequest',
-  'requestId': isA<int>(),
-  'hostInvocationContext': 'opaque-operation-token',
-  'serviceId': authorizedEnvironmentReadServiceId,
-  'method': method,
-  'payload': payload,
-});
+Map<String, Object?> _executionPayload() => {
+  ..._descriptionPayload(),
+  'hostInvocationContext': 'opaque-invocation',
+};
 
 final class _RunningBackend {
   _RunningBackend(this.isolate, this.responses, this.messages, this.ready)
@@ -272,17 +254,10 @@ final class _RunningBackend {
       'configurationContext': 'configured-default',
       'serviceId': remoteModelToolServiceId,
       'method': remoteModelToolServiceExecuteId,
-      'payload': payload ?? _operationPayload(execute: true),
+      'payload': payload ?? _executionPayload(),
     });
     commands.send({'kind': 'streamCredit', 'requestId': 7, 'credit': credit});
   }
-
-  void respond(Map<String, Object?> request, Object? payload) => commands.send({
-    'kind': 'hostResponse',
-    'requestId': request['requestId'],
-    'ok': true,
-    'payload': payload,
-  });
 
   Future<Map<String, Object?>> next() async {
     expect(

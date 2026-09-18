@@ -135,6 +135,12 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
+    name: 'filesystem_tools_backend',
+    path: 'plugins/filesystem_tools/packages/backend',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
     name: 'search_tools_plugin',
     path: 'plugins/search_tools',
     executable: 'dart',
@@ -275,6 +281,11 @@ analysisTargets = <({String name, String path, bool flutter})>[
     flutter: false,
   ),
   (name: 'search_tools_plugin', path: 'plugins/search_tools', flutter: false),
+  (
+    name: 'filesystem_tools_backend',
+    path: 'plugins/filesystem_tools/packages/backend',
+    flutter: false,
+  ),
   (
     name: 'search_tools_backend',
     path: 'plugins/search_tools/packages/backend',

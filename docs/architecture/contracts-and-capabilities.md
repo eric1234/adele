@@ -28,7 +28,7 @@ Capability transport plus Phase III active provider registration, deterministic 
 
 Plugin contract source is shared by frontend and backend packages and should normally describe immutable snapshot values. A value received across a runtime boundary is reconstructed; its object identity is not shared with the sender.
 
-The internal generator treats contracts as a constrained IDL embedded in Dart and provides typed clients, dispatchers, codecs, request handling, and structured errors. A contract library declares one or more local, non-empty `@AdeleService` services with unary `Future<T>` and server-streaming `Stream<T>` methods. Each service has its own client/dispatcher while sharing local DTO/failure codecs; Environment's provider and authorized-read services share its value and failure declarations. Zero declared `@AdeleFailure` types is valid, as in remote inference-source transport: no domain-specific failure is required, and unrecognized remote failures retain their transport semantics.
+The internal generator treats contracts as a constrained IDL embedded in Dart and provides typed clients, dispatchers, codecs, request handling, and structured errors. A contract library declares one or more local, non-empty `@AdeleService` services with unary `Future<T>` and server-streaming `Stream<T>` methods. Each service has its own client/dispatcher while sharing local DTO/failure codecs; Environment's provider, authorized-read, and authorized-mutation services share its value and failure declarations. Zero declared `@AdeleFailure` types is valid, as in remote inference-source transport: no domain-specific failure is required, and unrecognized remote failures retain their transport semantics.
 
 Values use one unnamed generative constructor with required named parameters, schema enums and values must be declared in the contract source library rather than imported, wire IDs use a conservative ASCII segment grammar, and every transported double must be finite. Client/bidirectional streaming, reverse streaming, general symmetric RPC, replay, and broader schema composition remain future work.
 
@@ -221,8 +221,17 @@ as unary operations. `authority()` takes no arguments and returns the already-bo
 Environment, provider, or other authority-selection IDs. Mutation and process
 operations are absent from this host service.
 
-The dispatcher captures the canonical `InferenceContextSourceContext` supplied by
-the composer and obtains its `AuthorizedEnvironmentFileReadFacet`. It never
+The separate generated unary `AuthorizedEnvironmentMutationService` exposes only
+`createTextFile(relativePath, text)`, `replaceExistingTextFile(relativePath,
+replacementText, expectedRevision)`, and `deleteExistingTextFile(relativePath,
+expectedRevision)`. It reuses existing mutation results and declared
+`EnvironmentFailure`, with no authority query, authority-selection IDs, reads, or
+process operations. The read service remains unchanged for inference sources and
+other consumers; granting mutation never implicitly grants reads.
+
+For remote inference sources, the read dispatcher captures the canonical
+`InferenceContextSourceContext` supplied by the composer and obtains its
+`AuthorizedEnvironmentFileReadFacet`. It never
 reconstructs authority from the transported Session/Run strings. Binding checks
 bracket the read, including failure settlement. The remote source cannot choose
 another Environment through this service.
@@ -242,8 +251,9 @@ producer cancellation. Registration retirement, connection shutdown, and termina
 also revoke contexts and settle pending host calls without waiting for arbitrary
 host service code, including while the outer stream is idle or paused. Late results
 cannot revive authority or reach a replacement generation. Revocation is not
-cancellation or rollback of an already-started read. These lifetimes reuse the
-existing protocol; both protocol versions remain 2 and reverse calls remain unary.
+cancellation or rollback of an already-started read or mutation. These lifetimes
+reuse the existing protocol; both protocol versions remain 2 and reverse calls
+remain unary.
 
 Public pure-Dart `adele_plugin_backend_support` supplies only the reusable
 `AdeleHostRequestMultiplexer` and bound `AdeleRequestChannel` needed by generated
@@ -258,8 +268,9 @@ Public `adele_model_tool/remote_model_tool.dart` declares generated
 `RemoteModelToolService` (`remoteModelToolServiceId`): unary `materialize`,
 `validateAndNormalize`, and `describe`, plus server-streaming `execute`. Immutable
 descriptors carry semantic tool identity/description, model alias/description/schema,
-and an opaque `routeId`. Canonical arguments, effect descriptions, progress, and
-terminal outcomes cross as immutable snapshots. Outcome classification, effect
+an opaque `routeId`, and required `executionHostServices`. Canonical arguments,
+effect descriptions, progress, and terminal outcomes cross as immutable snapshots.
+Outcome classification, effect
 certainty, model content, structured `hostData`, and diagnostic text are preserved;
 arbitrary exception `cause` objects are not transported. Route IDs identify backend
 executables only within the captured connection generation. They are not persistent
@@ -267,20 +278,47 @@ handles, model aliases, or authority tokens.
 
 The app's `RemoteModelToolAdapter` registers `ModelToolContribution` proxies through
 the existing adapter and extension registries. It requires the generated service ID
-and exactly one metadata key: `hostServices`, whose only valid values are `[]` and
-`['authorizedEnvironmentRead']`. Unknown keys, services, or duplicates fail
-activation. These are dependency requests, not permission grants or Profiles.
-Materialization captures the host's Session-bound read facet when requested and
-its exact Environment-provider binding, alongside the exact remote registration.
+and exactly one metadata key: `hostServices`, a duplicate-free list drawn from
+`authorizedEnvironmentRead` and `authorizedEnvironmentMutation`, including an
+empty list. Unknown keys, services, or duplicates fail activation. This exposure
+declares the maximum dependencies to capture, not permission grants or Profiles.
+Each descriptor's required `executionHostServices` is a duplicate-free subset of
+that exposure, not an inherited default. Unknown, duplicate, or undeclared services
+fail materialization. The subset is the exact service allowlist for that tool's
+execution; a read-only descriptor never receives mutation because its contribution
+also supplies mutating tools.
+
+Materialization captures every requested Session-bound read/mutation facet and its
+exact Environment-provider binding, alongside the exact remote registration. All
+facets must belong to the materializing Session and the same Environment; incoherent
+facets fail rather than being substituted or re-resolved.
 The existing composer still owns zero-or-many tools, duplicate Tool IDs, and alias
 collisions; the adapter adds no provider selection or tool registry.
 
-Materialize and describe receive fresh operation contexts when reads are requested;
-execute receives a fresh stream-lifetime context on listen. The executable retains
-host-side bindings, never a reusable invocation token. Argument validation receives
-no host authority. Synchronous `validateBinding()` checks both the remote generation
-and captured Environment binding; transported Session/Run IDs cannot rebind either.
-Retirement fails old work rather than selecting a replacement.
+Preparation carries data, not host-service authority:
+
+- `materialize(sessionId)` receives no invocation token.
+- `validateAndNormalize(routeId, proposedArguments)` receives no host authority.
+- `describe(routeId, arguments, sessionId, runId, environmentId?)` receives pure identity data, without a token or host calls.
+- `execute(routeId, arguments, sessionId, runId, environmentId?, hostInvocationContext?)` receives identity data and, when services are required, a fresh invocation token allowlisting exactly the descriptor's services.
+
+The nullable Environment identity describes the host-captured binding; it cannot
+select or reconstruct authority. `environmentId` and `hostInvocationContext` are
+required nullable arguments, not optional wire fields. Environment identity is null
+when no Environment facets were captured; the execution token is null for an empty
+service subset. The executable retains host-side bindings, never
+a reusable invocation token. Synchronous `validateBinding()` checks the remote
+generation and every captured facet, including dependencies outside an individual
+descriptor's execution subset. No operation re-resolves a binding. Retirement
+fails old work rather than selecting a replacement.
+
+Only execution after the normal policy/approval decision can receive model-tool
+host authority. Execute-stream authority starts on listen and is revoked on done,
+error, cancellation, or exact registration/connection retirement. Denied, rejected,
+or waiting invocations receive no execution token. Host calls and asynchronous
+settlement validate the exact captured bindings; semantic Session/Run/Environment
+IDs do not grant access. This controls the host-service API, not native backend
+operating-system access, and is not an OS sandbox.
 
 Local `ToolExecutable.validateAndNormalize` returns
 `FutureOr<CanonicalToolArguments>`, preserving synchronous local validators.
@@ -292,13 +330,25 @@ failure; malformed transport and other backend/protocol failures are not relabel
 as invalid model arguments. Host effect description, policy, approval, execution
 collection, and continuation remain on the normal path.
 
-Stock Search uses this point without a capability exposure: its backend advertises
-one `dev.adele.extension.model-tools` extension with the existing
-`dev.adele.plugin.search-tools.model-tools` registration ID, generated service ID,
-default configuration context, and read-service metadata. Its backend reuses the
-pure-Dart root Search semantics instead of duplicating traversal or validation.
-Filesystem/Command mutation and process host services, remote Chat orchestration,
-and reverse streaming are not implemented by this boundary.
+Stock Search and Filesystem Tools use this point without capability exposures.
+Their backends advertise `dev.adele.extension.model-tools` with their existing
+`dev.adele.plugin.search-tools.model-tools` and
+`dev.adele.plugin.filesystem-tools.model-tools` registration IDs, generated service
+ID, and default configuration context. Both reuse their pure-Dart root semantics.
+Search declares only `authorizedEnvironmentRead`, describes effects from pure
+identity data, and receives read authority only during execution. Filesystem
+declares read and mutation dependencies with these exact execution subsets:
+
+| Tool | `executionHostServices` |
+| --- | --- |
+| `read_file` | `['authorizedEnvironmentRead']` |
+| `apply_patch` | `['authorizedEnvironmentRead', 'authorizedEnvironmentMutation']` |
+| `create_file` | `['authorizedEnvironmentMutation']` |
+| `delete_file` | `['authorizedEnvironmentRead', 'authorizedEnvironmentMutation']` |
+
+The separate mutation service changes neither file semantics nor policy/effect
+ordering. Reverse calls remain unary on protocol version 2. Process host services,
+remote Command/Chat/selector migration, and reverse streaming remain deferred.
 
 ## Configured capability instances
 

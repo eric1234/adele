@@ -42,9 +42,10 @@ Public plugin-facing APIs remain experimental.
 Normal startup consumes a prepared installation snapshot with independently
 optional backend and frontend components. Backends advertise ready capabilities
 and extensions; frontends use metadata-driven presentation registration. Generic
-host adapters and operation-scoped unary host calls support the AGENTS.md and Search
-AOT backends, while four stock plugins remain statically composed in process. This
-reuses existing registries, isolate ports/framing, prepared EVC execution, and
+host adapters and operation-scoped unary read/mutation host calls support the
+AGENTS.md, Search, and Filesystem Tools AOT backends, while three stock plugins
+remain statically composed in process. This reuses existing registries, isolate
+ports/framing, prepared EVC execution, and
 per-view decoding. Plugin installation, production packaging, profile/enable-disable
 management, version solving, filesystem watching, general symmetric RPC, reverse
 streaming, and hot upgrade remain unimplemented.
@@ -69,15 +70,16 @@ It owns one `CapabilityRegistry`, `ExtensionRegistry`, `InMemoryProductStore`,
 `ProductLifecycleCoordinator.generated` wired to those same registries and store,
 `InferenceContextComposer` over the same extension registry, and retained
 `ChatStrategyPlugin`. By default it statically activates Chat,
-Filesystem Tools, Command Tools, and Local Directory Project
+Command Tools, and Local Directory Project
 Selector in process, all on the same extension registry. The selector is the
-fourth owned activation; the reduced composition omits only Command Tools. This
+third owned activation; the reduced composition omits only Command Tools. This
 is an implicit in-process composition, outside installed-component discovery and
 not a profile/configuration API. Construction is synchronous and provider-free. The
 runtime also owns pure-Dart `ApplicationPluginBootstrap` on those same capability
 and extension registries, without starting backend work in its constructor.
-AGENTS.md and Search have no production app dependency/import or static activation;
-their prepared backends supply contributions through generic remote extension activation.
+AGENTS.md, Search, and Filesystem Tools have no production app dependency/import or
+static activation; their prepared backends supply contributions through generic
+remote extension activation.
 
 The normal Stateful `AdeleApplication` constructs its runtime once synchronously
 in `initState`, not during rebuilds, then explicitly calls async
@@ -135,8 +137,8 @@ failure invalidates all backends. The bootstrap exposes read-only per-backend
 states and catalog issues, not a plugin-management UI. Overall `ready` means
 startup settled, not that every backend succeeded or a model is usable.
 
-Git and OpenAI entrypoints own their ready capability advertisements; AGENTS.md
-and Search own their ready extension advertisements. Generic
+Git and OpenAI entrypoints own their ready capability advertisements; AGENTS.md,
+Search, and Filesystem Tools own their ready extension advertisements. Generic
 `PluginBackendActivation.registerAdvertised` coherently owns both capability and
 extension registration, rollback, and retirement through the existing registries.
 Internal `RemoteExtensionAdapterRegistry` selects host adapters for known public
@@ -185,8 +187,9 @@ independent actions, not a chooser/default-provider framework.
 
 Normal activation consumes one catalog of prepared backend/frontend installations,
 not source paths or a compiler. No active Environment capability leaves Task
-Environment support unavailable; missing Chat, Filesystem Tools, Command
-Tools, or OpenAI activity EVC leaves the corresponding presentation unavailable
+Environment support unavailable; missing Search or Filesystem backends leaves
+their tools unavailable without in-process fallback. Missing Chat, Filesystem Tools,
+Command Tools, or OpenAI activity EVC leaves the corresponding presentation unavailable
 independently of the other frontends and model backend support.
 Artifact preparation belongs to repository/build-time tooling, not app startup;
 deployment inputs and source-checkout limitations are documented in
@@ -196,10 +199,11 @@ Checkout preparation stands in for future installation/update-time compilation;
 activation only consumes prepared artifacts. Caching, plugin management,
 production packaging, and profiles remain deferred. Linux tooling prepares seven
 installations in one `.dart_tool/adele/desktop-plugins/build-*/installations/` root:
-frontend-only Chat, Filesystem Tools, and Command Tools, backend-only Git and
-AGENTS.md (`agents-md/backend.aot`) plus Search (`search-tools/backend.aot`), and one
-combined OpenAI. Preparation produces four backend snapshots plus the host and
-four EVCs, with no AGENTS- or Search-specific configuration.
+frontend-only Chat and Command Tools, backend-only Git, AGENTS.md, and Search, and
+combined Filesystem Tools and OpenAI. Filesystem's installation has
+`filesystem-tools/backend.aot` and `filesystem-tools/frontend.evc`. Preparation
+produces five backend snapshots plus the host and four EVCs, with no AGENTS-,
+Search-, or Filesystem-specific configuration.
 `tools/stock_frontend_descriptors.dart` is the singular stock
 build-side descriptor table; app runtime activation has no stock tool/native
 identity table. Deployment uses only `ADELE_PLUGIN_INSTALLATION_ROOT`,
@@ -221,8 +225,9 @@ tool catalog, model selection, development IDs, execution, and evidence. The gen
 model capability adapter lives in `app/lib/core/model_provider_host.dart`; normal
 composition has no dependency on development code. Self-hosting uses generic
 `registerAdvertised` for backend-owned exposures but keeps its explicit
-artifact/host/profile topology, including `agentsMdArtifact` and `searchToolsArtifact`
-on the same shared host through `PluginBackendActivation` and the same generic
+artifact/host/profile topology, including `agentsMdArtifact`, `searchToolsArtifact`,
+and `filesystemToolsArtifact` on the same shared host through
+`PluginBackendActivation` and the same generic
 remote adapters. It does not require a normal installation root or catalog discovery,
 consume normal bootstrap configuration, or start its backend owner. Its own
 profile environment configures the backend with the default
@@ -337,15 +342,32 @@ The app's `RemoteInferenceContextSourceAdapter` and `RemoteModelToolAdapter` con
 remote instruction sources and model tools to their existing public composition
 contracts. Host-created operation contexts expose only
 allowlisted services backed by captured canonical Session authority, not authority
-chosen by transported Session/Run identifiers. The narrow Environment read service
-exposes the already-bound identity through no-argument `authority()`, plus file and
-directory reads, without mutation or process operations. Model-tool metadata is
-exactly `hostServices: []` or `hostServices: ['authorizedEnvironmentRead']`, a
-dependency request rather than a grant or Profile. Contexts are generation-bound
-and revoked when the operation or owning registration/connection ends. Execute
-stream authority starts only on listen and ends on done, error, cancellation, or
-retirement; validation has no host authority. Late results cannot migrate to
-replacements. Reverse calls remain unary. Process separation is not a sandbox.
+chosen by transported Session/Run/Environment identifiers. The narrow Environment
+read service exposes the already-bound identity through no-argument `authority()`, plus file and
+directory reads, without mutation or process operations. Separate generated
+`AuthorizedEnvironmentMutationService` supplies only create-new, conditional
+replacement, and conditional deletion, with no authority query or selectors.
+The read service remains unchanged for other consumers.
+
+Model-tool exposure `hostServices` declares the maximum read/mutation dependencies
+to capture. Every descriptor requires `executionHostServices`, a duplicate-free
+allowed subset defining its exact execution allowlist, not a grant or Profile.
+Materialization captures coherent facets for the same Session/Environment;
+synchronous validation checks every exact captured facet and the remote generation
+without re-resolution. Materialize and argument validation receive no token;
+description receives pure Session/Run/Environment identity data. Only execution
+after policy/approval receives a fresh token. Stream authority starts on listen and
+ends on done, error, cancellation, or exact registration/connection retirement.
+Late results cannot migrate to replacements; revocation does not roll back
+in-flight mutations.
+
+Filesystem's installed `plugins/filesystem_tools/packages/backend` reuses its root
+tool semantics: `read_file` gets read only, `apply_patch`/`delete_file` get read and
+mutation, and `create_file` gets mutation only. Search describes from pure identity
+and executes with read only. Reverse calls remain unary on protocol version 2.
+Backend/frontend availability is independent. Chat, Command Tools, and Local
+Directory Project Selector migration remains deferred. These checks authorize the
+host-service API, not native OS access; process separation is not a sandbox.
 
 [`contracts-and-capabilities.md`](contracts-and-capabilities.md) is the detailed
 specification for advertisements, point metadata, host-call authority, transport,

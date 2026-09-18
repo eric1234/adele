@@ -470,10 +470,11 @@ The current stock projections apply this distinction to Session-authorized
 Environment facets: Filesystem Tools owns `read_file`, `apply_patch`,
 `create_file`, and `delete_file`, Search Tools owns `search`, and Command Tools
 owns direct-argv `run_command` over the foreground process facet. No separate
-Command, Shell, or Search capability is introduced. Search runs as an installed AOT
-backend through the generic remote model-tool adapter; its pure-Dart root package
-still owns validation, traversal, exclusions, and result semantics. Filesystem and
-Command Tools remain in process.
+Command, Shell, or Search capability is introduced. Search and Filesystem Tools run
+as installed AOT backends through the generic remote model-tool adapter; their
+pure-Dart root packages still own validation, algorithms, and result semantics.
+Command Tools remains in process; its migration and remote process host services
+are deferred.
 
 ## Tool definitions and catalog
 
@@ -498,12 +499,24 @@ The next model invocation may rematerialize the set. A protocol requiring catalo
 
 Remote model tools use public `adele_model_tool/remote_model_tool.dart` transport
 and the app's `RemoteModelToolAdapter`, not kernel transport or a second registry.
-Materialization captures the exact remote registration and requested Session-bound
-Environment read facet. Descriptors carry an opaque backend route ID, not a
-persistent handle or authority token. Synchronous `validateBinding()` checks both
-captured generations; replacements require fresh resolution. Materialize/describe
-use fresh read-authority contexts, and execute retains one only for its stream
-lifetime. Argument validation has no host authority. See
+Exposure `hostServices` declares maximum read/mutation dependencies. Materialization
+captures the exact remote registration and requested Session-bound Environment
+facets, requiring the same Session and Environment across them. Descriptors carry
+an opaque backend route ID, not a persistent handle or authority token, and required
+`executionHostServices`: an exact validated subset of the exposure's dependencies.
+Synchronous `validateBinding()` checks the remote generation and all captured facets
+without re-resolution, not just the tool's execution subset.
+
+Materialize and argument validation receive no token. Description receives pure
+route/argument/Session/Run/Environment identity data without host calls. Only
+execution after policy/approval receives fresh stream-lifetime authority for the
+descriptor's services. Transported IDs do not grant or select authority. Search
+executes with read only; Filesystem descriptors request read for `read_file`,
+read/mutation for `apply_patch` and `delete_file`, and mutation only for `create_file`. The separate
+generated mutation service supports only create-new, conditional replacement, and
+conditional deletion, leaving the read service unchanged. Reverse calls remain
+unary; authority is revoked on settlement, cancellation, or retirement, without
+promising rollback of in-flight effects or an OS sandbox. See
 [`contracts-and-capabilities.md`](contracts-and-capabilities.md#remote-model-tools).
 
 ## Provider proposal versus ToolInvocation
@@ -559,7 +572,12 @@ Static metadata cannot fully describe concrete operations. Before policy/approva
 
 Examples include exact file/resource targets, observed versions, cwd, runtime resource identity, likely mutation scope, network uncertainty, and resource creation.
 
-Preflight may require bounded observation/read operations. If approval depends on observed state, material state must be revalidated immediately before execution. Effect description is an aid to policy/approval, not a guarantee that an open-ended command has no other effects; uncertainty must be representable.
+Future preflight may require bounded observation/read operations. Current remote
+model-tool description is pure identity/argument processing and has no host-service
+authority; file observation and revision checks occur during authorized execution.
+If approval depends on observed state, material state must be revalidated immediately
+before execution. Effect description is an aid to policy/approval, not a guarantee
+that an open-ended command has no other effects; uncertainty must be representable.
 
 A future policy engine may need semantic identity, exact binding/provider trust, canonical arguments, Run/Session/Agent/Workflow context, Environment, static effects, derived targets/effects, uncertainty, and runtime-resource information.
 

@@ -35,6 +35,8 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
                 'hostServices': [
                   if (options['read'] != false)
                     authorizedEnvironmentReadServiceId,
+                  if (options['mutation'] == true)
+                    authorizedEnvironmentMutationServiceId,
                 ],
               },
       ).toMap(),
@@ -79,6 +81,21 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
                   remoteModelToolServiceExecuteId => 'execute',
                   _ => null,
                 };
+          if (operation == 'materialize' && response['ok'] == true) {
+            if (options.containsKey('wireServices') ||
+                options['omitExecutionServices'] == true) {
+              response['payload'] = [
+                for (final descriptor in response['payload']! as List)
+                  {
+                    for (final entry in (descriptor as Map).entries)
+                      if (entry.key != 'executionHostServices')
+                        entry.key: entry.value,
+                    if (options['omitExecutionServices'] != true)
+                      'executionHostServices': options['wireServices'],
+                  },
+              ];
+            }
+          }
           if (operation != null &&
               operation == probe.malformed &&
               (response['ok'] == true || response['kind'] == 'streamItem')) {
@@ -121,10 +138,11 @@ final class _Probe implements RemoteModelToolService {
   final pending = <int, Completer<Map<String, Object?>>>{};
   final ready = <String, Completer<void>>{};
   final releases = <String, Completer<void>>{};
-  final routes = <String>{};
+  final routes = <String, List<String>>{};
   int nextRequest = 0;
   int nextMaterialization = 0;
   String? malformed;
+  String? lastExecutionToken;
 
   Future<Map<String, Object?>> call(
     String token, {
@@ -165,7 +183,7 @@ final class _Probe implements RemoteModelToolService {
         return true;
       })(),
       'replay' => await call(
-        payload['token']! as String,
+        payload['token'] as String? ?? 'invented-pre-policy',
         service:
             payload['service'] as String? ?? authorizedEnvironmentReadServiceId,
         method:
@@ -189,9 +207,22 @@ final class _Probe implements RemoteModelToolService {
   Future<void> operation(Map<String, Object?> record) async {
     records.add(record);
     final token = record['token'] as String?;
-    if (token != null) {
+    if (record['operation'] != 'execute') {
+      record['attempts'] = {
+        'read': await call(lastExecutionToken ?? 'invented-pre-policy'),
+        'mutation': await call(
+          lastExecutionToken ?? 'invented-pre-policy',
+          service: authorizedEnvironmentMutationServiceId,
+          method: authorizedEnvironmentMutationServiceCreateTextFileId,
+          payload: const {'relativePath': 'premature.txt', 'text': 'forbidden'},
+        ),
+      };
+    }
+    final services = routes[record['routeId']] ?? const <String>[];
+    if (token != null &&
+        services.contains(authorizedEnvironmentReadServiceId)) {
       final read = AuthorizedEnvironmentReadServiceClient(
-        _HostChannel(this, token),
+        _HostChannel(this, token, authorizedEnvironmentReadServiceId),
       );
       final authority = await read.authority();
       record['authority'] = {
@@ -203,6 +234,27 @@ final class _Probe implements RemoteModelToolService {
           .map((entry) => entry.relativePath)
           .toList();
       record['text'] = (await read.readFile('probe.txt')).text;
+    }
+    if (token != null &&
+        services.contains(authorizedEnvironmentMutationServiceId)) {
+      final mutation = AuthorizedEnvironmentMutationServiceClient(
+        _HostChannel(this, token, authorizedEnvironmentMutationServiceId),
+      );
+      final created = await mutation.createTextFile('created.txt', 'new text');
+      final replaced = await mutation.replaceExistingTextFile(
+        'created.txt',
+        'replacement text',
+        created.revision,
+      );
+      await mutation.deleteExistingTextFile('created.txt', replaced.revision);
+      record['mutations'] = [created.revision, replaced.revision];
+    }
+    if (record['operation'] == 'execute') {
+      lastExecutionToken = token;
+      final count = records
+          .where((item) => item['operation'] == 'execute')
+          .length;
+      (ready['execute:$count'] ??= Completer<void>()).complete();
     }
     await hold(record['operation']! as String);
   }
@@ -216,10 +268,7 @@ final class _Probe implements RemoteModelToolService {
   }
 
   @override
-  Future<List<RemoteToolDescriptor>> materialize(
-    String sessionId,
-    String? hostInvocationContext,
-  ) async {
+  Future<List<RemoteToolDescriptor>> materialize(String sessionId) async {
     final generation = nextMaterialization++;
     final descriptors = [
       for (var index = 0; index < (options['count'] as int? ?? 1); index++)
@@ -237,13 +286,27 @@ final class _Probe implements RemoteModelToolService {
             'additionalProperties': false,
           },
           routeId: 'route-$generation-$index',
+          executionHostServices: options.containsKey('executionServices')
+              ? List<String>.from(
+                  (options['executionServices']! as List)[index] as List,
+                )
+              : [
+                  if (options['read'] != false)
+                    authorizedEnvironmentReadServiceId,
+                  if (options['mutation'] == true)
+                    authorizedEnvironmentMutationServiceId,
+                ],
         ),
     ];
-    routes.addAll(descriptors.map((descriptor) => descriptor.routeId));
+    routes.addEntries(
+      descriptors.map(
+        (descriptor) =>
+            MapEntry(descriptor.routeId, descriptor.executionHostServices),
+      ),
+    );
     await operation({
       'operation': 'materialize',
       'sessionId': sessionId,
-      'token': hostInvocationContext,
       'routes': descriptors.map((descriptor) => descriptor.routeId).toList(),
     });
     return descriptors;
@@ -254,17 +317,15 @@ final class _Probe implements RemoteModelToolService {
     String routeId,
     Map<String, Object?> proposedArguments,
   ) async {
-    if (!routes.contains(routeId)) throw StateError('Unknown route $routeId.');
+    if (!routes.containsKey(routeId)) {
+      throw StateError('Unknown route $routeId.');
+    }
     final record = <String, Object?>{
       'operation': 'validate',
       'routeId': routeId,
       'arguments': proposedArguments,
     };
-    final token =
-        records.lastWhere((record) => record.containsKey('token'))['token']
-            as String?;
-    records.add(record);
-    if (token != null) record['replay'] = await call(token);
+    await operation(record);
     if (proposedArguments['value'] == 'invalid') {
       throw const RemoteToolArgumentValidationFailure(
         code: 'invalid_arguments',
@@ -286,27 +347,35 @@ final class _Probe implements RemoteModelToolService {
     RemoteCanonicalToolArguments arguments,
     String sessionId,
     String runId,
-    String? hostInvocationContext,
+    String? environmentId,
   ) async {
-    if (!routes.contains(routeId)) throw StateError('Unknown route $routeId.');
+    if (!routes.containsKey(routeId)) {
+      throw StateError('Unknown route $routeId.');
+    }
     await operation({
       'operation': 'describe',
       'routeId': routeId,
       'arguments': arguments.snapshot,
       'sessionId': sessionId,
       'runId': runId,
-      'token': hostInvocationContext,
+      'environmentId': environmentId,
     });
     return RemoteEffectDescription.fromLocal(
       EffectDescription(
-        effects: [ToolEffect.resourceInspection, ToolEffect.sourceRead],
+        effects: options['mutation'] == true
+            ? [ToolEffect.sourceMutation]
+            : [ToolEffect.resourceInspection, ToolEffect.sourceRead],
         targets: [
           EffectTarget(
-            uri: Uri.parse('adele-environment://tool-environment/probe.txt'),
+            uri: Uri.parse(
+              'adele-environment://${environmentId ?? 'none'}/probe.txt',
+            ),
           ),
         ],
         summary: 'Inspect the captured probe authority',
-        uncertainty: EffectUncertainty.uncertain,
+        uncertainty: options['mutation'] == true
+            ? EffectUncertainty.none
+            : EffectUncertainty.uncertain,
       ),
     );
   }
@@ -317,15 +386,19 @@ final class _Probe implements RemoteModelToolService {
     RemoteCanonicalToolArguments arguments,
     String sessionId,
     String runId,
+    String? environmentId,
     String? hostInvocationContext,
   ) async* {
-    if (!routes.contains(routeId)) throw StateError('Unknown route $routeId.');
+    if (!routes.containsKey(routeId)) {
+      throw StateError('Unknown route $routeId.');
+    }
     await operation({
       'operation': 'execute',
       'routeId': routeId,
       'arguments': arguments.snapshot,
       'sessionId': sessionId,
       'runId': runId,
+      'environmentId': environmentId,
       'token': hostInvocationContext,
     });
     for (final progress in [
@@ -370,17 +443,23 @@ final class _Probe implements RemoteModelToolService {
   }
 }
 
-// Test framing shares raw replay correlation with generated read clients. Domain
+// Test framing shares raw replay correlation with generated host clients. Domain
 // requests/results still use the generated contracts, not handwritten codecs.
 final class _HostChannel implements AdeleRequestChannel {
-  const _HostChannel(this.probe, this.token);
+  const _HostChannel(this.probe, this.token, this.service);
 
   final _Probe probe;
   final String token;
+  final String service;
 
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) async {
-    final response = await probe.call(token, method: method, payload: payload);
+    final response = await probe.call(
+      token,
+      service: service,
+      method: method,
+      payload: payload,
+    );
     if (response['ok'] != true) {
       throw StateError('Host call rejected: ${response['error']}');
     }

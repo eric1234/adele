@@ -42,20 +42,37 @@ and returns the already-bound `sessionId` and `environmentId`. No method accepts
 authority-selection IDs or exposes mutation/process operations; this service is
 not a separately selected provider capability.
 
+Separate generated unary `AuthorizedEnvironmentMutationService` exposes only
+`createTextFile(relativePath, text)`, `replaceExistingTextFile(relativePath,
+replacementText, expectedRevision)`, and `deleteExistingTextFile(relativePath,
+expectedRevision)`. It reuses the provider's mutation results and declared
+`EnvironmentFailure`, preserving create-new and revision-conditional semantics.
+It has no authority query, authority-selection IDs, reads, or process methods.
+The read service is unchanged; neither service implicitly grants the other.
+
 For remote inference sources, the app captures canonical
 `InferenceContextSourceContext`, obtains its `AuthorizedEnvironmentFileReadFacet`,
 and validates exact authority around each read. A secure opaque per-operation host
 context allowlists this service on the exact connection generation; transported
 Session/Run IDs never select authority. Calls use the existing ports/framed host
 and are revoked at operation settlement, retirement, and termination. Remote model
-tools capture the same Session-bound read facet during materialization and use
-fresh contexts for materialize/describe and the execute stream, never argument
-validation. Stream authority starts on listen and ends on done, error,
-cancellation, or retirement. Stock Search's AOT backend composes these directory
-and file reads using its existing pure-Dart semantics. See
+tools capture the read/mutation facets requested by exposure `hostServices` during
+materialization, validating the same Session and Environment across facets. Every
+captured exact binding is checked synchronously without re-resolution. Each tool's
+required `executionHostServices` selects an exact allowed subset of those
+dependencies. Materialize and argument validation receive no token; description
+receives only pure identity data, including nullable Environment identity.
+Only execution after policy/approval receives an operation token. Stream authority
+starts on listen and ends on done, error, cancellation, or retirement.
+
+Stock Search's AOT backend composes directory and file reads using its existing
+pure-Dart semantics. Filesystem's AOT backend reuses its root tools: `read_file`
+gets read only, `apply_patch`/`delete_file` get read and mutation, and `create_file`
+gets mutation only. Transported identities cannot choose an Environment. See
 [operation-scoped host calls](../../docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls).
-This unary read channel supports neither reverse streaming nor general symmetric
-RPC and is not a sandbox.
+These unary host services use the existing version-2 protocols, support neither
+reverse streaming nor general symmetric RPC, and are not an OS sandbox. Revocation
+does not roll back or cancel an already-started mutation.
 
 `runForegroundProcess` accepts a non-empty program, an immutable ordered
 argument vector, an Environment-relative working directory, and a required

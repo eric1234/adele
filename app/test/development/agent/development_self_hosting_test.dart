@@ -15,7 +15,7 @@ import 'chat_test_topology.dart';
 
 void main() {
   test(
-    'self-hosting prepares and owns remote AGENTS and Search on one host',
+    'self-hosting prepares and owns remote AGENTS, Search and Filesystem on one host',
     () async {
       final container = await Directory.systemTemp.createTemp(
         'adele-self-hosting-backends-',
@@ -32,6 +32,11 @@ void main() {
       expect(artifacts.searchToolsArtifact.path, endsWith('/search-tools.aot'));
       expect(await artifacts.searchToolsArtifact.length(), greaterThan(0));
       expect(
+        artifacts.filesystemToolsArtifact.path,
+        endsWith('/filesystem-tools.aot'),
+      );
+      expect(await artifacts.filesystemToolsArtifact.length(), greaterThan(0));
+      expect(
         compiled.where((line) => line.startsWith('Compiling ')),
         unorderedEquals([
           'Compiling packages/plugin_backend_host/bin/adele_backend_host.dart.',
@@ -39,6 +44,7 @@ void main() {
           'Compiling plugins/git_environment/packages/backend/bin/git_environment_backend.dart.',
           'Compiling plugins/agents_md/packages/backend/bin/agents_md_backend.dart.',
           'Compiling plugins/search_tools/packages/backend/bin/search_tools_backend.dart.',
+          'Compiling plugins/filesystem_tools/packages/backend/bin/filesystem_tools_backend.dart.',
         ]),
       );
       final git = await _createGitFixture(container);
@@ -63,6 +69,13 @@ void main() {
           .singleWhere(
             (binding) =>
                 binding.id.value == 'dev.adele.plugin.search-tools.model-tools',
+          );
+      final filesystem = topology.runtime.extensions
+          .discover(modelToolContributions)
+          .singleWhere(
+            (binding) =>
+                binding.id.value ==
+                'dev.adele.plugin.filesystem-tools.model-tools',
           );
       final source = topology.runtime.extensions
           .discover(inferenceContextSources)
@@ -102,6 +115,7 @@ void main() {
       );
       expect(source.validate, throwsA(isA<StaleExtensionBinding>()));
       expect(search.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(filesystem.validate, throwsA(isA<StaleExtensionBinding>()));
 
       final reduced = await DevelopmentSelfHostingTopology.start(
         artifacts: artifacts,

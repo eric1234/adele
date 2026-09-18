@@ -8,6 +8,7 @@ import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
+import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
@@ -42,6 +43,12 @@ void main() {
       expect(runtime.plugins.registry, same(runtime.registry));
       expect(runtime.plugins.extensions, same(runtime.extensions));
       expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
+      expect(
+        runtime.extensions
+            .discover(modelToolContributions)
+            .map((b) => b.id.value),
+        ['dev.adele.plugin.command-tools.model-tools'],
+      );
       expect(runtime.plugins.state, ApplicationPluginState.ready);
       expect(runtime.plugins.failure, isNull);
       expect(runtime.plugins.catalog!.installations, isEmpty);
@@ -173,6 +180,12 @@ void main() {
         );
         expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
         expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
+        expect(
+          runtime.extensions
+              .discover(modelToolContributions)
+              .map((b) => b.id.value),
+          ['dev.adele.plugin.command-tools.model-tools'],
+        );
         final Project project = runtime.lifecycle.createProject(
           Uri.parse('https://example.test/after-start-failure'),
         );

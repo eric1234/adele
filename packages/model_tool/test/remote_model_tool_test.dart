@@ -22,33 +22,56 @@ void main() {
   test(
     'materialize preserves descriptor fields and opaque executable route',
     () async {
-      for (final context in <String?>[null, 'opaque-host-context']) {
-        final descriptors = await client.materialize('session-1', context);
-        expect(remoteModelToolServiceId, 'modelTool');
-        expect(channel.method, 'modelTool.materialize');
-        expect(channel.payload, {
-          'sessionId': 'session-1',
-          'hostInvocationContext': context,
-        });
-        expect(service.materialization, ('session-1', context));
-        final descriptor = descriptors.single;
-        expect(descriptor.toolId, 'dev.adele.tool.test');
-        expect(descriptor.toolDescription, 'Semantic tool description');
-        expect(descriptor.modelAlias, 'test_tool');
-        expect(descriptor.modelDescription, 'Model tool description');
-        expect(descriptor.argumentsSchema, {'type': 'object'});
-        expect(descriptor.routeId, 'opaque/generation:1/executable:2');
-        expect(descriptor.toToolDefinition().id.value, descriptor.toolId);
-        expect(descriptor.toModelDefinition().alias, descriptor.modelAlias);
-        expect(
-          descriptor.toModelDefinition().argumentsSchema,
-          descriptor.argumentsSchema,
-        );
-        expect(descriptor, isNot(same(service.descriptor)));
-        expect(() => descriptors.clear(), throwsUnsupportedError);
-      }
+      final descriptors = await client.materialize('session-1');
+      expect(remoteModelToolServiceId, 'modelTool');
+      expect(channel.method, 'modelTool.materialize');
+      expect(channel.payload, {'sessionId': 'session-1'});
+      expect(service.materialization, 'session-1');
+      final descriptor = descriptors.single;
+      expect(descriptor.toolId, 'dev.adele.tool.test');
+      expect(descriptor.toolDescription, 'Semantic tool description');
+      expect(descriptor.modelAlias, 'test_tool');
+      expect(descriptor.modelDescription, 'Model tool description');
+      expect(descriptor.argumentsSchema, {'type': 'object'});
+      expect(descriptor.routeId, 'opaque/generation:1/executable:2');
+      expect(descriptor.executionHostServices, ['authorizedEnvironmentRead']);
+      expect(
+        () => descriptor.executionHostServices.clear(),
+        throwsUnsupportedError,
+      );
+      expect(descriptor.toToolDefinition().id.value, descriptor.toolId);
+      expect(descriptor.toModelDefinition().alias, descriptor.modelAlias);
+      expect(
+        descriptor.toModelDefinition().argumentsSchema,
+        descriptor.argumentsSchema,
+      );
+      expect(descriptor, isNot(same(service.descriptor)));
+      expect(() => descriptors.clear(), throwsUnsupportedError);
     },
   );
+
+  test('constructor and fromLocal snapshot execution service requests', () {
+    final services = ['authorizedEnvironmentMutation'];
+    final descriptor = _descriptor(executionHostServices: services);
+    final converted = RemoteToolDescriptor.fromLocal(
+      local.ToolRegistration(
+        definition: descriptor.toToolDefinition(),
+        modelDefinition: descriptor.toModelDefinition(),
+        executable: _UnusedExecutable(),
+      ),
+      routeId: 'converted-route',
+      executionHostServices: services,
+    );
+    services.clear();
+    for (final value in [descriptor, converted]) {
+      expect(value.executionHostServices, ['authorizedEnvironmentMutation']);
+      expect(() => value.executionHostServices.clear(), throwsUnsupportedError);
+    }
+    expect(converted.routeId, 'converted-route');
+    expect(converted.toolId, descriptor.toolId);
+    expect(converted.modelAlias, descriptor.modelAlias);
+    expect(converted.argumentsSchema, descriptor.argumentsSchema);
+  });
 
   test(
     'validation transports immutable canonical arguments without authority',
@@ -82,31 +105,39 @@ void main() {
       final arguments = RemoteCanonicalToolArguments(
         snapshot: {'query': 'needle'},
       );
-      final effect = await client.describe(
-        'route',
-        arguments,
-        'session',
-        'run',
-        null,
-      );
-      expect(channel.method, 'modelTool.describe');
-      expect(channel.payload, {
-        'routeId': 'route',
-        'arguments': {
-          'snapshot': {'query': 'needle'},
-        },
-        'sessionId': 'session',
-        'runId': 'run',
-        'hostInvocationContext': null,
-      });
-      expect(service.invocation, ('route', 'session', 'run', null));
-      expect(service.arguments!.snapshot, arguments.snapshot);
-      expect(effect.effects, RemoteToolEffect.values);
-      expect(effect.targetUris, [Uri.parse('environment://authorized/lib')]);
-      expect(effect.summary, 'Inspect authorized source');
-      expect(effect.uncertainty, RemoteEffectUncertainty.uncertain);
-      expect(() => effect.effects.clear(), throwsUnsupportedError);
-      expect(() => effect.targetUris.clear(), throwsUnsupportedError);
+      for (final environmentId in <String?>[null, 'captured-environment']) {
+        final effect = await client.describe(
+          'route',
+          arguments,
+          'session',
+          'run',
+          environmentId,
+        );
+        expect(channel.method, 'modelTool.describe');
+        expect(channel.payload, {
+          'routeId': 'route',
+          'arguments': {
+            'snapshot': {'query': 'needle'},
+          },
+          'sessionId': 'session',
+          'runId': 'run',
+          'environmentId': environmentId,
+        });
+        expect(service.invocation, (
+          'route',
+          'session',
+          'run',
+          environmentId,
+          null,
+        ));
+        expect(service.arguments!.snapshot, arguments.snapshot);
+        expect(effect.effects, RemoteToolEffect.values);
+        expect(effect.targetUris, [Uri.parse('environment://authorized/lib')]);
+        expect(effect.summary, 'Inspect authorized source');
+        expect(effect.uncertainty, RemoteEffectUncertainty.uncertain);
+        expect(() => effect.effects.clear(), throwsUnsupportedError);
+        expect(() => effect.targetUris.clear(), throwsUnsupportedError);
+      }
     },
   );
 
@@ -118,13 +149,28 @@ void main() {
         RemoteCanonicalToolArguments(snapshot: {}),
         'session',
         'run',
+        'captured-environment',
         'context',
       );
       expect(service.executions, 0);
       final events = await stream.toList();
       expect(service.executions, 1);
       expect(channel.method, 'modelTool.execute');
-      expect(service.invocation, ('route', 'session', 'run', 'context'));
+      expect(channel.payload, {
+        'routeId': 'route',
+        'arguments': {'snapshot': <String, Object?>{}},
+        'sessionId': 'session',
+        'runId': 'run',
+        'environmentId': 'captured-environment',
+        'hostInvocationContext': 'context',
+      });
+      expect(service.invocation, (
+        'route',
+        'session',
+        'run',
+        'captured-environment',
+        'context',
+      ));
       expect(events.map((event) => event.kind), [
         RemoteToolExecutionEventKind.progress,
         RemoteToolExecutionEventKind.terminal,
@@ -181,6 +227,7 @@ void main() {
             RemoteCanonicalToolArguments(snapshot: {}),
             'session',
             'run',
+            null,
             null,
           )
           .first;
@@ -265,11 +312,54 @@ void main() {
       expect((response['error']! as Map)['code'], 'invalid_request');
     }
     expect(service.validationRoute, isNull);
-    final missingContext = await dispatcher.dispatch(
-      _request(remoteModelToolServiceMaterializeId, {'sessionId': 'session'}),
+    final forbiddenContext = await dispatcher.dispatch(
+      _request(remoteModelToolServiceMaterializeId, {
+        'sessionId': 'session',
+        'hostInvocationContext': null,
+      }),
     );
-    expect((missingContext['error']! as Map)['code'], 'invalid_request');
+    expect((forbiddenContext['error']! as Map)['code'], 'invalid_request');
     expect(service.materialization, isNull);
+    for (final payload in <Map<String, Object?>>[
+      {
+        'routeId': 'route',
+        'arguments': {'snapshot': <String, Object?>{}},
+        'sessionId': 'session',
+        'runId': 'run',
+        'hostInvocationContext': null,
+      },
+      {
+        'routeId': 'route',
+        'arguments': {'snapshot': <String, Object?>{}},
+        'sessionId': 'session',
+        'runId': 'run',
+        'environmentId': null,
+        'hostInvocationContext': 'forbidden',
+      },
+    ]) {
+      final response = await dispatcher.dispatch(
+        _request(remoteModelToolServiceDescribeId, payload),
+      );
+      expect((response['error']! as Map)['code'], 'invalid_request');
+    }
+    expect(service.invocation, isNull);
+    await expectLater(
+      channel.stream(remoteModelToolServiceExecuteId, {
+        'routeId': 'route',
+        'arguments': {'snapshot': <String, Object?>{}},
+        'sessionId': 'session',
+        'runId': 'run',
+        'hostInvocationContext': null,
+      }).toList(),
+      throwsA(
+        isA<AdeleRemoteFailure>().having(
+          (error) => error.code,
+          'code',
+          'invalid_request',
+        ),
+      ),
+    );
+    expect(service.executions, 0);
   });
 
   test(
@@ -352,6 +442,7 @@ void main() {
             modelDescription: values['modelDescription']!,
             argumentsSchema: {},
             routeId: values['routeId']!,
+            executionHostServices: const [],
           ),
           throwsFormatException,
         );
@@ -501,19 +592,25 @@ void main() {
   test(
     'generated decoders enforce constructor rules, enums and exact fields',
     () async {
-      await client.materialize('session', null);
+      await client.materialize('session');
       final descriptor = Map<String, Object?>.from(
         (channel.response!['payload']! as List).single as Map,
       );
       for (final invalid in <Map<String, Object?>>[
         {...descriptor, 'routeId': ''},
         {...descriptor}..remove('routeId'),
+        {...descriptor}..remove('executionHostServices'),
+        {...descriptor, 'executionHostServices': null},
+        {
+          ...descriptor,
+          'executionHostServices': [1],
+        },
         {...descriptor, 'extra': true},
       ]) {
         await expectLater(
           RemoteModelToolServiceClient(
             _ResponseChannel(response: [invalid]),
-          ).materialize('session', null),
+          ).materialize('session'),
           throwsA(isA<AdeleProtocolException>()),
         );
       }
@@ -523,6 +620,7 @@ void main() {
             RemoteCanonicalToolArguments(snapshot: {}),
             'session',
             'run',
+            null,
             null,
           )
           .toList();
@@ -567,6 +665,7 @@ void main() {
                 'session',
                 'run',
                 null,
+                null,
               )
               .toList(),
           throwsA(isA<AdeleProtocolException>()),
@@ -578,6 +677,7 @@ void main() {
 
 RemoteToolDescriptor _descriptor({
   Map<String, Object?> schema = const {'type': 'object'},
+  List<String> executionHostServices = const ['authorizedEnvironmentRead'],
 }) => RemoteToolDescriptor(
   toolId: 'dev.adele.tool.test',
   toolDescription: 'Semantic tool description',
@@ -585,6 +685,7 @@ RemoteToolDescriptor _descriptor({
   modelDescription: 'Model tool description',
   argumentsSchema: schema,
   routeId: 'opaque/generation:1/executable:2',
+  executionHostServices: executionHostServices,
 );
 
 RemoteToolOutcome _outcome({
@@ -604,9 +705,9 @@ RemoteToolOutcome _outcome({
 
 final class _Service implements RemoteModelToolService {
   final descriptor = _descriptor();
-  (String, String?)? materialization;
+  String? materialization;
   String? validationRoute;
-  (String, String, String, String?)? invocation;
+  (String, String, String, String?, String?)? invocation;
   RemoteCanonicalToolArguments? arguments;
   Object? failure;
   int executions = 0;
@@ -638,11 +739,8 @@ final class _Service implements RemoteModelToolService {
   ];
 
   @override
-  Future<List<RemoteToolDescriptor>> materialize(
-    String sessionId,
-    String? hostInvocationContext,
-  ) async {
-    materialization = (sessionId, hostInvocationContext);
+  Future<List<RemoteToolDescriptor>> materialize(String sessionId) async {
+    materialization = sessionId;
     return [descriptor];
   }
 
@@ -662,9 +760,9 @@ final class _Service implements RemoteModelToolService {
     RemoteCanonicalToolArguments arguments,
     String sessionId,
     String runId,
-    String? hostInvocationContext,
+    String? environmentId,
   ) async {
-    invocation = (routeId, sessionId, runId, hostInvocationContext);
+    invocation = (routeId, sessionId, runId, environmentId, null);
     this.arguments = arguments;
     return RemoteEffectDescription(
       effects: RemoteToolEffect.values,
@@ -680,13 +778,25 @@ final class _Service implements RemoteModelToolService {
     RemoteCanonicalToolArguments arguments,
     String sessionId,
     String runId,
+    String? environmentId,
     String? hostInvocationContext,
   ) {
     executions++;
-    invocation = (routeId, sessionId, runId, hostInvocationContext);
+    invocation = (
+      routeId,
+      sessionId,
+      runId,
+      environmentId,
+      hostInvocationContext,
+    );
     this.arguments = arguments;
     return producer ?? Stream.fromIterable(events);
   }
+}
+
+final class _UnusedExecutable implements local.ToolExecutable {
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError();
 }
 
 Map<String, Object?> _request(String method, Map<String, Object?> payload) => {
@@ -739,7 +849,7 @@ final class _Channel implements AdeleStreamChannel {
         if (!await iterator.moveNext()) break;
         final frame = iterator.current;
         if (frame['kind'] == 'streamDone') break;
-        if (frame['kind'] == 'streamError') {
+        if (frame['kind'] == 'streamFailure') {
           throw _RemoteFailure(frame['error']! as Map);
         }
         yield frame['payload'];

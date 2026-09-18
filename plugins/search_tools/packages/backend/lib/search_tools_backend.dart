@@ -14,13 +14,14 @@ final class SearchToolsBackend implements RemoteModelToolService {
   final AdeleHostRequestMultiplexer _hostRequests;
 
   @override
-  Future<List<RemoteToolDescriptor>> materialize(
-    String sessionId,
-    String? hostInvocationContext,
-  ) async {
+  Future<List<RemoteToolDescriptor>> materialize(String sessionId) async {
     final registration = const SearchExecutable.unbound().registration;
     return [
-      RemoteToolDescriptor.fromLocal(registration, routeId: searchToolId.value),
+      RemoteToolDescriptor.fromLocal(
+        registration,
+        routeId: searchToolId.value,
+        executionHostServices: const [authorizedEnvironmentReadServiceId],
+      ),
     ];
   }
 
@@ -51,10 +52,12 @@ final class SearchToolsBackend implements RemoteModelToolService {
     RemoteCanonicalToolArguments arguments,
     String sessionId,
     String runId,
-    String? hostInvocationContext,
+    String? environmentId,
   ) async {
     _requireRoute(routeId);
-    final tool = await _operationTool(hostInvocationContext);
+    final tool = SearchExecutable(
+      _OperationReadFacet(sessionId, environmentId),
+    );
     return RemoteEffectDescription.fromLocal(
       await tool.describe(
         arguments.toLocal(),
@@ -72,10 +75,15 @@ final class SearchToolsBackend implements RemoteModelToolService {
     RemoteCanonicalToolArguments arguments,
     String sessionId,
     String runId,
+    String? environmentId,
     String? hostInvocationContext,
   ) async* {
     _requireRoute(routeId);
-    final tool = await _operationTool(hostInvocationContext);
+    final tool = _operationTool(
+      sessionId,
+      environmentId,
+      hostInvocationContext,
+    );
     yield* tool
         .execute(
           arguments.toLocal(),
@@ -97,7 +105,11 @@ final class SearchToolsBackend implements RemoteModelToolService {
     }
   }
 
-  Future<SearchExecutable> _operationTool(String? hostInvocationContext) async {
+  SearchExecutable _operationTool(
+    String sessionId,
+    String? environmentId,
+    String? hostInvocationContext,
+  ) {
     if (hostInvocationContext == null) {
       throw StateError(
         'Search requires an authorized host invocation context.',
@@ -109,17 +121,30 @@ final class SearchToolsBackend implements RemoteModelToolService {
         serviceId: authorizedEnvironmentReadServiceId,
       ),
     );
-    final identity = await client.authority();
-    return SearchExecutable(_OperationReadFacet(client, identity));
+    return SearchExecutable(
+      _OperationReadFacet(sessionId, environmentId, client: client),
+    );
   }
 }
 
 final class _OperationReadFacet implements AuthorizedEnvironmentFileReadFacet {
-  _OperationReadFacet(this._client, AuthorizedEnvironmentIdentity identity)
-    : sessionId = SessionId(identity.sessionId),
-      environmentId = EnvironmentId(identity.environmentId);
+  _OperationReadFacet(
+    String sessionId,
+    String? environmentId, {
+    AuthorizedEnvironmentReadServiceClient? client,
+  }) : sessionId = SessionId(sessionId),
+       environmentId = EnvironmentId(
+         environmentId ??
+             (throw StateError('Search requires a captured Environment ID.')),
+       ),
+       _client = client;
 
-  final AuthorizedEnvironmentReadServiceClient _client;
+  final AuthorizedEnvironmentReadServiceClient? _client;
+
+  // Description carries identity only and must never issue host reads.
+  AuthorizedEnvironmentReadServiceClient get _readClient =>
+      _client ??
+      (throw StateError('Description has no Environment read authority.'));
 
   @override
   final SessionId sessionId;
@@ -129,11 +154,11 @@ final class _OperationReadFacet implements AuthorizedEnvironmentFileReadFacet {
 
   @override
   Future<EnvironmentDirectoryListing> readDirectory(String relativePath) =>
-      _client.readDirectory(relativePath);
+      _readClient.readDirectory(relativePath);
 
   @override
   Future<EnvironmentTextFile> readFile(String relativePath) =>
-      _client.readFile(relativePath);
+      _readClient.readFile(relativePath);
 
   @override
   void validateBinding() {

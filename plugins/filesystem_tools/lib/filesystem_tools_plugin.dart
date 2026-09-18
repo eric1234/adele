@@ -11,6 +11,10 @@ final PluginId filesystemToolsPluginId = PluginId(
   'dev.adele.plugin.filesystem-tools',
 );
 
+final ExtensionId filesystemToolsExtensionId = ExtensionId(
+  'dev.adele.plugin.filesystem-tools.model-tools',
+);
+
 final ToolId applyPatchToolId = ToolId(
   'dev.adele.plugin.filesystem-tools.apply-patch',
 );
@@ -21,7 +25,7 @@ final class FilesystemToolsPlugin {
   ExtensionRegistration activate(ExtensionRegistry extensions) =>
       extensions.register(
         point: modelToolContributions,
-        id: ExtensionId('dev.adele.plugin.filesystem-tools.model-tools'),
+        id: filesystemToolsExtensionId,
         value: const _FilesystemModelTools(),
       );
 }
@@ -46,14 +50,24 @@ final class _FilesystemModelTools implements ModelToolContribution {
         'The filesystem facets belong to different Environments.',
       );
     }
-    return <ToolRegistration>[
-      _ReadFileExecutable(read).registration,
-      _ApplyPatchExecutable(read, mutation).registration,
-      _CreateFileExecutable(mutation).registration,
-      _DeleteFileExecutable(read, mutation).registration,
-    ];
+    return filesystemToolRegistrations(read, mutation);
   }
 }
+
+/// Shared semantics for in-process and backend adapters of this plugin.
+///
+/// Callers supply coherent facets for one Session and Environment. Construction
+/// does not access their identity or effects, so descriptors and validation need
+/// no host authority.
+List<ToolRegistration> filesystemToolRegistrations(
+  AuthorizedEnvironmentFileReadFacet read,
+  AuthorizedEnvironmentFileMutationFacet mutation,
+) => <ToolRegistration>[
+  _ReadFileExecutable(read).registration,
+  _ApplyPatchExecutable(read, mutation).registration,
+  _CreateFileExecutable(mutation).registration,
+  _DeleteFileExecutable(read, mutation).registration,
+];
 
 final class _ReadFileExecutable implements ToolExecutable {
   const _ReadFileExecutable(this._fileSystem);

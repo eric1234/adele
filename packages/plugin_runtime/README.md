@@ -121,8 +121,8 @@ termination do not remove unrelated registrations or replacements. The app suppl
 the inference-source and model-tool adapters; runtime owns neither point's metadata
 or composition rules.
 
-The runtime knows no Git/OpenAI/AGENTS.md/Search source paths, credential schemas, or stock
-exposure tables. Startup argv is opaque plugin input. Profiles/enable-disable
+The runtime knows no Git/OpenAI/AGENTS.md/Search/Filesystem source paths, credential
+schemas, or stock exposure tables. Startup argv is opaque plugin input. Profiles/enable-disable
 management, version solving, watching, and hot upgrade remain deferred.
 
 ## Unary Host Calls
@@ -149,10 +149,24 @@ isolate, and the runtime validates generation, invocation liveness, and the serv
 allowlist before dispatch and after settlement. Late responses cannot migrate to
 a replacement. Semantic Session/Run identifiers do not confer authority.
 Generated dispatchers preserve declared failures; the app captures canonical
-inference-source context or a materialized tool's Session-bound read facet to supply
-the authorized Environment read service. Its no-argument authority query and
-file/directory reads cannot select a different Environment; mutation and process
-host services are absent.
+inference-source context or a materialized tool's coherent Session-bound
+read/mutation facets. The unchanged authorized read service's no-argument authority
+query and file/directory reads cannot select a different Environment. Separate
+generated `AuthorizedEnvironmentMutationService` supplies only create-new,
+conditional replacement, and conditional deletion, with no authority query,
+authority-selection IDs, or process methods.
+
+For remote model tools, exposure `hostServices` declares maximum captured
+dependencies; each descriptor's required `executionHostServices` must be an exact
+allowed subset. The app adapter validates these point-specific declarations and
+all captured exact bindings, not this package. Materialize/validation receive no
+token and description receives pure identity data. Only execution after
+policy/approval receives a fresh stream-lifetime token whose allowlist contains
+exactly that descriptor's services. Filesystem read execution cannot acquire
+mutation through the contribution's broader dependency list; Search execution is
+read-only. Captured facets must share Session/Environment identity, with no
+re-resolution or authority chosen by transported IDs. These services add no transport
+message kinds or protocol bump. Revocation does not roll back in-flight mutations.
 See [the host-call contract](../../docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls).
 
 Plugins use public `adele_plugin_backend_support`, not this package, for their
