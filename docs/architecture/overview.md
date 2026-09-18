@@ -42,13 +42,14 @@ Public plugin-facing APIs remain experimental.
 Normal startup consumes a prepared installation snapshot with independently
 optional backend and frontend components. Backends advertise ready capabilities
 and extensions; frontends use metadata-driven presentation registration. Generic
-host adapters and operation-scoped unary read/mutation host calls support the
-AGENTS.md, Search, and Filesystem Tools AOT backends, while three stock plugins
-remain statically composed in process. This reuses existing registries, isolate
+host adapters and operation-scoped unary read/mutation and server-streaming process
+host calls support the AGENTS.md, Search, Filesystem Tools, and Command Tools AOT
+backends, while two stock plugins remain statically composed in process. This
+reuses existing registries, isolate
 ports/framing, prepared EVC execution, and
 per-view decoding. Plugin installation, production packaging, profile/enable-disable
-management, version solving, filesystem watching, general symmetric RPC, reverse
-streaming, and hot upgrade remain unimplemented.
+management, version solving, filesystem watching, general symmetric RPC,
+client/bidirectional streaming, ambient callbacks, and hot upgrade remain unimplemented.
 
 The normal shell supports Project opening, title-only Task creation with a real
 Git primary Environment, and one stock Chat Session with sequential approval-gated
@@ -69,16 +70,15 @@ ADELE has one Flutter desktop application, `adele_desktop`, under `app/`. The ap
 It owns one `CapabilityRegistry`, `ExtensionRegistry`, `InMemoryProductStore`,
 `ProductLifecycleCoordinator.generated` wired to those same registries and store,
 `InferenceContextComposer` over the same extension registry, and retained
-`ChatStrategyPlugin`. By default it statically activates Chat,
-Command Tools, and Local Directory Project
-Selector in process, all on the same extension registry. The selector is the
-third owned activation; the reduced composition omits only Command Tools. This
+`ChatStrategyPlugin`. It statically activates Chat and Local Directory Project
+Selector in process on the same extension registry, with no `includeCommandTools`
+option. These are its only two static activations. This
 is an implicit in-process composition, outside installed-component discovery and
 not a profile/configuration API. Construction is synchronous and provider-free. The
 runtime also owns pure-Dart `ApplicationPluginBootstrap` on those same capability
 and extension registries, without starting backend work in its constructor.
-AGENTS.md, Search, and Filesystem Tools have no production app dependency/import or
-static activation; their prepared backends supply contributions through generic
+AGENTS.md, Search, Filesystem Tools, and Command Tools have no production app
+dependency/import or static activation; their prepared backends supply contributions through generic
 remote extension activation.
 
 The normal Stateful `AdeleApplication` constructs its runtime once synchronously
@@ -138,7 +138,8 @@ states and catalog issues, not a plugin-management UI. Overall `ready` means
 startup settled, not that every backend succeeded or a model is usable.
 
 Git and OpenAI entrypoints own their ready capability advertisements; AGENTS.md,
-Search, and Filesystem Tools own their ready extension advertisements. Generic
+Search, Filesystem Tools, and Command Tools own their ready extension advertisements.
+Generic
 `PluginBackendActivation.registerAdvertised` coherently owns both capability and
 extension registration, rollback, and retirement through the existing registries.
 Internal `RemoteExtensionAdapterRegistry` selects host adapters for known public
@@ -187,7 +188,7 @@ independent actions, not a chooser/default-provider framework.
 
 Normal activation consumes one catalog of prepared backend/frontend installations,
 not source paths or a compiler. No active Environment capability leaves Task
-Environment support unavailable; missing Search or Filesystem backends leaves
+Environment support unavailable; missing Search, Filesystem, or Command backends leaves
 their tools unavailable without in-process fallback. Missing Chat, Filesystem Tools,
 Command Tools, or OpenAI activity EVC leaves the corresponding presentation unavailable
 independently of the other frontends and model backend support.
@@ -199,11 +200,11 @@ Checkout preparation stands in for future installation/update-time compilation;
 activation only consumes prepared artifacts. Caching, plugin management,
 production packaging, and profiles remain deferred. Linux tooling prepares seven
 installations in one `.dart_tool/adele/desktop-plugins/build-*/installations/` root:
-frontend-only Chat and Command Tools, backend-only Git, AGENTS.md, and Search, and
-combined Filesystem Tools and OpenAI. Filesystem's installation has
-`filesystem-tools/backend.aot` and `filesystem-tools/frontend.evc`. Preparation
-produces five backend snapshots plus the host and four EVCs, with no AGENTS-,
-Search-, or Filesystem-specific configuration.
+frontend-only Chat, backend-only Git, AGENTS.md, and Search, and combined Filesystem
+Tools, Command Tools, and OpenAI. Filesystem and Command each contain `backend.aot`
+and `frontend.evc` with independent component availability. Preparation produces
+six backend snapshots plus the host and four EVCs, with no AGENTS-, Search-,
+Filesystem-, or Command-specific configuration.
 `tools/stock_frontend_descriptors.dart` is the singular stock
 build-side descriptor table; app runtime activation has no stock tool/native
 identity table. Deployment uses only `ADELE_PLUGIN_INSTALLATION_ROOT`,
@@ -226,10 +227,12 @@ model capability adapter lives in `app/lib/core/model_provider_host.dart`; norma
 composition has no dependency on development code. Self-hosting uses generic
 `registerAdvertised` for backend-owned exposures but keeps its explicit
 artifact/host/profile topology, including `agentsMdArtifact`, `searchToolsArtifact`,
-and `filesystemToolsArtifact` on the same shared host through
+`filesystemToolsArtifact`, and `commandToolsArtifact` on the same shared host through
 `PluginBackendActivation` and the same generic
-remote adapters. It does not require a normal installation root or catalog discovery,
-consume normal bootstrap configuration, or start its backend owner. Its own
+remote adapters. Self-hosting's `includeCommandTools` controls explicit Command
+backend start/registration, not runtime construction. It does not require a normal
+installation root or catalog discovery, consume normal bootstrap configuration, or
+start its backend owner. Its own
 profile environment configures the backend with the default
 `startupArgumentsOnly: false`; registration includes all advertised
 online contexts, potentially both OpenAI contexts. It then explicitly resolves
@@ -244,7 +247,7 @@ Host implementations are split into small pure-Dart packages where Flutter is no
 
 | Package | Maintained/planned responsibility |
 | --- | --- |
-| `plugin_runtime` | Prepared installation catalog, backend connections, capability/extension activation adapters, and operation-scoped unary host routing |
+| `plugin_runtime` | Prepared installation catalog, backend connections, capability/extension activation adapters, and operation-scoped unary/server-streaming host routing |
 | `plugin_builder` | Source resolution, contract checks/generation coordination, backend/frontend builds, diagnostics, provenance, and caching |
 | `plugin_backend_host` | Shared child-process entrypoint and one external AOT isolate group per active plugin backend |
 | `agent_kernel` | Provider-neutral Run/model/tool semantics, interruptions, policy boundary, structured outcomes, and typed execution observation |
@@ -253,7 +256,8 @@ These are internal packages. Plugins must not import them.
 
 Public pure-Dart `adele_plugin_backend_support` is separate: its only production
 dependency is `adele_contract`, and its reusable `AdeleHostRequestMultiplexer`
-provides generated unary request channels without internal host or Flutter imports.
+binds generated clients to an `AdeleStreamChannel` supporting unary requests and
+server streams without internal host or Flutter imports.
 
 The source-plugin runtime shape is:
 
@@ -349,8 +353,13 @@ directory reads, without mutation or process operations. Separate generated
 replacement, and conditional deletion, with no authority query or selectors.
 The read service remains unchanged for other consumers.
 
-Model-tool exposure `hostServices` declares the maximum read/mutation dependencies
-to capture. Every descriptor requires `executionHostServices`, a duplicate-free
+Separate generated `AuthorizedEnvironmentProcessService` exposes exactly
+`runForegroundProcess(EnvironmentForegroundProcessRequest request) ->
+Stream<EnvironmentProcessEvent>`, using existing DTOs and declared failures without
+authority queries, authority-selection IDs, reads, or mutations.
+
+Model-tool exposure `hostServices` declares the maximum read/mutation/process
+dependencies to capture. Every descriptor requires `executionHostServices`, a duplicate-free
 allowed subset defining its exact execution allowlist, not a grant or Profile.
 Materialization captures coherent facets for the same Session/Environment;
 synchronous validation checks every exact captured facet and the remote generation
@@ -364,9 +373,13 @@ in-flight mutations.
 Filesystem's installed `plugins/filesystem_tools/packages/backend` reuses its root
 tool semantics: `read_file` gets read only, `apply_patch`/`delete_file` get read and
 mutation, and `create_file` gets mutation only. Search describes from pure identity
-and executes with read only. Reverse calls remain unary on protocol version 2.
-Backend/frontend availability is independent. Chat, Command Tools, and Local
-Directory Project Selector migration remains deferred. These checks authorize the
+and executes with read only. Command's installed `plugins/command_tools/packages/backend`
+reuses root semantics with process-only execution authority. Reverse reads/mutations
+remain unary; process streams use one-item credit, pause/resume, and cancellation.
+Revocation is immediate and precedes bounded cleanup of owned streams. Both
+transport protocols are version 3; the installed manifest remains version 1.
+Backend/frontend availability is independent. Chat and Local Directory Project
+Selector migration remains deferred. These checks authorize the
 host-service API, not native OS access; process separation is not a sandbox.
 
 [`contracts-and-capabilities.md`](contracts-and-capabilities.md) is the detailed

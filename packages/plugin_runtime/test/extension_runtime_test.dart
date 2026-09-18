@@ -489,6 +489,42 @@ void main() {
       },
     );
 
+    test(
+      'hanging nested cleanup is bounded and preserves the primary failure',
+      () async {
+        for (final fails in [false, true]) {
+          late PluginHostInvocation invocation;
+          final cleanup = Completer<void>();
+          final source = StreamController<int>(
+            sync: true,
+            onCancel: () => cleanup.future,
+          );
+          final primary = StateError('primary');
+          final errors = <Object>[];
+          final subscription = context
+              .invokeStream<int>({}, (opened) {
+                invocation = opened;
+                return source.stream;
+              })
+              .listen((_) {}, onError: (Object error) => errors.add(error));
+          if (fails) source.addError(primary);
+          final cancelling = subscription.cancel();
+          expect(invocation.isClosed, isTrue);
+          if (fails) {
+            await cancelling.timeout(const Duration(seconds: 3));
+            expect(errors, [same(primary)]);
+          } else {
+            await expectLater(
+              cancelling.timeout(const Duration(seconds: 3)),
+              throwsA(isA<TimeoutException>()),
+            );
+          }
+          cleanup.completeError(StateError('late cleanup error'));
+          await source.close();
+        }
+      },
+    );
+
     for (final lateFailure in [false, true]) {
       test(
         'cancellation settles pending unary before producer cleanup (late error=$lateFailure)',

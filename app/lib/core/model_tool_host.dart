@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
@@ -208,56 +210,108 @@ final class _SessionEnvironmentAuthority
     }
   }
 
-  Stream<T> _performStream<T>(Stream<T> Function() operation) async* {
-    validateBinding();
-    try {
-      await for (final T event in operation()) {
-        yield event;
+  Stream<T> _performStream<T>(Stream<T> Function() operation) {
+    Object mapError(Object error) {
+      if (error is ProviderUnavailable) {
+        return error.stale
+            ? AuthorizedEnvironmentBindingStale(
+                'The authorized Environment provider generation is stale.',
+                cause: error,
+              )
+            : AuthorizedEnvironmentBindingUnavailable(
+                'The authorized Environment provider is unavailable.',
+                cause: error,
+              );
       }
-    } on ProviderUnavailable catch (error) {
-      if (error.stale) {
-        throw AuthorizedEnvironmentBindingStale(
-          'The authorized Environment provider generation is stale.',
+      if (error is ProviderEndpointUnavailable) {
+        return AuthorizedEnvironmentBindingUnavailable(
+          'The authorized Environment provider endpoint is unavailable.',
           cause: error,
         );
       }
-      throw AuthorizedEnvironmentBindingUnavailable(
-        'The authorized Environment provider is unavailable.',
-        cause: error,
-      );
-    } on ProviderEndpointUnavailable catch (error) {
-      throw AuthorizedEnvironmentBindingUnavailable(
-        'The authorized Environment provider endpoint is unavailable.',
-        cause: error,
-      );
-    } on EnvironmentFailure {
-      rethrow;
-    } on Object catch (error, stackTrace) {
+      if (error is EnvironmentFailure) return error;
       try {
         validateBinding();
       } on AuthorizedEnvironmentBindingStale {
-        Error.throwWithStackTrace(
-          AuthorizedEnvironmentBindingStale(
-            'The authorized Environment provider generation became stale '
-            'during the process stream.',
-            cause: error,
-          ),
-          stackTrace,
+        return AuthorizedEnvironmentBindingStale(
+          'The authorized Environment provider generation became stale '
+          'during the process stream.',
+          cause: error,
         );
       } on AuthorizedEnvironmentBindingUnavailable {
-        Error.throwWithStackTrace(
-          AuthorizedEnvironmentBindingUnavailable(
-            'The authorized Environment provider became unavailable during '
-            'the process stream.',
-            cause: error,
-          ),
-          stackTrace,
+        return AuthorizedEnvironmentBindingUnavailable(
+          'The authorized Environment provider became unavailable during '
+          'the process stream.',
+          cause: error,
         );
       } on Object {
         // Revalidation is only used to recognize binding lifecycle changes.
       }
-      Error.throwWithStackTrace(error, stackTrace);
+      return error;
     }
+
+    late final StreamController<T> controller;
+    StreamSubscription<T>? subscription;
+    Future<void>? cancellation;
+    var terminated = false;
+    var failed = false;
+
+    Future<void> cancel() {
+      terminated = true;
+      final current = subscription;
+      if (current == null) return Future<void>.value();
+      final pending = cancellation ??= Future<void>.sync(current.cancel);
+      if (!failed) return pending;
+      // cancelOnError must deliver the primary failure even if cleanup stalls.
+      unawaited(pending.catchError((Object _) {}));
+      return Future<void>.value();
+    }
+
+    void fail(Object error, StackTrace stackTrace) {
+      if (terminated) return;
+      failed = true;
+      unawaited(cancel());
+      controller.addError(error, stackTrace);
+      unawaited(controller.close());
+    }
+
+    // Forward cancellation directly, even while the process produces no output.
+    controller = StreamController<T>(
+      sync: true,
+      onListen: () {
+        try {
+          validateBinding();
+        } on Object catch (error, stackTrace) {
+          fail(error, stackTrace);
+          return;
+        }
+        try {
+          subscription = operation().listen(
+            (event) {
+              if (!terminated) controller.add(event);
+            },
+            onError: (Object error, StackTrace stackTrace) =>
+                fail(mapError(error), stackTrace),
+            onDone: () {
+              if (terminated) return;
+              terminated = true;
+              unawaited(controller.close());
+            },
+          );
+          if (terminated) {
+            unawaited(cancel().catchError((Object _) {}));
+          } else if (controller.isPaused) {
+            subscription!.pause();
+          }
+        } on Object catch (error, stackTrace) {
+          fail(mapError(error), stackTrace);
+        }
+      },
+      onPause: () => subscription?.pause(),
+      onResume: () => subscription?.resume(),
+      onCancel: cancel,
+    );
+    return controller.stream;
   }
 }
 

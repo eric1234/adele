@@ -21,6 +21,7 @@ final class AdeleBackendHost {
   final BackendHostDiagnostic _diagnostic;
   final Map<String, _PluginIsolate> _plugins = <String, _PluginIsolate>{};
   final Map<int, (_PluginIsolate, int)> _hostRequests = {};
+  final Map<int, _ReverseStream> _hostStreams = {};
   int _nextHostRequestId = 1;
   bool _shutDown = false;
 
@@ -47,12 +48,20 @@ final class AdeleBackendHost {
       return true;
     }
     try {
-      if (_shutDown && message['kind'] != 'hostResponse') {
+      if (_shutDown &&
+          message['kind'] != 'hostResponse' &&
+          !(message['kind'] is String &&
+              (message['kind'] as String).startsWith('hostStream'))) {
         throw StateError('The backend host is shutting down.');
       }
       switch (message['kind']) {
         case 'hostResponse':
           _forwardHostResponse(message);
+        case 'hostStreamItem':
+        case 'hostStreamDone':
+        case 'hostStreamFailure':
+        case 'hostStreamCancelled':
+          _forwardHostStreamResponse(message);
         case 'startPlugin':
           await _startPlugin(message);
         case 'stopPlugin':
@@ -78,6 +87,11 @@ final class AdeleBackendHost {
       }
     } on Object catch (error, stackTrace) {
       _diagnostic('backend-host command failure: $error\n$stackTrace');
+      if (message['kind'] is String &&
+          (message['kind'] as String).startsWith('hostStream')) {
+        await shutdown(notify: false);
+        return false;
+      }
       _error(
         requestId,
         _pluginId(message),
@@ -212,6 +226,10 @@ final class AdeleBackendHost {
     _PluginIsolate plugin,
     Map<Object?, Object?> request,
   ) {
+    if (request['kind'] != 'hostRequest') {
+      _forwardHostStream(plugin, request);
+      return;
+    }
     if (_shutDown || !identical(_plugins[plugin.pluginId], plugin)) {
       plugin.hostResponse(request['requestId'] as int, {
         'ok': false,
@@ -247,6 +265,140 @@ final class AdeleBackendHost {
     }
   }
 
+  void _forwardHostStream(
+    _PluginIsolate plugin,
+    Map<Object?, Object?> request,
+  ) {
+    final kind = request['kind'];
+    final localId = request['requestId'] as int;
+    if (kind == 'hostStreamOpen') {
+      if (_shutDown || !identical(_plugins[plugin.pluginId], plugin)) {
+        plugin._reverseProtocolViolation();
+        return;
+      }
+      final id = _nextHostRequestId++;
+      final stream = _ReverseStream(plugin, localId, id);
+      _hostStreams[id] = stream;
+      plugin._hostStreamIds[localId] = id;
+      final message = <String, Object?>{
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': kind,
+        'requestId': id,
+        'pluginId': plugin.pluginId,
+        'generation': plugin.generation,
+        'hostInvocationContext': request['hostInvocationContext'],
+        'serviceId': request['serviceId'],
+        'method': request['method'],
+        'payload': request['payload'],
+      };
+      if (!_send(message)) {
+        // No runtime operation exists. Retain only until terminal receipt.
+        stream.localFailure = true;
+        _hostStreamTerminal(
+          stream,
+          'hostStreamFailure',
+          error: {
+            'code': 'host_request_encoding_failed',
+            'message': 'Host stream request could not be transported.',
+          },
+        );
+      }
+      return;
+    }
+    final id = plugin._hostStreamIds[localId];
+    final stream = _hostStreams[id];
+    if (stream == null) {
+      if (plugin._stopped || plugin.isTerminated) return;
+      plugin._reverseProtocolViolation();
+      return;
+    }
+    if (kind == 'hostStreamAck') {
+      if (!stream.terminal) {
+        plugin._reverseProtocolViolation();
+        return;
+      }
+      _removeHostStream(stream);
+    } else {
+      if (kind == 'hostStreamCredit') {
+        if (stream.credit != 0 || stream.cancelling) {
+          plugin._reverseProtocolViolation();
+          return;
+        }
+        stream.credit = 1;
+      } else {
+        if (stream.cancelling) {
+          plugin._reverseProtocolViolation();
+          return;
+        }
+        stream.cancelling = true;
+      }
+    }
+    if (!stream.localFailure) {
+      _send({
+        'protocolVersion': backendHostProtocolVersion,
+        'kind': kind,
+        'requestId': id,
+        'pluginId': plugin.pluginId,
+        'generation': plugin.generation,
+        if (kind == 'hostStreamCredit') 'credit': 1,
+      });
+    }
+  }
+
+  void _forwardHostStreamResponse(Map<String, Object?> message) {
+    final stream = _hostStreams[message['requestId']];
+    // A retired generation can have a response already in flight.
+    if (stream == null) return;
+    final kind = message['kind'];
+    final item = kind == 'hostStreamItem';
+    final failure = kind == 'hostStreamFailure';
+    if (message['pluginId'] != stream.plugin.pluginId ||
+        message['generation'] != stream.plugin.generation ||
+        stream.terminal ||
+        message.length != (item || failure ? 6 : 5) ||
+        (item && (!message.containsKey('payload') || stream.credit != 1)) ||
+        (failure &&
+            !stream.plugin._validStreamFailureError(message['error'])) ||
+        (kind == 'hostStreamCancelled' && !stream.cancelling)) {
+      // This is corruption of the shared host connection, not plugin output.
+      throw const FormatException('Malformed runtime host stream response.');
+    }
+    if (item) {
+      stream.credit = 0;
+      stream.plugin._commands.send({
+        'kind': kind,
+        'requestId': stream.localId,
+        'payload': message['payload'],
+      });
+    } else {
+      _hostStreamTerminal(stream, kind as String, error: message['error']);
+    }
+  }
+
+  void _hostStreamTerminal(
+    _ReverseStream stream,
+    String kind, {
+    Object? error,
+  }) {
+    stream.terminal = true;
+    stream.plugin._commands.send({
+      'kind': kind,
+      'requestId': stream.localId,
+      if (kind == 'hostStreamFailure') 'error': error,
+    });
+    // Bounded terminal tombstones allow in-flight credit/cancel until receipt.
+    stream.ackTimeout = Timer(_pluginLifecycleTimeout, () {
+      _removeHostStream(stream);
+      stream.plugin._reverseProtocolViolation();
+    });
+  }
+
+  void _removeHostStream(_ReverseStream stream) {
+    _hostStreams.remove(stream.outerId);
+    stream.plugin._hostStreamIds.remove(stream.localId);
+    stream.ackTimeout?.cancel();
+  }
+
   void _forwardHostResponse(Map<String, Object?> message) {
     final pending = _hostRequests[message['requestId']];
     if (pending == null) return;
@@ -261,6 +413,20 @@ final class AdeleBackendHost {
   }
 
   void _revokeHostRequests(_PluginIsolate plugin) {
+    for (final stream in _hostStreams.values.toList()) {
+      if (!identical(stream.plugin, plugin)) continue;
+      if (!stream.terminal) {
+        _hostStreamTerminal(
+          stream,
+          'hostStreamFailure',
+          error: {
+            'code': 'host_invocation_unavailable',
+            'message': 'Plugin generation is stopping.',
+          },
+        );
+      }
+      _removeHostStream(stream);
+    }
     for (final entry in _hostRequests.entries.toList()) {
       if (!identical(entry.value.$1, plugin)) continue;
       _hostRequests.remove(entry.key);
@@ -281,6 +447,9 @@ final class AdeleBackendHost {
     String message,
   ) {
     _hostRequests.removeWhere((_, request) => identical(request.$1, plugin));
+    for (final stream in _hostStreams.values.toList()) {
+      if (identical(stream.plugin, plugin)) _removeHostStream(stream);
+    }
     final String pluginId = plugin.pluginId;
     if (!identical(_plugins[pluginId], plugin)) return;
     _plugins.remove(pluginId);
@@ -357,6 +526,7 @@ final class _PluginIsolate {
   // Reverse IDs are nonnegative and strictly increasing per generation in
   // SendPort order, so replay rejection needs only a constant-space watermark.
   int _lastHostRequestId = -1;
+  final Map<int, int> _hostStreamIds = {};
   final Map<int, int> _outerRequestIds = <int, int>{};
   final Map<int, _HostPluginStream> _streams = <int, _HostPluginStream>{};
   final Map<int, int> _pluginStreamIdsByOuter = <int, int>{};
@@ -641,7 +811,10 @@ final class _PluginIsolate {
   }
 
   void _handleResponse(Object? raw) {
-    if (raw is Map && raw['kind'] == 'hostRequest') {
+    if (raw is Map &&
+        (raw['kind'] == 'hostRequest' ||
+            (raw['kind'] is String &&
+                (raw['kind'] as String).startsWith('hostStream')))) {
       _handleHostRequest(raw);
       return;
     }
@@ -707,6 +880,20 @@ final class _PluginIsolate {
 
   void _handleHostRequest(Map<Object?, Object?> raw) {
     try {
+      final kind = raw['kind'];
+      if (kind != 'hostRequest' && kind != 'hostStreamOpen') {
+        if (raw['requestId'] is! int ||
+            raw.length != (kind == 'hostStreamCredit' ? 3 : 2) ||
+            (kind == 'hostStreamCredit' &&
+                (raw['credit'] is! int || raw['credit'] != 1)) ||
+            (kind != 'hostStreamCredit' &&
+                kind != 'hostStreamCancel' &&
+                kind != 'hostStreamAck')) {
+          throw const FormatException('Malformed host stream control.');
+        }
+        _onHostRequest(this, raw);
+        return;
+      }
       if (raw.length != 6 ||
           raw['requestId'] is! int ||
           raw['hostInvocationContext'] is! String ||
@@ -728,11 +915,17 @@ final class _PluginIsolate {
       }
       _lastHostRequestId = requestId;
     } on Object {
-      _diagnostic('Plugin $pluginId sent a malformed host request.');
-      _isolate.kill(priority: Isolate.immediate);
+      _reverseProtocolViolation();
       return;
     }
     _onHostRequest(this, raw);
+  }
+
+  void _reverseProtocolViolation() {
+    _diagnostic(
+      'Plugin $pluginId sent a malformed host request or stream control.',
+    );
+    _isolate.kill(priority: Isolate.immediate);
   }
 
   void hostResponse(int requestId, Map<String, Object?> response) {
@@ -1043,6 +1236,18 @@ final class _PluginIsolate {
     _responses.close();
     _closeLifecyclePorts();
   }
+}
+
+final class _ReverseStream {
+  _ReverseStream(this.plugin, this.localId, this.outerId);
+  final _PluginIsolate plugin;
+  final int localId;
+  final int outerId;
+  int credit = 0;
+  bool cancelling = false;
+  bool terminal = false;
+  bool localFailure = false;
+  Timer? ackTimeout;
 }
 
 final class _HostPluginStream {

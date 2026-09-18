@@ -6,6 +6,280 @@ import 'package:test/test.dart';
 
 void main() {
   test(
+    'generated-style stream is lazy, ordered, one-credit and pausable',
+    () async {
+      final sent = <Map<String, Object?>>[];
+      final host = AdeleHostRequestMultiplexer(send: sent.add);
+      addTearDown(host.close);
+      final AdeleStreamChannel channel = host.bind(
+        hostInvocationContext: 'scope',
+        serviceId: 'events',
+      );
+      final stream = adeleDecodedStream<int>(
+        channel.stream('events.watch', {}),
+        (value) => value! as int,
+        (error) => error,
+      );
+      expect(sent, isEmpty);
+      final values = <int>[];
+      late StreamSubscription<int> subscription;
+      subscription = stream.listen((value) {
+        values.add(value);
+        subscription.pause();
+      });
+      expect(sent, [
+        {
+          'kind': 'hostStreamOpen',
+          'requestId': 0,
+          'hostInvocationContext': 'scope',
+          'serviceId': 'events',
+          'method': 'events.watch',
+          'payload': <String, Object?>{},
+        },
+        {'kind': 'hostStreamCredit', 'requestId': 0, 'credit': 1},
+      ]);
+      host.handleResponse({
+        'kind': 'hostStreamItem',
+        'requestId': 0,
+        'payload': 1,
+      });
+      expect(values, [1]);
+      expect(sent, hasLength(2));
+      subscription.resume();
+      await Future<void>.delayed(Duration.zero);
+      expect(sent.last, {
+        'kind': 'hostStreamCredit',
+        'requestId': 0,
+        'credit': 1,
+      });
+      host.handleResponse({
+        'kind': 'hostStreamItem',
+        'requestId': 0,
+        'payload': 2,
+      });
+      expect(values, [1, 2]);
+      var cancelled = false;
+      final cancelling = subscription.cancel().then((_) => cancelled = true);
+      expect(sent.last, {'kind': 'hostStreamCancel', 'requestId': 0});
+      await Future<void>.delayed(Duration.zero);
+      expect(cancelled, isFalse);
+      host.handleResponse({'kind': 'hostStreamCancelled', 'requestId': 0});
+      await cancelling;
+      expect(sent.last, {'kind': 'hostStreamAck', 'requestId': 0});
+      final unary = channel.request('events.read', {});
+      expect(sent.last['requestId'], 1);
+      host.handleResponse({
+        'kind': 'hostResponse',
+        'requestId': 1,
+        'ok': true,
+        'payload': 'still unary',
+      });
+      expect(await unary, 'still unary');
+    },
+  );
+
+  test(
+    'resume before first item does not duplicate credit; done acknowledges',
+    () async {
+      final sent = <Map<String, Object?>>[];
+      final host = AdeleHostRequestMultiplexer(send: sent.add);
+      addTearDown(host.close);
+      final done = Completer<void>();
+      final subscription = host
+          .bind(hostInvocationContext: 'scope', serviceId: 'events')
+          .stream('events.watch', {})
+          .listen((_) {}, onDone: done.complete);
+      subscription.pause();
+      subscription.resume();
+      await Future<void>.delayed(Duration.zero);
+      expect(sent, hasLength(2));
+      host.handleResponse({'kind': 'hostStreamDone', 'requestId': 0});
+      await done.future;
+      expect(sent.last['kind'], 'hostStreamAck');
+    },
+  );
+
+  test(
+    'credited item arriving while paused stays buffered until resume',
+    () async {
+      final sent = <Map<String, Object?>>[];
+      final host = AdeleHostRequestMultiplexer(send: sent.add);
+      addTearDown(host.close);
+      final values = <int>[];
+      final done = Completer<void>();
+      final subscription = adeleDecodedStream<int>(
+        host
+            .bind(hostInvocationContext: 'scope', serviceId: 'events')
+            .stream('events.watch', {}),
+        (value) => value! as int,
+        (error) => error,
+      ).listen(values.add, onDone: done.complete);
+      expect(sent, hasLength(2));
+      expect(sent.last, {
+        'kind': 'hostStreamCredit',
+        'requestId': 0,
+        'credit': 1,
+      });
+      subscription.pause();
+      host.handleResponse({
+        'kind': 'hostStreamItem',
+        'requestId': 0,
+        'payload': 7,
+      });
+      await Future<void>.delayed(Duration.zero);
+      expect(values, isEmpty);
+      expect(
+        sent,
+        hasLength(2),
+        reason: 'Paused delivery must not grant credit.',
+      );
+
+      subscription.resume();
+      await Future<void>.delayed(Duration.zero);
+      expect(values, [7]);
+      expect(sent, hasLength(3));
+      expect(sent.last, {
+        'kind': 'hostStreamCredit',
+        'requestId': 0,
+        'credit': 1,
+      });
+      subscription.pause();
+      subscription.resume();
+      await Future<void>.delayed(Duration.zero);
+      expect(values, [7]);
+      expect(
+        sent,
+        hasLength(3),
+        reason: 'The replacement credit is still outstanding.',
+      );
+      host.handleResponse({'kind': 'hostStreamDone', 'requestId': 0});
+      await done.future;
+      expect(sent.last, {'kind': 'hostStreamAck', 'requestId': 0});
+    },
+  );
+
+  test(
+    'generated decode failure cancels and preserves its original error',
+    () async {
+      final sent = <Map<String, Object?>>[];
+      final host = AdeleHostRequestMultiplexer(send: sent.add);
+      addTearDown(host.close);
+      final failure = StateError('decode failed');
+      final check = expectLater(
+        adeleDecodedStream<int>(
+          host
+              .bind(hostInvocationContext: 'scope', serviceId: 'events')
+              .stream('watch', {}),
+          (_) => throw failure,
+          (error) => error,
+        ),
+        emitsError(same(failure)),
+      );
+      host.handleResponse({
+        'kind': 'hostStreamItem',
+        'requestId': 0,
+        'payload': 'invalid',
+      });
+      expect(sent.last['kind'], 'hostStreamCancel');
+      host.handleResponse({'kind': 'hostStreamCancelled', 'requestId': 0});
+      await check;
+      expect(sent.last['kind'], 'hostStreamAck');
+    },
+  );
+
+  for (final error in <Object?>[
+    {
+      'code': 'failed',
+      'message': 'exact',
+      'declaredFailureType': 'events.failure',
+      'details': {'reason': 'test'},
+    },
+    {'code': 'failed', 'message': 'exact'},
+    {'code': 'failed', 'message': 'exact', 'declaredFailureType': null},
+    {
+      'code': 'failed',
+      'message': 'exact',
+      'declaredFailureType': 'events.failure',
+    },
+    {'code': 'failed', 'message': 'exact', 'details': null},
+    'invalid',
+  ]) {
+    test('stream failure parsing: $error', () async {
+      final sent = <Map<String, Object?>>[];
+      final host = AdeleHostRequestMultiplexer(send: sent.add);
+      addTearDown(host.close);
+      final valid =
+          error is Map && error.length <= 2 ||
+          error is Map && error['details'] is Map;
+      final check = expectLater(
+        host
+            .bind(hostInvocationContext: 'scope', serviceId: 'events')
+            .stream('watch', {}),
+        emitsError(
+          valid
+              ? isA<AdeleRemoteFailure>().having(
+                  (e) => e.code,
+                  'code',
+                  'failed',
+                )
+              : isA<AdeleProtocolException>(),
+        ),
+      );
+      host.handleResponse({
+        'kind': 'hostStreamFailure',
+        'requestId': 0,
+        'error': error,
+      });
+      await check;
+      expect(sent.last['kind'], 'hostStreamAck');
+    });
+  }
+
+  test(
+    'malformed stream item cancels, settles parsing error, then acknowledges',
+    () async {
+      final sent = <Map<String, Object?>>[];
+      final host = AdeleHostRequestMultiplexer(send: sent.add);
+      addTearDown(host.close);
+      final check = expectLater(
+        host
+            .bind(hostInvocationContext: 'scope', serviceId: 'events')
+            .stream('watch', {}),
+        emitsError(isA<AdeleProtocolException>()),
+      );
+      host.handleResponse({'kind': 'hostStreamItem', 'requestId': 0});
+      expect(sent.last['kind'], 'hostStreamCancel');
+      host.handleResponse({'kind': 'hostStreamCancelled', 'requestId': 0});
+      await check;
+      expect(sent.last['kind'], 'hostStreamAck');
+    },
+  );
+
+  test(
+    'close settles active streams and pending cancellation without replies',
+    () async {
+      final host = AdeleHostRequestMultiplexer(send: (_) {});
+      final channel = host.bind(
+        hostInvocationContext: 'scope',
+        serviceId: 'events',
+      );
+      final check = expectLater(
+        channel.stream('watch', {}),
+        emitsError(isA<StateError>()),
+      );
+      final subscription = channel.stream('watch', {}).listen((_) {});
+      final cancelling = subscription.cancel();
+      host.close();
+      await check;
+      await cancelling.timeout(const Duration(seconds: 1));
+      await expectLater(
+        channel.stream('late', {}),
+        emitsError(isA<StateError>()),
+      );
+    },
+  );
+
+  test(
     'bound calls use exact host wire without plugin or semantic authority',
     () async {
       final sent = <Map<String, Object?>>[];

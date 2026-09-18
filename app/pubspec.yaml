@@ -22,7 +22,6 @@ dependencies:
   adele_product: ^0.1.0
   adele_ui: ^0.1.0
   chat_strategy_plugin: ^0.1.0
-  command_tools_plugin: ^0.1.0
   crypto: ^3.0.6
   dart_eval: 0.8.5
   flutter:
@@ -37,6 +36,7 @@ dependencies:
   workspace_demo_contract: ^0.1.0
 
 dev_dependencies:
+  command_tools_plugin: ^0.1.0
   filesystem_tools_plugin: ^0.1.0
   search_tools_plugin: ^0.1.0
   flutter_test:

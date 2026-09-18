@@ -16,8 +16,16 @@ Future<void> main() async {
           host.noteStreamCancelRequested(message);
           // Reverse replies must reach their captured isolate even while the
           // lifecycle queue waits for that isolate to finish shutting down.
-          if (message['kind'] == 'hostResponse') {
-            unawaited(host.handle(message));
+          if (message['kind'] == 'hostResponse' ||
+              (message['kind'] is String &&
+                  (message['kind'] as String).startsWith('hostStream'))) {
+            unawaited(
+              host.handle(message).then((keepRunning) {
+                if (!keepRunning && !messages.isClosed) {
+                  unawaited(messages.close());
+                }
+              }),
+            );
           } else {
             messages.add(message);
           }

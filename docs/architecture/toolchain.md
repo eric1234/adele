@@ -30,20 +30,22 @@ pipeline compiles backend source to native Dart AOT and frontend source to
 Windows and macOS behavior remain future packaging and validation work.
 
 Normal desktop runtime activation never compiles plugin source. The Linux checkout
-launcher compiles the shared host and five backend AOT artifacts (Git, OpenAI,
-AGENTS.md, Search, and Filesystem Tools) plus four stock frontend EVCs (Chat,
-Filesystem Tools, Command Tools, and OpenAI activity) before launching or building
-Flutter, using the selected SDK.
+launcher compiles the shared host and six backend AOT artifacts (Git, OpenAI,
+AGENTS.md, Search, Filesystem Tools, and Command Tools) plus four stock frontend
+EVCs (Chat, Filesystem Tools, Command Tools, and OpenAI activity) before launching
+or building Flutter, using the selected SDK.
 The seven prepared installations share one fresh installation root; the host
-snapshot is beside that root. Chat and Command Tools are frontend-only; Git,
-AGENTS.md, and Search are backend-only; Filesystem Tools and OpenAI each combine
-backend and frontend. Filesystem's `filesystem-tools/backend.aot` uses its source
-under `plugins/filesystem_tools/packages/backend`; its frontend EVC remains
-independently activatable. AGENTS.md, Search, and Filesystem Tools require no
+snapshot is beside that root. Chat is frontend-only; Git, AGENTS.md, and Search are
+backend-only; Filesystem Tools, Command Tools, and OpenAI each combine backend and
+frontend. Filesystem's `filesystem-tools/backend.aot` and Command's
+`command-tools/backend.aot` use source under their plugins' `packages/backend`;
+their frontend EVCs remain independently activatable. AGENTS.md, Search,
+Filesystem Tools, and Command Tools require no
 configuration or additional deployment defines. Both host and plugin protocols are
-currently version 2, including unary authorized mutation calls: prepared hosts and
-backends must be rebuilt together, and mixed protocol versions are unsupported. The installed manifest
-remains version 1; see [contract compatibility](contracts-and-capabilities.md#contracts).
+currently version 3, supporting unary authorized reads/mutations and reverse
+server-streaming processes: prepared hosts and backends must be rebuilt together,
+and mixed protocol versions are unsupported. The installed manifest remains
+version 1; see [contract compatibility](contracts-and-capabilities.md#contracts).
 `tools/frontend_artifacts.dart` invokes
 `app/tool/compile_chat_frontend.dart`,
 `app/tool/compile_tool_inspection_frontends.dart`, and

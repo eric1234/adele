@@ -35,8 +35,9 @@ with nullable revision. The backend uses public pure-Dart
 `adele_plugin_backend_support` for unary host requests on the existing ports and
 framed host, not internal host imports. Secure opaque per-operation contexts are
 allowlisted for that read service and revoked in `finally`, on retirement, and on
-termination; exact connection generations are stamped by the host. This is not
-general symmetric RPC, reverse streaming, or a sandbox.
+termination; exact connection generations are stamped by the host. Source capture
+remains unary/read-only even though the shared transport supports separately
+authorized process streams. This is not general symmetric RPC or a sandbox.
 
 The source is required while active. Environment `not_found` and blank/whitespace
 files produce successful empty contributions. All other read/service/authority
@@ -58,7 +59,7 @@ prepared installation root. Shared-host artifacts and generic deployment inputs
 are described in [desktop tooling](../../packages/plugin_builder/README.md#desktop-tooling).
 Self-hosting supplies its explicit `agentsMdArtifact` on the same host through the
 same adapter activation, without requiring a normal installation root. Both
-host/plugin protocol versions are 2.
+host/plugin protocol versions are 3; prepared artifacts must be rebuilt together.
 
 The semantic package, backend, and support package are workspace members with
 maintained analysis/test discovery. Focused semantic validation uses

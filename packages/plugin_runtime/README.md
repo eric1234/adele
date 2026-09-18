@@ -5,7 +5,7 @@ It owns the semantic process-host connection, deterministic framed
 IPC, request correlation, plugin routing, structured remote failures,
 exit/stderr monitoring, and shutdown cleanup. It also owns the prepared installation
 catalog, active capability/extension registration adapters, and operation-scoped
-unary host-call routing. Process and framing objects
+unary and server-streaming host-call routing. Process and framing objects
 do not escape its API.
 
 ## Dependencies
@@ -121,13 +121,13 @@ termination do not remove unrelated registrations or replacements. The app suppl
 the inference-source and model-tool adapters; runtime owns neither point's metadata
 or composition rules.
 
-The runtime knows no Git/OpenAI/AGENTS.md/Search/Filesystem source paths, credential
+The runtime knows no Git/OpenAI/AGENTS.md/Search/Filesystem/Command source paths, credential
 schemas, or stock exposure tables. Startup argv is opaque plugin input. Profiles/enable-disable
 management, version solving, watching, and hot upgrade remain deferred.
 
-## Unary Host Calls
+## Operation-Scoped Host Calls
 
-Both host and plugin-backend protocols are version 2; rebuild prepared artifacts
+Both host and plugin-backend protocols are version 3; rebuild prepared artifacts
 together. `PluginBackendConnection.openHostInvocation` grants an opaque secure
 per-operation context with an explicit service-dispatcher allowlist on that exact
 connection. `RemoteExtensionContext.invoke` brackets the operation and revokes it
@@ -140,8 +140,9 @@ the operation starts before listen. Authority is revoked on done, first error,
 cancellation, or exact registration/connection retirement, before awaiting producer
 cancellation. Retirement also fails idle or paused streams. Pause/resume propagates
 to the producer; late events cannot revive authority or migrate to a replacement.
-This adds no wire messages or protocol-version change and does not make reverse
-host calls streaming.
+Owned reverse streams are cancelled when their invocation is revoked. Revocation
+is immediate; bounded cleanup cannot prolong authority while producer cancellation
+is pending.
 
 `hostRequest`/`hostResponse` reuse the same isolate ports and framed shared host.
 The shared host stamps connection generation and plugin identity from the owning
@@ -150,11 +151,21 @@ allowlist before dispatch and after settlement. Late responses cannot migrate to
 a replacement. Semantic Session/Run identifiers do not confer authority.
 Generated dispatchers preserve declared failures; the app captures canonical
 inference-source context or a materialized tool's coherent Session-bound
-read/mutation facets. The unchanged authorized read service's no-argument authority
+read/mutation/process facets. The unchanged authorized read service's no-argument authority
 query and file/directory reads cannot select a different Environment. Separate
 generated `AuthorizedEnvironmentMutationService` supplies only create-new,
 conditional replacement, and conditional deletion, with no authority query,
 authority-selection IDs, or process methods.
+
+Reverse server streams reuse the same ports and framing with exact-generation
+routing, lazy opening, and one-item credit. Pause/resume controls further producer
+advancement; cancellation reaches the producer without granting new authority.
+The allowlist and invocation liveness are checked for streaming as well as unary
+calls. Separate generated `AuthorizedEnvironmentProcessService` supplies exactly
+`runForegroundProcess(EnvironmentForegroundProcessRequest request) ->
+Stream<EnvironmentProcessEvent>` over the captured process facet, with no authority
+query or authority-selection IDs. Process DTOs and declared failures remain owned
+by `adele_environment`.
 
 For remote model tools, exposure `hostServices` declares maximum captured
 dependencies; each descriptor's required `executionHostServices` must be an exact
@@ -163,15 +174,16 @@ all captured exact bindings, not this package. Materialize/validation receive no
 token and description receives pure identity data. Only execution after
 policy/approval receives a fresh stream-lifetime token whose allowlist contains
 exactly that descriptor's services. Filesystem read execution cannot acquire
-mutation through the contribution's broader dependency list; Search execution is
-read-only. Captured facets must share Session/Environment identity, with no
-re-resolution or authority chosen by transported IDs. These services add no transport
-message kinds or protocol bump. Revocation does not roll back in-flight mutations.
+mutation or process authority through the contribution's broader dependency list;
+Search execution is read-only and Command execution is process-only. Captured
+facets must share Session/Environment identity, with no re-resolution or authority
+chosen by transported IDs. Revocation does not roll back in-flight effects.
 See [the host-call contract](../../docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls).
 
 Plugins use public `adele_plugin_backend_support`, not this package, for their
-request-channel multiplexer. This is unary operation-scoped access, not general
-symmetric RPC, reverse streaming, cancellation of arbitrary host code, or a sandbox.
+request/stream-channel multiplexer. This is operation-scoped unary and server-streaming
+access, not general symmetric RPC, client/bidirectional streaming, ambient callbacks,
+cancellation of arbitrary host code, or a sandbox. Installed manifests remain version 1.
 
 ## Maintenance And Limits
 

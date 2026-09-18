@@ -56,6 +56,8 @@ final class PluginBackendHost {
   final Map<int, Completer<Map<String, Object?>>> _pending =
       <int, Completer<Map<String, Object?>>>{};
   final Map<int, _PendingPluginStream> _streams = <int, _PendingPluginStream>{};
+  final Map<int, _HostServiceStream> _hostStreams = {};
+  int _lastHostRequestId = -1;
   final Map<int, String> _pendingPluginIds = <int, String>{};
   final Map<String, PluginBackendConnection> _plugins =
       <String, PluginBackendConnection>{};
@@ -544,6 +546,11 @@ final class PluginBackendHost {
   }
 
   void _handleMessage(Map<String, Object?> message) {
+    if (message['kind'] is String &&
+        (message['kind'] as String).startsWith('hostStream')) {
+      _handleHostStream(message);
+      return;
+    }
     if (message['kind'] == 'hostRequest') {
       unawaited(_handleHostRequest(message));
       return;
@@ -602,7 +609,8 @@ final class PluginBackendHost {
         message['hostInvocationContext'] is! String ||
         message['serviceId'] is! String ||
         message['method'] is! String ||
-        !_isStringKeyedMap(message['payload'])) {
+        !_isStringKeyedMap(message['payload']) ||
+        !_acceptHostRequestId(message['requestId'])) {
       _hostProtocolViolation('Malformed host request from shared host.');
       return;
     }
@@ -669,6 +677,278 @@ final class PluginBackendHost {
     // Revocation already settled and removed this response, independently of host code.
     if (invocation._pending.remove(requestId) == null) return;
     settle(isLive() ? response : _hostInvocationRevoked);
+  }
+
+  bool _acceptHostRequestId(Object? id) {
+    if (id is! int || id < 0 || id <= _lastHostRequestId) return false;
+    _lastHostRequestId = id;
+    return true;
+  }
+
+  void _handleHostStream(Map<String, Object?> message) {
+    final kind = message['kind'];
+    final id = message['requestId'];
+    final open = kind == 'hostStreamOpen';
+    final credit = kind == 'hostStreamCredit';
+    if (message['protocolVersion'] != backendHostProtocolVersion ||
+        id is! int ||
+        id < 0 ||
+        message['pluginId'] is! String ||
+        message['generation'] is! String ||
+        message.length !=
+            (open
+                ? 9
+                : credit
+                ? 6
+                : 5) ||
+        (open &&
+            (message['hostInvocationContext'] is! String ||
+                message['serviceId'] is! String ||
+                message['method'] is! String ||
+                !_isStringKeyedMap(message['payload']))) ||
+        (!open &&
+            !credit &&
+            kind != 'hostStreamCancel' &&
+            kind != 'hostStreamAck') ||
+        (credit && (message['credit'] is! int || message['credit'] != 1))) {
+      _hostProtocolViolation(
+        'Malformed reverse stream frame from shared host.',
+      );
+      return;
+    }
+    if (open) {
+      try {
+        adeleValidateConfigurationContext(
+          message['hostInvocationContext'] as String,
+        );
+        adeleValidateServiceId(message['serviceId'] as String);
+        if ((message['method'] as String).isEmpty) {
+          throw const AdeleProtocolException('Empty host stream method.');
+        }
+        adeleSnapshotJsonMap(
+          (message['payload'] as Map).cast<String, Object?>(),
+          maxNodes: adelePluginBackendJsonMaxNodes,
+        );
+      } on Object {
+        _hostProtocolViolation(
+          'Malformed reverse stream open from shared host.',
+        );
+        return;
+      }
+      if (!_acceptHostRequestId(id)) {
+        _hostProtocolViolation('Replayed reverse stream ID from shared host.');
+        return;
+      }
+      final connection = _plugins[message['pluginId']];
+      final invocation =
+          connection?._hostInvocations[message['hostInvocationContext']];
+      final live =
+          !_closed &&
+          !_shuttingDown &&
+          connection != null &&
+          !connection.isClosed &&
+          connection._generation == message['generation'] &&
+          invocation != null &&
+          !invocation.isClosed;
+      final dispatcher = live
+          ? invocation._services[message['serviceId']]
+          : null;
+      final stream = _HostServiceStream(
+        message,
+        live ? invocation : null,
+        dispatcher,
+      );
+      _hostStreams[id] = stream;
+      if (dispatcher == null) {
+        _finishHostStream(
+          stream,
+          'hostStreamFailure',
+          error: live
+              ? _hostFailure(
+                  'service_unavailable',
+                  'The service is not approved for this invocation.',
+                )['error']
+              : _hostInvocationRevoked['error'],
+        );
+        return;
+      }
+      invocation!._streams.add(stream);
+      _dispatchHostStream(stream, {
+        'kind': 'streamOpen',
+        'requestId': id,
+        'method': message['method'],
+        'payload': message['payload'],
+      });
+      return;
+    }
+    final stream = _hostStreams[id];
+    if (stream == null ||
+        stream.request['pluginId'] != message['pluginId'] ||
+        stream.request['generation'] != message['generation']) {
+      _hostProtocolViolation(
+        'Unknown or cross-generation reverse stream control.',
+      );
+      return;
+    }
+    if (kind == 'hostStreamAck') {
+      if (!stream.terminal) {
+        _hostProtocolViolation(
+          'Premature reverse stream terminal acknowledgement.',
+        );
+        return;
+      }
+      _hostStreams.remove(id);
+    } else {
+      if (credit) {
+        if (stream.credit != 0 || stream.cancelRequested) {
+          _hostProtocolViolation(
+            'Excess reverse stream credit from shared host.',
+          );
+          return;
+        }
+        stream.credit = 1;
+        if (stream.terminal) return;
+        _dispatchHostStream(stream, {
+          'kind': 'streamCredit',
+          'requestId': id,
+          'credit': 1,
+        });
+      } else {
+        if (stream.cancelRequested) {
+          _hostProtocolViolation('Duplicate reverse stream cancellation.');
+          return;
+        }
+        stream.cancelRequested = true;
+        _finishHostStream(stream, 'hostStreamCancelled', cancel: true);
+      }
+    }
+  }
+
+  void _dispatchHostStream(
+    _HostServiceStream stream,
+    Map<Object?, Object?> command,
+  ) {
+    try {
+      unawaited(
+        stream.dispatcher!
+            .handle(command, (event) {
+              if (stream.terminal) return;
+              final kind = event['kind'];
+              final item = kind == 'streamItem';
+              final failure = kind == 'streamFailure';
+              try {
+                if (event['requestId'] != stream.request['requestId'] ||
+                    event.length != (item || failure ? 3 : 2) ||
+                    (!item && !failure && kind != 'streamDone') ||
+                    (item &&
+                        (!event.containsKey('payload') ||
+                            stream.credit != 1)) ||
+                    (failure && !_validRemoteError(event['error']))) {
+                  throw const AdeleProtocolException(
+                    'Malformed host dispatcher stream output.',
+                  );
+                }
+                adeleSnapshotJsonMap(
+                  event,
+                  maxNodes: adelePluginBackendJsonMaxNodes,
+                );
+                if (item) {
+                  stream.credit = 0;
+                  _sendHostStream(
+                    stream,
+                    'hostStreamItem',
+                    payload: event['payload'],
+                  );
+                } else {
+                  _finishHostStream(
+                    stream,
+                    failure ? 'hostStreamFailure' : 'hostStreamDone',
+                    error: event['error'],
+                  );
+                }
+              } on Object {
+                _failHostStream(stream);
+              }
+            })
+            .catchError((Object _) => _failHostStream(stream)),
+      );
+    } on Object {
+      _failHostStream(stream);
+    }
+  }
+
+  void _failHostStream(_HostServiceStream stream) {
+    if (stream.terminal) return;
+    _finishHostStream(
+      stream,
+      'hostStreamFailure',
+      cancel: true,
+      error: _hostFailure(
+        'internal_error',
+        'Host stream dispatch or encoding failed.',
+      )['error'],
+    );
+  }
+
+  void _finishHostStream(
+    _HostServiceStream stream,
+    String kind, {
+    Object? error,
+    bool cancel = false,
+  }) {
+    if (stream.terminal) return;
+    stream.terminal = true;
+    stream.invocation?._streams.remove(stream);
+    // Revoke output first, initiate producer cancellation, then acknowledge it.
+    // Never await user cleanup or let its failure replace the operation failure.
+    if (cancel && stream.dispatcher != null) {
+      try {
+        unawaited(
+          stream.dispatcher!
+              .handle({
+                'kind': 'streamCancel',
+                'requestId': stream.request['requestId'],
+              }, (_) {})
+              .catchError((Object _) {}),
+        );
+      } on Object {
+        /* Cancellation is best effort after revocation. */
+      }
+    }
+    try {
+      _sendHostStream(stream, kind, error: error);
+    } on Object {
+      try {
+        _sendHostStream(
+          stream,
+          'hostStreamFailure',
+          error: _hostFailure(
+            'response_encoding_failed',
+            'Host stream terminal could not be transported.',
+          )['error'],
+        );
+      } on Object {
+        _hostProtocolViolation('Failed to send host stream terminal.');
+      }
+    }
+  }
+
+  void _sendHostStream(
+    _HostServiceStream stream,
+    String kind, {
+    Object? payload,
+    Object? error,
+  }) {
+    if (_closed) return;
+    _send({
+      'protocolVersion': backendHostProtocolVersion,
+      'kind': kind,
+      'requestId': stream.request['requestId'],
+      'pluginId': stream.request['pluginId'],
+      'generation': stream.request['generation'],
+      if (kind == 'hostStreamItem') 'payload': payload,
+      if (kind == 'hostStreamFailure') 'error': error,
+    });
   }
 
   void _sendHostResponse(
@@ -940,6 +1220,7 @@ final class PluginBackendHost {
       connection._finish(error);
     }
     _startingPlugins.clear();
+    _hostStreams.clear();
   }
 
   void _failPluginRequests(String pluginId, Object error) {
@@ -1104,6 +1385,11 @@ final class PluginBackendConnection implements AdeleStreamChannel {
   void _finish(Object reason) {
     _closed = true;
     _revokeHostInvocations();
+    _host._hostStreams.removeWhere(
+      (_, stream) =>
+          stream.request['pluginId'] == pluginId &&
+          stream.request['generation'] == _generation,
+    );
     if (!_termination.isCompleted) _termination.complete(reason);
   }
 }
@@ -1118,6 +1404,7 @@ final class PluginHostInvocation {
   final String id = _opaqueHostId();
   final Map<String, AdeleBackendDispatcher> _services;
   final Map<int, void Function(Map<String, Object?>)> _pending = {};
+  final Set<_HostServiceStream> _streams = {};
   bool _closed = false;
   bool get isClosed => _closed;
 
@@ -1128,12 +1415,30 @@ final class PluginHostInvocation {
     _closed = true;
     _owner._hostInvocations.remove(id);
     _services.clear();
+    for (final stream in _streams.toList()) {
+      _owner._host._finishHostStream(
+        stream,
+        'hostStreamFailure',
+        error: _hostInvocationRevoked['error'],
+        cancel: true,
+      );
+    }
     final pending = _pending.values.toList();
     _pending.clear();
     for (final settle in pending) {
       settle(_hostInvocationRevoked);
     }
   }
+}
+
+final class _HostServiceStream {
+  _HostServiceStream(this.request, this.invocation, this.dispatcher);
+  final Map<String, Object?> request;
+  final PluginHostInvocation? invocation;
+  final AdeleBackendDispatcher? dispatcher;
+  int credit = 0;
+  bool terminal = false;
+  bool cancelRequested = false;
 }
 
 final Random _hostRandom = Random.secure();

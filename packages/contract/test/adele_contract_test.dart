@@ -12,7 +12,7 @@ void main() {
     'metadata': <String, Object?>{'label': 'Fixture'},
   };
   test('extension readiness is strict, immutable and identity-free', () {
-    expect(adelePluginBackendProtocolVersion, 2);
+    expect(adelePluginBackendProtocolVersion, 3);
     expect(AdeleExtensionExposure.fromReady(const {}), isEmpty);
     final metadata = <String, Object?>{
       'values': <Object?>[true],

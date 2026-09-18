@@ -22,6 +22,7 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 
 const _searchId = 'dev.adele.plugin.search-tools';
 const _filesystemId = 'dev.adele.plugin.filesystem-tools';
+const _commandId = 'dev.adele.plugin.command-tools';
 const _gitId = 'dev.adele.plugin.git-environment';
 const _bound = Duration(seconds: 10);
 
@@ -30,6 +31,7 @@ void main() {
   late File hostArtifact;
   late File searchArtifact;
   late File filesystemArtifact;
+  late File commandArtifact;
   late File gitArtifact;
   late String aotRuntime;
 
@@ -46,6 +48,7 @@ void main() {
     hostArtifact = File.fromUri(artifacts.uri.resolve('host.aot'));
     searchArtifact = File.fromUri(artifacts.uri.resolve('search.aot'));
     filesystemArtifact = File.fromUri(artifacts.uri.resolve('filesystem.aot'));
+    commandArtifact = File.fromUri(artifacts.uri.resolve('command.aot'));
     gitArtifact = File.fromUri(artifacts.uri.resolve('git.aot'));
     for (final target in [
       (
@@ -61,6 +64,11 @@ void main() {
         entrypoint:
             'plugins/filesystem_tools/packages/backend/bin/filesystem_tools_backend.dart',
         artifact: filesystemArtifact,
+      ),
+      (
+        entrypoint:
+            'plugins/command_tools/packages/backend/bin/command_tools_backend.dart',
+        artifact: commandArtifact,
       ),
       (
         entrypoint:
@@ -114,6 +122,383 @@ void main() {
 
   Future<MaterializedToolSet> compose() async =>
       (await ModelToolComposer(extensions).materialize(context)).materialize();
+
+  Future<
+    ({
+      _ObservedProcess process,
+      MaterializedToolSet tools,
+      PluginBackendActivation command,
+      PluginBackendActivation git,
+      Directory worktree,
+      SessionModelToolHostContext context,
+    })
+  >
+  commandFixture() async {
+    final container = await Directory.systemTemp.createTemp(
+      'adele-command-git-',
+    );
+    addTearDown(() => container.delete(recursive: true));
+    final source = await Directory('${container.path}/source').create();
+    await Directory('${source.path}/nested').create();
+    await File(
+      '${source.path}/nested/source.txt',
+    ).writeAsString('Task source\n');
+    await _git(source, ['init']);
+    await _git(source, ['add', '.']);
+    await _git(source, [
+      '-c',
+      'user.name=ADELE Test',
+      '-c',
+      'user.email=adele@example.invalid',
+      'commit',
+      '-m',
+      'Command fixture',
+    ]);
+    final git = await start(gitArtifact, _gitId);
+    final command = await start(commandArtifact, _commandId);
+    addTearDown(ChatStrategyPlugin().activate(extensions).close);
+    final lifecycle = ProductLifecycleCoordinator.generated(
+      store: InMemoryProductStore(),
+      registry: capabilities,
+      extensions: extensions,
+      ids: MonotonicProductIdSource(seed: 'remote-command'),
+    );
+    final project = lifecycle.createProject(source.uri);
+    final created = await lifecycle.createTask(
+      projectId: project.id,
+      title: 'Command',
+    );
+    final session = lifecycle.createSession(
+      taskId: created.task.id,
+      strategyId: chatStrategyId,
+    );
+    final context = SessionModelToolHostContext(
+      sessionId: session.id,
+      environmentRuntime: lifecycle.environmentRuntime,
+    );
+    final process = _ObservedProcess(
+      await context.requireHostService<AuthorizedEnvironmentProcessFacet>(),
+    );
+    final tools = (await ModelToolComposer(
+      extensions,
+    ).materialize(process)).materialize();
+    // A fresh context is required after provider replacement; the first remains exact.
+    return (
+      process: process,
+      tools: tools,
+      command: command,
+      git: git,
+      worktree: Directory(
+        created.environment.providerState!['worktreePath']! as String,
+      ),
+      context: SessionModelToolHostContext(
+        sessionId: session.id,
+        environmentRuntime: lifecycle.environmentRuntime,
+      ),
+    );
+  }
+
+  test(
+    'real Command AOT grants process authority only after policy approval and listen',
+    () async {
+      final fixture = await commandFixture();
+      final process = fixture.process;
+      expect(fixture.command.connection.capabilityExposures, isEmpty);
+      final exposure = fixture.command.connection.extensionExposures.single;
+      expect(exposure.extensionId, '$_commandId.model-tools');
+      expect(exposure.metadata, {
+        'hostServices': [authorizedEnvironmentProcessServiceId],
+      });
+      expect(
+        fixture.tools.tools.single.definition.id.value,
+        '$_commandId.run-command',
+      );
+      expect(process.opens, 0);
+      final tool = fixture.tools.byAlias('run_command')!;
+      await expectLater(
+        () => tool.executable.validateAndNormalize({
+          'program': 'git',
+          'environmentId': 'forged',
+        }),
+        throwsA(isA<ToolArgumentValidationException>()),
+      );
+      final invocation = await _commandInvocation(
+        fixture.tools,
+        process.sessionId,
+        {'program': 'git'},
+      );
+      expect(invocation.canonicalArguments, {
+        'program': 'git',
+        'arguments': <String>[],
+        'workingDirectory': '',
+        'timeoutSeconds': 120,
+      });
+      final denied = await const ToolPolicyGate().evaluate(
+        invocation: invocation,
+        policy: const _DecisionPolicy(ToolPolicyDecision.deny),
+        interruptionId: RunInterruptionId('denied'),
+      );
+      expect(denied, isA<ToolExecutionDenied>());
+      expect(process.opens, 0);
+      final pending =
+          await const ToolPolicyGate().evaluate(
+                invocation: invocation,
+                policy: const ApprovalGatedToolPolicy(),
+                interruptionId: RunInterruptionId('command-approval'),
+              )
+              as ToolApprovalRequired;
+      expect(pending.effects.effects, {ToolEffect.processExecution});
+      expect(
+        pending.effects.targets.single.uri.toString(),
+        'adele-environment:/${process.environmentId.value}/',
+      );
+      expect(pending.effects.uncertainty, EffectUncertainty.uncertain);
+      final run = AgentRun(
+        id: invocation.context.runId,
+        sessionId: process.sessionId,
+      )..start();
+      run.interrupt(pending.interruption);
+      expect(run.state, RunState.waiting);
+      expect(
+        process.opens,
+        0,
+        reason: 'Describe and waiting for approval grant no process stream.',
+      );
+      final approved = const ToolPolicyGate().approve(
+        run.resolveInterruption(
+          ToolApprovalResolution(
+            interruptionId: pending.interruption.id,
+            toolInvocationId: invocation.id,
+            approved: true,
+          ),
+        ),
+      );
+      final events = run.startToolExecution(approved).events();
+      expect(process.opens, 0, reason: 'Authority starts only on listen.');
+      final observation = await collectToolExecution(events).timeout(_bound);
+      expect(observation.outcome.disposition, ToolOutcomeDisposition.success);
+      expect(process.opens, 1);
+      expect(process.requested, [AuthorizedEnvironmentProcessFacet]);
+    },
+    skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+  );
+
+  test(
+    'nested Command/Git streams preserve argv, cwd, progress, completion, timeout and domain failure',
+    () async {
+      final fixture = await commandFixture();
+      Future<ToolExecutionObservation> execute(
+        Map<String, Object?> arguments,
+      ) async {
+        final invocation = await _commandInvocation(
+          fixture.tools,
+          fixture.process.sessionId,
+          arguments,
+        );
+        return collectToolExecution(
+          invocation.tool.executable.execute(
+            invocation.arguments,
+            invocation.context,
+          ),
+        ).timeout(_bound);
+      }
+
+      final literal = await execute({
+        'program': '/usr/bin/printf',
+        'arguments': ['%s', r'$(touch forbidden); | > literal'],
+        'workingDirectory': './nested//',
+      });
+      expect(
+        literal.outcome.hostData['stdout'],
+        r'$(touch forbidden); | > literal',
+      );
+      expect(
+        await File('${fixture.worktree.path}/nested/forbidden').exists(),
+        isFalse,
+      );
+      final eventsBefore = fixture.process.events.length;
+      final result = await execute({
+        'program': '/bin/sh',
+        'arguments': [
+          '-c',
+          'printf "first\\n"; printf "error\\n" >&2; pwd; exit 7',
+        ],
+        'workingDirectory': 'nested',
+        'timeoutSeconds': 5,
+      });
+      expect(result.outcome.disposition, ToolOutcomeDisposition.success);
+      expect(result.outcome.hostData['exitCode'], 7);
+      expect(result.outcome.hostData['termination'], 'exited');
+      expect(
+        result.outcome.hostData['stdout'],
+        'first\n${fixture.worktree.path}/nested\n',
+      );
+      expect(result.outcome.hostData['stderr'], 'error\n');
+      expect(
+        result.progress
+            .where((p) => p.kind == ToolProgressKind.stdout)
+            .map((p) => p.content)
+            .join(),
+        result.outcome.hostData['stdout'],
+      );
+      expect(
+        result.progress
+            .where((p) => p.kind == ToolProgressKind.stderr)
+            .map((p) => p.content)
+            .join(),
+        'error\n',
+      );
+      expect(
+        fixture.process.events.last.kind,
+        EnvironmentProcessEventKind.completed,
+      );
+      expect(
+        result.progress.map(
+          (progress) => (progress.kind.name, progress.content),
+        ),
+        fixture.process.events
+            .skip(eventsBefore)
+            .where((event) => event.output != null)
+            .map((event) => (event.output!.stream.name, event.output!.text)),
+        reason: 'Every provider output reaches Run progress in the same order.',
+      );
+      final bounded = await execute({
+        'program': '/bin/sh',
+        'arguments': [
+          '-c',
+          'head -c 40000 /dev/zero; head -c 40000 /dev/zero >&2',
+        ],
+      });
+      for (final stream in ['stdout', 'stderr']) {
+        expect((bounded.outcome.hostData[stream] as String).length, 32 * 1024);
+        expect(bounded.outcome.hostData['${stream}Truncated'], isTrue);
+      }
+      final timeout = await execute({
+        'program': '/bin/sleep',
+        'arguments': ['300'],
+        'timeoutSeconds': 1,
+      });
+      expect(timeout.outcome.disposition, ToolOutcomeDisposition.success);
+      expect(timeout.outcome.hostData['termination'], 'timedOut');
+      expect(timeout.outcome.hostData['exitCode'], isNull);
+      final failed = await execute({'program': '/adele-missing-executable'});
+      expect(failed.outcome.failureKind, ToolFailureKind.domain);
+      expect(failed.outcome.hostData['code'], 'process_executable_not_found');
+      expect(fixture.command.connection.isClosed, isFalse);
+      expect(fixture.git.connection.isClosed, isFalse);
+      expect(host.isClosed, isFalse);
+    },
+    skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+  );
+
+  for (final retirement in ['consumer', 'invocation', 'provider']) {
+    test(
+      'real Command $retirement cancellation terminates the owned Git process group',
+      () async {
+        final fixture = await commandFixture();
+        final invocation = await _commandInvocation(
+          fixture.tools,
+          fixture.process.sessionId,
+          {
+            'program': '/bin/sh',
+            'arguments': [
+              '-c',
+              r'''sleep 300 & child=$!; trap 'wait "$child"; exit 0' TERM; printf 'owned:%s:%s\n' "$$" "$child"; wait "$child"''',
+            ],
+            'timeoutSeconds': 60,
+          },
+        );
+        final started = Completer<List<int>>();
+        final finished = Completer<void>();
+        final received = <ToolExecutionEvent>[];
+        final errors = <Object>[];
+        var output = '';
+        final subscription = invocation.tool.executable
+            .execute(invocation.arguments, invocation.context)
+            .listen(
+              (event) {
+                received.add(event);
+                if (event is ToolExecutionProgress) {
+                  output += event.progress.content;
+                  final match = RegExp(
+                    r'owned:(\d+):(\d+)\n',
+                  ).firstMatch(output);
+                  if (match != null && !started.isCompleted) {
+                    started.complete([
+                      int.parse(match[1]!),
+                      int.parse(match[2]!),
+                    ]);
+                  }
+                }
+              },
+              onError: errors.add,
+              onDone: finished.complete,
+            );
+        addTearDown(subscription.cancel);
+        final pids = await started.future.timeout(_bound);
+        // Emergency cleanup also runs on an assertion failure; never leave test children.
+        addTearDown(() {
+          for (final pid in pids) {
+            Process.killPid(pid, ProcessSignal.sigkill);
+          }
+        });
+        for (final pid in pids) {
+          expect(await Directory('/proc/$pid').exists(), isTrue);
+        }
+        if (retirement == 'consumer') {
+          await subscription.cancel().timeout(_bound);
+        } else {
+          if (retirement == 'invocation') {
+            await fixture.command.retire().timeout(_bound);
+          } else {
+            await fixture.git.close().timeout(_bound);
+          }
+          await finished.future.timeout(_bound);
+          expect(errors, contains(isA<StaleToolBindingException>()));
+        }
+        await _expectProcessesGone(pids);
+        pids.clear();
+        final count = received.length;
+        expect(received.whereType<ToolExecutionTerminal>(), isEmpty);
+        expect(host.isClosed, isFalse);
+        if (retirement == 'invocation') {
+          await fixture.command.close();
+          await start(commandArtifact, _commandId);
+        } else if (retirement == 'provider') {
+          await start(gitArtifact, _gitId);
+        }
+        final fresh = (await ModelToolComposer(
+          extensions,
+        ).materialize(fixture.context)).materialize();
+        final next = await _commandInvocation(
+          fresh,
+          fixture.process.sessionId,
+          {
+            'program': '/bin/echo',
+            'arguments': ['replacement'],
+          },
+        );
+        expect(
+          (await collectToolExecution(
+            next.tool.executable.execute(next.arguments, next.context),
+          ).timeout(_bound)).outcome.hostData['stdout'],
+          'replacement\n',
+        );
+        expect(
+          received,
+          hasLength(count),
+          reason: 'Expired streams cannot reach a replacement.',
+        );
+        if (retirement != 'consumer') {
+          expect(
+            invocation.tool.executable.validateBinding,
+            throwsA(isA<StaleToolBindingException>()),
+          );
+        }
+      },
+      skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+    );
+  }
 
   test('real Filesystem AOT composes four policy-compatible routes, preserves '
       'conditional mutations, and retires independently of Search', () async {
@@ -911,6 +1296,81 @@ void main() {
       expect(host.isClosed, isFalse);
     },
   );
+}
+
+Future<ToolInvocation> _commandInvocation(
+  MaterializedToolSet tools,
+  SessionId sessionId,
+  Map<String, Object?> arguments,
+) async =>
+    (await const ToolInvocationResolver().resolve(
+              invocationId: ToolInvocationId('command-invocation'),
+              proposal: ProviderToolProposal(
+                providerCallId: 'command-call',
+                alias: 'run_command',
+                arguments: arguments,
+              ),
+              tools: tools,
+              context: ToolExecutionContext(
+                sessionId: sessionId,
+                runId: RunId('command-run'),
+              ),
+            )
+            as ResolvedToolProposal)
+        .invocation;
+
+Future<void> _expectProcessesGone(List<int> pids) async {
+  final deadline = DateTime.now().add(_bound);
+  while (true) {
+    final alive = <int>[];
+    for (final pid in pids) {
+      if (await Directory('/proc/$pid').exists()) alive.add(pid);
+    }
+    if (alive.isEmpty) return;
+    if (DateTime.now().isAfter(deadline)) {
+      fail('Owned processes were not terminated and reaped: $alive');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+}
+
+final class _DecisionPolicy implements ToolPolicy {
+  const _DecisionPolicy(this.decision);
+  final ToolPolicyDecision decision;
+  @override
+  ToolPolicyDecision evaluate(ToolPolicyInput input) => decision;
+}
+
+final class _ObservedProcess
+    implements ModelToolHostContext, AuthorizedEnvironmentProcessFacet {
+  _ObservedProcess(this.delegate);
+  final AuthorizedEnvironmentProcessFacet delegate;
+  final requested = <Type>[];
+  final events = <EnvironmentProcessEvent>[];
+  int opens = 0;
+  @override
+  SessionId get sessionId => delegate.sessionId;
+  @override
+  EnvironmentId get environmentId => delegate.environmentId;
+  @override
+  void validateBinding() => delegate.validateBinding();
+  @override
+  Future<T> requireHostService<T extends Object>() async {
+    requested.add(T);
+    if (T == AuthorizedEnvironmentProcessFacet) return this as T;
+    throw StateError('Command requested unrelated authority $T.');
+  }
+
+  @override
+  Stream<EnvironmentProcessEvent> runForegroundProcess(
+    EnvironmentForegroundProcessRequest request,
+  ) {
+    opens++;
+    return delegate.runForegroundProcess(request).map((event) {
+      events.add(event);
+      return event;
+    });
+  }
 }
 
 Future<ToolProposalResolution> _resolution(

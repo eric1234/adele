@@ -43,6 +43,7 @@ void main() {
   late Directory artifacts;
   late File hostArtifact;
   late File probeArtifact;
+  late File commandArtifact;
   late String aotRuntime;
 
   setUpAll(() async {
@@ -57,6 +58,7 @@ void main() {
     ).path;
     hostArtifact = File.fromUri(artifacts.uri.resolve('host.aot'));
     probeArtifact = File.fromUri(artifacts.uri.resolve('probe.aot'));
+    commandArtifact = File.fromUri(artifacts.uri.resolve('command.aot'));
     for (final target in [
       (
         entrypoint: 'packages/plugin_backend_host/bin/adele_backend_host.dart',
@@ -65,6 +67,11 @@ void main() {
       (
         entrypoint: 'app/test/core/fixtures/remote_model_tool_probe.dart',
         artifact: probeArtifact,
+      ),
+      (
+        entrypoint:
+            'plugins/command_tools/packages/backend/bin/command_tools_backend.dart',
+        artifact: commandArtifact,
       ),
     ]) {
       await compileAotSnapshot(
@@ -231,7 +238,7 @@ void main() {
     },
     'unsupported service': {
       'metadata': {
-        'hostServices': ['authorizedEnvironmentProcess'],
+        'hostServices': ['unknownHostService'],
       },
     },
     'wrong service route': {'serviceId': 'notModelTools'},
@@ -434,7 +441,7 @@ void main() {
   for (final invalid in <String, Map<String, Object?>>{
     'missing': {'omitExecutionServices': true},
     'unknown': {
-      'wireServices': ['authorizedEnvironmentProcess'],
+      'wireServices': ['unknownHostService'],
     },
     'duplicate': {
       'wireServices': [
@@ -1001,6 +1008,387 @@ void main() {
     });
   }
 
+  const allServices = [
+    authorizedEnvironmentReadServiceId,
+    authorizedEnvironmentMutationServiceId,
+    authorizedEnvironmentProcessServiceId,
+  ];
+
+  for (final services in [
+    [authorizedEnvironmentProcessServiceId],
+    [authorizedEnvironmentReadServiceId, authorizedEnvironmentProcessServiceId],
+    [
+      authorizedEnvironmentMutationServiceId,
+      authorizedEnvironmentProcessServiceId,
+    ],
+    allServices,
+  ]) {
+    for (final mismatch in ['Session', 'Environment', 'absent']) {
+      if (mismatch == 'Environment' && services.length == 1) continue;
+      test(
+        '$services rejects process $mismatch before remote materialization',
+        () async {
+          final probe = await start(
+            options: {
+              'metadata': {'hostServices': services},
+              'executionServices': [<String>[]],
+            },
+          );
+          switch (mismatch) {
+            case 'Session':
+              context.process.sessionId = SessionId('foreign-session');
+            case 'Environment':
+              context.process.environmentId = EnvironmentId(
+                'foreign-environment',
+              );
+            case 'absent':
+              context.unavailable = AuthorizedEnvironmentProcessFacet;
+          }
+          await expectLater(materialize(), throwsStateError);
+          expect(await _records(probe.connection), isEmpty);
+          expect(context.process.processRequests, isEmpty);
+        },
+      );
+    }
+  }
+
+  for (final facet in ['read', 'mutation', 'process']) {
+    test(
+      'all three captured bindings validate synchronously, including $facet unused by route',
+      () async {
+        await start(
+          options: {
+            'metadata': {'hostServices': allServices},
+            'executionServices': [<String>[]],
+          },
+        );
+        final tool = (await materialize()).single.executable;
+        final captured = switch (facet) {
+          'read' => context.files,
+          'mutation' => context.mutations,
+          _ => context.process,
+        };
+        context.files = _Files();
+        context.mutations = _Files();
+        context.process = _Files();
+        captured.bindingFailure = const AuthorizedEnvironmentBindingStale(
+          'Retired',
+        );
+        expect(tool.validateBinding, throwsA(isA<StaleToolBindingException>()));
+        captured.bindingFailure = const AuthorizedEnvironmentBindingUnavailable(
+          'Unavailable',
+        );
+        expect(
+          tool.validateBinding,
+          throwsA(isA<ToolBindingUnavailableException>()),
+        );
+        expect(context.requested, [
+          AuthorizedEnvironmentFileReadFacet,
+          AuthorizedEnvironmentFileMutationFacet,
+          AuthorizedEnvironmentProcessFacet,
+        ]);
+        expect(
+          (await materialize()).single.executable.validateBinding,
+          returnsNormally,
+        );
+        expect(
+          tool.validateBinding,
+          throwsA(isA<ToolBindingUnavailableException>()),
+        );
+      },
+    );
+  }
+
+  test(
+    'process capture grants no pre-policy authority and each route narrows the full dependency set',
+    () async {
+      for (final services in [
+        <String>[],
+        [authorizedEnvironmentReadServiceId],
+      ]) {
+        final probe = await start(
+          options: {
+            'metadata': {'hostServices': allServices},
+            'hold': 'execute',
+            'executionServices': [services],
+          },
+        );
+        final tool = (await materialize()).single;
+        final arguments = await tool.executable.validateAndNormalize({
+          'value': 'data',
+        });
+        await tool.executable.describe(arguments, execution);
+        _expectDenied(await _processReplay(probe.connection, 'invented'));
+        final pending = tool.executable.execute(arguments, execution).toList();
+        await _control(probe.connection, 'ready', {'operation': 'execute'});
+        final token = (await _records(probe.connection)).last['token'];
+        _expectDenied(
+          await _processReplay(probe.connection, token),
+          token == null ? 'host_invocation_unavailable' : 'service_unavailable',
+        );
+        await _control(probe.connection, 'release', {'operation': 'execute'});
+        await pending;
+        await probe.close();
+      }
+      expect(context.process.processRequests, isEmpty);
+      expect(context.requested, [
+        for (var index = 0; index < 2; index++) ...[
+          AuthorizedEnvironmentFileReadFacet,
+          AuthorizedEnvironmentFileMutationFacet,
+          AuthorizedEnvironmentProcessFacet,
+        ],
+      ]);
+    },
+  );
+
+  test(
+    'process binding retirement rejects late authority-free materialization and description',
+    () async {
+      for (final operation in ['materialize', 'describe']) {
+        final probe = await start(
+          options: {
+            'metadata': {
+              'hostServices': [authorizedEnvironmentProcessServiceId],
+            },
+            'executionServices': [<String>[]],
+            'hold': operation,
+          },
+        );
+        final tool = operation == 'describe'
+            ? (await materialize()).single.executable
+            : null;
+        final pending = operation == 'materialize'
+            ? materialize()
+            : tool!.describe(
+                CanonicalToolArguments({'value': 'data'}),
+                execution,
+              );
+        final failed = expectLater(
+          pending,
+          throwsA(isA<StaleToolBindingException>()),
+        );
+        await _control(probe.connection, 'ready', {'operation': operation});
+        context.process.bindingFailure =
+            const AuthorizedEnvironmentBindingStale('Retired during operation');
+        await _control(probe.connection, 'release', {'operation': operation});
+        await failed;
+        expect(context.process.processRequests, isEmpty);
+        await probe.close();
+        context.process = _Files();
+      }
+    },
+  );
+
+  test(
+    'Command AOT uses only captured process authority after approval and forwards progress',
+    () async {
+      final connection = await host.startPlugin(
+        pluginId: 'dev.adele.plugin.command-tools',
+        artifactUri: commandArtifact.uri,
+      );
+      addTearDown(connection.close);
+      final activation = await PluginBackendActivation.registerAdvertised(
+        connection: connection,
+        capabilities: capabilities,
+        extensions: extensions,
+        adapters: createRemoteExtensionAdapters(),
+      );
+      addTearDown(activation.close);
+      final tools = await compose();
+      final captured = context.process;
+      context.process = _Files();
+      expect(context.requested, [AuthorizedEnvironmentProcessFacet]);
+      final resolved =
+          await const ToolInvocationResolver().resolve(
+                invocationId: ToolInvocationId('process-invocation'),
+                proposal: ProviderToolProposal(
+                  providerCallId: 'process-call',
+                  alias: 'run_command',
+                  arguments: {
+                    'program': 'git',
+                    'arguments': ['diff', '--check'],
+                  },
+                ),
+                tools: tools,
+                context: execution,
+              )
+              as ResolvedToolProposal;
+      final required =
+          await const ToolPolicyGate().evaluate(
+                invocation: resolved.invocation,
+                policy: const ApprovalGatedToolPolicy(),
+                interruptionId: RunInterruptionId('process-approval'),
+              )
+              as ToolApprovalRequired;
+      expect(required.effects.effects, {ToolEffect.processExecution});
+      expect(captured.processRequests, isEmpty);
+      expect(files.reads, isEmpty);
+      expect(mutations.mutations, isEmpty);
+      final run = AgentRun(id: execution.runId, sessionId: execution.sessionId)
+        ..start();
+      run.interrupt(required.interruption);
+      final allowed = const ToolPolicyGate().approve(
+        run.resolveInterruption(
+          ToolApprovalResolution(
+            interruptionId: required.interruption.id,
+            toolInvocationId: resolved.invocation.id,
+            approved: true,
+          ),
+        ),
+      );
+      final events = run.startToolExecution(allowed).events();
+      expect(captured.processRequests, isEmpty);
+      final observed = await collectToolExecution(events);
+      expect(observed.progress.map((event) => event.kind), [
+        ToolProgressKind.stdout,
+        ToolProgressKind.stderr,
+      ]);
+      expect(observed.outcome.disposition, ToolOutcomeDisposition.success);
+      expect(observed.outcome.hostData['exitCode'], 7);
+      expect(observed.outcome.hostData['environmentId'], 'tool-environment');
+      expect(captured.processRequests.single.arguments, ['diff', '--check']);
+      expect(context.process.processRequests, isEmpty);
+      expect(context.requested, [AuthorizedEnvironmentProcessFacet]);
+      captured.bindingFailure = const AuthorizedEnvironmentBindingStale(
+        'Retired process',
+      );
+      expect(
+        tools.tools.single.executable.validateBinding,
+        throwsA(isA<StaleToolBindingException>()),
+      );
+    },
+  );
+
+  for (final cleanupMode in ['hangs', 'throws', 'fails asynchronously']) {
+    test(
+      'Command generated process failure settles when producer cleanup $cleanupMode',
+      () async {
+        final connection = await host.startPlugin(
+          pluginId: 'dev.adele.plugin.command-tools',
+          artifactUri: commandArtifact.uri,
+        );
+        addTearDown(connection.close);
+        final activation = await PluginBackendActivation.registerAdvertised(
+          connection: connection,
+          capabilities: capabilities,
+          extensions: extensions,
+          adapters: createRemoteExtensionAdapters(),
+        );
+        addTearDown(activation.close);
+        final started = Completer<void>();
+        final cleanup = Completer<void>();
+        var cancellations = 0;
+        final source = StreamController<EnvironmentProcessEvent>(
+          sync: true,
+          onListen: started.complete,
+          onCancel: () {
+            cancellations++;
+            if (cleanupMode == 'throws') {
+              throw StateError('private cleanup failure');
+            }
+            if (cleanupMode == 'fails asynchronously') {
+              return Future<void>.error(StateError('private cleanup failure'));
+            }
+            return cleanup.future;
+          },
+        );
+        addTearDown(() async {
+          if (!cleanup.isCompleted) cleanup.complete();
+          await source.close();
+        });
+        context.process.processStream = source.stream;
+        final tool = (await materialize()).single.executable;
+        final arguments = await tool.validateAndNormalize({'program': 'fails'});
+        final pending = collectToolExecution(
+          tool.execute(arguments, execution),
+        );
+        await started.future.timeout(_bound);
+        source.addError(
+          const EnvironmentFailure(
+            code: 'process_failed',
+            message: 'Primary failure.',
+            details: {'evidence': 'preserved'},
+          ),
+        );
+        final observed = await pending.timeout(_bound);
+        expect(observed.outcome.disposition, ToolOutcomeDisposition.failure);
+        expect(observed.outcome.failureKind, ToolFailureKind.domain);
+        expect(observed.outcome.effectCertainty, EffectCertainty.uncertain);
+        expect(observed.outcome.hostData['code'], 'process_failed');
+        expect(observed.outcome.hostData['message'], 'Primary failure.');
+        expect(observed.outcome.hostData['details'], {'evidence': 'preserved'});
+        expect(
+          observed.outcome.hostDiagnostic,
+          isNot(contains('cleanup failure')),
+        );
+        expect(cancellations, 1);
+        expect(cleanup.isCompleted, isFalse);
+        expect(connection.isClosed, isFalse);
+        expect(tool.validateBinding, returnsNormally);
+        // A fresh operation settles on the same connection while old cleanup hangs.
+        context.process.processStream = null;
+        final next = await collectToolExecution(
+          tool.execute(arguments, execution),
+        ).timeout(_bound);
+        expect(next.outcome.disposition, ToolOutcomeDisposition.success);
+        expect(context.process.processRequests, hasLength(2));
+        expect(cancellations, 1);
+      },
+    );
+  }
+
+  for (final retire in [false, true]) {
+    test(
+      'Command ${retire ? 'retirement' : 'consumer cancellation'} cancels an idle process facet',
+      () async {
+        final connection = await host.startPlugin(
+          pluginId: 'dev.adele.plugin.command-tools',
+          artifactUri: commandArtifact.uri,
+        );
+        addTearDown(connection.close);
+        final activation = await PluginBackendActivation.registerAdvertised(
+          connection: connection,
+          capabilities: capabilities,
+          extensions: extensions,
+          adapters: createRemoteExtensionAdapters(),
+        );
+        addTearDown(activation.close);
+        final started = Completer<void>();
+        final cancelled = Completer<void>();
+        final source = StreamController<EnvironmentProcessEvent>(
+          sync: true,
+          onListen: started.complete,
+          onCancel: cancelled.complete,
+        );
+        addTearDown(source.close);
+        context.process.processStream = source.stream;
+        final tool = (await materialize()).single.executable;
+        final arguments = await tool.validateAndNormalize({'program': 'idle'});
+        final errors = <Object>[];
+        final done = Completer<void>();
+        final subscription = tool
+            .execute(arguments, execution)
+            .listen(
+              (_) => fail('Idle process must not emit output.'),
+              onError: errors.add,
+              onDone: done.complete,
+            );
+        addTearDown(subscription.cancel);
+        await started.future.timeout(_bound);
+        if (retire) {
+          await activation.retire().timeout(_bound);
+          await done.future.timeout(_bound);
+          expect(errors, [isA<StaleToolBindingException>()]);
+        } else {
+          await subscription.cancel().timeout(_bound);
+          expect(errors, isEmpty);
+        }
+        await cancelled.future.timeout(_bound);
+        expect(context.process.processRequests, hasLength(1));
+      },
+    );
+  }
+
   for (final terminate in [false, true]) {
     test(
       '${terminate ? 'connection termination' : 'exact retirement'} makes '
@@ -1104,6 +1492,23 @@ Future<Object?> _mutationReplay(
   },
 });
 
+Future<Object?> _processReplay(
+  PluginBackendConnection connection,
+  Object? token,
+) => _control(connection, 'replay', {
+  'token': token,
+  'service': authorizedEnvironmentProcessServiceId,
+  'method': authorizedEnvironmentProcessServiceRunForegroundProcessId,
+  'payload': {
+    'request': {
+      'program': 'forbidden',
+      'arguments': <String>[],
+      'relativeWorkingDirectory': '',
+      'timeoutSeconds': 1,
+    },
+  },
+});
+
 void _expectPrePolicyDenied(Map<String, Object?> record) {
   expect(record.containsKey('token'), isFalse);
   final attempts = record['attempts']! as Map;
@@ -1126,6 +1531,7 @@ final class _Context implements ModelToolHostContext {
 
   _Files files;
   _Files mutations;
+  _Files process = _Files();
   Type? unavailable;
   final requested = <Type>[];
 
@@ -1138,6 +1544,7 @@ final class _Context implements ModelToolHostContext {
     if (T != unavailable) {
       if (T == AuthorizedEnvironmentFileReadFacet) return files as T;
       if (T == AuthorizedEnvironmentFileMutationFacet) return mutations as T;
+      if (T == AuthorizedEnvironmentProcessFacet) return process as T;
     }
     throw StateError('No authority granted for $T.');
   }
@@ -1146,11 +1553,14 @@ final class _Context implements ModelToolHostContext {
 final class _Files
     implements
         AuthorizedEnvironmentFileReadFacet,
-        AuthorizedEnvironmentFileMutationFacet {
+        AuthorizedEnvironmentFileMutationFacet,
+        AuthorizedEnvironmentProcessFacet {
   String text = 'Captured authority';
   Object? bindingFailure;
   final reads = <String>[];
   final mutations = <Map<String, Object?>>[];
+  final processRequests = <EnvironmentForegroundProcessRequest>[];
+  Stream<EnvironmentProcessEvent>? processStream;
   Completer<void> entered = Completer<void>();
   Completer<void>? release;
 
@@ -1236,6 +1646,37 @@ final class _Files
 
   void unblock() {
     if (release != null && !release!.isCompleted) release!.complete();
+  }
+
+  @override
+  Stream<EnvironmentProcessEvent> runForegroundProcess(
+    EnvironmentForegroundProcessRequest request,
+  ) {
+    processRequests.add(request);
+    return processStream ??
+        Stream.fromIterable([
+          for (final stream in EnvironmentProcessOutputStream.values)
+            EnvironmentProcessEvent(
+              kind: EnvironmentProcessEventKind.output,
+              output: EnvironmentProcessOutput(
+                stream: stream,
+                text: stream == EnvironmentProcessOutputStream.stdout
+                    ? 'out\n'
+                    : 'err\n',
+              ),
+              completed: null,
+            ),
+          EnvironmentProcessEvent(
+            kind: EnvironmentProcessEventKind.completed,
+            output: null,
+            completed: EnvironmentProcessCompleted(
+              termination: EnvironmentProcessTermination.exited,
+              exitCode: 7,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+            ),
+          ),
+        ]);
   }
 }
 

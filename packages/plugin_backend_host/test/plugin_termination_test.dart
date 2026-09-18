@@ -74,6 +74,372 @@ void main() {
     },
   };
 
+  test(
+    'nested reverse streams preserve order, credit, allowlists and failures',
+    () async {
+      final host = await _startHost(dartaotruntime, hostArtifact);
+      addTearDown(host.close);
+      final plugin = await host.startPlugin(
+        pluginId: 'reverse-stream',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['reverse-streams'],
+      );
+      final peer = await host.startPlugin(
+        pluginId: 'reverse-peer',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['reverse-streams'],
+      );
+      final dispatcher = _StreamHostDispatcher((method) async* {
+        yield 0;
+        yield 1;
+        if (method == 'failure') {
+          throw const PluginRemoteFailure(
+            code: 'declared',
+            message: 'Exact failure',
+            declaredFailureType: 'fixture.failure',
+            details: {'value': 42},
+          );
+        }
+        yield 2;
+      });
+      final invocation = plugin.openHostInvocation({
+        'fixtureService': dispatcher,
+      });
+      final values = <Object?>[];
+      final first = Completer<void>();
+      final done = Completer<void>();
+      late StreamSubscription<Object?> subscription;
+      subscription = plugin.stream('nested', {'context': invocation.id}).listen(
+        (value) {
+          values.add(value);
+          if (values.length == 1) {
+            subscription.pause();
+            first.complete();
+          }
+        },
+        onDone: done.complete,
+      );
+      await first.future;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(values, [0]);
+      expect(dispatcher.advances, lessThanOrEqualTo(2));
+      final advances = dispatcher.advances;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(dispatcher.advances, advances);
+      subscription.resume();
+      await done.future.timeout(const Duration(seconds: 1));
+      expect(values, [0, 1, 2]);
+      expect(invocation.isClosed, isFalse);
+      await expectLater(
+        plugin.stream('nested', {
+          'context': invocation.id,
+          'method': 'failure',
+        }),
+        emitsInOrder([
+          0,
+          1,
+          emitsError(
+            isA<PluginRemoteFailure>()
+                .having((e) => e.code, 'code', 'declared')
+                .having((e) => e.details, 'details', {'value': 42}),
+          ),
+          emitsDone,
+        ]),
+      );
+      for (final attempt in [
+        (
+          connection: peer,
+          context: invocation.id,
+          service: 'fixtureService',
+          code: 'host_invocation_unavailable',
+        ),
+        (
+          connection: plugin,
+          context: 'unknown',
+          service: 'fixtureService',
+          code: 'host_invocation_unavailable',
+        ),
+        (
+          connection: plugin,
+          context: invocation.id,
+          service: 'denied',
+          code: 'service_unavailable',
+        ),
+      ]) {
+        await expectLater(
+          attempt.connection.stream('nested', {
+            'context': attempt.context,
+            'service': attempt.service,
+          }),
+          emitsError(
+            isA<PluginRemoteFailure>().having(
+              (e) => e.code,
+              'code',
+              attempt.code,
+            ),
+          ),
+        );
+      }
+      expect(dispatcher.opens, 2);
+      expect(await peer.request('ping', {}), 'alive');
+    },
+  );
+
+  for (final action in ['cancel', 'revoke', 'close', 'crash', 'host-close']) {
+    test(
+      'reverse stream $action settles independently of hanging producer cleanup',
+      () async {
+        final host = await _startHost(dartaotruntime, hostArtifact);
+        addTearDown(host.close);
+        final plugin = await host.startPlugin(
+          pluginId: 'reverse-stream',
+          artifactUri: pluginArtifact.uri,
+          arguments: ['reverse-streams'],
+        );
+        final peer = await host.startPlugin(
+          pluginId: 'reverse-peer',
+          artifactUri: pluginArtifact.uri,
+          arguments: ['reverse-streams'],
+        );
+        final cancellation = Completer<void>();
+        final cleanup = Completer<void>();
+        late StreamController<Object?> producer;
+        producer = StreamController<Object?>(
+          onListen: () => producer.add('first'),
+          onCancel: () {
+            cancellation.complete();
+            return cleanup.future;
+          },
+        );
+        final dispatcher = _StreamHostDispatcher((_) => producer.stream);
+        final invocation = plugin.openHostInvocation({
+          'fixtureService': dispatcher,
+        });
+        final first = Completer<void>();
+        final settled = Completer<void>();
+        final errors = <Object>[];
+        final subscription = plugin
+            .stream('nested', {'context': invocation.id})
+            .listen(
+              (_) {
+                if (!first.isCompleted) first.complete();
+              },
+              onError: (Object error) => errors.add(error),
+              onDone: settled.complete,
+            );
+        await first.future;
+        if (action == 'cancel') {
+          await subscription.cancel().timeout(const Duration(seconds: 1));
+        } else if (action == 'revoke') {
+          invocation.close();
+          expect(invocation.isClosed, isTrue);
+          await settled.future.timeout(const Duration(seconds: 1));
+          expect(
+            errors.single,
+            isA<PluginRemoteFailure>().having(
+              (e) => e.code,
+              'code',
+              'host_invocation_unavailable',
+            ),
+          );
+        } else if (action == 'close') {
+          await plugin.close().timeout(const Duration(seconds: 3));
+        } else if (action == 'crash') {
+          await expectLater(
+            plugin.request('crash', {}),
+            throwsA(isA<PluginRemoteFailure>()),
+          );
+        } else {
+          await host.close().timeout(const Duration(seconds: 3));
+        }
+        await cancellation.future.timeout(const Duration(seconds: 1));
+        expect(dispatcher.cancels, 1);
+        expect(cleanup.isCompleted, isFalse);
+        if (action != 'host-close') {
+          expect(await peer.request('ping', {}), 'alive');
+        }
+        if (action == 'cancel') {
+          expect(invocation.isClosed, isFalse);
+          expect(await plugin.request('ping', {}), 'alive');
+          invocation.close();
+        }
+        if (action == 'revoke' || action == 'close') {
+          await plugin.close();
+          final replacement = await host.startPlugin(
+            pluginId: 'reverse-stream',
+            artifactUri: pluginArtifact.uri,
+            arguments: ['reverse-streams'],
+          );
+          final fresh = replacement.openHostInvocation({
+            'fixtureService': _StreamHostDispatcher(
+              (_) => Stream.value('fresh'),
+            ),
+          });
+          await expectLater(
+            replacement.stream('nested', {'context': invocation.id}),
+            emitsError(isA<PluginRemoteFailure>()),
+          );
+          expect(
+            await replacement.stream('nested', {'context': fresh.id}).single,
+            'fresh',
+          );
+        }
+        cleanup.complete();
+      },
+    );
+  }
+
+  test(
+    'malformed reverse controls and replay are contained to their plugin',
+    () async {
+      final host = await _startHost(dartaotruntime, hostArtifact);
+      addTearDown(host.close);
+      final peer = await host.startPlugin(
+        pluginId: 'reverse-peer',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['reverse-streams'],
+      );
+      for (final frame in <Map<String, Object?>>[
+        {'kind': 'hostStreamCredit', 'requestId': 999, 'credit': 1},
+        {'kind': 'hostStreamCancel', 'requestId': 999},
+        {'kind': 'hostStreamAck', 'requestId': 999},
+        {'kind': 'hostStreamCredit', 'requestId': 0, 'credit': 2},
+        {'kind': 'hostStreamUnknown', 'requestId': 0},
+        {
+          'kind': 'hostStreamOpen',
+          'requestId': 0,
+          'hostInvocationContext': 'scope',
+          'serviceId': 'fixtureService',
+          'method': 'watch',
+          'payload': {},
+        },
+        {
+          'kind': 'hostStreamOpen',
+          'requestId': 1,
+          'hostInvocationContext': 'scope',
+          'serviceId': 'fixtureService',
+          'method': 'watch',
+          'payload': {},
+          'pluginId': 'reverse-peer',
+        },
+      ]) {
+        final plugin = await host.startPlugin(
+          pluginId: 'reverse-bad',
+          artifactUri: pluginArtifact.uri,
+          arguments: ['reverse-streams'],
+        );
+        final invocation = plugin.openHostInvocation({
+          'fixtureService': _StreamHostDispatcher((_) => Stream.value('value')),
+        });
+        expect(
+          await plugin.stream('nested', {'context': invocation.id}).single,
+          'value',
+        );
+        await expectLater(
+          plugin.request('raw', frame),
+          throwsA(isA<PluginRemoteFailure>()),
+        );
+        expect(host.isClosed, isFalse);
+        expect(await peer.request('ping', {}), 'alive');
+      }
+    },
+  );
+
+  test(
+    'oversize and malformed host stream output fail locally without late output',
+    () async {
+      final host = await _startHost(dartaotruntime, hostArtifact);
+      addTearDown(host.close);
+      final plugin = await host.startPlugin(
+        pluginId: 'reverse-output',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['reverse-streams'],
+      );
+      for (final value in [
+        Object(),
+        'x' * (maximumBackendHostFrameLength + 1),
+      ]) {
+        final dispatcher = _StreamHostDispatcher((_) => Stream.value(value));
+        final invocation = plugin.openHostInvocation({
+          'fixtureService': dispatcher,
+        });
+        await expectLater(
+          plugin.stream('nested', {'context': invocation.id}),
+          emitsError(
+            isA<PluginRemoteFailure>().having(
+              (e) => e.code,
+              'code',
+              'internal_error',
+            ),
+          ),
+        );
+        expect(dispatcher.cancels, 1);
+        expect(await plugin.request('ping', {}), 'alive');
+        invocation.close();
+      }
+    },
+  );
+
+  test(
+    'reverse stream request limits and missing terminal receipt stay plugin-local',
+    () async {
+      final host = await _startHost(dartaotruntime, hostArtifact);
+      addTearDown(host.close);
+      final plugin = await host.startPlugin(
+        pluginId: 'reverse-limits',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['reverse-streams'],
+      );
+      final peer = await host.startPlugin(
+        pluginId: 'reverse-peer',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['reverse-streams'],
+      );
+      final dispatcher = _StreamHostDispatcher((_) => Stream.value('value'));
+      final invocation = plugin.openHostInvocation({
+        'fixtureService': dispatcher,
+      });
+      await expectLater(
+        plugin.stream('nested', {'context': invocation.id, 'oversize': true}),
+        emitsError(
+          isA<PluginRemoteFailure>().having(
+            (e) => e.code,
+            'code',
+            'host_request_encoding_failed',
+          ),
+        ),
+      );
+      expect(dispatcher.opens, 0);
+      expect(await plugin.request('ping', {}), 'alive');
+      await expectLater(
+        plugin.stream('nested', {'context': invocation.id, 'compactDag': true}),
+        emitsError(isA<PluginRemoteFailure>()),
+      );
+      expect(invocation.isClosed, isTrue);
+      final replacement = await host.startPlugin(
+        pluginId: 'reverse-limits',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['reverse-streams'],
+      );
+      // This raw opening has no consumer to acknowledge the failure terminal.
+      await expectLater(
+        replacement
+            .request('raw', {
+              'kind': 'hostStreamOpen',
+              'requestId': 0,
+              'hostInvocationContext': 'unknown',
+              'serviceId': 'fixtureService',
+              'method': 'watch',
+              'payload': {},
+            })
+            .timeout(const Duration(seconds: 4)),
+        throwsA(isA<PluginRemoteFailure>()),
+      );
+      expect(await peer.request('ping', {}), 'alive');
+      expect(host.isClosed, isFalse);
+    },
+  );
+
   test('extension readiness reaches only its exact connection', () async {
     final host = await _startHost(dartaotruntime, hostArtifact);
     addTearDown(host.close);
@@ -2248,6 +2614,64 @@ final class _HostDispatcher implements AdeleBackendDispatcher {
   Future<void> close() async {
     closes++;
   }
+}
+
+final class _StreamHostDispatcher implements AdeleBackendDispatcher {
+  _StreamHostDispatcher(this.source);
+  final Stream<Object?> Function(String method) source;
+  final Map<int, StreamIterator<Object?>> _streams = {};
+  int opens = 0;
+  int advances = 0;
+  int cancels = 0;
+
+  @override
+  Future<void> handle(
+    Map<Object?, Object?> command,
+    void Function(Map<String, Object?>) send,
+  ) async {
+    final id = command['requestId'] as int;
+    if (command['kind'] == 'streamOpen') {
+      opens++;
+      _streams[id] = StreamIterator(source(command['method'] as String));
+    } else if (command['kind'] == 'streamCancel') {
+      cancels++;
+      await _streams.remove(id)?.cancel();
+      send({'kind': 'streamCancelled', 'requestId': id});
+    } else if (command['kind'] == 'streamCredit') {
+      final iterator = _streams[id]!;
+      advances++;
+      try {
+        final next = await iterator.moveNext();
+        if (_streams[id] != iterator) return;
+        send({
+          'kind': next ? 'streamItem' : 'streamDone',
+          'requestId': id,
+          if (next) 'payload': iterator.current,
+        });
+        if (!next) _streams.remove(id);
+      } on PluginRemoteFailure catch (error) {
+        _streams.remove(id);
+        send({
+          'kind': 'streamFailure',
+          'requestId': id,
+          'error': {
+            'code': error.code,
+            'message': error.message,
+            if (error.declaredFailureType != null)
+              'declaredFailureType': error.declaredFailureType,
+            'details': error.details,
+          },
+        });
+      }
+    }
+  }
+
+  @override
+  Future<Map<String, Object?>> dispatch(Map<Object?, Object?> request) =>
+      throw StateError('Not unary.');
+
+  @override
+  Future<void> close() => throw StateError('Dispatchers remain caller-owned.');
 }
 
 Future<void> _compile(

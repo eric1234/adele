@@ -2,7 +2,7 @@
 
 ## Status
 
-Generated typed unary and server-streaming/cancellation transport, active one-to-many capability routing, exact generation bindings, configured OpenAI provider contexts, and the common ModelProvider capability are implemented in the maintained development foundation. Backend-ready extension advertisements, host adapters over the existing extension registry, and operation-scoped unary backend-to-host calls support remote inference sources and model tools. Model-tool execution uses host-to-backend server streaming, not reverse streaming or general symmetric RPC.
+Generated typed unary and server-streaming/cancellation transport, active one-to-many capability routing, exact generation bindings, configured OpenAI provider contexts, and the common ModelProvider capability are implemented in the maintained development foundation. Backend-ready extension advertisements, host adapters over the existing extension registry, and operation-scoped backend-to-host calls support remote inference sources and model tools. Model-tool execution uses host-to-backend server streaming; authorized reads/mutations use reverse unary calls and foreground processes use reverse server streaming. This is not general symmetric RPC.
 
 The broader recursive extension model described in [`plugin-extension-model.md`](plugin-extension-model.md) is accepted architecture but mostly unimplemented. Capabilities should therefore be understood as one specialized callable part of that future extension architecture rather than as a universal registry for every kind of plugin participation.
 
@@ -28,9 +28,9 @@ Capability transport plus Phase III active provider registration, deterministic 
 
 Plugin contract source is shared by frontend and backend packages and should normally describe immutable snapshot values. A value received across a runtime boundary is reconstructed; its object identity is not shared with the sender.
 
-The internal generator treats contracts as a constrained IDL embedded in Dart and provides typed clients, dispatchers, codecs, request handling, and structured errors. A contract library declares one or more local, non-empty `@AdeleService` services with unary `Future<T>` and server-streaming `Stream<T>` methods. Each service has its own client/dispatcher while sharing local DTO/failure codecs; Environment's provider, authorized-read, and authorized-mutation services share its value and failure declarations. Zero declared `@AdeleFailure` types is valid, as in remote inference-source transport: no domain-specific failure is required, and unrecognized remote failures retain their transport semantics.
+The internal generator treats contracts as a constrained IDL embedded in Dart and provides typed clients, dispatchers, codecs, request handling, and structured errors. A contract library declares one or more local, non-empty `@AdeleService` services with unary `Future<T>` and server-streaming `Stream<T>` methods. Each service has its own client/dispatcher while sharing local DTO/failure codecs; Environment's provider, authorized-read, authorized-mutation, and authorized-process services share its value and failure declarations. Zero declared `@AdeleFailure` types is valid, as in remote inference-source transport: no domain-specific failure is required, and unrecognized remote failures retain their transport semantics.
 
-Values use one unnamed generative constructor with required named parameters, schema enums and values must be declared in the contract source library rather than imported, wire IDs use a conservative ASCII segment grammar, and every transported double must be finite. Client/bidirectional streaming, reverse streaming, general symmetric RPC, replay, and broader schema composition remain future work.
+Values use one unnamed generative constructor with required named parameters, schema enums and values must be declared in the contract source library rather than imported, wire IDs use a conservative ASCII segment grammar, and every transported double must be finite. Client/bidirectional streaming, ambient callbacks, general symmetric RPC, replay, and broader schema composition remain future work.
 
 The contract annotation import is exactly canonical, unprefixed, and without combinators or configurations. The plugin API import has the same shape exactly when the extracted schema semantically uses canonical `ResourceRef`; prefixed plugin API imports do not require it otherwise. Additional imports from either package, including repeated canonical URIs with `show` or `hide`, and every other import must be prefixed. Conditional imports whose default or configured URI is within either package are rejected. Every import prefix shares the generated top-level collision namespace with contract declarations, generated identifiers, unqualified ADELE runtime names, and SDK names; `ResourceRef` is reserved conditionally.
 
@@ -53,7 +53,7 @@ Committed transport is checked in normal CI. Development plugin preparation also
 Server-streaming uses the existing shared backend-host path. Generated clients open lazily and decode ordered typed items. Generated dispatchers hide producer iteration, cancellation, and terminal failure mapping. A fixed one-item credit window means paused consumers stop producer advancement after the already-granted item and cancellation reaches the producer iterator. Streams remain bound to their exact provider generation and fail rather than migrating when that generation disappears.
 
 Both `backendHostProtocolVersion` and `adelePluginBackendProtocolVersion` are
-currently 2. Prepared hosts and backends must use matching protocols and be rebuilt
+currently 3. Prepared hosts and backends must use matching protocols and be rebuilt
 together; mixed protocol versions are unsupported. These transport versions are
 separate from capability majors and the version-1 installed manifest.
 
@@ -229,6 +229,14 @@ expectedRevision)`. It reuses existing mutation results and declared
 process operations. The read service remains unchanged for inference sources and
 other consumers; granting mutation never implicitly grants reads.
 
+Separate generated `AuthorizedEnvironmentProcessService` exposes exactly
+`runForegroundProcess(EnvironmentForegroundProcessRequest request) ->
+Stream<EnvironmentProcessEvent>`. It reuses the existing request/event DTOs and
+declared `EnvironmentFailure`. It has no authority query, authority-selection IDs,
+file reads, or mutations. The host routes it through the captured
+`AuthorizedEnvironmentProcessFacet`, not a plugin-selected Environment. Granting
+this service does not implicitly grant either filesystem service.
+
 For remote inference sources, the read dispatcher captures the canonical
 `InferenceContextSourceContext` supplied by the composer and obtains its
 `AuthorizedEnvironmentFileReadFacet`. It never
@@ -251,15 +259,46 @@ producer cancellation. Registration retirement, connection shutdown, and termina
 also revoke contexts and settle pending host calls without waiting for arbitrary
 host service code, including while the outer stream is idle or paused. Late results
 cannot revive authority or reach a replacement generation. Revocation is not
-cancellation or rollback of an already-started read or mutation. These lifetimes
-reuse the existing protocol; both protocol versions remain 2 and reverse calls
-remain unary.
+cancellation or rollback of an already-started read or mutation.
+
+Reverse server streams reuse those same ports, framing, and exact-generation
+routing under protocol version 3. They open lazily and use a fixed one-item credit
+window: pausing stops producer advancement after the already-granted item, and
+cancellation reaches the producer. The invocation's allowlist and liveness apply
+to stream opening and delivery, not just unary dispatch. Outer-operation
+settlement, cancellation, registration retirement, and connection termination
+revoke authority immediately and cancel owned reverse streams. Cleanup is bounded
+and cannot keep authority alive while arbitrary producer cleanup is pending.
+Late items and terminals cannot revive a revoked operation or reach a replacement.
+Cancellation acknowledgement means cancellation was dispatched, not that arbitrary
+producer cleanup or operating-system process termination has completed. Bounded
+transport cleanup does not promise to interrupt arbitrary host service code.
+This supplies foreground-process streaming, not client/bidirectional streaming,
+ambient callbacks, or a general remote-object system.
+Host process adapters forward subscription cancellation even when a producer is
+idle or paused; delivery of a primary failure does not await producer cleanup.
+
+The reverse stream family is `hostStreamOpen`, `hostStreamCredit`, and
+`hostStreamCancel` from the backend, and `hostStreamItem`, `hostStreamDone`,
+`hostStreamFailure`, and `hostStreamCancelled` from the runtime. Opens carry the
+plugin-local request ID, invocation token, service, method, and payload. The shared
+host correlates its own request ID and stamps PluginId/generation; backend frames
+cannot supply those identities. Unary calls and stream opens share a monotonically
+increasing plugin-local ID space, so replay needs no unbounded historical ID set.
+`hostStreamCancelled` is sent after output is revoked and producer cancellation
+is initiated, without waiting for cleanup. A backend `hostStreamAck` confirms
+terminal receipt, allowing bounded terminal records to absorb controls already
+in flight without reopening authority. Missing receipt retires only the offending
+generation after the existing plugin lifecycle deadline; it does not accumulate
+terminal records indefinitely. Excess credit and unknown/replayed controls are
+protocol violations, not another producer window.
 
 Public pure-Dart `adele_plugin_backend_support` supplies only the reusable
-`AdeleHostRequestMultiplexer` and bound `AdeleRequestChannel` needed by generated
-clients. Its only production package dependency is `adele_contract`, with no internal
+`AdeleHostRequestMultiplexer`; its `bind` returns an `AdeleStreamChannel` supporting
+both unary requests and server streams for generated clients. Its only production
+package dependency is `adele_contract`, with no internal
 host or Flutter imports. It does not mint authority, grant service access, or
-implement general symmetric RPC. Reverse streaming, profiles,
+implement general symmetric RPC. Profiles
 and general plugin configuration remain deferred; this boundary is not a sandbox.
 
 ### Remote model tools
@@ -279,16 +318,17 @@ handles, model aliases, or authority tokens.
 The app's `RemoteModelToolAdapter` registers `ModelToolContribution` proxies through
 the existing adapter and extension registries. It requires the generated service ID
 and exactly one metadata key: `hostServices`, a duplicate-free list drawn from
-`authorizedEnvironmentRead` and `authorizedEnvironmentMutation`, including an
+`authorizedEnvironmentRead`, `authorizedEnvironmentMutation`, and
+`authorizedEnvironmentProcess`, including an
 empty list. Unknown keys, services, or duplicates fail activation. This exposure
 declares the maximum dependencies to capture, not permission grants or Profiles.
 Each descriptor's required `executionHostServices` is a duplicate-free subset of
 that exposure, not an inherited default. Unknown, duplicate, or undeclared services
 fail materialization. The subset is the exact service allowlist for that tool's
-execution; a read-only descriptor never receives mutation because its contribution
-also supplies mutating tools.
+execution; a read-only descriptor never receives mutation or process authority
+because its contribution also supplies effectful tools.
 
-Materialization captures every requested Session-bound read/mutation facet and its
+Materialization captures every requested Session-bound read/mutation/process facet and its
 exact Environment-provider binding, alongside the exact remote registration. All
 facets must belong to the materializing Session and the same Environment; incoherent
 facets fail rather than being substituted or re-resolved.
@@ -330,25 +370,33 @@ failure; malformed transport and other backend/protocol failures are not relabel
 as invalid model arguments. Host effect description, policy, approval, execution
 collection, and continuation remain on the normal path.
 
-Stock Search and Filesystem Tools use this point without capability exposures.
+Stock Search, Filesystem Tools, and Command Tools use this point without capability exposures.
 Their backends advertise `dev.adele.extension.model-tools` with their existing
-`dev.adele.plugin.search-tools.model-tools` and
-`dev.adele.plugin.filesystem-tools.model-tools` registration IDs, generated service
-ID, and default configuration context. Both reuse their pure-Dart root semantics.
+`dev.adele.plugin.search-tools.model-tools`,
+`dev.adele.plugin.filesystem-tools.model-tools`, and
+`dev.adele.plugin.command-tools.model-tools` registration IDs, generated service
+ID `modelTool`, and default configuration context. All reuse their pure-Dart root semantics.
 Search declares only `authorizedEnvironmentRead`, describes effects from pure
 identity data, and receives read authority only during execution. Filesystem
-declares read and mutation dependencies with these exact execution subsets:
+declares read and mutation dependencies; Command declares process only. Their exact
+execution subsets are:
 
 | Tool | `executionHostServices` |
 | --- | --- |
+| `search` | `['authorizedEnvironmentRead']` |
 | `read_file` | `['authorizedEnvironmentRead']` |
 | `apply_patch` | `['authorizedEnvironmentRead', 'authorizedEnvironmentMutation']` |
 | `create_file` | `['authorizedEnvironmentMutation']` |
 | `delete_file` | `['authorizedEnvironmentRead', 'authorizedEnvironmentMutation']` |
+| `run_command` | `['authorizedEnvironmentProcess']` |
 
-The separate mutation service changes neither file semantics nor policy/effect
-ordering. Reverse calls remain unary on protocol version 2. Process host services,
-remote Command/Chat/selector migration, and reverse streaming remain deferred.
+Command declares only `authorizedEnvironmentProcess` and describes effects from
+pure identity and argument data. Its backend uses reverse process streaming only
+during authorized execution. Read and mutation calls remain unary; the separate
+host services change neither tool semantics nor policy/effect ordering. Command's
+installed backend and frontend are independently available. Chat and selector
+migration, client/bidirectional streaming, ambient callbacks, and general symmetric
+RPC remain deferred.
 
 ## Configured capability instances
 

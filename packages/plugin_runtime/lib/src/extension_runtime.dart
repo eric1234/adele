@@ -102,11 +102,13 @@ final class RemoteExtensionContext {
     }
 
     Future<void> cancel() {
-      // Release nested unary calls before waiting for producer cancellation.
+      // Release nested host calls before waiting for producer cancellation.
       revoke();
       final current = subscription;
       if (current == null) return Future<void>.value();
-      final pending = cancellation ??= Future<void>.sync(current.cancel);
+      final pending = cancellation ??= Future<void>.sync(
+        current.cancel,
+      ).timeout(const Duration(seconds: 2));
       return failed ? pending.catchError((Object _) {}) : pending;
     }
 

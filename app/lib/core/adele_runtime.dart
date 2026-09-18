@@ -2,7 +2,6 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
-import 'package:command_tools_plugin/command_tools_plugin.dart';
 import 'package:local_directory_project_selector_plugin/local_directory_project_selector_plugin.dart';
 
 import 'application_plugin_bootstrap.dart';
@@ -12,7 +11,7 @@ import 'resource_cleanup.dart';
 /// Application-lifetime host graph and implicit stock in-process composition.
 /// Providers and product operations are established separately by callers.
 final class AdeleRuntime {
-  AdeleRuntime({ProductIdSource? ids, bool includeCommandTools = true}) {
+  AdeleRuntime({ProductIdSource? ids}) {
     plugins = ApplicationPluginBootstrap(registry, extensions);
     lifecycle = ProductLifecycleCoordinator.generated(
       store: store,
@@ -23,8 +22,6 @@ final class AdeleRuntime {
     contextComposer = InferenceContextComposer(extensions);
     _activations = <ExtensionRegistration>[
       chat.activate(extensions),
-      // Retain the existing reduced live-smoke composition, not a profile API.
-      if (includeCommandTools) const CommandToolsPlugin().activate(extensions),
       const LocalDirectoryProjectSelectorPlugin().activate(extensions),
     ];
   }

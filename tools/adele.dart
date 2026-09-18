@@ -159,6 +159,12 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
+    name: 'command_tools_backend',
+    path: 'plugins/command_tools/packages/backend',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
     name: 'agents_md_plugin',
     path: 'plugins/agents_md',
     executable: 'dart',
@@ -292,6 +298,11 @@ analysisTargets = <({String name, String path, bool flutter})>[
     flutter: false,
   ),
   (name: 'command_tools_plugin', path: 'plugins/command_tools', flutter: false),
+  (
+    name: 'command_tools_backend',
+    path: 'plugins/command_tools/packages/backend',
+    flutter: false,
+  ),
   (
     name: 'filesystem_tools_frontend',
     path: 'plugins/filesystem_tools/packages/frontend',
