@@ -60,11 +60,17 @@ It validates metadata and independently optional backend/frontend components wit
 confined prepared files, without starting processes, compiling source, loading
 EVC, or watching for changes. `PreparedPluginInstallation` retains optional
 `backendArtifactUri` and `frontend`; `PreparedFrontendComponent` contains the
-artifact URI and immutable presentation descriptors. The sealed, data-only
+artifact URI and separate immutable presentation and behavioral extension
+descriptor lists. The sealed, data-only
 `PreparedPresentationDescriptor` variants are `PreparedSessionPresentation`,
 `PreparedToolActivityPresentation`, and `PreparedModelNativeActivityPresentation`.
-They use existing public identity types without importing Flutter, `adele_ui`,
-eval, or concrete plugins. Strict role-specific fields describe executable
+The separate sealed `PreparedFrontendExtension` currently has
+`PreparedProjectSelectorExtension`, with `kind: 'projectSelector'`, `extensionId`,
+`displayName`, `library`, and `entrypoint`. Its optional `frontend.extensions` list
+defaults to empty and can coexist with the required, possibly empty `presentations`
+list; existing presentation roles and manifest version 1 are unchanged.
+Both descriptor families use existing public identity types without importing
+Flutter, `adele_ui`, eval, or concrete plugins. Strict role/kind-specific fields describe executable
 ABI/preparation data, not profile or activation state. The schema and failure rules
 live in
 [`plugin-layout.md`](../../docs/architecture/plugin-layout.md#prepared-installation-snapshot).
@@ -73,16 +79,20 @@ Unconfigured, missing, or empty roots succeed empty. Malformed/unreadable
 installation envelopes produce installation-wide issues and are excluded. An
 invalid component instead records `PreparedPluginCatalogIssue.component` as
 `PreparedPluginComponent.backend` or `.frontend`, omitting only that component
-while retaining the installation and healthy sibling. Invalid roles/descriptors
-invalidate the frontend component. Readable valid identities are reserved before
+while retaining the installation and healthy sibling. Invalid roles, kinds, or
+descriptors invalidate the frontend component. Readable valid identities are reserved before
 the remaining validation; duplicate PluginIds exclude all conflict members,
 including otherwise invalid manifests, without version selection. Root I/O
 failures propagate instead of looking empty.
 
 File confinement and existence do not establish executable EVC correctness.
-Flutter-side `PreparedFrontend.load` reads immutable bytes once per generation;
-decoding/entrypoint failures, including readable corrupt bytecode, stay per-view.
-The pure-Dart catalog neither decodes nor links frontend code.
+Flutter-side `PreparedFrontend.load` reads immutable bytes once per generation.
+The Flutter bootstrap then validates behavioral bytecode and descriptor entrypoint
+presence before registration, intercepting runtime execution before initializers
+or plugin code run and installing no native picker authority. Invalid behavioral
+code fails only that frontend attempt. Presentation-only decoding/entrypoint
+failures, including readable corrupt bytecode, stay per-view. The pure-Dart catalog
+neither decodes nor links frontend code.
 
 The app separately owns the policy of attempting all discovered valid components.
 Its backend bootstrap publishes this same catalog before backend startup, and
@@ -92,6 +102,13 @@ components means no host process, even with invalid host paths; frontends remain
 independently activatable. Profiles are unimplemented participation policy, not
 descriptor metadata. See
 [`app/README.md`](../../app/README.md#normal-backend-startup) for bootstrap ownership.
+
+The frontend-only Local Directory Project Selector uses this descriptor catalog,
+not `PluginBackendHost` or generated backend RPC. Its app-owned operation bridge
+and fresh eval runtime are distinct from backend host-invocation contexts and
+Session/Environment authority. Only headless Chat remains statically composed in
+`AdeleRuntime`; self-hosting stays selector-free and supplies its known Project
+source directly.
 
 ## Ready Registrations
 

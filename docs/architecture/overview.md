@@ -41,13 +41,15 @@ Public plugin-facing APIs remain experimental.
 
 Normal startup consumes a prepared installation snapshot with independently
 optional backend and frontend components. Backends advertise ready capabilities
-and extensions; frontends use metadata-driven presentation registration. Generic
-host adapters and operation-scoped unary read/mutation and server-streaming process
+and extensions; frontends use separate metadata-driven presentation and behavioral
+extension registration. Generic host adapters and operation-scoped unary
+read/mutation and server-streaming process
 host calls support the AGENTS.md, Search, Filesystem Tools, and Command Tools AOT
-backends, while two stock plugins remain statically composed in process. This
-reuses existing registries, isolate
-ports/framing, prepared EVC execution, and
-per-view decoding. Plugin installation, production packaging, profile/enable-disable
+backends, while only headless Chat remains statically composed in process. Local
+Directory Project Selector is a prepared frontend-only behavioral extension. This
+reuses existing registries, isolate ports/framing, and prepared EVC hosting, with
+per-view presentation decoding and fresh operation runtimes for selectors.
+Plugin installation, production packaging, profile/enable-disable
 management, version solving, filesystem watching, general symmetric RPC,
 client/bidirectional streaming, ambient callbacks, and hot upgrade remain unimplemented.
 
@@ -70,9 +72,8 @@ ADELE has one Flutter desktop application, `adele_desktop`, under `app/`. The ap
 It owns one `CapabilityRegistry`, `ExtensionRegistry`, `InMemoryProductStore`,
 `ProductLifecycleCoordinator.generated` wired to those same registries and store,
 `InferenceContextComposer` over the same extension registry, and retained
-`ChatStrategyPlugin`. It statically activates Chat and Local Directory Project
-Selector in process on the same extension registry, with no `includeCommandTools`
-option. These are its only two static activations. This
+`ChatStrategyPlugin`. Chat is its only static in-process activation on the same
+extension registry, with no `includeCommandTools` option. This
 is an implicit in-process composition, outside installed-component discovery and
 not a profile/configuration API. Construction is synchronous and provider-free. The
 runtime also owns pure-Dart `ApplicationPluginBootstrap` on those same capability
@@ -93,10 +94,12 @@ files before host creation. The version-1 JSON schema contains `PluginMetadata`
 (`id`, opaque `version`, `displayName`, optional `description`) and `components`,
 with independently optional backend and frontend components. Backend supplies an
 artifact such as `backend.aot`; frontend supplies an artifact such as `frontend.evc`
-and strict presentation descriptors with roles `session`, `toolActivity`, or
-`modelNativeActivity`. Artifact paths must be relative, confined, and existing.
+and strict `presentations` descriptors with roles `session`, `toolActivity`, or
+`modelNativeActivity`, plus an optional separate `extensions` list supporting
+`kind: 'projectSelector'`. Both lists coexist without changing presentation roles
+or manifest version 1. Artifact paths must be relative, confined, and existing.
 Descriptors are data-only executable ABI/preparation metadata, not profile state.
-There are no source paths, capability/extension exposures, configuration, or activation state
+There are no source paths, backend capability/extension exposures, configuration, or activation state
 in this manifest; the source/build
 `adele_plugin.yaml` has a different purpose. Stock source layouts are not normalized
 to it. See [`plugin-layout.md`](plugin-layout.md#prepared-installation-snapshot).
@@ -107,26 +110,33 @@ backend/frontend issues and omit only the failed component while retaining the
 installation and healthy sibling. Readable valid identities are reserved before
 remaining validation, so duplicate IDs exclude all conflict members, including
 otherwise invalid manifests, without selecting a version winner. Root I/O failure
-reports generic bootstrap failure, not successful emptiness; core in-process functionality
-and Project opening remain usable. There is no watching or rescan lifecycle.
+reports generic bootstrap failure, not successful emptiness; core in-process
+functionality remains usable, but prepared Project selectors require successful discovery and
+frontend activation. There is no watching or rescan lifecycle.
 
 The backend bootstrap publishes the catalog through its existing snapshot change
 notification before backend startup. Window-owned Flutter
 `ApplicationFrontendBootstrap` in `app/lib/frontend` consumes that same snapshot
 and the runtime's existing `ExtensionRegistry`. It loads each frontend once per
 generation through `PreparedFrontend` and registers the descriptor-selected public
-UI roles, with no second root, catalog, registry, or frontend runtime mechanism.
+UI roles and Project selector contributions, with no second root, catalog,
+registry, or frontend runtime mechanism.
 Local load/registration failure rolls back only that attempt's exact registrations
 and generation; frontend readiness does not depend on a backend, credentials, or
 another frontend. Retirement closes only captured exact registrations, not sibling
 roles or replacements. Generation close settles pending loads, retires its
-registrations, and invalidates its view resources, including late loads after close.
+registrations, and invalidates view resources and operation bridges, including late
+loads after close.
 
 Catalog validation establishes strict descriptors and confined existing files,
-not executable EVC correctness. `PreparedFrontend.load` retains immutable bytes;
-decoding and entrypoint execution stay per-view. Readable corrupt bytecode can
-therefore pass discovery and byte loading yet fail only when a view is created,
-without failing a Run or retiring healthy presentations.
+not executable EVC correctness. `PreparedFrontend.load` retains immutable bytes.
+Before registration, bootstrap validates behavioral bytecode and descriptor
+entrypoint presence through a validation runtime that intercepts execution before
+initializers or plugin code run, with no picker authority. A failure rejects only
+that frontend attempt. Presentation-only components retain per-view decoding and
+entrypoint execution: their readable corrupt bytecode can pass discovery and byte
+loading yet fail only when a view is created, without failing a Run or retiring
+healthy presentations.
 
 With no valid backend components, bootstrap succeeds without spawning a host even
 if runtime/host paths are invalid. Otherwise it starts one shared
@@ -192,21 +202,25 @@ Environment support unavailable; missing Search, Filesystem, or Command backends
 their tools unavailable without in-process fallback. Missing Chat, Filesystem Tools,
 Command Tools, or OpenAI activity EVC leaves the corresponding presentation unavailable
 independently of the other frontends and model backend support.
+Missing or invalid Local Directory frontend leaves its Project selector unavailable,
+without a static or native selector fallback.
 Artifact preparation belongs to repository/build-time tooling, not app startup;
 deployment inputs and source-checkout limitations are documented in
 [`app/README.md`](../../app/README.md#normal-backend-startup) and the
 [`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
 Checkout preparation stands in for future installation/update-time compilation;
 activation only consumes prepared artifacts. Caching, plugin management,
-production packaging, and profiles remain deferred. Linux tooling prepares seven
+production packaging, and profiles remain deferred. Linux tooling prepares eight
 installations in one `.dart_tool/adele/desktop-plugins/build-*/installations/` root:
-frontend-only Chat, backend-only Git, AGENTS.md, and Search, and combined Filesystem
-Tools, Command Tools, and OpenAI. Filesystem and Command each contain `backend.aot`
+frontend-only Chat and Local Directory Project Selector, backend-only Git, AGENTS.md,
+and Search, and combined Filesystem Tools, Command Tools, and OpenAI. Filesystem and
+Command each contain `backend.aot`
 and `frontend.evc` with independent component availability. Preparation produces
-six backend snapshots plus the host and four EVCs, with no AGENTS-, Search-,
+six backend snapshots plus the host and five EVCs, with no AGENTS-, Search-,
 Filesystem-, or Command-specific configuration.
 `tools/stock_frontend_descriptors.dart` is the singular stock
-build-side descriptor table; app runtime activation has no stock tool/native
+build-side source for presentation and behavioral extension descriptors; app runtime
+activation has no stock tool/native
 identity table. Deployment uses only `ADELE_PLUGIN_INSTALLATION_ROOT`,
 `ADELE_BACKEND_HOST_ARTIFACT`, `ADELE_DARTAOTRUNTIME_EXECUTABLE`, and
 `ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`, with no additional stock-specific defines.
@@ -238,10 +252,10 @@ profile environment configures the backend with the default
 online contexts, potentially both OpenAI contexts. It then explicitly resolves
 the selected profile's provider ID rather than filtering registrations by profile.
 
-The selector's native picker uses a conditional Flutter-only import so shared
-runtime composition preserves the real plain-Dart self-hosting CLI import graph.
-Registration makes no OS call; invoking the default picker headlessly throws
-`UnsupportedError`, not cancellation or a fallback.
+Self-hosting remains selector-free and creates its Project from the explicitly
+known isolated source URI. The shared runtime imports no selector, Flutter bridge,
+or native picker; no conditional picker import or headless picker fallback is
+needed. Normal selector activation likewise makes no OS call.
 
 Host implementations are split into small pure-Dart packages where Flutter is not required:
 
@@ -380,8 +394,9 @@ Revocation is immediate and precedes bounded cleanup of owned streams. Both
 transport protocols are version 1 under the
 [pre-release transport policy](contracts-and-capabilities.md#transport-version-policy);
 the installed manifest remains version 1.
-Backend/frontend availability is independent. Chat and Local Directory Project
-Selector migration remains deferred. These checks authorize the
+Backend/frontend availability is independent. Only headless Chat migration remains
+deferred; Local Directory uses a prepared frontend bridge, not this backend
+transport or its authority tokens. These checks authorize the
 host-service API, not native OS access; process separation is not a sandbox.
 
 [`contracts-and-capabilities.md`](contracts-and-capabilities.md) is the detailed
@@ -412,11 +427,27 @@ directory. B1 implements `ProjectSelectorContribution` in
 and permits zero, one, or multiple independent contributions, without priorities,
 defaults, categories, or applicability rules.
 
-Stock `local_directory_project_selector_plugin` provides `Open Local Directory...`
-through an injected narrow native picker using `file_selector ^1.1.0`. It returns
-an absolute `file:` directory URI with lexical dot normalization, without
-Git/filesystem validation or symlink resolution. The registration boundary is
-recorded in the [selector README](../../plugins/local_directory_project_selector/README.md).
+Stock `local_directory_project_selector_frontend` lives under
+`plugins/local_directory_project_selector/packages/frontend`, replacing the retired
+root implementation package. The frontend-only `local-directory-project-selector`
+installation describes `Open Local Directory...` through a `projectSelector`
+behavioral extension, not a presentation role or AOT backend. Its no-argument
+evaluated `Future<String?> selectProject()` calls the public interpreted-only
+`adele_ui/directory_picker_bridge.dart` stub, `Future<String?> pickDirectory()`.
+The EVC owns platform-path rules and lexical dot normalization, returning an
+absolute `file:` directory URI string or `null`, without Git/filesystem validation
+or symlink resolution.
+
+The app's compile-only `DirectoryPickerDeclarations` and operation-scoped
+`DirectoryPickerBridge` separate declaration from native access. The bridge wraps
+`file_selector.getDirectoryPath` asynchronously with `$Future.wrap`, returning the
+raw platform path and permitting one native call per operation. Internal
+`PreparedFrontend.invoke<T>` uses a fresh runtime, supplied bridge, and result
+decoder for the descriptor-selected no-argument entrypoint, then revokes in
+`finally`; it is not public arbitrary eval. The generic selector adapter validates
+only the returned URI and liveness, leaving local-directory path semantics in EVC.
+This grants no backend RPC or Session/Environment authority. See the
+[selector README](../../plugins/local_directory_project_selector/README.md).
 
 Only the app invokes the contribution and passes a selected URI to
 `runtime.lifecycle.createProject`, which publishes and returns the canonical
@@ -425,7 +456,9 @@ Project. `_project` in application State is window-local presentation, never
 cancellation and creates nothing; selector/lifecycle failure is an inline error
 without fallback or changing the presented Project. The app validates the exact
 retained binding after asynchronous selection and before creation; late results
-after disposal/exit are ignored.
+after disposal/exit are ignored. Retirement rejects late native picker results
+without forcibly closing an open OS dialog. Semantic path, picker, and result
+failures remain operation-local, not frontend-generation retirement.
 
 The opened shell derives a leaf name from the URI, falling back to host or URI,
 and shows the source URI, `Project is open`, and initially `No Tasks yet`. No
@@ -934,7 +967,7 @@ See [`agent-kernel-semantic-model.md`](agent-kernel-semantic-model.md).
 
 The default development UX is expected to be produced by a stock plugin/configuration set rather than by hard-coded ADELE core behavior. Directional stock responsibilities include:
 
-- Local Directory Project Selector (B1 native picker and minimal Project opening);
+- Local Directory Project Selector (prepared frontend behavior with a native picker bridge and minimal Project opening);
 - Task Browser;
 - Git/Worktree Environment provider;
 - Agent Interaction + Chat strategy;

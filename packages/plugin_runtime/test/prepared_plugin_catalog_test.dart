@@ -159,6 +159,7 @@ void main() {
             directory.uri.resolve('frontend.evc'),
           );
           expect(installation.frontend!.presentations, isEmpty);
+          expect(installation.frontend!.extensions, isEmpty);
         } else {
           expect(installation.frontend, isNull);
         }
@@ -186,6 +187,8 @@ void main() {
       expect(frontend.artifactUri.scheme, 'file');
       expect(frontend.artifactUri.isAbsolute, isTrue);
       expect(frontend.presentations, hasLength(3));
+      expect(frontend.extensions, isEmpty);
+      expect(() => frontend.extensions.clear(), throwsUnsupportedError);
       final tool =
           frontend.presentations[0] as PreparedToolActivityPresentation;
       expect(tool.library, _toolActivity['library']);
@@ -239,8 +242,99 @@ void main() {
       descriptors.clear();
       expect(copy.presentations, frontend.presentations);
       expect(() => copy.presentations.clear(), throwsUnsupportedError);
+      expect(copy.extensions, isEmpty);
+      expect(() => copy.extensions.clear(), throwsUnsupportedError);
     },
   );
+
+  for (final presentations in [
+    <Object?>[],
+    [_toolActivity, _session, _modelNativeActivity],
+  ]) {
+    test(
+      'round-trips frontend-only selectors with ${presentations.length} presentations',
+      () async {
+        final PreparedFrontendExtension selector =
+            PreparedProjectSelectorExtension(
+              extensionId: ExtensionId(_projectSelector['extensionId']!),
+              displayName: _projectSelector['displayName']!,
+              library: _projectSelector['library']!,
+              entrypoint: _projectSelector['entrypoint']!,
+            );
+        final secondSelector = PreparedProjectSelectorExtension(
+          extensionId: ExtensionId('org.example.another-selector'),
+          displayName: ' Another Project... ',
+          library: 'package:example_frontend/src/another_selector.g.dart',
+          entrypoint: '_selectAnotherProject2',
+        );
+        expect(selector.toJson(), _projectSelector);
+        final serialized = [selector.toJson(), secondSelector.toJson()];
+        final directory = await install(
+          'frontend',
+          _manifest(
+            components: {
+              'frontend': {
+                ..._frontend(presentations: presentations),
+                'extensions': [selector, secondSelector],
+              },
+            },
+          ),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.issues, isEmpty);
+        final installation = catalog.installations.single;
+        expect(installation.backendArtifactUri, isNull);
+        final frontend = installation.frontend!;
+        expect(frontend.artifactUri, directory.uri.resolve('frontend.evc'));
+        expect(frontend.presentations, hasLength(presentations.length));
+        expect(frontend.extensions, hasLength(2));
+        final decoded =
+            frontend.extensions.first as PreparedProjectSelectorExtension;
+        expect(
+          decoded.extensionId,
+          ExtensionId(_projectSelector['extensionId']!),
+        );
+        expect(decoded.displayName, _projectSelector['displayName']);
+        expect(decoded.library, _projectSelector['library']);
+        expect(decoded.entrypoint, _projectSelector['entrypoint']);
+        expect(
+          frontend.extensions.map((extension) => extension.toJson()),
+          serialized,
+        );
+        expect(() => frontend.extensions.clear(), throwsUnsupportedError);
+
+        final extensions = frontend.extensions.toList();
+        final copy = PreparedFrontendComponent(
+          artifactUri: frontend.artifactUri,
+          presentations: frontend.presentations,
+          extensions: extensions,
+        );
+        extensions.clear();
+        expect(copy.extensions, frontend.extensions);
+        expect(() => copy.extensions.clear(), throwsUnsupportedError);
+      },
+    );
+  }
+
+  test('explicit empty extensions coexist with presentations', () async {
+    await install(
+      'frontend',
+      _manifest(
+        components: {
+          'frontend': {
+            ..._frontend(presentations: [_session]),
+            'extensions': <Object?>[],
+          },
+        },
+      ),
+    );
+    final catalog = await PreparedPluginCatalog.discover(root.path);
+    expect(catalog.issues, isEmpty);
+    final frontend = catalog.installations.single.frontend!;
+    expect(frontend.presentations.single, isA<PreparedSessionPresentation>());
+    expect(frontend.extensions, isEmpty);
+    expect(() => frontend.extensions.clear(), throwsUnsupportedError);
+  });
 
   test('OpenAI backend and native frontend are one installation', () async {
     final directory = await install(
@@ -289,6 +383,11 @@ void main() {
         'missing presentations': {'artifact': 'frontend.evc'},
         for (final value in <Object?>[null, 1, false, 'invalid', {}])
           'non-array presentations $value': _frontend(presentations: value),
+        for (final value in <Object?>[null, 1, false, 'invalid', {}])
+          'non-array extensions $value': {
+            ..._frontend(presentations: [_session]),
+            'extensions': value,
+          },
       },
     };
     for (final entry in invalidComponents.entries) {
@@ -357,50 +456,72 @@ void main() {
     },
   );
 
-  for (final descriptor in [_session, _toolActivity, _modelNativeActivity]) {
+  for (final descriptor in [
+    _session,
+    _toolActivity,
+    _modelNativeActivity,
+    _projectSelector,
+  ]) {
+    final list = descriptor.containsKey('kind')
+        ? 'extensions'
+        : 'presentations';
     for (final field in descriptor.keys) {
-      test('${descriptor['role']} requires nonblank string $field', () async {
-        final invalidValues = <Object?>[null, 1, false, [], {}, '', '  '];
-        for (var index = 0; index <= invalidValues.length; index++) {
-          final invalid = <String, Object?>{...descriptor};
-          if (index == invalidValues.length) {
-            invalid.remove(field);
-          } else {
-            invalid[field] = invalidValues[index];
+      test(
+        '${descriptor['role'] ?? descriptor['kind']} requires nonblank string $field',
+        () async {
+          final invalidValues = <Object?>[
+            null,
+            1,
+            false,
+            [],
+            {},
+            '',
+            '  ',
+            '\t\n',
+          ];
+          for (var index = 0; index <= invalidValues.length; index++) {
+            final invalid = <String, Object?>{...descriptor};
+            if (index == invalidValues.length) {
+              invalid.remove(field);
+            } else {
+              invalid[field] = invalidValues[index];
+            }
+            await install(
+              'case-$index',
+              _manifest(
+                id: 'org.example.case-$index',
+                components: {
+                  'backend': {'artifact': 'backend.aot'},
+                  'frontend': {
+                    ..._frontend(presentations: [_session]),
+                    'extensions': [_projectSelector],
+                    list: [descriptor, invalid, descriptor],
+                  },
+                },
+              ),
+            );
           }
-          await install(
-            'case-$index',
-            _manifest(
-              id: 'org.example.case-$index',
-              components: {
-                'backend': {'artifact': 'backend.aot'},
-                'frontend': _frontend(
-                  presentations: [_session, invalid, _toolActivity],
-                ),
-              },
-            ),
+          final catalog = await PreparedPluginCatalog.discover(root.path);
+          expect(catalog.installations, hasLength(invalidValues.length + 1));
+          expect(
+            catalog.installations.map((item) => item.frontend),
+            everyElement(isNull),
           );
-        }
-        final catalog = await PreparedPluginCatalog.discover(root.path);
-        expect(catalog.installations, hasLength(invalidValues.length + 1));
-        expect(
-          catalog.installations.map((item) => item.frontend),
-          everyElement(isNull),
-        );
-        expect(
-          catalog.installations.map((item) => item.backendArtifactUri),
-          everyElement(isNotNull),
-        );
-        expect(catalog.issues, hasLength(invalidValues.length + 1));
-        expect(
-          catalog.issues.map((issue) => issue.component),
-          everyElement(PreparedPluginComponent.frontend),
-        );
-        expect(
-          catalog.issues.map((issue) => issue.message),
-          everyElement(contains('frontend.presentations[1].$field')),
-        );
-      });
+          expect(
+            catalog.installations.map((item) => item.backendArtifactUri),
+            everyElement(isNotNull),
+          );
+          expect(catalog.issues, hasLength(invalidValues.length + 1));
+          expect(
+            catalog.issues.map((issue) => issue.component),
+            everyElement(PreparedPluginComponent.frontend),
+          );
+          expect(
+            catalog.issues.map((issue) => issue.message),
+            everyElement(contains('frontend.$list[1].$field')),
+          );
+        },
+      );
     }
   }
 
@@ -408,6 +529,11 @@ void main() {
     'null descriptor': null,
     'array descriptor': [],
     'string descriptor': 'session',
+    'behavioral extension in presentations': _projectSelector,
+    'project selector presentation role': {
+      ..._projectSelector,
+      'role': 'projectSelector',
+    }..remove('kind'),
     'unknown role': {..._session, 'role': 'future'},
     'case-sensitive role': {..._session, 'role': 'Session'},
     'foreign session field': {..._session, 'toolId': 'org.example.tool'},
@@ -441,6 +567,107 @@ void main() {
       expect(catalog.installations.single.backendArtifactUri, isNotNull);
       expect(catalog.installations.single.frontend, isNull);
       expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
+    });
+  }
+
+  final invalidExtensions = <String, Object?>{
+    'null': null,
+    'array': [],
+    'string': 'projectSelector',
+    'number': 1,
+    'boolean': false,
+    'unknown kind': {..._projectSelector, 'kind': 'future'},
+    'case-sensitive kind': {..._projectSelector, 'kind': 'ProjectSelector'},
+    'presentation in extensions': _session,
+    for (final field in ['unknown', 'role', 'hostAdapter', 'configuration'])
+      'unsupported $field': {..._projectSelector, field: 'unsupported'},
+    for (final id in [
+      'selector',
+      'not namespaced',
+      'org.Example.selector',
+      'org.example..selector',
+      'org.example.selector-',
+      ' org.example.selector',
+      'org.example.selector ',
+    ])
+      'invalid ExtensionId $id': {..._projectSelector, 'extensionId': id},
+    for (final library in [
+      'lib/selector.dart',
+      'file:///selector.dart',
+      'package://example/selector.dart',
+      'package:bad-package/selector.dart',
+      'package:BadPackage/selector.dart',
+      'package:1example/selector.dart',
+      'package:example/',
+      'package:example/selector',
+      'package:example/selector.txt',
+      'package:example/selector.dart/',
+      'package:example//selector.dart',
+      'package:example/./selector.dart',
+      'package:example/nested/../selector.dart',
+      'package:example/../../selector.dart',
+      r'package:example/src\selector.dart',
+      'package:example/%73elector.dart',
+      'package:example/%2e%2e/selector.dart',
+      'package:example/selector.dart?query',
+      'package:example/selector.dart#fragment',
+      'package:example/my selector.dart',
+      ' package:example/selector.dart',
+      'package:example/selector.dart\n',
+    ])
+      'invalid library ${jsonEncode(library)}': {
+        ..._projectSelector,
+        'library': library,
+      },
+    for (final entrypoint in [
+      'Selector.selectProject',
+      'selectProject()',
+      'select-project',
+      '1selectProject',
+      'select Project',
+      ' selectProject',
+      'selectProject ',
+      'selectProject\n',
+      r'select\u0050roject',
+    ])
+      'invalid entrypoint ${jsonEncode(entrypoint)}': {
+        ..._projectSelector,
+        'entrypoint': entrypoint,
+      },
+  };
+  for (final entry in invalidExtensions.entries) {
+    test('extension ${entry.key} invalidates entire frontend only', () async {
+      final directory = await install(
+        'plugin',
+        _manifest(
+          components: {
+            'backend': {'artifact': 'backend.aot'},
+            'frontend': {
+              ..._frontend(presentations: [_session]),
+              'extensions': [_projectSelector, entry.value],
+            },
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      final installation = catalog.installations.single;
+      expect(
+        installation.backendArtifactUri,
+        directory.uri.resolve('backend.aot'),
+      );
+      expect(installation.frontend, isNull);
+      final issue = catalog.issues.single;
+      expect(issue.component, PreparedPluginComponent.frontend);
+      expect(issue.pluginId, installation.metadata.id);
+      expect(issue.installationDirectory.uri, directory.uri);
+      expect(
+        issue.message,
+        contains(
+          entry.key.startsWith('invalid ExtensionId')
+              ? 'extension ID'
+              : 'frontend.extensions[1]',
+        ),
+      );
     });
   }
 
@@ -1022,6 +1249,14 @@ const _session = {
   'strategyId': 'org.example.strategy',
   'entrypoint': 'buildSession',
   'hostAdapter': 'example.session.v1',
+};
+
+const _projectSelector = {
+  'kind': 'projectSelector',
+  'extensionId': 'org.example.project-selector',
+  'displayName': 'Open Project...',
+  'library': 'package:example_frontend/project_selector.dart',
+  'entrypoint': 'selectProject',
 };
 
 const _toolActivity = {

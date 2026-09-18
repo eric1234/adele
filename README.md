@@ -15,10 +15,10 @@ Typed Session presentation and prepared interpreted stock Chat history/composer
 Read-only live Run activity with tool-batch narration and native activity summaries
 Plugin-owned compact activity and retained, newest-first Inspection cards
 Per-inference instruction-source capture and immutable context snapshots
-Shared application runtime and two static in-process stock plugins
+Shared application runtime with only headless Chat statically composed in process
 Prepared backend/frontend discovery and backend-owned capability/extension advertisements
 Remote instruction sources and model tools with scoped host reads/mutations and process streaming
-Typed Project selectors and minimal local-directory Project opening
+Typed Project selectors and prepared interpreted local-directory Project opening
 Normal title-only Task creation with a real Git primary Environment
 Normal stock Chat Sessions with approval-gated ChatGPT-backed Runs
 Stock root-level AGENTS.md instructions
@@ -48,14 +48,15 @@ third-party extension APIs are not yet implemented.
 `AdeleRuntime()` in `app/lib/core/adele_runtime.dart` synchronously constructs a
 provider-free application host graph. It owns the capability and
 extension registries, in-memory product store, generated lifecycle coordinator,
-inference context composer, retained Chat plugin, and two static in-process
-activations: Chat and Local Directory Project Selector. It has no
-`includeCommandTools` option. It also owns pure-Dart `ApplicationPluginBootstrap`
+inference context composer, and retained Chat plugin as its only static in-process
+activation. It has no `includeCommandTools` option. It also owns pure-Dart
+`ApplicationPluginBootstrap`
 on the same capability and extension registries, without starting it from the
 constructor. AGENTS.md, Search, Filesystem Tools, and Command Tools are supplied by
 their installed AOT backends, with no production app import/dependency, static
 activation, or in-process fallback.
-The two in-process plugins are outside prepared backend discovery.
+Chat's headless activation is outside prepared discovery. Local Directory Project
+Selector is supplied by a frontend-only prepared installation, not runtime composition.
 
 Normal `AdeleApplication` explicitly calls `ApplicationPluginBootstrap.start`
 asynchronously with an installation root, shared runtime/host paths, and optional
@@ -63,10 +64,12 @@ generic startup argv. `plugin_runtime.PreparedPluginCatalog.discover(rootPath)`
 first snapshots immediate child directories' `adele_plugin.installation.json`
 files in deterministic order. Version-1 manifests contain `PluginMetadata` and
 independently optional backend and frontend components referring to confined,
-existing prepared files, not source paths, exposures, configuration, or activation
-state. A frontend supplies its artifact and strict data-only presentation
-descriptors for `session`, `toolActivity`, or `modelNativeActivity`; these describe
-executable ABI/preparation data, not profile state. Versions are opaque.
+existing prepared files, not source paths, backend exposures, configuration, or activation
+state. A frontend supplies its artifact and strict data-only `presentations`
+descriptors for `session`, `toolActivity`, or `modelNativeActivity`, plus an optional
+separate `extensions` list supporting `kind: 'projectSelector'`. Both lists can
+coexist under manifest version 1 and describe executable ABI/preparation data, not
+profile state. Versions are opaque.
 Missing/empty roots succeed empty. Invalid installation envelopes are excluded;
 invalid components record typed component issues and retain any healthy sibling.
 Readable valid identities are reserved even in otherwise invalid manifests, and
@@ -77,10 +80,12 @@ Before backend startup, the bootstrap notifies consumers of this same catalog
 snapshot. Window-owned Flutter `ApplicationFrontendBootstrap` activates its valid
 frontends through the existing `ExtensionRegistry` and `PreparedFrontend`, without
 a second root, catalog, registry, or runtime mechanism. Each frontend loads bytes
-once per generation and registers descriptor-selected roles with exact rollback,
-retirement, and close ownership. Catalog validation checks files, not executable
-EVC correctness: `PreparedFrontend.load` retains immutable bytes and decoding stays
-per-view, so readable corrupt bytecode remains presentation-local. Frontend
+once per generation and registers descriptor-selected presentations and behavioral
+extensions with exact rollback, retirement, and close ownership. Catalog validation
+checks files and descriptors, not executable EVC correctness. After byte loading,
+bootstrap validates behavioral bytecode and entrypoint presence without executing
+plugin code or opening a picker. Presentation-only bytecode still decodes per view,
+so its readable corruption remains presentation-local. Frontend
 availability is independent of backend readiness and credentials.
 
 No valid backends means successful startup without a process, even with invalid
@@ -141,13 +146,24 @@ selectors, with no priority, default, category, or applicability machinery.
 shell keeps its ADELE header and shows one button per contribution in registry
 registration order, or an explicit unavailable state when none exist.
 
-Stock `local_directory_project_selector_plugin` supplies `Open Local Directory...`
-using a native directory picker. Only the app passes its URI to
+Stock `local_directory_project_selector_frontend` under
+`plugins/local_directory_project_selector/packages/frontend` supplies
+`Open Local Directory...` from the frontend-only `local-directory-project-selector`
+installation; the old root implementation package is retired. Its evaluated
+`selectProject` calls public `adele_ui/directory_picker_bridge.dart`
+`Future<String?> pickDirectory()` and owns platform-path validation and lexical
+normalization into an absolute `file:` URI string, or `null` for cancellation.
+The app supplies the asynchronous native picker bridge, allowing one native call
+per operation. Its generic adapter validates the returned URI, not local-directory
+path rules. Only the app, after exact-binding validation, passes that URI to
 `runtime.lifecycle.createProject`, which publishes and returns the canonical
-Project. Presentation is window-local app State, not `runtime.currentProject`.
+Project. There is no selector AOT backend, backend RPC, or Environment authority.
+Presentation is window-local app State, not `runtime.currentProject`.
 Buttons are disabled during selection; `null` is cancellation, errors stay inline
 without fallback or changing the presented Project, and stale/late results cannot
-open a Project after selector retirement or window disposal/exit.
+open a Project after selector retirement or window disposal/exit. Retirement rejects
+late native results without forcibly closing an OS dialog; semantic selection
+failures stay operation-local.
 
 After opening, the shell shows a URI-derived leaf name (falling back to host or
 URI), source URI, `Project is open`, and initially `No Tasks yet`. Opening itself
@@ -579,9 +595,10 @@ dart tools/adele.dart build linux
 
 Normal Linux `run` and `build` compile a fresh shared-host AOT snapshot, six
 backend snapshots (Git, OpenAI, AGENTS.md, Search, Filesystem Tools, and Command
-Tools), and four frontend EVCs (Chat, Filesystem Tools, Command Tools, and OpenAI
-activity), assembling one prepared installation root before the Flutter run/build
-invocation. `prepareDesktopPluginDefines` in `tools/backend_artifacts.dart` uses
+Tools), and five frontend EVCs (Chat, Local Directory Project Selector, Filesystem
+Tools, Command Tools, and OpenAI activity), assembling one prepared installation
+root before the Flutter run/build invocation. `prepareDesktopPluginDefines` in
+`tools/backend_artifacts.dart` uses
 `compileAotSnapshot` from `plugin_builder` and selects the Dart compiler and
 `dartaotruntime` from the launching Flutter SDK. It still knows stock Git, OpenAI,
 AGENTS.md, Search, Filesystem Tools, and Command Tools source paths and writes
@@ -589,19 +606,21 @@ installed JSON manifests; source directories are not normalized to the reference
 `adele_plugin.yaml` source/build format. Installed manifests and source/build
 manifests are distinct; see `docs/architecture/plugin-layout.md`.
 `tools/frontend_artifacts.dart` invokes the Flutter build-time entrypoints
-`app/tool/compile_chat_frontend.dart`,
+`app/tool/compile_chat_frontend.dart`, `app/tool/compile_local_directory_frontend.dart`,
 `app/tool/compile_tool_inspection_frontends.dart`, and
 `app/tool/compile_openai_activity_frontend.dart`. Fresh artifacts are retained under
-`.dart_tool/adele/desktop-plugins/build-*/`. Its one `installations/` root has seven
-directories: frontend-only `chat-strategy`, backend-only
-`git-environment`, `agents-md`, and `search-tools`, and combined `filesystem-tools`,
+`.dart_tool/adele/desktop-plugins/build-*/`. Its one `installations/` root has eight
+directories: frontend-only `chat-strategy` and `local-directory-project-selector`,
+backend-only `git-environment`, `agents-md`, and `search-tools`, and combined `filesystem-tools`,
 `command-tools`, and `openai` installations, with independent backend/frontend
 availability.
 AGENTS.md, Search, Filesystem Tools, and Command Tools use `agents-md/backend.aot`,
 `search-tools/backend.aot`, `filesystem-tools/backend.aot`, and
 `command-tools/backend.aot`, with no plugin-specific configuration or deployment define. Each frontend
 is `frontend.evc`; `tools/stock_frontend_descriptors.dart` is the singular stock
-build-side descriptor table, not an app runtime activation table.
+build-side source for presentation and behavioral extension descriptors, not an app
+runtime activation table. The selector compiler helper is
+`app/tool/local_directory_frontend_compiler.dart`.
 The launcher passes `ADELE_DARTAOTRUNTIME_EXECUTABLE`,
 `ADELE_BACKEND_HOST_ARTIFACT`, `ADELE_PLUGIN_INSTALLATION_ROOT`,
 and `ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE` as the only four compile-time
@@ -615,8 +634,9 @@ source-checkout machine while those artifacts and that SDK remain in place.
 Moving or deleting them breaks the corresponding backend startup or frontend
 loading. This is not artifact caching, an installer, portable/production
 packaging, or profiles. Discovery is only the prepared backend/frontend startup
-snapshot. Invoking Flutter directly without the defines leaves Task Environment
-support, the AGENTS.md source, Search/Filesystem/Command tools, Chat presentation, stock tool
+snapshot. Invoking Flutter directly without the defines leaves Local Directory
+Project selection, Task Environment support, the AGENTS.md source,
+Search/Filesystem/Command tools, Chat presentation, stock tool
 Inspection, and OpenAI activity presentation unavailable independently.
 Checkout tooling stands in for future installation/update-time compilation;
 activation consumes prepared artifacts rather than building them.
@@ -655,12 +675,15 @@ discovery and `test-plan --json`. Run the semantic plugins' pure-Dart tests with
 `dart tools/adele.dart test --target agents_md_plugin`.
 
 `adele_ui` is a Flutter analysis/test target. The separate
-`chat_strategy_frontend`, `filesystem_tools_frontend`, `command_tools_frontend`,
-and `openai_frontend` packages are Flutter workspace members and analysis targets;
+`chat_strategy_frontend`, `local_directory_project_selector_frontend`,
+`filesystem_tools_frontend`, `command_tools_frontend`, and `openai_frontend`
+packages are Flutter workspace members and analysis targets;
 their EVC preparation belongs to the app's build-time tooling. Pure-Dart
 `openai_contract` has maintained identity tests and analysis/test discovery through
 `tools/adele.dart`; raw classification, projection, bounds, and native-preservation
 tests belong to `openai_model_provider_backend`.
+The selector frontend replaces the retired root selector package in maintained
+analysis/test discovery, including `test-plan --json`.
 
 The repository development command above is unrelated to ADELE's future
 application-level Command Palette/keybinding subsystem described by the
@@ -672,7 +695,7 @@ extension architecture.
 app/                         single Flutter desktop application
 packages/plugin_api/         adele_plugin_api (experimental public)
 packages/core_extensions/    adele_core_extensions narrow core-owned contracts
-packages/ui/                 adele_ui public Session/tool/native activity UI APIs
+packages/ui/                 adele_ui public presentation APIs and interpreted picker stub
 packages/contract/           adele_contract (experimental public)
 packages/contract_codegen/   contract_codegen (internal, pure Dart)
 packages/model_provider/     adele_model_provider (experimental public)
@@ -695,7 +718,7 @@ plugins/search_tools/        stock literal Search semantics plus AOT backend
 plugins/command_tools/       stock Command semantics, AOT backend, evaluated Inspection
 plugins/chat_strategy/       headless Chat strategy plus separate evaluated frontend
 plugins/agents_md/           root AGENTS.md semantics plus AOT backend
-plugins/local_directory_project_selector/ stock native directory Project selector
+plugins/local_directory_project_selector/ frontend-only evaluated local directory Project selector
 plugins/git_environment/     Git worktree Environment provider
 docs/architecture/           architecture boundaries/directional models
 docs/adr/                    architectural decision records
@@ -764,9 +787,11 @@ keeps explicit artifact/host/profile selection, including `agentsMdArtifact`,
 `searchToolsArtifact`, `filesystemToolsArtifact`, and `commandToolsArtifact` on its
 same shared host via generic adapter activation, without a normal installation root.
 Self-hosting's `includeCommandTools` controls explicit Command backend start and
-registration, not `AdeleRuntime` composition.
-Installation itself does not activate
-anything. Prepared presentation descriptors are executable ABI/preparation data;
+registration, not `AdeleRuntime` composition. It remains selector-free and creates
+its Project directly from its explicitly known isolated source URI, with no frontend
+discovery or native picker dependency.
+Installation itself does not activate anything. Prepared presentation and behavioral
+extension descriptors are executable ABI/preparation data;
 future profiles separately decide activation participation rather than replacing
 or becoming that metadata. Deployment-location defines and the temporary argv file
 are not a profile or general configuration API.
@@ -797,8 +822,8 @@ are not included and remain independent plugin concerns.
 Broader Reference/Observation material remains directional, without placeholder
 public APIs. Provider-aware projection and cache planning, token budgets,
 compaction, and context preview remain deferred.
-Migration of the remaining in-process Chat and Local Directory
-Project Selector is deferred. General provider/model configuration, Task Browser,
+Migration of the remaining in-process headless Chat strategy is deferred.
+General provider/model configuration, Task Browser,
 and richer Session/Run UI remain deferred. The normal product path reaches one stock Chat Session with
 plugin-owned evaluated history/composer and sequential, approval-gated Runs through
 experimental ChatGPT subscription auth. Single compact Chat activities and groups

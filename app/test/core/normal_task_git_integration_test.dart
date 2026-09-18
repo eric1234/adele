@@ -12,6 +12,7 @@ import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
+import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -519,7 +520,7 @@ void main() {
       expect(runtime.store.project(project.id), same(project));
       expect(
         runtime.extensions.discover(projectSelectorContributions),
-        hasLength(1),
+        isEmpty,
       );
       await expectLater(
         runtime.lifecycle.createTask(
@@ -944,16 +945,16 @@ void main() {
         isNull,
       );
       expect(runtime.store.session(SessionId('session-normal-1')), isNull);
-      final selector = runtime.extensions
-          .discover(projectSelectorContributions)
-          .single;
+      final stockChat = runtime.lifecycle.strategyResolver.resolve(
+        chatStrategyId,
+      );
       final List<String> stopped = [];
       final List<Future<void>> observations = [
         for (final entry in runtime.plugins.backends)
           entry.connection!.terminated.then((_) {
             stopped.add(entry.connection!.pluginId);
             expect(host.isClosed, isFalse);
-            expect(selector.validate, returnsNormally);
+            expect(stockChat.validateBinding, returnsNormally);
             for (final binding in bindings) {
               expect(
                 () => binding.endpointAs<CapabilityEndpoint>(),
@@ -985,6 +986,7 @@ void main() {
       );
       expect(runtime.plugins.state, ApplicationPluginState.closed);
       expect(runtime.plugins.failure, isNull);
+      expect(stockChat.validateBinding, throwsA(isA<StaleExtensionBinding>()));
       expect(
         runtime.extensions.discover(projectSelectorContributions),
         isEmpty,

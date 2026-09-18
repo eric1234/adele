@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
+import 'package:adele_desktop/frontend/directory_picker_bridge.dart';
 import 'package:adele_desktop/frontend/model_native_activity_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/prepared_session_adapter.dart';
@@ -13,6 +16,7 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:dart_eval/dart_eval.dart';
+import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -39,6 +43,7 @@ void main() {
       ..addPlugin(flutterEvalPlugin)
       ..addPlugin(const ToolActivityInspectionDeclarations())
       ..addPlugin(const ModelNativeActivityDeclarations())
+      ..addPlugin(const DirectoryPickerDeclarations())
       ..entrypoints.add(_library);
     final program = compiler.compile({
       'installed_probe': {
@@ -46,16 +51,30 @@ void main() {
 import 'package:flutter/material.dart';
 import 'package:adele_ui/tool_activity_inspection_bridge.dart';
 import 'package:adele_ui/model_native_activity_bridge.dart';
+import 'package:adele_ui/directory_picker_bridge.dart';
 Widget toolRich() => Text('rich ' + readToolActivitySnapshot().canonicalArguments['label']);
 Widget toolCompact() => Text('compact ' + readToolActivitySnapshot().canonicalArguments['label']);
 Widget nativeRich() => Text('rich ' + readModelNativeActivityData()['label']);
 Widget nativeCompact() => Text('compact ' + readModelNativeActivityData()['label']);
+Future<String?> customSelector() async => 'catalog://example/project';
+Future<String?> cancellation() async => null;
+Future<String?> badUri() async => 'https://[invalid';
+Future<int> badShape() async => 42;
+Future<dynamic> recordResult() async => (1, 2);
+Future<dynamic> cyclicResult() async {
+  final value = <String, dynamic>{};
+  value['self'] = value;
+  return value;
+}
+Future<String?> semanticFailure() async { throw StateError('selection failed'); }
+Future<String?> nativeSelector() async => await pickDirectory();
 ''',
       },
       'adele_ui': {
         for (final file in [
           'tool_activity_inspection_bridge.dart',
           'model_native_activity_bridge.dart',
+          'directory_picker_bridge.dart',
         ])
           file: File(
             '${Directory.current.parent.path}/packages/ui/lib/$file',
@@ -85,6 +104,7 @@ Widget nativeCompact() => Text('compact ' + readModelNativeActivityData()['label
     List<Map<String, Object?>>? descriptors, {
     List<int>? artifactBytes,
     bool backend = false,
+    List<Map<String, Object?>> extensionDescriptors = const [],
   }) async {
     final directory = await Directory('${root.path}/$name').create();
     final artifact = File('${directory.path}/frontend.evc');
@@ -108,6 +128,7 @@ Widget nativeCompact() => Text('compact ' + readModelNativeActivityData()['label
             'frontend': {
               'artifact': 'frontend.evc',
               'presentations': descriptors,
+              'extensions': extensionDescriptors,
             },
         },
       }),
@@ -228,6 +249,158 @@ Widget nativeCompact() => Text('compact ' + readModelNativeActivityData()['label
         extensions.discover(modelNativeActivityPresentationContributions),
         hasLength(1),
       );
+    },
+  );
+
+  test(
+    'behavioral descriptors coexist with presentations and retain exact bytes',
+    () async {
+      final artifact = await install(
+        'mixed',
+        [_sessionDescriptor('mixed')],
+        extensionDescriptors: [
+          _selectorDescriptor('selector', 'customSelector'),
+        ],
+      );
+      await owner.start(await discover());
+      final binding = extensions.discover(projectSelectorContributions).single;
+      expect(binding.id.value, 'dev.example.selector.selector');
+      expect(binding.value.displayName, 'Open prepared Project...');
+      expect(owner.generations.single.registrations, hasLength(2));
+      await artifact.writeAsBytes([0, 1, 2]);
+      expect(
+        await binding.value.selectProject(),
+        Uri.parse('catalog://example/project'),
+      );
+      expect(
+        await binding.value.selectProject(),
+        Uri.parse('catalog://example/project'),
+      );
+      expect(
+        extensions.discover(sessionPresentationContributions),
+        hasLength(1),
+      );
+    },
+  );
+
+  test(
+    'selector cancellation, result validation and semantic failure are operation-local',
+    () async {
+      await install(
+        'selectors',
+        [],
+        extensionDescriptors: [
+          for (final name in [
+            'cancellation',
+            'badUri',
+            'badShape',
+            'recordResult',
+            'cyclicResult',
+            'semanticFailure',
+            'customSelector',
+          ])
+            _selectorDescriptor(name.toLowerCase(), name),
+        ],
+      );
+      await owner.start(await discover());
+      final bindings = extensions.discover(projectSelectorContributions);
+      expect(await bindings.first.value.selectProject(), isNull);
+      for (final binding in bindings.skip(1).take(4)) {
+        await expectLater(binding.value.selectProject(), throwsFormatException);
+      }
+      await expectLater(bindings[5].value.selectProject(), throwsA(anything));
+      expect(
+        await bindings.last.value.selectProject(),
+        Uri.parse('catalog://example/project'),
+      );
+      expect(owner.generations.single.state, InstalledFrontendState.active);
+      expect(owner.generations.single.failure, isNull);
+      for (final binding in bindings) {
+        binding.validate();
+      }
+    },
+  );
+
+  test(
+    'corrupt behavioral bytecode and missing entrypoints fail activation without granting a picker',
+    () async {
+      await install(
+        'a-corrupt',
+        [_sessionDescriptor('rolled-back')],
+        artifactBytes: [1, 2, 3],
+        extensionDescriptors: [
+          _selectorDescriptor('corrupt', 'customSelector'),
+        ],
+      );
+      await install(
+        'b-absent-entrypoint',
+        [],
+        extensionDescriptors: [_selectorDescriptor('absent', 'notInArtifact')],
+      );
+      await install('c-healthy', [_nativeDescriptor('healthy')], backend: true);
+      await owner.start(await discover());
+      expect(owner.generations.map((generation) => generation.state), [
+        InstalledFrontendState.failed,
+        InstalledFrontendState.failed,
+        InstalledFrontendState.active,
+      ]);
+      expect(extensions.discover(projectSelectorContributions), isEmpty);
+      expect(extensions.discover(sessionPresentationContributions), isEmpty);
+      expect(
+        extensions.discover(modelNativeActivityPresentationContributions),
+        hasLength(1),
+      );
+      expect(owner.catalog!.installations.last.backendArtifactUri, isNotNull);
+    },
+  );
+
+  test(
+    'retired selector rejects late native results and replacement requires fresh discovery',
+    () async {
+      final original = FileSelectorPlatform.instance;
+      final picker = _PendingPicker();
+      FileSelectorPlatform.instance = picker;
+      addTearDown(() => FileSelectorPlatform.instance = original);
+      await install(
+        'selector',
+        [],
+        extensionDescriptors: [
+          _selectorDescriptor('selector', 'nativeSelector'),
+        ],
+      );
+      await owner.start(await discover());
+      expect(picker.calls, 0);
+      final old = extensions.discover(projectSelectorContributions).single;
+      final select = old.value.selectProject;
+      final pending = select();
+      final rejected = expectLater(pending, throwsA(anything));
+      expect(picker.calls, 1);
+      await owner.generations.single.retire(
+        projectSelectorContributions,
+        old.id,
+      );
+      expect(old.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(extensions.discover(projectSelectorContributions), isEmpty);
+      await install(
+        'selector',
+        [],
+        extensionDescriptors: [
+          _selectorDescriptor('selector', 'customSelector'),
+        ],
+      );
+      final replacement = ApplicationFrontendBootstrap(extensions: extensions);
+      addTearDown(replacement.close);
+      await replacement.start(await discover());
+      picker.pending.complete('catalog://late/selection');
+      await rejected;
+      await expectLater(select(), throwsStateError);
+      await owner.close();
+      final fresh = extensions.discover(projectSelectorContributions).single;
+      expect(
+        await fresh.value.selectProject(),
+        Uri.parse('catalog://example/project'),
+      );
+      expect(picker.calls, 1);
     },
   );
 
@@ -605,6 +778,25 @@ Map<String, Object?> _sessionDescriptor(String name) => {
   'entrypoint': 'customSession',
   'hostAdapter': 'probe',
 };
+
+Map<String, Object?> _selectorDescriptor(String name, String entrypoint) => {
+  'kind': 'projectSelector',
+  'library': _library,
+  'extensionId': 'dev.example.$name.selector',
+  'displayName': 'Open prepared Project...',
+  'entrypoint': entrypoint,
+};
+
+final class _PendingPicker extends FileSelectorPlatform {
+  final pending = Completer<String?>();
+  int calls = 0;
+
+  @override
+  Future<String?> getDirectoryPathWithOptions(FileDialogOptions options) {
+    calls++;
+    return pending.future;
+  }
+}
 
 Map<String, Object?> _toolDescriptor(String name) => {
   'role': 'toolActivity',

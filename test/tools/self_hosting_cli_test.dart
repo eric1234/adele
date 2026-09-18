@@ -4,7 +4,7 @@ import 'package:test/test.dart';
 
 void main() {
   test('self-hosting CLI remains importable without a Flutter engine', () async {
-    // The shared runtime must remain plain-Dart even with a native stock picker.
+    // The shared runtime is selector-free and must remain plain-Dart.
     // Help compiles that import graph without credentials, providers, or a Run.
     final ProcessResult result = await Process.run(
       Platform.resolvedExecutable,

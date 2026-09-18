@@ -1,0 +1,20 @@
+name: local_directory_project_selector_frontend
+description: Interpreted local directory Project selection for ADELE.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+  flutter: ">=3.38.10"
+
+resolution: workspace
+
+dependencies:
+  adele_ui: ^0.1.0
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  dart_eval: 0.8.5
+  flutter_test:
+    sdk: flutter

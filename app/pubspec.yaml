@@ -24,10 +24,10 @@ dependencies:
   chat_strategy_plugin: ^0.1.0
   crypto: ^3.0.6
   dart_eval: 0.8.5
+  file_selector: ^1.1.0
   flutter:
     sdk: flutter
   flutter_eval: 0.8.2
-  local_directory_project_selector_plugin: ^0.1.0
   openai_contract: ^0.1.0
   plugin_builder: ^0.1.0
   plugin_runtime: ^0.1.0
@@ -37,6 +37,7 @@ dependencies:
 
 dev_dependencies:
   command_tools_plugin: ^0.1.0
+  file_selector_platform_interface: ^2.7.0
   filesystem_tools_plugin: ^0.1.0
   search_tools_plugin: ^0.1.0
   flutter_test:

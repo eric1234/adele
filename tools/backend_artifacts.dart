@@ -159,6 +159,11 @@ Future<List<String>> prepareDesktopPluginDefines({
     ),
     (backend: null, id: 'dev.adele.plugin.chat-strategy', displayName: 'Chat'),
     (
+      backend: null,
+      id: 'dev.adele.plugin.local-directory-project-selector',
+      displayName: 'Local Directory Project Selector',
+    ),
+    (
       backend: filesystemTools,
       id: 'dev.adele.plugin.filesystem-tools',
       displayName: 'Filesystem Tools',
@@ -187,7 +192,8 @@ Future<List<String>> prepareDesktopPluginDefines({
           if (frontend != null)
             'frontend': <String, Object?>{
               'artifact': 'frontend.evc',
-              'presentations': stockFrontendDescriptors[plugin.id]!,
+              'presentations': stockFrontendDescriptors[plugin.id] ?? [],
+              'extensions': ?stockFrontendExtensionDescriptors[plugin.id],
             },
         },
       }),

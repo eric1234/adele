@@ -34,6 +34,7 @@ import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
+import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_eval/widgets.dart' show $StatefulWidget$bridge;
 import 'package:flutter_test/flutter_test.dart';
@@ -43,6 +44,7 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../../../tools/stock_frontend_descriptors.dart';
 import '../../tool/chat_frontend_compiler.dart';
+import '../../tool/local_directory_frontend_compiler.dart';
 import '../../tool/openai_activity_frontend_compiler.dart';
 import '../../tool/tool_inspection_frontend_compiler.dart';
 
@@ -51,6 +53,8 @@ const String _gitPluginId = 'dev.adele.plugin.git-environment';
 const String _agentsMdPluginId = 'dev.adele.plugin.agents-md';
 const String _openAiPluginId = 'dev.adele.openai';
 const String _chatPluginId = 'dev.adele.plugin.chat-strategy';
+const String _selectorPluginId =
+    'dev.adele.plugin.local-directory-project-selector';
 const String _filesystemPluginId = 'dev.adele.plugin.filesystem-tools';
 const String _commandPluginId = 'dev.adele.plugin.command-tools';
 const String _searchPluginId = 'dev.adele.plugin.search-tools';
@@ -133,6 +137,7 @@ void main() {
       _searchPluginId,
       _openAiPluginId,
       _chatPluginId,
+      _selectorPluginId,
       _filesystemPluginId,
       _commandPluginId,
     ]) {
@@ -160,10 +165,12 @@ void main() {
                 pluginId == _commandPluginId ||
                 pluginId == _openAiPluginId)
               'backend': {'artifact': 'backend.aot'},
-            if (stockFrontendDescriptors[pluginId] case final descriptors?)
+            if (stockFrontendDescriptors.containsKey(pluginId) ||
+                stockFrontendExtensionDescriptors.containsKey(pluginId))
               'frontend': {
                 'artifact': 'frontend.evc',
-                'presentations': descriptors,
+                'presentations': stockFrontendDescriptors[pluginId] ?? const [],
+                'extensions': ?stockFrontendExtensionDescriptors[pluginId],
               },
           },
         }),
@@ -193,6 +200,11 @@ void main() {
     );
     openAiEvc = File('${installationRoot.path}/$_openAiPluginId/frontend.evc');
     await compileChatFrontend(repositoryRoot: repository, artifact: evc);
+    await File(
+      '${installationRoot.path}/$_selectorPluginId/frontend.evc',
+    ).writeAsBytes(
+      await compileLocalDirectoryFrontend(repositoryRoot: repository),
+    );
     await openAiEvc.writeAsBytes(
       await compileOpenAiActivityFrontend(repositoryRoot: repository),
     );
@@ -1509,7 +1521,7 @@ void main() {
       await frontends.start(catalog);
       expect(frontends.catalog, same(catalog));
       expect(catalog.issues, isEmpty);
-      expect(catalog.installations, hasLength(7));
+      expect(catalog.installations, hasLength(8));
       expect(
         catalog.installations.where(
           (entry) => entry.backendArtifactUri != null,
@@ -1518,9 +1530,9 @@ void main() {
       );
       expect(
         catalog.installations.where((entry) => entry.frontend != null),
-        hasLength(4),
+        hasLength(5),
       );
-      expect(frontends.generations, hasLength(4));
+      expect(frontends.generations, hasLength(5));
       for (final generation in frontends.generations) {
         expect(generation.state, InstalledFrontendState.active);
         expect(generation.failure, isNull);
@@ -3066,7 +3078,7 @@ void main() {
   );
 
   testWidgets(
-    'F3a normal AdeleApplication opens a real Task with installed AGENTS, Chat and OpenAI EVCs',
+    'F3a normal AdeleApplication opens a native Local Directory Project and real Task with installed EVCs',
     (tester) => tester.runAsync(() async {
       await tester.binding.setSurfaceSize(const Size(1400, 1100));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -3167,15 +3179,14 @@ void main() {
       );
       addTearDown(runtime.close);
       expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
-      final selector = runtime.extensions.register(
-        point: projectSelectorContributions,
-        id: ExtensionId('dev.adele.test.f2-project-selector'),
-        value: ProjectSelectorContribution(
-          displayName: 'Open F2 Project',
-          selectProject: () async => source.uri,
-        ),
+      expect(
+        runtime.extensions.discover(projectSelectorContributions),
+        isEmpty,
       );
-      addTearDown(selector.close);
+      final originalPicker = FileSelectorPlatform.instance;
+      final picker = _DirectoryPicker(source.path);
+      FileSelectorPlatform.instance = picker;
+      addTearDown(() => FileSelectorPlatform.instance = originalPicker);
       late Future<void> starting;
       await tester.pumpWidget(
         AdeleApplication(
@@ -3209,6 +3220,8 @@ void main() {
       });
       await starting;
       bool allFrontendsRegistered() =>
+          runtime.extensions.discover(projectSelectorContributions).length ==
+              1 &&
           runtime.extensions
                   .discover(sessionPresentationContributions)
                   .length ==
@@ -3237,11 +3250,11 @@ void main() {
       await tester.pumpAndSettle();
       final catalog = runtime.plugins.catalog!;
       expect(catalog.issues, isEmpty);
-      expect(catalog.installations, hasLength(7));
+      expect(catalog.installations, hasLength(8));
       expect(runtime.plugins.backends, hasLength(6));
       expect(
         catalog.installations.where((entry) => entry.frontend != null),
-        hasLength(4),
+        hasLength(5),
       );
       for (final backend in runtime.plugins.backends) {
         expect(
@@ -3257,11 +3270,18 @@ void main() {
       expect(agentsMdBinding.id.value, '$_agentsMdPluginId.instructions');
       expect(agentsMdBinding.validate, returnsNormally);
       expect(outbound, isEmpty);
+      expect(picker.calls, 0);
       expect(find.text('No Project is open'), findsOneWidget);
-      await tester.tap(find.text('Open F2 Project'));
+      final selector = runtime.extensions
+          .discover(projectSelectorContributions)
+          .single;
+      expect(selector.id.value, '$_selectorPluginId.project-selector');
+      await tester.tap(find.text('Open Local Directory...'));
       await tester.pumpAndSettle();
       AdeleShell shell() => tester.widget<AdeleShell>(find.byType(AdeleShell));
       final project = shell().project!;
+      expect(picker.calls, 1);
+      expect(project.sourceLocation, source.uri);
       expect(runtime.store.project(project.id), same(project));
       expect(runtime.store.tasksFor(project.id), isEmpty);
       await tester.tap(find.text('New Task'));
@@ -3378,6 +3398,11 @@ void main() {
       expect(await tester.binding.handleRequestAppExit(), AppExitResponse.exit);
       expect(runtime.plugins.state, ApplicationPluginState.closed);
       expect(sessionBinding.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(selector.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(
+        runtime.extensions.discover(projectSelectorContributions),
+        isEmpty,
+      );
       expect(agentsMdBinding.validate, throwsA(isA<StaleExtensionBinding>()));
       expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
       expect(
@@ -3410,7 +3435,13 @@ void main() {
     timeout: const Timeout(Duration(seconds: 45)),
   );
 
-  for (final failure in ['frontend load', 'frontend bytecode', 'backend']) {
+  for (final failure in [
+    'frontend load',
+    'frontend bytecode',
+    'backend',
+    'selector missing',
+    'selector bytecode',
+  ]) {
     testWidgets(
       'F2 real OpenAI installation isolates $failure failure from its sibling',
       (tester) => tester.runAsync(() async {
@@ -3421,7 +3452,12 @@ void main() {
         final Directory root = await Directory(
           '${container.path}/installed',
         ).create();
-        for (final id in [_gitPluginId, _openAiPluginId]) {
+        final selectorFailure = failure.startsWith('selector');
+        for (final id in [
+          _gitPluginId,
+          _openAiPluginId,
+          if (selectorFailure) _selectorPluginId,
+        ]) {
           final Directory installed = await Directory(
             '${root.path}/$id',
           ).create();
@@ -3511,6 +3547,16 @@ void main() {
         } else if (failure == 'frontend bytecode') {
           await frontendArtifact.writeAsBytes([1, 2, 3]);
         }
+        if (selectorFailure) {
+          final selectorArtifact = File(
+            '${root.path}/$_selectorPluginId/frontend.evc',
+          );
+          if (failure == 'selector missing') {
+            await selectorArtifact.delete();
+          } else {
+            await selectorArtifact.writeAsBytes([1, 2, 3]);
+          }
+        }
         // A fresh discovery would exclude this installation. Frontend startup
         // must consume the backend's retained catalog, not reread its manifest.
         await File(
@@ -3523,7 +3569,9 @@ void main() {
         await frontends.start(catalog);
         expect(frontends.catalog, same(catalog));
         expect(frontends.state, ApplicationFrontendState.ready);
-        final frontend = frontends.generations.single;
+        final frontend = frontends.generations.singleWhere(
+          (entry) => entry.installation.metadata.id.value == _openAiPluginId,
+        );
         expect(frontend.installation, same(backend.installation));
         expect(
           frontend.state,
@@ -3535,6 +3583,19 @@ void main() {
           frontend.failure,
           failure == 'frontend load' ? isNotNull : isNull,
         );
+        expect(
+          runtime.extensions.discover(projectSelectorContributions),
+          isEmpty,
+        );
+        if (selectorFailure) {
+          final selector = frontends.generations.singleWhere(
+            (entry) =>
+                entry.installation.metadata.id.value == _selectorPluginId,
+          );
+          expect(selector.state, InstalledFrontendState.failed);
+          expect(selector.failure, isNotNull);
+          expect(selector.registrations, isEmpty);
+        }
         final presentation = ModelNativePresentation(
           kind: openAiReasoningSummaryPresentationKind,
           compactText: _initialSummary,
@@ -3561,7 +3622,7 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
-        if (failure == 'backend') {
+        if (failure == 'backend' || selectorFailure) {
           expect(find.text('Reasoning summary'), findsOneWidget);
           expect(find.text(_initialSummary), findsOneWidget);
           expect(find.text('Reasoning: $_initialSummary'), findsOneWidget);
@@ -3601,6 +3662,19 @@ void main() {
       }),
       timeout: const Timeout(Duration(seconds: 30)),
     );
+  }
+}
+
+final class _DirectoryPicker extends FileSelectorPlatform {
+  _DirectoryPicker(this.path);
+
+  final String path;
+  int calls = 0;
+
+  @override
+  Future<String?> getDirectoryPathWithOptions(FileDialogOptions options) async {
+    calls++;
+    return path;
   }
 }
 

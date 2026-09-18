@@ -15,6 +15,7 @@ import 'package:adele_model_provider/adele_model_provider.dart'
     show modelProviderCapability;
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
@@ -423,8 +424,9 @@ void main() {
           await tester.pumpWidget(
             AdeleApplication(createRuntime: createRuntime),
           );
-          final ExtensionBinding<ProjectSelectorContribution> stockSelector =
-              runtime.extensions.discover(projectSelectorContributions).first;
+          final stockChat = runtime.lifecycle.strategyResolver.resolve(
+            chatStrategyId,
+          );
           final Project project = await openProject(tester);
           await enterTitle(tester, 'Too late');
           final TaskTitleForm retained = tester.widget<TaskTitleForm>(
@@ -450,7 +452,7 @@ void main() {
           // before retiring runtime-owned resources.
           expect(exitCompleted, isFalse);
           expect(runtime.plugins.state, ApplicationPluginState.ready);
-          expect(stockSelector.validate, returnsNormally);
+          expect(stockChat.validateBinding, returnsNormally);
           expect(registration.isClosed, isFalse);
           expect(runtime.store.tasksFor(project.id), isEmpty);
           expect(
@@ -483,7 +485,10 @@ void main() {
             expect(exitCompleted, isTrue);
           }
           expect(runtime.plugins.state, ApplicationPluginState.closed);
-          expect(stockSelector.validate, throwsA(isA<StaleExtensionBinding>()));
+          expect(
+            stockChat.validateBinding,
+            throwsA(isA<StaleExtensionBinding>()),
+          );
           retained.onSubmit('Late duplicate');
           await tester.pump();
 

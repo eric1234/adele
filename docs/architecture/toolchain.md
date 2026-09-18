@@ -17,8 +17,9 @@ The repository tracks `flutter 3.38.10-stable` in `.tool-versions`. This pin is
 temporary. Flutter 3.44.8 with `flutter_eval 0.8.2` is not compatible, and no
 Flutter 3.44 or Dart 3.12 support is claimed. Eval modernization or replacement
 is required before broad third-party interpreted UI support.
-The narrow stock Chat Session, Filesystem/Command Tools Inspection, and OpenAI
-reasoning-summary Inspection frontends use this pin; they neither modernize eval
+The narrow stock Chat Session, Local Directory Project Selector,
+Filesystem/Command Tools Inspection, and OpenAI reasoning-summary Inspection
+frontends use this pin; they neither modernize eval
 nor establish a broad third-party
 Flutter compatibility surface.
 
@@ -31,11 +32,12 @@ Windows and macOS behavior remain future packaging and validation work.
 
 Normal desktop runtime activation never compiles plugin source. The Linux checkout
 launcher compiles the shared host and six backend AOT artifacts (Git, OpenAI,
-AGENTS.md, Search, Filesystem Tools, and Command Tools) plus four stock frontend
-EVCs (Chat, Filesystem Tools, Command Tools, and OpenAI activity) before launching
-or building Flutter, using the selected SDK.
-The seven prepared installations share one fresh installation root; the host
-snapshot is beside that root. Chat is frontend-only; Git, AGENTS.md, and Search are
+AGENTS.md, Search, Filesystem Tools, and Command Tools) plus five stock frontend
+EVCs (Chat, Local Directory Project Selector, Filesystem Tools, Command Tools, and
+OpenAI activity) before launching or building Flutter, using the selected SDK.
+The eight prepared installations share one fresh installation root; the host
+snapshot is beside that root. Chat and Local Directory Project Selector are
+frontend-only; Git, AGENTS.md, and Search are
 backend-only; Filesystem Tools, Command Tools, and OpenAI each combine backend and
 frontend. Filesystem's `filesystem-tools/backend.aot` and Command's
 `command-tools/backend.aot` use source under their plugins' `packages/backend`;
@@ -49,13 +51,29 @@ changes may retain that version; prior development artifacts are unsupported eve
 when their version numbers match. The installed manifest remains version 1; see
 the [pre-release transport policy](contracts-and-capabilities.md#transport-version-policy).
 `tools/frontend_artifacts.dart` invokes
-`app/tool/compile_chat_frontend.dart`,
+`app/tool/compile_chat_frontend.dart`, `app/tool/compile_local_directory_frontend.dart`,
 `app/tool/compile_tool_inspection_frontends.dart`, and
 `app/tool/compile_openai_activity_frontend.dart` through the Flutter test runner.
 Frontend compilation runs in Flutter build-time tooling, not generic runtime hosting or the
 pure-Dart `plugin_builder` dependency graph. Normal activation loads the prepared
 artifacts; missing or invalid artifacts fail the affected support rather than
 triggering compilation or a substitute implementation.
+
+The selector fixture uses the exact helper
+`app/tool/local_directory_frontend_compiler.dart` with build-time inputs
+`ADELE_REPOSITORY_ROOT` and `ADELE_LOCAL_DIRECTORY_FRONTEND_OUTPUT`. It compiles
+`plugins/local_directory_project_selector/packages/frontend` using compile-only
+`DirectoryPickerDeclarations`, with no native picker call. The output is
+`local-directory-project-selector/frontend.evc`; there is no selector backend
+snapshot or additional deployment define. The old root selector package is retired;
+`local_directory_project_selector_frontend` replaces it in workspace membership
+and maintained analysis/test discovery.
+
+Behavioral `frontend.extensions` metadata is separate from the unchanged
+`presentations` list under manifest version 1. Activation validates behavioral
+bytecode and entrypoint presence without executing plugin code; actual selection
+uses a fresh operation runtime and native bridge. Presentation-only corruption
+remains per-view. Runtime still compiles no source.
 
 `tools/backend_artifacts.dart` still owns stock source entrypoints and writes
 `adele_plugin.installation.json` beside each installation's independently optional

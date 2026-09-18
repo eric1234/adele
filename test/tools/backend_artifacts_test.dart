@@ -26,6 +26,8 @@ const String _toolFrontendHarness =
     'tool/compile_tool_inspection_frontends.dart';
 const String _openaiFrontendHarness =
     'tool/compile_openai_activity_frontend.dart';
+const String _localDirectoryFrontendHarness =
+    'tool/compile_local_directory_frontend.dart';
 
 void main() {
   late Directory root;
@@ -61,6 +63,9 @@ void main() {
     ).writeAsStringSync('void main() {}');
     File(
       '${root.path}/app/$_openaiFrontendHarness',
+    ).writeAsStringSync('void main() {}');
+    File(
+      '${root.path}/app/$_localDirectoryFrontendHarness',
     ).writeAsStringSync('void main() {}');
     for (final String entrypoint in <String>[
       _hostEntrypoint,
@@ -115,6 +120,10 @@ elif [ "\$1" = test ]; then
     kind=openai
     output="\$ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT"
     label='$_openaiFrontendHarness'
+  elif [ "\$5" = '$_localDirectoryFrontendHarness' ]; then
+    kind=local-directory
+    output="\$ADELE_LOCAL_DIRECTORY_FRONTEND_OUTPUT"
+    label='$_localDirectoryFrontendHarness'
   else
     test "\$5" = '$_toolFrontendHarness' || exit 92
     kind="\$ADELE_TOOL_INSPECTION_FRONTEND"
@@ -221,6 +230,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           'search_tools_backend',
           'filesystem_tools_backend',
           'command_tools_backend',
+          'local_directory_project_selector_frontend',
         ]),
       );
       expect(commands.existsSync(), isFalse);
@@ -229,7 +239,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
   );
 
   test(
-    'Linux run and builds prepare one fresh seven-installation snapshot',
+    'Linux run and builds prepare one fresh eight-installation snapshot',
     () async {
       final Set<String> outputDirectories = <String>{};
       final Map<String, String> retainedArtifacts = <String, String>{};
@@ -240,6 +250,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           '/wrong-tool-output';
       environment['ADELE_TOOL_INSPECTION_FRONTEND'] = 'wrong-tool';
       environment['ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT'] = '/wrong-openai';
+      environment['ADELE_LOCAL_DIRECTORY_FRONTEND_OUTPUT'] = '/wrong-selector';
       for (final List<String> arguments in <List<String>>[
         <String>['run', 'linux'],
         <String>['build', 'linux'],
@@ -271,6 +282,8 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           'compiled|$_toolFrontendHarness|command',
           'compile|$_openaiFrontendHarness',
           'compiled|$_openaiFrontendHarness',
+          'compile|$_localDirectoryFrontendHarness',
+          'compiled|$_localDirectoryFrontendHarness',
           'flutter-launch',
         ]);
         expect(result.stdout, contains('frontend compiler output'));
@@ -380,6 +393,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             'chat-strategy',
             'filesystem-tools',
             'command-tools',
+            'local-directory-project-selector',
           ]),
         );
         final installedIds = <String>{};
@@ -426,11 +440,19 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             name: 'Command Tools',
             backend: true,
           ),
+          (
+            directory: 'local-directory-project-selector',
+            id: 'dev.adele.plugin.local-directory-project-selector',
+            name: 'Local Directory Project Selector',
+            backend: false,
+          ),
         ]) {
           final directory = Directory.fromUri(
             installations.uri.resolve('${plugin.directory}/'),
           );
           final presentations = stockFrontendDescriptors[plugin.id];
+          final extensions = stockFrontendExtensionDescriptors[plugin.id];
+          final hasFrontend = presentations != null || extensions != null;
           final manifest = File.fromUri(
             directory.uri.resolve('adele_plugin.installation.json'),
           );
@@ -451,20 +473,19 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             },
             'components': {
               if (plugin.backend) 'backend': {'artifact': 'backend.aot'},
-              if (presentations != null)
+              if (hasFrontend)
                 'frontend': {
                   'artifact': 'frontend.evc',
-                  'presentations': presentations,
+                  'presentations': presentations ?? [],
+                  'extensions': ?extensions,
                 },
             },
           });
           expect(
             directory.listSync(),
-            hasLength(
-              1 + (plugin.backend ? 1 : 0) + (presentations != null ? 1 : 0),
-            ),
+            hasLength(1 + (plugin.backend ? 1 : 0) + (hasFrontend ? 1 : 0)),
           );
-          if (presentations != null) {
+          if (hasFrontend) {
             final artifact = File.fromUri(
               directory.uri.resolve('frontend.evc'),
             );
@@ -474,7 +495,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             retainedArtifacts[file.path] = file.readAsStringSync();
           }
         }
-        expect(installedIds, hasLength(7));
+        expect(installedIds, hasLength(8));
         final catalog = await PreparedPluginCatalog.discover(
           installations.path,
         );
@@ -495,14 +516,26 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.frontend != null,
           ),
-          hasLength(4),
+          hasLength(5),
         );
         for (final installation in catalog.installations) {
           final descriptors =
               stockFrontendDescriptors[installation.metadata.id.value];
           expect(
             installation.frontend?.presentations.length,
-            descriptors?.length,
+            installation.frontend == null ? null : descriptors?.length ?? 0,
+          );
+          expect(
+            installation.frontend?.extensions.map(
+              (extension) => extension.toJson(),
+            ),
+            installation.frontend == null
+                ? null
+                : stockFrontendExtensionDescriptors[installation
+                          .metadata
+                          .id
+                          .value] ??
+                      [],
           );
         }
         retainedArtifacts[startupArguments.path] = startupArguments
@@ -566,7 +599,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
         ).delete();
 
         final catalog = await PreparedPluginCatalog.discover(rootPath);
-        expect(catalog.installations, hasLength(7));
+        expect(catalog.installations, hasLength(8));
         expect(catalog.issues.single.component, missing);
         final command = catalog.installations.singleWhere(
           (installation) =>
@@ -591,11 +624,41 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.frontend != null,
           ),
-          hasLength(missing == PreparedPluginComponent.frontend ? 3 : 4),
+          hasLength(missing == PreparedPluginComponent.frontend ? 4 : 5),
         );
       },
     );
   }
+
+  test('missing selector EVC leaves no selector backend or frontend', () async {
+    final result = await invoke(['run', 'linux']);
+    expect(result.exitCode, 0, reason: result.stderr.toString());
+    const prefix = '--dart-define=ADELE_PLUGIN_INSTALLATION_ROOT=';
+    final rootPath = launchArguments
+        .readAsLinesSync()
+        .singleWhere((argument) => argument.startsWith(prefix))
+        .substring(prefix.length);
+    await File(
+      '$rootPath/local-directory-project-selector/frontend.evc',
+    ).delete();
+
+    final catalog = await PreparedPluginCatalog.discover(rootPath);
+    expect(catalog.installations, hasLength(8));
+    expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
+    final selector = catalog.installations.singleWhere(
+      (installation) =>
+          installation.metadata.id.value ==
+          'dev.adele.plugin.local-directory-project-selector',
+    );
+    expect(selector.backendArtifactUri, isNull);
+    expect(selector.frontend, isNull);
+    expect(
+      catalog.installations.where(
+        (installation) => installation.frontend != null,
+      ),
+      hasLength(4),
+    );
+  });
 
   for (final explicitClient in [false, true]) {
     test(
@@ -659,7 +722,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             .where(
               (file) => file.path.endsWith('adele_plugin.installation.json'),
             );
-        expect(manifests, hasLength(7));
+        expect(manifests, hasLength(8));
         for (final manifest in manifests) {
           for (final forbidden in [
             'secret-',
@@ -813,7 +876,13 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
   }
 
   for (final String command in <String>['run', 'build']) {
-    for (final String kind in ['chat', 'filesystem', 'command', 'openai']) {
+    for (final String kind in [
+      'chat',
+      'filesystem',
+      'command',
+      'openai',
+      'local-directory',
+    ]) {
       for (final String failure in <String>['exit', 'missing', 'empty']) {
         test(
           '$command never launches after $kind frontend $failure failure',
@@ -863,15 +932,26 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
               if (kind != 'chat') 'compile|$_toolFrontendHarness|filesystem',
               if (kind == 'command' ||
                   kind == 'openai' ||
+                  kind == 'local-directory' ||
                   (kind == 'filesystem' && failure != 'exit'))
                 'compiled|$_toolFrontendHarness|filesystem',
-              if (kind == 'command' || kind == 'openai')
+              if (kind == 'command' ||
+                  kind == 'openai' ||
+                  kind == 'local-directory')
                 'compile|$_toolFrontendHarness|command',
-              if (kind == 'openai' || (kind == 'command' && failure != 'exit'))
+              if (kind == 'openai' ||
+                  kind == 'local-directory' ||
+                  (kind == 'command' && failure != 'exit'))
                 'compiled|$_toolFrontendHarness|command',
-              if (kind == 'openai') 'compile|$_openaiFrontendHarness',
-              if (kind == 'openai' && failure != 'exit')
+              if (kind == 'openai' || kind == 'local-directory')
+                'compile|$_openaiFrontendHarness',
+              if (kind == 'local-directory' ||
+                  (kind == 'openai' && failure != 'exit'))
                 'compiled|$_openaiFrontendHarness',
+              if (kind == 'local-directory')
+                'compile|$_localDirectoryFrontendHarness',
+              if (kind == 'local-directory' && failure != 'exit')
+                'compiled|$_localDirectoryFrontendHarness',
             ]);
             expect(launchArguments.existsSync(), isFalse);
             expectNoPublishedInstallations();
