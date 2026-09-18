@@ -15,9 +15,9 @@ Typed Session presentation and prepared interpreted stock Chat history/composer
 Read-only live Run activity with tool-batch narration and native activity summaries
 Plugin-owned compact activity and retained, newest-first Inspection cards
 Per-inference instruction-source capture and immutable context snapshots
-Shared application runtime and four static in-process stock plugins
+Shared application runtime and three static in-process stock plugins
 Prepared backend/frontend discovery and backend-owned capability/extension advertisements
-Remote instruction sources and model tools with operation-scoped unary authorized host reads
+Remote instruction sources and model tools with operation-scoped unary authorized host reads/mutations
 Typed Project selectors and minimal local-directory Project opening
 Normal title-only Task creation with a real Git primary Environment
 Normal stock Chat Sessions with approval-gated ChatGPT-backed Runs
@@ -35,8 +35,9 @@ model-provider/transport regression infrastructure. These are internal
 reference fixtures, not product UI or product-domain definitions.
 
 Normal startup discovers a bounded snapshot of prepared installations with
-independently optional backend and frontend components. AGENTS.md and Search run as
-AOT backends through generic extension adapters and operation-scoped unary host services.
+independently optional backend and frontend components. AGENTS.md, Search, and
+Filesystem Tools run as AOT backends through generic extension adapters and
+operation-scoped unary host services.
 This is not a plugin installer or general activation manager. Profiles,
 enable/disable controls, version solving, watching, reverse streaming,
 general symmetric RPC, hot upgrade,
@@ -46,14 +47,14 @@ third-party extension APIs are not yet implemented.
 `AdeleRuntime()` in `app/lib/core/adele_runtime.dart` synchronously constructs a
 provider-free application host graph. It owns the capability and
 extension registries, in-memory product store, generated lifecycle coordinator,
-inference context composer, retained Chat plugin, and four static in-process
-activations: Chat, Filesystem Tools, Command Tools, and
-Local Directory Project Selector. The reduced smoke composition omits only
+inference context composer, retained Chat plugin, and three static in-process
+activations: Chat, Command Tools, and Local Directory Project Selector. The reduced
+smoke composition omits only
 Command Tools. It also owns pure-Dart `ApplicationPluginBootstrap` on the same
 capability and extension registries, without starting it from the constructor.
-AGENTS.md and Search are supplied by their installed AOT backends, with no production
-app import/dependency, static activation, or in-process fallback. The four in-process
-plugins are outside prepared backend discovery.
+AGENTS.md, Search, and Filesystem Tools are supplied by their installed AOT backends,
+with no production app import/dependency, static activation, or in-process fallback.
+The three in-process plugins are outside prepared backend discovery.
 
 Normal `AdeleApplication` explicitly calls `ApplicationPluginBootstrap.start`
 asynchronously with an installation root, shared runtime/host paths, and optional
@@ -89,9 +90,9 @@ generation. Shared-host failure affects all backends, not independently owned
 frontends. Read-only backend states and catalog issues are exposed without a
 plugin-management UI.
 
-Git and OpenAI entrypoints own their ready `capabilityExposures`; AGENTS.md and Search
-own their ready `extensionExposures` and point-specific metadata. `PluginId` comes from
-the installation/connection, not the advertisements.
+Git and OpenAI entrypoints own their ready `capabilityExposures`; AGENTS.md, Search,
+and Filesystem Tools own their ready `extensionExposures` and point-specific
+metadata. `PluginId` comes from the installation/connection, not the advertisements.
 `PluginBackendActivation.registerAdvertised` uses the existing capability and
 extension registries with coherent rollback and exact-generation retirement.
 Unknown extension points or malformed metadata fail only that backend attempt,
@@ -221,11 +222,20 @@ supplies coherent read, mutation, and process facets over the one authorized
 Environment. Search requests only the read facet and recursively composes
 `readDirectory` and `readFile` in Dart; its `search_tools_backend` reuses the
 pure-Dart root semantics through public generated remote model-tool transport.
-The generic app adapter captures the exact Session-authorized Environment and
-remote generations, using fresh operation-scoped read authority rather than
-authority selected by transported IDs. Validation may be asynchronous and receives
-no host authority; execution uses server streaming while reverse reads remain
-unary. Command Tools requests only the process facet and remains in process.
+Filesystem's `filesystem_tools_backend` under `plugins/filesystem_tools/packages/backend`
+likewise reuses its root tool semantics. The generic app adapter captures coherent
+Session-bound read/mutation facets and exact remote/Environment generations from
+exposure `hostServices`, the maximum dependency set. Each descriptor's required
+`executionHostServices` is its exact allowed subset: read for `read_file`, read plus
+mutation for `apply_patch`/`delete_file`, and mutation only for `create_file`.
+Materialize and argument validation receive no token; description uses pure
+Session/Run/Environment identity data. Only execution after policy/approval receives
+fresh stream-lifetime authority. Synchronous validation checks every captured facet
+without re-resolution; transported IDs cannot select authority. Execution uses
+server streaming while reverse reads and mutations remain unary. The separate
+mutation service supplies only create-new, conditional replace, and conditional
+delete; the read service remains unchanged. Command Tools requests only the process
+facet and remains in process. These host-service checks are not an OS sandbox.
 See [remote model tools](docs/architecture/contracts-and-capabilities.md#remote-model-tools).
 
 The stock Chat strategy accepts multiple proposals from
@@ -555,15 +565,15 @@ dart tools/adele.dart check
 dart tools/adele.dart build linux
 ```
 
-Normal Linux `run` and `build` compile a fresh shared-host AOT snapshot, four
-backend snapshots (Git, OpenAI, AGENTS.md, and Search), and four frontend EVCs (Chat,
-Filesystem Tools, Command Tools, and OpenAI activity), assembling one prepared
+Normal Linux `run` and `build` compile a fresh shared-host AOT snapshot, five
+backend snapshots (Git, OpenAI, AGENTS.md, Search, and Filesystem Tools), and four
+frontend EVCs (Chat, Filesystem Tools, Command Tools, and OpenAI activity), assembling one prepared
 installation root before the Flutter run/build
 invocation. `prepareDesktopPluginDefines` in `tools/backend_artifacts.dart` uses
 `compileAotSnapshot` from `plugin_builder` and selects the Dart compiler and
 `dartaotruntime` from the launching Flutter SDK. It still knows stock Git, OpenAI,
-AGENTS.md, and Search source paths and writes installed JSON manifests;
-source directories are not normalized to the reference fixture's draft
+AGENTS.md, Search, and Filesystem Tools source paths and writes installed JSON
+manifests; source directories are not normalized to the reference fixture's draft
 `adele_plugin.yaml` source/build format. Installed manifests and source/build
 manifests are distinct; see `docs/architecture/plugin-layout.md`.
 `tools/frontend_artifacts.dart` invokes the Flutter build-time entrypoints
@@ -571,10 +581,11 @@ manifests are distinct; see `docs/architecture/plugin-layout.md`.
 `app/tool/compile_tool_inspection_frontends.dart`, and
 `app/tool/compile_openai_activity_frontend.dart`. Fresh artifacts are retained under
 `.dart_tool/adele/desktop-plugins/build-*/`. Its one `installations/` root has seven
-directories: frontend-only `chat-strategy`, `filesystem-tools`, and `command-tools`,
-backend-only `git-environment`, `agents-md`, and `search-tools`, and one `openai` with
-both components.
-AGENTS.md and Search use `agents-md/backend.aot` and `search-tools/backend.aot`,
+directories: frontend-only `chat-strategy` and `command-tools`, backend-only
+`git-environment`, `agents-md`, and `search-tools`, and combined `filesystem-tools`
+and `openai` installations.
+AGENTS.md, Search, and Filesystem Tools use `agents-md/backend.aot`,
+`search-tools/backend.aot`, and `filesystem-tools/backend.aot`,
 with no plugin-specific configuration or deployment define. Each frontend
 is `frontend.evc`; `tools/stock_frontend_descriptors.dart` is the singular stock
 build-side descriptor table, not an app runtime activation table.
@@ -592,8 +603,8 @@ Moving or deleting them breaks the corresponding backend startup or frontend
 loading. This is not artifact caching, an installer, portable/production
 packaging, or profiles. Discovery is only the prepared backend/frontend startup
 snapshot. Invoking Flutter directly without the defines leaves Task Environment
-support, the AGENTS.md source, Search, Chat presentation, stock tool Inspection, and
-OpenAI activity presentation unavailable independently.
+support, the AGENTS.md source, Search/Filesystem tools, Chat presentation, stock tool
+Inspection, and OpenAI activity presentation unavailable independently.
 Checkout tooling stands in for future installation/update-time compilation;
 activation consumes prepared artifacts rather than building them.
 
@@ -619,10 +630,11 @@ reports every failed package after all targets settle. `check` verifies
 formatting, analysis, and all implemented tests, including committed
 generated-output freshness.
 
-The workspace includes `plugins/chat_strategy`, semantic `plugins/agents_md` and
-`plugins/search_tools`, their `packages/backend` packages, and
-`packages/plugin_backend_support`. The app depends on Chat, not on AGENTS.md or
-Search implementations in production; Search is a development-only test dependency.
+The workspace includes `plugins/chat_strategy`, semantic `plugins/agents_md`,
+`plugins/search_tools`, and `plugins/filesystem_tools`, their `packages/backend`
+packages, and `packages/plugin_backend_support`. The app depends on Chat, not on
+AGENTS.md, Search, or Filesystem implementations in production; semantic tool
+packages used by app tests remain development-only dependencies.
 The driver includes the semantic plugins, backends, and support package in analysis/test
 discovery and `test-plan --json`. Run the semantic plugins' pure-Dart tests with
 `dart tools/adele.dart test --target chat_strategy_plugin` or
@@ -664,7 +676,7 @@ plugins/workspace_demo/      internal source-plugin reference fixture
 plugins/resource_inspector/  Phase III two-provider capability fixture
 plugins/scripted_model/      deterministic ModelProvider/transport fixture
 plugins/openai/              Contract identities/schema, backend safe projection, evaluated frontend
-plugins/filesystem_tools/    stock text-file tools plus evaluated Apply Patch Inspection
+plugins/filesystem_tools/    stock text-file semantics, AOT backend, evaluated Apply Patch Inspection
 plugins/search_tools/        stock literal Search semantics plus AOT backend
 plugins/command_tools/       stock foreground Command tool plus evaluated Inspection
 plugins/chat_strategy/       headless Chat strategy plus separate evaluated frontend
@@ -734,9 +746,9 @@ Profiles are not implemented. Normal startup and development/self-hosting reuse
 the implicit in-process stock composition and generic registration of
 backend-owned advertisements, while owning separate backend topologies. Normal
 startup attempts all discovered valid backend and frontend components; self-hosting
-keeps explicit artifact/host/profile selection, including `agentsMdArtifact` and
-`searchToolsArtifact` on its same shared host via generic adapter activation,
-without a normal installation root.
+keeps explicit artifact/host/profile selection, including `agentsMdArtifact`,
+`searchToolsArtifact`, and `filesystemToolsArtifact` on its same shared host via
+generic adapter activation, without a normal installation root.
 Installation itself does not activate
 anything. Prepared presentation descriptors are executable ABI/preparation data;
 future profiles separately decide activation participation rather than replacing
@@ -769,8 +781,9 @@ are not included and remain independent plugin concerns.
 Broader Reference/Observation material remains directional, without placeholder
 public APIs. Provider-aware projection and cache planning, token budgets,
 compaction, and context preview remain deferred.
-General provider/model configuration, Task Browser, and richer Session/Run UI
-remain deferred. The normal product path reaches one stock Chat Session with
+Migration of the remaining in-process Chat, Command Tools, and Local Directory
+Project Selector is deferred. General provider/model configuration, Task Browser,
+and richer Session/Run UI remain deferred. The normal product path reaches one stock Chat Session with
 plugin-owned evaluated history/composer and sequential, approval-gated Runs through
 experimental ChatGPT subscription auth. Single compact Chat activities and groups
 open retained window-local Inspection cards with interpreted Apply Patch, Run

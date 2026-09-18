@@ -70,6 +70,9 @@ Future<List<String>> prepareDesktopPluginDefines({
   final File searchTools = File.fromUri(
     installations.uri.resolve('search-tools/backend.aot'),
   );
+  final File filesystemTools = File.fromUri(
+    installations.uri.resolve('filesystem-tools/backend.aot'),
+  );
   for (final ({String entrypoint, File artifact, String stage}) target
       in <({String entrypoint, File artifact, String stage})>[
         (
@@ -101,6 +104,12 @@ Future<List<String>> prepareDesktopPluginDefines({
               'plugins/search_tools/packages/backend/bin/search_tools_backend.dart',
           artifact: searchTools,
           stage: 'search-tools-compilation',
+        ),
+        (
+          entrypoint:
+              'plugins/filesystem_tools/packages/backend/bin/filesystem_tools_backend.dart',
+          artifact: filesystemTools,
+          stage: 'filesystem-tools-compilation',
         ),
       ]) {
     stdout.writeln('==> ${target.stage}');
@@ -141,7 +150,7 @@ Future<List<String>> prepareDesktopPluginDefines({
     ),
     (backend: null, id: 'dev.adele.plugin.chat-strategy', displayName: 'Chat'),
     (
-      backend: null,
+      backend: filesystemTools,
       id: 'dev.adele.plugin.filesystem-tools',
       displayName: 'Filesystem Tools',
     ),

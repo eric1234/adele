@@ -3,7 +3,6 @@ import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:command_tools_plugin/command_tools_plugin.dart';
-import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:local_directory_project_selector_plugin/local_directory_project_selector_plugin.dart';
 
 import 'application_plugin_bootstrap.dart';
@@ -24,7 +23,6 @@ final class AdeleRuntime {
     contextComposer = InferenceContextComposer(extensions);
     _activations = <ExtensionRegistration>[
       chat.activate(extensions),
-      const FilesystemToolsPlugin().activate(extensions),
       // Retain the existing reduced live-smoke composition, not a profile API.
       if (includeCommandTools) const CommandToolsPlugin().activate(extensions),
       const LocalDirectoryProjectSelectorPlugin().activate(extensions),

@@ -6,7 +6,7 @@
 
 This document defines ADELE's long-term composition model for plugins and plugin-defined extension ecosystems. It records architectural boundaries rather than a frozen Dart API. Implemented APIs such as `ExtensionPoint` remain experimental; other example interfaces below remain directional until concrete implementation requires them.
 
-The maintained repository includes source plugins, interpreted frontend execution, AOT backend execution, generated typed transport, active capability registration/resolution, configured provider contexts, provider-neutral agent execution, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, and generic registration/liveness. The registry supports typed extension points, activation-scoped registrations, exact-generation bindings, public contextual model-tool contributions, executable orchestration-strategy contributions, instruction-only inference-context sources, and Project selector contributions. Stock Filesystem Tools, Search Tools, and Command Tools own `read_file`/`apply_patch`/`create_file`/`delete_file`, `search`, and `run_command`. Headless stock Chat uses public `adele_orchestration` and remains in process alongside Filesystem Tools, Command Tools, and Local Directory Project Selector: four static activations in shared `AdeleRuntime`. The root-level AGENTS.md source and Search run through prepared `agents_md_backend` and `search_tools_backend` packages, reusing their pure-Dart root semantics without production app imports/dependencies or static activation. Host-rendered Project opening is minimal, not a general UI API. ADELE does **not** yet implement the broader recursive extension system described here, general plugin-facing workbench composition, generic commands/keybindings, product/Chat persistence, broader inference material or other context sources, or most of the expected stock plugin topology.
+The maintained repository includes source plugins, interpreted frontend execution, AOT backend execution, generated typed transport, active capability registration/resolution, configured provider contexts, provider-neutral agent execution, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, and generic registration/liveness. The registry supports typed extension points, activation-scoped registrations, exact-generation bindings, public contextual model-tool contributions, executable orchestration-strategy contributions, instruction-only inference-context sources, and Project selector contributions. Stock Filesystem Tools, Search Tools, and Command Tools own `read_file`/`apply_patch`/`create_file`/`delete_file`, `search`, and `run_command`. Headless stock Chat uses public `adele_orchestration` and remains in process alongside Command Tools and Local Directory Project Selector: three static activations in shared `AdeleRuntime`, with their migration deferred. The root-level AGENTS.md source, Search, and Filesystem Tools run through prepared `agents_md_backend`, `search_tools_backend`, and `filesystem_tools_backend` packages, reusing their pure-Dart root semantics without production app imports/dependencies or static activation. Host-rendered Project opening is minimal, not a general UI API. ADELE does **not** yet implement the broader recursive extension system described here, general plugin-facing workbench composition, generic commands/keybindings, product/Chat persistence, broader inference material or other context sources, or most of the expected stock plugin topology.
 
 The generic registry deliberately defines only registration, discovery, retirement, and binding liveness. Model-tool composition defines its own zero-or-many composition and alias-collision semantics. Strategy resolution requires exactly one current contribution for an explicit semantic ID, with unavailable/ambiguous errors rather than defaults or tie-breaking. Instruction-context composition defines its own zero-or-many capture, deterministic identity ordering, and required/optional source failure behavior; it has no numeric priority. Generic priority, applicability languages, and universal ordering/failure rules are not supplied by the registry. `EnvironmentRuntime` remains a provisional application/domain implementation rather than a template for extension runtimes.
 
@@ -326,7 +326,7 @@ The stock Local Directory Project Selector uses the existing in-process
 [`stock-plugin-direction.md`](stock-plugin-direction.md#31-local-directory-project-selector)
 for its native-picker and headless import boundaries.
 
-`AdeleRuntime` owns this fourth static stock activation on its existing registry and
+`AdeleRuntime` owns this third static stock activation on its existing registry and
 retires it with the others in reverse order. Reduced composition omits only
 Command Tools. `AdeleApplication` discovers selectors in `build`, invokes the
 chosen contribution, then calls `runtime.lifecycle.createProject` for a non-null
@@ -503,16 +503,27 @@ specified in [`contracts-and-capabilities.md`](contracts-and-capabilities.md#ope
 `RemoteModelToolAdapter` similarly registers native `ModelToolContribution`
 proxies using public generated `adele_model_tool/remote_model_tool.dart` transport.
 The existing composer retains zero-or-many tool composition and Tool ID/alias
-collision rules. Point metadata is exactly `hostServices: []` or
-`hostServices: ['authorizedEnvironmentRead']`: dependency requests, not grants or
-Profiles. When requested, materialization captures the host's Session-bound read
-facet and exact remote/Environment generations. Fresh contexts cover
-materialize/describe and the execute stream; validation receives no authority.
-The read service exposes only
-the already-bound identity plus file/directory reads, never authority selection,
-mutation, or processes. Search's backend reuses its root implementation through this
-adapter. Filesystem, Command, and Chat remain in process; this is not a general
-remote-object or orchestration framework.
+collision rules. Exposure `hostServices` declares the maximum dependencies from
+`authorizedEnvironmentRead` and `authorizedEnvironmentMutation`, including none,
+without duplicates. Each descriptor requires `executionHostServices`, a validated
+subset defining its exact execution allowlist. These declarations are dependency
+requests, not grants or Profiles. Materialization captures coherent read/mutation
+facets for the same Session and Environment and exact remote/Environment generations.
+Synchronous validation checks all captured facets without re-resolution.
+
+Materialize and validation receive no token. Description receives only route,
+canonical arguments, Session/Run IDs, and nullable Environment identity; this pure
+data cannot select authority. Only execution after policy/approval receives a fresh
+token, with stream-lifetime access to exactly the descriptor's services. The read
+service retains its already-bound identity query and file/directory reads. Separate
+mutation service exposes only create-new, conditional replacement, and conditional
+deletion, without authority-selection IDs, an authority query, or processes.
+Search's backend reuses its root semantics with pure identity-based description and
+read-only execution. Filesystem's backend reuses its root semantics with read for
+`read_file`, read/mutation for `apply_patch` and `delete_file`, and mutation only for
+`create_file`. Its frontend is independently activated from the same installation.
+Reverse calls remain unary; this is neither a general remote-object/orchestration
+framework nor an OS sandbox. Command, Chat, and selector migration remains deferred.
 
 The sealed `InferenceContextMaterial` root currently supports only final
 `InferenceInstructionMaterial(key, text, revision?)`: source-local nonblank string

@@ -13,6 +13,46 @@ Environment-relative logical file paths canonicalized before policy and
 execution. Reads return bounded UTF-8 text and a provider-produced opaque
 revision.
 
+## Installation And Authority
+
+Normal startup discovers one combined `filesystem-tools` installation with
+`backend.aot` and `frontend.evc`. The backend advertises the existing
+`dev.adele.plugin.filesystem-tools.model-tools` contribution at
+`dev.adele.extension.model-tools`, not a capability exposure. Generic remote
+activation registers it in the existing extension registry. `AdeleRuntime` has no
+static Filesystem activation or in-process fallback. Backend and frontend readiness
+and retirement are independent; missing presentation does not disable tools, and
+missing execution support does not prevent frontend activation.
+
+Exposure `hostServices` declares `authorizedEnvironmentRead` and
+`authorizedEnvironmentMutation` as maximum dependencies to capture, not permission
+grants. Every descriptor requires its exact `executionHostServices` subset:
+
+| Tool | Execution Services |
+| --- | --- |
+| `read_file` | `authorizedEnvironmentRead` |
+| `apply_patch` | `authorizedEnvironmentRead`, `authorizedEnvironmentMutation` |
+| `create_file` | `authorizedEnvironmentMutation` |
+| `delete_file` | `authorizedEnvironmentRead`, `authorizedEnvironmentMutation` |
+
+The host captures coherent read/mutation facets for the same Session/Environment
+and synchronously validates every exact captured binding without re-resolution.
+Only execution after policy/approval receives a fresh invocation token allowlisting
+exactly that tool's services. Stream authority starts on listen and ends on
+settlement, cancellation, or retirement. The [backend](#backend) uses public generated
+contracts and `adele_plugin_backend_support`, not app or internal host imports.
+
+Separate generated `AuthorizedEnvironmentMutationService` exposes only
+`createTextFile`, `replaceExistingTextFile`, and `deleteExistingTextFile`, with no
+authority query or selectors. The read service remains unchanged. Reverse calls
+are unary on the existing version-2 protocols. Host-service authorization is not
+an OS sandbox or rollback of already-started effects. No Filesystem-specific
+configuration or deployment define is required. Explicit self-hosting supplies
+`filesystemToolsArtifact` on its same shared host through generic registration,
+without a desktop installation root.
+
+## Tool Semantics
+
 `read_file(relativePath, startLine?, lineCount?)` reads the whole file when both
 range arguments are omitted. Each range argument is independently optional:
 `startLine` defaults to 1 and is 1-based; omitted `lineCount` means through EOF.
@@ -83,6 +123,13 @@ and host-filesystem fallback remain unsupported. Deterministic real-Git
 integration proves create -> read -> delete continuation; no paid create/delete
 model smoke is claimed.
 
+## Validation
+
+The root semantic suite remains the algorithm/validation authority. Backend tests
+focus on adaptation, generated calls, identity-only description, failures, and
+entrypoint routing rather than duplicating those semantic cases. The independent
+frontend package does not depend on this backend.
+
 ## Apply Patch Inspection
 
 The separate Flutter package `packages/frontend` (`filesystem_tools_frontend`)
@@ -91,9 +138,9 @@ and terminal outcome data to display relative path, edit count, common lifecycle
 tool-result disposition, new revision, and failure details when present. Outcome
 text is a bounded preview; this is not a Diff viewer or source editor.
 
-The headless package exports `applyPatchToolId` for stock composition to register
-`adele_ui`'s `ToolActivityInspectionContribution`. The frontend depends only on
-Flutter and `adele_ui`, not the headless implementation, app, or kernel. Generic
+Prepared build-side descriptors identify `applyPatchToolId` for generic frontend
+activation to register `adele_ui`'s `ToolActivityInspectionContribution`. The frontend
+depends only on Flutter and `adele_ui`, not the headless implementation, app, or kernel. Generic
 app hosting transports data without interpreting patch fields, composes proposals
 in model output order, and uses exact Tool ID/liveness resolution.
 

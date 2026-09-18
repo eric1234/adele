@@ -21,6 +21,7 @@ import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 const _searchId = 'dev.adele.plugin.search-tools';
+const _filesystemId = 'dev.adele.plugin.filesystem-tools';
 const _gitId = 'dev.adele.plugin.git-environment';
 const _bound = Duration(seconds: 10);
 
@@ -28,6 +29,7 @@ void main() {
   late Directory artifacts;
   late File hostArtifact;
   late File searchArtifact;
+  late File filesystemArtifact;
   late File gitArtifact;
   late String aotRuntime;
 
@@ -43,6 +45,7 @@ void main() {
     ).path;
     hostArtifact = File.fromUri(artifacts.uri.resolve('host.aot'));
     searchArtifact = File.fromUri(artifacts.uri.resolve('search.aot'));
+    filesystemArtifact = File.fromUri(artifacts.uri.resolve('filesystem.aot'));
     gitArtifact = File.fromUri(artifacts.uri.resolve('git.aot'));
     for (final target in [
       (
@@ -53,6 +56,11 @@ void main() {
         entrypoint:
             'plugins/search_tools/packages/backend/bin/search_tools_backend.dart',
         artifact: searchArtifact,
+      ),
+      (
+        entrypoint:
+            'plugins/filesystem_tools/packages/backend/bin/filesystem_tools_backend.dart',
+        artifact: filesystemArtifact,
       ),
       (
         entrypoint:
@@ -106,6 +114,162 @@ void main() {
 
   Future<MaterializedToolSet> compose() async =>
       (await ModelToolComposer(extensions).materialize(context)).materialize();
+
+  test('real Filesystem AOT composes four policy-compatible routes, preserves '
+      'conditional mutations, and retires independently of Search', () async {
+    final authority = _FilesystemAuthority();
+    final activation = await start(filesystemArtifact, _filesystemId);
+    expect(activation.connection.capabilityExposures, isEmpty);
+    final exposure = activation.connection.extensionExposures.single;
+    expect(exposure.extensionId, '$_filesystemId.model-tools');
+    expect(exposure.serviceId, remoteModelToolServiceId);
+    expect(exposure.metadata, {
+      'hostServices': [
+        authorizedEnvironmentReadServiceId,
+        authorizedEnvironmentMutationServiceId,
+      ],
+    });
+    final tools = (await ModelToolComposer(
+      extensions,
+    ).materialize(authority)).materialize();
+    expect(tools.tools.map((tool) => tool.modelDefinition.alias), [
+      'read_file',
+      'apply_patch',
+      'create_file',
+      'delete_file',
+    ]);
+    expect(authority.calls, isEmpty);
+    final execution = ToolExecutionContext(
+      sessionId: authority.sessionId,
+      runId: RunId('filesystem-run'),
+    );
+    Future<ToolOutcome> invoke(
+      String alias,
+      Map<String, Object?> arguments,
+    ) async {
+      final resolved = await const ToolInvocationResolver().resolve(
+        invocationId: ToolInvocationId('filesystem-$alias'),
+        proposal: ProviderToolProposal(
+          providerCallId: 'call-$alias',
+          alias: alias,
+          arguments: arguments,
+        ),
+        tools: tools,
+        context: execution,
+      );
+      expect(resolved, isA<ResolvedToolProposal>());
+      final invocation = (resolved as ResolvedToolProposal).invocation;
+      final before = authority.calls.toList();
+      final effects = await invocation.tool.executable.describe(
+        invocation.arguments,
+        execution,
+      );
+      expect(authority.calls, before);
+      expect(
+        effects.targets.single.uri.toString(),
+        'adele-environment:/filesystem-environment/${invocation.canonicalArguments['relativePath']}',
+      );
+      expect(
+        const ApprovalGatedToolPolicy().evaluate(
+          ToolPolicyInput(
+            invocation: invocation,
+            effects: effects,
+            context: execution,
+          ),
+        ),
+        alias == 'read_file'
+            ? ToolPolicyDecision.allow
+            : ToolPolicyDecision.ask,
+      );
+      return (await collectToolExecution(
+        invocation.tool.executable.execute(invocation.arguments, execution),
+      )).outcome;
+    }
+
+    final invalid = await const ToolInvocationResolver().resolve(
+      invocationId: ToolInvocationId('invalid'),
+      proposal: ProviderToolProposal(
+        providerCallId: 'invalid',
+        alias: 'create_file',
+        arguments: {'relativePath': '../outside', 'content': 'no'},
+      ),
+      tools: tools,
+      context: execution,
+    );
+    expect(
+      (invalid as RejectedToolProposal).failure.kind,
+      ToolProposalFailureKind.invalidArguments,
+    );
+    expect(authority.calls, isEmpty);
+    final read = await invoke('read_file', {'relativePath': './source.txt'});
+    expect(read.hostData['revision'], 'R1');
+    final patch = {
+      'relativePath': 'source.txt',
+      'expectedRevision': read.hostData['revision'],
+      'edits': [
+        {'search': 'old', 'replace': 'intermediate'},
+        {'search': 'intermediate', 'replace': 'new'},
+      ],
+    };
+    authority.conflict = true;
+    final conflict = await invoke('apply_patch', patch);
+    expect(conflict.failureKind, ToolFailureKind.domain);
+    expect(conflict.hostData['code'], environmentRevisionConflictCode);
+    expect(conflict.effectCertainty, EffectCertainty.knownNotOccurred);
+    expect(authority.text['source.txt'], 'old\n');
+    authority.conflict = false;
+    final changed = await invoke('apply_patch', patch);
+    expect(changed.effectCertainty, EffectCertainty.knownOccurred);
+    expect(authority.text['source.txt'], 'new\n');
+    expect(authority.calls, [
+      'read:source.txt',
+      'read:source.txt',
+      'replace:source.txt:R1',
+      'read:source.txt',
+      'replace:source.txt:R1',
+    ]);
+
+    final exists = await invoke('create_file', {
+      'relativePath': 'source.txt',
+      'content': 'overwrite',
+    });
+    expect(exists.hostData['code'], environmentFileAlreadyExistsCode);
+    expect(authority.text['source.txt'], 'new\n');
+    final created = await invoke('create_file', {
+      'relativePath': 'new.txt',
+      'content': 'new file\n',
+    });
+    expect(created.disposition, ToolOutcomeDisposition.success);
+    final observed = await invoke('read_file', {'relativePath': 'new.txt'});
+    expect(observed.hostData['revision'], created.hostData['revision']);
+    final deleting = {
+      'relativePath': 'new.txt',
+      'expectedRevision': observed.hostData['revision'],
+    };
+    authority.conflict = true;
+    final rejected = await invoke('delete_file', deleting);
+    expect(rejected.hostData['code'], environmentRevisionConflictCode);
+    expect(rejected.effectCertainty, EffectCertainty.knownNotOccurred);
+    expect(authority.text, contains('new.txt'));
+    authority.conflict = false;
+    expect(
+      (await invoke('delete_file', deleting)).disposition,
+      ToolOutcomeDisposition.success,
+    );
+    expect(authority.text, isNot(contains('new.txt')));
+    expect(activation.connection.isClosed, isFalse);
+    final sibling = await start(searchArtifact, _searchId);
+    await activation.close();
+    for (final tool in tools.tools) {
+      expect(
+        tool.executable.validateBinding,
+        throwsA(isA<StaleToolBindingException>()),
+      );
+    }
+    expect((await compose()).byAlias('search'), isNotNull);
+    expect(sibling.connection.isClosed, isFalse);
+    expect(host.isClosed, isFalse);
+  });
 
   test('real Search readiness advertises and composes without file access; '
       'generated canonicalization and effects feed host policy', () async {
@@ -798,6 +962,101 @@ Future<ToolOutcome> _execute(
   ).timeout(_bound);
   expect(observation.progress, isEmpty);
   return observation.outcome;
+}
+
+final class _FilesystemAuthority
+    implements
+        ModelToolHostContext,
+        AuthorizedEnvironmentFileReadFacet,
+        AuthorizedEnvironmentFileMutationFacet {
+  @override
+  final sessionId = SessionId('filesystem-session');
+  @override
+  final environmentId = EnvironmentId('filesystem-environment');
+  final text = <String, String>{'source.txt': 'old\n'};
+  final revisions = <String, String>{'source.txt': 'R1'};
+  final calls = <String>[];
+  bool conflict = false;
+  int nextRevision = 2;
+
+  @override
+  Future<T> requireHostService<T extends Object>() async {
+    if (T == AuthorizedEnvironmentFileReadFacet ||
+        T == AuthorizedEnvironmentFileMutationFacet) {
+      return this as T;
+    }
+    throw StateError('Unsupported authority $T.');
+  }
+
+  @override
+  void validateBinding() {}
+
+  @override
+  Future<EnvironmentTextFile> readFile(String relativePath) async {
+    calls.add('read:$relativePath');
+    return EnvironmentTextFile(
+      relativePath: relativePath,
+      text: text[relativePath]!,
+      sizeBytes: utf8.encode(text[relativePath]!).length,
+      revision: revisions[relativePath]!,
+    );
+  }
+
+  @override
+  Future<EnvironmentDirectoryListing> readDirectory(String relativePath) =>
+      throw StateError('Filesystem tools must not traverse.');
+
+  @override
+  Future<EnvironmentTextFileCreation> createTextFile(
+    String relativePath,
+    String content,
+  ) async {
+    calls.add('create:$relativePath');
+    if (text.containsKey(relativePath)) {
+      throw const EnvironmentFailure(
+        code: environmentFileAlreadyExistsCode,
+        message: 'Already exists.',
+        details: {},
+      );
+    }
+    text[relativePath] = content;
+    final revision = revisions[relativePath] = 'R${nextRevision++}';
+    return EnvironmentTextFileCreation(revision: revision);
+  }
+
+  void checkRevision(String path, String expected) {
+    if (conflict || revisions[path] != expected) {
+      throw const EnvironmentFailure(
+        code: environmentRevisionConflictCode,
+        message: 'Concurrent edit.',
+        details: {},
+      );
+    }
+  }
+
+  @override
+  Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
+    String relativePath,
+    String replacementText,
+    String expectedRevision,
+  ) async {
+    calls.add('replace:$relativePath:$expectedRevision');
+    checkRevision(relativePath, expectedRevision);
+    text[relativePath] = replacementText;
+    final revision = revisions[relativePath] = 'R${nextRevision++}';
+    return EnvironmentTextFileReplacement(revision: revision);
+  }
+
+  @override
+  Future<void> deleteExistingTextFile(
+    String relativePath,
+    String expectedRevision,
+  ) async {
+    calls.add('delete:$relativePath:$expectedRevision');
+    checkRevision(relativePath, expectedRevision);
+    text.remove(relativePath);
+    revisions.remove(relativePath);
+  }
 }
 
 final class _Context implements ModelToolHostContext {

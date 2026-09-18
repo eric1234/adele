@@ -20,7 +20,7 @@ final class RemoteModelToolServiceClient implements RemoteModelToolService {
     RemoteCanonicalToolArguments arguments,
     String sessionId,
     String runId,
-    String? hostInvocationContext,
+    String? environmentId,
   ) async {
     try {
       return _decodeRemoteEffectDescription(
@@ -30,7 +30,7 @@ final class RemoteModelToolServiceClient implements RemoteModelToolService {
               'arguments': _encodeRemoteCanonicalToolArguments(arguments),
               'sessionId': sessionId,
               'runId': runId,
-              'hostInvocationContext': switch (hostInvocationContext) {
+              'environmentId': switch (environmentId) {
                 final _adeleNonNullValue10? => _adeleNonNullValue10,
                 null => null,
               },
@@ -63,6 +63,7 @@ final class RemoteModelToolServiceClient implements RemoteModelToolService {
     RemoteCanonicalToolArguments arguments,
     String sessionId,
     String runId,
+    String? environmentId,
     String? hostInvocationContext,
   ) => AdeleLazyStream<RemoteToolExecutionEvent>((
     _adeleOnData0,
@@ -79,8 +80,12 @@ final class RemoteModelToolServiceClient implements RemoteModelToolService {
           'arguments': _encodeRemoteCanonicalToolArguments(arguments),
           'sessionId': sessionId,
           'runId': runId,
-          'hostInvocationContext': switch (hostInvocationContext) {
+          'environmentId': switch (environmentId) {
             final _adeleNonNullValue26? => _adeleNonNullValue26,
+            null => null,
+          },
+          'hostInvocationContext': switch (hostInvocationContext) {
+            final _adeleNonNullValue30? => _adeleNonNullValue30,
             null => null,
           },
         });
@@ -117,38 +122,31 @@ final class RemoteModelToolServiceClient implements RemoteModelToolService {
     );
   });
   @override
-  Future<List<RemoteToolDescriptor>> materialize(
-    String sessionId,
-    String? hostInvocationContext,
-  ) async {
+  Future<List<RemoteToolDescriptor>> materialize(String sessionId) async {
     try {
       return List<RemoteToolDescriptor>.unmodifiable(
         _contractList(
-          await this._adeleChannel
-              .request(remoteModelToolServiceMaterializeId, <String, Object?>{
-                'sessionId': sessionId,
-                'hostInvocationContext': switch (hostInvocationContext) {
-                  final _adeleNonNullValue35? => _adeleNonNullValue35,
-                  null => null,
-                },
-              }),
+          await this._adeleChannel.request(
+            remoteModelToolServiceMaterializeId,
+            <String, Object?>{'sessionId': sessionId},
+          ),
           'materialize',
         ).map(
           (_adeleElement38) => _decodeRemoteToolDescriptor(_adeleElement38),
         ),
       );
-    } on AdeleRemoteFailure catch (_adeleError31) {
-      switch (_adeleError31.declaredFailureType) {
+    } on AdeleRemoteFailure catch (_adeleError35) {
+      switch (_adeleError35.declaredFailureType) {
         case remoteToolArgumentValidationFailureTypeId:
           final _adeleDetails0 = _contractJsonMap(
-            _adeleError31.details,
+            _adeleError35.details,
             'failure details',
           );
           throw _contractConstruct(
             'RemoteToolArgumentValidationFailure',
             () => RemoteToolArgumentValidationFailure(
-              code: _adeleError31.code,
-              message: _adeleError31.message,
+              code: _adeleError35.code,
+              message: _adeleError35.message,
               details: _adeleDetails0,
             ),
           );
@@ -276,17 +274,17 @@ final class RemoteModelToolServiceDispatcher
             'arguments',
             'sessionId',
             'runId',
-            'hostInvocationContext',
+            'environmentId',
           }, 'describe payload');
           return <Object?>[
             _contractString(_adelePayload4['routeId'], 'routeId'),
             _decodeRemoteCanonicalToolArguments(_adelePayload4['arguments']),
             _contractString(_adelePayload4['sessionId'], 'sessionId'),
             _contractString(_adelePayload4['runId'], 'runId'),
-            switch (_adelePayload4['hostInvocationContext']) {
+            switch (_adelePayload4['environmentId']) {
               final _adeleNonNullValue58? => _contractString(
                 _adeleNonNullValue58,
-                'hostInvocationContext',
+                'environmentId',
               ),
               null => null,
             },
@@ -295,17 +293,9 @@ final class RemoteModelToolServiceDispatcher
         remoteModelToolServiceMaterializeId => (() {
           _contractFields(_adelePayload4, const {
             'sessionId',
-            'hostInvocationContext',
           }, 'materialize payload');
           return <Object?>[
             _contractString(_adelePayload4['sessionId'], 'sessionId'),
-            switch (_adelePayload4['hostInvocationContext']) {
-              final _adeleNonNullValue64? => _contractString(
-                _adeleNonNullValue64,
-                'hostInvocationContext',
-              ),
-              null => null,
-            },
           ];
         })(),
         remoteModelToolServiceValidateAndNormalizeId => (() {
@@ -357,7 +347,6 @@ final class RemoteModelToolServiceDispatcher
           final _adeleValues0 = _adeleArguments6 as List<Object?>;
           return await this._adeleService.materialize(
             _adeleValues0[0] as String,
-            _adeleValues0[1] as String?,
           );
         })(),
         remoteModelToolServiceValidateAndNormalizeId => (() async {
@@ -412,8 +401,8 @@ final class RemoteModelToolServiceDispatcher
         remoteModelToolServiceMaterializeId =>
           (_adeleResult8 as List<RemoteToolDescriptor>)
               .map(
-                (_adeleElement73) =>
-                    _encodeRemoteToolDescriptor(_adeleElement73),
+                (_adeleElement69) =>
+                    _encodeRemoteToolDescriptor(_adeleElement69),
               )
               .toList(growable: false),
         remoteModelToolServiceValidateAndNormalizeId =>
@@ -547,6 +536,7 @@ final class RemoteModelToolServiceDispatcher
               'arguments',
               'sessionId',
               'runId',
+              'environmentId',
               'hostInvocationContext',
             }, 'execute payload');
             return <Object?>[
@@ -554,6 +544,13 @@ final class RemoteModelToolServiceDispatcher
               _decodeRemoteCanonicalToolArguments(_adelePayload4['arguments']),
               _contractString(_adelePayload4['sessionId'], 'sessionId'),
               _contractString(_adelePayload4['runId'], 'runId'),
+              switch (_adelePayload4['environmentId']) {
+                final _adeleNonNullValue84? => _contractString(
+                  _adeleNonNullValue84,
+                  'environmentId',
+                ),
+                null => null,
+              },
               switch (_adelePayload4['hostInvocationContext']) {
                 final _adeleNonNullValue88? => _contractString(
                   _adeleNonNullValue88,
@@ -589,6 +586,7 @@ final class RemoteModelToolServiceDispatcher
                   _adeleArguments5[2] as String,
                   _adeleArguments5[3] as String,
                   _adeleArguments5[4] as String?,
+                  _adeleArguments5[5] as String?,
                 )
                 .map<Object?>((Object? _adeleItem) => _adeleItem),
           _ => throw const _ContractUnknownMethod(),
@@ -945,173 +943,187 @@ Map<String, Object?> _encodeRemoteToolDescriptor(
   RemoteToolDescriptor _adeleValue101,
 ) => <String, Object?>{
   'argumentsSchema': _contractJsonMap(_adeleValue101.argumentsSchema, 'map'),
+  'executionHostServices': _adeleValue101.executionHostServices
+      .map((_adeleElement104) => _adeleElement104)
+      .toList(growable: false),
   'modelAlias': _adeleValue101.modelAlias,
   'modelDescription': _adeleValue101.modelDescription,
   'routeId': _adeleValue101.routeId,
   'toolDescription': _adeleValue101.toolDescription,
   'toolId': _adeleValue101.toolId,
 };
-RemoteToolDescriptor _decodeRemoteToolDescriptor(Object? _adeleValue114) {
-  final _adeleMap115 = _contractMap(_adeleValue114, 'RemoteToolDescriptor');
-  _contractFields(_adeleMap115, const {
+RemoteToolDescriptor _decodeRemoteToolDescriptor(Object? _adeleValue118) {
+  final _adeleMap119 = _contractMap(_adeleValue118, 'RemoteToolDescriptor');
+  _contractFields(_adeleMap119, const {
     'argumentsSchema',
+    'executionHostServices',
     'modelAlias',
     'modelDescription',
     'routeId',
     'toolDescription',
     'toolId',
   }, 'RemoteToolDescriptor');
-  final _adeleField116 = _contractJsonMap(
-    _adeleMap115['argumentsSchema'],
+  final _adeleField120 = _contractJsonMap(
+    _adeleMap119['argumentsSchema'],
     'argumentsSchema',
   );
-  final _adeleField117 = _contractString(
-    _adeleMap115['modelAlias'],
+  final _adeleField121 = List<String>.unmodifiable(
+    _contractList(
+      _adeleMap119['executionHostServices'],
+      'executionHostServices',
+    ).map(
+      (_adeleElement129) =>
+          _contractString(_adeleElement129, 'executionHostServices element'),
+    ),
+  );
+  final _adeleField122 = _contractString(
+    _adeleMap119['modelAlias'],
     'modelAlias',
   );
-  final _adeleField118 = _contractString(
-    _adeleMap115['modelDescription'],
+  final _adeleField123 = _contractString(
+    _adeleMap119['modelDescription'],
     'modelDescription',
   );
-  final _adeleField119 = _contractString(_adeleMap115['routeId'], 'routeId');
-  final _adeleField120 = _contractString(
-    _adeleMap115['toolDescription'],
+  final _adeleField124 = _contractString(_adeleMap119['routeId'], 'routeId');
+  final _adeleField125 = _contractString(
+    _adeleMap119['toolDescription'],
     'toolDescription',
   );
-  final _adeleField121 = _contractString(_adeleMap115['toolId'], 'toolId');
+  final _adeleField126 = _contractString(_adeleMap119['toolId'], 'toolId');
   return _contractConstruct(
     'RemoteToolDescriptor',
     () => RemoteToolDescriptor(
-      argumentsSchema: _adeleField116,
-      modelAlias: _adeleField117,
-      modelDescription: _adeleField118,
-      routeId: _adeleField119,
-      toolDescription: _adeleField120,
-      toolId: _adeleField121,
+      argumentsSchema: _adeleField120,
+      executionHostServices: _adeleField121,
+      modelAlias: _adeleField122,
+      modelDescription: _adeleField123,
+      routeId: _adeleField124,
+      toolDescription: _adeleField125,
+      toolId: _adeleField126,
     ),
   );
 }
 
 const String remoteEffectDescriptionTypeId = 'modelTool.effectDescription';
 Map<String, Object?> _encodeRemoteEffectDescription(
-  RemoteEffectDescription _adeleValue134,
+  RemoteEffectDescription _adeleValue143,
 ) => <String, Object?>{
-  'effects': _adeleValue134.effects
-      .map((_adeleElement135) => _adeleElement135.name)
+  'effects': _adeleValue143.effects
+      .map((_adeleElement144) => _adeleElement144.name)
       .toList(growable: false),
-  'summary': _adeleValue134.summary,
-  'targetUris': _adeleValue134.targetUris
-      .map((_adeleElement141) => _contractUriString(_adeleElement141, 'Uri'))
+  'summary': _adeleValue143.summary,
+  'targetUris': _adeleValue143.targetUris
+      .map((_adeleElement150) => _contractUriString(_adeleElement150, 'Uri'))
       .toList(growable: false),
-  'uncertainty': _adeleValue134.uncertainty.name,
+  'uncertainty': _adeleValue143.uncertainty.name,
 };
-RemoteEffectDescription _decodeRemoteEffectDescription(Object? _adeleValue147) {
-  final _adeleMap148 = _contractMap(_adeleValue147, 'RemoteEffectDescription');
-  _contractFields(_adeleMap148, const {
+RemoteEffectDescription _decodeRemoteEffectDescription(Object? _adeleValue156) {
+  final _adeleMap157 = _contractMap(_adeleValue156, 'RemoteEffectDescription');
+  _contractFields(_adeleMap157, const {
     'effects',
     'summary',
     'targetUris',
     'uncertainty',
   }, 'RemoteEffectDescription');
-  final _adeleField149 = List<RemoteToolEffect>.unmodifiable(
+  final _adeleField158 = List<RemoteToolEffect>.unmodifiable(
     _contractList(
-      _adeleMap148['effects'],
+      _adeleMap157['effects'],
       'effects',
-    ).map((_adeleElement153) => _decodeRemoteToolEffect(_adeleElement153)),
+    ).map((_adeleElement162) => _decodeRemoteToolEffect(_adeleElement162)),
   );
-  final _adeleField150 = _contractString(_adeleMap148['summary'], 'summary');
-  final _adeleField151 = List<Uri>.unmodifiable(
-    _contractList(_adeleMap148['targetUris'], 'targetUris').map(
-      (_adeleElement159) =>
-          _contractUri(_adeleElement159, 'targetUris element'),
+  final _adeleField159 = _contractString(_adeleMap157['summary'], 'summary');
+  final _adeleField160 = List<Uri>.unmodifiable(
+    _contractList(_adeleMap157['targetUris'], 'targetUris').map(
+      (_adeleElement168) =>
+          _contractUri(_adeleElement168, 'targetUris element'),
     ),
   );
-  final _adeleField152 = _decodeRemoteEffectUncertainty(
-    _adeleMap148['uncertainty'],
+  final _adeleField161 = _decodeRemoteEffectUncertainty(
+    _adeleMap157['uncertainty'],
   );
   return _contractConstruct(
     'RemoteEffectDescription',
     () => RemoteEffectDescription(
-      effects: _adeleField149,
-      summary: _adeleField150,
-      targetUris: _adeleField151,
-      uncertainty: _adeleField152,
+      effects: _adeleField158,
+      summary: _adeleField159,
+      targetUris: _adeleField160,
+      uncertainty: _adeleField161,
     ),
   );
 }
 
 const String remoteToolExecutionEventTypeId = 'modelTool.executionEvent';
 Map<String, Object?> _encodeRemoteToolExecutionEvent(
-  RemoteToolExecutionEvent _adeleValue165,
+  RemoteToolExecutionEvent _adeleValue174,
 ) => <String, Object?>{
-  'kind': _adeleValue165.kind.name,
-  'outcome': switch (_adeleValue165.outcome) {
-    final _adeleNonNullValue169? => _encodeRemoteToolOutcome(
-      _adeleNonNullValue169,
+  'kind': _adeleValue174.kind.name,
+  'outcome': switch (_adeleValue174.outcome) {
+    final _adeleNonNullValue178? => _encodeRemoteToolOutcome(
+      _adeleNonNullValue178,
     ),
     null => null,
   },
-  'progress': switch (_adeleValue165.progress) {
-    final _adeleNonNullValue173? => _encodeRemoteToolProgress(
-      _adeleNonNullValue173,
+  'progress': switch (_adeleValue174.progress) {
+    final _adeleNonNullValue182? => _encodeRemoteToolProgress(
+      _adeleNonNullValue182,
     ),
     null => null,
   },
 };
 RemoteToolExecutionEvent _decodeRemoteToolExecutionEvent(
-  Object? _adeleValue176,
+  Object? _adeleValue185,
 ) {
-  final _adeleMap177 = _contractMap(_adeleValue176, 'RemoteToolExecutionEvent');
-  _contractFields(_adeleMap177, const {
+  final _adeleMap186 = _contractMap(_adeleValue185, 'RemoteToolExecutionEvent');
+  _contractFields(_adeleMap186, const {
     'kind',
     'outcome',
     'progress',
   }, 'RemoteToolExecutionEvent');
-  final _adeleField178 = _decodeRemoteToolExecutionEventKind(
-    _adeleMap177['kind'],
+  final _adeleField187 = _decodeRemoteToolExecutionEventKind(
+    _adeleMap186['kind'],
   );
-  final _adeleField179 = switch (_adeleMap177['outcome']) {
-    final _adeleNonNullValue184? => _decodeRemoteToolOutcome(
-      _adeleNonNullValue184,
+  final _adeleField188 = switch (_adeleMap186['outcome']) {
+    final _adeleNonNullValue193? => _decodeRemoteToolOutcome(
+      _adeleNonNullValue193,
     ),
     null => null,
   };
-  final _adeleField180 = switch (_adeleMap177['progress']) {
-    final _adeleNonNullValue188? => _decodeRemoteToolProgress(
-      _adeleNonNullValue188,
+  final _adeleField189 = switch (_adeleMap186['progress']) {
+    final _adeleNonNullValue197? => _decodeRemoteToolProgress(
+      _adeleNonNullValue197,
     ),
     null => null,
   };
   return _contractConstruct(
     'RemoteToolExecutionEvent',
     () => RemoteToolExecutionEvent(
-      kind: _adeleField178,
-      outcome: _adeleField179,
-      progress: _adeleField180,
+      kind: _adeleField187,
+      outcome: _adeleField188,
+      progress: _adeleField189,
     ),
   );
 }
 
 const String remoteToolOutcomeTypeId = 'modelTool.outcome';
 Map<String, Object?> _encodeRemoteToolOutcome(
-  RemoteToolOutcome _adeleValue191,
+  RemoteToolOutcome _adeleValue200,
 ) => <String, Object?>{
-  'disposition': _adeleValue191.disposition.name,
-  'effectCertainty': _adeleValue191.effectCertainty.name,
-  'failureKind': switch (_adeleValue191.failureKind) {
-    final _adeleNonNullValue197? => _adeleNonNullValue197.name,
+  'disposition': _adeleValue200.disposition.name,
+  'effectCertainty': _adeleValue200.effectCertainty.name,
+  'failureKind': switch (_adeleValue200.failureKind) {
+    final _adeleNonNullValue206? => _adeleNonNullValue206.name,
     null => null,
   },
-  'hostData': _contractJsonMap(_adeleValue191.hostData, 'map'),
-  'hostDiagnostic': switch (_adeleValue191.hostDiagnostic) {
-    final _adeleNonNullValue203? => _adeleNonNullValue203,
+  'hostData': _contractJsonMap(_adeleValue200.hostData, 'map'),
+  'hostDiagnostic': switch (_adeleValue200.hostDiagnostic) {
+    final _adeleNonNullValue212? => _adeleNonNullValue212,
     null => null,
   },
-  'modelContent': _adeleValue191.modelContent,
+  'modelContent': _adeleValue200.modelContent,
 };
-RemoteToolOutcome _decodeRemoteToolOutcome(Object? _adeleValue208) {
-  final _adeleMap209 = _contractMap(_adeleValue208, 'RemoteToolOutcome');
-  _contractFields(_adeleMap209, const {
+RemoteToolOutcome _decodeRemoteToolOutcome(Object? _adeleValue217) {
+  final _adeleMap218 = _contractMap(_adeleValue217, 'RemoteToolOutcome');
+  _contractFields(_adeleMap218, const {
     'disposition',
     'effectCertainty',
     'failureKind',
@@ -1119,136 +1131,136 @@ RemoteToolOutcome _decodeRemoteToolOutcome(Object? _adeleValue208) {
     'hostDiagnostic',
     'modelContent',
   }, 'RemoteToolOutcome');
-  final _adeleField210 = _decodeRemoteToolOutcomeDisposition(
-    _adeleMap209['disposition'],
+  final _adeleField219 = _decodeRemoteToolOutcomeDisposition(
+    _adeleMap218['disposition'],
   );
-  final _adeleField211 = _decodeRemoteEffectCertainty(
-    _adeleMap209['effectCertainty'],
+  final _adeleField220 = _decodeRemoteEffectCertainty(
+    _adeleMap218['effectCertainty'],
   );
-  final _adeleField212 = switch (_adeleMap209['failureKind']) {
-    final _adeleNonNullValue221? => _decodeRemoteToolFailureKind(
-      _adeleNonNullValue221,
+  final _adeleField221 = switch (_adeleMap218['failureKind']) {
+    final _adeleNonNullValue230? => _decodeRemoteToolFailureKind(
+      _adeleNonNullValue230,
     ),
     null => null,
   };
-  final _adeleField213 = _contractJsonMap(_adeleMap209['hostData'], 'hostData');
-  final _adeleField214 = switch (_adeleMap209['hostDiagnostic']) {
-    final _adeleNonNullValue227? => _contractString(
-      _adeleNonNullValue227,
+  final _adeleField222 = _contractJsonMap(_adeleMap218['hostData'], 'hostData');
+  final _adeleField223 = switch (_adeleMap218['hostDiagnostic']) {
+    final _adeleNonNullValue236? => _contractString(
+      _adeleNonNullValue236,
       'hostDiagnostic',
     ),
     null => null,
   };
-  final _adeleField215 = _contractString(
-    _adeleMap209['modelContent'],
+  final _adeleField224 = _contractString(
+    _adeleMap218['modelContent'],
     'modelContent',
   );
   return _contractConstruct(
     'RemoteToolOutcome',
     () => RemoteToolOutcome(
-      disposition: _adeleField210,
-      effectCertainty: _adeleField211,
-      failureKind: _adeleField212,
-      hostData: _adeleField213,
-      hostDiagnostic: _adeleField214,
-      modelContent: _adeleField215,
+      disposition: _adeleField219,
+      effectCertainty: _adeleField220,
+      failureKind: _adeleField221,
+      hostData: _adeleField222,
+      hostDiagnostic: _adeleField223,
+      modelContent: _adeleField224,
     ),
   );
 }
 
 const String remoteToolProgressTypeId = 'modelTool.progress';
 Map<String, Object?> _encodeRemoteToolProgress(
-  RemoteToolProgress _adeleValue232,
+  RemoteToolProgress _adeleValue241,
 ) => <String, Object?>{
-  'content': _adeleValue232.content,
-  'kind': _adeleValue232.kind.name,
+  'content': _adeleValue241.content,
+  'kind': _adeleValue241.kind.name,
 };
-RemoteToolProgress _decodeRemoteToolProgress(Object? _adeleValue237) {
-  final _adeleMap238 = _contractMap(_adeleValue237, 'RemoteToolProgress');
-  _contractFields(_adeleMap238, const {
+RemoteToolProgress _decodeRemoteToolProgress(Object? _adeleValue246) {
+  final _adeleMap247 = _contractMap(_adeleValue246, 'RemoteToolProgress');
+  _contractFields(_adeleMap247, const {
     'content',
     'kind',
   }, 'RemoteToolProgress');
-  final _adeleField239 = _contractString(_adeleMap238['content'], 'content');
-  final _adeleField240 = _decodeRemoteToolProgressKind(_adeleMap238['kind']);
+  final _adeleField248 = _contractString(_adeleMap247['content'], 'content');
+  final _adeleField249 = _decodeRemoteToolProgressKind(_adeleMap247['kind']);
   return _contractConstruct(
     'RemoteToolProgress',
-    () => RemoteToolProgress(content: _adeleField239, kind: _adeleField240),
+    () => RemoteToolProgress(content: _adeleField248, kind: _adeleField249),
   );
 }
 
-RemoteEffectCertainty _decodeRemoteEffectCertainty(Object? _adeleValue245) {
-  if (_adeleValue245 is! String)
+RemoteEffectCertainty _decodeRemoteEffectCertainty(Object? _adeleValue254) {
+  if (_adeleValue254 is! String)
     throw AdeleProtocolException('Expected RemoteEffectCertainty.');
-  return switch (_adeleValue245) {
+  return switch (_adeleValue254) {
     'knownNotOccurred' => RemoteEffectCertainty.knownNotOccurred,
     'knownOccurred' => RemoteEffectCertainty.knownOccurred,
     'uncertain' => RemoteEffectCertainty.uncertain,
     _ => throw AdeleProtocolException(
-      'Unknown RemoteEffectCertainty: ' + _adeleValue245 + '.',
+      'Unknown RemoteEffectCertainty: ' + _adeleValue254 + '.',
     ),
   };
 }
 
-RemoteEffectUncertainty _decodeRemoteEffectUncertainty(Object? _adeleValue246) {
-  if (_adeleValue246 is! String)
+RemoteEffectUncertainty _decodeRemoteEffectUncertainty(Object? _adeleValue255) {
+  if (_adeleValue255 is! String)
     throw AdeleProtocolException('Expected RemoteEffectUncertainty.');
-  return switch (_adeleValue246) {
+  return switch (_adeleValue255) {
     'none' => RemoteEffectUncertainty.none,
     'uncertain' => RemoteEffectUncertainty.uncertain,
     _ => throw AdeleProtocolException(
-      'Unknown RemoteEffectUncertainty: ' + _adeleValue246 + '.',
+      'Unknown RemoteEffectUncertainty: ' + _adeleValue255 + '.',
     ),
   };
 }
 
-RemoteToolEffect _decodeRemoteToolEffect(Object? _adeleValue247) {
-  if (_adeleValue247 is! String)
+RemoteToolEffect _decodeRemoteToolEffect(Object? _adeleValue256) {
+  if (_adeleValue256 is! String)
     throw AdeleProtocolException('Expected RemoteToolEffect.');
-  return switch (_adeleValue247) {
+  return switch (_adeleValue256) {
     'resourceInspection' => RemoteToolEffect.resourceInspection,
     'sourceRead' => RemoteToolEffect.sourceRead,
     'sourceMutation' => RemoteToolEffect.sourceMutation,
     'processExecution' => RemoteToolEffect.processExecution,
     _ => throw AdeleProtocolException(
-      'Unknown RemoteToolEffect: ' + _adeleValue247 + '.',
+      'Unknown RemoteToolEffect: ' + _adeleValue256 + '.',
     ),
   };
 }
 
 RemoteToolExecutionEventKind _decodeRemoteToolExecutionEventKind(
-  Object? _adeleValue248,
+  Object? _adeleValue257,
 ) {
-  if (_adeleValue248 is! String)
+  if (_adeleValue257 is! String)
     throw AdeleProtocolException('Expected RemoteToolExecutionEventKind.');
-  return switch (_adeleValue248) {
+  return switch (_adeleValue257) {
     'progress' => RemoteToolExecutionEventKind.progress,
     'terminal' => RemoteToolExecutionEventKind.terminal,
     _ => throw AdeleProtocolException(
-      'Unknown RemoteToolExecutionEventKind: ' + _adeleValue248 + '.',
+      'Unknown RemoteToolExecutionEventKind: ' + _adeleValue257 + '.',
     ),
   };
 }
 
-RemoteToolFailureKind _decodeRemoteToolFailureKind(Object? _adeleValue249) {
-  if (_adeleValue249 is! String)
+RemoteToolFailureKind _decodeRemoteToolFailureKind(Object? _adeleValue258) {
+  if (_adeleValue258 is! String)
     throw AdeleProtocolException('Expected RemoteToolFailureKind.');
-  return switch (_adeleValue249) {
+  return switch (_adeleValue258) {
     'domain' => RemoteToolFailureKind.domain,
     'infrastructure' => RemoteToolFailureKind.infrastructure,
     'staleBinding' => RemoteToolFailureKind.staleBinding,
     _ => throw AdeleProtocolException(
-      'Unknown RemoteToolFailureKind: ' + _adeleValue249 + '.',
+      'Unknown RemoteToolFailureKind: ' + _adeleValue258 + '.',
     ),
   };
 }
 
 RemoteToolOutcomeDisposition _decodeRemoteToolOutcomeDisposition(
-  Object? _adeleValue250,
+  Object? _adeleValue259,
 ) {
-  if (_adeleValue250 is! String)
+  if (_adeleValue259 is! String)
     throw AdeleProtocolException('Expected RemoteToolOutcomeDisposition.');
-  return switch (_adeleValue250) {
+  return switch (_adeleValue259) {
     'success' => RemoteToolOutcomeDisposition.success,
     'userRejected' => RemoteToolOutcomeDisposition.userRejected,
     'policyDenied' => RemoteToolOutcomeDisposition.policyDenied,
@@ -1256,20 +1268,20 @@ RemoteToolOutcomeDisposition _decodeRemoteToolOutcomeDisposition(
     'cancelled' => RemoteToolOutcomeDisposition.cancelled,
     'indeterminate' => RemoteToolOutcomeDisposition.indeterminate,
     _ => throw AdeleProtocolException(
-      'Unknown RemoteToolOutcomeDisposition: ' + _adeleValue250 + '.',
+      'Unknown RemoteToolOutcomeDisposition: ' + _adeleValue259 + '.',
     ),
   };
 }
 
-RemoteToolProgressKind _decodeRemoteToolProgressKind(Object? _adeleValue251) {
-  if (_adeleValue251 is! String)
+RemoteToolProgressKind _decodeRemoteToolProgressKind(Object? _adeleValue260) {
+  if (_adeleValue260 is! String)
     throw AdeleProtocolException('Expected RemoteToolProgressKind.');
-  return switch (_adeleValue251) {
+  return switch (_adeleValue260) {
     'status' => RemoteToolProgressKind.status,
     'stdout' => RemoteToolProgressKind.stdout,
     'stderr' => RemoteToolProgressKind.stderr,
     _ => throw AdeleProtocolException(
-      'Unknown RemoteToolProgressKind: ' + _adeleValue251 + '.',
+      'Unknown RemoteToolProgressKind: ' + _adeleValue260 + '.',
     ),
   };
 }

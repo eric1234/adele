@@ -2,8 +2,9 @@
 
 ## Status
 
-Accepted; unary host calls, remote inference-context sources, and remote model tools
-implemented; broader extension adaptation and reverse streaming deferred
+Accepted; unary read/mutation host calls, remote inference-context sources, and
+remote model tools implemented; broader extension adaptation and reverse streaming
+deferred
 
 ## Context
 
@@ -68,8 +69,13 @@ registry or moving host authority into plugins.
 10. Installation, profile participation, ready exposure, and invocation authority
     remain separate concerns. Installation metadata describes prepared components,
     not capability/extension exposures or activation/profile state.
-    Neither ready advertisements nor invocation contexts are persisted profile or
-    configuration state.
+     Neither ready advertisements nor invocation contexts are persisted profile or
+     configuration state.
+11. Model-tool dependency capture is distinct from effect authority. Materialization,
+    argument validation, and effect description receive no effectful host-service
+    authority. Description uses only host-supplied semantic identity data. Only an
+    execute stream reached after host policy or approval permits execution receives
+    the services in that tool descriptor's validated subset of captured dependencies.
 
 ## Alternatives considered
 
@@ -93,27 +99,45 @@ read service during each snapshot. The source uses its text-file read. The canon
 Session Environment authority remains host-owned; there is no static AGENTS.md
 activation in `AdeleRuntime`.
 
-Search's backend-only installation advertises a model-tool contribution and reuses
-the pure-Dart root Search implementation. Public `adele_model_tool` owns generated
+Search's backend-only installation and Filesystem Tools' combined backend/frontend
+installation advertise model-tool contributions, reusing their pure-Dart root
+semantics. Filesystem's backend lives under `plugins/filesystem_tools/packages/backend`;
+it is not statically activated by `AdeleRuntime`. Its prepared frontend remains
+independent of backend readiness. Public `adele_model_tool` owns generated
 materialize, validation, effect-description, and server-streaming execution
 transport; the generic app adapter registers proxies in the existing registry.
-Its exact `hostServices` metadata permits only no services or authorized Environment
-reads. This is a dependency request, not an authority grant or profile definition.
-Materialization captures the Session-bound read facet and exact remote/Environment
-generations. Synchronous binding validation never reselects either generation.
-Opaque executable route IDs are generation-bound, not persistent handles.
 
-Materialize/describe receive fresh operation contexts when reads are requested;
-execute receives stream-lifetime authority only on listen, revoked on done, error,
-cancellation, or retirement. Argument validation has no host authority. The shared
-read service exposes no-argument `authority()` for the bound Session/Environment
-identity, `readFile(path)`, and `readDirectory(path)`, without authority-selection
-IDs, mutation, or process methods. Reverse calls remain unary and both transport
-protocol versions remain 2. Immutable execution snapshots carry no exception causes.
+Exposure `hostServices` declares the maximum dependencies to capture from the
+allowed read/mutation services, not an authority grant or profile definition.
+Each descriptor requires `executionHostServices`, a duplicate-free allowed subset
+of that exposure and the exact execution allowlist. Filesystem's `read_file` needs
+read only, `apply_patch` and `delete_file` need read plus mutation, and `create_file`
+needs mutation only. Search needs read only.
+
+Materialization captures coherent Session-bound read/mutation facets and exact
+remote/Environment generations. All captured facets must share the Session and
+Environment. Synchronous binding validation checks every captured facet and never
+reselects a generation. Opaque executable route IDs are generation-bound, not
+persistent handles. `materialize(sessionId)` receives no token; argument validation
+receives no authority; `describe` receives route, canonical arguments, Session/Run
+IDs, and nullable Environment identity as pure data. Only `execute`, after policy
+or approval allows it, receives a fresh token with exactly its descriptor's services.
+The identity carried by describe/execute cannot select authority.
+
+Execution authority begins on stream listen and is revoked on done, error,
+cancellation, or retirement. The unchanged read service exposes no-argument
+`authority()` for the bound Session/Environment identity, `readFile(path)`, and
+`readDirectory(path)`. Separate `AuthorizedEnvironmentMutationService` exposes only
+create-new, conditional replacement, and conditional deletion, without authority
+queries, authority-selection IDs, reads, or process methods. Reverse calls remain
+unary and both transport protocol versions remain 2. Immutable execution snapshots
+carry no exception causes. These checks authorize host-service access, not native
+OS effects; they provide no sandbox or rollback of in-flight mutations.
 
 These two remote extension points do not implement the complete recursive extension
-system. Chat, Filesystem Tools, Command Tools, and Local Directory Project Selector
-remain statically composed. Reverse streaming and Profiles remain unimplemented.
+system. Chat, Command Tools, and Local Directory Project Selector remain the three
+statically composed plugins; their migration is deferred. Reverse streaming and
+Profiles remain unimplemented.
 Normal prepared startup currently attempts valid discovered components; that startup policy does
 not define profile participation or grant invocation authority.
 

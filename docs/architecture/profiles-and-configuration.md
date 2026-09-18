@@ -6,17 +6,17 @@ ADELE profiles and general configuration management are accepted architectural d
 
 Normal startup discovers one prepared installation snapshot and separately
 attempts every valid backend and frontend component, including the AGENTS.md
-instruction source and Search AOT backend. Four stock plugins are statically
-composed outside that discovery. This fixed participation policy is not profile activation or
-enable/disable management. Installed metadata contains neither configuration nor
+instruction source and Search and Filesystem Tools AOT backends. Three stock
+plugins are statically composed outside that discovery. This fixed participation
+policy is not profile activation or enable/disable management. Installed metadata contains neither configuration nor
 activation state; the temporary generic PluginId-to-argv startup file is outside
 the manifest and is intended to disappear with general configuration/profiles.
 
 Backend-ready exposure metadata describes live contributions, not activation
 participation or permission grants. Host-created operation contexts allow access
 only to explicitly supplied services for one operation and exact generation;
-they are not profiles or general permissions. AGENTS.md and Search require no
-configuration.
+they are not profiles or general permissions. AGENTS.md, Search, and Filesystem
+Tools require no configuration.
 See [`contracts-and-capabilities.md`](contracts-and-capabilities.md#operation-scoped-host-calls)
 for the host-call authority boundary.
 

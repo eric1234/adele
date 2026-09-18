@@ -41,7 +41,11 @@ final class RemoteToolDescriptor {
     required this.modelDescription,
     required Map<String, Object?> argumentsSchema,
     required this.routeId,
-  }) : argumentsSchema = adeleSnapshotJsonMap(argumentsSchema) {
+    required List<String> executionHostServices,
+  }) : argumentsSchema = adeleSnapshotJsonMap(argumentsSchema),
+       executionHostServices = List<String>.unmodifiable(
+         executionHostServices,
+       ) {
     _requireNonBlank(toolId, 'Tool ID');
     _requireNonBlank(toolDescription, 'Tool description');
     _requireNonBlank(modelAlias, 'Model tool alias');
@@ -58,9 +62,13 @@ final class RemoteToolDescriptor {
   /// Opaque route to the exact materialized executable, never a tool alias.
   final String routeId;
 
+  /// Requested execution services, not an authority grant or selector.
+  final List<String> executionHostServices;
+
   static RemoteToolDescriptor fromLocal(
     local.ToolRegistration registration, {
     required String routeId,
+    required List<String> executionHostServices,
   }) => RemoteToolDescriptor(
     toolId: registration.definition.id.value,
     toolDescription: registration.definition.description,
@@ -68,6 +76,7 @@ final class RemoteToolDescriptor {
     modelDescription: registration.modelDefinition.description,
     argumentsSchema: registration.modelDefinition.argumentsSchema,
     routeId: routeId,
+    executionHostServices: executionHostServices,
   );
 
   local.ToolDefinition toToolDefinition() => local.ToolDefinition(
@@ -267,14 +276,12 @@ final class RemoteToolExecutionEvent {
   };
 }
 
-/// Semantic IDs describe the invocation; only the host context grants authority.
+/// Semantic IDs describe the invocation; only the execution context grants
+/// authority. Materialization, validation, and description receive no authority.
 @AdeleService('modelTool')
 abstract interface class RemoteModelToolService {
   @AdeleMethod('materialize')
-  Future<List<RemoteToolDescriptor>> materialize(
-    String sessionId,
-    String? hostInvocationContext,
-  );
+  Future<List<RemoteToolDescriptor>> materialize(String sessionId);
 
   @AdeleMethod('validateAndNormalize')
   Future<RemoteCanonicalToolArguments> validateAndNormalize(
@@ -288,7 +295,7 @@ abstract interface class RemoteModelToolService {
     RemoteCanonicalToolArguments arguments,
     String sessionId,
     String runId,
-    String? hostInvocationContext,
+    String? environmentId,
   );
 
   @AdeleMethod('execute')
@@ -297,6 +304,7 @@ abstract interface class RemoteModelToolService {
     RemoteCanonicalToolArguments arguments,
     String sessionId,
     String runId,
+    String? environmentId,
     String? hostInvocationContext,
   );
 }

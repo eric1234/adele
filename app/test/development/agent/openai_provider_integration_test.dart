@@ -18,7 +18,6 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
-import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:resource_inspector_contract/resource_inspector_contract.dart';
@@ -36,6 +35,7 @@ void main() {
   late File inspectorArtifact;
   late File gitEnvironmentArtifact;
   late File searchToolsArtifact;
+  late File filesystemToolsArtifact;
 
   setUpAll(() async {
     repository = Directory.current.parent.path;
@@ -50,6 +50,7 @@ void main() {
     inspectorArtifact = File('${artifacts.path}/inspector.aot');
     gitEnvironmentArtifact = File('${artifacts.path}/git-environment.aot');
     searchToolsArtifact = File('${artifacts.path}/search-tools.aot');
+    filesystemToolsArtifact = File('${artifacts.path}/filesystem-tools.aot');
     await Future.wait(<Future<void>>[
       _compile(
         dart,
@@ -68,6 +69,12 @@ void main() {
         dart,
         '$repository/plugins/search_tools/packages/backend/bin/search_tools_backend.dart',
         searchToolsArtifact.path,
+        repository,
+      ),
+      _compile(
+        dart,
+        '$repository/plugins/filesystem_tools/packages/backend/bin/filesystem_tools_backend.dart',
+        filesystemToolsArtifact.path,
         repository,
       ),
       _compile(
@@ -386,7 +393,7 @@ void main() {
   );
 
   test(
-    'searches and reads real ADELE source through three shared-host AOT backends',
+    'searches and reads real ADELE source through four shared-host AOT backends',
     () async {
       const String strategyPath =
           'plugins/chat_strategy/lib/chat_strategy_plugin.dart';
@@ -645,8 +652,16 @@ void main() {
         materializedEnvironmentBinding.requestChannel,
         same(environmentBinding.requestChannel),
       );
-      final ExtensionRegistration filesystemActivation =
-          const FilesystemToolsPlugin().activate(extensions);
+      final PluginBackendActivation filesystemActivation =
+          await PluginBackendActivation.registerAdvertised(
+            connection: await host.startPlugin(
+              pluginId: 'dev.adele.plugin.filesystem-tools',
+              artifactUri: filesystemToolsArtifact.uri,
+            ),
+            capabilities: registry,
+            extensions: extensions,
+            adapters: createRemoteExtensionAdapters(),
+          );
       addTearDown(filesystemActivation.close);
       final PluginBackendActivation searchActivation =
           await PluginBackendActivation.registerAdvertised(

@@ -315,6 +315,10 @@ void main() {
           name: 'search_tools_backend',
           path: 'plugins/search_tools/packages/backend',
         ),
+        (
+          name: 'filesystem_tools_backend',
+          path: 'plugins/filesystem_tools/packages/backend',
+        ),
       ]) {
         final target = lookupTestTarget(expected.name);
         expect(target.path, expected.path);
@@ -338,6 +342,14 @@ void main() {
         isNot(contains('AgentsMdPlugin')),
       );
       final app = File('app/pubspec.yaml').readAsStringSync();
+      expect(
+        app.split('dev_dependencies:').first,
+        isNot(contains('filesystem_tools')),
+      );
+      expect(
+        File('app/lib/core/adele_runtime.dart').readAsStringSync(),
+        isNot(contains('FilesystemToolsPlugin')),
+      );
       expect(
         app.split('dev_dependencies:').first,
         isNot(contains('search_tools')),
@@ -598,6 +610,7 @@ void main() {
         'resource_inspector_contract|dart|plugins/resource_inspector/packages/contract|test --timeout 4m',
         'git_environment_backend|dart|plugins/git_environment/packages/backend|test --timeout 4m',
         'filesystem_tools_plugin|dart|plugins/filesystem_tools|test',
+        'filesystem_tools_backend|dart|plugins/filesystem_tools/packages/backend|test',
         'search_tools_plugin|dart|plugins/search_tools|test',
         'search_tools_backend|dart|plugins/search_tools/packages/backend|test',
         'command_tools_plugin|dart|plugins/command_tools|test',

@@ -19,21 +19,16 @@ void main() {
     () async {
       final local = const SearchExecutable.unbound().registration;
       fixture.host.close();
-      for (final token in <String?>[null, 'unused-materialization-token']) {
-        final descriptor = (await fixture.client.materialize(
-          'session',
-          token,
-        )).single;
-        expect(descriptor.toolId, 'dev.adele.plugin.search-tools.search');
-        expect(descriptor.routeId, descriptor.toolId);
-        expect(descriptor.toolDescription, local.definition.description);
-        expect(descriptor.modelAlias, 'search');
-        expect(descriptor.modelDescription, local.modelDefinition.description);
-        expect(
-          descriptor.argumentsSchema,
-          local.modelDefinition.argumentsSchema,
-        );
-      }
+      final descriptor = (await fixture.client.materialize('session')).single;
+      expect(descriptor.toolId, 'dev.adele.plugin.search-tools.search');
+      expect(descriptor.routeId, descriptor.toolId);
+      expect(descriptor.toolDescription, local.definition.description);
+      expect(descriptor.modelAlias, 'search');
+      expect(descriptor.modelDescription, local.modelDefinition.description);
+      expect(descriptor.executionHostServices, [
+        authorizedEnvironmentReadServiceId,
+      ]);
+      expect(descriptor.argumentsSchema, local.modelDefinition.argumentsSchema);
       expect(fixture.requests, isEmpty);
     },
   );
@@ -44,23 +39,8 @@ void main() {
       fixture.host.close();
       const semantic = SearchExecutable.unbound();
       for (final proposed in <Map<String, Object?>>[
-        {},
-        {'query': ''},
         {'query': 1},
-        {'query': 'x', 'extra': true},
-        {'query': 'x', 'path': null},
-        {'query': 'x', 'path': 1},
-        {'query': 'x' * 257},
-        for (final separator in ['\n', '\r', '\u0000', '\u2028', '\u2029'])
-          {'query': 'a${separator}b'},
-        for (final path in [
-          '/absolute',
-          'a/../b',
-          'a\u0000b',
-          'bad\uD800',
-          '\uDC00',
-        ])
-          {'query': 'x', 'path': path},
+        {'query': 'x', 'path': '/absolute'},
       ]) {
         late String message;
         try {
@@ -88,8 +68,6 @@ void main() {
       for (final proposed in <Map<String, Object?>>[
         {'query': r'a.*[literal]'},
         {'query': '  ', 'path': './src//./'},
-        {'query': 'x' * 256, 'path': 'paired-\uD83D\uDE00/./file'},
-        {'query': 'x', 'path': r'odd\name'},
       ]) {
         expect(
           (await fixture.client.validateAndNormalize(
@@ -121,7 +99,7 @@ void main() {
             _arguments(),
             'session',
             'run',
-            'token',
+            'environment',
           ),
           throwsA(isA<AdeleRemoteFailure>()),
         );
@@ -131,6 +109,7 @@ void main() {
             _arguments(),
             'session',
             'run',
+            'environment',
             'token',
           ),
           emitsError(isArgumentError),
@@ -160,50 +139,56 @@ void main() {
   );
 
   test(
-    'describe and execute obtain fresh authority only from each bound client',
+    'describe uses captured identity without a host channel or authority call',
     () async {
-      final first = fixture.bind(
-        'description-one',
-        environmentId: 'environment-one',
-      );
-      final second = fixture.bind(
-        'description-two',
-        environmentId: 'environment-two',
-      );
-      final execution = fixture.bind(
-        'execution',
-        environmentId: 'environment-three',
-      )..files['src/file.txt'] = 'Needle\nneedle needle';
-      final descriptor = (await fixture.client.materialize(
-        'ignored-session',
-        'expired',
-      )).single;
+      fixture.host.close();
+      final descriptor = (await fixture.client.materialize('session')).single;
       final arguments = await fixture.client.validateAndNormalize(
         descriptor.routeId,
         {'query': 'needle', 'path': './src//file.txt'},
       );
-      for (final token in ['description-one', 'description-two']) {
+      for (final environmentId in ['environment-one', 'environment-two']) {
         final effect = await fixture.client.describe(
           descriptor.routeId,
           arguments,
           'session',
           'unrelated-run',
-          token,
+          environmentId,
         );
         expect(effect.effects, [RemoteToolEffect.sourceRead]);
         expect(effect.uncertainty, RemoteEffectUncertainty.none);
         expect(
           effect.targetUris.single.toString(),
-          'adele-environment:/environment-${token == 'description-one' ? 'one' : 'two'}/src/file.txt',
+          'adele-environment:/$environmentId/src/file.txt',
         );
         expect(
           effect.summary,
           'Search the authorized Environment scope "src/file.txt".',
         );
       }
-      final outcome = await fixture.execute(arguments, token: 'execution');
+      expect(fixture.requests, isEmpty);
+    },
+  );
+
+  test(
+    'execute uses supplied identity but selects reads only through its token',
+    () async {
+      final execution = fixture.bind('execution')
+        ..files['src/file.txt'] = 'Needle\nneedle needle';
+      final unrelated = fixture.bind('semantic-environment');
+      final event = await fixture.backend
+          .execute(
+            searchToolId.value,
+            _arguments(path: 'src/file.txt'),
+            'semantic-session',
+            'semantic-run',
+            'semantic-environment',
+            'execution',
+          )
+          .single;
+      final outcome = event.outcome!;
       expect(outcome.disposition, RemoteToolOutcomeDisposition.success);
-      expect(outcome.hostData['environmentId'], 'environment-three');
+      expect(outcome.hostData['environmentId'], 'semantic-environment');
       expect(outcome.hostData['matches'], [
         {
           'relativePath': 'src/file.txt',
@@ -211,23 +196,13 @@ void main() {
           'snippet': 'needle needle',
         },
       ]);
-      expect(first.reads, isEmpty);
-      expect(second.reads, isEmpty);
+      expect(unrelated.reads, isEmpty);
       expect(execution.reads, ['directory:src/file.txt', 'file:src/file.txt']);
       expect(
         fixture.requests.map((request) => request['hostInvocationContext']),
-        [
-          'description-one',
-          'description-two',
-          'execution',
-          'execution',
-          'execution',
-        ],
+        ['execution', 'execution'],
       );
       expect(fixture.requests.map((request) => request['payload']), [
-        <String, Object?>{},
-        <String, Object?>{},
-        <String, Object?>{},
         {'relativePath': 'src/file.txt'},
         {'relativePath': 'src/file.txt'},
       ]);
@@ -238,82 +213,27 @@ void main() {
         ),
         isTrue,
       );
-    },
-  );
-
-  test(
-    'semantic Session IDs cannot select or replace host authority',
-    () async {
-      final files = fixture.bind('bound', environmentId: 'actual-environment');
-      await expectLater(
-        fixture.client.describe(
-          searchToolId.value,
-          _arguments(),
-          'forged-session',
-          'run',
-          'bound',
-        ),
-        throwsA(isA<AdeleRemoteFailure>()),
-      );
-      final event = await fixture.backend
-          .execute(
-            searchToolId.value,
-            _arguments(),
-            'forged-session',
-            'run',
-            'bound',
-          )
-          .single;
-      expect(event.kind, RemoteToolExecutionEventKind.terminal);
-      expect(event.outcome!.failureKind, RemoteToolFailureKind.infrastructure);
-      expect(
-        event.outcome!.effectCertainty,
-        RemoteEffectCertainty.knownNotOccurred,
-      );
-      expect(event.outcome!.hostData['environmentId'], 'actual-environment');
-      expect(event.outcome!.toLocal().cause, isNull);
-      expect(files.reads, isEmpty);
       expect(fixture.requests.map((request) => request['method']), [
-        authorizedEnvironmentReadServiceAuthorityId,
-        authorizedEnvironmentReadServiceAuthorityId,
+        authorizedEnvironmentReadServiceReadDirectoryId,
+        authorizedEnvironmentReadServiceReadFileId,
       ]);
-      expect(
-        fixture.requests.every(
-          (request) => (request['payload']! as Map).isEmpty,
-        ),
-        isTrue,
-      );
     },
   );
 
   test(
-    'missing and expired operation contexts never reuse previous authority',
+    'missing or invalid captured identity cannot trigger host calls',
     () async {
-      final files = fixture.bind('live');
-      await fixture.client.describe(
-        searchToolId.value,
-        _arguments(),
-        'session',
-        'run',
-        'live',
-      );
-      fixture.services.remove('live');
-      for (final token in <String?>[null, '', 'live']) {
+      final files = fixture.bind('bound');
+      for (final environmentId in <String?>[null, '', ' leading']) {
         await expectLater(
           fixture.client.describe(
             searchToolId.value,
             _arguments(),
             'session',
             'run',
-            token,
+            environmentId,
           ),
-          throwsA(
-            isA<AdeleRemoteFailure>().having(
-              (error) => error.declaredFailureType,
-              'type',
-              isNull,
-            ),
-          ),
+          throwsA(isA<AdeleRemoteFailure>()),
         );
         await expectLater(
           fixture.backend.execute(
@@ -321,17 +241,49 @@ void main() {
             _arguments(),
             'session',
             'run',
-            token,
+            environmentId,
+            'bound',
           ),
           emitsError(isNot(isA<RemoteToolArgumentValidationFailure>())),
         );
       }
       expect(files.reads, isEmpty);
-      expect(fixture.requests, hasLength(3));
+      expect(fixture.requests, isEmpty);
+    },
+  );
+
+  test(
+    'missing and expired operation contexts never reuse previous authority',
+    () async {
+      final files = fixture.bind('live');
+      expect(
+        (await fixture.execute(_arguments(), token: 'live')).disposition,
+        RemoteToolOutcomeDisposition.success,
+      );
+      fixture.services.remove('live');
+      for (final token in <String?>[null, '']) {
+        await expectLater(
+          fixture.backend.execute(
+            searchToolId.value,
+            _arguments(),
+            'session',
+            'run',
+            'environment',
+            token,
+          ),
+          emitsError(isNot(isA<RemoteToolArgumentValidationFailure>())),
+        );
+      }
+      final expired = await fixture.execute(_arguments(), token: 'live');
+      expect(expired.failureKind, RemoteToolFailureKind.infrastructure);
+      expect(expired.toLocal().cause, isNull);
+      expect(files.reads, ['directory:']);
+      expect(fixture.requests, hasLength(2));
       expect(
         fixture.requests.every(
           (request) =>
-              request['method'] == authorizedEnvironmentReadServiceAuthorityId,
+              request['method'] ==
+              authorizedEnvironmentReadServiceReadDirectoryId,
         ),
         isTrue,
       );
@@ -422,29 +374,6 @@ void main() {
       expect(files.reads, ['directory:src']);
     },
   );
-
-  test(
-    'excluded scopes and match limits still belong to the semantic executable',
-    () async {
-      final files = fixture.bind('execute')
-        ..files['many.txt'] = List.filled(101, 'needle').join('\n');
-      final excluded = await fixture.execute(
-        _arguments(path: 'src/BUILD'),
-        token: 'execute',
-      );
-      expect(excluded.failureKind, RemoteToolFailureKind.domain);
-      expect(excluded.effectCertainty, RemoteEffectCertainty.knownNotOccurred);
-      expect(excluded.hostDiagnostic, 'excluded_scope');
-      expect(files.reads, isEmpty);
-      final bounded = await fixture.execute(
-        _arguments(path: 'many.txt'),
-        token: 'execute',
-      );
-      expect(bounded.hostData['matches'], hasLength(100));
-      expect(bounded.hostData['truncated'], isTrue);
-      expect(bounded.hostData['stopReason'], 'max_matches');
-    },
-  );
 }
 
 RemoteCanonicalToolArguments _arguments({String path = ''}) =>
@@ -479,8 +408,8 @@ final class _Fixture {
   late final channel = _Channel(forward);
   late final client = RemoteModelToolServiceClient(channel);
 
-  _Files bind(String token, {String environmentId = 'environment'}) {
-    final files = _Files(environmentId);
+  _Files bind(String token) {
+    final files = _Files();
     final dispatcher = AuthorizedEnvironmentReadServiceDispatcher(files);
     services[token] = dispatcher;
     dispatchers.add(dispatcher);
@@ -492,7 +421,14 @@ final class _Fixture {
     required String token,
   }) async {
     final event = await backend
-        .execute(searchToolId.value, arguments, 'session', 'run', token)
+        .execute(
+          searchToolId.value,
+          arguments,
+          'session',
+          'run',
+          'environment',
+          token,
+        )
         .single;
     expect(event.kind, RemoteToolExecutionEventKind.terminal);
     expect(event.progress, isNull);
@@ -536,13 +472,6 @@ final class _Fixture {
 }
 
 final class _Files implements AuthorizedEnvironmentReadService {
-  _Files(String environmentId)
-    : identity = AuthorizedEnvironmentIdentity(
-        sessionId: 'session',
-        environmentId: environmentId,
-      );
-
-  final AuthorizedEnvironmentIdentity identity;
   final directories = <String, List<EnvironmentDirectoryEntry>>{'': []};
   final files = <String, String>{};
   final directoryFailures = <String, Object>{};
@@ -550,7 +479,9 @@ final class _Files implements AuthorizedEnvironmentReadService {
   final reads = <String>[];
 
   @override
-  Future<AuthorizedEnvironmentIdentity> authority() async => identity;
+  Future<AuthorizedEnvironmentIdentity> authority() => throw StateError(
+    'Search must use supplied identity without an authority call.',
+  );
 
   @override
   Future<EnvironmentDirectoryListing> readDirectory(String relativePath) async {

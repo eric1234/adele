@@ -376,6 +376,30 @@ abstract interface class AuthorizedEnvironmentReadService {
   Future<EnvironmentDirectoryListing> readDirectory(String relativePath);
 }
 
+/// Mutation access over authority already bound by the host invocation context.
+/// No method selects authority from transported product identities.
+@AdeleService('authorizedEnvironmentMutation')
+abstract interface class AuthorizedEnvironmentMutationService {
+  @AdeleMethod('createTextFile')
+  Future<EnvironmentTextFileCreation> createTextFile(
+    String relativePath,
+    String text,
+  );
+
+  @AdeleMethod('replaceExistingTextFile')
+  Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
+    String relativePath,
+    String replacementText,
+    String expectedRevision,
+  );
+
+  @AdeleMethod('deleteExistingTextFile')
+  Future<void> deleteExistingTextFile(
+    String relativePath,
+    String expectedRevision,
+  );
+}
+
 @AdeleFailure('environment.failure')
 final class EnvironmentFailure implements Exception {
   const EnvironmentFailure({

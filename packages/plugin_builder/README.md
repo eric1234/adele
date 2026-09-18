@@ -26,9 +26,9 @@ compiler share this primitive.
 ## Desktop Tooling
 
 Normal `dart tools/adele.dart run linux` and `build linux --profile` prepare the
-shared host AOT snapshot, four backend AOT snapshots (Git Environment, OpenAI,
-AGENTS.md, and Search), and four frontend EVCs (Chat, Filesystem Tools, Command Tools,
-and OpenAI activity) before launching the Flutter run/build command. Backend compilation
+shared host AOT snapshot, five backend AOT snapshots (Git Environment, OpenAI,
+AGENTS.md, Search, and Filesystem Tools), and four frontend EVCs (Chat, Filesystem
+Tools, Command Tools, and OpenAI activity) before launching the Flutter run/build command. Backend compilation
 runs outside Flutter; frontend compilation uses Flutter build-time tooling. This also
 applies to explicit Linux debug/release modes; non-Linux commands and the explicit
 development smoke entry remain unchanged. `prepareDesktopPluginDefines` in
@@ -39,7 +39,7 @@ reference fixture's draft `adele_plugin.yaml` source/build manifest.
 
 The launcher inspects its selected Flutter executable and uses that SDK's bundled
 `dart` and sibling `dartaotruntime`, not a potentially unrelated `dart` on PATH.
-It compiles the host first, then Git, OpenAI, AGENTS.md, and Search.
+It compiles the host and Git, OpenAI, AGENTS.md, Search, and Filesystem Tools backends.
 `tools/frontend_artifacts.dart` prepares all four stock EVCs in the same installation root with the selected Flutter
 SDK. `tools/stock_frontend_descriptors.dart` is the singular stock build-side
 presentation descriptor table, shared with installation fixtures rather than
@@ -52,7 +52,8 @@ preparation succeeds. The launcher passes only four generic deployment defines:
 - `ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`: absolute generic startup-arguments JSON file.
 
 Seven installation directories are immediate children of the one installation root;
-OpenAI's backend and frontend share one manifest and PluginId:
+Filesystem Tools and OpenAI each share one manifest and PluginId across their
+independently activatable backend and frontend components:
 
 ```text
 desktop-plugins/build-*/
@@ -64,6 +65,7 @@ desktop-plugins/build-*/
     |   `-- frontend.evc
     |-- filesystem-tools/
     |   |-- adele_plugin.installation.json
+    |   |-- backend.aot
     |   `-- frontend.evc
     |-- command-tools/
     |   |-- adele_plugin.installation.json
@@ -96,8 +98,9 @@ Flutter frontend owner; it does not run the source builder or know stock source
 layouts. Catalog validation checks confined existing files, not executable EVC
 correctness. Runtime bytecode decoding remains presentation-local.
 
-AGENTS.md and Search need no configuration/startup arguments or extra deployment
-defines. Their entrypoints own ready extension advertisements; the app uses generic
+Filesystem's backend source is under `plugins/filesystem_tools/packages/backend`.
+AGENTS.md, Search, and Filesystem Tools need no configuration/startup arguments or
+extra deployment defines. Their entrypoints own ready extension advertisements; the app uses generic
 remote extension activation rather than linking their semantic plugins in production.
 Both host and plugin-backend protocols use version 2, so all host/backend artifacts
 must be rebuilt together. The installed manifest uses version 1.
@@ -180,9 +183,13 @@ profile system, or cache. Discovery and activation remain separate; normal start
 attempts all discovered valid backend and frontend components without enable/disable
 controls, version solving, watching, or hot upgrade. Future profiles choose
 activation participation separately from prepared descriptors. The remote AGENTS.md
-source and Search tools use narrow unary host reads; Search execution uses existing
-host-to-backend server streaming. Reverse streaming and general symmetric RPC
-are unimplemented. In-process stock activations are outside this discovery path.
+source and Search tools use narrow unary host reads; Filesystem tools also use a
+separate unary mutation service. Remote model-tool preparation has no host token;
+only execution after policy/approval receives its descriptor's exact read/mutation
+allowlist through existing host-to-backend server streaming. Reverse streaming and
+general symmetric RPC are unimplemented. The three in-process stock activations
+(Chat, Command Tools, and Local Directory Project Selector) are outside this
+discovery path, with their migration deferred.
 
 ## Current Scope
 

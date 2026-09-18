@@ -38,6 +38,7 @@ import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:dart_eval/dart_eval_bridge.dart' show $Value;
 import 'package:dart_eval/stdlib/core.dart';
+import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_eval/widgets.dart';
@@ -4359,6 +4360,9 @@ bool inspect(String id) => inspectChatActivity(id);
 final class _Fixture {
   _Fixture() {
     runtime = AdeleRuntime(ids: ids);
+    // Controller/widget unit fixtures inject semantic tools explicitly. Installed
+    // execution is covered by normal_chatgpt_run_integration_test.dart.
+    _filesystem = const FilesystemToolsPlugin().activate(runtime.extensions);
     _selector = runtime.extensions.register(
       point: projectSelectorContributions,
       id: ExtensionId('dev.adele.test.chat-project-selector'),
@@ -4400,6 +4404,7 @@ final class _Fixture {
   late final AdeleRuntime runtime;
   late final ExtensionRegistration _selector;
   late final ExtensionRegistration _contextSource;
+  late final ExtensionRegistration _filesystem;
   int runtimeCreations = 0;
   int bootstraps = 0;
   int configurationReads = 0;
@@ -4516,6 +4521,7 @@ final class _Fixture {
     }
     await _selector.close();
     await _contextSource.close();
+    await _filesystem.close();
     await runtime.close();
   }
 }

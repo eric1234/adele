@@ -28,45 +28,85 @@ final class RemoteModelToolAdapter
         'Model-tool metadata requires only a hostServices list.',
       );
     }
-    if (services.length > 1 ||
-        services.any((service) => service != 'authorizedEnvironmentRead')) {
+    if (services.toSet().length != services.length ||
+        services.any((service) => !_knownHostServices.contains(service))) {
       throw const ExtensionContractException(
         'Unsupported or duplicate model-tool host service.',
       );
     }
-    return _RemoteModelTools(remote, requiresRead: services.isNotEmpty);
+    return _RemoteModelTools(
+      remote,
+      Set<String>.unmodifiable(services.cast<String>()),
+    );
   }
 }
 
+const _knownHostServices = {
+  authorizedEnvironmentReadServiceId,
+  authorizedEnvironmentMutationServiceId,
+};
+
 final class _RemoteModelTools implements ModelToolContribution {
-  const _RemoteModelTools(this.remote, {required this.requiresRead});
+  const _RemoteModelTools(this.remote, this.hostServices);
 
   final RemoteExtensionContext remote;
-  final bool requiresRead;
+  final Set<String> hostServices;
 
   @override
   Future<Iterable<ToolRegistration>> materialize(
     ModelToolHostContext context,
   ) async {
     remote.validate();
-    final files = requiresRead
+    final files = hostServices.contains(authorizedEnvironmentReadServiceId)
         ? await context.requireHostService<AuthorizedEnvironmentFileReadFacet>()
         : null;
-    if (files != null && files.sessionId != context.sessionId) {
+    final mutations =
+        hostServices.contains(authorizedEnvironmentMutationServiceId)
+        ? await context
+              .requireHostService<AuthorizedEnvironmentFileMutationFacet>()
+        : null;
+    if ((files != null && files.sessionId != context.sessionId) ||
+        (mutations != null && mutations.sessionId != context.sessionId)) {
       throw StateError('The filesystem authority belongs to another Session.');
     }
-    final binding = _ModelToolBinding(remote, context.sessionId, files);
-    final descriptors = await binding.invoke(
-      (token) => RemoteModelToolServiceClient(
-        remote.channel,
-      ).materialize(context.sessionId.value, token),
+    if (files != null &&
+        mutations != null &&
+        files.environmentId != mutations.environmentId) {
+      throw StateError(
+        'Read and mutation authority must share an Environment.',
+      );
+    }
+    final binding = _ModelToolBinding(
+      remote,
+      context.sessionId,
+      files,
+      mutations,
     );
+    // Capturing host dependencies does not grant the backend invocation authority.
+    final descriptors = await binding.invoke(
+      () => RemoteModelToolServiceClient(
+        remote.channel,
+      ).materialize(context.sessionId.value),
+    );
+    for (final descriptor in descriptors) {
+      final services = descriptor.executionHostServices;
+      if (services.toSet().length != services.length ||
+          services.any(
+            (service) =>
+                !_knownHostServices.contains(service) ||
+                !hostServices.contains(service),
+          )) {
+        throw const ExtensionContractException(
+          'Tool execution host services must be unique, known captured dependencies.',
+        );
+      }
+    }
     return List<ToolRegistration>.unmodifiable([
       for (final descriptor in descriptors)
         ToolRegistration(
           definition: descriptor.toToolDefinition(),
           modelDefinition: descriptor.toModelDefinition(),
-          executable: _RemoteToolExecutable(binding, descriptor.routeId),
+          executable: _RemoteToolExecutable(binding, descriptor),
         ),
     ]);
   }
@@ -74,16 +114,26 @@ final class _RemoteModelTools implements ModelToolContribution {
 
 /// Retains host-side authority and the exact extension, never an invocation token.
 final class _ModelToolBinding {
-  const _ModelToolBinding(this.remote, this.sessionId, this.files);
+  const _ModelToolBinding(
+    this.remote,
+    this.sessionId,
+    this.files,
+    this.mutations,
+  );
 
   final RemoteExtensionContext remote;
   final SessionId sessionId;
   final AuthorizedEnvironmentFileReadFacet? files;
+  final AuthorizedEnvironmentFileMutationFacet? mutations;
+
+  EnvironmentId? get environmentId =>
+      files?.environmentId ?? mutations?.environmentId;
 
   void validate() {
     try {
       remote.validate();
       files?.validateBinding();
+      mutations?.validateBinding();
     } on StaleExtensionBinding catch (error) {
       throw StaleToolBindingException(
         'The remote model-tool contributor generation is stale.',
@@ -103,15 +153,10 @@ final class _ModelToolBinding {
     }
   }
 
-  Future<T> invoke<T>(Future<T> Function(String? token) operation) async {
+  Future<T> invoke<T>(Future<T> Function() operation) async {
     validate();
     try {
-      if (files == null) return await operation(null);
-      final read = _ModelToolEnvironmentRead(this);
-      return await remote.invoke(read.services, (invocation) {
-        read.invocation = invocation;
-        return operation(invocation.id);
-      });
+      return await operation();
     } finally {
       validate();
     }
@@ -119,10 +164,12 @@ final class _ModelToolBinding {
 }
 
 final class _RemoteToolExecutable implements ToolExecutable {
-  const _RemoteToolExecutable(this.binding, this.routeId);
+  const _RemoteToolExecutable(this.binding, this.descriptor);
 
   final _ModelToolBinding binding;
-  final String routeId;
+  final RemoteToolDescriptor descriptor;
+
+  String get routeId => descriptor.routeId;
 
   RemoteModelToolServiceClient get client =>
       RemoteModelToolServiceClient(binding.remote.channel);
@@ -162,13 +209,13 @@ final class _RemoteToolExecutable implements ToolExecutable {
     ToolExecutionContext context,
   ) {
     binding.validateContext(context);
-    return binding.invoke((token) async {
+    return binding.invoke(() async {
       final result = await client.describe(
         routeId,
         RemoteCanonicalToolArguments(snapshot: arguments.snapshot),
         context.sessionId.value,
         context.runId.value,
-        token,
+        binding.environmentId?.value,
       );
       return result.toLocal();
     });
@@ -178,19 +225,23 @@ final class _RemoteToolExecutable implements ToolExecutable {
   Stream<ToolExecutionEvent> execute(
     CanonicalToolArguments arguments,
     ToolExecutionContext context,
-  ) {
-    final read = _ModelToolEnvironmentRead(binding);
-    return binding.remote
-        .invokeStream(read.services, (invocation) {
+  ) async* {
+    binding.validateContext(context);
+    final environment = _ModelToolEnvironmentServices(binding);
+    yield* binding.remote
+        .invokeStream(environment.services(descriptor.executionHostServices), (
+          invocation,
+        ) {
           binding.validateContext(context);
-          read.invocation = invocation;
+          environment.invocation = invocation;
           return client
               .execute(
                 routeId,
                 RemoteCanonicalToolArguments(snapshot: arguments.snapshot),
                 context.sessionId.value,
                 context.runId.value,
-                binding.files == null ? null : invocation.id,
+                binding.environmentId?.value,
+                descriptor.executionHostServices.isEmpty ? null : invocation.id,
               )
               .map((event) {
                 validateBinding();
@@ -221,18 +272,23 @@ final class _RemoteToolExecutable implements ToolExecutable {
   }
 }
 
-/// One generated service bound to one operation over previously captured reads.
-final class _ModelToolEnvironmentRead
-    implements AuthorizedEnvironmentReadService {
-  _ModelToolEnvironmentRead(this.binding);
+/// Separate generated dispatchers expose only the exact execute-route allowlist.
+final class _ModelToolEnvironmentServices
+    implements
+        AuthorizedEnvironmentReadService,
+        AuthorizedEnvironmentMutationService {
+  _ModelToolEnvironmentServices(this.binding);
 
   final _ModelToolBinding binding;
   PluginHostInvocation? invocation;
 
-  Map<String, AdeleBackendDispatcher> get services => {
-    if (binding.files != null)
+  Map<String, AdeleBackendDispatcher> services(List<String> allowed) => {
+    if (allowed.contains(authorizedEnvironmentReadServiceId))
       authorizedEnvironmentReadServiceId:
           AuthorizedEnvironmentReadServiceDispatcher(this),
+    if (allowed.contains(authorizedEnvironmentMutationServiceId))
+      authorizedEnvironmentMutationServiceId:
+          AuthorizedEnvironmentMutationServiceDispatcher(this),
   };
 
   void validate() {
@@ -267,4 +323,34 @@ final class _ModelToolEnvironmentRead
   @override
   Future<EnvironmentDirectoryListing> readDirectory(String relativePath) =>
       perform(() => binding.files!.readDirectory(relativePath));
+
+  @override
+  Future<EnvironmentTextFileCreation> createTextFile(
+    String relativePath,
+    String text,
+  ) => perform(() => binding.mutations!.createTextFile(relativePath, text));
+
+  @override
+  Future<EnvironmentTextFileReplacement> replaceExistingTextFile(
+    String relativePath,
+    String replacementText,
+    String expectedRevision,
+  ) => perform(
+    () => binding.mutations!.replaceExistingTextFile(
+      relativePath,
+      replacementText,
+      expectedRevision,
+    ),
+  );
+
+  @override
+  Future<void> deleteExistingTextFile(
+    String relativePath,
+    String expectedRevision,
+  ) => perform(
+    () => binding.mutations!.deleteExistingTextFile(
+      relativePath,
+      expectedRevision,
+    ),
+  );
 }
