@@ -99,10 +99,7 @@ void main() {
           isEmpty,
         );
         expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
-        expect(
-          runtime.extensions.discover(modelToolContributions),
-          hasLength(1),
-        );
+        expect(runtime.extensions.discover(modelToolContributions), isEmpty);
         expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
 
         await tester.tap(find.text('Open Test Project'));
@@ -179,77 +176,93 @@ void main() {
         );
         final AdeleRuntime runtime = AdeleRuntime();
         addTearDown(runtime.close);
-        late Future<void> backendSettled;
-        await tester.runAsync(() async {
-          final activated = runtime.extensions.changes.firstWhere(
-            (_) => runtime.extensions
-                .discover(modelNativeActivityPresentationContributions)
-                .isNotEmpty,
+        try {
+          late Future<void> backendSettled;
+          await tester.runAsync(() async {
+            final activated = runtime.extensions.changes.firstWhere(
+              (_) => runtime.extensions
+                  .discover(modelNativeActivityPresentationContributions)
+                  .isNotEmpty,
+            );
+            await tester.pumpWidget(
+              AdeleApplication(
+                createRuntime: () => runtime,
+                bootstrapPlugins: (plugins) {
+                  final starting = plugins.start(
+                    installationRoot: directory.path,
+                    dartaotruntimeExecutable:
+                        '${directory.path}/missing-runtime',
+                    hostArtifactPath: '${directory.path}/missing-host.aot',
+                  );
+                  backendSettled = backendFailure
+                      ? expectLater(starting, throwsA(isA<ProcessException>()))
+                      : starting;
+                  return starting;
+                },
+              ),
+            );
+            await activated.timeout(const Duration(seconds: 10));
+            await backendSettled;
+          });
+          await tester.pumpAndSettle();
+          final binding = runtime.extensions
+              .discover(modelNativeActivityPresentationContributions)
+              .single;
+          final compactBinding = runtime.extensions
+              .discover(modelNativeActivityCompactPresentationContributions)
+              .single;
+          expect(binding.validate, returnsNormally);
+          expect(compactBinding.validate, returnsNormally);
+          expect(runtime.plugins.catalog!.installations, hasLength(1));
+          expect(runtime.plugins.host, isNull);
+          expect(
+            runtime.plugins.state,
+            backendFailure
+                ? ApplicationPluginState.failed
+                : ApplicationPluginState.ready,
           );
-          await tester.pumpWidget(
-            AdeleApplication(
-              createRuntime: () => runtime,
-              bootstrapPlugins: (plugins) {
-                final starting = plugins.start(
-                  installationRoot: directory.path,
-                  dartaotruntimeExecutable: '${directory.path}/missing-runtime',
-                  hostArtifactPath: '${directory.path}/missing-host.aot',
-                );
-                backendSettled = backendFailure
-                    ? expectLater(starting, throwsA(isA<ProcessException>()))
-                    : starting;
-                return starting;
-              },
-            ),
+          expect(
+            compactBinding.value.presentationKind,
+            binding.value.presentationKind,
           );
-          await activated.timeout(const Duration(seconds: 10));
-          await backendSettled;
-        });
-        await tester.pumpAndSettle();
-        final binding = runtime.extensions
-            .discover(modelNativeActivityPresentationContributions)
-            .single;
-        final compactBinding = runtime.extensions
-            .discover(modelNativeActivityCompactPresentationContributions)
-            .single;
-        expect(binding.validate, returnsNormally);
-        expect(compactBinding.validate, returnsNormally);
-        expect(runtime.plugins.catalog!.installations, hasLength(1));
-        expect(runtime.plugins.host, isNull);
-        expect(
-          runtime.plugins.state,
-          backendFailure
-              ? ApplicationPluginState.failed
-              : ApplicationPluginState.ready,
-        );
-        expect(
-          compactBinding.value.presentationKind,
-          binding.value.presentationKind,
-        );
-        expect(
-          runtime.extensions.discover(modelToolContributions),
-          hasLength(1),
-        );
-        expect(find.text('No Project is open'), findsOneWidget);
-        expect(tester.takeException(), isNull);
-        await tester.runAsync(() async {
-          final retired = runtime.extensions.changes.firstWhere(
-            (_) =>
-                runtime.extensions
-                    .discover(modelNativeActivityPresentationContributions)
-                    .isEmpty &&
-                runtime.extensions
-                    .discover(
-                      modelNativeActivityCompactPresentationContributions,
-                    )
-                    .isEmpty,
+          expect(runtime.extensions.discover(modelToolContributions), isEmpty);
+          expect(find.text('No Project is open'), findsOneWidget);
+          expect(tester.takeException(), isNull);
+          await tester.runAsync(() async {
+            final retired = runtime.extensions.changes.firstWhere(
+              (_) =>
+                  runtime.extensions
+                      .discover(modelNativeActivityPresentationContributions)
+                      .isEmpty &&
+                  runtime.extensions
+                      .discover(
+                        modelNativeActivityCompactPresentationContributions,
+                      )
+                      .isEmpty,
+            );
+            await tester.pumpWidget(const SizedBox.shrink());
+            await retired.timeout(const Duration(seconds: 10));
+          });
+          await tester.pumpAndSettle();
+          expect(binding.validate, throwsA(isA<StaleExtensionBinding>()));
+          expect(
+            compactBinding.validate,
+            throwsA(isA<StaleExtensionBinding>()),
           );
-          await tester.pumpWidget(const SizedBox.shrink());
-          await retired.timeout(const Duration(seconds: 10));
-        });
-        await tester.pumpAndSettle();
-        expect(binding.validate, throwsA(isA<StaleExtensionBinding>()));
-        expect(compactBinding.validate, throwsA(isA<StaleExtensionBinding>()));
+        } finally {
+          // Settle failed bootstrap/frontend ownership before leaving the test zone.
+          await tester.runAsync(() async {
+            try {
+              if (find.byType(AdeleApplication).evaluate().isNotEmpty) {
+                await tester.binding.handleRequestAppExit();
+              }
+            } finally {
+              await tester.pumpWidget(const SizedBox.shrink());
+              await runtime.close();
+            }
+          });
+          await tester.pumpAndSettle();
+        }
       },
     );
   }
@@ -277,13 +290,18 @@ void main() {
   testWidgets('owns one provider-free runtime across rebuilds and disposal', (
     WidgetTester tester,
   ) async {
-    late AdeleRuntime runtime;
+    final AdeleRuntime runtime = AdeleRuntime();
     int creations = 0;
     AdeleRuntime createRuntime() {
       creations++;
-      return runtime = AdeleRuntime();
+      return runtime;
     }
 
+    expect(
+      runtime.extensions.discover(modelToolContributions),
+      isEmpty,
+      reason: 'A bare runtime has no model tools before plugin bootstrap.',
+    );
     await tester.pumpWidget(AdeleApplication(createRuntime: createRuntime));
     final ResolvedOrchestrationStrategy strategy = runtime
         .lifecycle
@@ -294,7 +312,7 @@ void main() {
       isEmpty,
     );
     expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
-    expect(runtime.extensions.discover(modelToolContributions), hasLength(1));
+    expect(runtime.extensions.discover(modelToolContributions), isEmpty);
     expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
     final ExtensionBinding<ProjectSelectorContribution> selector = runtime
         .extensions

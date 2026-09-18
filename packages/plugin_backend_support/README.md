@@ -24,7 +24,8 @@ after the already-granted item; cancellation reaches the host producer. Authorit
 belongs to the host operation, not the channel or subscription. Operation
 settlement, cancellation, or exact-generation retirement revokes it immediately,
 with bounded cleanup that cannot prolong access. Both transport protocols use
-version 3; host and backend artifacts must be rebuilt together.
+version 1; host and backend artifacts must be rebuilt together under the
+[pre-release transport policy](../../docs/architecture/contracts-and-capabilities.md#transport-version-policy).
 
 This helper does not mint authority, select an Environment, or own host policy.
 The host invocation identity is opaque, operation-local, and must not be persisted

@@ -165,7 +165,10 @@ void main() {
     () async {
       final backend = await _RunningBackend.start();
       addTearDown(backend.close);
-      expect(backend.ready['pluginBackendProtocolVersion'], 2);
+      expect(
+        backend.ready['pluginBackendProtocolVersion'],
+        adelePluginBackendProtocolVersion,
+      );
       expect(AdeleCapabilityExposure.fromReady(backend.ready), isEmpty);
       expect(backend.ready['extensionExposures'], [
         {

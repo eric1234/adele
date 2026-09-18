@@ -42,10 +42,12 @@ frontend. Filesystem's `filesystem-tools/backend.aot` and Command's
 their frontend EVCs remain independently activatable. AGENTS.md, Search,
 Filesystem Tools, and Command Tools require no
 configuration or additional deployment defines. Both host and plugin protocols are
-currently version 3, supporting unary authorized reads/mutations and reverse
+currently version 1, supporting unary authorized reads/mutations and reverse
 server-streaming processes: prepared hosts and backends must be rebuilt together,
-and mixed protocol versions are unsupported. The installed manifest remains
-version 1; see [contract compatibility](contracts-and-capabilities.md#contracts).
+and protocol versions must match exactly. Before the first release, unstable wire
+changes may retain that version; prior development artifacts are unsupported even
+when their version numbers match. The installed manifest remains version 1; see
+the [pre-release transport policy](contracts-and-capabilities.md#transport-version-policy).
 `tools/frontend_artifacts.dart` invokes
 `app/tool/compile_chat_frontend.dart`,
 `app/tool/compile_tool_inspection_frontends.dart`, and

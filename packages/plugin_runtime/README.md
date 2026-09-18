@@ -127,8 +127,12 @@ management, version solving, watching, and hot upgrade remain deferred.
 
 ## Operation-Scoped Host Calls
 
-Both host and plugin-backend protocols are version 3; rebuild prepared artifacts
-together. `PluginBackendConnection.openHostInvocation` grants an opaque secure
+Both host and plugin-backend protocols are version 1 with exact protocol-version
+matching. Before the first release, unstable wire changes may retain that version;
+rebuild prepared artifacts as a coherent set, without compatibility for prior
+development artifacts. See the
+[transport version policy](../../docs/architecture/contracts-and-capabilities.md#transport-version-policy).
+`PluginBackendConnection.openHostInvocation` grants an opaque secure
 per-operation context with an explicit service-dispatcher allowlist on that exact
 connection. `RemoteExtensionContext.invoke` brackets the operation and revokes it
 in `finally`, on registration retirement, and on connection shutdown/termination.

@@ -26,8 +26,13 @@ method payload, active registry, or host-call authorization. Field definitions a
 registration semantics live in
 [`contracts-and-capabilities.md`](../../docs/architecture/contracts-and-capabilities.md#backend-ready-advertisements).
 
-`adelePluginBackendProtocolVersion` is 3, matched by internal shared-host protocol
-version 3. Generated unary and server-streaming clients use operation-scoped host
+`adelePluginBackendProtocolVersion` is 1, as is the internal shared-host protocol
+version. Before the first release, unstable wire changes may retain that version;
+artifacts require exact protocol-version matching and a coherent runtime/host/backend
+rebuild, with no compatibility for prior development artifacts. Increments apply
+only when released artifacts establish a compatibility boundary. See the
+[transport version policy](../../docs/architecture/contracts-and-capabilities.md#transport-version-policy).
+Generated unary and server-streaming clients use operation-scoped host
 channels supplied by public `adele_plugin_backend_support`, whose `bind` returns
 an `AdeleStreamChannel` supporting both shapes. This contract package does not own
 the multiplexer, host authorization, or runtime adapter registry. Prepared host

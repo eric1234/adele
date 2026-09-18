@@ -10,7 +10,7 @@ void main() {
   test(
     'runtime rejects wrong stamped generation and settles revoked host requests once',
     () async {
-      expect(backendHostProtocolVersion, 3);
+      expect(backendHostProtocolVersion, 1);
       final fake = _FakeHost.create('''
 import 'dart:io';
 import 'package:plugin_runtime/plugin_runtime.dart';

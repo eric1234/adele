@@ -487,8 +487,9 @@ activation, operation-scoped unary host reads/mutations for AGENTS.md, Search,
 and Filesystem Tools, and reverse server-streaming processes for Command Tools.
 Two stock activations remain static and outside installed discovery; Chat and
 selector migration is deferred. Host and backend artifacts require matching
-protocol version 3; installed manifests remain version 1. See
-[contract compatibility](contracts-and-capabilities.md#contracts).
+protocol version 1 and rebuilding as a coherent set; installed manifests remain
+version 1. See the
+[pre-release transport policy](contracts-and-capabilities.md#transport-version-policy).
 Enable/disable management, profiles, version solving, filesystem watching,
 client/bidirectional streaming, ambient callbacks, general symmetric RPC, and hot
 upgrade remain deferred.

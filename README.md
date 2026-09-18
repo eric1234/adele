@@ -239,7 +239,10 @@ without re-resolution; transported IDs cannot select authority. Execution uses
 server streaming while reverse reads and mutations remain unary. Reverse process
 streams use one-item credit, pause/resume, and producer cancellation; settlement,
 cancellation, or retirement revokes authority immediately with bounded cleanup.
-Both transport protocols are version 3; installed manifests remain version 1.
+Both transport protocols are version 1 under the
+[pre-release transport policy](docs/architecture/contracts-and-capabilities.md#transport-version-policy);
+rebuild a coherent host/backend set after wire changes. Installed manifests remain
+version 1.
 The separate mutation service supplies only create-new, conditional replace, and conditional
 delete; the read service remains unchanged. Command Tools requests only the process
 facet through generated `AuthorizedEnvironmentProcessService`, whose sole

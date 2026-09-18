@@ -33,9 +33,13 @@ bootstrap always sets it to `true`. This is temporary deployment metadata, not a
 environment scrubber or settings/profile/credential service. See
 [`plugin_runtime` startup arguments](../plugin_runtime/README.md#startup-arguments).
 
-Both shared-host and plugin-backend protocols use version 3; host and backend
-snapshots must be rebuilt together. Unary `hostRequest`/`hostResponse` reuse the
-same response/command ports and framed transport. The host stamps PluginId and
+Both shared-host and plugin-backend protocols use version 1 with exact
+protocol-version matching. Before the first release, unstable wire changes may
+retain that version; rebuild coherent runtime/host/backend snapshots rather than
+reuse prior development artifacts. See the
+[transport version policy](../../docs/architecture/contracts-and-capabilities.md#transport-version-policy).
+Unary `hostRequest`/`hostResponse` reuse the same response/command ports and framed
+transport. The host stamps PluginId and
 the host-issued connection generation from the owning isolate, correlates each
 request independently of forward calls, and returns responses only to that captured
 generation. Plugin-side reverse request IDs are nonnegative and strictly increasing

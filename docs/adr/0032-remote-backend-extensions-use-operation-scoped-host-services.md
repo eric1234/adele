@@ -79,6 +79,12 @@ registry or moving host authority into plugins.
     authority. Description uses only host-supplied semantic identity data. Only an
     execute stream reached after host policy or approval permits execution receives
     the services in that tool descriptor's validated subset of captured dependencies.
+12. Before the first release, unstable transport wire changes may be made in place
+    under protocol version 1. Artifacts must match the relevant protocol version
+    exactly and be rebuilt as a coherent runtime/host/backend set; prior development
+    artifacts receive no compatibility layer, negotiation, or shim, even when their
+    version numbers match. Increment only when released artifacts establish a
+    compatibility boundary. Installed-manifest versioning remains separate.
 
 ## Alternatives considered
 
@@ -140,7 +146,7 @@ without authority queries or authority-selection IDs. Read/mutation calls remain
 unary; process calls use reverse server streaming with one-item credit and
 cancellation. Outer-operation settlement or retirement revokes authority
 immediately and cancels owned streams with bounded cleanup. Both transport
-protocol versions are 3; installed manifests remain version 1. Immutable execution
+protocol versions are 1; installed manifests remain version 1. Immutable execution
 snapshots carry no exception causes. These checks authorize host-service access,
 not native OS effects; they provide no sandbox or rollback of in-flight effects.
 

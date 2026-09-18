@@ -59,7 +59,8 @@ prepared installation root. Shared-host artifacts and generic deployment inputs
 are described in [desktop tooling](../../packages/plugin_builder/README.md#desktop-tooling).
 Self-hosting supplies its explicit `agentsMdArtifact` on the same host through the
 same adapter activation, without requiring a normal installation root. Both
-host/plugin protocol versions are 3; prepared artifacts must be rebuilt together.
+host/plugin protocol versions are 1; prepared artifacts must be rebuilt together
+under the [pre-release transport policy](../../docs/architecture/contracts-and-capabilities.md#transport-version-policy).
 
 The semantic package, backend, and support package are workspace members with
 maintained analysis/test discovery. Focused semantic validation uses

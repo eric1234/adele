@@ -105,8 +105,11 @@ Command's is under `plugins/command_tools/packages/backend`, with entrypoint
 Tools need no configuration/startup arguments or
 extra deployment defines. Their entrypoints own ready extension advertisements; the app uses generic
 remote extension activation rather than linking their semantic plugins in production.
-Both host and plugin-backend protocols use version 3, so all host/backend artifacts
-must be rebuilt together. The installed manifest uses version 1.
+Both host and plugin-backend protocols use version 1 with exact protocol-version
+matching. Rebuild all host/backend artifacts as a coherent set after wire changes,
+including pre-release changes that retain the version; prior development artifacts
+are unsupported. The installed manifest uses version 1. See the
+[transport version policy](../../docs/architecture/contracts-and-capabilities.md#transport-version-policy).
 
 The separate temporary startup file is a JSON object mapping PluginId to
 `List<String>` argv. The launcher derives OpenAI's credential-file reference and

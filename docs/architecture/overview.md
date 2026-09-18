@@ -377,7 +377,9 @@ and executes with read only. Command's installed `plugins/command_tools/packages
 reuses root semantics with process-only execution authority. Reverse reads/mutations
 remain unary; process streams use one-item credit, pause/resume, and cancellation.
 Revocation is immediate and precedes bounded cleanup of owned streams. Both
-transport protocols are version 3; the installed manifest remains version 1.
+transport protocols are version 1 under the
+[pre-release transport policy](contracts-and-capabilities.md#transport-version-policy);
+the installed manifest remains version 1.
 Backend/frontend availability is independent. Chat and Local Directory Project
 Selector migration remains deferred. These checks authorize the
 host-service API, not native OS access; process separation is not a sandbox.

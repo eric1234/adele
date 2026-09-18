@@ -52,10 +52,20 @@ Committed transport is checked in normal CI. Development plugin preparation also
 
 Server-streaming uses the existing shared backend-host path. Generated clients open lazily and decode ordered typed items. Generated dispatchers hide producer iteration, cancellation, and terminal failure mapping. A fixed one-item credit window means paused consumers stop producer advancement after the already-granted item and cancellation reaches the producer iterator. Streams remain bound to their exact provider generation and fail rather than migrating when that generation disappears.
 
+### Transport version policy
+
 Both `backendHostProtocolVersion` and `adelePluginBackendProtocolVersion` are
-currently 3. Prepared hosts and backends must use matching protocols and be rebuilt
-together; mixed protocol versions are unsupported. These transport versions are
-separate from capability majors and the version-1 installed manifest.
+currently 1. Before the first release, the unstable wire may change in place
+without incrementing these versions. Increment a transport version only when
+released artifacts establish a compatibility boundary, not for unreleased
+development changes.
+
+Artifacts must match the relevant protocol version exactly, and the runtime,
+shared host, and backends must be rebuilt as one coherent set after wire changes.
+Matching version numbers do not make prior development artifacts compatible;
+those artifacts are unsupported. There is no compatibility layer, negotiation, or
+shim for them. These transport versions are separate from capability majors and
+the unchanged version-1 installed manifest.
 
 ## Capability semantics
 
@@ -262,8 +272,8 @@ cannot revive authority or reach a replacement generation. Revocation is not
 cancellation or rollback of an already-started read or mutation.
 
 Reverse server streams reuse those same ports, framing, and exact-generation
-routing under protocol version 3. They open lazily and use a fixed one-item credit
-window: pausing stops producer advancement after the already-granted item, and
+routing under the current transport protocol. They open lazily and use a fixed
+one-item credit window: pausing stops producer advancement after the already-granted item, and
 cancellation reaches the producer. The invocation's allowlist and liveness apply
 to stream opening and delivery, not just unary dispatch. Outer-operation
 settlement, cancellation, registration retirement, and connection termination

@@ -848,7 +848,12 @@ returning `Stream<EnvironmentProcessEvent>`, with existing DTOs and no authority
 IDs. Reverse reads/mutations remain unary; reverse process streams use one-item
 credit, pause/resume, and cancellation. Settlement, cancellation, or retirement
 revokes authority immediately and cancels owned streams with bounded cleanup.
-Both transport protocols are version 3; installed manifests remain version 1.
+Both transport protocols use pre-release version 1 and require exact matching.
+Wire formats may change in place before the first release; runtime, host, and
+backend artifacts must be rebuilt together, with no compatibility promised for
+prior development artifacts. See the
+[transport version policy](../docs/architecture/contracts-and-capabilities.md#transport-version-policy).
+Installed-manifest versioning is independent and remains at version 1.
 Host-service authorization is not an OS sandbox or rollback of in-flight effects. See
 [remote model tools](../docs/architecture/contracts-and-capabilities.md#remote-model-tools).
 

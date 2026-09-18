@@ -81,7 +81,9 @@ with process-only execution authority. Transported identities cannot choose an E
 [operation-scoped host calls](../../docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls).
 Read/mutation host calls remain unary; process host calls use reverse server
 streaming with one-item credit, pause/resume, and producer cancellation. Both
-transport protocols are version 3; the installed manifest remains version 1.
+transport protocols are version 1 under the
+[pre-release transport policy](../../docs/architecture/contracts-and-capabilities.md#transport-version-policy);
+the installed manifest remains version 1.
 Outer-operation settlement, cancellation, or retirement revokes authority
 immediately and cancels owned reverse streams with bounded cleanup. This is not
 general symmetric RPC, client/bidirectional streaming, ambient callbacks, or an OS

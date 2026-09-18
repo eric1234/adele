@@ -6,7 +6,7 @@ import 'package:test/test.dart';
 void main() {
   test('decodes a frame split across partial reads', () {
     final Uint8List frame = encodeBackendHostFrame(<String, Object?>{
-      'protocolVersion': 1,
+      'protocolVersion': backendHostProtocolVersion,
       'kind': 'hostHello',
     });
     final BackendHostFrameDecoder decoder = BackendHostFrameDecoder();

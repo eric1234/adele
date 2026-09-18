@@ -171,8 +171,9 @@ service authorization/revocation, including execute-stream lifetime, not domain
 composition or source/tool semantics. Reverse read/mutation host calls remain
 unary; process calls use reverse server streaming with one-item credit and
 cancellation. Revocation is immediate and precedes bounded cleanup of owned
-streams. Both transport protocols are version 3; installed manifests remain
-version 1. Host-service authority is not an OS sandbox
+streams. Both transport protocols are version 1 under the
+[pre-release transport policy](contracts-and-capabilities.md#transport-version-policy);
+installed manifests remain version 1. Host-service authority is not an OS sandbox
 or rollback of already-started effects.
 The detailed advertisement and host-call specification is in
 [`contracts-and-capabilities.md`](contracts-and-capabilities.md#backend-ready-advertisements).
