@@ -13,4 +13,5 @@ dependencies:
   plugin_runtime: ^0.1.0
 
 dev_dependencies:
+  adele_plugin_backend_support: ^0.1.0
   test: ^1.26.3

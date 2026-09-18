@@ -15,13 +15,22 @@ final ToolId runCommandToolId = ToolId(
   'dev.adele.plugin.command-tools.run-command',
 );
 
+final ExtensionId commandToolsExtensionId = ExtensionId(
+  'dev.adele.plugin.command-tools.model-tools',
+);
+
+/// Shared semantic registration for in-process and remote Command Tools.
+ToolRegistration commandToolRegistration(
+  AuthorizedEnvironmentProcessFacet process,
+) => _RunCommandExecutable(process).registration;
+
 final class CommandToolsPlugin {
   const CommandToolsPlugin();
 
   ExtensionRegistration activate(ExtensionRegistry extensions) =>
       extensions.register(
         point: modelToolContributions,
-        id: ExtensionId('dev.adele.plugin.command-tools.model-tools'),
+        id: commandToolsExtensionId,
         value: const _CommandModelTools(),
       );
 }
@@ -38,7 +47,7 @@ final class _CommandModelTools implements ModelToolContribution {
     if (process.sessionId != context.sessionId) {
       throw StateError('The process authority belongs to another Session.');
     }
-    return <ToolRegistration>[_RunCommandExecutable(process).registration];
+    return <ToolRegistration>[commandToolRegistration(process)];
   }
 }
 

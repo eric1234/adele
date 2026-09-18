@@ -14,7 +14,6 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
-import 'package:command_tools_plugin/command_tools_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
@@ -37,6 +36,7 @@ void main() {
   late File agentsMdArtifact;
   late File searchToolsArtifact;
   late File filesystemToolsArtifact;
+  late File commandToolsArtifact;
 
   setUpAll(() async {
     repository = Directory.current.parent.path;
@@ -51,6 +51,7 @@ void main() {
     agentsMdArtifact = File('${artifacts.path}/agents-md.aot');
     searchToolsArtifact = File('${artifacts.path}/search-tools.aot');
     filesystemToolsArtifact = File('${artifacts.path}/filesystem-tools.aot');
+    commandToolsArtifact = File('${artifacts.path}/command-tools.aot');
     await Future.wait<void>(<Future<void>>[
       _compile(
         dart,
@@ -83,11 +84,17 @@ void main() {
         filesystemToolsArtifact.path,
         repository,
       ),
+      _compile(
+        dart,
+        '$repository/plugins/command_tools/packages/backend/bin/command_tools_backend.dart',
+        commandToolsArtifact.path,
+        repository,
+      ),
     ]);
   });
 
   test(
-    'F3c self-hosting retains remote AGENTS, Search and Filesystem with canonical Session authority',
+    'self-hosting retains remote AGENTS, Search, Filesystem and Command with canonical Session authority',
     () async {
       final Directory container = await Directory.systemTemp.createTemp(
         'adele-self-hosting-topology-',
@@ -112,6 +119,7 @@ void main() {
               agentsMdArtifact: agentsMdArtifact,
               searchToolsArtifact: searchToolsArtifact,
               filesystemToolsArtifact: filesystemToolsArtifact,
+              commandToolsArtifact: commandToolsArtifact,
             ),
             projectSource: source,
             hostEnvironment: const <String, String>{},
@@ -682,8 +690,16 @@ void main() {
             adapters: createRemoteExtensionAdapters(),
           );
       addTearDown(filesystemActivation.close);
-      final ExtensionRegistration commandActivation = const CommandToolsPlugin()
-          .activate(extensions);
+      final commandActivation =
+          await PluginBackendActivation.registerAdvertised(
+            connection: await host.startPlugin(
+              pluginId: 'dev.adele.plugin.command-tools',
+              artifactUri: commandToolsArtifact.uri,
+            ),
+            capabilities: registry,
+            extensions: extensions,
+            adapters: createRemoteExtensionAdapters(),
+          );
       addTearDown(commandActivation.close);
       final ToolCatalog catalog = await buildModelToolCatalogForSession(
         sessionId: sessionId,

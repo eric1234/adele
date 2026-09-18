@@ -73,6 +73,9 @@ Future<List<String>> prepareDesktopPluginDefines({
   final File filesystemTools = File.fromUri(
     installations.uri.resolve('filesystem-tools/backend.aot'),
   );
+  final File commandTools = File.fromUri(
+    installations.uri.resolve('command-tools/backend.aot'),
+  );
   for (final ({String entrypoint, File artifact, String stage}) target
       in <({String entrypoint, File artifact, String stage})>[
         (
@@ -110,6 +113,12 @@ Future<List<String>> prepareDesktopPluginDefines({
               'plugins/filesystem_tools/packages/backend/bin/filesystem_tools_backend.dart',
           artifact: filesystemTools,
           stage: 'filesystem-tools-compilation',
+        ),
+        (
+          entrypoint:
+              'plugins/command_tools/packages/backend/bin/command_tools_backend.dart',
+          artifact: commandTools,
+          stage: 'command-tools-compilation',
         ),
       ]) {
     stdout.writeln('==> ${target.stage}');
@@ -155,7 +164,7 @@ Future<List<String>> prepareDesktopPluginDefines({
       displayName: 'Filesystem Tools',
     ),
     (
-      backend: null,
+      backend: commandTools,
       id: 'dev.adele.plugin.command-tools',
       displayName: 'Command Tools',
     ),

@@ -40,7 +40,7 @@ choose a requested plugin's contract.
 
 Stock source directories have not been normalized to this fixture's
 `adele_plugin.yaml` layout. In particular, the desktop launcher still knows the
-Git, OpenAI, AGENTS.md, Search, and Filesystem Tools source entrypoints and prepares
+Git, OpenAI, AGENTS.md, Search, Filesystem Tools, and Command Tools source entrypoints and prepares
 their installations explicitly.
 Source/build discovery and installed-artifact discovery are separate boundaries.
 
@@ -242,6 +242,33 @@ startup argv, or additional deployment define is required. Self-hosting supplies
 explicit `filesystemToolsArtifact` on its same shared host via generic registration,
 without normal installation discovery. See [remote model tools](contracts-and-capabilities.md#remote-model-tools).
 
+### Stock Command split
+
+`plugins/command_tools` retains pure-Dart `command_tools_plugin` semantics; its
+`packages/backend` package, `command_tools_backend`, reuses validation, effect
+description, progress projection, and bounded terminal output through public
+generated model-tool/Environment contracts and `adele_plugin_backend_support`.
+The entrypoint is `packages/backend/bin/command_tools_backend.dart`. The app has
+no production Command implementation dependency/import, static activation, or
+in-process fallback. The semantic and backend packages are workspace members and
+maintained analysis/test targets; the frontend is independent.
+
+One `command-tools` installation contains `backend.aot` and `frontend.evc` under
+the existing `dev.adele.plugin.command-tools` identity. Its sole ready extension
+uses `dev.adele.extension.model-tools`, registration
+`dev.adele.plugin.command-tools.model-tools`, generated service `modelTool`,
+configuration context `default`, and exactly
+`hostServices: ['authorizedEnvironmentProcess']`. It advertises no capabilities.
+The `run_command` descriptor likewise requires process-only `executionHostServices`.
+Materialize/validation have no token; description uses pure identity data. Only
+execution after policy/approval receives authority for reverse process streaming.
+
+Backend/frontend readiness and retirement are independent. No Command-specific
+configuration, startup argv, or additional deployment define is required.
+Self-hosting supplies `commandToolsArtifact` on its same host; its
+`includeCommandTools` controls explicit backend start/registration, not
+`AdeleRuntime` construction. See [remote model tools](contracts-and-capabilities.md#remote-model-tools).
+
 ### Stock tool frontend split
 
 `plugins/filesystem_tools` and `plugins/command_tools` retain their pure-Dart
@@ -252,8 +279,8 @@ These frontends depend only on Flutter and public `adele_ui`, not their headless
 implementations, app, or kernel. They are root workspace members and maintained
 Flutter analysis targets, separate from backend execution.
 
-Command Tools' installation is frontend-only; Filesystem Tools' installation also
-contains its backend. Their frontends use `toolActivity` descriptors supplying
+Command Tools and Filesystem Tools each have one combined backend/frontend
+installation with independent component availability. Their frontends use `toolActivity` descriptors supplying
 tool identity, registration IDs, library, and both entrypoints. Stock build-side
 descriptors have one source of truth in `tools/stock_frontend_descriptors.dart`;
 app runtime activation has no stock tool identity table. The generic Inspection
@@ -369,8 +396,8 @@ multiple extension points does not imply multiple plugin runtimes.
 
 ## Normal prepared composition
 
-Synchronous, provider-free `AdeleRuntime()` owns three in-process stock activations
-(Chat, Command Tools, and Local Directory Project
+Synchronous, provider-free `AdeleRuntime()` owns two in-process stock activations
+(Chat and Local Directory Project
 Selector) and generic `ApplicationPluginBootstrap` on its existing capability and
 extension registries. `AdeleApplication` explicitly calls `ApplicationPluginBootstrap.start`
 with only an installation root, shared runtime/host paths, and optional generic
@@ -397,20 +424,20 @@ All backend registrations retire before backend generations close, then the host
 closes, then the runtime's in-process activations retire. Read-only backend states and catalog
 issues are available without a plugin-management UI.
 
-Git/OpenAI entrypoints own capability advertisements; AGENTS.md, Search, and
-Filesystem own their extension advertisements. `PluginBackendActivation.registerAdvertised` owns both
+Git/OpenAI entrypoints own capability advertisements; AGENTS.md, Search,
+Filesystem, and Command own their extension advertisements. `PluginBackendActivation.registerAdvertised` owns both
 capability and adapted extension registration with coherent rollback/retirement
 through the existing registries. Self-hosting uses the same generic remote extension
 activation but retains its explicit artifact/host/profile topology without normal discovery.
 
 `prepareDesktopPluginDefines` in `tools/backend_artifacts.dart` selects and compiles
-stock Git/OpenAI/AGENTS.md/Search/Filesystem source plus the shared host and invokes
-`tools/frontend_artifacts.dart` for four EVCs. In total, preparation produces five
+stock Git/OpenAI/AGENTS.md/Search/Filesystem/Command source plus the shared host and invokes
+`tools/frontend_artifacts.dart` for four EVCs. In total, preparation produces six
 backend snapshots, one host snapshot, and four frontend artifacts. It assembles
 seven installation directories under one fresh
 `.dart_tool/adele/desktop-plugins/build-*/installations/`: frontend-only
-`chat-strategy` and `command-tools`, backend-only `git-environment`, `agents-md`, and
-`search-tools`, and combined `filesystem-tools` and `openai`.
+`chat-strategy`, backend-only `git-environment`, `agents-md`, and
+`search-tools`, and combined `filesystem-tools`, `command-tools`, and `openai`.
 The singular build-side presentation table is `tools/stock_frontend_descriptors.dart`.
 Its separate startup-arguments JSON
 maps PluginId to a string argv list; normal OpenAI always receives `--chatgpt-only`,
@@ -456,13 +483,16 @@ packaging, activation contexts, and broad plugin APIs remain unproven.
 
 The prepared startup catalog supports independently optional frontends and
 metadata-driven presentation registration, alongside backend capability/extension
-activation and operation-scoped unary host reads/mutations for AGENTS.md, Search,
-and Filesystem Tools. Three stock activations remain static and outside installed
-discovery; Chat, Command Tools, and selector migration is deferred. Host and backend
-artifacts require matching protocol versions, separately from installed-manifest
-versioning; see [contract compatibility](contracts-and-capabilities.md#contracts).
-Enable/disable management, profiles, version solving, filesystem watching, reverse
-streaming, general symmetric RPC, and hot upgrade remain deferred.
+activation, operation-scoped unary host reads/mutations for AGENTS.md, Search,
+and Filesystem Tools, and reverse server-streaming processes for Command Tools.
+Two stock activations remain static and outside installed discovery; Chat and
+selector migration is deferred. Host and backend artifacts require matching
+protocol version 1 and rebuilding as a coherent set; installed manifests remain
+version 1. See the
+[pre-release transport policy](contracts-and-capabilities.md#transport-version-policy).
+Enable/disable management, profiles, version solving, filesystem watching,
+client/bidirectional streaming, ambient callbacks, general symmetric RPC, and hot
+upgrade remain deferred.
 
 Maintained plugin backends additionally prove generated server streaming,
 multiple generation-bound configuration contexts, real HTTP/SSE model-provider

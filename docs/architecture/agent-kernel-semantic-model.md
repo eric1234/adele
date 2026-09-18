@@ -470,11 +470,11 @@ The current stock projections apply this distinction to Session-authorized
 Environment facets: Filesystem Tools owns `read_file`, `apply_patch`,
 `create_file`, and `delete_file`, Search Tools owns `search`, and Command Tools
 owns direct-argv `run_command` over the foreground process facet. No separate
-Command, Shell, or Search capability is introduced. Search and Filesystem Tools run
+Command, Shell, or Search capability is introduced. Search, Filesystem Tools, and Command Tools run
 as installed AOT backends through the generic remote model-tool adapter; their
 pure-Dart root packages still own validation, algorithms, and result semantics.
-Command Tools remains in process; its migration and remote process host services
-are deferred.
+Command uses the separate generated authorized-process host service for reverse
+server streaming, without authority-selection IDs or kernel transport ownership.
 
 ## Tool definitions and catalog
 
@@ -499,7 +499,7 @@ The next model invocation may rematerialize the set. A protocol requiring catalo
 
 Remote model tools use public `adele_model_tool/remote_model_tool.dart` transport
 and the app's `RemoteModelToolAdapter`, not kernel transport or a second registry.
-Exposure `hostServices` declares maximum read/mutation dependencies. Materialization
+Exposure `hostServices` declares maximum read/mutation/process dependencies. Materialization
 captures the exact remote registration and requested Session-bound Environment
 facets, requiring the same Session and Environment across them. Descriptors carry
 an opaque backend route ID, not a persistent handle or authority token, and required
@@ -512,11 +512,16 @@ route/argument/Session/Run/Environment identity data without host calls. Only
 execution after policy/approval receives fresh stream-lifetime authority for the
 descriptor's services. Transported IDs do not grant or select authority. Search
 executes with read only; Filesystem descriptors request read for `read_file`,
-read/mutation for `apply_patch` and `delete_file`, and mutation only for `create_file`. The separate
+read/mutation for `apply_patch` and `delete_file`, and mutation only for `create_file`;
+Command executes with process only. The separate
 generated mutation service supports only create-new, conditional replacement, and
-conditional deletion, leaving the read service unchanged. Reverse calls remain
-unary; authority is revoked on settlement, cancellation, or retirement, without
-promising rollback of in-flight effects or an OS sandbox. See
+conditional deletion, leaving the read service unchanged. The generated process
+service exposes exactly `runForegroundProcess(EnvironmentForegroundProcessRequest
+request) -> Stream<EnvironmentProcessEvent>`, with existing DTOs and no authority
+query or authority-selection IDs. Reverse reads/mutations remain unary; process
+streams use one-item credit and cancellation. Authority is revoked immediately on
+settlement, cancellation, or retirement, before bounded cleanup of owned streams,
+without promising rollback of in-flight effects or an OS sandbox. See
 [`contracts-and-capabilities.md`](contracts-and-capabilities.md#remote-model-tools).
 
 ## Provider proposal versus ToolInvocation

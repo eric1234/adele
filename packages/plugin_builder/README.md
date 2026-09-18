@@ -26,8 +26,8 @@ compiler share this primitive.
 ## Desktop Tooling
 
 Normal `dart tools/adele.dart run linux` and `build linux --profile` prepare the
-shared host AOT snapshot, five backend AOT snapshots (Git Environment, OpenAI,
-AGENTS.md, Search, and Filesystem Tools), and four frontend EVCs (Chat, Filesystem
+shared host AOT snapshot, six backend AOT snapshots (Git Environment, OpenAI,
+AGENTS.md, Search, Filesystem Tools, and Command Tools), and four frontend EVCs (Chat, Filesystem
 Tools, Command Tools, and OpenAI activity) before launching the Flutter run/build command. Backend compilation
 runs outside Flutter; frontend compilation uses Flutter build-time tooling. This also
 applies to explicit Linux debug/release modes; non-Linux commands and the explicit
@@ -39,7 +39,7 @@ reference fixture's draft `adele_plugin.yaml` source/build manifest.
 
 The launcher inspects its selected Flutter executable and uses that SDK's bundled
 `dart` and sibling `dartaotruntime`, not a potentially unrelated `dart` on PATH.
-It compiles the host and Git, OpenAI, AGENTS.md, Search, and Filesystem Tools backends.
+It compiles the host and Git, OpenAI, AGENTS.md, Search, Filesystem Tools, and Command Tools backends.
 `tools/frontend_artifacts.dart` prepares all four stock EVCs in the same installation root with the selected Flutter
 SDK. `tools/stock_frontend_descriptors.dart` is the singular stock build-side
 presentation descriptor table, shared with installation fixtures rather than
@@ -52,7 +52,7 @@ preparation succeeds. The launcher passes only four generic deployment defines:
 - `ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`: absolute generic startup-arguments JSON file.
 
 Seven installation directories are immediate children of the one installation root;
-Filesystem Tools and OpenAI each share one manifest and PluginId across their
+Filesystem Tools, Command Tools, and OpenAI each share one manifest and PluginId across their
 independently activatable backend and frontend components:
 
 ```text
@@ -69,6 +69,7 @@ desktop-plugins/build-*/
     |   `-- frontend.evc
     |-- command-tools/
     |   |-- adele_plugin.installation.json
+    |   |-- backend.aot
     |   `-- frontend.evc
     |-- git-environment/
     |   |-- adele_plugin.installation.json
@@ -99,11 +100,16 @@ layouts. Catalog validation checks confined existing files, not executable EVC
 correctness. Runtime bytecode decoding remains presentation-local.
 
 Filesystem's backend source is under `plugins/filesystem_tools/packages/backend`.
-AGENTS.md, Search, and Filesystem Tools need no configuration/startup arguments or
+Command's is under `plugins/command_tools/packages/backend`, with entrypoint
+`bin/command_tools_backend.dart`. AGENTS.md, Search, Filesystem Tools, and Command
+Tools need no configuration/startup arguments or
 extra deployment defines. Their entrypoints own ready extension advertisements; the app uses generic
 remote extension activation rather than linking their semantic plugins in production.
-Both host and plugin-backend protocols use version 2, so all host/backend artifacts
-must be rebuilt together. The installed manifest uses version 1.
+Both host and plugin-backend protocols use version 1 with exact protocol-version
+matching. Rebuild all host/backend artifacts as a coherent set after wire changes,
+including pre-release changes that retain the version; prior development artifacts
+are unsupported. The installed manifest uses version 1. See the
+[transport version policy](../../docs/architecture/contracts-and-capabilities.md#transport-version-policy).
 
 The separate temporary startup file is a JSON object mapping PluginId to
 `List<String>` argv. The launcher derives OpenAI's credential-file reference and
@@ -184,11 +190,13 @@ attempts all discovered valid backend and frontend components without enable/dis
 controls, version solving, watching, or hot upgrade. Future profiles choose
 activation participation separately from prepared descriptors. The remote AGENTS.md
 source and Search tools use narrow unary host reads; Filesystem tools also use a
-separate unary mutation service. Remote model-tool preparation has no host token;
-only execution after policy/approval receives its descriptor's exact read/mutation
-allowlist through existing host-to-backend server streaming. Reverse streaming and
-general symmetric RPC are unimplemented. The three in-process stock activations
-(Chat, Command Tools, and Local Directory Project Selector) are outside this
+separate unary mutation service, while Command uses reverse server-streaming process
+calls. Remote model-tool preparation has no host token; only execution after
+policy/approval receives its descriptor's exact read/mutation/process allowlist.
+Reverse streams use one-item credit and cancellation, with immediate authority
+revocation and bounded cleanup. General symmetric RPC, client/bidirectional
+streaming, and ambient callbacks are unimplemented. The two in-process stock activations
+(Chat and Local Directory Project Selector) are outside this
 discovery path, with their migration deferred.
 
 ## Current Scope

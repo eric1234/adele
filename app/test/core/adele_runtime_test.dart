@@ -18,7 +18,7 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 
 void main() {
   test(
-    'startup only composes three stock contributions and a shared graph',
+    'startup only composes Chat and Local Directory contributions on a shared graph',
     () {
       final _RecordingIds ids = _RecordingIds();
       final AdeleRuntime runtime = AdeleRuntime(ids: ids);
@@ -48,11 +48,11 @@ void main() {
         _contributions(runtime).map((binding) => binding.id.value),
         unorderedEquals(<String>[
           'dev.adele.plugin.chat-strategy.orchestration',
-          'dev.adele.plugin.command-tools.model-tools',
           'dev.adele.plugin.local-directory-project-selector.project-selector',
         ]),
       );
       expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
+      expect(runtime.extensions.discover(modelToolContributions), isEmpty);
       expect(runtime.plugins.extensions, same(runtime.extensions));
       expect(runtime.plugins.host, isNull);
       expect(runtime.plugins.catalog, isNull);
@@ -78,9 +78,9 @@ void main() {
   );
 
   test(
-    'default IDs are optional and reduced composition omits only commands',
+    'default IDs are optional and bare composition contains no model tools',
     () {
-      final AdeleRuntime runtime = AdeleRuntime(includeCommandTools: false);
+      final AdeleRuntime runtime = AdeleRuntime();
       addTearDown(runtime.close);
 
       expect(
@@ -98,7 +98,7 @@ void main() {
   );
 
   test(
-    'bare runtime powers retained Chat without implicit Filesystem, Search or AGENTS',
+    'bare runtime powers retained Chat without implicit tools or AGENTS',
     () async {
       final _RecordingIds ids = _RecordingIds();
       final AdeleRuntime runtime = AdeleRuntime(ids: ids);
@@ -218,13 +218,7 @@ void main() {
       );
       expect(request.context.sourceResults, isEmpty);
       expect(channel.calls, hasLength(1));
-      expect(
-        request.tools.tools.map((tool) => tool.modelDefinition.alias),
-        unorderedEquals(<String>['run_command']),
-      );
-      for (final MaterializedTool tool in request.tools.tools) {
-        tool.executable.validateBinding();
-      }
+      expect(request.tools.tools, isEmpty);
       final List<ExtensionBinding<Object>> bindings = _contributions(runtime);
       final ResolvedOrchestrationStrategy strategy = runtime.lifecycle
           .resolveSessionStrategy(session.id);
@@ -243,12 +237,6 @@ void main() {
         () => runtime.lifecycle.resolveSessionStrategy(session.id),
         throwsA(isA<OrchestrationStrategyUnavailable>()),
       );
-      for (final MaterializedTool tool in request.tools.tools) {
-        expect(
-          tool.executable.validateBinding,
-          throwsA(isA<StaleToolBindingException>()),
-        );
-      }
       // The caller owns provider registration; runtime closes only its extensions.
       expect(provider.isClosed, isFalse);
       materialization.validateBinding();

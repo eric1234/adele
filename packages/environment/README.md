@@ -50,13 +50,21 @@ expectedRevision)`. It reuses the provider's mutation results and declared
 It has no authority query, authority-selection IDs, reads, or process methods.
 The read service is unchanged; neither service implicitly grants the other.
 
+Separate generated `AuthorizedEnvironmentProcessService` exposes exactly
+`runForegroundProcess(EnvironmentForegroundProcessRequest request) ->
+Stream<EnvironmentProcessEvent>`. It reuses existing process request/event DTOs and
+declared `EnvironmentFailure`, with no authority query, authority-selection IDs,
+reads, or mutations. It is an operation-scoped view of the captured
+`AuthorizedEnvironmentProcessFacet`, not a separate provider capability or a
+plugin-selected Environment. Neither filesystem host service grants process access.
+
 For remote inference sources, the app captures canonical
 `InferenceContextSourceContext`, obtains its `AuthorizedEnvironmentFileReadFacet`,
 and validates exact authority around each read. A secure opaque per-operation host
 context allowlists this service on the exact connection generation; transported
 Session/Run IDs never select authority. Calls use the existing ports/framed host
 and are revoked at operation settlement, retirement, and termination. Remote model
-tools capture the read/mutation facets requested by exposure `hostServices` during
+tools capture the read/mutation/process facets requested by exposure `hostServices` during
 materialization, validating the same Session and Environment across facets. Every
 captured exact binding is checked synchronously without re-resolution. Each tool's
 required `executionHostServices` selects an exact allowed subset of those
@@ -68,11 +76,18 @@ starts on listen and ends on done, error, cancellation, or retirement.
 Stock Search's AOT backend composes directory and file reads using its existing
 pure-Dart semantics. Filesystem's AOT backend reuses its root tools: `read_file`
 gets read only, `apply_patch`/`delete_file` get read and mutation, and `create_file`
-gets mutation only. Transported identities cannot choose an Environment. See
+gets mutation only. Command's AOT backend reuses its root `run_command` semantics
+with process-only execution authority. Transported identities cannot choose an Environment. See
 [operation-scoped host calls](../../docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls).
-These unary host services use the existing version-2 protocols, support neither
-reverse streaming nor general symmetric RPC, and are not an OS sandbox. Revocation
-does not roll back or cancel an already-started mutation.
+Read/mutation host calls remain unary; process host calls use reverse server
+streaming with one-item credit, pause/resume, and producer cancellation. Both
+transport protocols are version 1 under the
+[pre-release transport policy](../../docs/architecture/contracts-and-capabilities.md#transport-version-policy);
+the installed manifest remains version 1.
+Outer-operation settlement, cancellation, or retirement revokes authority
+immediately and cancels owned reverse streams with bounded cleanup. This is not
+general symmetric RPC, client/bidirectional streaming, ambient callbacks, or an OS
+sandbox. Revocation does not roll back or cancel an already-started mutation.
 
 `runForegroundProcess` accepts a non-empty program, an immutable ordered
 argument vector, an Environment-relative working directory, and a required

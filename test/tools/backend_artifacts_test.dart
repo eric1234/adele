@@ -19,6 +19,8 @@ const String _searchToolsEntrypoint =
     'plugins/search_tools/packages/backend/bin/search_tools_backend.dart';
 const String _filesystemToolsEntrypoint =
     'plugins/filesystem_tools/packages/backend/bin/filesystem_tools_backend.dart';
+const String _commandToolsEntrypoint =
+    'plugins/command_tools/packages/backend/bin/command_tools_backend.dart';
 const String _frontendHarness = 'tool/compile_chat_frontend.dart';
 const String _toolFrontendHarness =
     'tool/compile_tool_inspection_frontends.dart';
@@ -67,6 +69,7 @@ void main() {
       _agentsMdEntrypoint,
       _searchToolsEntrypoint,
       _filesystemToolsEntrypoint,
+      _commandToolsEntrypoint,
     ]) {
       final File source = File('${root.path}/$entrypoint');
       source.parent.createSync(recursive: true);
@@ -217,6 +220,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           'agents_md_backend',
           'search_tools_backend',
           'filesystem_tools_backend',
+          'command_tools_backend',
         ]),
       );
       expect(commands.existsSync(), isFalse);
@@ -257,6 +261,8 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           'compiled|$_searchToolsEntrypoint',
           'compile|$_filesystemToolsEntrypoint',
           'compiled|$_filesystemToolsEntrypoint',
+          'compile|$_commandToolsEntrypoint',
+          'compiled|$_commandToolsEntrypoint',
           'compile|$_frontendHarness',
           'compiled|$_frontendHarness',
           'compile|$_toolFrontendHarness|filesystem',
@@ -328,6 +334,9 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
         final File filesystemTools = File.fromUri(
           installations.uri.resolve('filesystem-tools/backend.aot'),
         );
+        final File commandTools = File.fromUri(
+          installations.uri.resolve('command-tools/backend.aot'),
+        );
         final File frontend = File.fromUri(
           installations.uri.resolve('chat-strategy/frontend.evc'),
         );
@@ -337,6 +346,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
         expect(agentsMd.uri.isAbsolute, isTrue);
         expect(searchTools.uri.isAbsolute, isTrue);
         expect(filesystemTools.uri.isAbsolute, isTrue);
+        expect(commandTools.uri.isAbsolute, isTrue);
         expect(frontend.uri.isAbsolute, isTrue);
         expect(host.path, endsWith('/host.aot'));
         expect(git.path, endsWith('/git-environment/backend.aot'));
@@ -344,6 +354,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
         expect(agentsMd.path, endsWith('/agents-md/backend.aot'));
         expect(searchTools.path, endsWith('/search-tools/backend.aot'));
         expect(filesystemTools.path, endsWith('/filesystem-tools/backend.aot'));
+        expect(commandTools.path, endsWith('/command-tools/backend.aot'));
         expect(frontend.path, endsWith('/chat-strategy/frontend.evc'));
         expect(frontendEnvironment.readAsLinesSync(), <String>[
           root.path,
@@ -413,7 +424,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
             directory: 'command-tools',
             id: 'dev.adele.plugin.command-tools',
             name: 'Command Tools',
-            backend: false,
+            backend: true,
           ),
         ]) {
           final directory = Directory.fromUri(
@@ -478,7 +489,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.backendArtifactUri != null,
           ),
-          hasLength(5),
+          hasLength(6),
         );
         expect(
           catalog.installations.where(
@@ -524,6 +535,10 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           filesystemTools.readAsStringSync(),
           'snapshot $_filesystemToolsEntrypoint\n',
         );
+        expect(
+          commandTools.readAsStringSync(),
+          'snapshot $_commandToolsEntrypoint\n',
+        );
         expect(frontend.readAsStringSync(), 'frontend bytecode\n');
         retainedArtifacts[host.path] = host.readAsStringSync();
         for (final MapEntry<String, String> artifact
@@ -534,6 +549,53 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
       }
     },
   );
+
+  for (final missing in PreparedPluginComponent.values) {
+    test(
+      'Command missing ${missing.name} retains its installed sibling',
+      () async {
+        final result = await invoke(['run', 'linux']);
+        expect(result.exitCode, 0, reason: result.stderr.toString());
+        const prefix = '--dart-define=ADELE_PLUGIN_INSTALLATION_ROOT=';
+        final rootPath = launchArguments
+            .readAsLinesSync()
+            .singleWhere((argument) => argument.startsWith(prefix))
+            .substring(prefix.length);
+        await File(
+          '$rootPath/command-tools/${missing == PreparedPluginComponent.backend ? 'backend.aot' : 'frontend.evc'}',
+        ).delete();
+
+        final catalog = await PreparedPluginCatalog.discover(rootPath);
+        expect(catalog.installations, hasLength(7));
+        expect(catalog.issues.single.component, missing);
+        final command = catalog.installations.singleWhere(
+          (installation) =>
+              installation.metadata.id.value ==
+              'dev.adele.plugin.command-tools',
+        );
+        expect(
+          command.backendArtifactUri,
+          missing == PreparedPluginComponent.backend ? isNull : isNotNull,
+        );
+        expect(
+          command.frontend,
+          missing == PreparedPluginComponent.frontend ? isNull : isNotNull,
+        );
+        expect(
+          catalog.installations.where(
+            (installation) => installation.backendArtifactUri != null,
+          ),
+          hasLength(missing == PreparedPluginComponent.backend ? 5 : 6),
+        );
+        expect(
+          catalog.installations.where(
+            (installation) => installation.frontend != null,
+          ),
+          hasLength(missing == PreparedPluginComponent.frontend ? 3 : 4),
+        );
+      },
+    );
+  }
 
   for (final explicitClient in [false, true]) {
     test(
@@ -693,6 +755,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
     _agentsMdEntrypoint,
     _searchToolsEntrypoint,
     _filesystemToolsEntrypoint,
+    _commandToolsEntrypoint,
   ]) {
     for (final String command in <String>['run', 'build']) {
       test('$command never launches after $failedEntrypoint fails', () async {
@@ -715,24 +778,32 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           if (failedEntrypoint == _openaiEntrypoint ||
               failedEntrypoint == _agentsMdEntrypoint ||
               failedEntrypoint == _searchToolsEntrypoint ||
-              failedEntrypoint == _filesystemToolsEntrypoint) ...<String>[
+              failedEntrypoint == _filesystemToolsEntrypoint ||
+              failedEntrypoint == _commandToolsEntrypoint) ...<String>[
             'compiled|$_gitEntrypoint',
             'compile|$_openaiEntrypoint',
           ],
           if (failedEntrypoint == _agentsMdEntrypoint ||
               failedEntrypoint == _searchToolsEntrypoint ||
-              failedEntrypoint == _filesystemToolsEntrypoint) ...<String>[
+              failedEntrypoint == _filesystemToolsEntrypoint ||
+              failedEntrypoint == _commandToolsEntrypoint) ...<String>[
             'compiled|$_openaiEntrypoint',
             'compile|$_agentsMdEntrypoint',
           ],
           if (failedEntrypoint == _searchToolsEntrypoint ||
-              failedEntrypoint == _filesystemToolsEntrypoint) ...<String>[
+              failedEntrypoint == _filesystemToolsEntrypoint ||
+              failedEntrypoint == _commandToolsEntrypoint) ...<String>[
             'compiled|$_agentsMdEntrypoint',
             'compile|$_searchToolsEntrypoint',
           ],
-          if (failedEntrypoint == _filesystemToolsEntrypoint) ...<String>[
+          if (failedEntrypoint == _filesystemToolsEntrypoint ||
+              failedEntrypoint == _commandToolsEntrypoint) ...<String>[
             'compiled|$_searchToolsEntrypoint',
             'compile|$_filesystemToolsEntrypoint',
+          ],
+          if (failedEntrypoint == _commandToolsEntrypoint) ...<String>[
+            'compiled|$_filesystemToolsEntrypoint',
+            'compile|$_commandToolsEntrypoint',
           ],
         ]);
         expect(launchArguments.existsSync(), isFalse);
@@ -784,6 +855,8 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
               'compiled|$_searchToolsEntrypoint',
               'compile|$_filesystemToolsEntrypoint',
               'compiled|$_filesystemToolsEntrypoint',
+              'compile|$_commandToolsEntrypoint',
+              'compiled|$_commandToolsEntrypoint',
               'compile|$_frontendHarness',
               if (kind != 'chat' || failure != 'exit')
                 'compiled|$_frontendHarness',

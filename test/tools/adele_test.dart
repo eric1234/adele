@@ -319,6 +319,10 @@ void main() {
           name: 'filesystem_tools_backend',
           path: 'plugins/filesystem_tools/packages/backend',
         ),
+        (
+          name: 'command_tools_backend',
+          path: 'plugins/command_tools/packages/backend',
+        ),
       ]) {
         final target = lookupTestTarget(expected.name);
         expect(target.path, expected.path);
@@ -358,6 +362,19 @@ void main() {
         app.split('dev_dependencies:').last,
         contains('search_tools_plugin:'),
       );
+      expect(
+        app.split('dev_dependencies:').first,
+        isNot(contains('command_tools')),
+      );
+      expect(
+        app.split('dev_dependencies:').last,
+        contains('command_tools_plugin:'),
+      );
+      final runtime = File(
+        'app/lib/core/adele_runtime.dart',
+      ).readAsStringSync();
+      expect(runtime, isNot(contains('CommandToolsPlugin')));
+      expect(runtime, isNot(contains('includeCommandTools')));
       for (final path in [
         'app/lib/core/adele_runtime.dart',
         'app/lib/core/application_plugin_bootstrap.dart',
@@ -366,6 +383,11 @@ void main() {
         expect(
           File(path).readAsStringSync(),
           isNot(contains('package:search_tools')),
+          reason: path,
+        );
+        expect(
+          File(path).readAsStringSync(),
+          isNot(contains('package:command_tools')),
           reason: path,
         );
       }
@@ -614,6 +636,7 @@ void main() {
         'search_tools_plugin|dart|plugins/search_tools|test',
         'search_tools_backend|dart|plugins/search_tools/packages/backend|test',
         'command_tools_plugin|dart|plugins/command_tools|test',
+        'command_tools_backend|dart|plugins/command_tools/packages/backend|test',
         'agents_md_plugin|dart|plugins/agents_md|test',
         'agents_md_backend|dart|plugins/agents_md/packages/backend|test',
         'chat_strategy_plugin|dart|plugins/chat_strategy|test',

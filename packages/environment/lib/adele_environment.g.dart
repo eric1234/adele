@@ -381,6 +381,615 @@ final class AuthorizedEnvironmentMutationServiceDispatcher
   }
 }
 
+const String authorizedEnvironmentProcessServiceId =
+    'authorizedEnvironmentProcess';
+const String authorizedEnvironmentProcessServiceRunForegroundProcessId =
+    'authorizedEnvironmentProcess.runForegroundProcess';
+
+final class AuthorizedEnvironmentProcessServiceClient
+    implements AuthorizedEnvironmentProcessService {
+  const AuthorizedEnvironmentProcessServiceClient(
+    AdeleRequestChannel _adeleChannel,
+  ) : _adeleChannel = _adeleChannel;
+  final AdeleRequestChannel _adeleChannel;
+  @override
+  Stream<EnvironmentProcessEvent> runForegroundProcess(
+    EnvironmentForegroundProcessRequest request,
+  ) => AdeleLazyStream<EnvironmentProcessEvent>((
+    _adeleOnData0,
+    _adeleOnError1,
+    _adeleOnDone2,
+    _adeleCancelOnError3,
+  ) {
+    final _adeleStreamChannel4 = this._adeleChannel;
+    if (_adeleStreamChannel4 is! AdeleStreamChannel)
+      throw StateError('This generated method requires an AdeleStreamChannel.');
+    final _adeleRaw43 = _adeleStreamChannel4.stream(
+      authorizedEnvironmentProcessServiceRunForegroundProcessId,
+      <String, Object?>{
+        'request': _encodeEnvironmentForegroundProcessRequest(request),
+      },
+    );
+    return adeleDecodedStream<EnvironmentProcessEvent>(
+      _adeleRaw43,
+      (Object? _adeleItem5) => _decodeEnvironmentProcessEvent(_adeleItem5),
+      (Object _adeleError42) {
+        if (_adeleError42 is AdeleRemoteFailure) {
+          switch (_adeleError42.declaredFailureType) {
+            case environmentFailureTypeId:
+              final _adeleDetails8 = _contractJsonMap(
+                _adeleError42.details,
+                'failure details',
+              );
+              throw _contractConstruct(
+                'EnvironmentFailure',
+                () => EnvironmentFailure(
+                  code: _adeleError42.code,
+                  message: _adeleError42.message,
+                  details: _adeleDetails8,
+                ),
+              );
+            default:
+              break;
+          }
+        }
+        return _adeleError42;
+      },
+    ).listen(
+      _adeleOnData0,
+      onError: _adeleOnError1,
+      onDone: _adeleOnDone2,
+      cancelOnError: _adeleCancelOnError3,
+    );
+  });
+}
+
+abstract interface class AuthorizedEnvironmentProcessServiceRequestDispatcher
+    implements AdeleBackendDispatcher {}
+
+final class AuthorizedEnvironmentProcessServiceDispatcher
+    implements AuthorizedEnvironmentProcessServiceRequestDispatcher {
+  AuthorizedEnvironmentProcessServiceDispatcher(this._adeleService);
+  final AuthorizedEnvironmentProcessService _adeleService;
+  final Map<int, _ContractStreamState> _adeleStreams =
+      <int, _ContractStreamState>{};
+  Future<void> _adeleOrdinaryTail = Future<void>.value();
+  final Set<Future<void>> _adeleOperations = <Future<void>>{};
+  final Set<Future<void>> _adeleCancellations = <Future<void>>{};
+  Future<void>? _adeleCloseFuture;
+  bool _adeleClosed = false;
+  @override
+  Future<Map<String, Object?>> dispatch(Map<Object?, Object?> _adeleRequest0) {
+    if (_adeleClosed)
+      return Future<Map<String, Object?>>.error(
+        StateError('The dispatcher is closed.'),
+      );
+    return _adeleScheduleOrdinary<Map<String, Object?>>(
+      () => _adeleDispatchCore(_adeleRequest0),
+    );
+  }
+
+  Future<Map<String, Object?>> _adeleDispatchCore(
+    Map<Object?, Object?> _adeleRequest0,
+  ) async {
+    final _adeleRequestId1 = _adeleRequest0['requestId'];
+    late final String _adeleMethod2;
+    try {
+      _adeleMethod2 = _decodeContractEnvelope(_adeleRequest0, 'request');
+    } on AdeleProtocolException catch (_adeleError3) {
+      return _contractFailure(
+        _adeleRequestId1,
+        null,
+        'invalid_request',
+        _adeleError3.message,
+        const {},
+      );
+    }
+    if (!const <String>{}.contains(_adeleMethod2))
+      return _contractFailure(
+        _adeleRequestId1,
+        null,
+        const {
+              authorizedEnvironmentProcessServiceRunForegroundProcessId,
+            }.contains(_adeleMethod2)
+            ? 'wrong_method_kind'
+            : 'unknown_method',
+        const {
+              authorizedEnvironmentProcessServiceRunForegroundProcessId,
+            }.contains(_adeleMethod2)
+            ? 'Streaming method requires stream-open.'
+            : 'Unknown method.',
+        const {},
+      );
+    late final Map<Object?, Object?> _adelePayload4;
+    try {
+      _adelePayload4 = _contractMap(
+        _adeleRequest0['payload'],
+        'request payload',
+      );
+    } on AdeleProtocolException catch (_adeleError5) {
+      return _contractFailure(
+        _adeleRequestId1,
+        null,
+        'invalid_request',
+        _adeleError5.message,
+        const {},
+      );
+    }
+    late final Object? _adeleArguments6;
+    try {
+      _adeleArguments6 = switch (_adeleMethod2) {
+        _ => throw const _ContractUnknownMethod(),
+      };
+    } on _ContractUnknownMethod {
+      return _contractFailure(
+        _adeleRequestId1,
+        null,
+        'unknown_method',
+        'Unknown method.',
+        const {},
+      );
+    } on AdeleProtocolException catch (_adeleError7) {
+      return _contractFailure(
+        _adeleRequestId1,
+        null,
+        'invalid_request',
+        _adeleError7.message,
+        const {},
+      );
+    }
+    late final Object? _adeleResult8;
+    try {
+      _adeleResult8 = await switch (_adeleMethod2) {
+        _ => throw const _ContractUnknownMethod(),
+      };
+    } on EnvironmentFailure catch (_adeleError9) {
+      try {
+        return _contractFailure(
+          _adeleRequestId1,
+          environmentFailureTypeId,
+          _adeleError9.code,
+          _adeleError9.message,
+          _contractJsonMap(_adeleError9.details, 'failure details'),
+        );
+      } on Object {
+        return _contractFailure(
+          _adeleRequestId1,
+          null,
+          'backend_contract_violation',
+          'The backend violated its generated contract.',
+          const {},
+        );
+      }
+    } on _ContractUnknownMethod {
+      return _contractFailure(
+        _adeleRequestId1,
+        null,
+        'unknown_method',
+        'Unknown method.',
+        const {},
+      );
+    } on Object catch (_adeleError10) {
+      return _contractFailure(
+        _adeleRequestId1,
+        null,
+        'internal_error',
+        'The backend request failed unexpectedly.',
+        const {},
+      );
+    }
+    try {
+      final _adeleEncoded11 = switch (_adeleMethod2) {
+        _ => throw const _ContractUnknownMethod(),
+      };
+      return {
+        'kind': 'response',
+        'requestId': _adeleRequestId1,
+        'ok': true,
+        'payload': _adeleEncoded11,
+      };
+    } on Object {
+      return _contractFailure(
+        _adeleRequestId1,
+        null,
+        'backend_contract_violation',
+        'The backend violated its generated contract.',
+        const {},
+      );
+    }
+  }
+
+  @override
+  Future<void> handle(
+    Map<Object?, Object?> _adeleCommand0,
+    void Function(Map<String, Object?>) _adeleSend1,
+  ) {
+    final _adeleKind2 = _adeleCommand0['kind'];
+    if (_adeleKind2 == 'request') {
+      if (_adeleClosed) return Future<void>.value();
+      return _adeleScheduleOrdinary<void>(
+        () async => _adeleSend1(await _adeleDispatchCore(_adeleCommand0)),
+      );
+    }
+    if (_adeleKind2 == 'streamOpen') {
+      if (_adeleClosed) return Future<void>.value();
+      final _adeleRequestId3 = _adeleCommand0['requestId'];
+      if (_adeleRequestId3 is! int ||
+          _adeleStreams.containsKey(_adeleRequestId3)) {
+        _adeleSend1(
+          _contractStreamFailure(
+            _adeleRequestId3,
+            null,
+            'invalid_request',
+            'Malformed stream-open request.',
+            const {},
+          ),
+        );
+        return Future<void>.value();
+      }
+      final _adeleState4 = _ContractStreamState.opening(_adeleRequestId3);
+      _adeleStreams[_adeleRequestId3] = _adeleState4;
+      return _adeleScheduleOrdinary<void>(
+        () => _adeleOpenStream(_adeleState4, _adeleCommand0, _adeleSend1),
+      );
+    }
+    final _adeleRequestId3 = _adeleCommand0['requestId'];
+    if (_adeleRequestId3 is! int) return Future<void>.value();
+    final _adeleState4 = _adeleStreams[_adeleRequestId3];
+    if (_adeleKind2 == 'streamCredit') {
+      final _adeleCredit5 = _adeleCommand0['credit'];
+      if (_adeleState4 != null && _adeleCredit5 is int && _adeleCredit5 > 0) {
+        _adeleState4.credit += _adeleCredit5;
+        _adelePump(_adeleState4, _adeleSend1);
+      }
+      return Future<void>.value();
+    }
+    if (_adeleKind2 == 'streamCancel')
+      return _adeleCancelAndAcknowledge(_adeleRequestId3, _adeleSend1);
+    return Future<void>.value();
+  }
+
+  Future<T> _adeleScheduleOrdinary<T>(Future<T> Function() _adeleBody0) {
+    final Future<T> _adeleResult1 = _adeleOrdinaryTail.then(
+      (_) => _adeleBody0(),
+    );
+    late final Future<void> _adeleSettlement2;
+    _adeleSettlement2 = _adeleResult1
+        .then<void>((_) {}, onError: (_, _) {})
+        .whenComplete(() => _adeleOperations.remove(_adeleSettlement2));
+    _adeleOrdinaryTail = _adeleSettlement2;
+    _adeleOperations.add(_adeleSettlement2);
+    return _adeleResult1;
+  }
+
+  Future<void> _adeleOpenStream(
+    _ContractStreamState _adeleState0,
+    Map<Object?, Object?> _adeleRequest0,
+    void Function(Map<String, Object?>) _adeleSend1,
+  ) async {
+    final _adeleRequestId2 = _adeleState0.requestId;
+    try {
+      if (_adeleState0.done) return;
+      late final String _adeleMethod3;
+      late final Map<Object?, Object?> _adelePayload4;
+      late final List<Object?> _adeleArguments5;
+      try {
+        _adeleMethod3 = _decodeContractEnvelope(_adeleRequest0, 'streamOpen');
+        if (!const {
+          authorizedEnvironmentProcessServiceRunForegroundProcessId,
+        }.contains(_adeleMethod3)) {
+          final _adeleWrongKind6 = const <String>{}.contains(_adeleMethod3);
+          _adeleFinish(
+            _adeleState0,
+            _adeleSend1,
+            _contractStreamFailure(
+              _adeleRequestId2,
+              null,
+              _adeleWrongKind6 ? 'wrong_method_kind' : 'unknown_method',
+              _adeleWrongKind6
+                  ? 'Unary method requires request.'
+                  : 'Unknown method.',
+              const {},
+            ),
+          );
+          return;
+        }
+        _adelePayload4 = _contractMap(
+          _adeleRequest0['payload'],
+          'request payload',
+        );
+        _adeleArguments5 = switch (_adeleMethod3) {
+          authorizedEnvironmentProcessServiceRunForegroundProcessId => (() {
+            _contractFields(_adelePayload4, const {
+              'request',
+            }, 'runForegroundProcess payload');
+            return <Object?>[
+              _decodeEnvironmentForegroundProcessRequest(
+                _adelePayload4['request'],
+              ),
+            ];
+          })(),
+          _ => throw const _ContractUnknownMethod(),
+        };
+      } on AdeleProtocolException catch (_adeleError7) {
+        _adeleFinish(
+          _adeleState0,
+          _adeleSend1,
+          _contractStreamFailure(
+            _adeleRequestId2,
+            null,
+            'invalid_request',
+            _adeleError7.message,
+            const {},
+          ),
+        );
+        return;
+      }
+      try {
+        final Stream<Object?> _adeleSource8 = switch (_adeleMethod3) {
+          authorizedEnvironmentProcessServiceRunForegroundProcessId =>
+            this._adeleService
+                .runForegroundProcess(
+                  _adeleArguments5[0] as EnvironmentForegroundProcessRequest,
+                )
+                .map<Object?>((Object? _adeleItem) => _adeleItem),
+          _ => throw const _ContractUnknownMethod(),
+        };
+        if (_adeleState0.done) {
+          await AdeleStreamIterator<Object?>(_adeleSource8).cancel();
+          return;
+        }
+        _adeleState0.method = _adeleMethod3;
+        _adeleState0.iterator = AdeleStreamIterator<Object?>(_adeleSource8);
+        _adelePump(_adeleState0, _adeleSend1);
+      } on EnvironmentFailure catch (_adeleError9) {
+        try {
+          _adeleFinish(
+            _adeleState0,
+            _adeleSend1,
+            _contractStreamFailure(
+              _adeleRequestId2,
+              environmentFailureTypeId,
+              _adeleError9.code,
+              _adeleError9.message,
+              _contractJsonMap(_adeleError9.details, 'failure details'),
+            ),
+          );
+        } on Object {
+          _adeleFinish(
+            _adeleState0,
+            _adeleSend1,
+            _contractStreamFailure(
+              _adeleRequestId2,
+              null,
+              'backend_contract_violation',
+              'The backend violated its generated contract.',
+              const {},
+            ),
+          );
+        }
+      } on TypeError {
+        _adeleFinish(
+          _adeleState0,
+          _adeleSend1,
+          _contractStreamFailure(
+            _adeleRequestId2,
+            null,
+            'backend_contract_violation',
+            'The backend violated its generated contract.',
+            const {},
+          ),
+        );
+      } on Object {
+        _adeleFinish(
+          _adeleState0,
+          _adeleSend1,
+          _contractStreamFailure(
+            _adeleRequestId2,
+            null,
+            'internal_error',
+            'The backend stream failed unexpectedly.',
+            const {},
+          ),
+        );
+      }
+    } finally {
+      if (!_adeleState0.openingSettled.isCompleted)
+        _adeleState0.openingSettled.complete();
+    }
+  }
+
+  Future<void> _adelePump(
+    _ContractStreamState _adeleState0,
+    void Function(Map<String, Object?>) _adeleSend1,
+  ) async {
+    final _adeleIterator2 = _adeleState0.iterator;
+    if (_adeleState0.pumping || _adeleState0.done || _adeleIterator2 == null)
+      return;
+    _adeleState0.pumping = true;
+    try {
+      while (!_adeleState0.done && _adeleState0.credit > 0) {
+        _adeleState0.credit--;
+        late final bool _adeleHasItem2;
+        try {
+          _adeleHasItem2 = await _adeleIterator2.moveNext();
+        } on EnvironmentFailure catch (_adeleError3) {
+          try {
+            _adeleFinish(
+              _adeleState0,
+              _adeleSend1,
+              _contractStreamFailure(
+                _adeleState0.requestId,
+                environmentFailureTypeId,
+                _adeleError3.code,
+                _adeleError3.message,
+                _contractJsonMap(_adeleError3.details, 'failure details'),
+              ),
+            );
+          } on Object {
+            _adeleFinish(
+              _adeleState0,
+              _adeleSend1,
+              _contractStreamFailure(
+                _adeleState0.requestId,
+                null,
+                'backend_contract_violation',
+                'The backend violated its generated contract.',
+                const {},
+              ),
+            );
+          }
+          return;
+        } on TypeError {
+          _adeleFailAndCancel(
+            _adeleState0,
+            _adeleSend1,
+            _contractStreamFailure(
+              _adeleState0.requestId,
+              null,
+              'backend_contract_violation',
+              'The backend violated its generated contract.',
+              const {},
+            ),
+          );
+          return;
+        } on Object {
+          _adeleFinish(
+            _adeleState0,
+            _adeleSend1,
+            _contractStreamFailure(
+              _adeleState0.requestId,
+              null,
+              'internal_error',
+              'The backend stream failed unexpectedly.',
+              const {},
+            ),
+          );
+          return;
+        }
+        if (_adeleState0.done ||
+            _adeleStreams[_adeleState0.requestId] != _adeleState0)
+          return;
+        if (!_adeleHasItem2) {
+          _adeleFinish(_adeleState0, _adeleSend1, {
+            'kind': 'streamDone',
+            'requestId': _adeleState0.requestId,
+          });
+          return;
+        }
+        try {
+          final _adeleEncoded4 = switch (_adeleState0.method) {
+            authorizedEnvironmentProcessServiceRunForegroundProcessId =>
+              _encodeEnvironmentProcessEvent(
+                (_adeleIterator2.current as EnvironmentProcessEvent),
+              ),
+            _ => throw const _ContractUnknownMethod(),
+          };
+          _adeleSend1({
+            'kind': 'streamItem',
+            'requestId': _adeleState0.requestId,
+            'payload': _adeleEncoded4,
+          });
+        } on Object {
+          _adeleFailAndCancel(
+            _adeleState0,
+            _adeleSend1,
+            _contractStreamFailure(
+              _adeleState0.requestId,
+              null,
+              'backend_contract_violation',
+              'The backend violated its generated contract.',
+              const {},
+            ),
+          );
+          return;
+        }
+      }
+    } finally {
+      _adeleState0.pumping = false;
+      if (!_adeleState0.done &&
+          _adeleState0.credit > 0 &&
+          _adeleState0.iterator != null)
+        _adelePump(_adeleState0, _adeleSend1);
+    }
+  }
+
+  void _adeleFinish(
+    _ContractStreamState _adeleState0,
+    void Function(Map<String, Object?>) _adeleSend1,
+    Map<String, Object?> _adeleTerminal2,
+  ) {
+    if (_adeleState0.done ||
+        _adeleStreams.remove(_adeleState0.requestId) != _adeleState0)
+      return;
+    _adeleState0.done = true;
+    _adeleSend1(_adeleTerminal2);
+  }
+
+  void _adeleFailAndCancel(
+    _ContractStreamState _adeleState0,
+    void Function(Map<String, Object?>) _adeleSend1,
+    Map<String, Object?> _adeleTerminal2,
+  ) {
+    if (_adeleState0.done ||
+        _adeleStreams.remove(_adeleState0.requestId) != _adeleState0)
+      return;
+    _adeleState0.done = true;
+    _adeleTrackCancellation(
+      _adeleState0,
+      onSettled: () => _adeleSend1(_adeleTerminal2),
+    );
+  }
+
+  Future<void> _adeleCancelAndAcknowledge(
+    int _adeleRequestId0,
+    void Function(Map<String, Object?>) _adeleSend1,
+  ) async {
+    if (await _adeleCancel(_adeleRequestId0))
+      _adeleSend1({'kind': 'streamCancelled', 'requestId': _adeleRequestId0});
+  }
+
+  Future<void> _adeleTrackCancellation(
+    _ContractStreamState _adeleState0, {
+    void Function()? onSettled,
+  }) {
+    late final Future<void> _adeleCancellation1;
+    _adeleCancellation1 =
+        (() async {
+              await _adeleState0.openingSettled.future;
+              try {
+                await _adeleState0.iterator?.cancel();
+              } on Object {
+                return;
+              }
+            })()
+            .then<void>((_) => onSettled?.call())
+            .whenComplete(
+              () => _adeleCancellations.remove(_adeleCancellation1),
+            );
+    _adeleCancellations.add(_adeleCancellation1);
+    return _adeleCancellation1;
+  }
+
+  Future<bool> _adeleCancel(int _adeleRequestId0) {
+    final _adeleState1 = _adeleStreams.remove(_adeleRequestId0);
+    if (_adeleState1 == null || _adeleState1.done)
+      return Future<bool>.value(false);
+    _adeleState1.done = true;
+    return _adeleTrackCancellation(_adeleState1).then((_) => true);
+  }
+
+  @override
+  Future<void> close() => _adeleCloseFuture ??= _adeleClose();
+  Future<void> _adeleClose() async {
+    _adeleClosed = true;
+    final _adeleIds0 = _adeleStreams.keys.toList(growable: false);
+    await Future.wait<bool>(_adeleIds0.map(_adeleCancel));
+    await Future.wait<void>(_adeleOperations.toList(growable: false));
+    await Future.wait<void>(_adeleCancellations.toList(growable: false));
+  }
+}
+
 const String authorizedEnvironmentReadServiceId = 'authorizedEnvironmentRead';
 const String authorizedEnvironmentReadServiceAuthorityId =
     'authorizedEnvironmentRead.authority';
@@ -404,18 +1013,18 @@ final class AuthorizedEnvironmentReadServiceClient
           <String, Object?>{},
         ),
       );
-    } on AdeleRemoteFailure catch (_adeleError42) {
-      switch (_adeleError42.declaredFailureType) {
+    } on AdeleRemoteFailure catch (_adeleError52) {
+      switch (_adeleError52.declaredFailureType) {
         case environmentFailureTypeId:
           final _adeleDetails0 = _contractJsonMap(
-            _adeleError42.details,
+            _adeleError52.details,
             'failure details',
           );
           throw _contractConstruct(
             'EnvironmentFailure',
             () => EnvironmentFailure(
-              code: _adeleError42.code,
-              message: _adeleError42.message,
+              code: _adeleError52.code,
+              message: _adeleError52.message,
               details: _adeleDetails0,
             ),
           );
@@ -434,18 +1043,18 @@ final class AuthorizedEnvironmentReadServiceClient
           <String, Object?>{'relativePath': relativePath},
         ),
       );
-    } on AdeleRemoteFailure catch (_adeleError45) {
-      switch (_adeleError45.declaredFailureType) {
+    } on AdeleRemoteFailure catch (_adeleError55) {
+      switch (_adeleError55.declaredFailureType) {
         case environmentFailureTypeId:
           final _adeleDetails0 = _contractJsonMap(
-            _adeleError45.details,
+            _adeleError55.details,
             'failure details',
           );
           throw _contractConstruct(
             'EnvironmentFailure',
             () => EnvironmentFailure(
-              code: _adeleError45.code,
-              message: _adeleError45.message,
+              code: _adeleError55.code,
+              message: _adeleError55.message,
               details: _adeleDetails0,
             ),
           );
@@ -464,18 +1073,18 @@ final class AuthorizedEnvironmentReadServiceClient
           <String, Object?>{'relativePath': relativePath},
         ),
       );
-    } on AdeleRemoteFailure catch (_adeleError50) {
-      switch (_adeleError50.declaredFailureType) {
+    } on AdeleRemoteFailure catch (_adeleError60) {
+      switch (_adeleError60.declaredFailureType) {
         case environmentFailureTypeId:
           final _adeleDetails0 = _contractJsonMap(
-            _adeleError50.details,
+            _adeleError60.details,
             'failure details',
           );
           throw _contractConstruct(
             'EnvironmentFailure',
             () => EnvironmentFailure(
-              code: _adeleError50.code,
-              message: _adeleError50.message,
+              code: _adeleError60.code,
+              message: _adeleError60.message,
               details: _adeleDetails0,
             ),
           );
@@ -746,18 +1355,18 @@ final class EnvironmentProviderServiceClient
           },
         ),
       );
-    } on AdeleRemoteFailure catch (_adeleError65) {
-      switch (_adeleError65.declaredFailureType) {
+    } on AdeleRemoteFailure catch (_adeleError75) {
+      switch (_adeleError75.declaredFailureType) {
         case environmentFailureTypeId:
           final _adeleDetails0 = _contractJsonMap(
-            _adeleError65.details,
+            _adeleError75.details,
             'failure details',
           );
           throw _contractConstruct(
             'EnvironmentFailure',
             () => EnvironmentFailure(
-              code: _adeleError65.code,
-              message: _adeleError65.message,
+              code: _adeleError75.code,
+              message: _adeleError75.message,
               details: _adeleDetails0,
             ),
           );
@@ -774,7 +1383,7 @@ final class EnvironmentProviderServiceClient
     String expectedRevision,
   ) async {
     try {
-      final _adeleResponse81 = await this._adeleChannel.request(
+      final _adeleResponse91 = await this._adeleChannel.request(
         environmentProviderServiceDeleteExistingTextFileId,
         <String, Object?>{
           'environmentId': environmentId,
@@ -782,20 +1391,20 @@ final class EnvironmentProviderServiceClient
           'expectedRevision': expectedRevision,
         },
       );
-      _contractVoid(_adeleResponse81, 'deleteExistingTextFile');
+      _contractVoid(_adeleResponse91, 'deleteExistingTextFile');
       return;
-    } on AdeleRemoteFailure catch (_adeleError74) {
-      switch (_adeleError74.declaredFailureType) {
+    } on AdeleRemoteFailure catch (_adeleError84) {
+      switch (_adeleError84.declaredFailureType) {
         case environmentFailureTypeId:
           final _adeleDetails0 = _contractJsonMap(
-            _adeleError74.details,
+            _adeleError84.details,
             'failure details',
           );
           throw _contractConstruct(
             'EnvironmentFailure',
             () => EnvironmentFailure(
-              code: _adeleError74.code,
-              message: _adeleError74.message,
+              code: _adeleError84.code,
+              message: _adeleError84.message,
               details: _adeleDetails0,
             ),
           );
@@ -818,18 +1427,18 @@ final class EnvironmentProviderServiceClient
           },
         ),
       );
-    } on AdeleRemoteFailure catch (_adeleError82) {
-      switch (_adeleError82.declaredFailureType) {
+    } on AdeleRemoteFailure catch (_adeleError92) {
+      switch (_adeleError92.declaredFailureType) {
         case environmentFailureTypeId:
           final _adeleDetails0 = _contractJsonMap(
-            _adeleError82.details,
+            _adeleError92.details,
             'failure details',
           );
           throw _contractConstruct(
             'EnvironmentFailure',
             () => EnvironmentFailure(
-              code: _adeleError82.code,
-              message: _adeleError82.message,
+              code: _adeleError92.code,
+              message: _adeleError92.message,
               details: _adeleDetails0,
             ),
           );
@@ -854,18 +1463,18 @@ final class EnvironmentProviderServiceClient
           },
         ),
       );
-    } on AdeleRemoteFailure catch (_adeleError87) {
-      switch (_adeleError87.declaredFailureType) {
+    } on AdeleRemoteFailure catch (_adeleError97) {
+      switch (_adeleError97.declaredFailureType) {
         case environmentFailureTypeId:
           final _adeleDetails0 = _contractJsonMap(
-            _adeleError87.details,
+            _adeleError97.details,
             'failure details',
           );
           throw _contractConstruct(
             'EnvironmentFailure',
             () => EnvironmentFailure(
-              code: _adeleError87.code,
-              message: _adeleError87.message,
+              code: _adeleError97.code,
+              message: _adeleError97.message,
               details: _adeleDetails0,
             ),
           );
@@ -890,18 +1499,18 @@ final class EnvironmentProviderServiceClient
           },
         ),
       );
-    } on AdeleRemoteFailure catch (_adeleError94) {
-      switch (_adeleError94.declaredFailureType) {
+    } on AdeleRemoteFailure catch (_adeleError104) {
+      switch (_adeleError104.declaredFailureType) {
         case environmentFailureTypeId:
           final _adeleDetails0 = _contractJsonMap(
-            _adeleError94.details,
+            _adeleError104.details,
             'failure details',
           );
           throw _contractConstruct(
             'EnvironmentFailure',
             () => EnvironmentFailure(
-              code: _adeleError94.code,
-              message: _adeleError94.message,
+              code: _adeleError104.code,
+              message: _adeleError104.message,
               details: _adeleDetails0,
             ),
           );
@@ -930,18 +1539,18 @@ final class EnvironmentProviderServiceClient
           },
         ),
       );
-    } on AdeleRemoteFailure catch (_adeleError101) {
-      switch (_adeleError101.declaredFailureType) {
+    } on AdeleRemoteFailure catch (_adeleError111) {
+      switch (_adeleError111.declaredFailureType) {
         case environmentFailureTypeId:
           final _adeleDetails0 = _contractJsonMap(
-            _adeleError101.details,
+            _adeleError111.details,
             'failure details',
           );
           throw _contractConstruct(
             'EnvironmentFailure',
             () => EnvironmentFailure(
-              code: _adeleError101.code,
-              message: _adeleError101.message,
+              code: _adeleError111.code,
+              message: _adeleError111.message,
               details: _adeleDetails0,
             ),
           );
@@ -964,18 +1573,18 @@ final class EnvironmentProviderServiceClient
           },
         ),
       );
-    } on AdeleRemoteFailure catch (_adeleError112) {
-      switch (_adeleError112.declaredFailureType) {
+    } on AdeleRemoteFailure catch (_adeleError122) {
+      switch (_adeleError122.declaredFailureType) {
         case environmentFailureTypeId:
           final _adeleDetails0 = _contractJsonMap(
-            _adeleError112.details,
+            _adeleError122.details,
             'failure details',
           );
           throw _contractConstruct(
             'EnvironmentFailure',
             () => EnvironmentFailure(
-              code: _adeleError112.code,
-              message: _adeleError112.message,
+              code: _adeleError122.code,
+              message: _adeleError122.message,
               details: _adeleDetails0,
             ),
           );
@@ -998,7 +1607,7 @@ final class EnvironmentProviderServiceClient
     final _adeleStreamChannel4 = this._adeleChannel;
     if (_adeleStreamChannel4 is! AdeleStreamChannel)
       throw StateError('This generated method requires an AdeleStreamChannel.');
-    final _adeleRaw118 = _adeleStreamChannel4.stream(
+    final _adeleRaw128 = _adeleStreamChannel4.stream(
       environmentProviderServiceRunForegroundProcessId,
       <String, Object?>{
         'environmentId': environmentId,
@@ -1006,21 +1615,21 @@ final class EnvironmentProviderServiceClient
       },
     );
     return adeleDecodedStream<EnvironmentProcessEvent>(
-      _adeleRaw118,
+      _adeleRaw128,
       (Object? _adeleItem5) => _decodeEnvironmentProcessEvent(_adeleItem5),
-      (Object _adeleError117) {
-        if (_adeleError117 is AdeleRemoteFailure) {
-          switch (_adeleError117.declaredFailureType) {
+      (Object _adeleError127) {
+        if (_adeleError127 is AdeleRemoteFailure) {
+          switch (_adeleError127.declaredFailureType) {
             case environmentFailureTypeId:
               final _adeleDetails8 = _contractJsonMap(
-                _adeleError117.details,
+                _adeleError127.details,
                 'failure details',
               );
               throw _contractConstruct(
                 'EnvironmentFailure',
                 () => EnvironmentFailure(
-                  code: _adeleError117.code,
-                  message: _adeleError117.message,
+                  code: _adeleError127.code,
+                  message: _adeleError127.message,
                   details: _adeleDetails8,
                 ),
               );
@@ -1028,7 +1637,7 @@ final class EnvironmentProviderServiceClient
               break;
           }
         }
-        return _adeleError117;
+        return _adeleError127;
       },
     ).listen(
       _adeleOnData0,
@@ -1831,64 +2440,64 @@ const String environmentFailureTypeId = 'environment.failure';
 const String authorizedEnvironmentIdentityTypeId =
     'environment.authorizedIdentity';
 Map<String, Object?> _encodeAuthorizedEnvironmentIdentity(
-  AuthorizedEnvironmentIdentity _adeleValue177,
+  AuthorizedEnvironmentIdentity _adeleValue187,
 ) => <String, Object?>{
-  'environmentId': _adeleValue177.environmentId,
-  'sessionId': _adeleValue177.sessionId,
+  'environmentId': _adeleValue187.environmentId,
+  'sessionId': _adeleValue187.sessionId,
 };
 AuthorizedEnvironmentIdentity _decodeAuthorizedEnvironmentIdentity(
-  Object? _adeleValue182,
+  Object? _adeleValue192,
 ) {
-  final _adeleMap183 = _contractMap(
-    _adeleValue182,
+  final _adeleMap193 = _contractMap(
+    _adeleValue192,
     'AuthorizedEnvironmentIdentity',
   );
-  _contractFields(_adeleMap183, const {
+  _contractFields(_adeleMap193, const {
     'environmentId',
     'sessionId',
   }, 'AuthorizedEnvironmentIdentity');
-  final _adeleField184 = _contractString(
-    _adeleMap183['environmentId'],
+  final _adeleField194 = _contractString(
+    _adeleMap193['environmentId'],
     'environmentId',
   );
-  final _adeleField185 = _contractString(
-    _adeleMap183['sessionId'],
+  final _adeleField195 = _contractString(
+    _adeleMap193['sessionId'],
     'sessionId',
   );
   return _contractConstruct(
     'AuthorizedEnvironmentIdentity',
     () => AuthorizedEnvironmentIdentity(
-      environmentId: _adeleField184,
-      sessionId: _adeleField185,
+      environmentId: _adeleField194,
+      sessionId: _adeleField195,
     ),
   );
 }
 
 const String environmentTransportContextTypeId = 'environment.context';
 Map<String, Object?> _encodeEnvironmentTransportContext(
-  EnvironmentTransportContext _adeleValue190,
+  EnvironmentTransportContext _adeleValue200,
 ) => <String, Object?>{
-  'environmentId': _adeleValue190.environmentId,
-  'environmentRole': _adeleValue190.environmentRole,
-  'projectId': _adeleValue190.projectId,
+  'environmentId': _adeleValue200.environmentId,
+  'environmentRole': _adeleValue200.environmentRole,
+  'projectId': _adeleValue200.projectId,
   'projectSourceLocation': _contractUriString(
-    _adeleValue190.projectSourceLocation,
+    _adeleValue200.projectSourceLocation,
     'Uri',
   ),
-  'providerId': _adeleValue190.providerId,
-  'providerState': _contractJsonMap(_adeleValue190.providerState, 'map'),
-  'providerStateInitialized': _adeleValue190.providerStateInitialized,
-  'taskId': _adeleValue190.taskId,
-  'taskTitle': _adeleValue190.taskTitle,
+  'providerId': _adeleValue200.providerId,
+  'providerState': _contractJsonMap(_adeleValue200.providerState, 'map'),
+  'providerStateInitialized': _adeleValue200.providerStateInitialized,
+  'taskId': _adeleValue200.taskId,
+  'taskTitle': _adeleValue200.taskTitle,
 };
 EnvironmentTransportContext _decodeEnvironmentTransportContext(
-  Object? _adeleValue209,
+  Object? _adeleValue219,
 ) {
-  final _adeleMap210 = _contractMap(
-    _adeleValue209,
+  final _adeleMap220 = _contractMap(
+    _adeleValue219,
     'EnvironmentTransportContext',
   );
-  _contractFields(_adeleMap210, const {
+  _contractFields(_adeleMap220, const {
     'environmentId',
     'environmentRole',
     'projectId',
@@ -1899,130 +2508,130 @@ EnvironmentTransportContext _decodeEnvironmentTransportContext(
     'taskId',
     'taskTitle',
   }, 'EnvironmentTransportContext');
-  final _adeleField211 = _contractString(
-    _adeleMap210['environmentId'],
+  final _adeleField221 = _contractString(
+    _adeleMap220['environmentId'],
     'environmentId',
   );
-  final _adeleField212 = _contractString(
-    _adeleMap210['environmentRole'],
+  final _adeleField222 = _contractString(
+    _adeleMap220['environmentRole'],
     'environmentRole',
   );
-  final _adeleField213 = _contractString(
-    _adeleMap210['projectId'],
+  final _adeleField223 = _contractString(
+    _adeleMap220['projectId'],
     'projectId',
   );
-  final _adeleField214 = _contractUri(
-    _adeleMap210['projectSourceLocation'],
+  final _adeleField224 = _contractUri(
+    _adeleMap220['projectSourceLocation'],
     'projectSourceLocation',
   );
-  final _adeleField215 = _contractString(
-    _adeleMap210['providerId'],
+  final _adeleField225 = _contractString(
+    _adeleMap220['providerId'],
     'providerId',
   );
-  final _adeleField216 = _contractJsonMap(
-    _adeleMap210['providerState'],
+  final _adeleField226 = _contractJsonMap(
+    _adeleMap220['providerState'],
     'providerState',
   );
-  final _adeleField217 = _contractBool(
-    _adeleMap210['providerStateInitialized'],
+  final _adeleField227 = _contractBool(
+    _adeleMap220['providerStateInitialized'],
     'providerStateInitialized',
   );
-  final _adeleField218 = _contractString(_adeleMap210['taskId'], 'taskId');
-  final _adeleField219 = _contractString(
-    _adeleMap210['taskTitle'],
+  final _adeleField228 = _contractString(_adeleMap220['taskId'], 'taskId');
+  final _adeleField229 = _contractString(
+    _adeleMap220['taskTitle'],
     'taskTitle',
   );
   return _contractConstruct(
     'EnvironmentTransportContext',
     () => EnvironmentTransportContext(
-      environmentId: _adeleField211,
-      environmentRole: _adeleField212,
-      projectId: _adeleField213,
-      projectSourceLocation: _adeleField214,
-      providerId: _adeleField215,
-      providerState: _adeleField216,
-      providerStateInitialized: _adeleField217,
-      taskId: _adeleField218,
-      taskTitle: _adeleField219,
+      environmentId: _adeleField221,
+      environmentRole: _adeleField222,
+      projectId: _adeleField223,
+      projectSourceLocation: _adeleField224,
+      providerId: _adeleField225,
+      providerState: _adeleField226,
+      providerStateInitialized: _adeleField227,
+      taskId: _adeleField228,
+      taskTitle: _adeleField229,
     ),
   );
 }
 
 const String environmentDirectoryEntryTypeId = 'environment.directoryEntry';
 Map<String, Object?> _encodeEnvironmentDirectoryEntry(
-  EnvironmentDirectoryEntry _adeleValue238,
+  EnvironmentDirectoryEntry _adeleValue248,
 ) => <String, Object?>{
-  'kind': _adeleValue238.kind.name,
-  'name': _adeleValue238.name,
-  'relativePath': _adeleValue238.relativePath,
+  'kind': _adeleValue248.kind.name,
+  'name': _adeleValue248.name,
+  'relativePath': _adeleValue248.relativePath,
 };
 EnvironmentDirectoryEntry _decodeEnvironmentDirectoryEntry(
-  Object? _adeleValue245,
+  Object? _adeleValue255,
 ) {
-  final _adeleMap246 = _contractMap(
-    _adeleValue245,
+  final _adeleMap256 = _contractMap(
+    _adeleValue255,
     'EnvironmentDirectoryEntry',
   );
-  _contractFields(_adeleMap246, const {
+  _contractFields(_adeleMap256, const {
     'kind',
     'name',
     'relativePath',
   }, 'EnvironmentDirectoryEntry');
-  final _adeleField247 = _decodeEnvironmentDirectoryEntryKind(
-    _adeleMap246['kind'],
+  final _adeleField257 = _decodeEnvironmentDirectoryEntryKind(
+    _adeleMap256['kind'],
   );
-  final _adeleField248 = _contractString(_adeleMap246['name'], 'name');
-  final _adeleField249 = _contractString(
-    _adeleMap246['relativePath'],
+  final _adeleField258 = _contractString(_adeleMap256['name'], 'name');
+  final _adeleField259 = _contractString(
+    _adeleMap256['relativePath'],
     'relativePath',
   );
   return _contractConstruct(
     'EnvironmentDirectoryEntry',
     () => EnvironmentDirectoryEntry(
-      kind: _adeleField247,
-      name: _adeleField248,
-      relativePath: _adeleField249,
+      kind: _adeleField257,
+      name: _adeleField258,
+      relativePath: _adeleField259,
     ),
   );
 }
 
 const String environmentDirectoryListingTypeId = 'environment.directoryListing';
 Map<String, Object?> _encodeEnvironmentDirectoryListing(
-  EnvironmentDirectoryListing _adeleValue256,
+  EnvironmentDirectoryListing _adeleValue266,
 ) => <String, Object?>{
-  'entries': _adeleValue256.entries
+  'entries': _adeleValue266.entries
       .map(
-        (_adeleElement257) =>
-            _encodeEnvironmentDirectoryEntry(_adeleElement257),
+        (_adeleElement267) =>
+            _encodeEnvironmentDirectoryEntry(_adeleElement267),
       )
       .toList(growable: false),
-  'relativePath': _adeleValue256.relativePath,
+  'relativePath': _adeleValue266.relativePath,
 };
 EnvironmentDirectoryListing _decodeEnvironmentDirectoryListing(
-  Object? _adeleValue263,
+  Object? _adeleValue273,
 ) {
-  final _adeleMap264 = _contractMap(
-    _adeleValue263,
+  final _adeleMap274 = _contractMap(
+    _adeleValue273,
     'EnvironmentDirectoryListing',
   );
-  _contractFields(_adeleMap264, const {
+  _contractFields(_adeleMap274, const {
     'entries',
     'relativePath',
   }, 'EnvironmentDirectoryListing');
-  final _adeleField265 = List<EnvironmentDirectoryEntry>.unmodifiable(
-    _contractList(_adeleMap264['entries'], 'entries').map(
-      (_adeleElement267) => _decodeEnvironmentDirectoryEntry(_adeleElement267),
+  final _adeleField275 = List<EnvironmentDirectoryEntry>.unmodifiable(
+    _contractList(_adeleMap274['entries'], 'entries').map(
+      (_adeleElement277) => _decodeEnvironmentDirectoryEntry(_adeleElement277),
     ),
   );
-  final _adeleField266 = _contractString(
-    _adeleMap264['relativePath'],
+  final _adeleField276 = _contractString(
+    _adeleMap274['relativePath'],
     'relativePath',
   );
   return _contractConstruct(
     'EnvironmentDirectoryListing',
     () => EnvironmentDirectoryListing(
-      entries: _adeleField265,
-      relativePath: _adeleField266,
+      entries: _adeleField275,
+      relativePath: _adeleField276,
     ),
   );
 }
@@ -2030,341 +2639,341 @@ EnvironmentDirectoryListing _decodeEnvironmentDirectoryListing(
 const String environmentForegroundProcessRequestTypeId =
     'environment.foregroundProcessRequest';
 Map<String, Object?> _encodeEnvironmentForegroundProcessRequest(
-  EnvironmentForegroundProcessRequest _adeleValue273,
+  EnvironmentForegroundProcessRequest _adeleValue283,
 ) => <String, Object?>{
-  'arguments': _adeleValue273.arguments
-      .map((_adeleElement274) => _adeleElement274)
+  'arguments': _adeleValue283.arguments
+      .map((_adeleElement284) => _adeleElement284)
       .toList(growable: false),
-  'program': _adeleValue273.program,
-  'relativeWorkingDirectory': _adeleValue273.relativeWorkingDirectory,
-  'timeoutSeconds': _adeleValue273.timeoutSeconds,
+  'program': _adeleValue283.program,
+  'relativeWorkingDirectory': _adeleValue283.relativeWorkingDirectory,
+  'timeoutSeconds': _adeleValue283.timeoutSeconds,
 };
 EnvironmentForegroundProcessRequest _decodeEnvironmentForegroundProcessRequest(
-  Object? _adeleValue284,
+  Object? _adeleValue294,
 ) {
-  final _adeleMap285 = _contractMap(
-    _adeleValue284,
+  final _adeleMap295 = _contractMap(
+    _adeleValue294,
     'EnvironmentForegroundProcessRequest',
   );
-  _contractFields(_adeleMap285, const {
+  _contractFields(_adeleMap295, const {
     'arguments',
     'program',
     'relativeWorkingDirectory',
     'timeoutSeconds',
   }, 'EnvironmentForegroundProcessRequest');
-  final _adeleField286 = List<String>.unmodifiable(
-    _contractList(_adeleMap285['arguments'], 'arguments').map(
-      (_adeleElement290) =>
-          _contractString(_adeleElement290, 'arguments element'),
+  final _adeleField296 = List<String>.unmodifiable(
+    _contractList(_adeleMap295['arguments'], 'arguments').map(
+      (_adeleElement300) =>
+          _contractString(_adeleElement300, 'arguments element'),
     ),
   );
-  final _adeleField287 = _contractString(_adeleMap285['program'], 'program');
-  final _adeleField288 = _contractString(
-    _adeleMap285['relativeWorkingDirectory'],
+  final _adeleField297 = _contractString(_adeleMap295['program'], 'program');
+  final _adeleField298 = _contractString(
+    _adeleMap295['relativeWorkingDirectory'],
     'relativeWorkingDirectory',
   );
-  final _adeleField289 = _contractInt(
-    _adeleMap285['timeoutSeconds'],
+  final _adeleField299 = _contractInt(
+    _adeleMap295['timeoutSeconds'],
     'timeoutSeconds',
   );
   return _contractConstruct(
     'EnvironmentForegroundProcessRequest',
     () => EnvironmentForegroundProcessRequest(
-      arguments: _adeleField286,
-      program: _adeleField287,
-      relativeWorkingDirectory: _adeleField288,
-      timeoutSeconds: _adeleField289,
+      arguments: _adeleField296,
+      program: _adeleField297,
+      relativeWorkingDirectory: _adeleField298,
+      timeoutSeconds: _adeleField299,
     ),
   );
 }
 
 const String environmentProcessCompletedTypeId = 'environment.processCompleted';
 Map<String, Object?> _encodeEnvironmentProcessCompleted(
-  EnvironmentProcessCompleted _adeleValue300,
+  EnvironmentProcessCompleted _adeleValue310,
 ) => <String, Object?>{
-  'exitCode': switch (_adeleValue300.exitCode) {
-    final _adeleNonNullValue302? => _adeleNonNullValue302,
+  'exitCode': switch (_adeleValue310.exitCode) {
+    final _adeleNonNullValue312? => _adeleNonNullValue312,
     null => null,
   },
-  'stderrTruncated': _adeleValue300.stderrTruncated,
-  'stdoutTruncated': _adeleValue300.stdoutTruncated,
-  'termination': _adeleValue300.termination.name,
+  'stderrTruncated': _adeleValue310.stderrTruncated,
+  'stdoutTruncated': _adeleValue310.stdoutTruncated,
+  'termination': _adeleValue310.termination.name,
 };
 EnvironmentProcessCompleted _decodeEnvironmentProcessCompleted(
-  Object? _adeleValue311,
+  Object? _adeleValue321,
 ) {
-  final _adeleMap312 = _contractMap(
-    _adeleValue311,
+  final _adeleMap322 = _contractMap(
+    _adeleValue321,
     'EnvironmentProcessCompleted',
   );
-  _contractFields(_adeleMap312, const {
+  _contractFields(_adeleMap322, const {
     'exitCode',
     'stderrTruncated',
     'stdoutTruncated',
     'termination',
   }, 'EnvironmentProcessCompleted');
-  final _adeleField313 = switch (_adeleMap312['exitCode']) {
-    final _adeleNonNullValue318? => _contractInt(
-      _adeleNonNullValue318,
+  final _adeleField323 = switch (_adeleMap322['exitCode']) {
+    final _adeleNonNullValue328? => _contractInt(
+      _adeleNonNullValue328,
       'exitCode',
     ),
     null => null,
   };
-  final _adeleField314 = _contractBool(
-    _adeleMap312['stderrTruncated'],
+  final _adeleField324 = _contractBool(
+    _adeleMap322['stderrTruncated'],
     'stderrTruncated',
   );
-  final _adeleField315 = _contractBool(
-    _adeleMap312['stdoutTruncated'],
+  final _adeleField325 = _contractBool(
+    _adeleMap322['stdoutTruncated'],
     'stdoutTruncated',
   );
-  final _adeleField316 = _decodeEnvironmentProcessTermination(
-    _adeleMap312['termination'],
+  final _adeleField326 = _decodeEnvironmentProcessTermination(
+    _adeleMap322['termination'],
   );
   return _contractConstruct(
     'EnvironmentProcessCompleted',
     () => EnvironmentProcessCompleted(
-      exitCode: _adeleField313,
-      stderrTruncated: _adeleField314,
-      stdoutTruncated: _adeleField315,
-      termination: _adeleField316,
+      exitCode: _adeleField323,
+      stderrTruncated: _adeleField324,
+      stdoutTruncated: _adeleField325,
+      termination: _adeleField326,
     ),
   );
 }
 
 const String environmentProcessEventTypeId = 'environment.processEvent';
 Map<String, Object?> _encodeEnvironmentProcessEvent(
-  EnvironmentProcessEvent _adeleValue327,
+  EnvironmentProcessEvent _adeleValue337,
 ) => <String, Object?>{
-  'completed': switch (_adeleValue327.completed) {
-    final _adeleNonNullValue329? => _encodeEnvironmentProcessCompleted(
-      _adeleNonNullValue329,
+  'completed': switch (_adeleValue337.completed) {
+    final _adeleNonNullValue339? => _encodeEnvironmentProcessCompleted(
+      _adeleNonNullValue339,
     ),
     null => null,
   },
-  'kind': _adeleValue327.kind.name,
-  'output': switch (_adeleValue327.output) {
-    final _adeleNonNullValue335? => _encodeEnvironmentProcessOutput(
-      _adeleNonNullValue335,
+  'kind': _adeleValue337.kind.name,
+  'output': switch (_adeleValue337.output) {
+    final _adeleNonNullValue345? => _encodeEnvironmentProcessOutput(
+      _adeleNonNullValue345,
     ),
     null => null,
   },
 };
-EnvironmentProcessEvent _decodeEnvironmentProcessEvent(Object? _adeleValue338) {
-  final _adeleMap339 = _contractMap(_adeleValue338, 'EnvironmentProcessEvent');
-  _contractFields(_adeleMap339, const {
+EnvironmentProcessEvent _decodeEnvironmentProcessEvent(Object? _adeleValue348) {
+  final _adeleMap349 = _contractMap(_adeleValue348, 'EnvironmentProcessEvent');
+  _contractFields(_adeleMap349, const {
     'completed',
     'kind',
     'output',
   }, 'EnvironmentProcessEvent');
-  final _adeleField340 = switch (_adeleMap339['completed']) {
-    final _adeleNonNullValue344? => _decodeEnvironmentProcessCompleted(
-      _adeleNonNullValue344,
+  final _adeleField350 = switch (_adeleMap349['completed']) {
+    final _adeleNonNullValue354? => _decodeEnvironmentProcessCompleted(
+      _adeleNonNullValue354,
     ),
     null => null,
   };
-  final _adeleField341 = _decodeEnvironmentProcessEventKind(
-    _adeleMap339['kind'],
+  final _adeleField351 = _decodeEnvironmentProcessEventKind(
+    _adeleMap349['kind'],
   );
-  final _adeleField342 = switch (_adeleMap339['output']) {
-    final _adeleNonNullValue350? => _decodeEnvironmentProcessOutput(
-      _adeleNonNullValue350,
+  final _adeleField352 = switch (_adeleMap349['output']) {
+    final _adeleNonNullValue360? => _decodeEnvironmentProcessOutput(
+      _adeleNonNullValue360,
     ),
     null => null,
   };
   return _contractConstruct(
     'EnvironmentProcessEvent',
     () => EnvironmentProcessEvent(
-      completed: _adeleField340,
-      kind: _adeleField341,
-      output: _adeleField342,
+      completed: _adeleField350,
+      kind: _adeleField351,
+      output: _adeleField352,
     ),
   );
 }
 
 const String environmentProcessOutputTypeId = 'environment.processOutput';
 Map<String, Object?> _encodeEnvironmentProcessOutput(
-  EnvironmentProcessOutput _adeleValue353,
+  EnvironmentProcessOutput _adeleValue363,
 ) => <String, Object?>{
-  'stream': _adeleValue353.stream.name,
-  'text': _adeleValue353.text,
+  'stream': _adeleValue363.stream.name,
+  'text': _adeleValue363.text,
 };
 EnvironmentProcessOutput _decodeEnvironmentProcessOutput(
-  Object? _adeleValue358,
+  Object? _adeleValue368,
 ) {
-  final _adeleMap359 = _contractMap(_adeleValue358, 'EnvironmentProcessOutput');
-  _contractFields(_adeleMap359, const {
+  final _adeleMap369 = _contractMap(_adeleValue368, 'EnvironmentProcessOutput');
+  _contractFields(_adeleMap369, const {
     'stream',
     'text',
   }, 'EnvironmentProcessOutput');
-  final _adeleField360 = _decodeEnvironmentProcessOutputStream(
-    _adeleMap359['stream'],
+  final _adeleField370 = _decodeEnvironmentProcessOutputStream(
+    _adeleMap369['stream'],
   );
-  final _adeleField361 = _contractString(_adeleMap359['text'], 'text');
+  final _adeleField371 = _contractString(_adeleMap369['text'], 'text');
   return _contractConstruct(
     'EnvironmentProcessOutput',
     () =>
-        EnvironmentProcessOutput(stream: _adeleField360, text: _adeleField361),
+        EnvironmentProcessOutput(stream: _adeleField370, text: _adeleField371),
   );
 }
 
 const String environmentProviderResultTypeId = 'environment.providerResult';
 Map<String, Object?> _encodeEnvironmentProviderResult(
-  EnvironmentProviderResult _adeleValue366,
+  EnvironmentProviderResult _adeleValue376,
 ) => <String, Object?>{
-  'providerState': _contractJsonMap(_adeleValue366.providerState, 'map'),
+  'providerState': _contractJsonMap(_adeleValue376.providerState, 'map'),
 };
 EnvironmentProviderResult _decodeEnvironmentProviderResult(
-  Object? _adeleValue369,
+  Object? _adeleValue379,
 ) {
-  final _adeleMap370 = _contractMap(
-    _adeleValue369,
+  final _adeleMap380 = _contractMap(
+    _adeleValue379,
     'EnvironmentProviderResult',
   );
-  _contractFields(_adeleMap370, const {
+  _contractFields(_adeleMap380, const {
     'providerState',
   }, 'EnvironmentProviderResult');
-  final _adeleField371 = _contractJsonMap(
-    _adeleMap370['providerState'],
+  final _adeleField381 = _contractJsonMap(
+    _adeleMap380['providerState'],
     'providerState',
   );
   return _contractConstruct(
     'EnvironmentProviderResult',
-    () => EnvironmentProviderResult(providerState: _adeleField371),
+    () => EnvironmentProviderResult(providerState: _adeleField381),
   );
 }
 
 const String environmentTextFileTypeId = 'environment.textFile';
 Map<String, Object?> _encodeEnvironmentTextFile(
-  EnvironmentTextFile _adeleValue374,
+  EnvironmentTextFile _adeleValue384,
 ) => <String, Object?>{
-  'relativePath': _adeleValue374.relativePath,
-  'revision': _adeleValue374.revision,
-  'sizeBytes': _adeleValue374.sizeBytes,
-  'text': _adeleValue374.text,
+  'relativePath': _adeleValue384.relativePath,
+  'revision': _adeleValue384.revision,
+  'sizeBytes': _adeleValue384.sizeBytes,
+  'text': _adeleValue384.text,
 };
-EnvironmentTextFile _decodeEnvironmentTextFile(Object? _adeleValue383) {
-  final _adeleMap384 = _contractMap(_adeleValue383, 'EnvironmentTextFile');
-  _contractFields(_adeleMap384, const {
+EnvironmentTextFile _decodeEnvironmentTextFile(Object? _adeleValue393) {
+  final _adeleMap394 = _contractMap(_adeleValue393, 'EnvironmentTextFile');
+  _contractFields(_adeleMap394, const {
     'relativePath',
     'revision',
     'sizeBytes',
     'text',
   }, 'EnvironmentTextFile');
-  final _adeleField385 = _contractString(
-    _adeleMap384['relativePath'],
+  final _adeleField395 = _contractString(
+    _adeleMap394['relativePath'],
     'relativePath',
   );
-  final _adeleField386 = _contractString(_adeleMap384['revision'], 'revision');
-  final _adeleField387 = _contractInt(_adeleMap384['sizeBytes'], 'sizeBytes');
-  final _adeleField388 = _contractString(_adeleMap384['text'], 'text');
+  final _adeleField396 = _contractString(_adeleMap394['revision'], 'revision');
+  final _adeleField397 = _contractInt(_adeleMap394['sizeBytes'], 'sizeBytes');
+  final _adeleField398 = _contractString(_adeleMap394['text'], 'text');
   return _contractConstruct(
     'EnvironmentTextFile',
     () => EnvironmentTextFile(
-      relativePath: _adeleField385,
-      revision: _adeleField386,
-      sizeBytes: _adeleField387,
-      text: _adeleField388,
+      relativePath: _adeleField395,
+      revision: _adeleField396,
+      sizeBytes: _adeleField397,
+      text: _adeleField398,
     ),
   );
 }
 
 const String environmentTextFileCreationTypeId = 'environment.textFileCreation';
 Map<String, Object?> _encodeEnvironmentTextFileCreation(
-  EnvironmentTextFileCreation _adeleValue397,
-) => <String, Object?>{'revision': _adeleValue397.revision};
+  EnvironmentTextFileCreation _adeleValue407,
+) => <String, Object?>{'revision': _adeleValue407.revision};
 EnvironmentTextFileCreation _decodeEnvironmentTextFileCreation(
-  Object? _adeleValue400,
+  Object? _adeleValue410,
 ) {
-  final _adeleMap401 = _contractMap(
-    _adeleValue400,
+  final _adeleMap411 = _contractMap(
+    _adeleValue410,
     'EnvironmentTextFileCreation',
   );
-  _contractFields(_adeleMap401, const {
+  _contractFields(_adeleMap411, const {
     'revision',
   }, 'EnvironmentTextFileCreation');
-  final _adeleField402 = _contractString(_adeleMap401['revision'], 'revision');
+  final _adeleField412 = _contractString(_adeleMap411['revision'], 'revision');
   return _contractConstruct(
     'EnvironmentTextFileCreation',
-    () => EnvironmentTextFileCreation(revision: _adeleField402),
+    () => EnvironmentTextFileCreation(revision: _adeleField412),
   );
 }
 
 const String environmentTextFileReplacementTypeId =
     'environment.textFileReplacement';
 Map<String, Object?> _encodeEnvironmentTextFileReplacement(
-  EnvironmentTextFileReplacement _adeleValue405,
-) => <String, Object?>{'revision': _adeleValue405.revision};
+  EnvironmentTextFileReplacement _adeleValue415,
+) => <String, Object?>{'revision': _adeleValue415.revision};
 EnvironmentTextFileReplacement _decodeEnvironmentTextFileReplacement(
-  Object? _adeleValue408,
+  Object? _adeleValue418,
 ) {
-  final _adeleMap409 = _contractMap(
-    _adeleValue408,
+  final _adeleMap419 = _contractMap(
+    _adeleValue418,
     'EnvironmentTextFileReplacement',
   );
-  _contractFields(_adeleMap409, const {
+  _contractFields(_adeleMap419, const {
     'revision',
   }, 'EnvironmentTextFileReplacement');
-  final _adeleField410 = _contractString(_adeleMap409['revision'], 'revision');
+  final _adeleField420 = _contractString(_adeleMap419['revision'], 'revision');
   return _contractConstruct(
     'EnvironmentTextFileReplacement',
-    () => EnvironmentTextFileReplacement(revision: _adeleField410),
+    () => EnvironmentTextFileReplacement(revision: _adeleField420),
   );
 }
 
 EnvironmentDirectoryEntryKind _decodeEnvironmentDirectoryEntryKind(
-  Object? _adeleValue413,
+  Object? _adeleValue423,
 ) {
-  if (_adeleValue413 is! String)
+  if (_adeleValue423 is! String)
     throw AdeleProtocolException('Expected EnvironmentDirectoryEntryKind.');
-  return switch (_adeleValue413) {
+  return switch (_adeleValue423) {
     'file' => EnvironmentDirectoryEntryKind.file,
     'directory' => EnvironmentDirectoryEntryKind.directory,
     'other' => EnvironmentDirectoryEntryKind.other,
     _ => throw AdeleProtocolException(
-      'Unknown EnvironmentDirectoryEntryKind: ' + _adeleValue413 + '.',
+      'Unknown EnvironmentDirectoryEntryKind: ' + _adeleValue423 + '.',
     ),
   };
 }
 
 EnvironmentProcessEventKind _decodeEnvironmentProcessEventKind(
-  Object? _adeleValue414,
+  Object? _adeleValue424,
 ) {
-  if (_adeleValue414 is! String)
+  if (_adeleValue424 is! String)
     throw AdeleProtocolException('Expected EnvironmentProcessEventKind.');
-  return switch (_adeleValue414) {
+  return switch (_adeleValue424) {
     'output' => EnvironmentProcessEventKind.output,
     'completed' => EnvironmentProcessEventKind.completed,
     _ => throw AdeleProtocolException(
-      'Unknown EnvironmentProcessEventKind: ' + _adeleValue414 + '.',
+      'Unknown EnvironmentProcessEventKind: ' + _adeleValue424 + '.',
     ),
   };
 }
 
 EnvironmentProcessOutputStream _decodeEnvironmentProcessOutputStream(
-  Object? _adeleValue415,
+  Object? _adeleValue425,
 ) {
-  if (_adeleValue415 is! String)
+  if (_adeleValue425 is! String)
     throw AdeleProtocolException('Expected EnvironmentProcessOutputStream.');
-  return switch (_adeleValue415) {
+  return switch (_adeleValue425) {
     'stdout' => EnvironmentProcessOutputStream.stdout,
     'stderr' => EnvironmentProcessOutputStream.stderr,
     _ => throw AdeleProtocolException(
-      'Unknown EnvironmentProcessOutputStream: ' + _adeleValue415 + '.',
+      'Unknown EnvironmentProcessOutputStream: ' + _adeleValue425 + '.',
     ),
   };
 }
 
 EnvironmentProcessTermination _decodeEnvironmentProcessTermination(
-  Object? _adeleValue416,
+  Object? _adeleValue426,
 ) {
-  if (_adeleValue416 is! String)
+  if (_adeleValue426 is! String)
     throw AdeleProtocolException('Expected EnvironmentProcessTermination.');
-  return switch (_adeleValue416) {
+  return switch (_adeleValue426) {
     'exited' => EnvironmentProcessTermination.exited,
     'timedOut' => EnvironmentProcessTermination.timedOut,
     _ => throw AdeleProtocolException(
-      'Unknown EnvironmentProcessTermination: ' + _adeleValue416 + '.',
+      'Unknown EnvironmentProcessTermination: ' + _adeleValue426 + '.',
     ),
   };
 }

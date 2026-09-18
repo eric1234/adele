@@ -107,6 +107,7 @@ void main() {
   late File agentsMdArtifact;
   late File searchArtifact;
   late File filesystemArtifact;
+  late File commandArtifact;
   late File openAiArtifact;
   late File evc;
   late File filesystemEvc;
@@ -156,6 +157,7 @@ void main() {
                 pluginId == _agentsMdPluginId ||
                 pluginId == _searchPluginId ||
                 pluginId == _filesystemPluginId ||
+                pluginId == _commandPluginId ||
                 pluginId == _openAiPluginId)
               'backend': {'artifact': 'backend.aot'},
             if (stockFrontendDescriptors[pluginId] case final descriptors?)
@@ -175,6 +177,9 @@ void main() {
     );
     filesystemArtifact = File(
       '${installationRoot.path}/$_filesystemPluginId/backend.aot',
+    );
+    commandArtifact = File(
+      '${installationRoot.path}/$_commandPluginId/backend.aot',
     );
     openAiArtifact = File(
       '${installationRoot.path}/$_openAiPluginId/backend.aot',
@@ -234,6 +239,12 @@ void main() {
       ),
       (
         entrypoint:
+            'plugins/command_tools/packages/backend/bin/command_tools_backend.dart',
+        artifact: commandArtifact,
+        stage: 'normal-chatgpt-command',
+      ),
+      (
+        entrypoint:
             'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart',
         artifact: openAiArtifact,
         stage: 'normal-chatgpt-openai',
@@ -249,101 +260,105 @@ void main() {
     }
   });
 
-  for (final failedComponent in ['none', 'backend', 'frontend']) {
-    test(
-      'F3c installed Filesystem components stay independent: $failedComponent failure',
-      () async {
-        final root = await Directory.systemTemp.createTemp(
-          'adele-filesystem-only-',
-        );
-        addTearDown(() => root.delete(recursive: true));
-        final installed = await Directory(
-          '${root.path}/filesystem-tools',
-        ).create();
-        await File(
-          '${installationRoot.path}/$_filesystemPluginId/adele_plugin.installation.json',
-        ).copy('${installed.path}/adele_plugin.installation.json');
-        if (failedComponent == 'backend') {
-          await File('${installed.path}/backend.aot').writeAsBytes([0]);
-        } else {
-          await filesystemArtifact.copy('${installed.path}/backend.aot');
-        }
-        if (failedComponent != 'frontend') {
-          await filesystemEvc.copy('${installed.path}/frontend.evc');
-        }
-        final runtime = AdeleRuntime();
-        addTearDown(runtime.close);
-        expect(
-          runtime.extensions
-              .discover(modelToolContributions)
-              .map((b) => b.id.value),
-          ['$_commandPluginId.model-tools'],
-        );
-        await runtime.plugins.start(
-          installationRoot: root.path,
-          dartaotruntimeExecutable: dartaotruntime,
-          hostArtifactPath: hostArtifact.path,
-        );
-        expect(runtime.plugins.state, ApplicationPluginState.ready);
-        expect(runtime.plugins.failure, isNull);
-        final backend = runtime.plugins.backends.single;
-        expect(backend.installation.metadata.id.value, _filesystemPluginId);
-        expect(
-          backend.state,
-          failedComponent == 'backend'
-              ? InstalledBackendState.failed
-              : InstalledBackendState.active,
-        );
-        expect(
-          backend.failure,
-          failedComponent == 'backend' ? isNotNull : isNull,
-        );
-        expect(
-          runtime.plugins.catalog!.issues,
-          hasLength(failedComponent == 'frontend' ? 1 : 0),
-        );
-        final frontends = ApplicationFrontendBootstrap(
-          extensions: runtime.extensions,
-        );
-        addTearDown(frontends.close);
-        await frontends.start(runtime.plugins.catalog!);
-        expect(
-          runtime.extensions.discover(toolActivityInspectionContributions),
-          hasLength(failedComponent == 'frontend' ? 0 : 1),
-        );
-        expect(
-          runtime.extensions
-              .discover(modelToolContributions)
-              .map((b) => b.id.value),
-          unorderedEquals([
-            '$_commandPluginId.model-tools',
-            if (failedComponent != 'backend')
-              '$_filesystemPluginId.model-tools',
-          ]),
-        );
-        expect(
-          runtime.registry.providersFor(environmentProviderCapability),
-          isEmpty,
-        );
-        expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
-        expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
-        await runtime.plugins.close();
-        expect(
-          runtime.extensions
-              .discover(modelToolContributions)
-              .map((b) => b.id.value),
-          ['$_commandPluginId.model-tools'],
-          reason:
-              'Retirement cannot activate an in-process filesystem fallback.',
-        );
-        expect(
-          runtime.extensions.discover(toolActivityInspectionContributions),
-          hasLength(failedComponent == 'frontend' ? 0 : 1),
-          reason:
-              'Backend close does not retire independently owned presentation.',
-        );
-      },
-    );
+  for (final pluginId in [_filesystemPluginId, _commandPluginId]) {
+    for (final failedComponent in ['none', 'backend', 'frontend']) {
+      test(
+        'installed $pluginId components stay independent: $failedComponent failure',
+        () async {
+          final root = await Directory.systemTemp.createTemp(
+            'adele-filesystem-only-',
+          );
+          addTearDown(() => root.delete(recursive: true));
+          final installed = await Directory('${root.path}/tools').create();
+          await File(
+            '${installationRoot.path}/$pluginId/adele_plugin.installation.json',
+          ).copy('${installed.path}/adele_plugin.installation.json');
+          if (failedComponent == 'backend') {
+            await File('${installed.path}/backend.aot').writeAsBytes([0]);
+          } else {
+            await (pluginId == _filesystemPluginId
+                    ? filesystemArtifact
+                    : commandArtifact)
+                .copy('${installed.path}/backend.aot');
+          }
+          if (failedComponent != 'frontend') {
+            await (pluginId == _filesystemPluginId ? filesystemEvc : commandEvc)
+                .copy('${installed.path}/frontend.evc');
+          }
+          final runtime = AdeleRuntime();
+          addTearDown(runtime.close);
+          expect(
+            runtime.extensions
+                .discover(modelToolContributions)
+                .map((b) => b.id.value),
+            isEmpty,
+          );
+          await runtime.plugins.start(
+            installationRoot: root.path,
+            dartaotruntimeExecutable: dartaotruntime,
+            hostArtifactPath: hostArtifact.path,
+          );
+          expect(runtime.plugins.state, ApplicationPluginState.ready);
+          expect(runtime.plugins.failure, isNull);
+          final backend = runtime.plugins.backends.single;
+          expect(backend.installation.metadata.id.value, pluginId);
+          expect(
+            backend.state,
+            failedComponent == 'backend'
+                ? InstalledBackendState.failed
+                : InstalledBackendState.active,
+          );
+          expect(
+            backend.failure,
+            failedComponent == 'backend' ? isNotNull : isNull,
+          );
+          expect(
+            runtime.plugins.catalog!.issues,
+            hasLength(failedComponent == 'frontend' ? 1 : 0),
+          );
+          final frontends = ApplicationFrontendBootstrap(
+            extensions: runtime.extensions,
+          );
+          addTearDown(frontends.close);
+          await frontends.start(runtime.plugins.catalog!);
+          expect(
+            runtime.extensions.discover(toolActivityInspectionContributions),
+            hasLength(failedComponent == 'frontend' ? 0 : 1),
+          );
+          expect(
+            runtime.extensions
+                .discover(modelToolContributions)
+                .map((b) => b.id.value),
+            unorderedEquals([
+              if (failedComponent != 'backend') '$pluginId.model-tools',
+            ]),
+          );
+          expect(
+            runtime.registry.providersFor(environmentProviderCapability),
+            isEmpty,
+          );
+          expect(
+            runtime.registry.providersFor(modelProviderCapability),
+            isEmpty,
+          );
+          expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
+          await runtime.plugins.close();
+          expect(
+            runtime.extensions
+                .discover(modelToolContributions)
+                .map((b) => b.id.value),
+            isEmpty,
+            reason: 'Retirement cannot activate an in-process tool fallback.',
+          );
+          expect(
+            runtime.extensions.discover(toolActivityInspectionContributions),
+            hasLength(failedComponent == 'frontend' ? 0 : 1),
+            reason:
+                'Backend close does not retire independently owned presentation.',
+          );
+        },
+      );
+    }
   }
 
   test('F3b installed Search starts without Git, AGENTS or OpenAI', () async {
@@ -376,10 +391,7 @@ void main() {
       runtime.extensions
           .discover(modelToolContributions)
           .map((binding) => binding.id.value),
-      unorderedEquals([
-        '$_commandPluginId.model-tools',
-        '$_searchPluginId.model-tools',
-      ]),
+      unorderedEquals(['$_searchPluginId.model-tools']),
     );
     expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
     expect(
@@ -389,7 +401,11 @@ void main() {
     expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
   });
 
-  for (final failedPluginId in [_searchPluginId, _filesystemPluginId]) {
+  for (final failedPluginId in [
+    _searchPluginId,
+    _filesystemPluginId,
+    _commandPluginId,
+  ]) {
     test(
       '$failedPluginId startup failure preserves sibling backends and Task creation',
       () async {
@@ -402,15 +418,12 @@ void main() {
         );
         addTearDown(runtime.close);
         final staticTools = runtime.extensions.discover(modelToolContributions);
-        expect(
-          staticTools.map((binding) => binding.id.value),
-          unorderedEquals(['$_commandPluginId.model-tools']),
-        );
+        expect(staticTools.map((binding) => binding.id.value), isEmpty);
         await runtime.plugins.start(
           installationRoot: installationRoot.path,
           dartaotruntimeExecutable: dartaotruntime,
           hostArtifactPath: hostArtifact.path,
-          // Both real tool entrypoints reject argv before advertising extensions.
+          // Tool entrypoints reject argv before advertising extensions.
           startupArguments: {
             failedPluginId: ['unexpected-test-argument'],
           },
@@ -419,7 +432,7 @@ void main() {
         expect(runtime.plugins.failure, isNull);
         expect(runtime.plugins.host!.isClosed, isFalse);
         expect(runtime.plugins.catalog!.issues, isEmpty);
-        expect(runtime.plugins.backends, hasLength(5));
+        expect(runtime.plugins.backends, hasLength(6));
         final failed = runtime.plugins.backends.singleWhere(
           (entry) => entry.installation.metadata.id.value == failedPluginId,
         );
@@ -427,7 +440,9 @@ void main() {
           failed.installation.backendArtifactUri,
           failedPluginId == _searchPluginId
               ? searchArtifact.uri
-              : filesystemArtifact.uri,
+              : failedPluginId == _filesystemPluginId
+              ? filesystemArtifact.uri
+              : commandArtifact.uri,
         );
         expect(failed.state, InstalledBackendState.failed);
         expect(failed.failure, isNotNull);
@@ -438,6 +453,7 @@ void main() {
           _openAiPluginId,
           if (failedPluginId != _searchPluginId) _searchPluginId,
           if (failedPluginId != _filesystemPluginId) _filesystemPluginId,
+          if (failedPluginId != _commandPluginId) _commandPluginId,
         ]) {
           final backend = runtime.plugins.backends.singleWhere(
             (entry) => entry.installation.metadata.id.value == id,
@@ -459,6 +475,8 @@ void main() {
               '$_searchPluginId.model-tools',
             if (failedPluginId != _filesystemPluginId)
               '$_filesystemPluginId.model-tools',
+            if (failedPluginId != _commandPluginId)
+              '$_commandPluginId.model-tools',
           ]),
         );
         for (final binding in staticTools) {
@@ -675,10 +693,7 @@ void main() {
       );
       addTearDown(runtime.close);
       final staticTools = runtime.extensions.discover(modelToolContributions);
-      expect(
-        staticTools.map((binding) => binding.id.value),
-        unorderedEquals(['$_commandPluginId.model-tools']),
-      );
+      expect(staticTools.map((binding) => binding.id.value), isEmpty);
       expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
       expect(
         runtime.registry.providersFor(environmentProviderCapability),
@@ -706,7 +721,7 @@ void main() {
       expect(runtime.plugins.state, ApplicationPluginState.ready);
       expect(runtime.plugins.failure, isNull);
       expect(runtime.plugins.catalog!.issues, isEmpty);
-      expect(runtime.plugins.backends, hasLength(5));
+      expect(runtime.plugins.backends, hasLength(6));
       for (final backend in runtime.plugins.backends) {
         expect(
           backend.failure,
@@ -870,6 +885,7 @@ void main() {
         unorderedEquals([
           ...staticTools.map((binding) => binding.id.value),
           '$_filesystemPluginId.model-tools',
+          '$_commandPluginId.model-tools',
         ]),
       );
       for (final binding in [...staticTools, agentsBinding]) {
@@ -1260,8 +1276,8 @@ void main() {
         runtime.extensions
             .discover(modelToolContributions)
             .map((b) => b.id.value),
-        ['$_commandPluginId.model-tools'],
-        reason: 'Filesystem tools must be absent before installed bootstrap.',
+        isEmpty,
+        reason: 'Model tools must be absent before installed bootstrap.',
       );
       await runtime.plugins.start(
         installationRoot: installationRoot.path,
@@ -1284,7 +1300,7 @@ void main() {
       expect(runtime.plugins.state, ApplicationPluginState.ready);
       expect(runtime.plugins.failure, isNull);
       expect(runtime.plugins.registry, same(runtime.registry));
-      expect(runtime.plugins.backends, hasLength(5));
+      expect(runtime.plugins.backends, hasLength(6));
       for (final backend in runtime.plugins.backends) {
         expect(
           backend.failure,
@@ -1299,6 +1315,18 @@ void main() {
       final filesystemBackend = runtime.plugins.backends.singleWhere(
         (entry) => entry.installation.metadata.id.value == _filesystemPluginId,
       );
+      final commandBackend = runtime.plugins.backends.singleWhere(
+        (entry) => entry.installation.metadata.id.value == _commandPluginId,
+      );
+      expect(
+        commandBackend.installation.backendArtifactUri,
+        commandArtifact.uri,
+      );
+      expect(commandBackend.installation.frontend, isNotNull);
+      expect(commandBackend.connection!.capabilityExposures, isEmpty);
+      expect(commandBackend.connection!.extensionExposures.single.metadata, {
+        'hostServices': [authorizedEnvironmentProcessServiceId],
+      });
       expect(
         filesystemBackend.installation.backendArtifactUri,
         filesystemArtifact.uri,
@@ -1486,7 +1514,7 @@ void main() {
         catalog.installations.where(
           (entry) => entry.backendArtifactUri != null,
         ),
-        hasLength(5),
+        hasLength(6),
       );
       expect(
         catalog.installations.where((entry) => entry.frontend != null),
@@ -3210,7 +3238,7 @@ void main() {
       final catalog = runtime.plugins.catalog!;
       expect(catalog.issues, isEmpty);
       expect(catalog.installations, hasLength(7));
-      expect(runtime.plugins.backends, hasLength(5));
+      expect(runtime.plugins.backends, hasLength(6));
       expect(
         catalog.installations.where((entry) => entry.frontend != null),
         hasLength(4),
@@ -3448,13 +3476,13 @@ void main() {
         );
         final catalog = runtime.plugins.catalog!;
         expect(catalog.issues, isEmpty);
-        // This root omits AGENTS, Search and Filesystem; no static substitutes.
+        // This root omits AGENTS and model tools; no static substitutes.
         expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
         expect(
           runtime.extensions
               .discover(modelToolContributions)
               .map((binding) => binding.id.value),
-          unorderedEquals(['$_commandPluginId.model-tools']),
+          isEmpty,
         );
         final backend = runtime.plugins.backends.singleWhere(
           (entry) => entry.installation.metadata.id.value == _openAiPluginId,

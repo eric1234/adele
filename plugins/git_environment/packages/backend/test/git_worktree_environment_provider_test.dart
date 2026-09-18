@@ -1520,26 +1520,43 @@ void main() {
     'times out and terminates the owned process tree',
     () async {
       final _ProcessFixture fixture = await _createProcessFixture();
-      final File sentinel = File('${fixture.container.path}/timeout-sentinel');
 
+      // A native fixture avoids spending the one-second execution timeout on
+      // Dart JIT startup. The leader reaps its child after the group receives TERM.
       final List<EnvironmentProcessEvent> events = await fixture.provider
           .runForegroundProcess(
             fixture.environment.id,
-            fixture.request(<String>[
-              'sentinel-parent',
-              sentinel.path,
-            ], timeoutSeconds: 1),
+            EnvironmentForegroundProcessRequest(
+              program: '/bin/sh',
+              arguments: [
+                '-c',
+                r'''sleep 300 & child=$!; trap 'wait "$child"; exit 0' TERM; printf 'owned:%s:%s\n' "$$" "$child"; wait "$child"''',
+              ],
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 1,
+            ),
           )
           .toList();
 
-      expect(_outputText(events), contains('started'));
+      final match = RegExp(
+        r'owned:(\d+):(\d+)\n',
+      ).firstMatch(_outputText(events));
+      expect(match, isNotNull);
+      final pids = [int.parse(match![1]!), int.parse(match[2]!)];
+      addTearDown(() {
+        for (final pid in pids) {
+          Process.killPid(pid, ProcessSignal.sigkill);
+        }
+      });
       expect(
         _completion(events).termination,
         EnvironmentProcessTermination.timedOut,
       );
       expect(_completion(events).exitCode, isNull);
-      await Future<void>.delayed(const Duration(seconds: 2));
-      expect(await sentinel.exists(), isFalse);
+      for (final pid in pids) {
+        expect(await Directory('/proc/$pid').exists(), isFalse);
+      }
+      pids.clear();
     },
     skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
   );

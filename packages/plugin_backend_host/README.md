@@ -33,9 +33,13 @@ bootstrap always sets it to `true`. This is temporary deployment metadata, not a
 environment scrubber or settings/profile/credential service. See
 [`plugin_runtime` startup arguments](../plugin_runtime/README.md#startup-arguments).
 
-Both shared-host and plugin-backend protocols use version 2; host and backend
-snapshots must be rebuilt together. Unary `hostRequest`/`hostResponse` reuse the
-same response/command ports and framed transport. The host stamps PluginId and
+Both shared-host and plugin-backend protocols use version 1 with exact
+protocol-version matching. Before the first release, unstable wire changes may
+retain that version; rebuild coherent runtime/host/backend snapshots rather than
+reuse prior development artifacts. See the
+[transport version policy](../../docs/architecture/contracts-and-capabilities.md#transport-version-policy).
+Unary `hostRequest`/`hostResponse` reuse the same response/command ports and framed
+transport. The host stamps PluginId and
 the host-issued connection generation from the owning isolate, correlates each
 request independently of forward calls, and returns responses only to that captured
 generation. Plugin-side reverse request IDs are nonnegative and strictly increasing
@@ -44,9 +48,17 @@ high-watermark, not an unbounded history. Plugin termination removes its pending
 routes, never retargeting them
 to a replacement with the same PluginId.
 
+Reverse server streaming uses the same ports/framed transport and captured
+generation routing, with one-item credit and cancellation forwarded between the
+backend consumer and host producer. Invocation settlement, cancellation, or
+retirement revokes authority immediately and cancels its owned streams with
+bounded cleanup. Late items or terminals cannot reach a replacement generation.
+The installed manifest stays version 1, independently of transport versions.
+
 Invocation-token validation and service allowlisting belong to `plugin_runtime`;
-canonical Session/Environment authority and the generated read dispatcher belong
+canonical Session/Environment authority and generated read/mutation/process dispatchers belong
 to the app/domain boundary. The host neither derives authority from semantic IDs
-nor knows AGENTS.md behavior. Reverse streaming and general symmetric RPC remain
-unimplemented. See [operation-scoped host calls](../../docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls)
+nor knows stock source/tool behavior. Client/bidirectional streaming, ambient
+callbacks, and general symmetric RPC remain unimplemented. See
+[operation-scoped host calls](../../docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls)
 for authorization and revocation semantics.

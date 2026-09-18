@@ -259,8 +259,12 @@ exact connection generations. Invocation contexts are revoked in `finally`, on
 retirement, and on termination. Public pure-Dart `adele_plugin_backend_support`
 supplies the backend channel multiplexer without importing internal runtime or
 Flutter. This package defines transport values, not host routing/authorization.
-Both host/plugin protocols are version 2; reverse streaming and general symmetric
-RPC remain deferred. See [host calls](../../docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls).
+Both host/plugin protocols are version 1 under the
+[pre-release transport policy](../../docs/architecture/contracts-and-capabilities.md#transport-version-policy).
+Source capture remains unary and read-only; reverse server streaming serves
+separately authorized process tools,
+not inference-source effect authority. General symmetric RPC and ambient callbacks
+remain deferred. See [host calls](../../docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls).
 
 ### Snapshot And Rendering
 

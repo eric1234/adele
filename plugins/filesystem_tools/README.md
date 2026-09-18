@@ -44,9 +44,12 @@ contracts and `adele_plugin_backend_support`, not app or internal host imports.
 
 Separate generated `AuthorizedEnvironmentMutationService` exposes only
 `createTextFile`, `replaceExistingTextFile`, and `deleteExistingTextFile`, with no
-authority query or selectors. The read service remains unchanged. Reverse calls
-are unary on the existing version-2 protocols. Host-service authorization is not
-an OS sandbox or rollback of already-started effects. No Filesystem-specific
+authority query or selectors. The read service remains unchanged. Filesystem's
+reverse calls remain unary on protocol version 1 under the
+[pre-release transport policy](../../docs/architecture/contracts-and-capabilities.md#transport-version-policy);
+the shared transport's separate process streaming grants these tools no process
+authority. Host-service
+authorization is not an OS sandbox or rollback of already-started effects. No Filesystem-specific
 configuration or deployment define is required. Explicit self-hosting supplies
 `filesystemToolsArtifact` on its same shared host through generic registration,
 without a desktop installation root.

@@ -1,7 +1,13 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
-const int backendHostProtocolVersion = 2;
+/// Exact-match runtime/shared-host wire version, not an installed-manifest version.
+///
+/// Before the first release, unstable wire changes keep this version in place.
+/// Rebuild a coherent runtime/host/backend set; prior development artifacts are
+/// unsupported even when their protocol version matches. Increment only when
+/// released artifacts establish a compatibility boundary.
+const int backendHostProtocolVersion = 1;
 const int backendHostStreamWindow = 1;
 const int maximumBackendHostFrameLength = 8 * 1024 * 1024;
 

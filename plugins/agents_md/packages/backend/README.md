@@ -16,8 +16,9 @@ values. Session/Run strings are not read authority; the host-issued operation
 context allowlists the read service on the exact connection generation and is
 revoked at operation settlement, retirement, and termination. The host supplies
 the captured Session's Environment read facet. The backend imports no app, kernel,
-internal runtime, or Flutter implementation. This unary channel provides neither
-reverse streaming nor general symmetric RPC and is not a sandbox.
+internal runtime, or Flutter implementation. This source uses only unary reads;
+the shared transport's reverse process streaming grants it no process authority.
+This is neither general symmetric RPC nor a sandbox.
 
 Normal preparation installs `agents-md/backend.aot`. Explicit self-hosting uses
 its own `agentsMdArtifact` on the same shared host without a normal installation

@@ -488,6 +488,163 @@ void main() {
     );
   });
 
+  for (final paused in [false, true]) {
+    test(
+      'process facet immediately cancels an ${paused ? 'paused' : 'idle'} provider subscription',
+      () async {
+        final fixture = await _fixture();
+        final process = await SessionModelToolHostContext(
+          sessionId: fixture.sessionId,
+          environmentRuntime: fixture.runtime,
+        ).requireHostService<AuthorizedEnvironmentProcessFacet>();
+        final cancelled = Completer<void>();
+        final cleanup = Completer<void>();
+        final provider = StreamController<EnvironmentProcessEvent>(
+          sync: true,
+          onCancel: () {
+            cancelled.complete();
+            return cleanup.future;
+          },
+        );
+        addTearDown(() {
+          if (!cleanup.isCompleted) cleanup.complete();
+          return provider.close();
+        });
+        fixture.provider.processStream = provider.stream;
+        final stream = process.runForegroundProcess(_processRequest());
+        expect(fixture.provider.processEnvironmentIds, isEmpty);
+        final subscription = stream.listen((_) {});
+        expect(fixture.provider.processEnvironmentIds, [fixture.environmentId]);
+        if (paused) {
+          subscription.pause();
+          expect(provider.isPaused, isTrue);
+        }
+        final pending = subscription.cancel();
+        expect(
+          cancelled.isCompleted,
+          isTrue,
+          reason: 'Cancellation must not wait for provider output.',
+        );
+        expect(cleanup.isCompleted, isFalse);
+        cleanup.complete();
+        await pending.timeout(const Duration(seconds: 1));
+      },
+    );
+  }
+
+  test(
+    'process facet preserves provider error classification and cancels on failure',
+    () async {
+      final fixture = await _fixture();
+      final process = await SessionModelToolHostContext(
+        sessionId: fixture.sessionId,
+        environmentRuntime: fixture.runtime,
+      ).requireHostService<AuthorizedEnvironmentProcessFacet>();
+      for (final error in <Object>[
+        ProviderUnavailable(
+          capability: environmentProviderCapability,
+          providerId: fixture.providerId,
+          availableProviderIds: const [],
+          stale: true,
+        ),
+        ProviderUnavailable(
+          capability: environmentProviderCapability,
+          providerId: fixture.providerId,
+          availableProviderIds: const [],
+        ),
+        ProviderEndpointUnavailable(fixture.providerId),
+        const EnvironmentFailure(
+          code: 'process_start_failed',
+          message: 'Declared failure.',
+          details: {},
+        ),
+        StateError('Unrelated failure'),
+      ]) {
+        var cancelled = false;
+        final provider = StreamController<EnvironmentProcessEvent>(
+          sync: true,
+          onCancel: () {
+            cancelled = true;
+          },
+        );
+        fixture.provider.processStream = provider.stream;
+        final Matcher expected = switch (error) {
+          ProviderUnavailable(stale: true) =>
+            isA<AuthorizedEnvironmentBindingStale>().having(
+              (failure) => failure.cause,
+              'cause',
+              same(error),
+            ),
+          ProviderUnavailable() || ProviderEndpointUnavailable() =>
+            isA<AuthorizedEnvironmentBindingUnavailable>().having(
+              (failure) => failure.cause,
+              'cause',
+              same(error),
+            ),
+          _ => same(error),
+        };
+        final failed = expectLater(
+          process.runForegroundProcess(_processRequest()).toList(),
+          throwsA(expected),
+        );
+        provider.addError(error);
+        await failed;
+        expect(cancelled, isTrue);
+        await provider.close();
+      }
+    },
+  );
+
+  for (final cleanupMode in ['hangs', 'throws', 'fails asynchronously']) {
+    test(
+      'process primary failure settles when producer cleanup $cleanupMode',
+      () async {
+        final fixture = await _fixture();
+        final process = await SessionModelToolHostContext(
+          sessionId: fixture.sessionId,
+          environmentRuntime: fixture.runtime,
+        ).requireHostService<AuthorizedEnvironmentProcessFacet>();
+        final cleanup = Completer<void>();
+        var cancellations = 0;
+        final provider = StreamController<EnvironmentProcessEvent>(
+          sync: true,
+          onCancel: () {
+            cancellations++;
+            if (cleanupMode == 'throws') throw StateError('cleanup failed');
+            if (cleanupMode == 'fails asynchronously') {
+              return Future<void>.error(StateError('cleanup failed'));
+            }
+            return cleanup.future;
+          },
+        );
+        addTearDown(() async {
+          if (!cleanup.isCompleted) cleanup.complete();
+          await provider.close();
+        });
+        fixture.provider.processStream = provider.stream;
+        final iterator = StreamIterator(
+          process.runForegroundProcess(_processRequest()),
+        );
+        const primary = EnvironmentFailure(
+          code: 'process_failed',
+          message: 'Primary failure.',
+          details: {'evidence': 'preserved'},
+        );
+        final failed = expectLater(
+          iterator.moveNext().timeout(const Duration(seconds: 1)),
+          throwsA(same(primary)),
+        );
+        provider.addError(primary);
+        await failed;
+        expect(cancellations, 1);
+        expect(cleanup.isCompleted, isFalse);
+        await iterator.cancel().timeout(const Duration(seconds: 1));
+        expect(cancellations, 1);
+        expect(process.validateBinding, returnsNormally);
+      },
+    );
+  }
+
   test('active process stream translates retired generation closure', () async {
     final _Fixture fixture = await _fixture();
     final SessionModelToolHostContext context = SessionModelToolHostContext(

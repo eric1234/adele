@@ -2,9 +2,9 @@
 
 ## Status
 
-Accepted; unary read/mutation host calls, remote inference-context sources, and
-remote model tools implemented; broader extension adaptation and reverse streaming
-deferred
+Accepted; unary read/mutation and bounded server-streaming process host calls,
+remote inference-context sources, and remote model tools implemented; broader
+extension adaptation, client/bidirectional streaming, and ambient callbacks deferred
 
 ## Context
 
@@ -59,10 +59,13 @@ registry or moving host authority into plugins.
    Revocation is idempotent; expired, foreign-generation, and unapproved-service calls fail.
    Revocation does not promise rollback or cancellation of effects already in
    flight.
-8. The initial backend-to-host transport is unary and reuses the existing backend
-   connection. It does not replace the generated host-to-plugin service path.
-   Reverse streaming is added only when a concrete extension requires it, not as
-   speculative symmetric RPC infrastructure.
+8. Backend-to-host transport reuses the existing backend connection and generated
+   contracts for unary calls and bounded server streams. Command execution supplies
+   the concrete reverse-streaming requirement: lazy opening, one-item credit,
+   pause/resume, producer cancellation, and exact-generation ownership. Revocation
+   is immediate and precedes bounded cleanup; pending producer cleanup cannot
+   prolong authority. This does not replace the host-to-plugin path or introduce
+   general symmetric RPC, client/bidirectional streaming, or ambient callbacks.
 9. Process and isolate separation provide isolation, not a security sandbox.
    Invocation checks govern the host-service API; they do not sandbox native
    backend code or arbitrary operating-system effects.
@@ -76,6 +79,12 @@ registry or moving host authority into plugins.
     authority. Description uses only host-supplied semantic identity data. Only an
     execute stream reached after host policy or approval permits execution receives
     the services in that tool descriptor's validated subset of captured dependencies.
+12. Before the first release, unstable transport wire changes may be made in place
+    under protocol version 1. Artifacts must match the relevant protocol version
+    exactly and be rebuilt as a coherent runtime/host/backend set; prior development
+    artifacts receive no compatibility layer, negotiation, or shim, even when their
+    version numbers match. Increment only when released artifacts establish a
+    compatibility boundary. Installed-manifest versioning remains separate.
 
 ## Alternatives considered
 
@@ -99,22 +108,22 @@ read service during each snapshot. The source uses its text-file read. The canon
 Session Environment authority remains host-owned; there is no static AGENTS.md
 activation in `AdeleRuntime`.
 
-Search's backend-only installation and Filesystem Tools' combined backend/frontend
-installation advertise model-tool contributions, reusing their pure-Dart root
-semantics. Filesystem's backend lives under `plugins/filesystem_tools/packages/backend`;
-it is not statically activated by `AdeleRuntime`. Its prepared frontend remains
-independent of backend readiness. Public `adele_model_tool` owns generated
+Search's backend-only installation and Filesystem Tools' and Command Tools'
+combined backend/frontend installations advertise model-tool contributions,
+reusing their pure-Dart root semantics. Their backends live under the owning
+plugins' `packages/backend`; none is statically activated by `AdeleRuntime`.
+Prepared frontends remain independent of backend readiness. Public `adele_model_tool` owns generated
 materialize, validation, effect-description, and server-streaming execution
 transport; the generic app adapter registers proxies in the existing registry.
 
 Exposure `hostServices` declares the maximum dependencies to capture from the
-allowed read/mutation services, not an authority grant or profile definition.
+allowed read/mutation/process services, not an authority grant or profile definition.
 Each descriptor requires `executionHostServices`, a duplicate-free allowed subset
 of that exposure and the exact execution allowlist. Filesystem's `read_file` needs
 read only, `apply_patch` and `delete_file` need read plus mutation, and `create_file`
-needs mutation only. Search needs read only.
+needs mutation only. Search needs read only; Command needs process only.
 
-Materialization captures coherent Session-bound read/mutation facets and exact
+Materialization captures coherent Session-bound read/mutation/process facets and exact
 remote/Environment generations. All captured facets must share the Session and
 Environment. Synchronous binding validation checks every captured facet and never
 reselects a generation. Opaque executable route IDs are generation-bound, not
@@ -129,15 +138,22 @@ cancellation, or retirement. The unchanged read service exposes no-argument
 `authority()` for the bound Session/Environment identity, `readFile(path)`, and
 `readDirectory(path)`. Separate `AuthorizedEnvironmentMutationService` exposes only
 create-new, conditional replacement, and conditional deletion, without authority
-queries, authority-selection IDs, reads, or process methods. Reverse calls remain
-unary and both transport protocol versions remain 2. Immutable execution snapshots
-carry no exception causes. These checks authorize host-service access, not native
-OS effects; they provide no sandbox or rollback of in-flight mutations.
+queries, authority-selection IDs, reads, or process methods. Separate generated
+`AuthorizedEnvironmentProcessService` exposes exactly
+`runForegroundProcess(EnvironmentForegroundProcessRequest request) ->
+Stream<EnvironmentProcessEvent>`, reusing existing DTOs and declared failures,
+without authority queries or authority-selection IDs. Read/mutation calls remain
+unary; process calls use reverse server streaming with one-item credit and
+cancellation. Outer-operation settlement or retirement revokes authority
+immediately and cancels owned streams with bounded cleanup. Both transport
+protocol versions are 1; installed manifests remain version 1. Immutable execution
+snapshots carry no exception causes. These checks authorize host-service access,
+not native OS effects; they provide no sandbox or rollback of in-flight effects.
 
 These two remote extension points do not implement the complete recursive extension
-system. Chat, Command Tools, and Local Directory Project Selector remain the three
-statically composed plugins; their migration is deferred. Reverse streaming and
-Profiles remain unimplemented.
+system. Chat and Local Directory Project Selector remain the two statically
+composed plugins; their migration is deferred. Client/bidirectional streaming,
+ambient callbacks, general symmetric RPC, and Profiles remain unimplemented.
 Normal prepared startup currently attempts valid discovered components; that startup policy does
 not define profile participation or grant invocation authority.
 
@@ -152,8 +168,9 @@ not define profile participation or grant invocation authority.
   requests are pending.
 - Each remotely supported extension point needs a host adapter that understands
   its typed semantic contract and the host services appropriate to its operations.
-- Future reverse-streaming requirements remain deliberately unsolved until a
-  concrete extension establishes the required lifetime and control semantics.
+- Reverse streaming has a concrete bounded lifetime and flow-control mechanism;
+  broader streaming modes and ambient host callbacks remain deferred rather than
+  becoming speculative general RPC infrastructure.
 - Remaining statically composed plugins can migrate incrementally without
   changing the existing contribution registry or completing all recursive
   extension mechanisms at once.

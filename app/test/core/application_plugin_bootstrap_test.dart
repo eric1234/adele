@@ -43,12 +43,7 @@ void main() {
       expect(runtime.plugins.registry, same(runtime.registry));
       expect(runtime.plugins.extensions, same(runtime.extensions));
       expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
-      expect(
-        runtime.extensions
-            .discover(modelToolContributions)
-            .map((b) => b.id.value),
-        ['dev.adele.plugin.command-tools.model-tools'],
-      );
+      expect(runtime.extensions.discover(modelToolContributions), isEmpty);
       expect(runtime.plugins.state, ApplicationPluginState.ready);
       expect(runtime.plugins.failure, isNull);
       expect(runtime.plugins.catalog!.installations, isEmpty);
@@ -180,12 +175,7 @@ void main() {
         );
         expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
         expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
-        expect(
-          runtime.extensions
-              .discover(modelToolContributions)
-              .map((b) => b.id.value),
-          ['dev.adele.plugin.command-tools.model-tools'],
-        );
+        expect(runtime.extensions.discover(modelToolContributions), isEmpty);
         final Project project = runtime.lifecycle.createProject(
           Uri.parse('https://example.test/after-start-failure'),
         );

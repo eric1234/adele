@@ -44,6 +44,7 @@ final class RemoteModelToolAdapter
 const _knownHostServices = {
   authorizedEnvironmentReadServiceId,
   authorizedEnvironmentMutationServiceId,
+  authorizedEnvironmentProcessServiceId,
 };
 
 final class _RemoteModelTools implements ModelToolContribution {
@@ -65,15 +66,23 @@ final class _RemoteModelTools implements ModelToolContribution {
         ? await context
               .requireHostService<AuthorizedEnvironmentFileMutationFacet>()
         : null;
-    if ((files != null && files.sessionId != context.sessionId) ||
-        (mutations != null && mutations.sessionId != context.sessionId)) {
-      throw StateError('The filesystem authority belongs to another Session.');
+    final process = hostServices.contains(authorizedEnvironmentProcessServiceId)
+        ? await context.requireHostService<AuthorizedEnvironmentProcessFacet>()
+        : null;
+    final authorities = <AuthorizedEnvironmentAuthority>[
+      ?files,
+      ?mutations,
+      ?process,
+    ];
+    if (authorities.any(
+      (authority) => authority.sessionId != context.sessionId,
+    )) {
+      throw StateError('The Environment authority belongs to another Session.');
     }
-    if (files != null &&
-        mutations != null &&
-        files.environmentId != mutations.environmentId) {
+    if (authorities.map((authority) => authority.environmentId).toSet().length >
+        1) {
       throw StateError(
-        'Read and mutation authority must share an Environment.',
+        'Read, mutation and process authority must share an Environment.',
       );
     }
     final binding = _ModelToolBinding(
@@ -81,6 +90,7 @@ final class _RemoteModelTools implements ModelToolContribution {
       context.sessionId,
       files,
       mutations,
+      process,
     );
     // Capturing host dependencies does not grant the backend invocation authority.
     final descriptors = await binding.invoke(
@@ -119,21 +129,26 @@ final class _ModelToolBinding {
     this.sessionId,
     this.files,
     this.mutations,
+    this.process,
   );
 
   final RemoteExtensionContext remote;
   final SessionId sessionId;
   final AuthorizedEnvironmentFileReadFacet? files;
   final AuthorizedEnvironmentFileMutationFacet? mutations;
+  final AuthorizedEnvironmentProcessFacet? process;
 
   EnvironmentId? get environmentId =>
-      files?.environmentId ?? mutations?.environmentId;
+      files?.environmentId ??
+      mutations?.environmentId ??
+      process?.environmentId;
 
   void validate() {
     try {
       remote.validate();
       files?.validateBinding();
       mutations?.validateBinding();
+      process?.validateBinding();
     } on StaleExtensionBinding catch (error) {
       throw StaleToolBindingException(
         'The remote model-tool contributor generation is stale.',
@@ -276,7 +291,8 @@ final class _RemoteToolExecutable implements ToolExecutable {
 final class _ModelToolEnvironmentServices
     implements
         AuthorizedEnvironmentReadService,
-        AuthorizedEnvironmentMutationService {
+        AuthorizedEnvironmentMutationService,
+        AuthorizedEnvironmentProcessService {
   _ModelToolEnvironmentServices(this.binding);
 
   final _ModelToolBinding binding;
@@ -289,6 +305,9 @@ final class _ModelToolEnvironmentServices
     if (allowed.contains(authorizedEnvironmentMutationServiceId))
       authorizedEnvironmentMutationServiceId:
           AuthorizedEnvironmentMutationServiceDispatcher(this),
+    if (allowed.contains(authorizedEnvironmentProcessServiceId))
+      authorizedEnvironmentProcessServiceId:
+          AuthorizedEnvironmentProcessServiceDispatcher(this),
   };
 
   void validate() {
@@ -353,4 +372,85 @@ final class _ModelToolEnvironmentServices
       expectedRevision,
     ),
   );
+
+  @override
+  Stream<EnvironmentProcessEvent> runForegroundProcess(
+    EnvironmentForegroundProcessRequest request,
+  ) {
+    late final StreamController<EnvironmentProcessEvent> controller;
+    StreamSubscription<EnvironmentProcessEvent>? subscription;
+    Future<void>? cancellation;
+    var terminated = false;
+    var failed = false;
+
+    Future<void> cancel() {
+      terminated = true;
+      final current = subscription;
+      if (current == null) return Future<void>.value();
+      final pending = cancellation ??= Future<void>.sync(current.cancel);
+      if (!failed) return pending;
+      // Generated dispatch uses cancelOnError; cleanup cannot block its failure.
+      unawaited(pending.catchError((Object _) {}));
+      return Future<void>.value();
+    }
+
+    void fail(Object error, StackTrace stackTrace) {
+      if (terminated) return;
+      try {
+        validate();
+      } on Object catch (bindingError, bindingStack) {
+        error = bindingError;
+        stackTrace = bindingStack;
+      }
+      failed = true;
+      unawaited(cancel());
+      controller.addError(error, stackTrace);
+      unawaited(controller.close());
+    }
+
+    // An idle provider must receive cancellation without waiting for another event.
+    controller = StreamController<EnvironmentProcessEvent>(
+      sync: true,
+      onListen: () {
+        try {
+          validate();
+          subscription = binding.process!
+              .runForegroundProcess(request)
+              .listen(
+                (event) {
+                  if (terminated) return;
+                  try {
+                    validate();
+                    controller.add(event);
+                  } on Object catch (error, stackTrace) {
+                    fail(error, stackTrace);
+                  }
+                },
+                onError: fail,
+                onDone: () {
+                  if (terminated) return;
+                  try {
+                    validate();
+                    terminated = true;
+                    unawaited(controller.close());
+                  } on Object catch (error, stackTrace) {
+                    fail(error, stackTrace);
+                  }
+                },
+              );
+          if (terminated) {
+            unawaited(cancel().catchError((Object _) {}));
+          } else if (controller.isPaused) {
+            subscription!.pause();
+          }
+        } on Object catch (error, stackTrace) {
+          fail(error, stackTrace);
+        }
+      },
+      onPause: () => subscription?.pause(),
+      onResume: () => subscription?.resume(),
+      onCancel: cancel,
+    );
+    return controller.stream;
+  }
 }

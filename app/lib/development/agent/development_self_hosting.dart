@@ -115,6 +115,7 @@ final class DevelopmentSelfHostingArtifacts {
     required this.agentsMdArtifact,
     required this.searchToolsArtifact,
     required this.filesystemToolsArtifact,
+    required this.commandToolsArtifact,
   });
 
   final Directory repository;
@@ -126,6 +127,7 @@ final class DevelopmentSelfHostingArtifacts {
   final File agentsMdArtifact;
   final File searchToolsArtifact;
   final File filesystemToolsArtifact;
+  final File commandToolsArtifact;
 
   static Future<DevelopmentSelfHostingArtifacts> compile({
     required Directory repository,
@@ -150,6 +152,9 @@ final class DevelopmentSelfHostingArtifacts {
           searchToolsArtifact: File('${outputDirectory.path}/search-tools.aot'),
           filesystemToolsArtifact: File(
             '${outputDirectory.path}/filesystem-tools.aot',
+          ),
+          commandToolsArtifact: File(
+            '${outputDirectory.path}/command-tools.aot',
           ),
         );
     await Future.wait(<Future<void>>[
@@ -200,6 +205,14 @@ final class DevelopmentSelfHostingArtifacts {
         entrypoint:
             'plugins/filesystem_tools/packages/backend/bin/filesystem_tools_backend.dart',
         output: artifacts.filesystemToolsArtifact,
+        log: log,
+      ),
+      _compileAot(
+        dart: dart,
+        repository: repository,
+        entrypoint:
+            'plugins/command_tools/packages/backend/bin/command_tools_backend.dart',
+        output: artifacts.commandToolsArtifact,
         log: log,
       ),
     ]);
@@ -273,10 +286,12 @@ final class DevelopmentSelfHostingTopology {
     required PluginBackendActivation agentsMdActivation,
     required PluginBackendActivation searchToolsActivation,
     required PluginBackendActivation filesystemToolsActivation,
+    required PluginBackendActivation? commandToolsActivation,
   }) : _environmentActivation = environmentActivation,
        _agentsMdActivation = agentsMdActivation,
        _searchToolsActivation = searchToolsActivation,
-       _filesystemToolsActivation = filesystemToolsActivation;
+       _filesystemToolsActivation = filesystemToolsActivation,
+       _commandToolsActivation = commandToolsActivation;
 
   final PluginBackendHost host;
   final AdeleRuntime runtime;
@@ -297,6 +312,7 @@ final class DevelopmentSelfHostingTopology {
   final PluginBackendActivation _agentsMdActivation;
   final PluginBackendActivation _searchToolsActivation;
   final PluginBackendActivation _filesystemToolsActivation;
+  final PluginBackendActivation? _commandToolsActivation;
   Future<void>? _closing;
 
   SessionId get sessionId => session.id;
@@ -321,11 +337,9 @@ final class DevelopmentSelfHostingTopology {
     PluginBackendActivation? agentsMdActivation;
     PluginBackendActivation? searchToolsActivation;
     PluginBackendActivation? filesystemToolsActivation;
+    PluginBackendActivation? commandToolsActivation;
     try {
-      runtime = AdeleRuntime(
-        ids: _DevelopmentSelfHostingIds(identity),
-        includeCommandTools: includeCommandTools,
-      );
+      runtime = AdeleRuntime(ids: _DevelopmentSelfHostingIds(identity));
       final CapabilityRegistry registry = runtime.registry;
       final InMemoryProductStore store = runtime.store;
       final ProductLifecycleCoordinator lifecycle = runtime.lifecycle;
@@ -352,6 +366,20 @@ final class DevelopmentSelfHostingTopology {
         extensions: runtime.extensions,
         adapters: createRemoteExtensionAdapters(),
       );
+      if (includeCommandTools) {
+        final PluginBackendConnection commandToolsConnection = await host
+            .startPlugin(
+              pluginId: 'dev.adele.plugin.command-tools',
+              artifactUri: artifacts.commandToolsArtifact.uri,
+            );
+        commandToolsActivation =
+            await PluginBackendActivation.registerAdvertised(
+              connection: commandToolsConnection,
+              capabilities: registry,
+              extensions: runtime.extensions,
+              adapters: createRemoteExtensionAdapters(),
+            );
+      }
       final PluginBackendConnection searchToolsConnection = await host
           .startPlugin(
             pluginId: 'dev.adele.plugin.search-tools',
@@ -446,6 +474,7 @@ final class DevelopmentSelfHostingTopology {
             agentsMdActivation: agentsMdActivation,
             searchToolsActivation: searchToolsActivation,
             filesystemToolsActivation: filesystemToolsActivation,
+            commandToolsActivation: commandToolsActivation,
           );
       log?.call('Project source: ${topology.projectSource.path}');
       log?.call('Task worktree: ${topology.taskWorktreePath}');
@@ -456,6 +485,7 @@ final class DevelopmentSelfHostingTopology {
           if (filesystemToolsActivation != null)
             filesystemToolsActivation.close,
           if (searchToolsActivation != null) searchToolsActivation.close,
+          if (commandToolsActivation != null) commandToolsActivation.close,
           if (agentsMdActivation != null) agentsMdActivation.close,
           if (environmentActivation != null) environmentActivation.close,
           if (!host.isClosed) () => host.close(graceful: false),
@@ -487,10 +517,12 @@ final class DevelopmentSelfHostingTopology {
   Future<void> close() => _closing ??= closeResources(<Future<void> Function()>[
     _filesystemToolsActivation.retire,
     _searchToolsActivation.retire,
+    if (_commandToolsActivation != null) _commandToolsActivation.retire,
     _agentsMdActivation.retire,
     _environmentActivation.retire,
     _filesystemToolsActivation.close,
     _searchToolsActivation.close,
+    if (_commandToolsActivation != null) _commandToolsActivation.close,
     _agentsMdActivation.close,
     _environmentActivation.close,
     if (!host.isClosed) host.close,

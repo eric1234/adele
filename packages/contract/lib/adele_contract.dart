@@ -8,7 +8,14 @@ import 'dart:collection';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 
 const int _adeleJsonMaxDepth = 64;
-const int adelePluginBackendProtocolVersion = 2;
+
+/// Exact-match plugin-backend wire version, not an installed-manifest version.
+///
+/// Before the first release, unstable wire changes keep this version in place.
+/// Rebuild a coherent runtime/host/backend set; prior development artifacts are
+/// unsupported even when their protocol version matches. Increment only when
+/// released artifacts establish a compatibility boundary.
+const int adelePluginBackendProtocolVersion = 1;
 
 /// Expanded JSON node limit for extension metadata and reverse request payloads.
 const int adelePluginBackendJsonMaxNodes = 100000;

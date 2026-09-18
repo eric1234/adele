@@ -400,6 +400,16 @@ abstract interface class AuthorizedEnvironmentMutationService {
   );
 }
 
+/// Foreground process access over authority already bound by the host invocation.
+/// Neither product identities nor provider selectors cross this service.
+@AdeleService('authorizedEnvironmentProcess')
+abstract interface class AuthorizedEnvironmentProcessService {
+  @AdeleMethod('runForegroundProcess')
+  Stream<EnvironmentProcessEvent> runForegroundProcess(
+    EnvironmentForegroundProcessRequest request,
+  );
+}
+
 @AdeleFailure('environment.failure')
 final class EnvironmentFailure implements Exception {
   const EnvironmentFailure({

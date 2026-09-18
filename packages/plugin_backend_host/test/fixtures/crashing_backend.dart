@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:adele_contract/adele_contract.dart';
+import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
 
 Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   final Map<Object?, Object?> bootstrap =
@@ -11,6 +12,10 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   final SendPort bootstrapPort = bootstrap['bootstrapPort']! as SendPort;
   final SendPort responsePort = bootstrap['responsePort']! as SendPort;
   final ReceivePort commands = ReceivePort();
+  if (arguments.first == 'reverse-streams') {
+    _serveHostStreams(bootstrapPort, responsePort, commands);
+    return;
+  }
   final ReceivePort? keepAlive = arguments.first == 'acknowledge-hang'
       ? ReceivePort()
       : null;
@@ -309,6 +314,93 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       if (keepAlive == null) return;
     }
   }
+}
+
+void _serveHostStreams(
+  SendPort bootstrap,
+  SendPort responses,
+  ReceivePort commands,
+) {
+  final host = AdeleHostRequestMultiplexer(send: responses.send);
+  final iterators = <int, StreamIterator<Object?>>{};
+  bootstrap.send({
+    'kind': 'ready',
+    'commandPort': commands.sendPort,
+    'pluginBackendProtocolVersion': adelePluginBackendProtocolVersion,
+  });
+  // A nested reverse stream must continue receiving replies during forward work.
+  commands.listen((Object? raw) async {
+    if (host.handleResponse(raw)) return;
+    final message = raw! as Map;
+    final id = message['requestId'] as int;
+    final payload = message['payload'] as Map?;
+    if (message['kind'] == 'streamOpen') {
+      iterators[id] = StreamIterator(
+        host
+            .bind(
+              hostInvocationContext: payload!['context'] as String,
+              serviceId: payload['service'] as String? ?? 'fixtureService',
+            )
+            .stream(payload['method'] as String? ?? 'watch', {
+              if (payload['oversize'] == true)
+                'value': 'x' * (8 * 1024 * 1024 + 1),
+              if (payload['compactDag'] == true) 'value': _compactDag(),
+            }),
+      );
+    } else if (message['kind'] == 'streamCredit') {
+      final iterator = iterators[id];
+      if (iterator == null) return;
+      try {
+        final next = await iterator.moveNext();
+        if (iterators[id] != iterator) return;
+        responses.send({
+          'kind': next ? 'streamItem' : 'streamDone',
+          'requestId': id,
+          if (next) 'payload': iterator.current,
+        });
+        if (!next) iterators.remove(id);
+      } on Object catch (error) {
+        if (iterators.remove(id) != iterator) return;
+        responses.send({
+          'kind': 'streamFailure',
+          'requestId': id,
+          'error': {
+            'code': error is AdeleRemoteFailure ? error.code : 'fixture_error',
+            'message': error.toString(),
+            if (error is AdeleRemoteFailure &&
+                error.declaredFailureType != null)
+              'declaredFailureType': error.declaredFailureType,
+            if (error is AdeleRemoteFailure)
+              'details': jsonDecode(jsonEncode(error.details)),
+          },
+        });
+      }
+    } else if (message['kind'] == 'streamCancel') {
+      await iterators.remove(id)?.cancel();
+      responses.send({'kind': 'streamCancelled', 'requestId': id});
+    } else if (message['method'] == 'raw') {
+      responses.send(Map<String, Object?>.from(payload!));
+    } else if (message['method'] == 'shutdown') {
+      host.close();
+      await Future.wait(iterators.values.map((iterator) => iterator.cancel()));
+      responses.send({
+        'kind': 'response',
+        'requestId': id,
+        'ok': true,
+        'payload': null,
+      });
+      commands.close();
+    } else if (message['method'] == 'crash') {
+      commands.close();
+    } else {
+      responses.send({
+        'kind': 'response',
+        'requestId': id,
+        'ok': true,
+        'payload': 'alive',
+      });
+    }
+  });
 }
 
 Object? _compactDag() {

@@ -10,7 +10,7 @@ void main() {
   test(
     'runtime rejects wrong stamped generation and settles revoked host requests once',
     () async {
-      expect(backendHostProtocolVersion, 2);
+      expect(backendHostProtocolVersion, 1);
       final fake = _FakeHost.create('''
 import 'dart:io';
 import 'package:plugin_runtime/plugin_runtime.dart';
@@ -37,13 +37,14 @@ void main() {
         }
         final payload = message['payload'] as Map;
         pending[message['requestId'] as int] = message;
-        send({'kind': 'hostRequest', 'requestId': message['requestId'], 'pluginId': message['pluginId'],
+        send({'kind': message['method'] == 'reverseStream' ? 'hostStreamOpen' : 'hostRequest', 'requestId': message['requestId'], 'pluginId': message['pluginId'],
           'generation': payload['generation'] ?? generations[message['pluginId']],
           'hostInvocationContext': payload['context'], 'serviceId': 'fixture', 'method': 'fixture.invoke', 'payload': {}});
-      } else if (kind == 'hostResponse') {
+      } else if (kind == 'hostResponse' || kind == 'hostStreamFailure') {
         responses++;
         final original = pending.remove(message['requestId']);
         if (original != null) send({'kind': 'response', 'requestId': original['requestId'], 'pluginId': original['pluginId'], 'ok': true, 'payload': message});
+        if (kind == 'hostStreamFailure') send({'kind': 'hostStreamAck', 'requestId': message['requestId'], 'pluginId': message['pluginId'], 'generation': message['generation']});
       } else if (kind == 'shutdownHost') {
         send({'kind': 'hostStopped', 'requestId': message['requestId']});
         exit(0);
@@ -102,10 +103,65 @@ void main() {
               })
               as Map;
       expect((stale['error'] as Map)['code'], 'host_invocation_unavailable');
+      final staleStream =
+          await replacement.request('reverseStream', {
+                'context': replacementInvocation.id,
+                'generation': oldGeneration,
+              })
+              as Map;
+      expect(staleStream['kind'], 'hostStreamFailure');
+      expect(
+        (staleStream['error'] as Map)['code'],
+        'host_invocation_unavailable',
+      );
       expect(dispatcher.calls, 1);
       await host.close();
       expect(replacementInvocation.isClosed, isTrue);
     },
+    // Includes AOT fixture compilation; operation settlement remains bounded above.
+    timeout: const Timeout(Duration(minutes: 1)),
+  );
+
+  test(
+    'uncorrelatable reverse controls from shared host retire all connections',
+    () async {
+      final fake = _FakeHost.create('''
+import 'dart:io';
+import 'package:plugin_runtime/plugin_runtime.dart';
+void main() {
+  void send(Map<String, Object?> message) => stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, ...message}));
+  send({'kind': 'hostHello'});
+  final decoder = BackendHostFrameDecoder();
+  stdin.listen((bytes) {
+    for (final message in decoder.add(bytes)) {
+      if (message['kind'] == 'startPlugin') {
+        send({'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId']});
+      } else if (message['kind'] == 'request') {
+        send({'kind': 'hostStreamCredit', 'requestId': 999, 'pluginId': message['pluginId'], 'generation': 'unknown', 'credit': 1});
+      }
+    }
+  });
+}
+''');
+      addTearDown(fake.dispose);
+      final host = await fake.start();
+      addTearDown(host.close);
+      final first = await host.startPlugin(
+        pluginId: 'first',
+        artifactUri: Uri.file('/unused'),
+      );
+      final peer = await host.startPlugin(
+        pluginId: 'peer',
+        artifactUri: Uri.file('/unused'),
+      );
+      await expectLater(
+        first.request('inject', {}),
+        throwsA(isA<PluginConnectionClosed>()),
+      );
+      expect(await peer.terminated, isA<PluginConnectionClosed>());
+      expect(host.isClosed, isTrue);
+    },
+    timeout: const Timeout(Duration(minutes: 1)),
   );
 
   test(

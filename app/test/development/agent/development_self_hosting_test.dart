@@ -10,12 +10,13 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:plugin_runtime/plugin_runtime.dart';
 
 import 'chat_test_topology.dart';
 
 void main() {
   test(
-    'self-hosting prepares and owns remote AGENTS, Search and Filesystem on one host',
+    'self-hosting prepares and owns remote AGENTS and all tools on one host',
     () async {
       final container = await Directory.systemTemp.createTemp(
         'adele-self-hosting-backends-',
@@ -37,6 +38,11 @@ void main() {
       );
       expect(await artifacts.filesystemToolsArtifact.length(), greaterThan(0));
       expect(
+        artifacts.commandToolsArtifact.path,
+        endsWith('/command-tools.aot'),
+      );
+      expect(await artifacts.commandToolsArtifact.length(), greaterThan(0));
+      expect(
         compiled.where((line) => line.startsWith('Compiling ')),
         unorderedEquals([
           'Compiling packages/plugin_backend_host/bin/adele_backend_host.dart.',
@@ -45,6 +51,7 @@ void main() {
           'Compiling plugins/agents_md/packages/backend/bin/agents_md_backend.dart.',
           'Compiling plugins/search_tools/packages/backend/bin/search_tools_backend.dart.',
           'Compiling plugins/filesystem_tools/packages/backend/bin/filesystem_tools_backend.dart.',
+          'Compiling plugins/command_tools/packages/backend/bin/command_tools_backend.dart.',
         ]),
       );
       final git = await _createGitFixture(container);
@@ -80,6 +87,13 @@ void main() {
       final source = topology.runtime.extensions
           .discover(inferenceContextSources)
           .single;
+      final command = topology.runtime.extensions
+          .discover(modelToolContributions)
+          .singleWhere(
+            (binding) =>
+                binding.id.value ==
+                'dev.adele.plugin.command-tools.model-tools',
+          );
       expect(source.id.value, 'dev.adele.plugin.agents-md.instructions');
       const guidance = 'Read guidance from the isolated Task Environment.\n';
       await File(
@@ -105,6 +119,33 @@ void main() {
       expect(requests.single.context.sourceResults.single.sourceId, source.id);
       expect(requests.single.instructions, contains(guidance));
       expect(requests.single.instructions, isNot(contains('Project guidance')));
+      final commandRetired = topology.runtime.extensions.changes.firstWhere(
+        (_) => !topology.runtime.extensions
+            .discover(modelToolContributions)
+            .any((binding) => binding.id == command.id),
+      );
+      await topology.host.stopPlugin('dev.adele.plugin.command-tools');
+      await commandRetired.timeout(const Duration(seconds: 10));
+      expect(topology.host.isClosed, isFalse);
+      expect(command.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(search.validate, returnsNormally);
+      expect(filesystem.validate, returnsNormally);
+      expect(source.validate, returnsNormally);
+      topology.environmentMaterialization.validateBinding();
+      final withoutCommand = await buildModelToolCatalogForSession(
+        sessionId: topology.sessionId,
+        environmentRuntime: topology.lifecycle.environmentRuntime,
+        extensions: topology.runtime.extensions,
+      );
+      expect(
+        withoutCommand.materialize().tools.map(
+          (tool) => tool.modelDefinition.alias,
+        ),
+        developmentSelfHostingToolAliases.where(
+          (alias) => alias != 'run_command',
+        ),
+        reason: 'Command termination must not enable an in-process fallback.',
+      );
       final closing = topology.close();
       expect(topology.close(), same(closing));
       await closing;
@@ -117,6 +158,7 @@ void main() {
       expect(search.validate, throwsA(isA<StaleExtensionBinding>()));
       expect(filesystem.validate, throwsA(isA<StaleExtensionBinding>()));
 
+      await artifacts.commandToolsArtifact.delete();
       final reduced = await DevelopmentSelfHostingTopology.start(
         artifacts: artifacts,
         projectSource: git.project,
@@ -126,6 +168,14 @@ void main() {
         includeCommandTools: false,
       );
       addTearDown(reduced.close);
+      expect(
+        reduced.runtime.extensions
+            .discover(modelToolContributions)
+            .map((binding) => binding.id.value),
+        isNot(contains(command.id.value)),
+        reason:
+            'The reduced topology must not even start the missing Command AOT.',
+      );
       expect(
         reduced.catalog.materialize().tools.map(
           (tool) => tool.modelDefinition.alias,
@@ -159,6 +209,18 @@ void main() {
         remaining.materialize().tools.map((tool) => tool.modelDefinition.alias),
         ['read_file', 'apply_patch', 'create_file', 'delete_file'],
         reason: 'Search termination must not enable an in-process fallback.',
+      );
+      await expectLater(
+        DevelopmentSelfHostingTopology.start(
+          artifacts: artifacts,
+          projectSource: git.project,
+          hostEnvironment: const {},
+          identity: 'missing-command',
+          taskTitle: 'Missing Command must fail without fallback',
+          onTaskEstablished: (_) =>
+              fail('Must fail before establishing a Task.'),
+        ),
+        throwsA(isA<PluginRemoteFailure>()),
       );
     },
     timeout: const Timeout(Duration(minutes: 4)),
