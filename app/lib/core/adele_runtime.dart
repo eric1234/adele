@@ -2,7 +2,6 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
-import 'package:local_directory_project_selector_plugin/local_directory_project_selector_plugin.dart';
 
 import 'application_plugin_bootstrap.dart';
 import 'product_lifecycle.dart';
@@ -20,10 +19,7 @@ final class AdeleRuntime {
       ids: ids,
     );
     contextComposer = InferenceContextComposer(extensions);
-    _activations = <ExtensionRegistration>[
-      chat.activate(extensions),
-      const LocalDirectoryProjectSelectorPlugin().activate(extensions),
-    ];
+    _activations = <ExtensionRegistration>[chat.activate(extensions)];
   }
 
   final CapabilityRegistry registry = CapabilityRegistry();

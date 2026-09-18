@@ -45,10 +45,11 @@ final class PreparedFrontend {
   final Uint8List? _bytes;
   final Object? failure;
   final Set<_PreparedPresentationState> _presentations = {};
+  final Set<PreparedFrontendBridge> _operations = {};
   bool _active = true;
 
   /// Retains a private immutable copy. Missing artifacts remain explicitly
-  /// unavailable; bytecode decoding and entrypoint failures are bounded per view.
+  /// unavailable; owners choose role-specific decode and entrypoint validation.
   static Future<PreparedFrontend> load(File artifact) async {
     try {
       return PreparedFrontend._(
@@ -58,6 +59,79 @@ final class PreparedFrontend {
     } on Object catch (error) {
       return PreparedFrontend._(null, error);
     }
+  }
+
+  /// Decode and resolve behavioral ABI without executing plugin code or granting
+  /// native authority. Presentation-only generations retain per-view validation.
+  void validateOperation({
+    required String library,
+    required String entrypoint,
+  }) {
+    _ValidationRuntime(
+      ByteData.sublistView(_requireBytes()),
+    ).executeLib(library, entrypoint);
+  }
+
+  /// Host-internal execution of a descriptor-selected, no-argument operation.
+  /// Each call gets a fresh runtime; the role adapter must copy/validate its
+  /// result before any eval-owned value can escape. Do not eagerly reify unknown
+  /// values: collection reification is recursive and some eval types lose shape.
+  Future<T> invoke<T>({
+    required String library,
+    required String entrypoint,
+    required PreparedFrontendBridge Function() createBridge,
+    required T Function(Object? value) decodeResult,
+  }) {
+    // The completion belongs to the caller's zone, not the eval error zone.
+    final completion = Completer<T>();
+    PreparedFrontendBridge? bridge;
+    void release() {
+      final owned = bridge;
+      bridge = null;
+      if (owned == null) return;
+      _operations.remove(owned);
+      owned.invalidate();
+    }
+
+    void fail(Object error, StackTrace stack) {
+      if (completion.isCompleted) return;
+      release();
+      completion.completeError(error, stack);
+    }
+
+    late Uint8List bytes;
+    late PreparedFrontendBridge operation;
+    try {
+      bytes = _requireBytes();
+      operation = bridge = createBridge();
+      _operations.add(operation);
+    } on Object catch (error, stack) {
+      fail(error, stack);
+      return completion.future;
+    }
+    runZonedGuarded(() async {
+      try {
+        final runtime = Runtime(ByteData.sublistView(bytes))
+          ..addPlugin(operation);
+        final Object? result = await runtime.executeLib(library, entrypoint);
+        _requireBytes();
+        if (completion.isCompleted) return;
+        final decoded = decodeResult(result);
+        release();
+        completion.complete(decoded);
+      } on Object catch (error, stack) {
+        fail(error, stack);
+      } finally {
+        release();
+      }
+    }, fail);
+    return completion.future;
+  }
+
+  Uint8List _requireBytes() {
+    if (!_active) throw StateError('The prepared frontend is retired.');
+    if (failure case final error?) throw error;
+    return _bytes!;
   }
 
   Widget createPresentation({
@@ -76,10 +150,29 @@ final class PreparedFrontend {
   void invalidate() {
     if (!_active) return;
     _active = false;
+    for (final operation in _operations) {
+      operation.invalidate();
+    }
+    _operations.clear();
     for (final _PreparedPresentationState presentation
         in _presentations.toList()) {
       presentation.invalidate();
     }
+  }
+}
+
+/// The eval pin decodes lazily inside executeLib before dispatching execute.
+/// Intercept dispatch to validate decoding/entrypoint presence without executing
+/// initializers, opening a picker, or installing global runtime overrides.
+final class _ValidationRuntime extends Runtime {
+  _ValidationRuntime(super.bytes);
+
+  @override
+  Object? execute(int entrypoint) {
+    if (entrypoint < 0 || entrypoint >= pr.length) {
+      throw const FormatException('Invalid prepared operation entrypoint.');
+    }
+    return null;
   }
 }
 

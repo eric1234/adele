@@ -27,8 +27,9 @@ compiler share this primitive.
 
 Normal `dart tools/adele.dart run linux` and `build linux --profile` prepare the
 shared host AOT snapshot, six backend AOT snapshots (Git Environment, OpenAI,
-AGENTS.md, Search, Filesystem Tools, and Command Tools), and four frontend EVCs (Chat, Filesystem
-Tools, Command Tools, and OpenAI activity) before launching the Flutter run/build command. Backend compilation
+AGENTS.md, Search, Filesystem Tools, and Command Tools), and five frontend EVCs
+(Chat, Local Directory Project Selector, Filesystem Tools, Command Tools, and OpenAI
+activity) before launching the Flutter run/build command. Backend compilation
 runs outside Flutter; frontend compilation uses Flutter build-time tooling. This also
 applies to explicit Linux debug/release modes; non-Linux commands and the explicit
 development smoke entry remain unchanged. `prepareDesktopPluginDefines` in
@@ -40,10 +41,11 @@ reference fixture's draft `adele_plugin.yaml` source/build manifest.
 The launcher inspects its selected Flutter executable and uses that SDK's bundled
 `dart` and sibling `dartaotruntime`, not a potentially unrelated `dart` on PATH.
 It compiles the host and Git, OpenAI, AGENTS.md, Search, Filesystem Tools, and Command Tools backends.
-`tools/frontend_artifacts.dart` prepares all four stock EVCs in the same installation root with the selected Flutter
-SDK. `tools/stock_frontend_descriptors.dart` is the singular stock build-side
-presentation descriptor table, shared with installation fixtures rather than
-duplicated in app runtime activation. Manifests are written after all component
+`tools/frontend_artifacts.dart` prepares all five stock EVCs in the same installation
+root with the selected Flutter SDK. `tools/stock_frontend_descriptors.dart` is the
+singular stock build-side source for presentation and behavioral extension
+descriptors, shared with installation fixtures rather than duplicated in app runtime
+activation. Manifests are written after all component
 preparation succeeds. The launcher passes only four generic deployment defines:
 
 - `ADELE_DARTAOTRUNTIME_EXECUTABLE`: absolute matched runtime path.
@@ -51,7 +53,7 @@ preparation succeeds. The launcher passes only four generic deployment defines:
 - `ADELE_PLUGIN_INSTALLATION_ROOT`: absolute fresh prepared-installations root.
 - `ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`: absolute generic startup-arguments JSON file.
 
-Seven installation directories are immediate children of the one installation root;
+Eight installation directories are immediate children of the one installation root;
 Filesystem Tools, Command Tools, and OpenAI each share one manifest and PluginId across their
 independently activatable backend and frontend components:
 
@@ -61,6 +63,9 @@ desktop-plugins/build-*/
 |-- startup-arguments.json
 `-- installations/
     |-- chat-strategy/
+    |   |-- adele_plugin.installation.json
+    |   `-- frontend.evc
+    |-- local-directory-project-selector/
     |   |-- adele_plugin.installation.json
     |   `-- frontend.evc
     |-- filesystem-tools/
@@ -88,16 +93,20 @@ desktop-plugins/build-*/
 
 Each installed JSON manifest contains a schema version, plugin metadata, and
 independently optional `backend` and `frontend` components. Each frontend contains
-a relative artifact and strict presentation descriptors for Session, tool activity,
-or model-native activity roles. Descriptors are executable ABI/preparation data,
-not profile state. Manifests contain no source paths, capability/extension exposures,
-configuration, or activation state. Their runtime schema and catalog failure rules
+a relative artifact, required `presentations` list for Session, tool activity,
+or model-native activity roles, and optional separate `extensions` list supporting
+`kind: 'projectSelector'`. Empty lists are valid and both may coexist under manifest
+version 1; presentation descriptors are unchanged. Descriptors are executable
+ABI/preparation data, not profile state. Manifests contain no source paths, backend
+capability/extension exposures, configuration, or activation state. Their runtime schema and catalog failure rules
 are maintained in
 [`plugin-layout.md`](../../docs/architecture/plugin-layout.md#prepared-installation-snapshot).
 The runtime discovers this snapshot before starting a host and shares it with the
 Flutter frontend owner; it does not run the source builder or know stock source
 layouts. Catalog validation checks confined existing files, not executable EVC
-correctness. Runtime bytecode decoding remains presentation-local.
+correctness. Flutter bootstrap validates behavioral bytecode and entrypoint
+presence without executing plugin code before registration; invalid behavioral
+code fails that frontend attempt. Presentation-only decoding remains per-view.
 
 Filesystem's backend source is under `plugins/filesystem_tools/packages/backend`.
 Command's is under `plugins/command_tools/packages/backend`, with entrypoint
@@ -142,10 +151,23 @@ The same launcher invokes `app/tool/compile_tool_inspection_frontends.dart` once
 for each owning tool frontend, using `ADELE_TOOL_INSPECTION_FRONTEND` and
 `ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT` alongside the repository root. It also
 invokes `app/tool/compile_openai_activity_frontend.dart` with build-time inputs
-`ADELE_REPOSITORY_ROOT` and `ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT`. Each stage
+`ADELE_REPOSITORY_ROOT` and `ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT`. Local Directory
+uses `app/tool/compile_local_directory_frontend.dart` with the exact helper
+`app/tool/local_directory_frontend_compiler.dart`, `ADELE_REPOSITORY_ROOT`, and
+`ADELE_LOCAL_DIRECTORY_FRONTEND_OUTPUT`. It compiles
+`plugins/local_directory_project_selector/packages/frontend` using compile-only
+picker declarations, not a native picker call. Each stage
 must produce nonempty EVC before application launch; failure never silently reuses
 an older artifact. These Flutter compiler entrypoints remain outside this package
 and the normal application startup import graph.
+
+`local_directory_project_selector_frontend` replaces the retired root selector
+package in workspace membership and maintained analysis/test discovery. Its
+`local-directory-project-selector` installation is frontend-only, with no AOT
+selector or additional deployment define. The evaluated operation owns path
+normalization; app hosting supplies a single-use asynchronous directory-picker
+bridge and validates the returned URI. This does not add backend RPC or
+Session/Environment authority.
 
 The OpenAI source split is Contract/Backend/Frontend under
 `plugins/openai/packages/{contract,backend,frontend}`. Contract is pure-Dart
@@ -195,9 +217,10 @@ calls. Remote model-tool preparation has no host token; only execution after
 policy/approval receives its descriptor's exact read/mutation/process allowlist.
 Reverse streams use one-item credit and cancellation, with immediate authority
 revocation and bounded cleanup. General symmetric RPC, client/bidirectional
-streaming, and ambient callbacks are unimplemented. The two in-process stock activations
-(Chat and Local Directory Project Selector) are outside this
-discovery path, with their migration deferred.
+streaming, and ambient callbacks are unimplemented. Only headless Chat remains
+statically activated outside prepared discovery, with its migration deferred.
+Self-hosting stays selector-free and creates its Project from an explicitly known
+source URI; it does not prepare or activate the directory-picker frontend.
 
 ## Current Scope
 

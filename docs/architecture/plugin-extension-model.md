@@ -6,7 +6,29 @@
 
 This document defines ADELE's long-term composition model for plugins and plugin-defined extension ecosystems. It records architectural boundaries rather than a frozen Dart API. Implemented APIs such as `ExtensionPoint` remain experimental; other example interfaces below remain directional until concrete implementation requires them.
 
-The maintained repository includes source plugins, interpreted frontend execution, AOT backend execution, generated typed transport, active capability registration/resolution, configured provider contexts, provider-neutral agent execution, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, and generic registration/liveness. The registry supports typed extension points, activation-scoped registrations, exact-generation bindings, public contextual model-tool contributions, executable orchestration-strategy contributions, instruction-only inference-context sources, and Project selector contributions. Stock Filesystem Tools, Search Tools, and Command Tools own `read_file`/`apply_patch`/`create_file`/`delete_file`, `search`, and `run_command`. Headless stock Chat uses public `adele_orchestration` and remains in process alongside Local Directory Project Selector: two static activations in shared `AdeleRuntime`, with their migration deferred. The root-level AGENTS.md source, Search, Filesystem Tools, and Command Tools run through prepared `agents_md_backend`, `search_tools_backend`, `filesystem_tools_backend`, and `command_tools_backend` packages, reusing their pure-Dart root semantics without production app imports/dependencies or static activation. Host-rendered Project opening is minimal, not a general UI API. ADELE does **not** yet implement the broader recursive extension system described here, general plugin-facing workbench composition, generic commands/keybindings, product/Chat persistence, broader inference material or other context sources, or most of the expected stock plugin topology.
+The maintained repository includes source plugins, interpreted frontend execution,
+AOT backend execution, generated typed transport, active capability
+registration/resolution, configured provider contexts, provider-neutral agent
+execution, initial Project/Task/Environment lifecycle, canonical strategy-bound
+Session creation with separate Environment authority, and generic
+registration/liveness. The registry supports typed extension points,
+activation-scoped registrations, exact-generation bindings, public contextual
+model-tool contributions, executable orchestration-strategy contributions,
+instruction-only inference-context sources, and Project selector contributions.
+Stock Filesystem Tools, Search Tools, and Command Tools own
+`read_file`/`apply_patch`/`create_file`/`delete_file`, `search`, and `run_command`.
+Headless stock Chat uses public `adele_orchestration` and is the only static
+activation in shared `AdeleRuntime`, with its migration deferred. Local Directory
+Project Selector runs as a prepared frontend-only behavioral extension. The
+root-level AGENTS.md source, Search, Filesystem Tools, and Command Tools run through
+prepared `agents_md_backend`, `search_tools_backend`, `filesystem_tools_backend`,
+and `command_tools_backend` packages, reusing their pure-Dart root semantics without
+production app imports/dependencies or static activation. Host-rendered Project
+opening is minimal, not a general UI API. ADELE does **not** yet implement the
+broader recursive extension system described here, general plugin-facing workbench
+composition, generic commands/keybindings, product/Chat persistence, broader
+inference material or other context sources, or most of the expected stock plugin
+topology.
 
 The generic registry deliberately defines only registration, discovery, retirement, and binding liveness. Model-tool composition defines its own zero-or-many composition and alias-collision semantics. Strategy resolution requires exactly one current contribution for an explicit semantic ID, with unavailable/ambiguous errors rather than defaults or tie-breaking. Instruction-context composition defines its own zero-or-many capture, deterministic identity ordering, and required/optional source failure behavior; it has no numeric priority. Generic priority, applicability languages, and universal ordering/failure rules are not supplied by the registry. `EnvironmentRuntime` remains a provisional application/domain implementation rather than a template for extension runtimes.
 
@@ -43,9 +65,11 @@ failure remains global. Self-hosting uses the same registration path with its ow
 explicit artifact/host/profile topology, without requiring normal discovery. See
 [`dependency-rules.md`](dependency-rules.md#application-backend-composition) for
 ownership and replaceability. The frontend owner consumes that same catalog and
-registers strict prepared presentation descriptors independently of backend
-readiness. Profiles, enable/disable management, version solving, watching, hot
-upgrade, and production packaging remain deferred.
+registers strict prepared presentation and behavioral extension descriptors
+independently of backend readiness. The separate `frontend.extensions` list
+supports `kind: 'projectSelector'`; existing `presentations` roles are unchanged
+and both lists can coexist under manifest version 1. Profiles, enable/disable
+management, version solving, watching, hot upgrade, and production packaging remain deferred.
 
 Internal `RemoteExtensionAdapterRegistry` supplies host adapters for known public
 points, not plugin contributions or a second public registry.
@@ -322,18 +346,39 @@ Its `ProjectSelectorContribution` contains only `String displayName` and
 A selector returns a source URI or `null` for cancellation, never a Project or
 host lifecycle context. `adele_product` remains unchanged and independent.
 
-The stock Local Directory Project Selector uses the existing in-process
-`activate(ExtensionRegistry)` registration convention; see
-[`stock-plugin-direction.md`](stock-plugin-direction.md#31-local-directory-project-selector)
-for its native-picker and headless import boundaries.
+Stock `local_directory_project_selector_frontend` under
+`plugins/local_directory_project_selector/packages/frontend` replaces the retired
+root implementation package. Its frontend-only `local-directory-project-selector`
+installation declares a behavioral extension with `kind: 'projectSelector'`,
+`extensionId`, `displayName`, `library`, and `entrypoint`, separately from
+presentation roles. `ApplicationFrontendBootstrap` registers a native proxy in the
+existing selector point. The evaluated no-argument `selectProject` returns a URI
+string or `null`, not a Project or a widget.
 
-`AdeleRuntime` owns the selector and Chat as its two static stock activations on its
-existing registry and retires them in reverse order. Command is an installed AOT
-backend, not a runtime constructor option. `AdeleApplication` discovers selectors
-in `build`, invokes the chosen contribution, then calls `runtime.lifecycle.createProject` for a non-null
-URI. Lifecycle publishes and returns the canonical Project; `_project` in app
-State is window-local presentation, not `runtime.currentProject`. No selector
-owns product creation, derived Project metadata, persistence, or deduplication.
+The frontend calls the public interpreted-only
+`adele_ui/directory_picker_bridge.dart` `Future<String?> pickDirectory()` stub.
+The app supplies compile-only declarations and a single-use, operation-scoped
+bridge to asynchronous native directory selection. EVC owns platform-path rules
+and normalization into an absolute `file:` URI; the generic adapter validates the
+URI result and liveness, not local-directory semantics. Internal
+`PreparedFrontend.invoke<T>` uses a fresh runtime, supplied bridge, and result
+decoder for the descriptor-selected no-argument operation, revoking in `finally`.
+It is not a public arbitrary-eval API, backend RPC, or Session/Environment authority.
+
+Bootstrap validates behavioral bytecode and entrypoint presence before registration
+without executing initializers or plugin code or granting picker access. Invalid
+behavioral code fails only that frontend attempt. Presentation-only corruption
+retains per-view failure semantics. Semantic selection failures remain
+operation-local rather than retiring the generation.
+
+`AdeleRuntime` owns only Chat as a static stock activation. Command is an installed
+AOT backend, not a runtime constructor option. Self-hosting remains selector-free
+and creates its Project from its explicitly known source URI. `AdeleApplication`
+discovers selectors in `build`, invokes the chosen contribution, validates its
+retained exact binding, then calls `runtime.lifecycle.createProject` for a non-null
+URI. Lifecycle publishes and returns the canonical Project; `_project` in app State
+is window-local presentation, not `runtime.currentProject`. No selector owns product
+creation, derived Project metadata, persistence, or deduplication.
 
 ## 5.4 Task and Environment boundary
 
@@ -395,7 +440,9 @@ For B1 selection, the app retains the exact selector binding and validates it
 after asynchronous selection before Project creation. It ignores late results
 after disposal/exit and never tries a replacement contribution. Buttons are
 disabled while selection is pending; cancellation is a no-op, and selector or
-lifecycle failure stays inline without changing the presented Project.
+lifecycle failure stays inline without changing the presented Project. The prepared
+selector bridge rejects late native results after retirement without forcibly
+closing an already-open OS dialog or migrating the operation to a replacement.
 
 Task establishment settlement is unchanged: provider success publishes the
 Task and finalized primary Environment and records the exact materialization.
@@ -533,7 +580,8 @@ authority-selection IDs. Reverse reads/mutations stay unary; reverse process
 streams use one-item credit, pause/resume, and cancellation. Settlement,
 cancellation, or retirement revokes authority immediately and cancels owned streams
 with bounded cleanup. This is neither a general remote-object/orchestration
-framework nor an OS sandbox. Chat and selector migration remains deferred.
+framework nor an OS sandbox. Headless Chat migration remains deferred; the prepared
+Local Directory frontend uses no AOT backend or backend host-service authority.
 
 The sealed `InferenceContextMaterial` root currently supports only final
 `InferenceInstructionMaterial(key, text, revision?)`: source-local nonblank string

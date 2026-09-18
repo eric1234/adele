@@ -211,8 +211,17 @@ maintained in its [README](../../plugins/agents_md/README.md).
 
 **Role:** native directory selection, returning only a source URI or cancellation.
 
-The selector owns the OS picker experience, not Project identity or lifecycle.
-The app invokes it and separately calls core lifecycle, as section 12.1 describes.
+The selector owns selection behavior and path-to-source-URI semantics, not native
+picker plumbing, Project identity, or lifecycle. The maintained Local Directory
+implementation is `local_directory_project_selector_frontend` under
+`plugins/local_directory_project_selector/packages/frontend`, replacing the retired
+root package. It is a frontend-only prepared installation, not an AOT backend or
+static `AdeleRuntime` activation. EVC calls the narrow public interpreted picker
+stub and normalizes the result to an absolute `file:` URI string or cancellation;
+the app supplies one asynchronous native picker call per operation through a
+revocable bridge. The generic adapter validates URI shape without owning path rules.
+The app invokes the contribution and separately calls core lifecycle after exact
+binding and window-lifetime validation, as section 12.1 describes.
 Directory selection must not imply Git validation or Environment creation; the
 selected Environment provider owns source suitability for its own operations.
 
@@ -221,6 +230,10 @@ associations, or deduplication. Zero selectors should be unavailable; multiple
 selectors can be independent choices rather than a priority competition. Future
 GitHub/cloud/catalog or recent-Project selectors can supply the same semantic
 boundary. Public contract ownership follows [`dependency-rules.md`](dependency-rules.md).
+Retirement rejects late native results without forcibly closing dialogs; semantic
+selection failures stay operation-local. The selector receives no backend RPC or
+Session/Environment authority. Headless self-hosting remains selector-free and uses
+an explicitly known source URI directly.
 
 ## 3.2 Task Browser
 

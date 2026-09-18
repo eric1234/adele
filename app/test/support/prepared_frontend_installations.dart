@@ -11,7 +11,8 @@ Future<Directory> prepareFrontendInstallations({
   await root.create(recursive: true);
   for (final entry in artifacts.entries) {
     final presentations = stockFrontendDescriptors[entry.key];
-    if (presentations == null) {
+    final extensions = stockFrontendExtensionDescriptors[entry.key];
+    if (presentations == null && extensions == null) {
       throw ArgumentError.value(entry.key, 'artifacts', 'Unknown stock plugin');
     }
     final directory = Directory.fromUri(root.uri.resolve('${entry.key}/'));
@@ -32,7 +33,8 @@ Future<Directory> prepareFrontendInstallations({
         'components': {
           'frontend': {
             'artifact': 'frontend.evc',
-            'presentations': presentations,
+            'presentations': presentations ?? const [],
+            'extensions': ?extensions,
           },
         },
       }),

@@ -1,12 +1,15 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_ui/adele_ui.dart';
+import 'package:dart_eval/stdlib/core.dart';
 import 'package:flutter/widgets.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../core/resource_cleanup.dart';
+import 'directory_picker_bridge.dart';
 import 'model_native_activity_bridge.dart';
 import 'prepared_frontend.dart';
 import 'prepared_session_adapter.dart';
@@ -166,6 +169,15 @@ final class InstalledFrontendActivation {
       );
       if (_closed) return;
       if (generation.failure case final failure?) throw failure;
+      for (final descriptor in component.extensions) {
+        switch (descriptor) {
+          case PreparedProjectSelectorExtension():
+            generation.validateOperation(
+              library: descriptor.library,
+              entrypoint: descriptor.entrypoint,
+            );
+        }
+      }
       for (final descriptor in component.presentations) {
         if (_closed) return;
         switch (descriptor) {
@@ -277,6 +289,56 @@ final class InstalledFrontendActivation {
             );
         }
       }
+      for (final descriptor in component.extensions) {
+        if (_closed) return;
+        switch (descriptor) {
+          case PreparedProjectSelectorExtension():
+            _register(
+              point: projectSelectorContributions,
+              id: descriptor.extensionId,
+              contribution: (isActive) => ProjectSelectorContribution(
+                displayName: descriptor.displayName,
+                selectProject: () async {
+                  _requireActive(isActive);
+                  late DirectoryPickerBridge bridge;
+                  return generation.invoke<Uri?>(
+                    library: descriptor.library,
+                    entrypoint: descriptor.entrypoint,
+                    createBridge: () =>
+                        bridge = DirectoryPickerBridge(isActive: isActive),
+                    decodeResult: (value) {
+                      _requireActive(isActive);
+                      bridge.validateResult();
+                      final String? text = switch (value) {
+                        null || $null() => null,
+                        String() => value,
+                        $String() => value.$value,
+                        _ => throw const FormatException(
+                          'A Project selector must return a URI string or null.',
+                        ),
+                      };
+                      if (text == null) return null;
+                      if (text.isEmpty || text.length > 16384) {
+                        throw const FormatException(
+                          'A Project selector must return a URI string or null.',
+                        );
+                      }
+                      final uri = Uri.parse(text);
+                      if (!uri.hasScheme ||
+                          text.contains(RegExp(r'[\x00-\x20\x7f]')) ||
+                          text.contains(RegExp(r'%(?![0-9a-fA-F]{2})'))) {
+                        throw const FormatException(
+                          'Invalid selected Project URI.',
+                        );
+                      }
+                      return uri;
+                    },
+                  );
+                },
+              ),
+            );
+        }
+      }
       _state = InstalledFrontendState.active;
     } on Object catch (error) {
       _failure = error;
@@ -306,7 +368,9 @@ final class InstalledFrontendActivation {
   }
 
   static void _requireActive(bool Function() isActive) {
-    if (!isActive()) throw StateError('The prepared presentation is retired.');
+    if (!isActive()) {
+      throw StateError('The prepared frontend contribution is retired.');
+    }
   }
 
   /// Retires the captured point/ID registration, never a replacement binding.

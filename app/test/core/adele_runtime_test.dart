@@ -18,7 +18,7 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 
 void main() {
   test(
-    'startup only composes Chat and Local Directory contributions on a shared graph',
+    'startup only composes Chat on a shared graph without Project selectors',
     () {
       final _RecordingIds ids = _RecordingIds();
       final AdeleRuntime runtime = AdeleRuntime(ids: ids);
@@ -48,7 +48,6 @@ void main() {
         _contributions(runtime).map((binding) => binding.id.value),
         unorderedEquals(<String>[
           'dev.adele.plugin.chat-strategy.orchestration',
-          'dev.adele.plugin.local-directory-project-selector.project-selector',
         ]),
       );
       expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
@@ -58,12 +57,8 @@ void main() {
       expect(runtime.plugins.catalog, isNull);
       expect(runtime.plugins.backends, isEmpty);
       expect(
-        runtime.extensions
-            .discover(projectSelectorContributions)
-            .single
-            .value
-            .displayName,
-        'Open Local Directory...',
+        runtime.extensions.discover(projectSelectorContributions),
+        isEmpty,
       );
       expect(
         runtime.lifecycle.strategyResolver.resolve(chatStrategyId).contribution,
@@ -87,7 +82,6 @@ void main() {
         _contributions(runtime).map((binding) => binding.id.value),
         unorderedEquals(<String>[
           'dev.adele.plugin.chat-strategy.orchestration',
-          'dev.adele.plugin.local-directory-project-selector.project-selector',
         ]),
       );
       final Project project = runtime.lifecycle.createProject(

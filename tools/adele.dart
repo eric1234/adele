@@ -183,8 +183,8 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
-    name: 'local_directory_project_selector_plugin',
-    path: 'plugins/local_directory_project_selector',
+    name: 'local_directory_project_selector_frontend',
+    path: 'plugins/local_directory_project_selector/packages/frontend',
     executable: 'flutter',
     arguments: <String>['test'],
   ),
@@ -326,8 +326,8 @@ analysisTargets = <({String name, String path, bool flutter})>[
     flutter: true,
   ),
   (
-    name: 'local_directory_project_selector_plugin',
-    path: 'plugins/local_directory_project_selector',
+    name: 'local_directory_project_selector_frontend',
+    path: 'plugins/local_directory_project_selector/packages/frontend',
     flutter: true,
   ),
   (

@@ -206,6 +206,37 @@ backend attempt rather than silently dropping an exposure.
 registration phases, rolls back both on failure, and retires their exact
 registrations before connection close. Termination cannot retarget old bindings.
 
+## Frontend behavioral operations
+
+Prepared frontend behavior is separate from generated backend RPC and capability
+selection. Under installed `manifestVersion: 1`, `frontend.extensions` is an
+optional list distinct from the unchanged `frontend.presentations` list; both may
+coexist. Its supported `kind: 'projectSelector'` descriptor has `extensionId`,
+`displayName`, `library`, and `entrypoint`. The Flutter owner adapts it to the
+existing `ProjectSelectorContribution` in the same extension registry, not a new
+capability or backend exposure. The exact schema is in
+[`plugin-layout.md`](plugin-layout.md#prepared-installation-snapshot).
+
+Bootstrap validates behavioral bytecode and entrypoint presence without executing
+initializers or plugin code, using a validation runtime that intercepts dispatch.
+Presentation-only corruption remains per-view. Internal `PreparedFrontend.invoke<T>`
+executes a descriptor-selected no-argument entrypoint in a fresh eval runtime with
+a supplied bridge and result decoder, revoking the bridge in `finally`. This is not
+a public arbitrary-eval interface or remote-object API.
+
+Local Directory's EVC calls the interpreted-only public
+`adele_ui/directory_picker_bridge.dart` `Future<String?> pickDirectory()` stub. App
+`DirectoryPickerDeclarations` carries compile-time ABI only; operation-scoped
+`DirectoryPickerBridge` uses `$Future.wrap` over `file_selector.getDirectoryPath`,
+returning the raw platform path and allowing one native call per operation. EVC
+owns path validation and normalization into an absolute `file:` URI string or
+`null`. The generic adapter validates the URI result and liveness; the app validates
+the exact binding and window lifetime before creating a Project. Retirement rejects
+late native results without forcibly closing a dialog, and semantic failures stay
+operation-local. No AOT selector, backend host-invocation token, generated backend
+RPC, or Session/Environment authority is involved. The backend host-service rules
+below remain a distinct boundary.
+
 ## Operation-scoped host calls
 
 The hosting decision is recorded in
@@ -404,9 +435,10 @@ Command declares only `authorizedEnvironmentProcess` and describes effects from
 pure identity and argument data. Its backend uses reverse process streaming only
 during authorized execution. Read and mutation calls remain unary; the separate
 host services change neither tool semantics nor policy/effect ordering. Command's
-installed backend and frontend are independently available. Chat and selector
+installed backend and frontend are independently available. Headless Chat
 migration, client/bidirectional streaming, ambient callbacks, and general symmetric
-RPC remain deferred.
+RPC remain deferred; the Local Directory selector is already a prepared frontend,
+not a consumer of backend host-service authority.
 
 ## Configured capability instances
 

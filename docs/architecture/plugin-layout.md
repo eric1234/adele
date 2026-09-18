@@ -40,8 +40,9 @@ choose a requested plugin's contract.
 
 Stock source directories have not been normalized to this fixture's
 `adele_plugin.yaml` layout. In particular, the desktop launcher still knows the
-Git, OpenAI, AGENTS.md, Search, Filesystem Tools, and Command Tools source entrypoints and prepares
-their installations explicitly.
+Git, OpenAI, AGENTS.md, Search, Filesystem Tools, and Command Tools backend
+entrypoints plus the stock frontend sources, including Local Directory Project
+Selector, and prepares their installations explicitly.
 Source/build discovery and installed-artifact discovery are separate boundaries.
 
 ## Prepared installation snapshot
@@ -68,8 +69,10 @@ snapshot of immediate child installation directories. Each child supplies
 `displayName`, and optional `description`. Version is not parsed or used to select
 a winner. `components` may be empty or contain independently optional `backend`
 and `frontend` components. Backend has only an `artifact` relative file path.
-Frontend has `artifact` (normally `frontend.evc`) and a `presentations` array;
-an empty array is valid. One installation can supply both components without
+Frontend has `artifact` (normally `frontend.evc`), a required `presentations` array,
+and an optional separate `extensions` array that defaults to empty. Empty arrays
+are valid, and both lists can coexist in the same frontend component under
+`manifestVersion: 1`. One installation can supply both components without
 duplicating its PluginId in another directory.
 
 Each presentation is a data-only descriptor with a required `role` and exactly
@@ -90,15 +93,35 @@ They are not profile state, configuration, permission grants, or executable
 callbacks in the manifest. Profiles remain a separate, unimplemented policy for
 which installed plugins participate in an activation context.
 
+Behavioral extensions use `kind`, not presentation `role`. The supported shape is:
+
+| Kind | Required fields besides `kind` |
+| --- | --- |
+| `projectSelector` | `extensionId`, `displayName`, `library`, `entrypoint` |
+
+All fields are nonblank strings, and `extensionId` uses the existing public
+identity validation. `library` must be a canonical `package:` Dart-library URI
+without traversal, query, fragment, or escapes; `entrypoint` must be a single
+top-level Dart identifier, not a member expression or call. Unknown kinds and
+fields are rejected. The descriptor selects
+a no-argument EVC entrypoint returning a URI string or `null`, adapted to the
+existing `ProjectSelectorContribution`. It is not a widget factory, backend-ready
+exposure, or permission grant. Existing presentation descriptors are unchanged.
+
 Artifacts must exist as regular files and remain confined to their installation
 after filesystem resolution; absolute paths, traversal, and escaping symlinks are
 rejected. Installation directories cannot themselves be symlinks. This is file
 and descriptor validation, not executable EVC validation: the catalog does not
 read or decode bytecode, resolve entrypoints, or validate a host adapter's runtime
 compatibility. `PreparedFrontend.load` later retains immutable bytes once per
-generation; decoding and entrypoint execution remain per-view. Readable corrupt
-EVC therefore fails locally when presented, not during catalog discovery.
-The manifest contains no capability or extension exposures, source paths, configuration,
+generation. Before registering a component's contributions, Flutter bootstrap
+validates behavioral bytecode and entrypoint presence with a runtime that intercepts
+execution before initializers or plugin code run. It installs no native picker
+bridge. A corrupt behavioral artifact or missing entrypoint fails that frontend
+attempt, not catalog discovery or a healthy backend sibling. Presentation-only
+components retain per-view decoding and execution, so readable corruption still
+fails locally when presented.
+The manifest contains no backend capability or extension exposures, source paths, configuration,
 credentials, profiles, or activation state.
 
 Discovery sorts child paths deterministically and does not recurse or watch for
@@ -120,8 +143,10 @@ Discovery activates neither component. Normal application bootstrap separately
 attempts all discovered valid components from this same snapshot; metadata-only
 entries start nothing. This fixed startup policy does not put activation state in
 the manifest or implement profiles. Installation and activation remain distinct
-as accepted in ADR 0015. Backend-ready capability/extension advertisements, not
-installed metadata, supply live registrations through host adapters; see
+as accepted in ADR 0015. Backend-ready capability/extension advertisements supply
+backend registrations; frontend descriptors supply registrations only when the
+Flutter owner activates their prepared generation. Neither is activated by
+discovery alone. See
 [`contracts-and-capabilities.md`](contracts-and-capabilities.md#backend-ready-advertisements).
 
 ## Package split
@@ -130,7 +155,7 @@ installed metadata, supply live registrations through host adapters; see
 | --- | --- | --- |
 | Contract | Shared identities, payload schemas, typed async transport declarations, and immutable values as needed | Pure Dart; no Flutter; no provider algorithms or transport/generation implementation |
 | Backend | Privileged/native Dart behavior | Depends on public contract/API packages as needed; never on frontend; compiled locally to AOT and hosted in an external isolate group |
-| Frontend | Plugin UI source | Depends on public contract/API packages as needed; never on backend; may use Flutter; currently interpreted with pinned `flutter_eval`/`dart_eval` |
+| Frontend | Plugin presentation and frontend behavioral source | Depends on public contract/API packages as needed; never on backend; may use Flutter; currently interpreted with pinned `flutter_eval`/`dart_eval` |
 
 Typed frontend/backend service communication uses shared public contracts and
 generated transport. Source imports do not cross between implementation packages,
@@ -167,6 +192,36 @@ execution objects, and approval authority stay outside the evaluated package.
 The narrow primitive bridge and
 host-owned execution presentation are described in
 [`overview.md`](overview.md#session-presentation).
+
+### Stock Local Directory frontend
+
+`plugins/local_directory_project_selector/packages/frontend` is the sole maintained
+implementation package, `local_directory_project_selector_frontend`; the old root
+selector package is retired. It depends on public `adele_ui`, not `file_selector`,
+app, or internal host packages. Its frontend-only installation is
+`local-directory-project-selector`, with `frontend.evc`, an empty `presentations`
+list, and a `projectSelector` descriptor in `extensions`. No AOT backend is supplied.
+
+The descriptor names
+`package:local_directory_project_selector_frontend/local_directory_project_selector_frontend.dart`
+and `selectProject`, with extension ID
+`dev.adele.plugin.local-directory-project-selector.project-selector` and display
+name `Open Local Directory...`. EVC calls the interpreted-only public
+`adele_ui/directory_picker_bridge.dart` stub, owns platform-path validation and
+normalization, and returns an absolute `file:` URI string or `null`.
+
+The app supplies a single-use asynchronous native picker bridge per operation.
+Internal `PreparedFrontend.invoke<T>` creates a fresh runtime for a descriptor
+entrypoint, decodes its result, and revokes its supplied bridge in `finally`.
+The generic host validates URI shape and liveness; only application lifecycle
+creates a Project after exact-binding validation. Retirement rejects late native
+results without forcibly closing dialogs; semantic failure stays operation-local.
+No backend RPC or Session/Environment authority is involved. Self-hosting remains
+selector-free and creates its Project from its explicitly known source URI.
+
+Build-time compilation uses `app/tool/local_directory_frontend_compiler.dart`
+through `app/tool/compile_local_directory_frontend.dart`. The frontend replaces the
+root selector in workspace membership and maintained analysis/test discovery.
 
 ### Stock AGENTS.md split
 
@@ -352,6 +407,7 @@ another:
 | Plugin runtime instance | Running plugin created for an activation context |
 | Frontend activation generation | Exact active prepared frontend and its registrations, not a canonical Session identity |
 | Presentation instance | One view's widget/resources, distinct from the frontend generation that supplied it |
+| Frontend operation | One descriptor-selected invocation with a fresh runtime and revocable bridge, not a backend authority token or persistent plugin instance |
 | Configured capability instance | Persistent named provider/account/connection managed by a runtime |
 | Project/Task/Session/Environment | Core product identities associated with plugin behavior, not plugin/package identity |
 | Runtime resource | Temporary document, terminal, browser session, process, or similar handle |
@@ -396,9 +452,8 @@ multiple extension points does not imply multiple plugin runtimes.
 
 ## Normal prepared composition
 
-Synchronous, provider-free `AdeleRuntime()` owns two in-process stock activations
-(Chat and Local Directory Project
-Selector) and generic `ApplicationPluginBootstrap` on its existing capability and
+Synchronous, provider-free `AdeleRuntime()` owns only headless Chat as a static
+in-process activation and generic `ApplicationPluginBootstrap` on its existing capability and
 extension registries. `AdeleApplication` explicitly calls `ApplicationPluginBootstrap.start`
 with only an installation root, shared runtime/host paths, and optional generic
 startup arguments. Discovery precedes host startup. If there are no valid backend
@@ -412,9 +467,10 @@ one prepared generation for its descriptors. Registration failure rolls back tha
 attempt's exact registrations and invalidates its generation without affecting
 healthy frontends or backends. Role retirement closes captured exact registrations
 without retiring siblings or replacements. Generation close settles pending loads,
-retires its registrations, and invalidates view resources; late loads cannot attach
-to a closed owner. Decoding remains per-view, so a corrupt artifact or failed
-entrypoint does not fail a Run or retire another frontend component.
+retires its registrations, and invalidates views and operation bridges; late loads
+cannot attach to a closed owner. Behavioral bytecode and entrypoint presence are
+validated without execution before registration. Presentation-only decoding remains
+per-view; neither failure path fails a Run or retires another frontend component.
 
 When backend components exist, one shared host independently attempts them, with no
 required Git or additional-OpenAI tier. A backend start, advertisement, or
@@ -428,17 +484,20 @@ Git/OpenAI entrypoints own capability advertisements; AGENTS.md, Search,
 Filesystem, and Command own their extension advertisements. `PluginBackendActivation.registerAdvertised` owns both
 capability and adapted extension registration with coherent rollback/retirement
 through the existing registries. Self-hosting uses the same generic remote extension
-activation but retains its explicit artifact/host/profile topology without normal discovery.
+activation but retains its explicit artifact/host/profile topology without normal
+discovery or selector activation.
 
 `prepareDesktopPluginDefines` in `tools/backend_artifacts.dart` selects and compiles
 stock Git/OpenAI/AGENTS.md/Search/Filesystem/Command source plus the shared host and invokes
-`tools/frontend_artifacts.dart` for four EVCs. In total, preparation produces six
-backend snapshots, one host snapshot, and four frontend artifacts. It assembles
-seven installation directories under one fresh
+`tools/frontend_artifacts.dart` for five EVCs. In total, preparation produces six
+backend snapshots, one host snapshot, and five frontend artifacts. It assembles
+eight installation directories under one fresh
 `.dart_tool/adele/desktop-plugins/build-*/installations/`: frontend-only
-`chat-strategy`, backend-only `git-environment`, `agents-md`, and
-`search-tools`, and combined `filesystem-tools`, `command-tools`, and `openai`.
-The singular build-side presentation table is `tools/stock_frontend_descriptors.dart`.
+`chat-strategy` and `local-directory-project-selector`, backend-only
+`git-environment`, `agents-md`, and `search-tools`, and combined `filesystem-tools`,
+`command-tools`, and `openai`.
+The singular build-side source for presentation and behavioral extension descriptors
+is `tools/stock_frontend_descriptors.dart`.
 Its separate startup-arguments JSON
 maps PluginId to a string argv list; normal OpenAI always receives `--chatgpt-only`,
 with a second JSON argument only when configured. That argument references the
@@ -464,9 +523,9 @@ Deployment and build details are maintained in
 [`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
 Checkout paths are not portable/production packaging, an installer, or a cache.
 
-Normal Chat, Filesystem Tools, Command Tools, and OpenAI activity frontend
-activations independently consume catalog-discovered EVCs, not per-stock artifact
-fields or deployment defines. Flutter build-time tooling prepares all four before
+Normal Chat, Local Directory Project Selector, Filesystem Tools, Command Tools, and
+OpenAI activity frontend activations independently consume catalog-discovered EVCs, not per-stock artifact
+fields or deployment defines. Flutter build-time tooling prepares all five before
 app launch/build, outside the normal runtime import graph. Tool Inspection retains
 the same view/runtime across coalesced snapshot updates rather than reloading
 bytecode for lifecycle changes. A missing, corrupt, or retired frontend does not
@@ -482,11 +541,13 @@ rebuild/reload on Linux x64 Flutter profile mode. Windows, macOS, release mode,
 packaging, activation contexts, and broad plugin APIs remain unproven.
 
 The prepared startup catalog supports independently optional frontends and
-metadata-driven presentation registration, alongside backend capability/extension
+metadata-driven presentation and behavioral extension registration, alongside
+backend capability/extension
 activation, operation-scoped unary host reads/mutations for AGENTS.md, Search,
 and Filesystem Tools, and reverse server-streaming processes for Command Tools.
-Two stock activations remain static and outside installed discovery; Chat and
-selector migration is deferred. Host and backend artifacts require matching
+Only headless Chat remains statically activated outside installed discovery, with
+its migration deferred. Local Directory is frontend-only, not an AOT selector or
+another backend host-call service. Host and backend artifacts require matching
 protocol version 1 and rebuilding as a coherent set; installed manifests remain
 version 1. See the
 [pre-release transport policy](contracts-and-capabilities.md#transport-version-policy).

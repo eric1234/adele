@@ -46,3 +46,19 @@ const Map<String, List<Map<String, Object?>>> stockFrontendDescriptors = {
     },
   ],
 };
+
+/// Build-time non-presentation extension metadata, keyed by owning PluginId.
+const Map<String, List<Map<String, Object?>>>
+stockFrontendExtensionDescriptors = {
+  'dev.adele.plugin.local-directory-project-selector': [
+    {
+      'kind': 'projectSelector',
+      'extensionId':
+          'dev.adele.plugin.local-directory-project-selector.project-selector',
+      'displayName': 'Open Local Directory...',
+      'library':
+          'package:local_directory_project_selector_frontend/local_directory_project_selector_frontend.dart',
+      'entrypoint': 'selectProject',
+    },
+  ],
+};

@@ -25,10 +25,44 @@ final class PreparedFrontendComponent {
   PreparedFrontendComponent({
     required this.artifactUri,
     required List<PreparedPresentationDescriptor> presentations,
-  }) : presentations = List.unmodifiable(presentations);
+    List<PreparedFrontendExtension> extensions = const [],
+  }) : presentations = List.unmodifiable(presentations),
+       extensions = List.unmodifiable(extensions);
 
   final Uri artifactUri;
   final List<PreparedPresentationDescriptor> presentations;
+  final List<PreparedFrontendExtension> extensions;
+}
+
+/// Data-only behavioral extension metadata, separate from presentation roles.
+sealed class PreparedFrontendExtension {
+  const PreparedFrontendExtension({required this.library});
+
+  final String library;
+
+  Map<String, Object?> toJson();
+}
+
+final class PreparedProjectSelectorExtension extends PreparedFrontendExtension {
+  const PreparedProjectSelectorExtension({
+    required this.extensionId,
+    required this.displayName,
+    required super.library,
+    required this.entrypoint,
+  });
+
+  final ExtensionId extensionId;
+  final String displayName;
+  final String entrypoint;
+
+  @override
+  Map<String, Object?> toJson() => {
+    'kind': 'projectSelector',
+    'extensionId': extensionId.value,
+    'displayName': displayName,
+    'library': library,
+    'entrypoint': entrypoint,
+  };
 }
 
 sealed class PreparedPresentationDescriptor {
@@ -298,6 +332,7 @@ Future<PreparedFrontendComponent> _frontend(
   final frontend = _object(value, 'components.frontend', {
     'artifact',
     'presentations',
+    'extensions',
   });
   final presentations = frontend['presentations'];
   if (presentations is! List<Object?>) {
@@ -307,6 +342,16 @@ Future<PreparedFrontendComponent> _frontend(
     for (var index = 0; index < presentations.length; index++)
       _presentation(presentations[index], 'frontend.presentations[$index]'),
   ];
+  final extensions = frontend.containsKey('extensions')
+      ? frontend['extensions']
+      : const <Object?>[];
+  if (extensions is! List<Object?>) {
+    throw const FormatException('frontend.extensions must be an array.');
+  }
+  final extensionDescriptors = <PreparedFrontendExtension>[
+    for (var index = 0; index < extensions.length; index++)
+      _extension(extensions[index], 'frontend.extensions[$index]'),
+  ];
   return PreparedFrontendComponent(
     artifactUri: await _artifact(
       frontend['artifact'],
@@ -314,7 +359,49 @@ Future<PreparedFrontendComponent> _frontend(
       directory,
     ),
     presentations: descriptors,
+    extensions: extensionDescriptors,
   );
+}
+
+PreparedFrontendExtension _extension(Object? value, String label) {
+  if (value is! Map<String, Object?>) {
+    throw FormatException('$label must be an object.');
+  }
+  String text(String field) => _text(value[field], '$label.$field');
+  switch (text('kind')) {
+    case 'projectSelector':
+      _object(value, label, {
+        'kind',
+        'extensionId',
+        'displayName',
+        'library',
+        'entrypoint',
+      });
+      final library = text('library');
+      if (!RegExp(
+            r'^package:[a-z_][a-z0-9_]*/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.dart$',
+          ).hasMatch(library) ||
+          library.split('/').any((part) => part == '.' || part == '..')) {
+        throw FormatException(
+          '$label.library must be a canonical package: URI to a Dart library '
+          'without traversal.',
+        );
+      }
+      final entrypoint = text('entrypoint');
+      if (!RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(entrypoint)) {
+        throw FormatException(
+          '$label.entrypoint must be a single top-level Dart identifier.',
+        );
+      }
+      return PreparedProjectSelectorExtension(
+        extensionId: ExtensionId(text('extensionId')),
+        displayName: text('displayName'),
+        library: library,
+        entrypoint: entrypoint,
+      );
+    default:
+      throw FormatException('$label.kind is unsupported.');
+  }
 }
 
 PreparedPresentationDescriptor _presentation(Object? value, String label) {

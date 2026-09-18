@@ -107,8 +107,9 @@ survives follow-up prompts for the controller lifetime, not in canonical history
 
 ## Prepared Artifact
 
-The Linux launcher prepares the OpenAI EVC alongside Chat, Filesystem Tools, and
-Command Tools. It installs `frontend.evc` alongside `backend.aot` in the one
+The Linux launcher prepares the OpenAI EVC alongside Chat, Local Directory Project
+Selector, Filesystem Tools, and Command Tools. It installs `frontend.evc` alongside
+`backend.aot` in the one
 `dev.adele.openai` installation, with descriptors from
 `tools/stock_frontend_descriptors.dart`. Runtime discovers both components from
 `ADELE_PLUGIN_INSTALLATION_ROOT`; there is no separate frontend artifact define.
@@ -125,7 +126,7 @@ The two environment variables are compiler inputs, not runtime configuration or
 model options. The `app/tool` compile harness is checkout tooling standing in for
 future installation/update preparation, not runtime activation. See
 [app frontend preparation](../../../../app/README.md#prepared-chat-frontend)
-for all four artifacts, the selected Flutter/eval pin, independent activation,
+for all five artifacts, the selected Flutter/eval pin, independent activation,
 and source-checkout path limitations. Descriptors describe prepared execution and
 presentation roles, not profile participation. Profiles, installation management,
 and portable packaging remain deferred.

@@ -93,7 +93,7 @@ void main() {
         );
         expect(find.text('ADELE'), findsOneWidget);
         expect(find.text('No Project is open'), findsOneWidget);
-        expect(find.text('Open Local Directory...'), findsOneWidget);
+        expect(find.text('Open Local Directory...'), findsNothing);
         expect(
           runtime.registry.providersFor(environmentProviderCapability),
           isEmpty,
@@ -275,7 +275,8 @@ void main() {
 
     expect(find.text('ADELE'), findsOneWidget);
     expect(find.text('No Project is open'), findsOneWidget);
-    expect(find.text('Open Local Directory...'), findsOneWidget);
+    expect(find.text('Open Local Directory...'), findsNothing);
+    expect(find.text('No Project selectors are available.'), findsOneWidget);
     expect(find.text('No workspace is open'), findsNothing);
     expect(find.text('No plugins are loaded'), findsNothing);
     expect(find.text('Phase 0'), findsNothing);
@@ -314,11 +315,8 @@ void main() {
     expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
     expect(runtime.extensions.discover(modelToolContributions), isEmpty);
     expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
-    final ExtensionBinding<ProjectSelectorContribution> selector = runtime
-        .extensions
-        .discover(projectSelectorContributions)
-        .single;
-    expect(find.text(selector.value.displayName), findsOneWidget);
+    expect(runtime.extensions.discover(projectSelectorContributions), isEmpty);
+    expect(find.text('No Project selectors are available.'), findsOneWidget);
     expect(find.text('No Project is open'), findsOneWidget);
 
     await tester.pumpWidget(AdeleApplication(createRuntime: createRuntime));
@@ -334,7 +332,7 @@ void main() {
     expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
     expect(runtime.extensions.discover(modelToolContributions), isEmpty);
     expect(runtime.extensions.discover(projectSelectorContributions), isEmpty);
-    expect(selector.validate, throwsA(isA<StaleExtensionBinding>()));
+    expect(strategy.validateBinding, throwsA(isA<StaleExtensionBinding>()));
   });
 
   testWidgets('graceful application exit awaits runtime retirement', (

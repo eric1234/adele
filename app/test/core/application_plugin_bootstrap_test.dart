@@ -61,7 +61,7 @@ void main() {
       expect(runtime.store.project(project.id), same(project));
       expect(
         runtime.extensions.discover(projectSelectorContributions),
-        hasLength(1),
+        isEmpty,
       );
       await expectLater(
         runtime.lifecycle.createTask(
@@ -182,7 +182,7 @@ void main() {
         expect(runtime.store.project(project.id), same(project));
         expect(
           runtime.extensions.discover(projectSelectorContributions),
-          hasLength(1),
+          isEmpty,
         );
         await expectLater(
           runtime.lifecycle.createTask(

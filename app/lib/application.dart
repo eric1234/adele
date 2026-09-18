@@ -48,6 +48,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   late final AdeleRuntime _runtime;
   late final AppLifecycleListener _lifecycleListener;
   late final StreamSubscription<ApplicationPluginState> _pluginSubscription;
+  late final StreamSubscription<void> _extensionSubscription;
   Future<void>? _closing;
   Object? _bootstrapError;
   Project? _project;
@@ -105,6 +106,9 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         unawaited(_frontends.start(catalog));
       }
       _chatFrontendAdapter.refresh();
+      if (mounted && _closing == null) setState(() {});
+    });
+    _extensionSubscription = _runtime.extensions.changes.listen((_) {
       if (mounted && _closing == null) setState(() {});
     });
     unawaited(_bootstrapPlugins());
@@ -404,6 +408,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   void dispose() {
     _lifecycleListener.dispose();
     unawaited(_pluginSubscription.cancel());
+    unawaited(_extensionSubscription.cancel());
     // Flutter disposal cannot await; graceful desktop exit awaits above.
     unawaited(_closeRuntime());
     _inspection.dispose();
