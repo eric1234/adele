@@ -85,7 +85,7 @@ final class WindowInspection extends ChangeNotifier {
         .firstOrNull;
   }
 
-  /// The caller first validates the emitted Chat token against retained evidence.
+  /// The caller first validates the emitted activity handle against retained evidence.
   bool inspectActivity({
     required Session session,
     required RunActivitySnapshot activity,

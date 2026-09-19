@@ -10,103 +10,66 @@ import 'package:adele_model_provider/adele_model_provider.dart'
     show modelProviderCapability;
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
-import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
-import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 void main() {
-  test(
-    'startup only composes Chat on a shared graph without Project selectors',
-    () {
-      final _RecordingIds ids = _RecordingIds();
-      final AdeleRuntime runtime = AdeleRuntime(ids: ids);
-      addTearDown(runtime.close);
-
-      expect(ids.calls, isEmpty);
-      expect(
-        runtime.registry.providersFor(environmentProviderCapability),
-        isEmpty,
-      );
-      expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
-      expect(runtime.store.project(ProjectId('project-1')), isNull);
-      expect(runtime.store.tasksFor(ProjectId('project-1')), isEmpty);
-      expect(runtime.store.task(TaskId('task-1')), isNull);
-      expect(runtime.store.environment(EnvironmentId('environment-1')), isNull);
-      expect(runtime.store.session(SessionId('session-1')), isNull);
-      expect(runtime.store.sessionAuthority(SessionId('session-1')), isNull);
-      expect(runtime.lifecycle.store, same(runtime.store));
-      expect(runtime.lifecycle.environmentRuntime.store, same(runtime.store));
-      expect(
-        runtime.lifecycle.environmentRuntime.currentMaterialization(
-          EnvironmentId('environment-1'),
-        ),
-        isNull,
-      );
-      expect(
-        _contributions(runtime).map((binding) => binding.id.value),
-        unorderedEquals(<String>[
-          'dev.adele.plugin.chat-strategy.orchestration',
-        ]),
-      );
-      expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
-      expect(runtime.extensions.discover(modelToolContributions), isEmpty);
-      expect(runtime.plugins.extensions, same(runtime.extensions));
-      expect(runtime.plugins.host, isNull);
-      expect(runtime.plugins.catalog, isNull);
-      expect(runtime.plugins.backends, isEmpty);
-      expect(
-        runtime.extensions.discover(projectSelectorContributions),
-        isEmpty,
-      );
-      expect(
-        runtime.lifecycle.strategyResolver.resolve(chatStrategyId).contribution,
-        same(
-          runtime.extensions
-              .discover(orchestrationStrategyContributions)
-              .single
-              .value,
-        ),
-      );
-    },
-  );
+  test('startup has zero static plugins, providers or product state', () async {
+    final runtime = AdeleRuntime();
+    addTearDown(runtime.close);
+    expect(
+      runtime.registry.providersFor(environmentProviderCapability),
+      isEmpty,
+    );
+    expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+    expect(
+      runtime.extensions.discover(orchestrationStrategyContributions),
+      isEmpty,
+    );
+    expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
+    expect(runtime.extensions.discover(modelToolContributions), isEmpty);
+    expect(runtime.extensions.discover(projectSelectorContributions), isEmpty);
+    expect(runtime.store.session(SessionId('session-1')), isNull);
+    expect(runtime.lifecycle.store, same(runtime.store));
+    expect(runtime.lifecycle.environmentRuntime.store, same(runtime.store));
+    expect(runtime.plugins.extensions, same(runtime.extensions));
+    expect(runtime.plugins.registry, same(runtime.registry));
+    expect(runtime.plugins.host, isNull);
+    expect(runtime.plugins.catalog, isNull);
+    expect(runtime.plugins.backends, isEmpty);
+    final closing = runtime.close();
+    expect(runtime.close(), same(closing));
+    await closing;
+    expect(runtime.close(), same(closing));
+  });
 
   test(
-    'default IDs are optional and bare composition contains no model tools',
-    () {
-      final AdeleRuntime runtime = AdeleRuntime();
-      addTearDown(runtime.close);
-
-      expect(
-        _contributions(runtime).map((binding) => binding.id.value),
-        unorderedEquals(<String>[
-          'dev.adele.plugin.chat-strategy.orchestration',
-        ]),
-      );
-      final Project project = runtime.lifecycle.createProject(
-        Uri.parse('file:///runtime-fixture/source'),
-      );
-      expect(runtime.store.project(project.id), same(project));
-    },
-  );
-
-  test(
-    'bare runtime powers retained Chat without implicit tools or AGENTS',
+    'explicit generic contributions use the shared product and Run graph',
     () async {
-      final _RecordingIds ids = _RecordingIds();
-      final AdeleRuntime runtime = AdeleRuntime(ids: ids);
-      addTearDown(runtime.close);
-      final _EnvironmentChannel channel = _EnvironmentChannel();
-      final ProviderId providerId = ProviderId(
-        'dev.adele.environment.runtime-test',
+      final runtime = AdeleRuntime(
+        ids: MonotonicProductIdSource(seed: 'runtime'),
       );
-      final CapabilityRegistration provider = runtime.registry.register(
+      addTearDown(runtime.close);
+      final strategyId = OrchestrationStrategyId(
+        'dev.example.runtime-strategy',
+      );
+      final strategyRegistration = runtime.extensions.register(
+        point: orchestrationStrategyContributions,
+        id: ExtensionId('dev.example.runtime-strategy'),
+        value: OrchestrationStrategyContribution(
+          strategyId: strategyId,
+          materialize: (context) => _Execution(context.host),
+        ),
+      );
+      addTearDown(strategyRegistration.close);
+      final channel = _EnvironmentChannel();
+      final provider = runtime.registry.register(
         provider: ProviderDescriptor(
-          id: providerId,
+          id: ProviderId('dev.example.environment'),
           capability: environmentProviderCapability,
-          pluginId: 'dev.adele.plugin.runtime-test',
-          displayName: 'Runtime Test',
+          pluginId: 'dev.example.environment',
+          displayName: 'Test environment',
           serviceId: environmentProviderServiceId,
         ),
         endpoint: AdeleRequestChannelEndpoint(
@@ -116,201 +79,97 @@ void main() {
         ),
       );
       addTearDown(provider.close);
-      expect(channel.calls, isEmpty);
-      expect(ids.calls, isEmpty);
-
-      final Project project = runtime.lifecycle.createProject(
-        Uri.parse('file:///runtime-fixture/source'),
+      final project = runtime.lifecycle.createProject(
+        Uri.parse('file:///fixture/'),
       );
-      final TaskCreationResult created = await runtime.lifecycle.createTask(
+      final task = await runtime.lifecycle.createTask(
         projectId: project.id,
-        title: 'Runtime composition',
-        providerId: providerId,
+        title: 'Generic Run',
       );
-      final Session session = runtime.lifecycle.createSession(
-        taskId: created.task.id,
-        strategyId: chatStrategyId,
-      );
-      expect(ids.calls, <String>['project', 'task', 'environment', 'session']);
-      expect(runtime.store.project(project.id), same(project));
-      expect(runtime.store.task(created.task.id), same(created.task));
-      expect(
-        runtime.store.environment(created.environment.id),
-        same(created.environment),
+      final session = runtime.lifecycle.createSession(
+        taskId: task.task.id,
+        strategyId: strategyId,
       );
       expect(runtime.store.session(session.id), same(session));
       expect(
         runtime.store.requireSessionAuthority(session.id).environmentId,
-        created.environment.id,
+        task.environment.id,
       );
-      final EnvironmentMaterialization materialization = await runtime
-          .lifecycle
-          .environmentRuntime
-          .materialize(created.environment.id);
-      expect(materialization.environment, same(created.environment));
-      expect(materialization.provider, isA<GeneratedEnvironmentProvider>());
-      final Map<String, Object?> context =
-          channel.calls.single.payload['context']! as Map<String, Object?>;
-      expect(
-        channel.calls.single.method,
-        environmentProviderServiceEstablishId,
-      );
-      expect(context['projectId'], project.id.value);
-      expect(context['taskId'], session.taskId.value);
-      expect(context['environmentId'], created.environment.id.value);
-      expect(context['providerId'], providerId.value);
-
-      final ChatSessionState history = runtime.chat.sessions.obtain(session.id)
-        ..instructions = 'Runtime-owned Chat instructions.'
-        ..append(ChatUserMessage('Retained question.'))
-        ..append(ChatAssistantMessage('Retained answer.'))
-        ..append(ChatUserMessage('Current question.'));
-      final ToolCatalog catalog = await buildModelToolCatalogForSession(
+      final tools = await buildModelToolCatalogForSession(
         sessionId: session.id,
         environmentRuntime: runtime.lifecycle.environmentRuntime,
         extensions: runtime.extensions,
       );
-      final _RecordingModel model = _RecordingModel();
-      final SessionOrchestrationRun run = await createSessionOrchestrationRun(
+      final model = _Model();
+      final run = await createSessionOrchestrationRun(
         lifecycle: runtime.lifecycle,
         sessionId: session.id,
         runId: RunId('runtime-run'),
         contextComposer: runtime.contextComposer,
         model: model,
-        toolCatalog: catalog,
-        policy: const _NoToolCalls(),
+        toolCatalog: tools,
+        policy: const _NoTools(),
       );
       expect(model.requests, isEmpty);
-      expect(channel.calls, hasLength(1));
-
       await run.start();
-
       expect(run.run.state, RunState.completed);
-      final SemanticModelRequest request = model.requests.single;
-      expect(
-        request.input.map(
-          (item) => ((item as SemanticMessageInput).role, item.content),
-        ),
-        <(SemanticMessageRole, String)>[
-          (SemanticMessageRole.user, 'Retained question.'),
-          (SemanticMessageRole.assistant, 'Retained answer.'),
-          (SemanticMessageRole.user, 'Current question.'),
-        ],
-      );
-      expect(runtime.chat.sessions.obtain(session.id), same(history));
-      expect(history.snapshot().entries.map((entry) => entry.content), <String>[
-        'Retained question.',
-        'Retained answer.',
-        'Current question.',
-        'Runtime answer.',
-      ]);
-      expect(history.snapshot().entries.last, isA<ChatAssistantMessage>());
-      expect(
-        (request.context.instructionGroups.first as StrategyInstructionGroup)
-            .instructions,
-        '$chatToolNarrationGuidance\n\nRuntime-owned Chat instructions.',
-      );
-      expect(request.context.sourceResults, isEmpty);
-      expect(channel.calls, hasLength(1));
-      expect(request.tools.tools, isEmpty);
-      final List<ExtensionBinding<Object>> bindings = _contributions(runtime);
-      final ResolvedOrchestrationStrategy strategy = runtime.lifecycle
-          .resolveSessionStrategy(session.id);
-
-      final Future<void> closing = runtime.close();
-      expect(runtime.close(), same(closing));
-      await closing;
-      expect(runtime.close(), same(closing));
-
-      expect(_contributions(runtime), isEmpty);
-      for (final ExtensionBinding<Object> binding in bindings) {
-        expect(binding.validate, throwsA(isA<StaleExtensionBinding>()));
-      }
-      expect(strategy.validateBinding, throwsA(isA<StaleExtensionBinding>()));
-      expect(
-        () => runtime.lifecycle.resolveSessionStrategy(session.id),
-        throwsA(isA<OrchestrationStrategyUnavailable>()),
-      );
-      // The caller owns provider registration; runtime closes only its extensions.
+      expect(model.requests.single.context.sourceResults, isEmpty);
+      expect(model.requests.single.tools.tools, isEmpty);
+      expect(channel.calls, 1);
+      await runtime.close();
+      // Only explicit owners retire their registrations; runtime invents none.
+      expect(strategyRegistration.isClosed, isFalse);
       expect(provider.isClosed, isFalse);
-      materialization.validateBinding();
-      expect(channel.calls, hasLength(1));
+      await run.close();
     },
   );
 }
 
-List<ExtensionBinding<Object>> _contributions(AdeleRuntime runtime) => [
-  ...runtime.extensions.discover(orchestrationStrategyContributions),
-  ...runtime.extensions.discover(inferenceContextSources),
-  ...runtime.extensions.discover(modelToolContributions),
-  ...runtime.extensions.discover(projectSelectorContributions),
-];
-
-final class _RecordingIds implements ProductIdSource {
-  final List<String> calls = <String>[];
-
+final class _Execution implements OrchestrationExecution {
+  _Execution(this.host);
+  final OrchestrationExecutionHost host;
   @override
-  ProjectId nextProjectId() {
-    calls.add('project');
-    return ProjectId('project-1');
+  Future<void> start() async {
+    host.start();
+    await host.invokeModel(StrategyInferenceMaterial(input: const []));
+    host.complete();
   }
 
   @override
-  TaskId nextTaskId() {
-    calls.add('task');
-    return TaskId('task-1');
-  }
-
+  Future<void> resolveApproval(ToolApprovalResolution resolution) =>
+      throw StateError('No approvals.');
   @override
-  EnvironmentId nextEnvironmentId() {
-    calls.add('environment');
-    return EnvironmentId('environment-1');
-  }
-
-  @override
-  SessionId nextSessionId() {
-    calls.add('session');
-    return SessionId('session-1');
-  }
+  Future<void> close() async {}
 }
 
 final class _EnvironmentChannel implements AdeleRequestChannel {
-  final List<({String method, Map<String, Object?> payload})> calls = [];
-
+  int calls = 0;
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) async {
-    calls.add((method: method, payload: payload));
-    return switch (method) {
-      environmentProviderServiceEstablishId => <String, Object?>{
-        'providerState': <String, Object?>{'transport': 'established'},
-      },
-      _ => throw StateError('Unexpected Environment operation: $method'),
-    };
+    calls++;
+    return {'providerState': <String, Object?>{}};
   }
 }
 
-final class _RecordingModel implements ModelPort {
-  final List<SemanticModelRequest> requests = <SemanticModelRequest>[];
-
+final class _Model implements ModelPort {
+  final requests = <SemanticModelRequest>[];
   @override
   Stream<ModelEvent> invoke(SemanticModelRequest request) async* {
     requests.add(request);
     yield ModelOutputItemCompleted(
       invocationId: request.invocationId,
-      item: ModelTextOutput('Runtime answer.'),
+      item: ModelTextOutput('Result'),
     );
     yield ModelInvocationSettledEvent(
       invocationId: request.invocationId,
       settlement: ModelSettlement.completed,
-      metadata: ModelTerminalMetadata(effectiveModel: 'runtime-fixture'),
     );
   }
 }
 
-final class _NoToolCalls implements ToolPolicy {
-  const _NoToolCalls();
-
+final class _NoTools implements ToolPolicy {
+  const _NoTools();
   @override
   ToolPolicyDecision evaluate(ToolPolicyInput input) =>
-      throw StateError('This Run must not execute tools.');
+      throw StateError('No tools.');
 }

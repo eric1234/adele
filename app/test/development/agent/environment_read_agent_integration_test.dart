@@ -7,23 +7,23 @@ import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/remote_inference_context_host.dart';
 import 'package:adele_desktop/development/agent/development_agent_support.dart';
-import 'package:adele_desktop/development/agent/development_self_hosting.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
-import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
+import 'package:chat_strategy_backend/chat_strategy_backend.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import '../../../tool/self_hosting/development_self_hosting.dart';
 import 'source_read_evidence_test_support.dart';
 
 const String _gitEnvironmentPluginId = 'dev.adele.plugin.git-environment';
 const String _gitEnvironmentProviderId = 'dev.adele.environment.git-worktree';
 const String _agentsMdPluginId = 'dev.adele.plugin.agents-md';
 const String _sourceRelativePath =
-    'plugins/chat_strategy/lib/chat_strategy_plugin.dart';
+    'plugins/chat_strategy/packages/backend/lib/chat_strategy_backend.dart';
 const String _transientSourceRelativePath =
     'app/lib/development/agent/phase_v_d1_transient_test_file.txt';
 const String _transientSourceContent = 'transient ADELE content \u{1f642}\n';
@@ -37,6 +37,7 @@ void main() {
   late File searchToolsArtifact;
   late File filesystemToolsArtifact;
   late File commandToolsArtifact;
+  late File chatStrategyArtifact;
 
   setUpAll(() async {
     repository = Directory.current.parent.path;
@@ -52,7 +53,14 @@ void main() {
     searchToolsArtifact = File('${artifacts.path}/search-tools.aot');
     filesystemToolsArtifact = File('${artifacts.path}/filesystem-tools.aot');
     commandToolsArtifact = File('${artifacts.path}/command-tools.aot');
+    chatStrategyArtifact = File('${artifacts.path}/chat-strategy.aot');
     await Future.wait<void>(<Future<void>>[
+      _compile(
+        dart,
+        '$repository/plugins/chat_strategy/packages/backend/bin/chat_strategy_backend.dart',
+        chatStrategyArtifact.path,
+        repository,
+      ),
       _compile(
         dart,
         '$repository/packages/plugin_backend_host/bin/adele_backend_host.dart',
@@ -120,6 +128,7 @@ void main() {
               searchToolsArtifact: searchToolsArtifact,
               filesystemToolsArtifact: filesystemToolsArtifact,
               commandToolsArtifact: commandToolsArtifact,
+              chatStrategyArtifact: chatStrategyArtifact,
             ),
             projectSource: source,
             hostEnvironment: const <String, String>{},
@@ -132,7 +141,7 @@ void main() {
       expect(topology.lifecycle, same(topology.runtime.lifecycle));
       expect(topology.store, same(topology.runtime.store));
       expect(topology.contextComposer, same(topology.runtime.contextComposer));
-      expect(topology.chat, same(topology.runtime.chat));
+      expect(topology.chatSession, isA<ChatSessionServiceClient>());
       // Self-hosting uses its existing host, not normal installation bootstrap.
       expect(topology.runtime.plugins.host, isNull);
       expect(topology.runtime.plugins.catalog, isNull);
@@ -188,8 +197,9 @@ void main() {
           .environmentMaterialization
           .provider
           .readFile(topology.environment.id, 'AGENTS.md');
-      final ChatSessionState chatState = topology.runtime.chat.sessions.obtain(
-        topology.sessionId,
+      expect(
+        (await topology.chatSession.snapshot(topology.sessionId.value)).entries,
+        isEmpty,
       );
       final _SearchReadModel model = _SearchReadModel();
       final DevelopmentSelfHostingRunResult result =
@@ -197,7 +207,8 @@ void main() {
             identity: 'topology',
             lifecycle: topology.lifecycle,
             contextComposer: topology.contextComposer,
-            sessions: topology.chat.sessions,
+            sessions: topology.chatSession,
+            resolvedStrategy: topology.resolvedStrategy,
             sessionId: topology.sessionId,
             prompt: 'Locate and read ChatSessionState.',
             instructions: 'Inspect source through the authorized Environment.',
@@ -205,9 +216,8 @@ void main() {
             catalog: topology.catalog,
             maxModelInvocations: 3,
           );
-      expect(result.succeeded, isTrue);
-      expect(result.session, same(chatState));
-      expect(chatState.snapshot().entries, hasLength(2));
+      expect(result.succeeded, isTrue, reason: result.run.failure?.toString());
+      expect(result.sessionSnapshot.entries, hasLength(2));
       expect(model.receivedRealSource, isTrue);
       expect(model.requests, hasLength(3));
       for (final SemanticModelRequest request in model.requests) {
@@ -389,9 +399,7 @@ void main() {
       final ChatSessionState history = chat.sessions.obtain(sessionId)
         ..instructions =
             'Search for and read the requested source before answering.'
-        ..append(
-          ChatUserMessage('Inspect the maintained ADELE strategy source.'),
-        );
+        ..appendUserMessage('Inspect the maintained ADELE strategy source.');
       final _SearchReadModel model = _SearchReadModel();
       final SessionOrchestrationRun strategy =
           await createSessionOrchestrationRun(
@@ -408,14 +416,14 @@ void main() {
 
       await strategy.start();
 
-      expect(run.state, RunState.completed);
+      expect(run.state, RunState.completed, reason: run.failure?.toString());
       expect(authority.environmentId, created.environment.id);
       expect(model.invocations, 3);
       expect(model.receivedRealSource, isTrue);
       expect(model.discoveredPath, _sourceRelativePath);
       expect(strategy.lastToolOutcome?.hostData['text'], expectedSource);
       expect(
-        (history.snapshot().entries.last as ChatAssistantMessage).content,
+        history.snapshot().entries.last.content,
         allOf(contains(_sourceRelativePath), contains('8')),
       );
 
@@ -509,7 +517,8 @@ void main() {
       final MaterializedTool searchC = catalogB.materialize().byAlias(
         'search',
       )!;
-      const String siblingPath = 'plugins/chat_strategy/lib/scope-decoy.txt';
+      const String siblingPath =
+          'plugins/chat_strategy/packages/backend/lib/scope-decoy.txt';
       final String worktreePath =
           created.environment.providerState!['worktreePath']! as String;
       await File(
@@ -523,7 +532,10 @@ void main() {
       expect(materializationB, isNot(same(materializationA)));
       expect(materializationB.environment.id, materializationA.environment.id);
       expect(restoredSearch.disposition, ToolOutcomeDisposition.success);
-      expect(restoredSearch.hostData['path'], 'plugins/chat_strategy/lib');
+      expect(
+        restoredSearch.hostData['path'],
+        'plugins/chat_strategy/packages/backend/lib',
+      );
       final ToolOutcome missingScope = await _executeSearch(
         searchC,
         sessionId,
@@ -715,7 +727,7 @@ void main() {
             'Read the requested source, use its visible revision for one '
             'apply_patch call with ordered exact edits, validate it with '
             'git diff --check using direct arguments, then report the result.'
-        ..append(ChatUserMessage('Update the strategy default safely.'));
+        ..appendUserMessage('Update the strategy default safely.');
       final SessionOrchestrationRun strategy =
           await createSessionOrchestrationRun(
             lifecycle: lifecycle,
@@ -760,7 +772,7 @@ void main() {
       expect(model.commandResultValidated, isTrue);
       expect(authority.environmentId, created.environment.id);
       expect(
-        (history.snapshot().entries.last as ChatAssistantMessage).content,
+        history.snapshot().entries.last.content,
         allOf(
           contains('maxModelInvocations to 9'),
           contains('git diff --check exited with code 0'),
@@ -1068,9 +1080,7 @@ void main() {
         ..instructions =
             'Create the requested new file, read it, use the read result '
             'Revision to delete it safely, then report completion.'
-        ..append(
-          ChatUserMessage('Create, verify, and remove the transient file.'),
-        );
+        ..appendUserMessage('Create, verify, and remove the transient file.');
       final SessionOrchestrationRun strategy =
           await createSessionOrchestrationRun(
             lifecycle: lifecycle,
@@ -1098,7 +1108,7 @@ void main() {
       expect(taskOnlyExistenceObserved, isTrue);
       expect(authority.environmentId, created.environment.id);
       expect(
-        (history.snapshot().entries.last as ChatAssistantMessage).content,
+        history.snapshot().entries.last.content,
         contains('created, verified, and deleted'),
       );
 
@@ -1245,7 +1255,7 @@ final class _SearchReadModel implements ModelPort {
             alias: 'search',
             arguments: const <String, Object?>{
               'query': 'final class ChatSessionState',
-              'path': './plugins/chat_strategy//lib/',
+              'path': './plugins/chat_strategy/packages/backend//lib/',
             },
           ),
         ),
@@ -1753,7 +1763,7 @@ _VisiblePatch _parseVisiblePatch(String modelContent) {
 Future<ToolOutcome> _executeSearch(
   MaterializedTool tool,
   SessionId sessionId, {
-  String path = 'plugins/chat_strategy/lib',
+  String path = 'plugins/chat_strategy/packages/backend/lib',
 }) async {
   final CanonicalToolArguments arguments = await tool.executable
       .validateAndNormalize(<String, Object?>{

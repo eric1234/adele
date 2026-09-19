@@ -12,10 +12,89 @@ abstract interface class PreparedFrontendBridge implements EvalPlugin {
   void invalidate();
 }
 
+/// Revokes observation/actions while retaining read-only display during exit.
+abstract interface class PreparedFrontendRetainable {
+  void retainPresentation();
+}
+
+/// Presentation hosts keep their existing subtree while exit observers drain.
+/// This does not retain authority or select replacement registrations.
+final class PreparedFrontendRetention
+    extends InheritedNotifier<ValueNotifier<bool>> {
+  const PreparedFrontendRetention({
+    super.key,
+    required super.notifier,
+    required super.child,
+  });
+
+  static bool isRetaining(BuildContext context) =>
+      context
+          .dependOnInheritedWidgetOfExactType<PreparedFrontendRetention>()
+          ?.notifier
+          ?.value ??
+      false;
+}
+
 /// Optional per-view failure notification, bound before runtime configuration.
 /// This callback belongs to the native owner and is never exposed to eval.
 abstract interface class PreparedFrontendFailureSource {
   set onFailure(VoidCallback? callback);
+}
+
+/// A presentation may compose independent native APIs in one eval runtime.
+final class PreparedFrontendBridges
+    implements
+        PreparedFrontendBridge,
+        PreparedFrontendFailureSource,
+        PreparedFrontendRetainable {
+  PreparedFrontendBridges(Iterable<PreparedFrontendBridge> bridges)
+    : _bridges = List.unmodifiable(bridges);
+
+  final List<PreparedFrontendBridge> _bridges;
+
+  @override
+  String get identifier => 'dev.adele.prepared-frontend-bridges';
+
+  @override
+  void configureForCompile(BridgeDeclarationRegistry registry) {
+    for (final bridge in _bridges) {
+      bridge.configureForCompile(registry);
+    }
+  }
+
+  @override
+  void configureForRuntime(Runtime runtime) {
+    for (final bridge in _bridges) {
+      bridge.configureForRuntime(runtime);
+    }
+  }
+
+  @override
+  set onFailure(VoidCallback? callback) {
+    for (final bridge in _bridges) {
+      if (bridge is PreparedFrontendFailureSource) {
+        (bridge as PreparedFrontendFailureSource).onFailure = callback;
+      }
+    }
+  }
+
+  @override
+  void invalidate() {
+    for (final bridge in _bridges) {
+      bridge.invalidate();
+    }
+  }
+
+  @override
+  void retainPresentation() {
+    for (final bridge in _bridges) {
+      if (bridge is PreparedFrontendRetainable) {
+        (bridge as PreparedFrontendRetainable).retainPresentation();
+      } else {
+        bridge.invalidate();
+      }
+    }
+  }
 }
 
 /// Opt-in host-owned factual content for unavailable prepared presentations.
@@ -47,6 +126,7 @@ final class PreparedFrontend {
   final Set<_PreparedPresentationState> _presentations = {};
   final Set<PreparedFrontendBridge> _operations = {};
   bool _active = true;
+  bool _retaining = false;
 
   /// Retains a private immutable copy. Missing artifacts remain explicitly
   /// unavailable; owners choose role-specific decode and entrypoint validation.
@@ -129,7 +209,9 @@ final class PreparedFrontend {
   }
 
   Uint8List _requireBytes() {
-    if (!_active) throw StateError('The prepared frontend is retired.');
+    if (!_active || _retaining) {
+      throw StateError('The prepared frontend is retired.');
+    }
     if (failure case final error?) throw error;
     return _bytes!;
   }
@@ -157,6 +239,30 @@ final class PreparedFrontend {
     for (final _PreparedPresentationState presentation
         in _presentations.toList()) {
       presentation.invalidate();
+    }
+  }
+
+  void retainPresentations() {
+    if (!_active || _retaining) return;
+    _retaining = true;
+    for (final operation in _operations) {
+      operation.invalidate();
+    }
+    _operations.clear();
+    for (final presentation in _presentations.toList()) {
+      presentation.retainPresentation();
+    }
+  }
+
+  void releasePresentations() {
+    _retaining = false;
+    if (_active) {
+      invalidate();
+    } else {
+      // Registrations may have retired this generation during exit.
+      for (final presentation in _presentations.toList()) {
+        presentation.invalidate();
+      }
     }
   }
 }
@@ -209,7 +315,7 @@ class _PreparedPresentationState extends State<_PreparedPresentation> {
   Future<void> _load() async {
     final PreparedFrontend generation = widget.generation;
     final Uint8List? bytes = generation._bytes;
-    if (!generation._active || bytes == null) {
+    if (!generation._active || generation._retaining || bytes == null) {
       _failed = true;
       return;
     }
@@ -231,7 +337,9 @@ class _PreparedPresentationState extends State<_PreparedPresentation> {
       final InterpretedWidget loaded = pending is Future<InterpretedWidget>
           ? await pending
           : pending;
-      if (!mounted || !generation._active || _failed) return;
+      if (!mounted || !generation._active || generation._retaining || _failed) {
+        return;
+      }
       setState(() => _loaded = loaded);
     } on Object {
       _fail();
@@ -255,6 +363,10 @@ class _PreparedPresentationState extends State<_PreparedPresentation> {
   }
 
   void invalidate() {
+    if (widget.generation._retaining) {
+      retainPresentation();
+      return;
+    }
     _release();
     if (!mounted) return;
     if (SchedulerBinding.instance.schedulerPhase ==
@@ -267,6 +379,15 @@ class _PreparedPresentationState extends State<_PreparedPresentation> {
     }
   }
 
+  void retainPresentation() {
+    final bridge = _bridge;
+    if (bridge is PreparedFrontendRetainable) {
+      (bridge as PreparedFrontendRetainable).retainPresentation();
+    } else {
+      bridge?.invalidate();
+    }
+  }
+
   @override
   void dispose() {
     _release();
@@ -276,6 +397,9 @@ class _PreparedPresentationState extends State<_PreparedPresentation> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.generation._retaining) {
+      return _loaded?.widget ?? const SizedBox.shrink();
+    }
     if (_failed || !widget.generation._active) {
       return PreparedFrontendFallback.maybeOf(context) ??
           const Text('Frontend unavailable.');

@@ -26,7 +26,7 @@ compiler share this primitive.
 ## Desktop Tooling
 
 Normal `dart tools/adele.dart run linux` and `build linux --profile` prepare the
-shared host AOT snapshot, six backend AOT snapshots (Git Environment, OpenAI,
+shared host AOT snapshot, seven backend AOT snapshots (Git Environment, OpenAI, Chat,
 AGENTS.md, Search, Filesystem Tools, and Command Tools), and five frontend EVCs
 (Chat, Local Directory Project Selector, Filesystem Tools, Command Tools, and OpenAI
 activity) before launching the Flutter run/build command. Backend compilation
@@ -40,7 +40,7 @@ reference fixture's draft `adele_plugin.yaml` source/build manifest.
 
 The launcher inspects its selected Flutter executable and uses that SDK's bundled
 `dart` and sibling `dartaotruntime`, not a potentially unrelated `dart` on PATH.
-It compiles the host and Git, OpenAI, AGENTS.md, Search, Filesystem Tools, and Command Tools backends.
+It compiles the host and Git, OpenAI, Chat, AGENTS.md, Search, Filesystem Tools, and Command Tools backends.
 `tools/frontend_artifacts.dart` prepares all five stock EVCs in the same installation
 root with the selected Flutter SDK. `tools/stock_frontend_descriptors.dart` is the
 singular stock build-side source for presentation and behavioral extension
@@ -54,7 +54,7 @@ preparation succeeds. The launcher passes only four generic deployment defines:
 - `ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`: absolute generic startup-arguments JSON file.
 
 Eight installation directories are immediate children of the one installation root;
-Filesystem Tools, Command Tools, and OpenAI each share one manifest and PluginId across their
+Chat, Filesystem Tools, Command Tools, and OpenAI each share one manifest and PluginId across their
 independently activatable backend and frontend components:
 
 ```text
@@ -64,6 +64,7 @@ desktop-plugins/build-*/
 `-- installations/
     |-- chat-strategy/
     |   |-- adele_plugin.installation.json
+    |   |-- backend.aot
     |   `-- frontend.evc
     |-- local-directory-project-selector/
     |   |-- adele_plugin.installation.json
@@ -96,7 +97,9 @@ independently optional `backend` and `frontend` components. Each frontend contai
 a relative artifact, required `presentations` list for Session, tool activity,
 or model-native activity roles, and optional separate `extensions` list supporting
 `kind: 'projectSelector'`. Empty lists are valid and both may coexist under manifest
-version 1; presentation descriptors are unchanged. Descriptors are executable
+version 1. Session descriptors include `displayName` and may declare an explicit
+`backendServices` allowlist and `strategyAffinity`; Chat allowlists generated
+`chatSessionServiceId` and uses `owningBackend`, with no `hostAdapter`. Descriptors are executable
 ABI/preparation data, not profile state. Manifests contain no source paths, backend
 capability/extension exposures, configuration, or activation state. Their runtime schema and catalog failure rules
 are maintained in
@@ -108,10 +111,14 @@ correctness. Flutter bootstrap validates behavioral bytecode and entrypoint
 presence without executing plugin code before registration; invalid behavioral
 code fails that frontend attempt. Presentation-only decoding remains per-view.
 
+Chat's backend source is under `plugins/chat_strategy/packages/backend`; its
+Contract/Backend/Frontend packages replace the retired root semantic package.
+The generated Chat frontend client is prepared with the generic own-backend and
+Session execution bridge declarations, not a native Chat controller.
 Filesystem's backend source is under `plugins/filesystem_tools/packages/backend`.
 Command's is under `plugins/command_tools/packages/backend`, with entrypoint
-`bin/command_tools_backend.dart`. AGENTS.md, Search, Filesystem Tools, and Command
-Tools need no configuration/startup arguments or
+`bin/command_tools_backend.dart`. Chat, AGENTS.md, Search, Filesystem Tools, and Command
+Tools need no startup configuration/arguments or
 extra deployment defines. Their entrypoints own ready extension advertisements; the app uses generic
 remote extension activation rather than linking their semantic plugins in production.
 Both host and plugin-backend protocols use version 1 with exact protocol-version
@@ -217,8 +224,11 @@ calls. Remote model-tool preparation has no host token; only execution after
 policy/approval receives its descriptor's exact read/mutation/process allowlist.
 Reverse streams use one-item credit and cancellation, with immediate authority
 revocation and bounded cleanup. General symmetric RPC, client/bidirectional
-streaming, and ambient callbacks are unimplemented. Only headless Chat remains
-statically activated outside prepared discovery, with its migration deferred.
+streaming, and ambient callbacks are unimplemented. Chat is an installed AOT
+strategy using public remote orchestration and a separate generated
+`ChatSessionService`. Runtime composition has no static stock activations or fallback.
+Self-hosting tooling under `app/tool/self_hosting/` uses the same remote backend
+path, with Chat Contract as a development-only app dependency, not linked semantics.
 Self-hosting stays selector-free and creates its Project from an explicitly known
 source URI; it does not prepare or activate the directory-picker frontend.
 

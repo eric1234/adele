@@ -7,7 +7,8 @@ import 'inference_context_host.dart';
 import 'product_lifecycle.dart';
 import 'run_activity_projection.dart';
 
-/// Resolves only the canonical Session's stored strategy, once for this Run.
+/// Captures the canonical Session's exact strategy for this Run. A supplied
+/// selection is validated against this lifecycle, never replaced by resolution.
 Future<SessionOrchestrationRun> createSessionOrchestrationRun({
   required ProductLifecycleCoordinator lifecycle,
   required SessionId sessionId,
@@ -16,13 +17,15 @@ Future<SessionOrchestrationRun> createSessionOrchestrationRun({
   required ModelPort model,
   required ToolCatalog toolCatalog,
   required ToolPolicy policy,
+  ResolvedOrchestrationStrategy? resolvedStrategy,
 }) async {
   final Session? session = lifecycle.store.session(sessionId);
   if (session == null) {
     throw StateError('Session $sessionId is not published.');
   }
-  final ResolvedOrchestrationStrategy binding = lifecycle
-      .resolveSessionStrategy(sessionId);
+  final ResolvedOrchestrationStrategy binding =
+      resolvedStrategy ?? lifecycle.resolveSessionStrategy(sessionId);
+  lifecycle.validateResolvedStrategy(session.strategyId, binding);
   final KernelOrchestrationHost host = KernelOrchestrationHost(
     run: AgentRun(id: runId, sessionId: sessionId),
     strategy: binding,
@@ -39,6 +42,16 @@ Future<SessionOrchestrationRun> createSessionOrchestrationRun({
   final OrchestrationExecution execution = await binding.materialize(
     OrchestrationStrategyHostContext(session: session, host: host),
   );
+  try {
+    lifecycle.validateResolvedStrategy(session.strategyId, binding);
+  } on Object {
+    try {
+      await execution.close();
+    } on Object {
+      // Preserve canonical ownership failure over cleanup failure.
+    }
+    rethrow;
+  }
   return SessionOrchestrationRun._(host, execution);
 }
 

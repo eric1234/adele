@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
@@ -71,19 +72,36 @@ sealed class PreparedPresentationDescriptor {
   final String library;
 }
 
+enum PreparedStrategyAffinity { independent, owningBackend }
+
 final class PreparedSessionPresentation extends PreparedPresentationDescriptor {
-  const PreparedSessionPresentation({
+  PreparedSessionPresentation({
     required this.extensionId,
     required this.strategyId,
+    required this.displayName,
     required this.entrypoint,
-    required this.hostAdapter,
     required super.library,
-  });
+    Iterable<String> backendServices = const [],
+    this.strategyAffinity = PreparedStrategyAffinity.independent,
+  }) : backendServices = List.unmodifiable(backendServices) {
+    _text(displayName, 'displayName');
+    final seen = <String>{};
+    for (final service in this.backendServices) {
+      adeleValidateServiceId(service);
+      if (!seen.add(service)) {
+        throw const FormatException(
+          'backendServices must not contain duplicates.',
+        );
+      }
+    }
+  }
 
   final ExtensionId extensionId;
   final OrchestrationStrategyId strategyId;
+  final String displayName;
   final String entrypoint;
-  final String hostAdapter;
+  final List<String> backendServices;
+  final PreparedStrategyAffinity strategyAffinity;
 }
 
 final class PreparedToolActivityPresentation
@@ -416,15 +434,35 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
         'library',
         'extensionId',
         'strategyId',
+        'displayName',
         'entrypoint',
-        'hostAdapter',
+        'backendServices',
+        'strategyAffinity',
       });
+      final services = value.containsKey('backendServices')
+          ? value['backendServices']
+          : const <String>[];
+      if (services is! List<Object?> ||
+          services.any((item) => item is! String)) {
+        throw FormatException('$label.backendServices must be a string array.');
+      }
+      final affinity = value.containsKey('strategyAffinity')
+          ? switch (value['strategyAffinity']) {
+              'independent' => PreparedStrategyAffinity.independent,
+              'owningBackend' => PreparedStrategyAffinity.owningBackend,
+              _ => throw FormatException(
+                '$label.strategyAffinity is unsupported.',
+              ),
+            }
+          : PreparedStrategyAffinity.independent;
       return PreparedSessionPresentation(
         extensionId: ExtensionId(text('extensionId')),
         strategyId: OrchestrationStrategyId(text('strategyId')),
+        displayName: text('displayName'),
         entrypoint: text('entrypoint'),
-        hostAdapter: text('hostAdapter'),
         library: text('library'),
+        backendServices: services.cast<String>(),
+        strategyAffinity: affinity,
       );
     case 'toolActivity':
       _object(value, label, {

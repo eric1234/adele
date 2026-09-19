@@ -6,15 +6,235 @@ import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_desktop/core/remote_inference_context_host.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_orchestration/remote_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:plugin_runtime/plugin_runtime.dart';
 
 void main() {
+  test(
+    'exact installation, strategy origins and channels never retarget',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'adele-exact-bootstrap-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final root = await Directory('${directory.path}/installations').create();
+      final installationDirectory = await Directory(
+        '${root.path}/plugin',
+      ).create();
+      final artifact = await File(
+        '${installationDirectory.path}/backend.aot',
+      ).writeAsString('fixture');
+      const pluginId = 'dev.adele.test.exact-backend';
+      await File(
+        '${installationDirectory.path}/adele_plugin.installation.json',
+      ).writeAsString(
+        jsonEncode({
+          'manifestVersion': 1,
+          'metadata': {
+            'id': pluginId,
+            'version': 'test',
+            'displayName': 'Exact Backend',
+          },
+          'components': {
+            'backend': {'artifact': 'backend.aot'},
+          },
+        }),
+      );
+      final script = await File(
+        '${directory.path}/host.dart',
+      ).writeAsString(_exactHostScript);
+      final extensions = ExtensionRegistry();
+      final capabilities = CapabilityRegistry();
+      final bootstrap = ApplicationPluginBootstrap(capabilities, extensions);
+      addTearDown(bootstrap.close);
+      final exposures = <Map<String, Object?>>[
+        for (final name in ['a', 'b'])
+          {
+            'extensionPointId': orchestrationStrategyContributions.value,
+            'extensionId': 'dev.adele.test.strategy.$name',
+            'serviceId': remoteOrchestrationServiceId,
+            'configurationContext': 'configured-$name',
+            'metadata': {
+              'strategyId': 'dev.adele.strategy.$name',
+              'routeId': name,
+            },
+          },
+      ];
+      final startup = [
+        jsonEncode({'extensionExposures': exposures}),
+      ];
+      final before = (await PreparedPluginCatalog.discover(
+        root.path,
+      )).installations.single;
+      expect(bootstrap.backendForInstallation(before), isNull);
+      final started = bootstrap.start(
+        installationRoot: root.path,
+        dartaotruntimeExecutable:
+            '${Platform.environment['FLUTTER_ROOT']}/bin/cache/dart-sdk/bin/${Platform.isWindows ? 'dart.exe' : 'dart'}',
+        hostArtifactPath: script.path,
+        startupArguments: {pluginId: startup},
+      );
+      expect(bootstrap.backendForInstallation(before), isNull);
+      await started;
+      final installation = bootstrap.catalog!.installations.single;
+      final backend = bootstrap.backendForInstallation(installation)!;
+      expect(bootstrap.backendForInstallation(before), isNull);
+      expect(
+        bootstrap.backendForInstallation(
+          PreparedPluginInstallation(
+            metadata: installation.metadata,
+            installationDirectory: installation.installationDirectory,
+            backendArtifactUri: installation.backendArtifactUri,
+          ),
+        ),
+        isNull,
+      );
+      final bindings = extensions.discover(orchestrationStrategyContributions);
+      final strategyA = bindings.first;
+      final originA = backend.strategyOrigin(strategyA)!;
+      final originB = backend.strategyOrigin(bindings.last)!;
+      expect(originA.connection, same(originB.connection));
+      expect(
+        backend.strategyOrigin(
+          extensions.discover(orchestrationStrategyContributions).first,
+        ),
+        same(originA),
+      );
+      PreparedSessionPresentation presentation(
+        OrchestrationStrategyId id,
+        PreparedStrategyAffinity affinity,
+      ) => PreparedSessionPresentation(
+        extensionId: ExtensionId('dev.adele.test.presentation'),
+        strategyId: id,
+        displayName: 'Example',
+        library: 'package:example/session.dart',
+        entrypoint: 'buildSession',
+        backendServices: ['history'],
+        strategyAffinity: affinity,
+      );
+      var live = true;
+      final channel = backend.openChannel(
+        presentation: presentation(
+          strategyA.value.strategyId,
+          PreparedStrategyAffinity.owningBackend,
+        ),
+        strategyBinding: strategyA,
+        validatePresentation: () {
+          if (!live) throw StateError('View retired.');
+        },
+      );
+      expect(await channel.request('history', 'echo', {}), {
+        'configurationContext': 'configured-a',
+        'serviceId': 'history',
+      });
+      final channelB = backend.openChannel(
+        presentation: presentation(
+          bindings.last.value.strategyId,
+          PreparedStrategyAffinity.owningBackend,
+        ),
+        strategyBinding: bindings.last,
+        validatePresentation: () {},
+      );
+      expect(await channelB.request('history', 'echo', {}), {
+        'configurationContext': 'configured-b',
+        'serviceId': 'history',
+      });
+      final foreign = ExtensionRegistry();
+      foreign.register(
+        point: orchestrationStrategyContributions,
+        id: strategyA.id,
+        value: strategyA.value,
+      );
+      final foreignBinding = foreign
+          .discover(orchestrationStrategyContributions)
+          .single;
+      expect(backend.strategyOrigin(foreignBinding), isNull);
+      expect(
+        () => backend.openChannel(
+          presentation: presentation(
+            strategyA.value.strategyId,
+            PreparedStrategyAffinity.owningBackend,
+          ),
+          strategyBinding: foreignBinding,
+          validatePresentation: () {},
+        ),
+        throwsStateError,
+      );
+      expect(
+        () => backend.openChannel(
+          presentation: presentation(
+            bindings.last.value.strategyId,
+            PreparedStrategyAffinity.owningBackend,
+          ),
+          strategyBinding: strategyA,
+          validatePresentation: () {},
+        ),
+        throwsArgumentError,
+      );
+      final independent = backend.openChannel(
+        presentation: presentation(
+          strategyA.value.strategyId,
+          PreparedStrategyAffinity.independent,
+        ),
+        strategyBinding: foreignBinding,
+        validatePresentation: () {},
+      );
+      expect(await independent.request('history', 'echo', {}), {
+        'configurationContext': 'default',
+        'serviceId': 'history',
+      });
+      live = false;
+      await expectLater(
+        channel.request('history', 'echo', {}),
+        throwsStateError,
+      );
+      live = true;
+      await backend.connection!.close();
+      expect(bootstrap.backendForInstallation(installation), isNull);
+      final replacement = await bootstrap.host!.startPlugin(
+        pluginId: pluginId,
+        artifactUri: artifact.uri,
+        arguments: startup,
+      );
+      final activation = await PluginBackendActivation.registerAdvertised(
+        connection: replacement,
+        capabilities: capabilities,
+        extensions: extensions,
+        adapters: createRemoteExtensionAdapters(),
+      );
+      addTearDown(activation.close);
+      final replacementBinding = extensions
+          .discover(orchestrationStrategyContributions)
+          .first;
+      expect(
+        activation.extensionOrigin(replacementBinding)!.connection,
+        same(replacement),
+      );
+      expect(originA.validate, throwsA(isA<StaleExtensionBinding>()));
+      await expectLater(
+        channel.request('history', 'echo', {}),
+        throwsStateError,
+      );
+      await expectLater(
+        independent.request('history', 'echo', {}),
+        throwsStateError,
+      );
+      expect(bootstrap.backendForInstallation(installation), isNull);
+      await activation.close();
+      final closing = bootstrap.close();
+      expect(bootstrap.backendForInstallation(installation), isNull);
+      await closing;
+    },
+  );
+
   for (final String rootKind in ['unconfigured', 'missing', 'empty']) {
     test('$rootKind root is ready without starting a host', () async {
       final Directory container = await Directory.systemTemp.createTemp(
@@ -281,3 +501,40 @@ void main() {
     },
   );
 }
+
+// Only transport framing/readiness are faked; activation and routing are real.
+const _exactHostScript = r'''
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+void send(Map<String, Object?> message) {
+  final bytes = utf8.encode(jsonEncode({'protocolVersion': 1, ...message}));
+  final length = ByteData(4)..setUint32(0, bytes.length);
+  stdout.add([...length.buffer.asUint8List(), ...bytes]);
+}
+void main() {
+  send({'kind': 'hostHello'});
+  var buffer = <int>[];
+  stdin.listen((bytes) {
+    buffer.addAll(bytes);
+    while (buffer.length >= 4) {
+      final length = ByteData.sublistView(Uint8List.fromList(buffer), 0, 4).getUint32(0);
+      if (buffer.length < length + 4) break;
+      final message = jsonDecode(utf8.decode(buffer.sublist(4, 4 + length))) as Map<String, dynamic>;
+      buffer = buffer.sublist(4 + length);
+      final route = {'requestId': message['requestId'], 'pluginId': message['pluginId'], 'generation': message['generation']};
+      switch (message['kind']) {
+        case 'startPlugin':
+          send({'kind': 'pluginReady', ...route, ...jsonDecode(message['arguments'][0]) as Map<String, dynamic>});
+        case 'stopPlugin':
+          send({'kind': 'pluginStopped', ...route});
+        case 'request':
+          send({'kind': 'response', ...route, 'ok': true, 'payload': {'configurationContext': message['configurationContext'], 'serviceId': message['serviceId']}});
+        case 'shutdownHost':
+          send({'kind': 'hostStopped', 'requestId': message['requestId']});
+          exit(0);
+      }
+    }
+  });
+}
+''';

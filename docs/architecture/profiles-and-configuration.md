@@ -7,8 +7,9 @@ ADELE profiles and general configuration management are accepted architectural d
 Normal startup discovers one prepared installation snapshot and separately
 attempts every valid backend and frontend component, including the AGENTS.md
 instruction source and Search, Filesystem Tools, and Command Tools AOT backends,
-plus the frontend-only Local Directory Project Selector. Only headless Chat is
-statically composed outside that discovery. This fixed participation
+plus the frontend-only Local Directory Project Selector and Chat's independently
+activated backend and frontend. No stock plugin is statically composed outside
+that discovery. This fixed participation
 policy is not profile activation or enable/disable management. Installed metadata contains neither configuration nor
 activation state; the temporary generic PluginId-to-argv startup file is outside
 the manifest and is intended to disappear with general configuration/profiles.
@@ -20,6 +21,9 @@ they are not profiles or general permissions. AGENTS.md, Search, Filesystem Tool
 and Command Tools require no configuration. Prepared frontend presentation and
 behavioral extension descriptors likewise describe executable ABI, not profile state;
 the selector's native picker bridge grants no backend Session/Environment authority.
+Session descriptors can allowlist services on their exact owning backend and
+require the Session strategy to originate from that connection. This is component
+plumbing, not profile policy or operation-scoped backend-to-host authority.
 See [`contracts-and-capabilities.md`](contracts-and-capabilities.md#operation-scoped-host-calls)
 for the host-call authority boundary.
 

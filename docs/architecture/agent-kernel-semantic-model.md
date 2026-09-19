@@ -84,14 +84,16 @@ allocates `SessionId` and atomically publishes the Session and separate authorit
 `store.session(id)` reads the product value; `requireSessionAuthority` remains the
 Environment authority read path. This lifecycle is in memory, not disk persistence.
 
-Headless stock `chat_strategy_plugin` owns `ChatSessionStore`, whose
-`obtain(SessionId)` retains `ChatSessionState` across Runs. Its immutable
-`ChatSessionSnapshot` contains canonical `ChatEntry` values:
-`ChatUserMessage` and `ChatAssistantMessage`. Only user and final assistant
-messages enter canonical history. Intermediate assistant/native output,
-proposals, and tool results remain Run-local replay; they are not promoted to
-canonical Session meaning. Chat owns instructions and a positive invocation
-budget, snapshotted when each Run is materialized.
+Stock Chat uses `plugins/chat_strategy/packages/{contract,backend,frontend}`;
+the root semantic package is retired. Backend's `RemoteOrchestrationBackend` and
+generated `ChatSessionService` snapshot/append/configuration operations share one canonical
+in-memory store. Contract snapshots carry stable entry occurrence IDs. Only user
+and final assistant messages enter canonical history; intermediate output,
+proposals, and tool results remain Run-local replay. Backend owns default
+instructions and a positive invocation budget (default eight), snapshotted per
+Run. External append/configuration mutations are rejected from active
+materialization through execution close, including approval waits. Core execution
+has no canonical history store or generic history protocol.
 
 The kernel consumes/re-exports the same product `SessionId`, but has no
 `session.dart` or `context.dart`, `SessionEntry`, `UserSessionMessage`,
@@ -173,20 +175,18 @@ produce an explicit unavailable error; duplicate semantic IDs are ambiguous even
 under distinct `ExtensionId` values. The lifecycle coordinator's
 `resolveSessionStrategy(sessionId)` resolves the canonical Session's stored ID.
 
-`ChatStrategyPlugin.activate` follows the same in-process activation convention
-as stock tool plugins. It registers semantic strategy ID
+The installed Chat backend advertises semantic strategy ID
 `dev.adele.strategy.chat`, distinct from plugin ID
 `dev.adele.plugin.chat-strategy` and extension ID
-`dev.adele.plugin.chat-strategy.orchestration`. This is the first real executable
-stock strategy, not identity-only metadata or production discovery. Its private
-loop is extracted from the former `DevelopmentToolLoopStrategy`; the app no
-longer owns the loop or temporary development strategy registration.
+`dev.adele.plugin.chat-strategy.orchestration`. Generic remote extension activation
+registers it in the existing strategy point. `AdeleRuntime` has no static stock
+activation, and normal app code imports neither Chat Contract nor implementation.
 
 ## Public execution and internal mechanics
 
 `createSessionOrchestrationRun` in `app/lib/core/orchestration_host.dart` looks up
-the canonical Session by `SessionId`, resolves its exact contribution once per
-Run, and materializes it using `OrchestrationStrategyHostContext(session, host)`
+the canonical Session by `SessionId`, resolves or validates its exact contribution
+once per Run, and materializes it using `OrchestrationStrategyHostContext(session, host)`
 against `KernelOrchestrationHost`. The result is `OrchestrationExecution`, with
 `start` and `resolveApproval` entry points for strategy sequencing. Materialization
 is async-capable through `FutureOr<OrchestrationExecution>` and the application
@@ -243,13 +243,15 @@ The backend proxy maps reconstructed proposal objects by identity, while the hos
 resolves handles to its original objects. Per-resume approval is host-captured:
 the proxy accepts only the exact current reconstructed resolution and calls
 no-argument `applyCurrentApproval`, which consumes the real host authorization once.
-Close/retirement releases state, not approvals or history. This is an execution
-substrate proven by test AOTs; stock Chat remains static and its canonical history
-remains strategy-specific Session state.
+Close/retirement releases execution state, not approvals or canonical history.
+Stock Chat uses this same substrate; its canonical history remains backend-owned
+Session state, independent of execution-scoped handles.
 
-Self-hosting activates Chat, obtains retained state, sets Chat configuration,
-appends the prompt, and routes `SessionId` through lifecycle resolution and this
-host. It does not construct a development loop or kernel history adapter.
+Self-hosting tooling under `app/tool/self_hosting/` uses the generated Chat Contract
+client to configure, append to, and snapshot the same remote backend, then routes
+`SessionId` and its exact resolved strategy through lifecycle and this host. Chat
+Contract is a development-only app dependency. There is no development loop,
+in-process Chat activation, or kernel history adapter.
 Normal application presentation uses the same execution path for a canonical Chat
 Session. Session creation does not require a model; each submitted prompt selects
 a fresh exact provider binding, Session-authorized tool catalog, and immutable
@@ -267,6 +269,22 @@ configurable permissions/profiles, steering, child Sessions, and persistence rem
 deferred.
 
 # Strategy state and context assembly
+
+Normal Chat Frontend owns asynchronous composer acceptance and history refresh
+through its generated own-backend client. An explicit `backendServices` allowlist
+bounds requests to the exact sibling connection and configuration context; the
+frontend cannot select a PluginId or retarget a stale channel. With prepared
+`strategyAffinity: 'owningBackend'`, the host verifies the strategy's exact
+registration origin and pins Run execution to that backend's state. Matching
+strategy/plugin IDs alone is insufficient. `createSession` validates before
+publication, including canonical registry ownership of a supplied resolved binding.
+
+The generic Session execution bridge exposes scheduling and immutable activity
+over opaque handles, not canonical history. Chat Frontend associates each accepted
+stable entry occurrence ID with a Run handle and owns grouping/timeline placement.
+Core owns model/tools/policy, approval, activity evidence, and Inspection. Frontend
+and backend startup availability are independent, with no fallback; temporary
+provider/model selection remains an app composition concern.
 
 ## Implemented inference composition
 
@@ -718,11 +736,12 @@ settlement. A retired `ResolvedOrchestrationStrategy` fails with generic
 on replacement B. An in-flight operation may settle and retain evidence, but
 retirement does not imply rollback of external effects.
 
-A later Run in the same Session freshly resolves the stored ID and may use B;
+A later Run in the same Session can freshly resolve the stored ID and may use B;
 unavailable or ambiguous resolution never falls back to another strategy or
-rewrites the canonical Session. Reusing Chat history from a retained
-`ChatSessionStore` across Runs is independent of migrating a live binding and
-does not establish disk persistence or automatic restoration after reactivation.
+rewrites the canonical Session. An owning-backend presentation must establish a
+fresh coherent state/execution binding, not reuse its stale channel with B.
+Backend history reuse across Runs is independent of live-binding migration and
+does not establish persistence or automatic state restoration after reactivation.
 
 # Environment
 
@@ -780,14 +799,15 @@ projection preserves canonical arguments, known effects, and structured outcome
 Opaque native and tool-owned payloads are evidence, not automatically rendered
 or classified as reasoning.
 
-Stock Chat uses this observation boundary for presentation-only activity groups:
-one successfully completed model invocation with tools or a native output whose
-`presentation != null` is one group, independently of rich frontend activation.
+Stock Chat Frontend uses this observation boundary for presentation-only activity:
+each tool proposal or native output with `presentation != null` in a successfully
+completed model invocation counts once, independently of rich frontend activation.
+One occurrence appears directly; two or more form one group.
 Chat needs no negative projection cache or registry-change retry machinery.
 Headings prefer explicit tool-batch narration only when tools are present, then
-safe compact text, then a structural tool count. This is Chat presentation policy, not
-a kernel grouping invariant. Reasoning-only groups precede canonical final
-assistant text; completed groups remain only for the current controller lifetime.
+safe compact text, then a structural operation count. This is Chat presentation policy, not
+a kernel grouping invariant. Reasoning-only activity precedes canonical final
+assistant text; completed groups remain only for the current presentation lifetime.
 Groups can open window-owned Inspection, whose common host interleaves tools and
 native activity by exact `output.sequence` through public `adele_ui` contributions
 matched by `ToolId` or safe presentation kind. Missing rich presentation does not
@@ -802,7 +822,8 @@ orchestration and the kernel and is the only native replay source; safe
 presentation is never replayed. Selection, frontend resources, display-control
 escaping, and provider/tool interpretation remain
 outside the kernel; see [model-native activity presentation](overview.md#model-native-activity-presentation).
-Reasoning deltas and nested Inspection remain deferred.
+Reasoning deltas and arbitrary drill-down beyond group-to-individual Inspection
+remain deferred.
 
 Public plugin Events are a broader extension concept defined outside the kernel. A kernel observation may later be projected into a public Event, but the internal Run journal and public Event system are not assumed to be identical.
 
@@ -965,10 +986,10 @@ Do not add before a concrete need:
 # Current execution path
 
 ```text
-canonical SessionId + retained Chat state
+canonical SessionId + backend-owned Chat state
     -> createSessionOrchestrationRun
-    -> exact contribution materialization
-    -> Chat start
+    -> exact remote contribution materialization
+    -> backend Chat start through an operation-scoped host invocation
     -> StrategyInferenceMaterial
     -> current source capture into InferenceContextSnapshot
     -> host SemanticModelRequest(context, invocationId, tools)

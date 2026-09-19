@@ -210,7 +210,7 @@ registrations before connection close. Termination cannot retarget old bindings.
 
 Prepared frontend behavior is separate from generated backend RPC and capability
 selection. Under installed `manifestVersion: 1`, `frontend.extensions` is an
-optional list distinct from the unchanged `frontend.presentations` list; both may
+optional list distinct from the `frontend.presentations` list; both may
 coexist. Its supported `kind: 'projectSelector'` descriptor has `extensionId`,
 `displayName`, `library`, and `entrypoint`. The Flutter owner adapts it to the
 existing `ProjectSelectorContribution` in the same extension registry, not a new
@@ -236,6 +236,53 @@ late native results without forcibly closing a dialog, and semantic failures sta
 operation-local. No AOT selector, backend host-invocation token, generated backend
 RPC, or Session/Environment authority is involved. The backend host-service rules
 below remain a distinct boundary.
+
+## Own-backend frontend requests
+
+Session frontends can use generated unary clients over
+`adele_ui/owning_backend_bridge.dart`. The prepared descriptor's `backendServices`
+is an explicit, duplicate-free service-ID allowlist. Internal `OwningBackendChannel`
+captures one exact sibling `PluginBackendConnection` and configuration context,
+validates presentation/activation liveness before dispatch and after settlement,
+and transports copied immutable data. Neither PluginId nor configuration selection
+crosses the frontend bridge. It does not perform capability resolution, arbitrary
+backend lookup, replacement retargeting, or general symmetric RPC.
+
+Session descriptors include `displayName`, `strategyId`, `extensionId`, `library`,
+and `entrypoint`; optional `strategyAffinity` is `independent` or `owningBackend`.
+For owning-backend affinity, the host verifies the resolved strategy's exact
+registration origin against the captured connection/context. Origin is internal
+registration ownership, not matching IDs, contribution value identity, or a
+plugin-declared claim. Lifecycle validates the supplied strategy in its canonical
+registry before publishing a Session; Run hosting retains that same binding and
+revalidates through asynchronous materialization. A retired or foreign binding
+fails explicitly. The old `hostAdapter` field is removed, with manifest version 1
+unchanged. See the [installed schema](plugin-layout.md#prepared-installation-snapshot).
+
+Chat's `backendServices` allowlists generated `chatSessionServiceId`; its
+`strategyAffinity` is `owningBackend`. Descriptor and dispatcher must use the same
+generated service identity, not independently coined spellings.
+`ChatSessionService` supplies generated `snapshot`, `appendUserMessage`, and
+`configureSession` methods, with immutable `ChatEntry` and `ChatSessionSnapshot`
+values and declared `ChatSessionFailure`. Backend also advertises its Session
+capability for typed headless consumers such as self-hosting; this does not turn
+the frontend bridge into a provider selector. That service and Backend's
+`RemoteOrchestrationBackend` share one canonical in-memory store, with stable
+entry occurrence IDs. Backend owns default instructions and the eight-invocation
+default, snapshotted per Run. External mutations are rejected from materialization
+until execution close, including approval waits; snapshots remain readable while
+busy. Only user/final assistant entries
+are canonical; intermediate output and tool outcomes remain Run-local replay.
+
+The separate generic Session execution bridge supplies asynchronous scheduling,
+immutable execution/activity reads, subscriptions, and Inspection/widget slots
+over emitted opaque handles. Chat Frontend owns composer acceptance, history
+refresh, grouping, and stable accepted-entry-to-Run association. Core owns
+model/tools/policy, approval, activity evidence, and Inspection, not canonical Chat
+history. Backend and frontend activation are independent; absent services or stale
+ownership fail without fallback. Normal app code imports no Chat contract or
+implementation; self-hosting tooling uses Contract as a development dependency and
+the same remote backend path.
 
 ## Operation-scoped host calls
 
@@ -400,7 +447,9 @@ rather than accumulating unreachable backend execution state.
 Automatic cleanup preserves an acknowledged terminal result; a failed backend
 close remains in its existing closing execution until explicit release surfaces
 that failure to the app's generation-close safeguard.
-Stock Chat stays static/local; both transport protocols and manifests remain 1.
+Stock Chat uses `RemoteOrchestrationBackend` over this substrate; canonical history
+is shared with its separate `ChatSessionService`, not copied into core execution.
+Both transport protocols and installed manifests remain 1.
 
 ### Remote model tools
 
@@ -495,8 +544,8 @@ Command declares only `authorizedEnvironmentProcess` and describes effects from
 pure identity and argument data. Its backend uses reverse process streaming only
 during authorized execution. Read and mutation calls remain unary; the separate
 host services change neither tool semantics nor policy/effect ordering. Command's
-installed backend and frontend are independently available. Headless Chat
-migration, client/bidirectional streaming, ambient callbacks, and general symmetric
+installed backend and frontend are independently available. Client/bidirectional
+streaming, ambient callbacks, and general symmetric
 RPC remain deferred; the Local Directory selector is already a prepared frontend,
 not a consumer of backend host-service authority.
 

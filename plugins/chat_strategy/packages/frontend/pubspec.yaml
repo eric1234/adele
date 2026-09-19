@@ -10,5 +10,7 @@ environment:
 resolution: workspace
 
 dependencies:
+  adele_ui: ^0.1.0
+  chat_strategy_contract: ^0.1.0
   flutter:
     sdk: flutter

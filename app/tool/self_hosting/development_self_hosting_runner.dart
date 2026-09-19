@@ -5,11 +5,12 @@ import 'dart:io';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/model_provider_host.dart';
 import 'package:adele_desktop/core/resource_cleanup.dart';
-import 'package:adele_desktop/development/agent/development_self_hosting.dart';
-import 'package:adele_desktop/development/agent/development_self_hosting_report.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:crypto/crypto.dart';
+
+import 'development_self_hosting.dart';
+import 'development_self_hosting_report.dart';
 
 const List<String> developmentSelfHostingPhases = <String>[
   'sourceReconciliationPreflight',
@@ -458,7 +459,8 @@ final class DevelopmentSelfHostingRunner {
                 identity: identity,
                 lifecycle: activeTopology.lifecycle,
                 contextComposer: activeTopology.contextComposer,
-                sessions: activeTopology.chat.sessions,
+                sessions: activeTopology.chatSession,
+                resolvedStrategy: activeTopology.resolvedStrategy,
                 sessionId: activeTopology.sessionId,
                 prompt: prompt!,
                 instructions: instructions!,

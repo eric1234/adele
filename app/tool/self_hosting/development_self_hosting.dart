@@ -13,7 +13,7 @@ import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
-import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
+import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
@@ -116,6 +116,7 @@ final class DevelopmentSelfHostingArtifacts {
     required this.searchToolsArtifact,
     required this.filesystemToolsArtifact,
     required this.commandToolsArtifact,
+    required this.chatStrategyArtifact,
   });
 
   final Directory repository;
@@ -128,6 +129,7 @@ final class DevelopmentSelfHostingArtifacts {
   final File searchToolsArtifact;
   final File filesystemToolsArtifact;
   final File commandToolsArtifact;
+  final File chatStrategyArtifact;
 
   static Future<DevelopmentSelfHostingArtifacts> compile({
     required Directory repository,
@@ -136,28 +138,35 @@ final class DevelopmentSelfHostingArtifacts {
   }) async {
     await outputDirectory.create(recursive: true);
     final String dart = _dartExecutable();
-    final DevelopmentSelfHostingArtifacts artifacts =
-        DevelopmentSelfHostingArtifacts(
-          repository: repository,
-          dartAotRuntime:
-              '${File(dart).parent.path}${Platform.pathSeparator}'
-              '${Platform.isWindows ? 'dartaotruntime.exe' : 'dartaotruntime'}',
-          directory: outputDirectory,
-          hostArtifact: File('${outputDirectory.path}/host.aot'),
-          openAiArtifact: File('${outputDirectory.path}/openai.aot'),
-          gitEnvironmentArtifact: File(
-            '${outputDirectory.path}/git-environment.aot',
-          ),
-          agentsMdArtifact: File('${outputDirectory.path}/agents-md.aot'),
-          searchToolsArtifact: File('${outputDirectory.path}/search-tools.aot'),
-          filesystemToolsArtifact: File(
-            '${outputDirectory.path}/filesystem-tools.aot',
-          ),
-          commandToolsArtifact: File(
-            '${outputDirectory.path}/command-tools.aot',
-          ),
-        );
+    final DevelopmentSelfHostingArtifacts
+    artifacts = DevelopmentSelfHostingArtifacts(
+      repository: repository,
+      dartAotRuntime:
+          '${File(dart).parent.path}${Platform.pathSeparator}'
+          '${Platform.isWindows ? 'dartaotruntime.exe' : 'dartaotruntime'}',
+      directory: outputDirectory,
+      hostArtifact: File('${outputDirectory.path}/host.aot'),
+      openAiArtifact: File('${outputDirectory.path}/openai.aot'),
+      gitEnvironmentArtifact: File(
+        '${outputDirectory.path}/git-environment.aot',
+      ),
+      agentsMdArtifact: File('${outputDirectory.path}/agents-md.aot'),
+      searchToolsArtifact: File('${outputDirectory.path}/search-tools.aot'),
+      filesystemToolsArtifact: File(
+        '${outputDirectory.path}/filesystem-tools.aot',
+      ),
+      commandToolsArtifact: File('${outputDirectory.path}/command-tools.aot'),
+      chatStrategyArtifact: File('${outputDirectory.path}/chat-strategy.aot'),
+    );
     await Future.wait(<Future<void>>[
+      _compileAot(
+        dart: dart,
+        repository: repository,
+        entrypoint:
+            'plugins/chat_strategy/packages/backend/bin/chat_strategy_backend.dart',
+        output: artifacts.chatStrategyArtifact,
+        log: log,
+      ),
       _compileAot(
         dart: dart,
         repository: repository,
@@ -282,12 +291,16 @@ final class DevelopmentSelfHostingTopology {
     required this.authority,
     required this.catalog,
     required this.projectSource,
+    required this.chatSession,
+    required this.resolvedStrategy,
+    required PluginBackendActivation chatStrategyActivation,
     required PluginCapabilityActivation environmentActivation,
     required PluginBackendActivation agentsMdActivation,
     required PluginBackendActivation searchToolsActivation,
     required PluginBackendActivation filesystemToolsActivation,
     required PluginBackendActivation? commandToolsActivation,
-  }) : _environmentActivation = environmentActivation,
+  }) : _chatStrategyActivation = chatStrategyActivation,
+       _environmentActivation = environmentActivation,
        _agentsMdActivation = agentsMdActivation,
        _searchToolsActivation = searchToolsActivation,
        _filesystemToolsActivation = filesystemToolsActivation,
@@ -299,7 +312,8 @@ final class DevelopmentSelfHostingTopology {
   CapabilityRegistry get registry => runtime.registry;
   InMemoryProductStore get store => runtime.store;
   ProductLifecycleCoordinator get lifecycle => runtime.lifecycle;
-  ChatStrategyPlugin get chat => runtime.chat;
+  final ChatSessionServiceClient chatSession;
+  final ResolvedOrchestrationStrategy resolvedStrategy;
   InferenceContextComposer get contextComposer => runtime.contextComposer;
   final Project project;
   final Task task;
@@ -308,6 +322,7 @@ final class DevelopmentSelfHostingTopology {
   final SessionEnvironmentAuthority authority;
   final ToolCatalog catalog;
   final Directory projectSource;
+  final PluginBackendActivation _chatStrategyActivation;
   final PluginCapabilityActivation _environmentActivation;
   final PluginBackendActivation _agentsMdActivation;
   final PluginBackendActivation _searchToolsActivation;
@@ -333,6 +348,7 @@ final class DevelopmentSelfHostingTopology {
       environment: hostEnvironment,
     );
     AdeleRuntime? runtime;
+    PluginBackendActivation? chatStrategyActivation;
     PluginCapabilityActivation? environmentActivation;
     PluginBackendActivation? agentsMdActivation;
     PluginBackendActivation? searchToolsActivation;
@@ -343,6 +359,22 @@ final class DevelopmentSelfHostingTopology {
       final CapabilityRegistry registry = runtime.registry;
       final InMemoryProductStore store = runtime.store;
       final ProductLifecycleCoordinator lifecycle = runtime.lifecycle;
+      final PluginBackendConnection chatConnection = await host.startPlugin(
+        pluginId: chatStrategyPluginId.value,
+        artifactUri: artifacts.chatStrategyArtifact.uri,
+      );
+      chatStrategyActivation = await PluginBackendActivation.registerAdvertised(
+        connection: chatConnection,
+        capabilities: registry,
+        extensions: runtime.extensions,
+        adapters: createRemoteExtensionAdapters(),
+      );
+      final ChatSessionServiceClient chatSession = ChatSessionServiceClient(
+        chatConnection.channelFor(
+          chatConnection.defaultConfigurationContext,
+          chatSessionServiceId,
+        ),
+      );
       final ProviderId environmentProviderId = ProviderId(
         'dev.adele.environment.git-worktree',
       );
@@ -434,6 +466,18 @@ final class DevelopmentSelfHostingTopology {
         taskId: created.task.id,
         strategyId: chatStrategyId,
       );
+      final ResolvedOrchestrationStrategy resolvedStrategy = lifecycle
+          .resolveSessionStrategy(session.id);
+      if (!identical(
+        chatStrategyActivation
+            .extensionOrigin(resolvedStrategy.binding)
+            ?.connection,
+        chatConnection,
+      )) {
+        throw StateError(
+          'The Chat strategy and Session service must share one backend generation.',
+        );
+      }
       final SessionEnvironmentAuthority authority = store
           .requireSessionAuthority(session.id);
       if (authority.environmentId != created.environment.id) {
@@ -470,6 +514,9 @@ final class DevelopmentSelfHostingTopology {
             authority: authority,
             catalog: catalog,
             projectSource: projectSource,
+            chatSession: chatSession,
+            resolvedStrategy: resolvedStrategy,
+            chatStrategyActivation: chatStrategyActivation,
             environmentActivation: environmentActivation,
             agentsMdActivation: agentsMdActivation,
             searchToolsActivation: searchToolsActivation,
@@ -488,6 +535,7 @@ final class DevelopmentSelfHostingTopology {
           if (commandToolsActivation != null) commandToolsActivation.close,
           if (agentsMdActivation != null) agentsMdActivation.close,
           if (environmentActivation != null) environmentActivation.close,
+          if (chatStrategyActivation != null) chatStrategyActivation.close,
           if (!host.isClosed) () => host.close(graceful: false),
           if (runtime != null) runtime.close,
         ]);
@@ -515,6 +563,7 @@ final class DevelopmentSelfHostingTopology {
   String get baselineCommit => _requiredProviderStateString('baselineCommit');
 
   Future<void> close() => _closing ??= closeResources(<Future<void> Function()>[
+    _chatStrategyActivation.retire,
     _filesystemToolsActivation.retire,
     _searchToolsActivation.retire,
     if (_commandToolsActivation != null) _commandToolsActivation.retire,
@@ -525,6 +574,7 @@ final class DevelopmentSelfHostingTopology {
     if (_commandToolsActivation != null) _commandToolsActivation.close,
     _agentsMdActivation.close,
     _environmentActivation.close,
+    _chatStrategyActivation.close,
     if (!host.isClosed) host.close,
     runtime.close,
   ]);
@@ -602,14 +652,13 @@ activateDevelopmentSelfHostingModelProvider({
 final class DevelopmentSelfHostingRunResult {
   DevelopmentSelfHostingRunResult({
     required this.run,
-    required this.session,
+    required this.sessionSnapshot,
     required this.finalAssistantResponse,
     required this.executionFailure,
     required this.executionStackTrace,
-  }) : sessionSnapshot = session.snapshot();
+  });
 
   final AgentRun run;
-  final ChatSessionState session;
 
   /// Canonical Chat history captured when this Run result was created.
   final ChatSessionSnapshot sessionSnapshot;
@@ -627,7 +676,8 @@ Future<DevelopmentSelfHostingRunResult> executeDevelopmentSelfHostingRun({
   required String identity,
   required ProductLifecycleCoordinator lifecycle,
   required InferenceContextComposer contextComposer,
-  required ChatSessionStore sessions,
+  required ChatSessionService sessions,
+  required ResolvedOrchestrationStrategy resolvedStrategy,
   required SessionId sessionId,
   required String prompt,
   required String instructions,
@@ -635,13 +685,26 @@ Future<DevelopmentSelfHostingRunResult> executeDevelopmentSelfHostingRun({
   required ToolCatalog catalog,
   required int maxModelInvocations,
 }) async {
-  final ChatSessionState session = sessions.obtain(sessionId)
-    ..instructions = instructions
-    ..maxModelInvocations = maxModelInvocations
-    ..append(ChatUserMessage(prompt));
-  final int initialEntryCount = session.snapshot().entries.length;
+  final Session? session = lifecycle.store.session(sessionId);
+  if (session == null || session.strategyId != chatStrategyId) {
+    throw StateError('Self-hosting requires a canonical Chat Session.');
+  }
+  lifecycle.validateResolvedStrategy(session.strategyId, resolvedStrategy);
+  await sessions.configureSession(
+    sessionId.value,
+    instructions,
+    maxModelInvocations,
+  );
+  resolvedStrategy.validateBinding();
+  await sessions.appendUserMessage(sessionId.value, prompt);
+  resolvedStrategy.validateBinding();
+  final int initialEntryCount = (await sessions.snapshot(
+    sessionId.value,
+  )).entries.length;
+  resolvedStrategy.validateBinding();
   final SessionOrchestrationRun execution = await createSessionOrchestrationRun(
     lifecycle: lifecycle,
+    resolvedStrategy: resolvedStrategy,
     contextComposer: contextComposer,
     sessionId: sessionId,
     runId: RunId('run-$identity'),
@@ -663,7 +726,9 @@ Future<DevelopmentSelfHostingRunResult> executeDevelopmentSelfHostingRun({
     executionFailure ??= error;
     executionStackTrace ??= stackTrace;
   }
-  final List<ChatEntry> entries = session.snapshot().entries;
+  final ChatSessionSnapshot snapshot = await sessions.snapshot(sessionId.value);
+  resolvedStrategy.validateBinding();
+  final List<ChatEntry> entries = snapshot.entries;
   final ChatEntry? finalEntry =
       execution.run.state == RunState.completed &&
           entries.length > initialEntryCount
@@ -671,9 +736,9 @@ Future<DevelopmentSelfHostingRunResult> executeDevelopmentSelfHostingRun({
       : null;
   return DevelopmentSelfHostingRunResult(
     run: execution.run,
-    session: session,
-    finalAssistantResponse: finalEntry is ChatAssistantMessage
-        ? finalEntry.content
+    sessionSnapshot: snapshot,
+    finalAssistantResponse: finalEntry?.role == 'assistant'
+        ? finalEntry!.content
         : null,
     executionFailure: executionFailure,
     executionStackTrace: executionStackTrace,

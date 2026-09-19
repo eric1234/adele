@@ -6,7 +6,7 @@ import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:agent_kernel/agent_kernel.dart';
-import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
+import 'package:chat_strategy_backend/chat_strategy_backend.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/orchestration_test_lifecycle.dart';
@@ -770,7 +770,7 @@ void main() {
       final OrchestrationTestLifecycle topology =
           await OrchestrationTestLifecycle.create(extensions, sessionId);
       final Session session = topology.createSession(chatStrategyId);
-      chat.sessions.obtain(session.id).append(ChatUserMessage('Inspect.'));
+      chat.sessions.obtain(session.id).appendUserMessage('Inspect.');
       final _RetiringProposalModel model = _RetiringProposalModel(
         generationA.close,
       );
@@ -2312,7 +2312,179 @@ void main() {
     },
   );
 
+  test(
+    'supplied Run strategy rejects foreign, mismatched, ambiguous and replaced bindings',
+    () async {
+      final extensions = ExtensionRegistry();
+      final strategyId = OrchestrationStrategyId('dev.adele.strategy.pinned');
+      final extensionId = ExtensionId('dev.adele.test.pinned');
+      final callbacks = <String>[];
+      var materializations = 0;
+      final contribution = OrchestrationStrategyContribution(
+        strategyId: strategyId,
+        materialize: (context) {
+          materializations++;
+          return _CompletingExecution(context.host, callbacks);
+        },
+      );
+      final first = extensions.register(
+        point: orchestrationStrategyContributions,
+        id: extensionId,
+        value: contribution,
+      );
+      addTearDown(first.close);
+      final topology = await OrchestrationTestLifecycle.create(
+        extensions,
+        SessionId('pinned-session'),
+      );
+      final session = topology.createSession(strategyId);
+      final selected = topology.lifecycle.resolveSessionStrategy(session.id);
+      Future<SessionOrchestrationRun> create(
+        ResolvedOrchestrationStrategy binding, {
+        SessionId? id,
+      }) => createSessionOrchestrationRun(
+        lifecycle: topology.lifecycle,
+        sessionId: id ?? session.id,
+        runId: RunId('pinned-run'),
+        contextComposer: InferenceContextComposer(extensions),
+        model: _Model(),
+        toolCatalog: _catalog(_Executable()),
+        policy: const _Policy(ToolPolicyDecision.allow),
+        resolvedStrategy: binding,
+      );
+      final foreign = ExtensionRegistry();
+      foreign.register(
+        point: orchestrationStrategyContributions,
+        id: extensionId,
+        value: contribution,
+      );
+      await expectLater(
+        create(OrchestrationStrategyResolver(foreign).resolve(strategyId)),
+        throwsArgumentError,
+      );
+      await expectLater(
+        create(selected, id: SessionId('unknown-session')),
+        throwsStateError,
+      );
+      final otherId = OrchestrationStrategyId('dev.adele.strategy.other');
+      final other = extensions.register(
+        point: orchestrationStrategyContributions,
+        id: ExtensionId('dev.adele.test.other'),
+        value: OrchestrationStrategyContribution(
+          strategyId: otherId,
+          materialize: (_) => throw StateError('Must not materialize.'),
+        ),
+      );
+      addTearDown(other.close);
+      await expectLater(
+        create(topology.lifecycle.strategyResolver.resolve(otherId)),
+        throwsArgumentError,
+      );
+      final duplicate = extensions.register(
+        point: orchestrationStrategyContributions,
+        id: ExtensionId('dev.adele.test.duplicate'),
+        value: contribution,
+      );
+      await expectLater(
+        create(selected),
+        throwsA(isA<AmbiguousOrchestrationStrategy>()),
+      );
+      await duplicate.close();
+      final initialRun = await create(selected);
+      await initialRun.start();
+      expect(materializations, 1);
+      await first.close();
+      final second = extensions.register(
+        point: orchestrationStrategyContributions,
+        id: extensionId,
+        value: contribution,
+      );
+      addTearDown(second.close);
+      await expectLater(
+        create(selected),
+        throwsA(isA<StaleExtensionBinding>()),
+      );
+      expect(materializations, 1);
+      final next = await create(
+        topology.lifecycle.resolveSessionStrategy(session.id),
+      );
+      await next.start();
+      expect(materializations, 2);
+      expect(topology.lifecycle.store.session(session.id), same(session));
+    },
+  );
+
   for (final bool ambiguous in <bool>[false, true]) {
+    test(
+      'supplied strategy rejects ${ambiguous ? 'ambiguity' : 'replacement'} during materialization',
+      () async {
+        final extensions = ExtensionRegistry();
+        final id = OrchestrationStrategyId('dev.adele.strategy.pending');
+        final extensionId = ExtensionId('dev.adele.test.pending');
+        final entered = Completer<void>();
+        final release = Completer<void>();
+        late _CompletingExecution allocated;
+        final registration = extensions.register(
+          point: orchestrationStrategyContributions,
+          id: extensionId,
+          value: OrchestrationStrategyContribution(
+            strategyId: id,
+            materialize: (context) async {
+              allocated = _CompletingExecution(context.host, []);
+              entered.complete();
+              await release.future;
+              return allocated;
+            },
+          ),
+        );
+        addTearDown(registration.close);
+        final topology = await OrchestrationTestLifecycle.create(
+          extensions,
+          SessionId('pending-session'),
+        );
+        final session = topology.createSession(id);
+        final pending = createSessionOrchestrationRun(
+          lifecycle: topology.lifecycle,
+          sessionId: session.id,
+          runId: RunId('pending-run'),
+          contextComposer: InferenceContextComposer(extensions),
+          model: _Model(),
+          toolCatalog: _catalog(_Executable()),
+          policy: const _Policy(ToolPolicyDecision.allow),
+          resolvedStrategy: topology.lifecycle.resolveSessionStrategy(
+            session.id,
+          ),
+        );
+        final check = expectLater(
+          pending,
+          throwsA(
+            ambiguous
+                ? isA<AmbiguousOrchestrationStrategy>()
+                : isA<StaleExtensionBinding>(),
+          ),
+        );
+        await entered.future;
+        if (!ambiguous) await registration.close();
+        var replacementCalls = 0;
+        final replacement = extensions.register(
+          point: orchestrationStrategyContributions,
+          id: ambiguous ? ExtensionId('dev.adele.test.competing') : extensionId,
+          value: OrchestrationStrategyContribution(
+            strategyId: id,
+            materialize: (context) {
+              replacementCalls++;
+              return _CompletingExecution(context.host, []);
+            },
+          ),
+        );
+        addTearDown(replacement.close);
+        release.complete();
+        await check;
+        expect(allocated.closed, isTrue);
+        expect(replacementCalls, 0);
+      },
+    );
+
     test(
       'canonical Run rejects ${ambiguous ? 'ambiguous' : 'unavailable'} stored strategy without fallback',
       () async {
@@ -2433,7 +2605,7 @@ void main() {
       final Session session = topology.createSession(chatStrategyId);
       final ChatSessionState history = sessions.obtain(session.id)
         ..instructions = 'Generation A'
-        ..append(ChatUserMessage('Inspect.'));
+        ..appendUserMessage('Inspect.');
       final ResolvedOrchestrationStrategy bindingA = topology.lifecycle
           .resolveSessionStrategy(session.id);
       final _Model modelA = _Model();
@@ -2471,7 +2643,6 @@ void main() {
 
       await generationA.close();
       final ChatStrategyPlugin chatB = ChatStrategyPlugin(sessions: sessions);
-      chatB.sessions.obtain(session.id).instructions = 'Generation B';
       // Observe the real plugin materializer, without substituting its execution.
       final ExtensionRegistry activationRegistryB = ExtensionRegistry();
       addTearDown(chatB.activate(activationRegistryB).close);
@@ -2538,6 +2709,7 @@ void main() {
       expect(_events(runA.run).whereType<ToolExecutionStarted>(), isEmpty);
 
       final _Model modelB = _Model();
+      chatB.sessions.obtain(session.id).instructions = 'Generation B';
       final SessionOrchestrationRun runB = await createSessionOrchestrationRun(
         lifecycle: topology.lifecycle,
         contextComposer: InferenceContextComposer(extensions),
@@ -2564,7 +2736,7 @@ void main() {
       );
       expect(modelB.sawCorrelatedContinuation, isTrue);
       expect(executable.executions, 1);
-      expect(history.snapshot().entries.last, isA<ChatAssistantMessage>());
+      expect(history.snapshot().entries.last.role, 'assistant');
       expect(history.snapshot().entries.last.content, 'Complete.');
       expect(topology.lifecycle.store.session(session.id), same(session));
       expect(session.strategyId, chatStrategyId);
@@ -2589,7 +2761,7 @@ void main() {
             );
         final Session session = topology.createSession(chatStrategyId);
         final ChatSessionState history = chat.sessions.obtain(session.id)
-          ..append(ChatUserMessage('Inspect.'));
+          ..appendUserMessage('Inspect.');
         final _Executable executable = _Executable();
         final _Model model = _Model();
         final Completer<void> started = Completer<void>();
@@ -3020,7 +3192,7 @@ final class _BatchFixture {
     final Session productSession = topology.createSession(chatStrategyId);
     final ChatSessionState session = chat.sessions.obtain(productSession.id)
       ..maxModelInvocations = maxModelInvocations
-      ..append(ChatUserMessage('Perform steps.'));
+      ..appendUserMessage('Perform steps.');
     final SessionOrchestrationRun strategy =
         await createSessionOrchestrationRun(
           lifecycle: topology.lifecycle,
@@ -3233,7 +3405,7 @@ Future<_StrategyFixture> _fixture(
   final ChatSessionState history = chat.sessions.obtain(session.id)
     ..instructions = instructions
     ..maxModelInvocations = maxModelInvocations
-    ..append(ChatUserMessage('Inspect.'));
+    ..appendUserMessage('Inspect.');
   final _Model model = _Model(
     alias: modelAlias,
     proposalBeforeText: proposalBeforeText,
@@ -3608,9 +3780,10 @@ final class _CompletingExecution implements OrchestrationExecution {
 
   final OrchestrationExecutionHost host;
   final List<String> callbacks;
+  bool closed = false;
 
   @override
-  Future<void> close() async {}
+  Future<void> close() async => closed = true;
 
   @override
   Future<void> start() async {

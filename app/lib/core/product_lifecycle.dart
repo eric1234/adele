@@ -412,13 +412,14 @@ final class ProductLifecycleCoordinator {
     required TaskId taskId,
     required OrchestrationStrategyId strategyId,
     EnvironmentId? environmentId,
+    ResolvedOrchestrationStrategy? resolvedStrategy,
   }) {
     if (store.task(taskId) == null) {
       throw StateError('Task $taskId is not published.');
     }
-    final ResolvedOrchestrationStrategy strategy = strategyResolver.resolve(
-      strategyId,
-    );
+    final ResolvedOrchestrationStrategy strategy =
+        resolvedStrategy ?? strategyResolver.resolve(strategyId);
+    validateResolvedStrategy(strategyId, strategy);
     final Environment environment = store._requireSessionEnvironment(
       taskId: taskId,
       environmentId: environmentId,
@@ -428,7 +429,7 @@ final class ProductLifecycleCoordinator {
       taskId: taskId,
       strategyId: strategyId,
     );
-    strategy.validateBinding();
+    validateResolvedStrategy(strategyId, strategy);
     store._publishSession(session, environment);
     return session;
   }
@@ -439,6 +440,27 @@ final class ProductLifecycleCoordinator {
       throw StateError('Session $sessionId is not published.');
     }
     return strategyResolver.resolve(session.strategyId);
+  }
+
+  /// Checks canonical selection in this lifecycle's registry without replacing
+  /// the supplied binding. Matching semantic IDs or contribution objects is not
+  /// sufficient to establish registration ownership.
+  void validateResolvedStrategy(
+    OrchestrationStrategyId strategyId,
+    ResolvedOrchestrationStrategy strategy,
+  ) {
+    strategy.validateBinding();
+    if (strategy.strategyId != strategyId) {
+      throw ArgumentError(
+        'Session and resolved strategy identities must match.',
+      );
+    }
+    final canonical = strategyResolver.resolve(strategyId);
+    if (!canonical.binding.isSameRegistration(strategy.binding)) {
+      throw ArgumentError(
+        'Resolved strategy belongs to another lifecycle registry.',
+      );
+    }
   }
 
   Future<TaskCreationResult> createTask({

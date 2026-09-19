@@ -12,9 +12,9 @@ import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
-import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
@@ -819,9 +819,22 @@ void main() {
           .lifecycle
           .environmentRuntime
           .materialize(first.environment.id);
+      final strategyId = OrchestrationStrategyId('dev.adele.test.lifecycle');
+      addTearDown(
+        runtime.extensions
+            .register(
+              point: orchestrationStrategyContributions,
+              id: ExtensionId('dev.adele.test.lifecycle.strategy'),
+              value: OrchestrationStrategyContribution(
+                strategyId: strategyId,
+                materialize: (_) => throw StateError('No Run is started here.'),
+              ),
+            )
+            .close,
+      );
       final Session session = runtime.lifecycle.createSession(
         taskId: first.task.id,
-        strategyId: chatStrategyId,
+        strategyId: strategyId,
       );
       final SessionEnvironmentAuthority authority = runtime.store
           .requireSessionAuthority(session.id);
@@ -945,8 +958,9 @@ void main() {
         isNull,
       );
       expect(runtime.store.session(SessionId('session-normal-1')), isNull);
-      final stockChat = runtime.lifecycle.strategyResolver.resolve(
-        chatStrategyId,
+      expect(
+        runtime.extensions.discover(orchestrationStrategyContributions),
+        isEmpty,
       );
       final List<String> stopped = [];
       final List<Future<void>> observations = [
@@ -954,7 +968,6 @@ void main() {
           entry.connection!.terminated.then((_) {
             stopped.add(entry.connection!.pluginId);
             expect(host.isClosed, isFalse);
-            expect(stockChat.validateBinding, returnsNormally);
             for (final binding in bindings) {
               expect(
                 () => binding.endpointAs<CapabilityEndpoint>(),
@@ -986,7 +999,10 @@ void main() {
       );
       expect(runtime.plugins.state, ApplicationPluginState.closed);
       expect(runtime.plugins.failure, isNull);
-      expect(stockChat.validateBinding, throwsA(isA<StaleExtensionBinding>()));
+      expect(
+        runtime.extensions.discover(orchestrationStrategyContributions),
+        isEmpty,
+      );
       expect(
         runtime.extensions.discover(projectSelectorContributions),
         isEmpty,

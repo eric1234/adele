@@ -3,14 +3,14 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
+import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/directory_picker_bridge.dart';
 import 'package:adele_desktop/frontend/model_native_activity_bridge.dart';
-import 'package:adele_desktop/frontend/prepared_frontend.dart';
-import 'package:adele_desktop/frontend/prepared_session_adapter.dart';
+import 'package:adele_desktop/frontend/prepared_session_host.dart';
 import 'package:adele_desktop/frontend/tool_activity_inspection_bridge.dart';
-import 'package:adele_desktop/plugins/stock_chat_frontend.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
@@ -34,7 +34,6 @@ final _session = Session(
 void main() {
   late Directory root;
   late ExtensionRegistry extensions;
-  late _SessionAdapter adapter;
   late ApplicationFrontendBootstrap owner;
   late Uint8List bytes;
 
@@ -87,11 +86,7 @@ Future<String?> nativeSelector() async => await pickDirectory();
   setUp(() async {
     root = await Directory.systemTemp.createTemp('adele-installed-frontend-');
     extensions = ExtensionRegistry();
-    adapter = _SessionAdapter();
-    owner = ApplicationFrontendBootstrap(
-      extensions: extensions,
-      sessionAdapters: {'probe': adapter},
-    );
+    owner = ApplicationFrontendBootstrap(extensions: extensions);
   });
 
   tearDown(() async {
@@ -142,7 +137,7 @@ Future<String?> nativeSelector() async => await pickDirectory();
     return catalog;
   }
 
-  test('empty snapshot starts once and closes adapters once', () async {
+  test('empty snapshot starts and closes once', () async {
     final catalog = await discover();
     await owner.start(catalog);
     expect(owner.state, ApplicationFrontendState.ready);
@@ -153,9 +148,60 @@ Future<String?> nativeSelector() async => await pickDirectory();
     expect(owner.close(), same(closing));
     await closing;
     expect(owner.state, ApplicationFrontendState.closed);
-    expect(adapter.closes, 1);
     expect(() => owner.start(catalog), throwsStateError);
   });
+
+  for (final affinity in ['independent', 'owningBackend']) {
+    test(
+      'Session $affinity metadata activates independently of its backend',
+      () async {
+        await owner.close();
+        final backends = ApplicationPluginBootstrap(
+          CapabilityRegistry(),
+          extensions,
+        );
+        addTearDown(backends.close);
+        final host = PreparedSessionHost(
+          extensions: extensions,
+          backends: backends,
+          controllerForSession: (_) =>
+              throw StateError('Activation cannot obtain execution.'),
+          inspectActivity: (_, _) => false,
+        );
+        owner = ApplicationFrontendBootstrap(
+          extensions: extensions,
+          sessionHost: host,
+        );
+        final strategy = extensions.register(
+          point: orchestrationStrategyContributions,
+          id: ExtensionId('dev.example.strategy'),
+          value: OrchestrationStrategyContribution(
+            strategyId: _strategyId,
+            materialize: (_) =>
+                throw StateError('Activation cannot start a Run.'),
+          ),
+        );
+        addTearDown(strategy.close);
+        await install('session', [
+          {..._sessionDescriptor('session'), 'strategyAffinity': affinity},
+        ]);
+        await owner.start(await discover());
+        expect(owner.generations.single.state, InstalledFrontendState.active);
+        final presentation = extensions
+            .discover(sessionPresentationContributions)
+            .single;
+        if (affinity == 'independent') {
+          final choice = host.resolve(presentation);
+          expect(choice.pinStrategy, isFalse);
+          expect(choice.backend, isNull);
+          expect(choice.strategy.strategyId, _strategyId);
+        } else {
+          expect(() => host.resolve(presentation), throwsStateError);
+        }
+        presentation.validate();
+      },
+    );
+  }
 
   test(
     'absent frontend is ignored; zero descriptors is an active generation',
@@ -171,7 +217,7 @@ Future<String?> nativeSelector() async => await pickDirectory();
   );
 
   test(
-    'multiple descriptors retain exact metadata and shared generation',
+    'multiple descriptors retain exact metadata independently of Session hosting',
     () async {
       await install('multiple', [
         _sessionDescriptor('one'),
@@ -194,13 +240,8 @@ Future<String?> nativeSelector() async => await pickDirectory();
       ]);
       for (final binding in sessions) {
         expect(binding.value.strategyId, _strategyId);
-        binding.value.createPresentation(_session);
+        expect(binding.value.displayName, 'Prepared Session');
       }
-      expect(adapter.generations[0], same(adapter.generations[1]));
-      expect(
-        adapter.descriptors,
-        catalog.installations.single.frontend!.presentations.take(2),
-      );
       expect(
         extensions.discover(toolActivityInspectionContributions),
         hasLength(2),
@@ -225,12 +266,10 @@ Future<String?> nativeSelector() async => await pickDirectory();
   );
 
   test(
-    'read and unknown-adapter failures do not stop other installations',
+    'read failures do not stop independently activated Session frontends',
     () async {
       final missing = await install('a-missing', [_toolDescriptor('missing')]);
-      await install('b-unknown', [
-        {..._sessionDescriptor('unknown'), 'hostAdapter': 'not-registered'},
-      ]);
+      await install('b-unknown', [_sessionDescriptor('unknown')]);
       await install('c-healthy', [_nativeDescriptor('healthy')]);
       final catalog = await discover();
       await missing.delete();
@@ -238,13 +277,16 @@ Future<String?> nativeSelector() async => await pickDirectory();
       expect(owner.state, ApplicationFrontendState.ready);
       expect(owner.generations.map((value) => value.state), [
         InstalledFrontendState.failed,
-        InstalledFrontendState.failed,
+        InstalledFrontendState.active,
         InstalledFrontendState.active,
       ]);
       expect(owner.generations[0].failure, isA<FileSystemException>());
-      expect(owner.generations[1].failure, isA<StateError>());
+      expect(owner.generations[1].failure, isNull);
       expect(extensions.discover(toolActivityInspectionContributions), isEmpty);
-      expect(extensions.discover(sessionPresentationContributions), isEmpty);
+      expect(
+        extensions.discover(sessionPresentationContributions),
+        hasLength(1),
+      );
       expect(
         extensions.discover(modelNativeActivityPresentationContributions),
         hasLength(1),
@@ -405,27 +447,6 @@ Future<String?> nativeSelector() async => await pickDirectory();
   );
 
   test(
-    'stock Chat adapter rejects a non-Chat descriptor before registration',
-    () async {
-      final chat = StockChatFrontend(
-        extensions: extensions,
-        controllerForSession: (_) =>
-            throw StateError('Must not obtain a controller'),
-      );
-      final chatOwner = ApplicationFrontendBootstrap(
-        extensions: extensions,
-        sessionAdapters: {'probe': chat},
-      );
-      addTearDown(chatOwner.close);
-      await install('wrong-strategy', [_sessionDescriptor('wrong')]);
-      await chatOwner.start(await discover());
-      expect(chatOwner.generations.single.state, InstalledFrontendState.failed);
-      expect(chatOwner.generations.single.failure, isA<StateError>());
-      expect(extensions.discover(sessionPresentationContributions), isEmpty);
-    },
-  );
-
-  test(
     'partial registration failure rolls back the whole generation only',
     () async {
       final existing = extensions.register(
@@ -482,13 +503,10 @@ Future<String?> nativeSelector() async => await pickDirectory();
       final generation = owner.generations.single;
       final bindings = extensions.discover(sessionPresentationContributions);
       final factory = bindings.first.value.createPresentation;
-      factory(_session);
-      bindings.last.value.createPresentation(_session);
       await generation.retire(
         sessionPresentationContributions,
         bindings.first.id,
       );
-      expect(adapter.liveness.map((active) => active()), [false, true]);
       expect(() => factory(_session), throwsStateError);
       expect(bindings.first.validate, throwsA(isA<StaleExtensionBinding>()));
       bindings.last.validate();
@@ -496,6 +514,7 @@ Future<String?> nativeSelector() async => await pickDirectory();
         point: sessionPresentationContributions,
         id: bindings.first.id,
         value: SessionPresentationContribution(
+          displayName: 'Replacement',
           strategyId: _strategyId,
           createPresentation: (_) => const Text('replacement'),
         ),
@@ -506,7 +525,6 @@ Future<String?> nativeSelector() async => await pickDirectory();
       await closing;
       expect(replacement.isClosed, isFalse);
       expect(() => factory(_session), throwsStateError);
-      expect(adapter.liveness.map((active) => active()), [false, false]);
     },
   );
 
@@ -535,29 +553,20 @@ Future<String?> nativeSelector() async => await pickDirectory();
         ),
         isTrue,
       );
-      expect(adapter.closes, 1);
       expect(extensions.discover(sessionPresentationContributions), isEmpty);
       expect(extensions.discover(toolActivityInspectionContributions), isEmpty);
     },
   );
 
-  test(
-    'close before start owns each adapter once and never opens a snapshot',
-    () async {
-      final shared = _SessionAdapter();
-      final unused = ApplicationFrontendBootstrap(
-        extensions: extensions,
-        sessionAdapters: {'first': shared, 'second': shared},
-      );
-      final closing = unused.close();
-      expect(unused.close(), same(closing));
-      await closing;
-      expect(shared.closes, 1);
-      expect(unused.catalog, isNull);
-      final catalog = await discover();
-      expect(() => unused.start(catalog), throwsStateError);
-    },
-  );
+  test('close before start never opens a snapshot', () async {
+    final unused = ApplicationFrontendBootstrap(extensions: extensions);
+    final closing = unused.close();
+    expect(unused.close(), same(closing));
+    await closing;
+    expect(unused.catalog, isNull);
+    final catalog = await discover();
+    expect(() => unused.start(catalog), throwsStateError);
+  });
 
   test(
     'retirement distinguishes equal IDs at sibling extension points',
@@ -613,13 +622,11 @@ Future<String?> nativeSelector() async => await pickDirectory();
           .discover(sessionPresentationContributions)
           .single;
       expect(binding.validate, returnsNormally);
-      expect(() => binding.value.createPresentation(_session), returnsNormally);
       expect(
         extensions.discover(modelNativeActivityPresentationContributions),
         isEmpty,
       );
       expect(extensions.discover(toolActivityInspectionContributions), isEmpty);
-      expect(adapter.closes, 0);
       await owner.close();
       expect(binding.validate, throwsA(isA<StaleExtensionBinding>()));
       expect(
@@ -628,25 +635,6 @@ Future<String?> nativeSelector() async => await pickDirectory();
         ),
         isTrue,
       );
-      expect(adapter.closes, 1);
-    },
-  );
-
-  test(
-    'adapter cleanup attempts siblings and retains idempotent failure',
-    () async {
-      final failing = _SessionAdapter()..failClose = true;
-      final sibling = _SessionAdapter();
-      final closingOwner = ApplicationFrontendBootstrap(
-        extensions: extensions,
-        sessionAdapters: {'failing': failing, 'sibling': sibling},
-      );
-      final closing = closingOwner.close();
-      await expectLater(closing, throwsStateError);
-      expect(closingOwner.state, ApplicationFrontendState.closed);
-      expect(closingOwner.close(), same(closing));
-      expect(failing.closes, 1);
-      expect(sibling.closes, 1);
     },
   );
 
@@ -776,7 +764,7 @@ Map<String, Object?> _sessionDescriptor(String name) => {
   'extensionId': 'dev.example.$name.session',
   'strategyId': _strategyId.value,
   'entrypoint': 'customSession',
-  'hostAdapter': 'probe',
+  'displayName': 'Prepared Session',
 };
 
 Map<String, Object?> _selectorDescriptor(String name, String entrypoint) => {
@@ -817,36 +805,6 @@ Map<String, Object?> _nativeDescriptor(String name) => {
   'inspectionEntrypoint': 'nativeRich',
   'compactEntrypoint': 'nativeCompact',
 };
-
-final class _SessionAdapter implements PreparedSessionAdapter {
-  final generations = <PreparedFrontend>[];
-  final descriptors = <PreparedSessionPresentation>[];
-  final liveness = <bool Function()>[];
-  int closes = 0;
-  bool failClose = false;
-
-  @override
-  void validate(PreparedSessionPresentation descriptor) {}
-
-  @override
-  Widget createPresentation({
-    required PreparedFrontend generation,
-    required PreparedSessionPresentation descriptor,
-    required Session session,
-    required bool Function() isActive,
-  }) {
-    generations.add(generation);
-    descriptors.add(descriptor);
-    liveness.add(isActive);
-    return Text(descriptor.entrypoint);
-  }
-
-  @override
-  Future<void> close() async {
-    closes++;
-    if (failClose) throw StateError('adapter cleanup failed');
-  }
-}
 
 final class _ToolSource extends ChangeNotifier
     implements ToolActivityInspectionSource {

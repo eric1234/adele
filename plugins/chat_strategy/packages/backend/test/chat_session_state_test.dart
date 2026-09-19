@@ -1,12 +1,12 @@
 import 'package:adele_orchestration/adele_orchestration.dart';
-import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
+import 'package:chat_strategy_backend/chat_strategy_backend.dart';
 import 'package:test/test.dart';
 
 void main() {
   test('store retains state by canonical Session identity', () {
     final ChatSessionStore store = ChatSessionStore();
     final ChatSessionState first = store.obtain(SessionId('session-1'))
-      ..append(ChatUserMessage('Inspect.'));
+      ..appendUserMessage('Inspect.');
 
     expect(store.obtain(SessionId('session-1')), same(first));
     expect(store.obtain(SessionId('session-2')), isNot(same(first)));
@@ -32,9 +32,10 @@ void main() {
   test('standalone state defaults to empty history and eight model calls', () {
     final ChatSessionState state = ChatSessionState(SessionId('session-1'));
 
-    expect(state.instructions, '');
+    expect(state.instructions, chatDefaultInstructions);
     expect(state.maxModelInvocations, 8);
-    expect(state.snapshot().id, state.id);
+    expect(state.snapshot().instructions, state.instructions);
+    expect(state.snapshot().maxModelInvocations, state.maxModelInvocations);
     expect(state.snapshot().entries, isEmpty);
   });
 
@@ -53,29 +54,29 @@ void main() {
 
   test('snapshot is an immutable copy, not a live view of conversation', () {
     final ChatSessionState state = ChatSessionState(SessionId('session-1'))
-      ..append(ChatUserMessage('Inspect the resource.'));
+      ..appendUserMessage('Inspect the resource.');
     final ChatSessionSnapshot before = state.snapshot();
-    final ChatAssistantMessage assistant = ChatAssistantMessage('Complete.');
-    state.append(assistant);
+    final ChatEntry second = state.appendUserMessage('Another question.');
 
-    expect(before.id, state.id);
     expect(before.entries, hasLength(1));
-    expect(before.entries.single, isA<ChatUserMessage>());
-    expect(state.snapshot().entries, <Matcher>[
-      isA<ChatUserMessage>(),
-      same(assistant),
-    ]);
-    expect(() => before.entries.add(assistant), throwsUnsupportedError);
-    expect(() => before.entries[0] = assistant, throwsUnsupportedError);
+    expect(before.entries.single.role, 'user');
+    expect(state.snapshot().entries, <Matcher>[isA<ChatEntry>(), same(second)]);
+    expect(() => before.entries.add(second), throwsUnsupportedError);
+    expect(() => before.entries[0] = second, throwsUnsupportedError);
     expect(() => before.entries.clear(), throwsUnsupportedError);
   });
 
   test('snapshot constructor copies caller-owned entries', () {
-    final ChatUserMessage user = ChatUserMessage('Inspect.');
+    const ChatEntry user = ChatEntry(
+      id: 'entry-1',
+      role: 'user',
+      content: 'Inspect.',
+    );
     final List<ChatEntry> entries = <ChatEntry>[user];
     final ChatSessionSnapshot snapshot = ChatSessionSnapshot(
-      id: SessionId('session-1'),
       entries: entries,
+      instructions: 'Instructions.',
+      maxModelInvocations: 8,
     );
     entries.clear();
 
@@ -84,19 +85,17 @@ void main() {
   });
 
   for (final String blank in <String>['', ' ', '\t\r\n']) {
-    test(
-      'user and assistant messages reject blank content ${blank.length}',
-      () {
-        expect(() => ChatUserMessage(blank), throwsFormatException);
-        expect(() => ChatAssistantMessage(blank), throwsFormatException);
-      },
-    );
+    test('user messages reject blank content ${blank.length}', () {
+      final state = ChatSessionState(SessionId('session-1'));
+      expect(() => state.appendUserMessage(blank), throwsFormatException);
+      expect(state.snapshot().entries, isEmpty);
+    });
   }
 
   test('messages preserve nonblank content without normalization', () {
     const String content = '  Inspect.\r\n\t';
 
-    expect(ChatUserMessage(content).content, content);
-    expect(ChatAssistantMessage(content).content, content);
+    final state = ChatSessionState(SessionId('session-1'));
+    expect(state.appendUserMessage(content).content, content);
   });
 }

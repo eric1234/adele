@@ -10,7 +10,7 @@ import 'package:adele_desktop/development/agent/development_agent_support.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:agent_kernel/agent_kernel.dart';
-import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
+import 'package:chat_strategy_backend/chat_strategy_backend.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:resource_inspector_contract/resource_inspector_contract.dart';
@@ -156,12 +156,14 @@ void main() {
       expect(modelA.streamCount, 2);
       expect(modelA.requestCount, 0);
       expect(happy.session.snapshot().entries, <Matcher>[
-        isA<ChatUserMessage>(),
-        isA<ChatAssistantMessage>().having(
-          (ChatAssistantMessage message) => message.content,
-          'content',
-          contains('Basic inspection'),
-        ),
+        isA<ChatEntry>().having((entry) => entry.role, 'role', 'user'),
+        isA<ChatEntry>()
+            .having((entry) => entry.role, 'role', 'assistant')
+            .having(
+              (ChatEntry message) => message.content,
+              'content',
+              contains('Basic inspection'),
+            ),
       ]);
       final ToolOutcome happyOutcome = happy.strategy.lastToolOutcome!;
       expect(happyOutcome.modelContent, contains('Basic inspection'));
@@ -245,8 +247,7 @@ void main() {
         ToolOutcomeDisposition.userRejected,
       );
       expect(
-        (rejected.session.snapshot().entries.last as ChatAssistantMessage)
-            .content,
+        rejected.session.snapshot().entries.last.content,
         contains('rejected'),
       );
       expect(
@@ -491,7 +492,7 @@ Future<_RunFixture> _runFixture({
   addTearDown(topology.close);
   final ChatSessionState session = topology.chat.sessions.obtain(
     topology.session.id,
-  )..append(ChatUserMessage(userContent));
+  )..appendUserMessage(userContent);
   final ToolCatalog catalog = ToolCatalog()..register(registration);
   final SessionOrchestrationRun strategy = await createSessionOrchestrationRun(
     lifecycle: topology.lifecycle,

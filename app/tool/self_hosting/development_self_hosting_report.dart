@@ -2,10 +2,12 @@ import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:adele_desktop/development/agent/development_self_hosting.dart';
 import 'package:adele_environment/adele_environment.dart';
+import 'package:adele_orchestration/remote_orchestration.dart';
 import 'package:agent_kernel/agent_kernel.dart';
-import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
+import 'package:chat_strategy_contract/chat_strategy_contract.dart';
+
+import 'development_self_hosting.dart';
 
 const int developmentSelfHostingReportSchemaVersion = 1;
 
@@ -563,13 +565,7 @@ Map<String, Object?> developmentSelfHostingJournalJson(
       ? const <Object?>[]
       : <Object?>[
           for (final ChatEntry entry in result.sessionSnapshot.entries)
-            <String, Object?>{
-              'role': switch (entry) {
-                ChatUserMessage() => 'user',
-                ChatAssistantMessage() => 'assistant',
-              },
-              'content': entry.content,
-            },
+            <String, Object?>{'role': entry.role, 'content': entry.content},
         ],
   'records': result == null
       ? const <Object?>[]
@@ -1064,18 +1060,11 @@ Map<String, Object?>? developmentSelfHostingErrorJson(Object? error) {
       'cause': _causeJson(error.cause),
     };
   }
-  if (error is ModelInvocationIncomplete) {
+  if (error is RemoteStrategyFailure) {
     return <String, Object?>{
-      'type': 'ModelInvocationIncomplete',
-      'reason': error.reason.name,
-      'metadata': _metadataJson(error.metadata),
-    };
-  }
-  if (error is ModelInvocationLimitExceeded) {
-    return <String, Object?>{
-      'type': 'ModelInvocationLimitExceeded',
-      'maximum': error.maximum,
-      'message': error.toString(),
+      'type': 'RemoteStrategyFailure',
+      'code': error.code,
+      'message': error.message,
     };
   }
   if (error is EnvironmentFailure) {
@@ -1363,13 +1352,12 @@ Map<String, Object?>? _failureSummary(Object? failure) {
   final String message = switch (failure) {
     ModelFailure(:final kind, :final providerMessage) =>
       providerMessage ?? 'Model provider failure: ${kind.name}.',
-    ModelInvocationIncomplete(:final reason) =>
-      'Model invocation ended incomplete: ${reason.name}.',
     EnvironmentFailure(:final message) => message,
     _ => full['message']?.toString() ?? failure.toString(),
   };
   return <String, Object?>{
     'type': full['type'],
+    if (full.containsKey('code')) 'code': full['code'],
     if (full.containsKey('kind')) 'kind': full['kind'],
     if (full.containsKey('providerCode')) 'providerCode': full['providerCode'],
     'message': message,

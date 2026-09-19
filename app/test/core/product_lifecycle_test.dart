@@ -419,6 +419,78 @@ void main() {
     );
 
     test(
+      'supplied strategy requires canonical exact registration before publication',
+      () async {
+        final selected = coordinator.strategyResolver.resolve(strategyId);
+        final foreign = ExtensionRegistry();
+        foreign.register(
+          point: orchestrationStrategyContributions,
+          id: extensionId,
+          value: selected.contribution,
+        );
+        final foreignSelection = OrchestrationStrategyResolver(
+          foreign,
+        ).resolve(strategyId);
+        expect(
+          () => coordinator.createSession(
+            taskId: taskA.id,
+            strategyId: strategyId,
+            resolvedStrategy: foreignSelection,
+          ),
+          throwsArgumentError,
+        );
+        expect(
+          () => coordinator.createSession(
+            taskId: taskA.id,
+            strategyId: otherStrategyId,
+            resolvedStrategy: selected,
+          ),
+          throwsArgumentError,
+        );
+        final duplicate = extensions.register(
+          point: orchestrationStrategyContributions,
+          id: ExtensionId('dev.adele.fixture.duplicate'),
+          value: selected.contribution,
+        );
+        expect(
+          () => coordinator.createSession(
+            taskId: taskA.id,
+            strategyId: strategyId,
+            resolvedStrategy: selected,
+          ),
+          throwsA(isA<AmbiguousOrchestrationStrategy>()),
+        );
+        await duplicate.close();
+        final original = selected.contribution;
+        await registration.close();
+        final replacement = extensions.register(
+          point: orchestrationStrategyContributions,
+          id: extensionId,
+          value: original,
+        );
+        addTearDown(replacement.close);
+        expect(
+          () => coordinator.createSession(
+            taskId: taskA.id,
+            strategyId: strategyId,
+            resolvedStrategy: selected,
+          ),
+          throwsA(isA<StaleExtensionBinding>()),
+        );
+        expect(store.session(SessionId('session-test-1')), isNull);
+        expect(store.sessionAuthority(SessionId('session-test-1')), isNull);
+        final fresh = coordinator.strategyResolver.resolve(strategyId);
+        final session = coordinator.createSession(
+          taskId: taskA.id,
+          strategyId: strategyId,
+          resolvedStrategy: fresh,
+        );
+        expect(session.id, SessionId('session-test-1'));
+        expect(store.session(session.id), same(session));
+      },
+    );
+
+    test(
       'another strategy requires another Session; identity cannot be overwritten',
       () {
         final ExtensionRegistration other = extensions.register(

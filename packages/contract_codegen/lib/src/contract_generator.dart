@@ -11,6 +11,8 @@ import 'package:analyzer/diagnostic/diagnostic.dart';
 import 'package:dart_style/dart_style.dart';
 import 'package:path/path.dart' as p;
 
+part 'eval_client_emitter.dart';
+
 final class ContractDiagnostic implements Exception {
   const ContractDiagnostic(this.message, this.path, this.line, this.column);
 
@@ -128,12 +130,16 @@ final class TypeModel {
 }
 
 final class ContractGenerator {
-  const ContractGenerator();
+  const ContractGenerator({this.sdkPath});
 
-  Future<ContractGeneratedFile> generate(File source) async {
+  /// Explicit SDK location for build-time callers running in a Flutter engine.
+  final String? sdkPath;
+
+  Future<ContractModel> _resolve(File source) async {
     final File absolute = source.absolute;
     final AnalysisContextCollection collection = AnalysisContextCollection(
       includedPaths: <String>[absolute.path],
+      sdkPath: sdkPath,
     );
     final SomeResolvedUnitResult result = await collection
         .contextFor(absolute.path)
@@ -159,7 +165,22 @@ final class ContractGenerator {
         location.columnNumber,
       );
     }
-    final ContractModel model = _Extractor(result).extract();
+    return _Extractor(result).extract();
+  }
+
+  /// A standalone, client-only wire view for interpreted frontends. Native
+  /// contract constructors and backend dispatch remain the semantic authority.
+  /// Unsupported transport shapes fail generation rather than being weakened.
+  Future<String> generateEvalClient(File source) async {
+    final model = await _resolve(source);
+    return DartFormatter(
+      languageVersion: DartFormatter.latestLanguageVersion,
+    ).format(_EvalClientEmitter().emit(model), uri: source.uri);
+  }
+
+  Future<ContractGeneratedFile> generate(File source) async {
+    final File absolute = source.absolute;
+    final ContractModel model = await _resolve(source);
     final String unformatted = DartContractEmitter().emit(model);
     final String formatted = DartFormatter(
       languageVersion: DartFormatter.latestLanguageVersion,

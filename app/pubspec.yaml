@@ -21,7 +21,6 @@ dependencies:
   adele_plugin_api: ^0.1.0
   adele_product: ^0.1.0
   adele_ui: ^0.1.0
-  chat_strategy_plugin: ^0.1.0
   crypto: ^3.0.6
   dart_eval: 0.8.5
   file_selector: ^1.1.0
@@ -37,7 +36,10 @@ dependencies:
 
 dev_dependencies:
   adele_plugin_backend_support: ^0.1.0
+  chat_strategy_backend: ^0.1.0
+  chat_strategy_contract: ^0.1.0
   command_tools_plugin: ^0.1.0
+  contract_codegen: ^0.1.0
   file_selector_platform_interface: ^2.7.0
   filesystem_tools_plugin: ^0.1.0
   search_tools_plugin: ^0.1.0

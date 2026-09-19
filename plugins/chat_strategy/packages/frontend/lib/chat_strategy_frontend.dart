@@ -1,56 +1,262 @@
+import 'package:adele_ui/inspection_display.dart';
+import 'package:adele_ui/owning_backend_bridge.dart';
+import 'package:adele_ui/session_execution_bridge.dart';
+import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:flutter/material.dart';
 
-import 'src/chat_frontend_bridge.dart';
-
-Widget buildChat() => ChatFrontend();
+Future<Widget> buildChat() async {
+  final client = ChatSessionServiceClient(
+    OwningBackendRequestChannel(chatSessionServiceId),
+  );
+  final sessionId = currentSessionId();
+  ChatSessionSnapshot? snapshot;
+  String failure = '';
+  final result = await settleSessionOperation(client.snapshot(sessionId));
+  if (result[0] == true) {
+    snapshot = result[1] as ChatSessionSnapshot;
+  } else {
+    snapshot = null;
+    failure = 'Chat history is unavailable. Retry to refresh.';
+  }
+  return ChatFrontend(
+    client: client,
+    initialSnapshot: snapshot,
+    sessionId: sessionId,
+    initialFailure: failure,
+  );
+}
 
 class ChatFrontend extends StatefulWidget {
+  ChatFrontend({
+    required this.client,
+    required this.initialSnapshot,
+    required this.sessionId,
+    required this.initialFailure,
+  });
+  final ChatSessionServiceClient client;
+  final ChatSessionSnapshot? initialSnapshot;
+  final String sessionId;
+  final String initialFailure;
+
   @override
   State<ChatFrontend> createState() => _ChatFrontendState();
 }
 
 class _ChatFrontendState extends State<ChatFrontend> {
   final TextEditingController controller = TextEditingController();
+  // The evaluator requires an explicit initializer to box nullable fields.
+  // ignore: avoid_init_to_null
+  ChatSessionSnapshot? snapshot = null;
+  // ignore: avoid_init_to_null
+  ChatEntry? acceptedEntry = null;
+  final Map<String, String> runs = <String, String>{};
+  void Function() listener = () {};
+  String sessionId = '';
+  String failure = '';
+  String historyFailure = '';
+  bool submitting = false;
+  bool refreshing = false;
+  bool refreshRequested = false;
+  bool wasExecuting = false;
+  int revision = 0;
   bool disposed = false;
 
   @override
   void initState() {
     super.initState();
-    subscribeChatChanges(() {
-      if (disposed) return;
-      setState(() {});
-    });
+    sessionId = widget.sessionId;
+    snapshot = widget.initialSnapshot;
+    historyFailure = widget.initialFailure;
+    final execution = readSessionExecution();
+    wasExecuting =
+        execution['running'] == true || execution['advancing'] == true;
+    listener = () => executionChanged();
+    subscribeSessionExecution(listener);
   }
 
-  void submit() {
+  void executionChanged() {
     if (disposed) return;
+    final execution = readSessionExecution();
+    final bool executing =
+        execution['running'] == true || execution['advancing'] == true;
+    final bool terminal = wasExecuting && !executing;
+    wasExecuting = executing;
+    setState(() {});
+    if (terminal) refreshCanonical();
+  }
+
+  Future<void> refreshCanonical() async {
+    refreshRequested = true;
+    if (refreshing || disposed) return;
+    refreshing = true;
+    while (refreshRequested && !disposed) {
+      refreshRequested = false;
+      final int requestedRevision = revision;
+      final ChatSessionServiceClient client = widget.client;
+      final result = await settleSessionOperation(client.snapshot(sessionId));
+      if (disposed) return;
+      if (result[0] == true) {
+        final next = result[1] as ChatSessionSnapshot;
+        // An append accepted while this read was pending must not be erased by
+        // an older snapshot. Read again rather than merging invented history.
+        if (requestedRevision != revision) {
+          refreshRequested = true;
+        } else {
+          setState(() {
+            snapshot = next;
+            historyFailure = '';
+          });
+        }
+      } else {
+        setState(() {
+          historyFailure = 'Chat history is unavailable. Retry to refresh.';
+        });
+      }
+    }
+    refreshing = false;
+  }
+
+  Future<void> submit() async {
+    if (disposed || submitting || snapshot == null) return;
+    if (readSessionExecution()['canStart'] != true) return;
     final String prompt = controller.text;
     if (prompt.trim().isEmpty) return;
-    if (submitChatPrompt(prompt) && !disposed) controller.clear();
+    setState(() {
+      submitting = true;
+      failure = '';
+    });
+    if (acceptedEntry == null) {
+      final ChatSessionServiceClient client = widget.client;
+      final result = await settleSessionOperation(
+        client.appendUserMessage(sessionId, prompt),
+      );
+      if (disposed) return;
+      if (result[0] != true) {
+        setState(() {
+          failure = 'Message was not accepted. Your draft is preserved.';
+          submitting = false;
+        });
+        return;
+      }
+      final entry = result[1] as ChatEntry;
+      revision++;
+      acceptedEntry = entry;
+      final current = snapshot!;
+      final entries = <ChatEntry>[];
+      entries.addAll(current.entries);
+      if (!entries.any((existing) => existing.id == entry.id)) {
+        entries.add(entry);
+      }
+      setState(() {
+        snapshot = ChatSessionSnapshot(
+          entries: entries,
+          instructions: current.instructions,
+          maxModelInvocations: current.maxModelInvocations,
+        );
+      });
+    }
+    final result = await settleSessionOperation(startSessionRun());
+    if (disposed) return;
+    if (result[0] != true) {
+      setState(() {
+        failure = 'Message accepted, but Run could not start. Retry Send.';
+        submitting = false;
+      });
+      return;
+    }
+    final String runHandle = result[1] as String;
+    runs[acceptedEntry!.id] = runHandle;
+    acceptedEntry = null;
+    controller.clear();
+    executionChanged();
+    // Scheduling may already have settled a very short Run before its handle
+    // arrived. Canonical history is also refreshed at every later terminal.
+    refreshCanonical();
+    if (!disposed) {
+      setState(() {
+        submitting = false;
+      });
+    }
   }
 
   @override
   void dispose() {
     disposed = true;
-    unsubscribeChatChanges();
+    unsubscribeSessionExecution(listener);
     controller.dispose();
     super.dispose();
   }
 
-  Widget activity(ChatPresentationEntry entry) =>
-      buildChatActivity(entry.id!) ?? SizedBox.shrink();
+  List<Widget> activity(String runHandle) {
+    final result = <Widget>[];
+    final data = readSessionRunActivity(runHandle);
+    final models = data['models'] as List<Map<String, Object?>>;
+    for (final model in models.where(
+      (model) => model['settlement'] == 'completed',
+    )) {
+      final visible = <Map<String, Object?>>[];
+      final narration = <String>[];
+      bool hasTools = false;
+      String nativeText = '';
+      for (final output in model['outputs'] as List<Map<String, Object?>>) {
+        final kind = output['kind'];
+        if (kind == 'text') {
+          final text = output['content'] as String;
+          if (text.trim().isNotEmpty) narration.add(text.trim());
+        } else if (kind == 'tool') {
+          hasTools = true;
+          visible.add(output);
+        } else if (kind == 'native' && output['presentation'] != null) {
+          visible.add(output);
+          final compact = output['compactText'] as String;
+          if (nativeText.isEmpty && compact.trim().isNotEmpty) {
+            nativeText = compact.trim();
+          }
+        }
+      }
+      if (visible.length == 1) {
+        result.add(buildSessionActivity(visible[0]['handle'] as String));
+      } else if (visible.length > 1) {
+        String heading = '${visible.length} operations';
+        if (hasTools && narration.isNotEmpty) {
+          heading = narration.join(' ');
+        } else if (nativeText.isNotEmpty) {
+          heading = nativeText;
+        }
+        result.add(activityGroup(model['handle'] as String, heading));
+      }
+    }
+    return result;
+  }
+
+  // A separate frame keeps each callback's handle out of the eval loop's
+  // recycled locals. Group policy and its heading still belong to Chat.
+  Widget activityGroup(String handle, String heading) => Padding(
+    padding: EdgeInsets.only(bottom: 16),
+    child: TextButton(
+      onPressed: () {
+        if (!disposed) inspectSessionActivity(handle);
+      },
+      child: Text(
+        compactDisplayText(heading),
+        style: TextStyle(fontSize: 12, color: Colors.grey),
+      ),
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
-    final ChatPresentationSnapshot snapshot = readChatSnapshot();
+    final current = snapshot;
+    final bool canSubmit =
+        current != null &&
+        !submitting &&
+        readSessionExecution()['canStart'] == true;
     final List<Widget> children = <Widget>[
       Text('Chat', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
       SizedBox(height: 16),
     ];
-    for (final ChatPresentationEntry entry in snapshot.entries) {
-      if (entry.kind == 'activity') {
-        children.add(activity(entry));
-      } else {
+    if (current != null) {
+      for (final ChatEntry entry in current.entries) {
         children.add(
           Padding(
             padding: EdgeInsets.only(bottom: 16),
@@ -75,18 +281,34 @@ class _ChatFrontendState extends State<ChatFrontend> {
             ),
           ),
         );
+        final runHandle = runs[entry.id];
+        if (runHandle != null) children.addAll(activity(runHandle));
       }
+    }
+    if (failure.isNotEmpty) {
+      children.add(Text(failure));
+    }
+    if (historyFailure.isNotEmpty) {
+      children.add(Text(historyFailure));
+      children.add(
+        TextButton(
+          onPressed: () {
+            refreshCanonical();
+          },
+          child: Text('Retry history'),
+        ),
+      );
     }
     // flutter_eval 0.8.2 does not bridge TextField.decoration.
     children.add(Text('Ask ADELE...'));
     children.add(
       TextField(
         controller: controller,
-        enabled: snapshot.canSubmit,
+        enabled: canSubmit && acceptedEntry == null,
         onSubmitted: (String value) => submit(),
       ),
     );
-    if (snapshot.canSubmit) {
+    if (canSubmit) {
       children.add(
         Align(
           alignment: Alignment.centerRight,

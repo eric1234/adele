@@ -67,7 +67,10 @@ class ToolActivityInspectionDeclarations implements EvalPlugin {
 /// execution, approval callback or full activity history crosses this boundary.
 final class ToolActivityInspectionBridge
     extends ToolActivityInspectionDeclarations
-    implements PreparedFrontendBridge, PreparedFrontendFailureSource {
+    implements
+        PreparedFrontendBridge,
+        PreparedFrontendFailureSource,
+        PreparedFrontendRetainable {
   ToolActivityInspectionBridge({
     required ToolActivityInspectionSource source,
     required bool Function() isActive,
@@ -81,6 +84,7 @@ final class ToolActivityInspectionBridge
   bool _scheduled = false;
   VoidCallback? _callback;
   VoidCallback? _onFailure;
+  _ToolSnapshot? _retainedSnapshot;
 
   @override
   set onFailure(VoidCallback? callback) => _onFailure = callback;
@@ -106,6 +110,7 @@ final class ToolActivityInspectionBridge
         _,
         _,
       ) {
+        if (_retainedSnapshot case final snapshot?) return snapshot;
         if (!_available) {
           throw StateError('Tool activity inspection is unavailable.');
         }
@@ -188,7 +193,16 @@ final class ToolActivityInspectionBridge
 
   @override
   void invalidate() {
+    _retainedSnapshot = null;
     if (!_active) return;
+    _active = false;
+    _unsubscribe();
+  }
+
+  @override
+  void retainPresentation() {
+    if (!_active) return;
+    _retainedSnapshot = _ToolSnapshot(_InspectionData(_source.snapshot));
     _active = false;
     _unsubscribe();
   }

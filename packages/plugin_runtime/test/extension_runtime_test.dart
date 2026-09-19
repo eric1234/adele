@@ -242,6 +242,215 @@ void main() {
   });
 
   test(
+    'origin lookup uses exact registrations across discovery and replacement',
+    () async {
+      final ready = {
+        'extensionExposures': [_exposure('first', 'configured')],
+      };
+      final connection = await connect(ready);
+      final first = await activate(connection);
+      final retained = extensions.discover(_point).single;
+      final rediscovered = extensions.discover(_point).single;
+      final origin = first.extensionOrigin(retained)!;
+      expect(first.extensionOrigin(rediscovered), same(origin));
+      expect(origin.connection, same(connection));
+      final foreign = ExtensionRegistry();
+      foreign.register(point: _point, id: retained.id, value: retained.value);
+      expect(first.extensionOrigin(foreign.discover(_point).single), isNull);
+      await first.retire();
+      // Re-registration on the very same connection is still another registration.
+      final second = await activate(connection);
+      final replacement = extensions.discover(_point).single;
+      expect(first.extensionOrigin(replacement), isNull);
+      expect(second.extensionOrigin(replacement), isNot(same(origin)));
+      expect(
+        () => second.extensionOrigin(retained),
+        throwsA(isA<StaleExtensionBinding>()),
+      );
+      expect(origin.validate, throwsA(isA<StaleExtensionBinding>()));
+      await first.retire();
+      expect(second.extensionOrigin(replacement)!.validate, returnsNormally);
+      await second.close();
+    },
+  );
+
+  group('owning backend channel', () {
+    late PluginBackendConnection connection;
+    late PluginBackendActivation activation;
+    late RemoteExtensionContext origin;
+    late OwningBackendChannel channel;
+    var presentationLive = true;
+
+    setUp(() async {
+      connection = await connect({
+        'extensionExposures': [_exposure('first', 'configured')],
+      });
+      activation = await activate(connection);
+      origin = activation.extensionOrigin(extensions.discover(_point).single)!;
+      presentationLive = true;
+      channel = OwningBackendChannel(
+        connection: connection,
+        configurationContext: origin.configurationContext,
+        backendServices: ['testService'],
+        validateOwner: origin.validate,
+        validatePresentation: () {
+          if (!presentationLive) throw StateError('Presentation retired.');
+        },
+      );
+    });
+
+    test(
+      'captures exact context, allowlist and immutable structured snapshots',
+      () async {
+        expect(await channel.request('testService', 'echo', {}), {
+          'configurationContext': 'configured',
+          'serviceId': 'testService',
+        });
+        final nested = <Object?>[
+          {'text': 'before'},
+          null,
+          true,
+          1,
+          1.5,
+        ];
+        final pending = channel.request('testService', 'echoPayload', {
+          'nested': nested,
+        });
+        nested.clear();
+        final response = await pending as Map<String, Object?>;
+        expect(response['nested'], [
+          {'text': 'before'},
+          null,
+          true,
+          1,
+          1.5,
+        ]);
+        expect(() => response.clear(), throwsUnsupportedError);
+        expect(
+          () => (response['nested'] as List).clear(),
+          throwsUnsupportedError,
+        );
+        expect(
+          () => ((response['nested'] as List).first as Map).clear(),
+          throwsUnsupportedError,
+        );
+        await expectLater(
+          channel.request('unlisted', 'echo', {}),
+          throwsStateError,
+        );
+        final empty = OwningBackendChannel(
+          connection: connection,
+          configurationContext: origin.configurationContext,
+          backendServices: [],
+          validateOwner: origin.validate,
+          validatePresentation: () {},
+        );
+        await expectLater(
+          empty.request('testService', 'echo', {}),
+          throwsStateError,
+        );
+      },
+    );
+
+    test(
+      'rejects non-data, cycles and nonfinite numbers before dispatch',
+      () async {
+        final cyclicList = <Object?>[];
+        cyclicList.add(cyclicList);
+        final cyclicMap = <String, Object?>{};
+        cyclicMap['self'] = cyclicMap;
+        final custom = _JsonPretender();
+        for (final value in <Object?>[
+          Object(),
+          custom,
+          () {},
+          {1: 'not a string key'},
+          <int>{1},
+          double.nan,
+          double.infinity,
+          cyclicList,
+          cyclicMap,
+        ]) {
+          await expectLater(
+            channel.request('testService', 'echoPayload', {'value': value}),
+            throwsFormatException,
+          );
+        }
+        expect(custom.called, isFalse);
+        await expectLater(
+          channel.request('testService', 'nonfiniteResponse', {}),
+          throwsFormatException,
+        );
+      },
+    );
+
+    for (final retireOwner in [false, true]) {
+      test(
+        'rejects late response after ${retireOwner ? 'owner' : 'presentation'} retirement',
+        () async {
+          final result = Completer<Object?>();
+          final dispatcher = _HostDispatcher(() => result.future);
+          final invocation = connection.openHostInvocation({
+            'fixture': dispatcher,
+          });
+          final pending = channel.request('testService', 'reverse', {
+            'context': invocation.id,
+          });
+          final check = expectLater(
+            pending,
+            throwsA(
+              retireOwner ? isA<StaleExtensionBinding>() : isA<StateError>(),
+            ),
+          );
+          await dispatcher.entered.future;
+          if (retireOwner) {
+            await activation.retire();
+            await activate(connection);
+          } else {
+            presentationLive = false;
+          }
+          result.complete('late');
+          await check;
+          invocation.close();
+          await expectLater(
+            channel.request('testService', 'echo', {}),
+            throwsA(
+              retireOwner ? isA<StaleExtensionBinding>() : isA<StateError>(),
+            ),
+          );
+        },
+      );
+    }
+
+    test(
+      'cannot use a foreign context or retarget the same plugin ID',
+      () async {
+        final other = await connect({}, pluginId: 'dev.adele.test.other');
+        expect(
+          () => OwningBackendChannel(
+            connection: other,
+            configurationContext: origin.configurationContext,
+            backendServices: [],
+            validateOwner: () {},
+            validatePresentation: () {},
+          ),
+          throwsArgumentError,
+        );
+        await activation.close();
+        final replacement = await connect({
+          'extensionExposures': [_exposure('first', 'configured')],
+        });
+        await activate(replacement);
+        await expectLater(
+          channel.request('testService', 'echo', {}),
+          throwsA(isA<StaleExtensionBinding>()),
+        );
+        expect(replacement.isClosed, isFalse);
+      },
+    );
+  });
+
+  test(
     'retirement revokes authority before draining adapter cleanup',
     () async {
       final connection = await connect({
@@ -932,6 +1141,14 @@ final class _HostDispatcher implements AdeleBackendDispatcher {
   Future<void> close() async => closed = true;
 }
 
+final class _JsonPretender {
+  bool called = false;
+  Object toJson() {
+    called = true;
+    return {};
+  }
+}
+
 // Self-contained framed host: generic activation tests do not need AOT compilation.
 final _hostScript =
     '''
@@ -939,7 +1156,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 void send(Map<String, Object?> message) {
-  final bytes = utf8.encode(jsonEncode({'protocolVersion': $backendHostProtocolVersion, ...message}));
+  final bytes = utf8.encode(jsonEncode({'protocolVersion': $backendHostProtocolVersion, ...message}).replaceAll('"NONFINITE_TEST_VALUE"', '1e309'));
   final length = ByteData(4)..setUint32(0, bytes.length);
   stdout.add([...length.buffer.asUint8List(), ...bytes]);
 }
@@ -981,6 +1198,8 @@ void main() {
         case 'request':
           if (message['method'] == 'reverse') {
             reverse(message);
+          } else if (message['method'] == 'echoPayload' || message['method'] == 'nonfiniteResponse') {
+            send({'kind': 'response', ...route, 'ok': true, 'payload': message['method'] == 'echoPayload' ? message['payload'] : 'NONFINITE_TEST_VALUE'});
           } else if (message['method'] == 'terminate') {
             send({'kind': 'pluginFailed', 'pluginId': message['pluginId'], 'error': {'code': 'plugin_exited', 'message': 'Fixture terminated'}});
           } else {

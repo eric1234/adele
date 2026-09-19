@@ -1,10 +1,25 @@
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
+import 'package:adele_ui/owning_backend_bridge.dart';
+import 'package:adele_ui/session_execution_bridge.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('native imports grant neither backend nor Session execution access', () {
+    expect(
+      () => const OwningBackendRequestChannel('example').request('read', {}),
+      throwsUnsupportedError,
+    );
+    expect(currentSessionId, throwsUnsupportedError);
+    expect(readSessionExecution, throwsUnsupportedError);
+    expect(startSessionRun, throwsUnsupportedError);
+    expect(() => readSessionRunActivity('invented'), throwsUnsupportedError);
+    expect(() => inspectSessionActivity('invented'), throwsUnsupportedError);
+    expect(() => buildSessionActivity('invented'), throwsUnsupportedError);
+  });
+
   final OrchestrationStrategyId strategyId = OrchestrationStrategyId(
     'dev.adele.test.strategy',
   );
@@ -32,6 +47,7 @@ void main() {
       point: sessionPresentationContributions,
       id: ExtensionId('dev.adele.test.unrelated-presentation'),
       value: SessionPresentationContribution(
+        displayName: 'Other Strategy',
         strategyId: otherStrategyId,
         createPresentation: (_) => throw StateError('Must not be invoked.'),
       ),
@@ -58,6 +74,7 @@ void main() {
       const Widget presentation = SizedBox.shrink();
       final SessionPresentationContribution contribution =
           SessionPresentationContribution(
+            displayName: 'Example Strategy',
             strategyId: strategyId,
             createPresentation: (value) {
               creations++;
@@ -69,6 +86,7 @@ void main() {
         point: sessionPresentationContributions,
         id: ExtensionId('dev.adele.test.unrelated-presentation'),
         value: SessionPresentationContribution(
+          displayName: 'Other Strategy',
           strategyId: otherStrategyId,
           createPresentation: (_) => throw StateError('Must not be invoked.'),
         ),
@@ -86,6 +104,7 @@ void main() {
       expect(creations, 0);
       expect(binding.id, id);
       expect(binding.value, same(contribution));
+      expect(binding.value.displayName, 'Example Strategy');
       binding.validate();
       expect(binding.value.createPresentation(session), same(presentation));
       expect(creations, 1);
@@ -104,6 +123,7 @@ void main() {
           point: sessionPresentationContributions,
           id: id,
           value: SessionPresentationContribution(
+            displayName: 'Example Strategy',
             strategyId: OrchestrationStrategyId(strategyId.value),
             createPresentation: (_) => throw StateError('Must not be invoked.'),
           ),
@@ -140,6 +160,7 @@ void main() {
       final ExtensionId id = ExtensionId('dev.adele.test.presentation');
       final SessionPresentationContribution contribution =
           SessionPresentationContribution(
+            displayName: 'Example Strategy',
             strategyId: strategyId,
             createPresentation: (_) => const SizedBox.shrink(),
           );

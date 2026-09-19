@@ -76,6 +76,9 @@ Future<List<String>> prepareDesktopPluginDefines({
   final File commandTools = File.fromUri(
     installations.uri.resolve('command-tools/backend.aot'),
   );
+  final File chat = File.fromUri(
+    installations.uri.resolve('chat-strategy/backend.aot'),
+  );
   for (final ({String entrypoint, File artifact, String stage}) target
       in <({String entrypoint, File artifact, String stage})>[
         (
@@ -120,6 +123,12 @@ Future<List<String>> prepareDesktopPluginDefines({
           artifact: commandTools,
           stage: 'command-tools-compilation',
         ),
+        (
+          entrypoint:
+              'plugins/chat_strategy/packages/backend/bin/chat_strategy_backend.dart',
+          artifact: chat,
+          stage: 'chat-strategy-compilation',
+        ),
       ]) {
     stdout.writeln('==> ${target.stage}');
     await compileAotSnapshot(
@@ -157,7 +166,7 @@ Future<List<String>> prepareDesktopPluginDefines({
       id: 'dev.adele.plugin.search-tools',
       displayName: 'Search Tools',
     ),
-    (backend: null, id: 'dev.adele.plugin.chat-strategy', displayName: 'Chat'),
+    (backend: chat, id: 'dev.adele.plugin.chat-strategy', displayName: 'Chat'),
     (
       backend: null,
       id: 'dev.adele.plugin.local-directory-project-selector',

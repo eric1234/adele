@@ -45,7 +45,8 @@ and extensions; frontends use separate metadata-driven presentation and behavior
 extension registration. Generic host adapters and operation-scoped unary
 read/mutation and server-streaming process
 host calls support the AGENTS.md, Search, Filesystem Tools, and Command Tools AOT
-backends, while only headless Chat remains statically composed in process. Local
+backends. Chat runs as an installed AOT strategy with its own canonical Session
+service; the runtime has no static stock activations. Local
 Directory Project Selector is a prepared frontend-only behavioral extension. This
 reuses existing registries, isolate ports/framing, and prepared EVC hosting, with
 per-view presentation decoding and fresh operation runtimes for selectors.
@@ -71,14 +72,12 @@ ADELE has one Flutter desktop application, `adele_desktop`, under `app/`. The ap
 `app/lib/core/adele_runtime.dart` defines the application-lifetime `AdeleRuntime`.
 It owns one `CapabilityRegistry`, `ExtensionRegistry`, `InMemoryProductStore`,
 `ProductLifecycleCoordinator.generated` wired to those same registries and store,
-`InferenceContextComposer` over the same extension registry, and retained
-`ChatStrategyPlugin`. Chat is its only static in-process activation on the same
-extension registry, with no `includeCommandTools` option. This
-is an implicit in-process composition, outside installed-component discovery and
-not a profile/configuration API. Construction is synchronous and provider-free. The
+`InferenceContextComposer` over the same extension registry, with no static stock
+activation, Chat imports, or `includeCommandTools` option. Construction is
+synchronous and provider-free. The
 runtime also owns pure-Dart `ApplicationPluginBootstrap` on those same capability
 and extension registries, without starting backend work in its constructor.
-AGENTS.md, Search, Filesystem Tools, and Command Tools have no production app
+Chat, AGENTS.md, Search, Filesystem Tools, and Command Tools have no production app
 dependency/import or static activation; their prepared backends supply contributions through generic
 remote extension activation.
 
@@ -91,7 +90,8 @@ data handles. Approval remains host-captured and single-use per resume. Executio
 close/retirement releases retained state without resolving waiting Runs or
 retargeting replacement generations. Public orchestration owns transport and a
 native backend host proxy; the app owns actual mechanics and authority. Stock
-Chat remains the only static plugin and has not migrated. See
+Chat uses this same remote substrate, sharing canonical backend state with its
+generated `ChatSessionService`. See
 [remote orchestration](contracts-and-capabilities.md#remote-orchestration-strategies).
 
 The normal Stateful `AdeleApplication` constructs its runtime once synchronously
@@ -159,8 +159,8 @@ failure invalidates all backends. The bootstrap exposes read-only per-backend
 states and catalog issues, not a plugin-management UI. Overall `ready` means
 startup settled, not that every backend succeeded or a model is usable.
 
-Git and OpenAI entrypoints own their ready capability advertisements; AGENTS.md,
-Search, Filesystem Tools, and Command Tools own their ready extension advertisements.
+Git and OpenAI entrypoints own their ready capability advertisements; Chat,
+AGENTS.md, Search, Filesystem Tools, and Command Tools own their ready extension advertisements.
 Generic
 `PluginBackendActivation.registerAdvertised` coherently owns both capability and
 extension registration, rollback, and retirement through the existing registries.
@@ -197,7 +197,7 @@ runtime cleanup failures through `FlutterError`. Frontend cleanup runs even if
 runtime cleanup fails, retiring exact registrations and invalidating bridges after
 pending activation settles. Runtime close shares one completion across
 callers: all backend capability and extension registrations retire before their
-connections close, then the host closes, then in-process activations retire in reverse order.
+connections close, then the host closes. There are no static stock activations to retire.
 `app/lib/core/resource_cleanup.dart` supplies `closeResources`, shared with
 development teardown: every action is attempted before the first error is
 rethrown with its stack.
@@ -211,7 +211,8 @@ independent actions, not a chooser/default-provider framework.
 Normal activation consumes one catalog of prepared backend/frontend installations,
 not source paths or a compiler. No active Environment capability leaves Task
 Environment support unavailable; missing Search, Filesystem, or Command backends leaves
-their tools unavailable without in-process fallback. Missing Chat, Filesystem Tools,
+their tools unavailable without in-process fallback. Missing Chat backend leaves
+its strategy and Session service unavailable. Missing Chat, Filesystem Tools,
 Command Tools, or OpenAI activity EVC leaves the corresponding presentation unavailable
 independently of the other frontends and model backend support.
 Missing or invalid Local Directory frontend leaves its Project selector unavailable,
@@ -224,12 +225,12 @@ Checkout preparation stands in for future installation/update-time compilation;
 activation only consumes prepared artifacts. Caching, plugin management,
 production packaging, and profiles remain deferred. Linux tooling prepares eight
 installations in one `.dart_tool/adele/desktop-plugins/build-*/installations/` root:
-frontend-only Chat and Local Directory Project Selector, backend-only Git, AGENTS.md,
-and Search, and combined Filesystem Tools, Command Tools, and OpenAI. Filesystem and
-Command each contain `backend.aot`
-and `frontend.evc` with independent component availability. Preparation produces
-six backend snapshots plus the host and five EVCs, with no AGENTS-, Search-,
-Filesystem-, or Command-specific configuration.
+frontend-only Local Directory Project Selector, backend-only Git, AGENTS.md,
+and Search, and combined Chat, Filesystem Tools, Command Tools, and OpenAI. Each
+combined installation contains `backend.aot` and `frontend.evc` with independent
+component availability. Preparation produces
+seven backend snapshots plus the host and five EVCs, with no Chat-, AGENTS-, Search-,
+Filesystem-, or Command-specific startup configuration.
 `tools/stock_frontend_descriptors.dart` is the singular stock
 build-side source for presentation and behavioral extension descriptors; app runtime
 activation has no stock tool/native
@@ -245,14 +246,17 @@ General provider/model configuration,
 Task Browser, persistence, and richer workbench UI remain deferred.
 
 Development/self-hosting owns an `AdeleRuntime` instance instead of duplicating
-these registries, lifecycle, composer, Chat, and activations. Its surrounding
-topology/runner retains its independent AOT artifacts and host ownership, provider
+these registries, lifecycle, and composer. Plugin-specific runner code lives in
+`app/tool/self_hosting/`, not `app/lib/development/agent/development_self_hosting*.dart`.
+Chat Contract is a development-only app dependency; the tooling configures,
+appends to, and snapshots the same remote Chat backend used by normal startup.
+Its surrounding topology/runner retains independent AOT artifacts and host ownership, provider
 activation, isolated Git source, Project/Task/Environment/Session establishment,
 tool catalog, model selection, development IDs, execution, and evidence. The generic
 model capability adapter lives in `app/lib/core/model_provider_host.dart`; normal
 composition has no dependency on development code. Self-hosting uses generic
 `registerAdvertised` for backend-owned exposures but keeps its explicit
-artifact/host/profile topology, including `agentsMdArtifact`, `searchToolsArtifact`,
+artifact/host/profile topology, including Chat, `agentsMdArtifact`, `searchToolsArtifact`,
 `filesystemToolsArtifact`, and `commandToolsArtifact` on the same shared host through
 `PluginBackendActivation` and the same generic
 remote adapters. Self-hosting's `includeCommandTools` controls explicit Command
@@ -406,8 +410,8 @@ Revocation is immediate and precedes bounded cleanup of owned streams. Both
 transport protocols are version 1 under the
 [pre-release transport policy](contracts-and-capabilities.md#transport-version-policy);
 the installed manifest remains version 1.
-Backend/frontend availability is independent. Only headless Chat migration remains
-deferred; Local Directory uses a prepared frontend bridge, not this backend
+Backend/frontend availability is independent. Local Directory uses a prepared
+frontend bridge, not this backend
 transport or its authority tokens. These checks authorize the
 host-service API, not native OS access; process separation is not a sandbox.
 
@@ -530,9 +534,11 @@ new public package. Canonical Session contains no live binding, Environment
 authority, or Chat history.
 
 `ProductLifecycleCoordinator.createSession` requires `taskId` and `strategyId`
-and accepts an optional `environmentId`. It validates the existing Task, exactly
-one current strategy contribution, and the Task's primary or explicitly selected
-same-Task Environment. It then allocates `SessionId`, atomically publishes the
+and accepts optional `environmentId` and `resolvedStrategy`. It validates the
+existing Task, exactly one current strategy contribution, and the Task's primary or explicitly selected
+same-Task Environment. A supplied strategy must own the same exact current
+registration in this lifecycle's registry, not merely the same semantic ID. It
+allocates `SessionId`, revalidates before publication, then atomically publishes the
 canonical Session and separate Task/Environment authority, and returns `Session`.
 Failed validation publishes neither value. Publication is private; there is no
 public `associateSession` operation. `store.session(id)` reads the canonical value,
@@ -547,20 +553,23 @@ makes it fail with generic `StaleExtensionBinding`. Only fresh resolution may us
 a replacement registration, with no fallback or rewrite of the stored strategy
 ID. The permanent semantic binding is not a lifetime activation-generation pin.
 
-Run remains the core unit of execution inside a Session. Stock Chat owns
-`ChatSessionStore.obtain(SessionId)` and retained in-memory `ChatSessionState`.
-Immutable snapshots contain `ChatEntry` values (`ChatUserMessage` and
-`ChatAssistantMessage`); only user/final assistant messages are canonical and
-reused across Runs. Intermediate model/native output, proposals, and tool
-results are Run-local replay. Instructions and a positive invocation budget are
-Chat-owned configuration snapshotted per materialized Run, not product Session
-fields. Normal stock presentation explicitly creates Chat through canonical
-lifecycle with `chatStrategyId`; it introduces no universal default strategy.
-Session validity is independent of model availability. The current Session and
-its presentation controller remain window-local, never runtime navigation state.
+Run remains the core unit of execution inside a Session. Chat's canonical source
+split is `plugins/chat_strategy/packages/{contract,backend,frontend}`; the root
+semantic package is retired. Backend's `RemoteOrchestrationBackend` and generated
+`ChatSessionService` snapshot/append/configuration operations share one in-memory canonical
+store. Immutable user/final assistant entries have stable occurrence IDs and are
+reused across Runs. Intermediate output, proposals, and tool results are Run-local
+replay. Default instructions and a positive invocation budget (default eight) are
+backend-owned configuration snapshotted per materialized Run, not product fields.
+External mutations are rejected from materialization until close, including
+approval waits. Session creation uses live contribution metadata, not a compiled
+Chat ID or universal default. Session validity is independent of model availability;
+current Session and presentation remain window-local, never runtime navigation state.
 
-Each accepted prompt appends a canonical user entry and allocates a fresh Run ID.
-The application freshly resolves the exact selected ModelProvider and constructs
+The Chat frontend asynchronously appends a canonical user entry through its
+generated client, then associates that stable accepted entry ID with an opaque
+handle from generic Run scheduling. The application allocates a fresh Run ID,
+resolves the exact selected ModelProvider, and constructs
 its adapter, builds the Session-authorized tool catalog, and snapshots the normal
 approval-gated policy for that Run. Existing per-inference context composition
 supplies root AGENTS.md instructions from the Task Environment. Chat appends only the final
@@ -573,13 +582,15 @@ The accepted direction allows child Sessions for delegated work. They may share 
 ### Session presentation
 
 `packages/ui` (`adele_ui`) defines `SessionPresentationContribution` with
-`strategyId: OrchestrationStrategyId` and
+`strategyId: OrchestrationStrategyId`, `displayName: String`, and
 `createPresentation: Widget Function(Session)`. Typed
 `sessionPresentationContributions` uses the existing extension registry. The
 canonical Session's stored strategy ID is matched exactly: no match is
 unavailable, one match provides presentation, and multiple matches are explicitly
 ambiguous. Presentation selection neither supplies a default strategy nor changes
-Session lifecycle or execution resolution.
+the stored Session strategy identity. Prepared owning-backend affinity additionally
+requires exact backend origin for creation and execution, not a different
+selection/default rule.
 
 The generic `app/lib/ui/session/session_presentation_host.dart` hosts an existing
 Session without Chat identities or controller knowledge. It observes registry
@@ -588,34 +599,37 @@ widgets so their resources dispose. Only fresh resolution can select a replaceme
 Absent presentation or a factory/load failure does not invalidate the Session or
 backend execution; there is no native Chat fallback.
 
-The separate Flutter `chat_strategy_frontend` package under
-`plugins/chat_strategy/packages/frontend` owns evaluated history/composer UI. It
-does not import the headless Chat implementation, app, or kernel.
-`app/lib/frontend` owns generic catalog-driven activation and prepared hosting.
-`app/lib/plugins/stock_chat_frontend.dart` remains only the bounded native adapter
-to `ChatController`, intentionally retained in `app/lib/ui/chat`. Prepared Session
-metadata selects `hostAdapter: 'stock-chat-controller-v1'`, and the adapter validates
-the strategy. It does not load EVC, register contributions, or own activation.
-Unsupported adapter/strategy combinations fail explicitly. This is neither a
-PluginId switch nor a public universal Session-controller seam or reverse-call API.
-Frontend activation generations and presentation instances are distinct; widget
-lifecycle does not define a permanent one-runtime-per-view architecture.
+The separate Flutter `chat_strategy_frontend` owns asynchronous composer acceptance,
+canonical history refresh, grouping, and timeline placement. It imports shared
+Chat Contract and public UI APIs, not Backend, app, or kernel. Its generated client
+uses `adele_ui/owning_backend_bridge.dart` over a presentation-local unary channel
+to the exact sibling backend connection and configuration context. An explicit
+`backendServices` allowlist bounds requests; no PluginId selection or replacement
+retargeting crosses the bridge.
 
-The eval bridge carries immutable primitive message/activity timeline snapshots,
-composer-enabled state, submission of a string returning synchronous boolean
-acceptance, and an opaque activity-widget slot for previously emitted activity
-IDs. The native slot wraps plugin-owned compact presentation in common inspect
-interaction. It returns a native widget wrapper, not a foreign runtime's eval
-object; each plugin presentation keeps its own prepared runtime and read-only
-bridge. Session, controller, execution, and approval objects do not cross it.
-Native slot actions are bound to that Chat presentation's bridge liveness and
-mounted context. Parent presentation failure revokes them immediately, without
-revoking sibling presentations or treating a compact child failure as Chat failure.
-Common `RunExecutionStatus`, `PendingToolApproval`, and display safety live under
-`app/lib/ui/execution`, with stock controller adaptation at the composition edge.
-Host policy and exact-invocation approval remain the security authority. Activity
-summaries are lightweight interpreted Chat content, not actionable approval UI.
-Richer workbench composition and broad third-party UI APIs remain deferred.
+Session descriptors supply `displayName`, `strategyId`, `extensionId`, `library`,
+and `entrypoint`, with optional `backendServices` and `strategyAffinity`. Chat
+allowlists generated `chatSessionServiceId` and uses `owningBackend`. `hostAdapter`
+is removed under manifest
+version 1. The host verifies origin from exact registration ownership, not IDs,
+contribution value identity, or plugin claims. Affinity pins Run materialization to
+the strategy from that same backend/context; lifecycle validates before publishing
+the Session. Backend and frontend startup are independent, but operations needing
+an absent or retired owner fail without fallback.
+
+The separate generic `session_execution_bridge.dart` supplies immutable execution
+snapshots, subscriptions, async Run scheduling, retained activity reads, and native
+inspect/build slots over opaque emitted handles. It carries no canonical history.
+The frontend associates accepted entry IDs with Run handles rather than message
+text or list positions. Core owns model/tools/policy, approvals, activity evidence,
+and Inspection; plugin code owns Chat meaning. Executable and approval objects do
+not cross the bridge. Native slots retain exact presentation liveness and isolate
+child compact views in their own prepared runtimes.
+
+`app/lib/frontend` owns generic activation and prepared hosting without Chat imports
+or a stock adapter. Common execution status, approval cards, and display safety
+live under `app/lib/ui/execution`. Frontend generations and presentation instances
+remain distinct; broader workbench and third-party UI APIs remain deferred.
 
 ### Activity Inspection
 
@@ -629,7 +643,7 @@ keep their position and independent collapsed state. Collapse hides the body but
 retains the target; dismiss removes only that card. Stale card callbacks cannot
 act on another card. Changing the presented Session or disposing the window
 clears the stack; Run completion, follow-up prompts, and frontend retirement do
-not. The stock Chat adapter validates opaque IDs against exact activity emitted
+not. The generic Session execution bridge validates opaque handles against exact activity emitted
 to that presentation, with current-Session and lifetime checks.
 
 Chat owns the single-versus-group decision separately for each completed model
@@ -668,7 +682,7 @@ compact tool presentation retains a bounded model-visible alias; native fallback
 retains provider-approved `compactText`. Common code never parses tool arguments.
 Retirement removes only the custom view; replacement needs fresh exact resolution.
 
-Ownership is deliberately separate: Chat strategy owns grouping and timeline
+Ownership is deliberately separate: Chat frontend owns grouping and timeline
 placement; common host/workbench owns inspect interaction and card stack/chrome;
 tool/provider plugins own compact and rich read-only bodies; Run/core owns
 evidence identity, order, and lifecycle; the approval host owns authorization.
@@ -813,9 +827,8 @@ provider/model configuration UI remain deferred.
 
 `agent_kernel` remains an internal provider-neutral execution substrate. Concrete models, tools, editors, SCM integrations, terminals, orchestration strategies, and presentation belong outside the kernel.
 
-`plugins/chat_strategy` contains the first executable stock strategy,
-`chat_strategy_plugin`. `ChatStrategyPlugin.activate` follows the in-process
-stock tool convention with semantic ID `dev.adele.strategy.chat`, distinct from
+`plugins/chat_strategy/packages/backend` supplies the installed stock Chat strategy
+through `RemoteOrchestrationBackend`, with semantic ID `dev.adele.strategy.chat`, distinct from
 plugin ID `dev.adele.plugin.chat-strategy` and extension ID
 `dev.adele.plugin.chat-strategy.orchestration`. The private Chat loop owns bounded
 sequential proposal batches, approval/rejection continuation, and invocation
@@ -824,7 +837,7 @@ because it has no continuation slot. This is not concurrent tool execution or a
 general workflow system.
 
 `createSessionOrchestrationRun` in `app/lib/core/orchestration_host.dart` looks up
-the canonical Session, resolves its exact contribution once for the Run, and
+the canonical Session, resolves or validates its exact contribution once for the Run, and
 materializes against `KernelOrchestrationHost` via
 `OrchestrationStrategyHostContext(session, host)`. The callback returns
 `OrchestrationExecution` with `start` and `resolveApproval`.
@@ -863,13 +876,13 @@ reasoning. Raw `ModelNativeOutput` evidence is retained without generic parsing;
 the provider backend supplies safe presentation and its frontend renders rich
 Inspection, without changing raw replay.
 
-The provisional `ChatController` observes the active Run and retains immutable
-activity snapshots separately from canonical Chat state. Its mixed presentation
-inserts activity after the initiating user entry and before the final assistant
-entry, keeping completed activity through follow-up prompts for that controller's
-lifetime. Snapshots are built lazily from buffered evidence; controller captures
-and frontend notifications are coalesced post-frame, not repeated per progress
-chunk. It detaches observation on close. Reopening/reconstructing a Session cannot restore
+`SessionExecutionController` in `app/lib/ui/execution` retains activity snapshots separately from
+backend canonical Chat state. The plugin frontend's mixed presentation associates
+opaque Run handles with stable accepted entry IDs and inserts activity before the
+final assistant entry, keeping completed activity through follow-up prompts for
+that presentation's lifetime. Snapshots are built lazily from buffered evidence;
+host captures and frontend notifications are coalesced, not repeated per progress
+chunk. Observation detaches on close. Reopening/reconstructing a Session cannot restore
 historical activity until persistence exists. Inspection consumes this retained
 evidence separately from compact Chat narration; tool-specific fields belong to
 the interpreted tool frontend and native interpretation to its owning plugin,
@@ -898,8 +911,9 @@ public package nor Chat depends on the kernel. The kernel has no Chat history
 port or generic `ContextAssembler`; the Session/context types in ADR 0022 are
 historical proof details, not current kernel APIs.
 
-Self-hosting uses its `AdeleRuntime`'s retained Chat, obtains Session state and
-appends the prompt, then routes `SessionId` through lifecycle and the core host.
+Self-hosting uses a generated Chat Contract client to configure, append to, and
+snapshot the installed remote backend, then routes `SessionId` and the exact
+strategy binding through lifecycle and the core host.
 The app no longer has `simple_tool_loop_strategy.dart` or
 `development_strategy_registration.dart`;
 `development_agent_support.dart` contains only policy.
@@ -1005,8 +1019,8 @@ exist yet.
 
 Profiles are accepted as sparse named composition layers. One context may eventually use an ordered stack such as `Developer + Work`. They may contribute activation decisions, ordinary configuration overrides, provider availability, and provider preferences.
 
-Normal startup and development/self-hosting reuse the implicit in-process stock
-composition and generic registration of backend-owned advertisements, while owning
+Normal startup and development/self-hosting reuse the provider-free runtime and
+generic registration of backend-owned advertisements, while owning
 separate backend topologies. Normal startup attempts all discovered valid backend
 and frontend components; self-hosting retains explicit artifact/host/profile
 selection. Profiles are unimplemented activation-participation policy, separate

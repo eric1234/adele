@@ -2,8 +2,8 @@ import 'dart:io';
 
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
+import 'package:adele_desktop/frontend/session_execution_bridge.dart';
 import 'package:adele_desktop/frontend/tool_activity_inspection_bridge.dart';
-import 'package:adele_desktop/plugins/chat_frontend_bridge.dart';
 import 'package:adele_desktop/ui/activity/tool_activity_compact_host.dart';
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
@@ -14,12 +14,13 @@ import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:adele_ui/inspection_display.dart';
 import 'package:command_tools_plugin/command_tools_plugin.dart';
+import 'package:dart_eval/dart_eval.dart';
 import 'package:filesystem_tools_plugin/filesystem_tools_plugin.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
-import '../tool/chat_frontend_compiler.dart';
 import '../tool/tool_inspection_frontend_compiler.dart';
 import 'support/prepared_frontend_installations.dart';
 
@@ -27,7 +28,7 @@ void main() {
   late Directory temporary;
   late File filesystemArtifact;
   late File commandArtifact;
-  late File chatArtifact;
+  late File sessionArtifact;
   late Directory installations;
   late ExtensionRegistry extensions;
   late ApplicationFrontendBootstrap frontends;
@@ -38,7 +39,7 @@ void main() {
     temporary = await Directory.systemTemp.createTemp('adele-tool-inspection-');
     filesystemArtifact = File('${temporary.path}/filesystem.evc');
     commandArtifact = File('${temporary.path}/command.evc');
-    chatArtifact = File('${temporary.path}/chat.evc');
+    sessionArtifact = File('${temporary.path}/session.evc');
     // Exercise Command without first loading another frontend's declarations.
     for (final frontend in [
       ToolInspectionFrontend.command,
@@ -52,10 +53,29 @@ void main() {
         frontend: frontend,
       );
     }
-    await compileChatFrontend(
-      repositoryRoot: Directory.current.parent,
-      artifact: chatArtifact,
-    );
+    final program =
+        (Compiler()
+              ..addPlugin(flutterEvalPlugin)
+              ..addPlugin(const SessionExecutionDeclarations())
+              ..entrypoints.add('package:session_probe/main.dart'))
+            .compile({
+              'session_probe': {
+                'main.dart': '''
+import 'package:flutter/material.dart';
+import 'package:adele_ui/session_execution_bridge.dart';
+Widget buildSession() => Column(children: [
+  const Text('Session'),
+  buildSessionActivity(readSessionExecution()['activity'] as String),
+]);
+''',
+              },
+              'adele_ui': {
+                'session_execution_bridge.dart': File(
+                  '${Directory.current.parent.path}/packages/ui/lib/session_execution_bridge.dart',
+                ).readAsStringSync(),
+              },
+            });
+    await sessionArtifact.writeAsBytes(program.write());
     installations = await prepareFrontendInstallations(
       root: Directory('${temporary.path}/installed'),
       artifacts: {
@@ -706,132 +726,129 @@ void main() {
     },
   );
 
-  testWidgets('actual Chat summary first-mounts one-edit waiting patch EVC', (
-    tester,
-  ) async {
-    final PreparedFrontend chat = (await tester.runAsync(
-      () => PreparedFrontend.load(chatArtifact),
-    ))!;
-    addTearDown(chat.invalidate);
-    final ToolInvocationActivity patch = _activity(
-      proposalSequence: 2,
-      kind: ToolActivityKind.approvalRequested,
-      arguments: {
-        'relativePath': 'lib/task_answer.dart',
-        'expectedRevision': 'opaque-task-revision',
-        'edits': [
-          {
-            'search': 'const taskAnswer = "task-worktree-only";',
-            'replace': 'const taskAnswer = "approved-task-value";',
-          },
-        ],
-      },
-    );
-    final ActivityGroupInspectionTarget selection =
-        ActivityGroupInspectionTarget(
-          sessionId: SessionId('chat-session'),
-          runId: RunId('chat-run'),
-          modelInvocationId: patch.modelInvocationId,
-        );
-    final RunActivitySnapshot activity = RunActivitySnapshot(
-      runId: selection.runId,
-      sessionId: selection.sessionId,
-      state: RunState.waiting,
-      sequence: 20,
-      models: [
-        ModelInvocationActivity(
-          id: patch.modelInvocationId,
-          startSequence: 1,
-          settlement: ModelSettlement.completed,
-          terminalSequence: 4,
-          outputs: [
-            ModelOutputActivity(
-              sequence: patch.proposalSequence,
-              item: ModelToolProposalOutput(
-                ProviderToolProposal(
-                  providerCallId: patch.providerCallId,
-                  alias: patch.alias,
-                  arguments: patch.canonicalArguments,
-                ),
-              ),
-            ),
-            ModelOutputActivity(
-              sequence: 3,
-              item: ModelToolProposalOutput(
-                ProviderToolProposal(
-                  providerCallId: 'command',
-                  alias: 'run_command',
-                  arguments: const {
-                    'program': 'git',
-                    'arguments': ['diff', '--check'],
-                  },
-                ),
-              ),
-            ),
+  testWidgets(
+    'generic Session activity first-mounts one-edit waiting patch EVC',
+    (tester) async {
+      final PreparedFrontend sessionFrontend = (await tester.runAsync(
+        () => PreparedFrontend.load(sessionArtifact),
+      ))!;
+      addTearDown(sessionFrontend.invalidate);
+      final ToolInvocationActivity patch = _activity(
+        proposalSequence: 2,
+        kind: ToolActivityKind.approvalRequested,
+        arguments: {
+          'relativePath': 'lib/task_answer.dart',
+          'expectedRevision': 'opaque-task-revision',
+          'edits': [
+            {
+              'search': 'const taskAnswer = "task-worktree-only";',
+              'replace': 'const taskAnswer = "approved-task-value";',
+            },
           ],
-        ),
-      ],
-      tools: [patch],
-    );
-    bool selected = false;
-    late StateSetter rebuild;
-    final _InspectionChatSource source = _InspectionChatSource(() {
-      rebuild(() => selected = true);
-    });
-    addTearDown(source.dispose);
-    final Widget chatView = chat.createChatPresentation(
-      source: source,
-      isActive: () => true,
-      buildActivity: (id) => id == 'group'
-          ? TextButton(
-              onPressed: () => source.inspectActivity(id),
-              child: const Text('ACTIVITY: Update and validate'),
-            )
-          : null,
-    );
-    await tester.pumpWidget(
-      _host(
-        StatefulBuilder(
-          builder: (_, setState) {
-            rebuild = setState;
-            return Column(
-              children: [
-                chatView,
-                if (selected)
-                  InspectionHost(
-                    card: _groupCard(activity, selection.modelInvocationId),
-                    activity: activity,
-                    heading: 'Update and validate',
-                    extensions: extensions,
-                    onCollapse: () {},
-                    onExpand: () {},
-                    onDismiss: () => rebuild(() => selected = false),
-                    onInspectOutput: (_) {},
+        },
+      );
+      final ActivityGroupInspectionTarget selection =
+          ActivityGroupInspectionTarget(
+            sessionId: SessionId('inspection-session'),
+            runId: RunId('inspection-run'),
+            modelInvocationId: patch.modelInvocationId,
+          );
+      final RunActivitySnapshot activity = RunActivitySnapshot(
+        runId: selection.runId,
+        sessionId: selection.sessionId,
+        state: RunState.waiting,
+        sequence: 20,
+        models: [
+          ModelInvocationActivity(
+            id: patch.modelInvocationId,
+            startSequence: 1,
+            settlement: ModelSettlement.completed,
+            terminalSequence: 4,
+            outputs: [
+              ModelOutputActivity(
+                sequence: patch.proposalSequence,
+                item: ModelToolProposalOutput(
+                  ProviderToolProposal(
+                    providerCallId: patch.providerCallId,
+                    alias: patch.alias,
+                    arguments: patch.canonicalArguments,
                   ),
-              ],
-            );
-          },
+                ),
+              ),
+              ModelOutputActivity(
+                sequence: 3,
+                item: ModelToolProposalOutput(
+                  ProviderToolProposal(
+                    providerCallId: 'command',
+                    alias: 'run_command',
+                    arguments: const {
+                      'program': 'git',
+                      'arguments': ['diff', '--check'],
+                    },
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+        tools: [patch],
+      );
+      bool selected = false;
+      late StateSetter rebuild;
+      final _InspectionSessionSource source = _InspectionSessionSource(() {
+        rebuild(() => selected = true);
+      });
+      addTearDown(source.dispose);
+      final Widget sessionView = sessionFrontend.createPresentation(
+        library: 'package:session_probe/main.dart',
+        entrypoint: 'buildSession',
+        createBridge: () =>
+            SessionExecutionBridge(source: source, isActive: () => true),
+      );
+      await tester.pumpWidget(
+        _host(
+          StatefulBuilder(
+            builder: (_, setState) {
+              rebuild = setState;
+              return Column(
+                children: [
+                  sessionView,
+                  if (selected)
+                    InspectionHost(
+                      card: _groupCard(activity, selection.modelInvocationId),
+                      activity: activity,
+                      heading: 'Update and validate',
+                      extensions: extensions,
+                      onCollapse: () {},
+                      onExpand: () {},
+                      onDismiss: () => rebuild(() => selected = false),
+                      onInspectOutput: (_) {},
+                    ),
+                ],
+              );
+            },
+          ),
         ),
-      ),
-    );
-    final Element chatElement = tester.element(find.text('Chat'));
-    expect(find.text('Apply Patch'), findsNothing);
-    await tester.tap(find.text('ACTIVITY: Update and validate'));
-    await tester.pumpAndSettle();
-    expect(
-      find.text('Apply Patch: "lib/task_answer.dart" / 1 edit'),
-      findsOneWidget,
-    );
-    expect(find.text('Apply Patch'), findsNothing);
-    expect(find.textContaining('Requested edits:'), findsNothing);
-    expect(find.textContaining('Status:'), findsNothing);
-    expect(find.text('Tool delivery: Pending'), findsNothing);
-    expect(find.text('Proposal: run_command'), findsOneWidget);
-    expect(tester.element(find.text('Chat')), same(chatElement));
-    expect(activity.tools.single, same(patch));
-    expect(patch.outcome, isNull);
-    expect(tester.takeException(), isNull);
-  });
+      );
+      final Element sessionElement = tester.element(find.text('Session'));
+      expect(find.text('Apply Patch'), findsNothing);
+      await tester.tap(find.text('ACTIVITY: Update and validate'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Apply Patch: "lib/task_answer.dart" / 1 edit'),
+        findsOneWidget,
+      );
+      expect(find.text('Apply Patch'), findsNothing);
+      expect(find.textContaining('Requested edits:'), findsNothing);
+      expect(find.textContaining('Status:'), findsNothing);
+      expect(find.text('Tool delivery: Pending'), findsNothing);
+      expect(find.text('Proposal: run_command'), findsOneWidget);
+      expect(tester.element(find.text('Session')), same(sessionElement));
+      expect(activity.tools.single, same(patch));
+      expect(patch.outcome, isNull);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'actual mixed EVC group follows proposal order and survives partial retirement',
@@ -1195,25 +1212,34 @@ class _Source extends ChangeNotifier implements ToolActivityInspectionSource {
   }
 }
 
-class _InspectionChatSource extends ChangeNotifier
-    implements ChatFrontendSource {
-  _InspectionChatSource(this.openInspection);
+class _InspectionSessionSource extends ChangeNotifier
+    implements SessionExecutionSource {
+  _InspectionSessionSource(this.openInspection);
 
   final VoidCallback openInspection;
 
   @override
-  ChatPresentationSnapshot get snapshot => ChatPresentationSnapshot(
-    entries: const [
-      ChatPresentationEntry.activity(
-        id: 'group',
-        content: 'Update and validate',
-      ),
-    ],
-    canSubmit: false,
-  );
+  String currentSessionId() => 'inspection-session';
 
   @override
-  bool submit(String prompt) => false;
+  Map<String, Object?> readExecution() => const {'activity': 'group'};
+
+  @override
+  Future<String> startRun() => throw StateError('Read-only fixture.');
+
+  @override
+  Map<String, Object?> readRunActivity(String handle) => const {};
+
+  @override
+  Widget buildActivity(String handle) => handle == 'group'
+      ? TextButton(
+          onPressed: () => inspectActivity(handle),
+          child: const Text('ACTIVITY: Update and validate'),
+        )
+      : const SizedBox.shrink();
+
+  @override
+  void invalidate() {}
 
   @override
   bool inspectActivity(String id) {

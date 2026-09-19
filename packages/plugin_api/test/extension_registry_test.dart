@@ -51,6 +51,38 @@ void main() {
   });
 
   test(
+    'exact ownership survives rediscovery, never IDs or reused values',
+    () async {
+      final registry = ExtensionRegistry();
+      final foreign = ExtensionRegistry();
+      final id = ExtensionId('dev.adele.test.exact');
+      const value = _Greeting('shared');
+      final registration = registry.register(
+        point: point,
+        id: id,
+        value: value,
+      );
+      foreign.register(point: point, id: id, value: value);
+      final first = registry.discover(point).single;
+      final second = registry.discover(point).single;
+      final other = foreign.discover(point).single;
+      expect(first, isNot(same(second)));
+      expect(registration.owns(first), isTrue);
+      expect(registration.owns(second), isTrue);
+      expect(first.isSameRegistration(second), isTrue);
+      expect(registration.owns(other), isFalse);
+      expect(first.isSameRegistration(other), isFalse);
+      await registration.close();
+      registry.register(point: point, id: id, value: value);
+      final replacement = registry.discover(point).single;
+      expect(registration.owns(first), isTrue);
+      expect(registration.owns(replacement), isFalse);
+      expect(first.isSameRegistration(replacement), isFalse);
+      expect(first.validate, throwsA(isA<StaleExtensionBinding>()));
+    },
+  );
+
+  test(
     'changes broadcast asynchronously after registration and retirement',
     () async {
       final ExtensionRegistry registry = ExtensionRegistry();

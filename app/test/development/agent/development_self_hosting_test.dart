@@ -2,21 +2,23 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_desktop/core/model_tool_host.dart';
-import 'package:adele_desktop/development/agent/development_self_hosting.dart';
-import 'package:adele_desktop/development/agent/development_self_hosting_report.dart';
-import 'package:adele_desktop/development/agent/development_self_hosting_runner.dart';
+import 'package:adele_desktop/core/remote_inference_context_host.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_orchestration/remote_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:agent_kernel/agent_kernel.dart';
-import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
+import 'package:chat_strategy_backend/chat_strategy_backend.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import '../../../tool/self_hosting/development_self_hosting.dart';
+import '../../../tool/self_hosting/development_self_hosting_report.dart';
+import '../../../tool/self_hosting/development_self_hosting_runner.dart';
 import 'chat_test_topology.dart';
 
 void main() {
   test(
-    'self-hosting prepares and owns remote AGENTS and all tools on one host',
+    'self-hosting prepares and owns remote Chat, AGENTS and all tools on one host',
     () async {
       final container = await Directory.systemTemp.createTemp(
         'adele-self-hosting-backends-',
@@ -29,6 +31,11 @@ void main() {
         log: compiled.add,
       );
       expect(artifacts.agentsMdArtifact.path, endsWith('/agents-md.aot'));
+      expect(
+        artifacts.chatStrategyArtifact.path,
+        endsWith('/chat-strategy.aot'),
+      );
+      expect(await artifacts.chatStrategyArtifact.length(), greaterThan(0));
       expect(await artifacts.agentsMdArtifact.length(), greaterThan(0));
       expect(artifacts.searchToolsArtifact.path, endsWith('/search-tools.aot'));
       expect(await artifacts.searchToolsArtifact.length(), greaterThan(0));
@@ -46,6 +53,7 @@ void main() {
         compiled.where((line) => line.startsWith('Compiling ')),
         unorderedEquals([
           'Compiling packages/plugin_backend_host/bin/adele_backend_host.dart.',
+          'Compiling plugins/chat_strategy/packages/backend/bin/chat_strategy_backend.dart.',
           'Compiling plugins/openai/packages/backend/bin/openai_model_provider_backend.dart.',
           'Compiling plugins/git_environment/packages/backend/bin/git_environment_backend.dart.',
           'Compiling plugins/agents_md/packages/backend/bin/agents_md_backend.dart.',
@@ -107,7 +115,8 @@ void main() {
         identity: 'remote-context',
         lifecycle: topology.lifecycle,
         contextComposer: topology.contextComposer,
-        sessions: topology.chat.sessions,
+        sessions: topology.chatSession,
+        resolvedStrategy: topology.resolvedStrategy,
         sessionId: topology.sessionId,
         prompt: 'Complete.',
         instructions: 'Respond.',
@@ -116,6 +125,12 @@ void main() {
         maxModelInvocations: 1,
       );
       expect(result.succeeded, isTrue);
+      expect(result.sessionSnapshot.entries.map((entry) => entry.role), [
+        'user',
+        'assistant',
+      ]);
+      expect(result.sessionSnapshot.instructions, 'Respond.');
+      expect(result.sessionSnapshot.maxModelInvocations, 1);
       expect(requests.single.context.sourceResults.single.sourceId, source.id);
       expect(requests.single.instructions, contains(guidance));
       expect(requests.single.instructions, isNot(contains('Project guidance')));
@@ -146,6 +161,117 @@ void main() {
         ),
         reason: 'Command termination must not enable an in-process fallback.',
       );
+      final retainedSnapshot = result.sessionSnapshot;
+      final followUp = await executeDevelopmentSelfHostingRun(
+        identity: 'remote-follow-up',
+        lifecycle: topology.lifecycle,
+        contextComposer: topology.contextComposer,
+        sessions: topology.chatSession,
+        resolvedStrategy: topology.resolvedStrategy,
+        sessionId: topology.sessionId,
+        prompt: 'Continue.',
+        instructions: 'Continue remotely.',
+        model: const _FinalModel(response: 'Continued.'),
+        catalog: withoutCommand,
+        maxModelInvocations: 2,
+      );
+      expect(followUp.succeeded, isTrue);
+      expect(followUp.sessionSnapshot.entries.map((entry) => entry.content), [
+        'Complete.',
+        'Complete.',
+        'Continue.',
+        'Continued.',
+      ]);
+      expect(
+        followUp.sessionSnapshot.entries.take(2).map((entry) => entry.id),
+        retainedSnapshot.entries.map((entry) => entry.id),
+      );
+      expect(retainedSnapshot.entries, hasLength(2));
+      final limited = await executeDevelopmentSelfHostingRun(
+        identity: 'remote-limited',
+        lifecycle: topology.lifecycle,
+        contextComposer: topology.contextComposer,
+        sessions: topology.chatSession,
+        resolvedStrategy: topology.resolvedStrategy,
+        sessionId: topology.sessionId,
+        prompt: 'Exceed the invocation limit.',
+        instructions: 'Use a tool.',
+        model: _AlwaysProposalModel(),
+        catalog: withoutCommand,
+        maxModelInvocations: 1,
+      );
+      expect(limited.exitCode, 1);
+      expect(limited.run.failure, isA<RemoteStrategyFailure>());
+      expect(limited.finalAssistantResponse, isNull);
+      expect(limited.sessionSnapshot.entries, hasLength(5));
+      expect(limited.sessionSnapshot.entries.last.role, 'user');
+      expect(developmentSelfHostingErrorJson(limited.run.failure), {
+        'type': 'RemoteStrategyFailure',
+        'code': 'ModelInvocationLimitExceeded',
+        'message':
+            'ModelInvocationLimitExceeded: Run exceeded 1 model invocations.',
+      });
+      expect(followUp.sessionSnapshot.entries, hasLength(4));
+      final chatRetired = topology.runtime.extensions.changes.firstWhere(
+        (_) => topology.runtime.extensions
+            .discover(orchestrationStrategyContributions)
+            .isEmpty,
+      );
+      await topology.host.stopPlugin(chatStrategyPluginId.value);
+      await chatRetired.timeout(const Duration(seconds: 10));
+      expect(
+        topology.resolvedStrategy.validateBinding,
+        throwsA(isA<StaleExtensionBinding>()),
+      );
+      await expectLater(
+        topology.chatSession.snapshot(topology.sessionId.value),
+        throwsA(isA<PluginConnectionClosed>()),
+      );
+      final replacementConnection = await topology.host.startPlugin(
+        pluginId: chatStrategyPluginId.value,
+        artifactUri: artifacts.chatStrategyArtifact.uri,
+      );
+      final replacement = await PluginBackendActivation.registerAdvertised(
+        connection: replacementConnection,
+        capabilities: topology.registry,
+        extensions: topology.runtime.extensions,
+        adapters: createRemoteExtensionAdapters(),
+      );
+      addTearDown(replacement.close);
+      final replacementStrategy = topology.lifecycle.resolveSessionStrategy(
+        topology.sessionId,
+      );
+      expect(
+        replacement.extensionOrigin(replacementStrategy.binding)?.connection,
+        same(replacementConnection),
+      );
+      final replacementSession = ChatSessionServiceClient(
+        replacementConnection.channelFor(
+          replacementConnection.defaultConfigurationContext,
+          chatSessionServiceId,
+        ),
+      );
+      await expectLater(
+        executeDevelopmentSelfHostingRun(
+          identity: 'stale-chat',
+          lifecycle: topology.lifecycle,
+          contextComposer: topology.contextComposer,
+          sessions: replacementSession,
+          resolvedStrategy: topology.resolvedStrategy,
+          sessionId: topology.sessionId,
+          prompt: 'Must not reach the replacement.',
+          instructions: 'Must not configure the replacement.',
+          model: const _FinalModel(),
+          catalog: withoutCommand,
+          maxModelInvocations: 1,
+        ),
+        throwsA(isA<StaleExtensionBinding>()),
+      );
+      expect(
+        (await replacementSession.snapshot(topology.sessionId.value)).entries,
+        isEmpty,
+      );
+      await replacement.close();
       final closing = topology.close();
       expect(topology.close(), same(closing));
       await closing;
@@ -219,6 +345,19 @@ void main() {
           taskTitle: 'Missing Command must fail without fallback',
           onTaskEstablished: (_) =>
               fail('Must fail before establishing a Task.'),
+        ),
+        throwsA(isA<PluginRemoteFailure>()),
+      );
+      await artifacts.chatStrategyArtifact.delete();
+      await expectLater(
+        DevelopmentSelfHostingTopology.start(
+          artifacts: artifacts,
+          projectSource: git.project,
+          hostEnvironment: const {},
+          identity: 'missing-chat',
+          taskTitle: 'Missing Chat must fail without fallback',
+          includeCommandTools: false,
+          onTaskEstablished: (_) => fail('Chat must start before the Task.'),
         ),
         throwsA(isA<PluginRemoteFailure>()),
       );
@@ -498,7 +637,8 @@ void main() {
           identity: 'retained-first',
           lifecycle: topology.lifecycle,
           contextComposer: topology.contextComposer,
-          sessions: topology.chat.sessions,
+          sessions: topology.chatSession,
+          resolvedStrategy: topology.resolvedStrategy,
           sessionId: topology.session.id,
           prompt: 'First request.',
           instructions: 'First instructions.',
@@ -512,7 +652,8 @@ void main() {
           identity: 'retained-second',
           lifecycle: topology.lifecycle,
           contextComposer: topology.contextComposer,
-          sessions: topology.chat.sessions,
+          sessions: topology.chatSession,
+          resolvedStrategy: topology.resolvedStrategy,
           sessionId: topology.session.id,
           prompt: 'Second request.',
           instructions: 'Second instructions.',
@@ -525,14 +666,9 @@ void main() {
     expect(second.run.state, RunState.completed);
     expect(first.run.id, isNot(second.run.id));
     expect(second.run.sessionId, topology.session.id);
-    expect(second.session, same(first.session));
-    expect(
-      second.session,
-      same(topology.chat.sessions.obtain(topology.session.id)),
-    );
     expect(firstSnapshot.entries, hasLength(2));
     expect(
-      second.session.snapshot().entries.map((entry) => entry.content),
+      second.sessionSnapshot.entries.map((entry) => entry.content),
       <String>['First request.', 'Complete.', 'Second request.', 'Complete.'],
     );
     expect(requests.map((request) => request.instructions), <String>[
@@ -545,7 +681,7 @@ void main() {
       ),
       <String>['First request.', 'Complete.', 'Second request.'],
     );
-    expect(second.session.maxModelInvocations, 2);
+    expect(second.sessionSnapshot.maxModelInvocations, 2);
     expect(
       topology.lifecycle.store.session(topology.session.id),
       same(topology.session),
@@ -567,7 +703,8 @@ void main() {
         identity: identity,
         lifecycle: topology.lifecycle,
         contextComposer: topology.contextComposer,
-        sessions: topology.chat.sessions,
+        sessions: topology.chatSession,
+        resolvedStrategy: topology.resolvedStrategy,
         sessionId: topology.session.id,
         prompt: identity,
         instructions: 'Respond.',
@@ -644,7 +781,6 @@ void main() {
       expect(jsonEncode(secondJournal), secondJournalJson);
       expect(jsonEncode(firstSummary), firstSummaryJson);
       expect(jsonEncode(secondSummary), secondSummaryJson);
-      expect(first.sessionSnapshot.id, topology.session.id);
       expect(
         first.sessionSnapshot.entries.map((entry) => entry.content),
         <String>['first', 'Complete.'],
@@ -658,14 +794,10 @@ void main() {
         ],
       );
       expect(first.finalAssistantResponse, 'Complete.');
-      expect(first.session, same(second.session));
-      expect(first.session, same(third.session));
       expect(
-        first.session,
-        same(topology.chat.sessions.obtain(topology.session.id)),
-      );
-      expect(
-        first.session.snapshot().entries.map((entry) => entry.content),
+        (await topology.chatSession.snapshot(
+          topology.session.id.value,
+        )).entries.map((entry) => entry.content),
         <String>['first', 'Complete.', 'second', 'third', 'Third response.'],
       );
     },
@@ -800,7 +932,7 @@ void main() {
     final DevelopmentSelfHostingRunResult result =
         DevelopmentSelfHostingRunResult(
           run: run,
-          session: session,
+          sessionSnapshot: session.snapshot(),
           finalAssistantResponse: null,
           executionFailure: null,
           executionStackTrace: null,
@@ -875,7 +1007,7 @@ void main() {
       final Map<String, Object?> summary = developmentSelfHostingSummaryJson(
         result: DevelopmentSelfHostingRunResult(
           run: run,
-          session: session,
+          sessionSnapshot: session.snapshot(),
           finalAssistantResponse: null,
           executionFailure: null,
           executionStackTrace: null,
@@ -1669,7 +1801,8 @@ Future<DevelopmentSelfHostingRunResult> _executeRun({
     identity: identity,
     lifecycle: topology.lifecycle,
     contextComposer: topology.contextComposer,
-    sessions: topology.chat.sessions,
+    sessions: topology.chatSession,
+    resolvedStrategy: topology.resolvedStrategy,
     sessionId: topology.session.id,
     prompt: prompt,
     instructions: instructions,

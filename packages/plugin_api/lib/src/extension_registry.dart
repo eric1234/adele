@@ -137,6 +137,11 @@ final class ExtensionBinding<T extends Object> {
 
   ExtensionId get id => _active.id;
 
+  /// Compares registration identity, not discovery wrappers or contribution IDs.
+  /// This does not establish liveness; use [validate] before using a binding.
+  bool isSameRegistration(ExtensionBinding<Object> other) =>
+      identical(_active, other._active);
+
   T get value {
     if (!_active.active) throw StaleExtensionBinding(id);
     final Object value = _active.value;
@@ -160,6 +165,10 @@ final class ExtensionRegistration {
   final _ActiveExtension<Object> _active;
 
   bool get isClosed => !_active.active;
+
+  /// Whether this registration owns the exact binding, including after retirement.
+  bool owns(ExtensionBinding<Object> binding) =>
+      identical(_active, binding._active);
 
   Future<void> close() async => _registry._remove(_active);
 }
