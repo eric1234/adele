@@ -8,9 +8,84 @@ import 'package:test/test.dart';
 
 void main() {
   test(
+    'close blocks new Chat work without changing waiting approval or history',
+    () async {
+      final _Fixture fixture = await _Fixture.create();
+      fixture.host.waitingCalls.add('call-1');
+      await fixture.execution.start();
+      final resolution = fixture.host.approval(true);
+      final history = fixture.state.snapshot();
+      final timeline = List.of(fixture.host.timeline);
+      await fixture.registration.close();
+      final Future<void> closing = fixture.execution.close();
+      expect(fixture.execution.close(), same(closing));
+      await closing;
+      await expectLater(
+        fixture.execution.start(),
+        throwsA(isA<InvalidRunOperation>()),
+      );
+      await expectLater(
+        fixture.execution.resolveApproval(resolution),
+        throwsA(isA<InvalidRunOperation>()),
+      );
+      expect(fixture.host.state, RunState.waiting);
+      expect(fixture.host.timeline, timeline);
+      expect(fixture.state.snapshot().entries, history.entries);
+      expect(fixture.host.proposals, hasLength(1));
+    },
+  );
+
+  test(
+    'close drains local Chat while preserving configuration snapshot and order',
+    () async {
+      final _Fixture fixture = await _Fixture.create(
+        instructions: 'Captured instructions.',
+      );
+      final Completer<void> entered = Completer<void>();
+      final Completer<void> release = Completer<void>();
+      fixture.host.onModel = (material) async {
+        entered.complete();
+        await release.future;
+        return _finalTurn(text: 'Settled answer.');
+      };
+      final Future<void> advancing = fixture.execution.start();
+      await entered.future;
+      fixture.state.instructions = 'Only for the next Run.';
+      bool closed = false;
+      final Future<void> closing = fixture.execution.close();
+      final Future<void> observed = closing.then((_) => closed = true);
+      expect(fixture.execution.close(), same(closing));
+      await expectLater(
+        fixture.execution.start(),
+        throwsA(isA<InvalidRunOperation>()),
+      );
+      expect(closed, isFalse);
+      expect(fixture.host.state, RunState.running);
+      release.complete();
+      await advancing;
+      await observed;
+      expect(fixture.host.state, RunState.completed);
+      expect(
+        fixture.host.requests.single.instructions,
+        '$chatToolNarrationGuidance\n\nCaptured instructions.',
+      );
+      expect(fixture.state.snapshot().entries.map((entry) => entry.content), [
+        'Perform steps.',
+        'Settled answer.',
+      ]);
+      expect(fixture.host.timeline, [
+        'start',
+        'model-1',
+        'validate',
+        'complete',
+      ]);
+    },
+  );
+
+  test(
     'activation contributes executable Chat under its stable identities',
     () async {
-      final _Fixture fixture = _Fixture(
+      final _Fixture fixture = await _Fixture.create(
         turns: <StrategyModelTurn>[_finalTurn()],
       );
 
@@ -44,7 +119,7 @@ void main() {
   test(
     'retired registration cannot materialize or retarget a replacement',
     () async {
-      final _Fixture fixture = _Fixture();
+      final _Fixture fixture = await _Fixture.create();
       await fixture.registration.close();
       final ChatStrategyPlugin replacement = ChatStrategyPlugin();
       final ExtensionRegistration registration = replacement.activate(
@@ -52,7 +127,7 @@ void main() {
       );
       addTearDown(registration.close);
 
-      expect(
+      await expectLater(
         () => fixture.resolved.materialize(fixture.context),
         throwsA(isA<StaleExtensionBinding>()),
       );
@@ -61,7 +136,7 @@ void main() {
       );
       expect(current.binding, isNot(same(fixture.resolved.binding)));
       expect(
-        current.materialize(fixture.context),
+        await current.materialize(fixture.context),
         isA<OrchestrationExecution>(),
       );
       expect(
@@ -74,7 +149,7 @@ void main() {
   test(
     'Chat automatically supplies batch narration guidance, not history entries',
     () async {
-      final _Fixture fixture = _Fixture(
+      final _Fixture fixture = await _Fixture.create(
         turns: <StrategyModelTurn>[_finalTurn()],
       );
 
@@ -112,7 +187,7 @@ void main() {
   ]) {
     test('${instructions.trim().isEmpty ? 'Whitespace-only' : 'Explicit'} '
         'Session instructions retain exact bytes and the protocol', () async {
-      final _Fixture fixture = _Fixture(
+      final _Fixture fixture = await _Fixture.create(
         instructions: instructions,
         turns: <StrategyModelTurn>[_finalTurn()],
       );
@@ -138,7 +213,9 @@ void main() {
     'narration and Session instructions compose normally with an independent source',
     () async {
       const String instructions = '  Use source tools before answering.\r\n';
-      final _Fixture fixture = _Fixture(instructions: instructions);
+      final _Fixture fixture = await _Fixture.create(
+        instructions: instructions,
+      );
       final ExtensionId sourceId = ExtensionId('fixture.independent-source');
       int captures = 0;
       final ExtensionRegistration source = fixture.registry.register(
@@ -219,7 +296,7 @@ void main() {
   test(
     'final text is concatenated in output order before host completion',
     () async {
-      final _Fixture fixture = _Fixture(
+      final _Fixture fixture = await _Fixture.create(
         turns: <StrategyModelTurn>[
           _finalTurn(
             output: <ModelOutputItem>[
@@ -261,7 +338,7 @@ void main() {
       test(
         '$settlement rejects ${whitespace ? 'blank' : 'missing'} final text',
         () async {
-          final _Fixture fixture = _Fixture(
+          final _Fixture fixture = await _Fixture.create(
             turns: <StrategyModelTurn>[
               _finalTurn(
                 settlement: settlement,
@@ -284,7 +361,7 @@ void main() {
     }
 
     test('$settlement validates binding before final history append', () async {
-      final _Fixture fixture = _Fixture(
+      final _Fixture fixture = await _Fixture.create(
         turns: <StrategyModelTurn>[_finalTurn(settlement: settlement)],
       );
       final StateError stale = StateError('Strategy binding retired.');
@@ -300,7 +377,7 @@ void main() {
   }
 
   test('refusal records text and never processes observed proposals', () async {
-    final _Fixture fixture = _Fixture(
+    final _Fixture fixture = await _Fixture.create(
       turns: <StrategyModelTurn>[
         _batchTurn(settlement: ModelSettlement.refused),
       ],
@@ -327,7 +404,7 @@ void main() {
           usage: ModelUsage(inputTokens: 12, outputTokens: 7),
           providerNativeState: _metadata(),
         );
-        final _Fixture fixture = _Fixture(
+        final _Fixture fixture = await _Fixture.create(
           turns: <StrategyModelTurn>[
             _batchTurn(
               settlement: ModelSettlement.incomplete,
@@ -357,7 +434,7 @@ void main() {
     'model failure after multiple proposals remains the original failure',
     () async {
       final StateError failure = StateError('Provider failed.');
-      final _Fixture fixture = _Fixture(
+      final _Fixture fixture = await _Fixture.create(
         turns: <StrategyModelTurn>[
           StrategyModelTurn.failed(
             tools: _Tools(),
@@ -379,7 +456,7 @@ void main() {
   test(
     'three proposals drain sequentially from the exact opaque snapshot',
     () async {
-      final _Fixture fixture = _Fixture();
+      final _Fixture fixture = await _Fixture.create();
 
       await fixture.execution.start();
 
@@ -433,7 +510,7 @@ void main() {
   test(
     'continuation preserves native, proposal-before-text, and outcome order',
     () async {
-      final _Fixture fixture = _Fixture();
+      final _Fixture fixture = await _Fixture.create();
 
       await fixture.execution.start();
 
@@ -490,7 +567,7 @@ void main() {
   test(
     'later proposal and inference wait until prior processing completes',
     () async {
-      final _Fixture fixture = _Fixture();
+      final _Fixture fixture = await _Fixture.create();
       final Completer<void> started = Completer<void>();
       final Completer<void> release = Completer<void>();
       fixture.host.onProposal = (tools, proposal) async {
@@ -518,7 +595,7 @@ void main() {
     test(
       'batch continues after public proposal resolution failure $kind',
       () async {
-        final _Fixture fixture = _Fixture();
+        final _Fixture fixture = await _Fixture.create();
         final SemanticToolProposalFailureInput failure = _proposalFailure(
           'call-2',
           kind,
@@ -561,7 +638,7 @@ void main() {
     test(
       'semantic tool outcome $disposition does not abort the batch',
       () async {
-        final _Fixture fixture = _Fixture();
+        final _Fixture fixture = await _Fixture.create();
         final SemanticToolOutcomeInput outcome = _outcome(
           'call-2',
           disposition: disposition,
@@ -599,7 +676,7 @@ void main() {
     test(
       'host infrastructure failure with $certainty continues unchanged',
       () async {
-        final _Fixture fixture = _Fixture();
+        final _Fixture fixture = await _Fixture.create();
         final StateError cause = StateError('Tool execution failed.');
         final SemanticToolOutcomeInput result = SemanticToolOutcomeInput(
           providerCallId: 'call-2',
@@ -635,7 +712,7 @@ void main() {
     test(
       '${approved ? 'approval' : 'rejection'} drains remainder before inference',
       () async {
-        final _Fixture fixture = _Fixture();
+        final _Fixture fixture = await _Fixture.create();
         fixture.host.waitingCalls.add('call-2');
 
         await fixture.execution.start();
@@ -688,7 +765,7 @@ void main() {
   }
 
   test('approval of one proposal does not approve a later proposal', () async {
-    final _Fixture fixture = _Fixture();
+    final _Fixture fixture = await _Fixture.create();
     fixture.host.waitingCalls.addAll(<String>['call-2', 'call-3']);
     await fixture.execution.start();
     final ToolApprovalResolution first = fixture.host.approval(true);
@@ -715,7 +792,7 @@ void main() {
   test(
     'stale approved outcome and later proposal failure retain the batch',
     () async {
-      final _Fixture fixture = _Fixture();
+      final _Fixture fixture = await _Fixture.create();
       fixture.host.waitingCalls.add('call-2');
       await fixture.execution.start();
       final SemanticToolOutcomeInput stale = _outcome(
@@ -745,7 +822,7 @@ void main() {
     test(
       'invalid ${wrongInterruption ? 'interruption' : 'tool'} identity does not lose pending approval',
       () async {
-        final _Fixture fixture = _Fixture();
+        final _Fixture fixture = await _Fixture.create();
         fixture.host.waitingCalls.add('call-2');
         await fixture.execution.start();
         final ToolApprovalResolution valid = fixture.host.approval(true);
@@ -777,7 +854,7 @@ void main() {
   test(
     'last proposal can pause and resume directly into model continuation',
     () async {
-      final _Fixture fixture = _Fixture();
+      final _Fixture fixture = await _Fixture.create();
       fixture.host.waitingCalls.add('call-3');
       await fixture.execution.start();
       expect(fixture.host.requests, hasLength(1));
@@ -793,7 +870,7 @@ void main() {
   test(
     'final permitted invocation cannot process any proposal in a batch',
     () async {
-      final _Fixture fixture = _Fixture(maxModelInvocations: 1);
+      final _Fixture fixture = await _Fixture.create(maxModelInvocations: 1);
 
       await fixture.execution.start();
 
@@ -815,7 +892,7 @@ void main() {
   test(
     'model budget fails accidental loop before the last batch executes',
     () async {
-      final _Fixture fixture = _Fixture(
+      final _Fixture fixture = await _Fixture.create(
         maxModelInvocations: 2,
         turns: <StrategyModelTurn>[_batchTurn(proposalCount: 1), _batchTurn()],
       );
@@ -843,7 +920,7 @@ void main() {
   test(
     'instructions and budget are captured at materialization, not start',
     () async {
-      final _Fixture fixture = _Fixture(
+      final _Fixture fixture = await _Fixture.create(
         instructions: 'Use source tools before answering.',
         maxModelInvocations: 2,
         turns: <StrategyModelTurn>[_batchTurn(proposalCount: 1), _batchTurn()],
@@ -882,7 +959,7 @@ void main() {
   test(
     'two Runs share canonical Session history but never private Run items',
     () async {
-      final _Fixture fixture = _Fixture(maxModelInvocations: 2);
+      final _Fixture fixture = await _Fixture.create(maxModelInvocations: 2);
       await fixture.execution.start();
       final ChatSessionSnapshot afterFirst = fixture.state.snapshot();
       fixture.plugin.sessions.obtain(SessionId(fixture.session.id.value))
@@ -897,7 +974,7 @@ void main() {
           _finalTurn(text: 'Explained.'),
         ],
       );
-      final OrchestrationExecution second = fixture.resolver
+      final OrchestrationExecution second = await fixture.resolver
           .resolve(fixture.session.strategyId)
           .materialize(
             OrchestrationStrategyHostContext(
@@ -906,6 +983,7 @@ void main() {
             ),
           );
 
+      addTearDown(second.close);
       await second.start();
 
       expect(fixture.host.id, isNot(secondHost.id));
@@ -987,7 +1065,7 @@ void main() {
         presentation: presentation,
       );
       final ModelNativeOutput native = batch.output.first as ModelNativeOutput;
-      final _Fixture fixture = _Fixture(
+      final _Fixture fixture = await _Fixture.create(
         turns: <StrategyModelTurn>[
           batch,
           _finalTurn(
@@ -1041,7 +1119,7 @@ void main() {
         fixture.session.id,
         <StrategyModelTurn>[_finalTurn()],
       );
-      final OrchestrationExecution next = fixture.resolver
+      final OrchestrationExecution next = await fixture.resolver
           .resolve(fixture.session.strategyId)
           .materialize(
             OrchestrationStrategyHostContext(
@@ -1049,6 +1127,7 @@ void main() {
               host: nextHost,
             ),
           );
+      addTearDown(next.close);
       await next.start();
       expect(nextHost.state, RunState.completed);
       final List<SemanticMessageInput> history = nextHost.requests.single.input
@@ -1070,7 +1149,7 @@ void main() {
   test(
     'resume without pending approval and repeated start preserve lifecycle',
     () async {
-      final _Fixture fixture = _Fixture(
+      final _Fixture fixture = await _Fixture.create(
         turns: <StrategyModelTurn>[_finalTurn()],
       );
       final ToolApprovalResolution unrelated = _approval('unrelated', true);
@@ -1101,7 +1180,7 @@ void main() {
     test(
       'reentrant start and resume are rejected during $phase advancement',
       () async {
-        final _Fixture fixture = _Fixture();
+        final _Fixture fixture = await _Fixture.create();
         final Completer<void> entered = Completer<void>();
         final Completer<void> release = Completer<void>();
         Future<void> running;
@@ -1157,7 +1236,7 @@ void main() {
   test(
     'start while waiting and duplicate resolution do not restart a batch',
     () async {
-      final _Fixture fixture = _Fixture();
+      final _Fixture fixture = await _Fixture.create();
       fixture.host.waitingCalls.add('call-2');
       await fixture.execution.start();
       final ToolApprovalResolution resolution = fixture.host.approval(true);
@@ -1184,7 +1263,7 @@ void main() {
     test(
       'unexpected host $phase error fails active Run and is rethrown',
       () async {
-        final _Fixture fixture = _Fixture();
+        final _Fixture fixture = await _Fixture.create();
         final StateError failure = StateError('Host $phase failed.');
         late final Future<void> operation;
         if (phase == 'model') {
@@ -1219,7 +1298,7 @@ void main() {
   test(
     'InvalidRunOperation from host is rethrown without failing the Run',
     () async {
-      final _Fixture fixture = _Fixture();
+      final _Fixture fixture = await _Fixture.create();
       const InvalidRunOperation invalid = InvalidRunOperation(
         'Host cannot advance.',
       );
@@ -1240,7 +1319,7 @@ void main() {
     test(
       'error after host becomes $state does not fail a terminal Run again',
       () async {
-        final _Fixture fixture = _Fixture();
+        final _Fixture fixture = await _Fixture.create();
         final StateError failure = StateError('Host stopped.');
         fixture.host.onModel = (material) async {
           fixture.host.state = state;
@@ -1258,7 +1337,7 @@ void main() {
 }
 
 final class _Fixture {
-  _Fixture({
+  _Fixture._({
     List<StrategyModelTurn>? turns,
     int maxModelInvocations = 8,
     String instructions = '',
@@ -1276,9 +1355,23 @@ final class _Fixture {
     addTearDown(registration.close);
     resolver = OrchestrationStrategyResolver(registry);
     resolved = resolver.resolve(session.strategyId);
-    execution = resolved.materialize(context);
+  }
+
+  static Future<_Fixture> create({
+    List<StrategyModelTurn>? turns,
+    int maxModelInvocations = 8,
+    String instructions = '',
+  }) async {
+    final _Fixture fixture = _Fixture._(
+      turns: turns,
+      maxModelInvocations: maxModelInvocations,
+      instructions: instructions,
+    );
+    fixture.execution = await fixture.resolved.materialize(fixture.context);
+    addTearDown(fixture.execution.close);
     // Execution assertions exclude the resolver's materialization validation.
-    host.timeline.clear();
+    fixture.host.timeline.clear();
+    return fixture;
   }
 
   final ChatStrategyPlugin plugin = ChatStrategyPlugin();

@@ -1043,8 +1043,15 @@ contribution against `KernelOrchestrationHost` via
 `OrchestrationStrategyHostContext(session, host)`. Callers do not supply a
 replacement strategy or construct the strategy loop directly.
 
-The contribution's `materialize` callback returns `OrchestrationExecution` with
-`start` and `resolveApproval`. `OrchestrationExecutionHost` exposes lifecycle
+The contribution's `materialize` callback returns
+`FutureOr<OrchestrationExecution>` with `start`, `resolveApproval`, and idempotent
+async `close`. `createSessionOrchestrationRun` is async and validates the exact
+binding before and after materialization; a stale late result is closed rather
+than returned. `SessionOrchestrationRun` drains active advancement before cleanup,
+including terminal cleanup. `ChatController.close` also closes its current
+execution after draining. Closing a waiting Run does not resolve its interruption
+or fabricate a tool outcome, completion, or canonical assistant message.
+`OrchestrationExecutionHost` exposes lifecycle
 operations and binding validation, `invokeModel(StrategyInferenceMaterial)`,
 `processProposal` using an opaque `StrategyToolSnapshot` and
 `ProviderToolProposal`, and approval resolution returning semantic continuation.
@@ -1074,6 +1081,32 @@ asynchronous settlement. If generation A retires, its active Run fails explicitl
 and cannot advance using B. A later Run in the same Session may freshly resolve B
 under the unchanged semantic strategy ID. Retirement does not imply cancellation
 or rollback of effects already in flight.
+
+`lib/core/remote_orchestration_host.dart` supplies the normal adapter factory's
+`RemoteOrchestrationStrategyAdapter`. Strict ready metadata contains only nonblank
+`strategyId` and opaque `routeId`, with the generated orchestration service ID.
+The existing extension registry/resolver retains its zero/one/ambiguous rules.
+Materialization sends only immutable canonical identities and no host token.
+Each remote start/resume gets a fresh invocation allowlisting only
+`RemoteOrchestrationHostService`, backed by the captured native host. Host calls
+are unary, not client/bidirectional streams or ambient callbacks.
+
+Private execution-owned tables retain exact host snapshots and proposal objects.
+Opaque handles survive a waiting pause but carry no host-service authority;
+fabricated, foreign-generation/execution/snapshot, and consumed proposals fail.
+The reusable backend host proxy maps reconstructed objects by identity and mirrors
+synchronous lifecycle transitions, flushing them before work and settlement.
+Each resume captures the real host approval; reverse `applyCurrentApproval()` has
+no plugin-selected fields and consumes that authorization once. The previous
+start token is unusable throughout the pause and later resume. Retirement cleanup
+releases backend state using only the captured generation's authority-free route.
+
+`remote_orchestration_integration_test.dart` and `remote_orchestration_host_test.dart`
+compile real test AOT backends on the shared host. They cover multi-proposal
+ask/wait/fresh-resume/continuation/completion, release, stale generations, and
+provenance/approval attacks. These are test fixtures, not production plugins.
+Stock Chat and development/self-hosting remain in-process with `runtime.chat` and
+`ChatSessionStore`; normal prepared artifact counts and manifests are unchanged.
 
 Headless stock `chat_strategy_plugin` registers executable Chat under
 `dev.adele.strategy.chat`, distinct from plugin ID

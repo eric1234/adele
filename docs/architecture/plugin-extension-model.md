@@ -308,7 +308,11 @@ canonical ID. `createSessionOrchestrationRun` in the application resolves the
 canonical Session and exact contribution once per Run, then invokes
 materialization against `KernelOrchestrationHost`. The callback receives
 `OrchestrationStrategyHostContext(session, host)` and returns
-`OrchestrationExecution` with `start` and `resolveApproval` entry points.
+`FutureOr<OrchestrationExecution>` with `start`, `resolveApproval`, and idempotent
+async `close` entry points. The application awaits materialization and validates
+the exact binding before and after settlement, closing a stale late execution.
+Cleanup releases resources without resolving waiting approvals or changing Run
+evidence.
 
 `OrchestrationExecutionHost` supplies lifecycle operations and binding validation,
 `invokeModel(StrategyInferenceMaterial)`, `processProposal` against an opaque
@@ -324,6 +328,18 @@ settlement/metadata or failure, and the opaque snapshot. The host accepts a
 proposal only once from its exact completed turn. It applies only the current
 host-supplied approval resolution to the retained invocation, so sequencing does
 not grant a strategy permission to approve itself.
+
+`RemoteOrchestrationStrategyAdapter` now adapts independently installed AOT
+generations into this same point, not a separate strategy registry. Strict
+readiness metadata is only `strategyId` and `routeId`. Public orchestration owns
+separate generated transport and a reusable backend host proxy. Materialization
+has no host authority; each start/resume gets a fresh unary execution-host service
+invocation. Execution-scoped opaque snapshot/proposal handles preserve exact
+semantic data provenance across approval waits but confer no authority. Approval
+is captured by the host for the current resume and applied once with no
+backend-selected fields. Retired executions never retarget a replacement;
+close/retirement releases backend resources. See
+[remote orchestration transport](contracts-and-capabilities.md#remote-orchestration-strategies).
 
 Stock `ChatStrategyPlugin.activate` registers Chat under semantic ID
 `dev.adele.strategy.chat` and extension ID

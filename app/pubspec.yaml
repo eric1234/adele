@@ -36,6 +36,7 @@ dependencies:
   workspace_demo_contract: ^0.1.0
 
 dev_dependencies:
+  adele_plugin_backend_support: ^0.1.0
   command_tools_plugin: ^0.1.0
   file_selector_platform_interface: ^2.7.0
   filesystem_tools_plugin: ^0.1.0

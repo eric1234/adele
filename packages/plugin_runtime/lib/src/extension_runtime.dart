@@ -47,6 +47,7 @@ final class RemoteExtensionContext {
   final AdeleExtensionExposure exposure;
   final ConfigurationContextId configurationContext;
   final Map<PluginHostInvocation, void Function()> _invocations = {};
+  final Set<Future<void> Function()> _retirementCleanup = {};
   ExtensionRegistration? _registration;
   bool _retired = false;
 
@@ -59,6 +60,14 @@ final class RemoteExtensionContext {
   AdeleRequestChannel get channel {
     validate();
     return connection.channelFor(configurationContext, exposure.serviceId);
+  }
+
+  /// Releases adapter-owned resources after authority is revoked. The returned
+  /// callback detaches cleanup when a resource ends before its registration.
+  void Function() onRetire(Future<void> Function() cleanup) {
+    if (_retired) throw StateError('The remote extension is retired.');
+    _retirementCleanup.add(cleanup);
+    return () => _retirementCleanup.remove(cleanup);
   }
 
   /// Authority exists only for this operation and this exact registration.
@@ -173,12 +182,17 @@ final class RemoteExtensionContext {
     return controller.stream;
   }
 
-  void _retire() {
+  Future<void> _retire() {
     _retired = true;
     for (final retire in _invocations.values.toList()) {
       retire();
     }
     _invocations.clear();
+    final cleanup = _retirementCleanup.toList();
+    _retirementCleanup.clear();
+    return Future.wait<void>([
+      for (final close in cleanup) Future<void>.sync(close),
+    ]);
   }
 }
 
@@ -219,18 +233,23 @@ final class PluginExtensionActivation {
       await activation.retire();
       rethrow;
     }
-    unawaited(connection.terminated.then((_) => activation.retire()));
+    unawaited(
+      connection.terminated.then((_) => activation.retire()).catchError((
+        Object _,
+      ) {
+        // Explicit retirement/close still observes the retained cleanup failure.
+      }),
+    );
     return activation;
   }
 
   Future<void> retire() => _retiring ??= _retire();
 
   Future<void> _retire() {
-    for (final context in _contexts) {
-      context._retire();
-    }
+    final cleanup = [for (final context in _contexts) context._retire()];
     // Start every close synchronously, so no binding survives an await here.
     return Future.wait<void>([
+      ...cleanup,
       for (final registration in _registrations.reversed) registration.close(),
     ]);
   }

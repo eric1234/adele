@@ -777,15 +777,16 @@ void main() {
       final ToolCatalog catalog = await ModelToolComposer(
         extensions,
       ).materialize(_NoHostServices(sessionId));
-      final SessionOrchestrationRun strategy = createSessionOrchestrationRun(
-        lifecycle: topology.lifecycle,
-        contextComposer: InferenceContextComposer(extensions),
-        sessionId: session.id,
-        runId: RunId('run-in-flight-retirement'),
-        model: model,
-        toolCatalog: catalog,
-        policy: const _Policy(ToolPolicyDecision.allow),
-      );
+      final SessionOrchestrationRun strategy =
+          await createSessionOrchestrationRun(
+            lifecycle: topology.lifecycle,
+            contextComposer: InferenceContextComposer(extensions),
+            sessionId: session.id,
+            runId: RunId('run-in-flight-retirement'),
+            model: model,
+            toolCatalog: catalog,
+            policy: const _Policy(ToolPolicyDecision.allow),
+          );
       final AgentRun run = strategy.run;
 
       await strategy.start();
@@ -2280,15 +2281,16 @@ void main() {
       final Session session = topology.createSession(selectedId);
       final _Model model = _Model();
       final _Executable executable = _Executable();
-      final SessionOrchestrationRun execution = createSessionOrchestrationRun(
-        lifecycle: topology.lifecycle,
-        contextComposer: InferenceContextComposer(extensions),
-        sessionId: session.id,
-        runId: RunId('routing-run'),
-        model: model,
-        toolCatalog: _catalog(executable),
-        policy: const _Policy(ToolPolicyDecision.allow),
-      );
+      final SessionOrchestrationRun execution =
+          await createSessionOrchestrationRun(
+            lifecycle: topology.lifecycle,
+            contextComposer: InferenceContextComposer(extensions),
+            sessionId: session.id,
+            runId: RunId('routing-run'),
+            model: model,
+            toolCatalog: _catalog(executable),
+            policy: const _Policy(ToolPolicyDecision.allow),
+          );
 
       expect(materialized.single, same(session));
       expect(topology.lifecycle.store.session(session.id), same(session));
@@ -2358,7 +2360,7 @@ void main() {
         }
         final _Model model = _Model();
         final _Executable executable = _Executable();
-        SessionOrchestrationRun create(SessionId id) =>
+        Future<SessionOrchestrationRun> create(SessionId id) =>
             createSessionOrchestrationRun(
               lifecycle: topology.lifecycle,
               contextComposer: InferenceContextComposer(extensions),
@@ -2369,7 +2371,7 @@ void main() {
               policy: const _Policy(ToolPolicyDecision.allow),
             );
 
-        expect(
+        await expectLater(
           () => create(session.id),
           throwsA(
             ambiguous
@@ -2397,7 +2399,7 @@ void main() {
                   ),
           ),
         );
-        expect(
+        await expectLater(
           () => create(SessionId('unpublished-session')),
           throwsStateError,
         );
@@ -2437,7 +2439,7 @@ void main() {
       final _Model modelA = _Model();
       final _Executable executable = _Executable();
       final ToolCatalog catalog = _catalog(executable);
-      final SessionOrchestrationRun runA = createSessionOrchestrationRun(
+      final SessionOrchestrationRun runA = await createSessionOrchestrationRun(
         lifecycle: topology.lifecycle,
         contextComposer: InferenceContextComposer(extensions),
         sessionId: session.id,
@@ -2486,10 +2488,10 @@ void main() {
               id: activatedB.binding.id,
               value: OrchestrationStrategyContribution(
                 strategyId: chatStrategyId,
-                materialize: (OrchestrationStrategyHostContext context) {
+                materialize: (OrchestrationStrategyHostContext context) async {
                   materializedB.add(context.session);
                   return _ObservedExecution(
-                    activatedB.materialize(context),
+                    await activatedB.materialize(context),
                     callbacksB,
                   );
                 },
@@ -2536,7 +2538,7 @@ void main() {
       expect(_events(runA.run).whereType<ToolExecutionStarted>(), isEmpty);
 
       final _Model modelB = _Model();
-      final SessionOrchestrationRun runB = createSessionOrchestrationRun(
+      final SessionOrchestrationRun runB = await createSessionOrchestrationRun(
         lifecycle: topology.lifecycle,
         contextComposer: InferenceContextComposer(extensions),
         sessionId: session.id,
@@ -2602,15 +2604,16 @@ void main() {
         } else {
           executable.beforeTerminal = suspend;
         }
-        final SessionOrchestrationRun execution = createSessionOrchestrationRun(
-          lifecycle: topology.lifecycle,
-          contextComposer: InferenceContextComposer(extensions),
-          sessionId: session.id,
-          runId: RunId('retiring-chat-run'),
-          model: model,
-          toolCatalog: _catalog(executable),
-          policy: const _Policy(ToolPolicyDecision.allow),
-        );
+        final SessionOrchestrationRun execution =
+            await createSessionOrchestrationRun(
+              lifecycle: topology.lifecycle,
+              contextComposer: InferenceContextComposer(extensions),
+              sessionId: session.id,
+              runId: RunId('retiring-chat-run'),
+              model: model,
+              toolCatalog: _catalog(executable),
+              policy: const _Policy(ToolPolicyDecision.allow),
+            );
         final Future<void> running = execution.start();
         await started.future;
         expect(execution.run.state, RunState.running);
@@ -3018,15 +3021,17 @@ final class _BatchFixture {
     final ChatSessionState session = chat.sessions.obtain(productSession.id)
       ..maxModelInvocations = maxModelInvocations
       ..append(ChatUserMessage('Perform steps.'));
-    final SessionOrchestrationRun strategy = createSessionOrchestrationRun(
-      lifecycle: topology.lifecycle,
-      contextComposer: InferenceContextComposer(extensions),
-      sessionId: productSession.id,
-      runId: RunId('batch-run'),
-      model: model,
-      toolCatalog: catalog,
-      policy: _BatchPolicy(decisions, infrastructureFailure),
-    );
+    final SessionOrchestrationRun strategy =
+        await createSessionOrchestrationRun(
+          lifecycle: topology.lifecycle,
+          contextComposer: InferenceContextComposer(extensions),
+          sessionId: productSession.id,
+          runId: RunId('batch-run'),
+          model: model,
+          toolCatalog: catalog,
+          policy: _BatchPolicy(decisions, infrastructureFailure),
+        );
+    addTearDown(strategy.close);
     return _BatchFixture._(session, strategy, catalog, executable, model);
   }
 
@@ -3237,14 +3242,14 @@ Future<_StrategyFixture> _fixture(
   );
   final _Executable executable = _Executable(progress: progress);
   final ToolCatalog catalog = _catalog(executable);
-  return _StrategyFixture(
+  final _StrategyFixture fixture = _StrategyFixture(
     extensions: extensions,
     strategyRegistration: strategyRegistration,
     session: session,
     history: history,
     model: model,
     executable: executable,
-    strategy: createSessionOrchestrationRun(
+    strategy: await createSessionOrchestrationRun(
       lifecycle: topology.lifecycle,
       contextComposer: InferenceContextComposer(extensions),
       sessionId: session.id,
@@ -3254,6 +3259,8 @@ Future<_StrategyFixture> _fixture(
       policy: _Policy(decision),
     ),
   );
+  addTearDown(fixture.strategy.close);
+  return fixture;
 }
 
 final class _StrategyFixture {
@@ -3603,6 +3610,9 @@ final class _CompletingExecution implements OrchestrationExecution {
   final List<String> callbacks;
 
   @override
+  Future<void> close() async {}
+
+  @override
   Future<void> start() async {
     callbacks.add('start');
     host.start();
@@ -3621,6 +3631,9 @@ final class _ObservedExecution implements OrchestrationExecution {
 
   final OrchestrationExecution delegate;
   final List<String> callbacks;
+
+  @override
+  Future<void> close() => delegate.close();
 
   @override
   Future<void> start() {

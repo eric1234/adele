@@ -1028,7 +1028,6 @@ void main() {
       await tester.runAsync(() => artifact.writeAsBytes(program.write()));
       final model = fixture.registerModel();
       final controller = await fixture.createController();
-      addTearDown(controller.close);
       expect(controller.submit('Retain the native action'), isTrue);
       final running = controller.activeRunFuture!;
       final call = await model.callAt(0);
@@ -1170,6 +1169,8 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
       siblingAction();
       expect(inspected, 5);
+      // Await cached execution cleanup before leaving this fake-async zone.
+      await controller.close();
       expect(tester.takeException(), isNull);
     },
   );
@@ -1213,7 +1214,6 @@ bool inspect(String id) => inspectChatActivity(id);
     await tester.runAsync(() => artifact.writeAsBytes(program.write()));
     final model = fixture.registerModel();
     final controller = await fixture.createController();
-    addTearDown(controller.close);
     final inspected = <(RunId, ModelInvocationId)>[];
     final frontend = StockChatFrontend(
       extensions: fixture.runtime.extensions,
@@ -1326,6 +1326,7 @@ bool inspect(String id) => inspectChatActivity(id);
     await tester.pumpWidget(const SizedBox.shrink());
     expect(controller.failure, isNull);
     expect(model.calls, hasLength(1));
+    await controller.close();
     expect(tester.takeException(), isNull);
   });
 
@@ -4128,6 +4129,20 @@ bool inspect(String id) => inspectChatActivity(id);
       expect(controller.submit('Closing cannot start work'), isFalse);
       await closing;
       expect(run.state, RunState.waiting);
+      await expectLater(
+        controller.currentRun!.resolveApproval(
+          ToolApprovalResolution(
+            interruptionId:
+                (run.interruptions.values.single as ToolApprovalInterruption)
+                    .id,
+            toolInvocationId:
+                (run.interruptions.values.single as ToolApprovalInterruption)
+                    .toolInvocationId,
+            approved: true,
+          ),
+        ),
+        throwsA(isA<InvalidRunOperation>()),
+      );
       expect(run.journal.records, journal);
       expect(_events(run).whereType<RunInterruptionResolved>(), isEmpty);
       expect(_events(run).whereType<ToolExecutionStarted>(), isEmpty);
@@ -4193,6 +4208,10 @@ bool inspect(String id) => inspectChatActivity(id);
         await active;
         await closing;
         expect(closed, isTrue);
+        await expectLater(
+          controller.currentRun!.start(),
+          throwsA(isA<InvalidRunOperation>()),
+        );
         expect(run.state, nextApproval ? RunState.waiting : RunState.completed);
         expect(fixture.environment.writeCount, 1);
         expect(fixture.environment.replacements, hasLength(1));
@@ -4300,6 +4319,110 @@ bool inspect(String id) => inspectChatActivity(id);
       },
     );
   }
+
+  test(
+    'controller close drains pending strategy materialization and releases its late execution once',
+    () async {
+      final model = fixture.registerModel();
+      int notifications = 0;
+      int activityNotifications = 0;
+      final controller = await fixture.createController(
+        onChanged: () => notifications++,
+        onActivityChanged: () => activityNotifications++,
+      );
+      final original = fixture.runtime.extensions
+          .discover(orchestrationStrategyContributions)
+          .single;
+      // Only runtime-owned Chat retires; fixture providers/tools stay available.
+      await fixture.runtime.close();
+      final entered = Completer<OrchestrationStrategyHostContext>();
+      final materializing = Completer<OrchestrationExecution>();
+      final execution = _LateMaterializedExecution();
+      final registration = fixture.runtime.extensions.register(
+        point: orchestrationStrategyContributions,
+        id: original.id,
+        value: OrchestrationStrategyContribution(
+          strategyId: chatStrategyId,
+          materialize: (context) {
+            entered.complete(context);
+            return materializing.future;
+          },
+        ),
+      );
+      addTearDown(registration.close);
+      addTearDown(() async {
+        if (!materializing.isCompleted) materializing.complete(execution);
+        if (!execution.release.isCompleted) execution.release.complete();
+        await controller.close();
+      });
+
+      expect(
+        controller.submit('Accepted before materialization settles'),
+        isTrue,
+      );
+      final active = controller.activeRunFuture!;
+      final context = await entered.future;
+      expect(context.session, same(controller.session));
+      expect(context.host.state, RunState.created);
+      expect(materializing.isCompleted, isFalse);
+      expect(controller.currentRun, isNull);
+      final frozen = controller.snapshot;
+      expect(frozen.entries.single, isA<ChatUserMessage>());
+      expect(notifications, 1);
+
+      bool closed = false;
+      final closing = controller.close();
+      final observedClose = closing.then((_) => closed = true);
+      expect(controller.close(), same(closing));
+      expect(controller.isClosed, isTrue);
+      expect(controller.submit('Rejected during materialization'), isFalse);
+      await Future<void>.delayed(Duration.zero);
+      expect(closed, isFalse);
+      expect(controller.activeRunFuture, same(active));
+      expect(execution.startCalls, 0);
+      expect(execution.closeCalls, 0);
+      expect(model.calls, isEmpty);
+
+      materializing.complete(execution);
+      await execution.closing.future;
+      await active;
+      expect(execution.startCalls, 1);
+      expect(execution.closeCalls, 1);
+      expect(controller.activeRunFuture, isNull);
+      expect(closed, isFalse);
+      execution.release.complete();
+      await observedClose;
+      expect(controller.close(), same(closing));
+      await controller.close();
+      expect(execution.closeCalls, 1);
+      expect(closed, isTrue);
+      expect(context.host.state, RunState.created);
+      expect(controller.currentRun, isNull);
+      expect(controller.pendingApproval, isNull);
+      expect(controller.failure, isNull);
+      expect(controller.snapshot, same(frozen));
+      expect(controller.timeline.map((entry) => entry.content), [
+        'Accepted before materialization settles',
+      ]);
+      expect(controller.activitySnapshots, isEmpty);
+      expect(notifications, 1);
+      expect(activityNotifications, 0);
+      expect(
+        fixture.runtime.chat.sessions
+            .obtain(controller.session.id)
+            .snapshot()
+            .entries,
+        orderedEquals(frozen.entries),
+      );
+      expect(fixture.runIds.values, [context.host.id]);
+      expect(model.calls, isEmpty);
+      expect(fixture.environment.reads, isEmpty);
+      expect(fixture.environment.directories, isEmpty);
+      expect(fixture.environment.replacements, isEmpty);
+      expect(fixture.environment.processes, isEmpty);
+      expect(fixture.environment.sourceText, _EnvironmentChannel.initialText);
+    },
+  );
 
   for (final bool duringPreparation in <bool>[false, true]) {
     for (final bool fails in <bool>[false, true]) {
@@ -4527,6 +4650,29 @@ final class _Fixture {
     await _command.close();
     await _filesystem.close();
     await runtime.close();
+  }
+}
+
+final class _LateMaterializedExecution implements OrchestrationExecution {
+  final closing = Completer<void>();
+  final release = Completer<void>();
+  int startCalls = 0;
+  int closeCalls = 0;
+
+  @override
+  Future<void> start() async {
+    // Stay nonterminal so automatic terminal release cannot satisfy this test.
+    startCalls++;
+  }
+
+  @override
+  Future<void> resolveApproval(ToolApprovalResolution resolution) =>
+      throw StateError('This execution does not request approval.');
+
+  @override
+  Future<void> close() {
+    if (closeCalls++ == 0) closing.complete();
+    return release.future;
   }
 }
 

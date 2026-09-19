@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart' as product;
@@ -307,9 +309,10 @@ void main() {
       ),
     );
 
-    final OrchestrationExecution materialized = OrchestrationStrategyResolver(
-      registry,
-    ).resolve(strategyId).materialize(context);
+    final OrchestrationExecution materialized =
+        await OrchestrationStrategyResolver(
+          registry,
+        ).resolve(strategyId).materialize(context);
 
     expect(materialized, same(execution));
     expect(received, same(context));
@@ -328,7 +331,7 @@ void main() {
     expect(host.resolution, same(resolution));
   });
 
-  test('wrong strategy never reaches the contribution factory', () {
+  test('wrong strategy never reaches the contribution factory', () async {
     final ExtensionRegistry registry = ExtensionRegistry();
     int calls = 0;
     registry.register(
@@ -349,7 +352,7 @@ void main() {
           host: _TestHost(session.id),
         );
 
-    expect(
+    await expectLater(
       () => OrchestrationStrategyResolver(
         registry,
       ).resolve(strategyId).materialize(context),
@@ -395,13 +398,13 @@ void main() {
       ),
     );
 
-    expect(
+    await expectLater(
       () => original.materialize(context),
       throwsA(isA<StaleExtensionBinding>()),
     );
     expect(originalCalls, 0);
     expect(replacementCalls, 0);
-    resolver.resolve(strategyId).materialize(context);
+    await resolver.resolve(strategyId).materialize(context);
     expect(replacementCalls, 1);
   });
 
@@ -427,7 +430,7 @@ void main() {
       ),
     );
 
-    expect(
+    await expectLater(
       () => OrchestrationStrategyResolver(
         registry,
       ).resolve(strategyId).materialize(context),
@@ -436,7 +439,7 @@ void main() {
     await retirement;
   });
 
-  test('host identity is rechecked before and after the factory', () {
+  test('host identity is rechecked before and after the factory', () async {
     for (final bool changeDuringFactory in <bool>[false, true]) {
       final ExtensionRegistry registry = ExtensionRegistry();
       final Session session = _session(strategyId);
@@ -458,7 +461,7 @@ void main() {
       );
       if (!changeDuringFactory) host.sessionId = SessionId('another-session');
 
-      expect(
+      await expectLater(
         () => OrchestrationStrategyResolver(
           registry,
         ).resolve(strategyId).materialize(context),
@@ -468,7 +471,7 @@ void main() {
     }
   });
 
-  test('host binding is validated before and after the factory', () {
+  test('host binding is validated before and after the factory', () async {
     for (final bool retireDuringFactory in <bool>[false, true]) {
       final ExtensionRegistry registry = ExtensionRegistry();
       final Session session = _session(strategyId);
@@ -491,7 +494,7 @@ void main() {
       );
       if (!retireDuringFactory) host.bindingFailure = failure;
 
-      expect(
+      await expectLater(
         () => OrchestrationStrategyResolver(
           registry,
         ).resolve(strategyId).materialize(context),
@@ -501,7 +504,7 @@ void main() {
     }
   });
 
-  test('factory failures propagate without fallback', () {
+  test('factory failures propagate without fallback', () async {
     final ExtensionRegistry registry = ExtensionRegistry();
     final Session session = _session(strategyId);
     final StateError failure = StateError('materialization failed');
@@ -514,7 +517,7 @@ void main() {
       ),
     );
 
-    expect(
+    await expectLater(
       () => OrchestrationStrategyResolver(registry)
           .resolve(strategyId)
           .materialize(
@@ -526,6 +529,133 @@ void main() {
       throwsA(same(failure)),
     );
   });
+
+  test('async materialization validates again only after settlement', () async {
+    final ExtensionRegistry registry = ExtensionRegistry();
+    final Session session = _session(strategyId);
+    final _TestHost host = _TestHost(session.id);
+    final _TestExecution execution = _TestExecution(host);
+    final Completer<OrchestrationExecution> ready = Completer();
+    registry.register(
+      point: orchestrationStrategyContributions,
+      id: extensionId,
+      value: OrchestrationStrategyContribution(
+        strategyId: strategyId,
+        materialize: (_) => ready.future,
+      ),
+    );
+    final Future<OrchestrationExecution> pending =
+        OrchestrationStrategyResolver(registry)
+            .resolve(strategyId)
+            .materialize(
+              OrchestrationStrategyHostContext(session: session, host: host),
+            );
+    expect(host.validations, 1);
+    expect(host.state, RunState.created);
+    ready.complete(execution);
+    expect(await pending, same(execution));
+    expect(host.validations, 2);
+    expect(execution.closeCalls, 0);
+    await execution.close();
+  });
+
+  for (final bool hostRetires in [false, true]) {
+    for (final bool cleanupFails in [false, true]) {
+      test(
+        'late materialization closes stale ${hostRetires ? 'host' : 'strategy'} '
+        'allocation, preserving validation when cleanup fails=$cleanupFails',
+        () async {
+          final ExtensionRegistry registry = ExtensionRegistry();
+          final Session session = _session(strategyId);
+          final _TestHost host = _TestHost(session.id);
+          final StateError primary = StateError('host retired');
+          final Completer<OrchestrationExecution> ready = Completer();
+          final Completer<void> release = Completer();
+          final _TestExecution execution = _TestExecution(host)
+            ..onClose = () => release.future;
+          final ExtensionRegistration registration = registry.register(
+            point: orchestrationStrategyContributions,
+            id: extensionId,
+            value: OrchestrationStrategyContribution(
+              strategyId: strategyId,
+              materialize: (_) => ready.future,
+            ),
+          );
+          final Future<OrchestrationExecution> pending =
+              OrchestrationStrategyResolver(registry)
+                  .resolve(strategyId)
+                  .materialize(
+                    OrchestrationStrategyHostContext(
+                      session: session,
+                      host: host,
+                    ),
+                  );
+          bool settled = false;
+          final Future<void> checked = expectLater(
+            pending.whenComplete(() => settled = true),
+            throwsA(hostRetires ? same(primary) : isA<StaleExtensionBinding>()),
+          );
+          if (hostRetires) {
+            host.bindingFailure = primary;
+          } else {
+            await registration.close();
+            registry.register(
+              point: orchestrationStrategyContributions,
+              id: extensionId,
+              value: OrchestrationStrategyContribution(
+                strategyId: strategyId,
+                materialize: (_) => throw StateError('Must not migrate'),
+              ),
+            );
+          }
+          ready.complete(execution);
+          await Future<void>.delayed(Duration.zero);
+          expect(execution.closeCalls, 1);
+          expect(settled, isFalse);
+          if (cleanupFails) {
+            release.completeError(StateError('cleanup failed'));
+          } else {
+            release.complete();
+          }
+          await checked;
+          expect(host.state, RunState.created);
+          expect(execution.closeCalls, 1);
+        },
+      );
+    }
+  }
+
+  test(
+    'async factory failure preserves its error without substitution',
+    () async {
+      final ExtensionRegistry registry = ExtensionRegistry();
+      final Session session = _session(strategyId);
+      final StateError failure = StateError('async allocation failed');
+      final Completer<OrchestrationExecution> ready = Completer();
+      final ExtensionRegistration registration = registry.register(
+        point: orchestrationStrategyContributions,
+        id: extensionId,
+        value: OrchestrationStrategyContribution(
+          strategyId: strategyId,
+          materialize: (_) => ready.future,
+        ),
+      );
+      final Future<void> checked = expectLater(
+        OrchestrationStrategyResolver(registry)
+            .resolve(strategyId)
+            .materialize(
+              OrchestrationStrategyHostContext(
+                session: session,
+                host: _TestHost(session.id),
+              ),
+            ),
+        throwsA(same(failure)),
+      );
+      await registration.close();
+      ready.completeError(failure);
+      await checked;
+    },
+  );
 }
 
 Session _session(OrchestrationStrategyId strategyId) => Session(
@@ -538,9 +668,18 @@ OrchestrationExecution _materialize(OrchestrationStrategyHostContext context) =>
     _TestExecution(context.host);
 
 final class _TestExecution implements OrchestrationExecution {
-  const _TestExecution(this.host);
+  _TestExecution(this.host);
 
   final OrchestrationExecutionHost host;
+  int closeCalls = 0;
+  Future<void> Function()? onClose;
+  Future<void>? _closing;
+
+  @override
+  Future<void> close() => _closing ??= Future<void>.sync(() async {
+    closeCalls++;
+    await onClose?.call();
+  });
 
   @override
   Future<void> start() async {

@@ -9,6 +9,172 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/orchestration_test_lifecycle.dart';
 
 void main() {
+  test('async native materialization keeps host authority disabled', () async {
+    final Completer<void> entered = Completer<void>();
+    final Completer<void> release = Completer<void>();
+    late OrchestrationExecutionHost host;
+    bool published = false;
+    final Future<_Fixture> creating =
+        _Fixture.create(
+          duringMaterialize: (value) async {
+            host = value;
+            entered.complete();
+            await release.future;
+            expect(host.start, throwsA(isA<InvalidRunOperation>()));
+          },
+        ).then((value) {
+          published = true;
+          return value;
+        });
+    await entered.future;
+    expect(published, isFalse);
+    expect(host.state, RunState.created);
+    expect(host.start, throwsA(isA<InvalidRunOperation>()));
+    release.complete();
+    final _Fixture fixture = await creating;
+    expect(fixture.run.journal.records, isEmpty);
+    await fixture.strategy.close();
+    expect(fixture.execution.closeCalls, 1);
+  });
+
+  for (final bool waiting in [false, true]) {
+    test(
+      'close releases ${waiting ? 'waiting' : 'unstarted'} execution exactly '
+      'once without changing evidence or approvals',
+      () async {
+        final _Fixture fixture = await _Fixture.create();
+        if (waiting) await fixture.strategy.start();
+        final RunState state = fixture.run.state;
+        final records = fixture.run.journal.records;
+        final interruptions = Map.of(fixture.run.interruptions);
+        final resolution = waiting
+            ? _decision(fixture.run, true)
+            : ToolApprovalResolution(
+                interruptionId: RunInterruptionId('unused'),
+                toolInvocationId: ToolInvocationId('unused'),
+                approved: true,
+              );
+        final Completer<void> release = Completer<void>();
+        fixture.execution.onClose = () => release.future;
+        await fixture.registration.close();
+        final Future<void> closing = fixture.strategy.close();
+        expect(fixture.strategy.close(), same(closing));
+        await expectLater(
+          fixture.strategy.start(),
+          throwsA(isA<InvalidRunOperation>()),
+        );
+        await expectLater(
+          fixture.strategy.resolveApproval(resolution),
+          throwsA(isA<InvalidRunOperation>()),
+        );
+        expect(fixture.execution.closeCalls, 1);
+        expect(
+          () => fixture.execution.host.fail(StateError('cleanup mutation')),
+          throwsA(isA<InvalidRunOperation>()),
+        );
+        release.complete();
+        await closing;
+        expect(fixture.strategy.close(), same(closing));
+        expect(fixture.run.state, state);
+        expect(fixture.run.journal.records, orderedEquals(records));
+        expect(fixture.run.interruptions, interruptions);
+        expect(fixture.execution.approvalCalls, 0);
+        expect(fixture.tool.executions, 0);
+      },
+    );
+  }
+
+  for (final bool resume in [false, true]) {
+    test(
+      'close drains active ${resume ? 'approval' : 'start'} before forwarding '
+      'cleanup, retaining settlement evidence',
+      () async {
+        final _Fixture fixture = await _Fixture.create();
+        if (resume) await fixture.strategy.start();
+        final Completer<void> entered = Completer<void>();
+        final Completer<void> release = Completer<void>();
+        Future<void> suspend() async {
+          entered.complete();
+          await release.future;
+        }
+
+        if (resume) {
+          fixture.tool.beforeTerminal = suspend;
+        } else {
+          fixture.model.beforeSettlement = suspend;
+        }
+        final Future<void> advancing = resume
+            ? fixture.strategy.resolveApproval(_decision(fixture.run, true))
+            : fixture.strategy.start();
+        await entered.future;
+        final records = fixture.run.journal.records;
+        bool closed = false;
+        final Future<void> closing = fixture.strategy.close();
+        final Future<void> observed = closing.then((_) => closed = true);
+        expect(fixture.strategy.close(), same(closing));
+        await expectLater(
+          fixture.strategy.start(),
+          throwsA(isA<InvalidRunOperation>()),
+        );
+        expect(closed, isFalse);
+        expect(fixture.execution.closeCalls, 0);
+        expect(fixture.run.journal.records, orderedEquals(records));
+        release.complete();
+        await advancing;
+        await observed;
+        expect(fixture.execution.closeCalls, 1);
+        expect(
+          fixture.run.state,
+          resume ? RunState.completed : RunState.waiting,
+        );
+        expect(
+          fixture.events.whereType<ModelInvocationSettled>(),
+          hasLength(1),
+        );
+        expect(
+          fixture.events.whereType<ToolExecutionCompleted>(),
+          hasLength(resume ? 1 : 0),
+        );
+        expect(fixture.events.whereType<RunFailed>(), isEmpty);
+        expect(fixture.run.interruptions, resume ? isEmpty : hasLength(1));
+      },
+    );
+  }
+
+  for (final bool fails in [false, true]) {
+    test('terminal ${fails ? 'failure' : 'success'} releases automatically and '
+        'retains cleanup failure only on close', () async {
+      final _Fixture fixture = await _Fixture.create();
+      final StateError primary = StateError('advancement failed');
+      final StateError cleanup = StateError('cleanup failed');
+      fixture.execution.onClose = () async => throw cleanup;
+      await fixture.strategy.start();
+      expect(fixture.execution.closeCalls, 0);
+      if (fails) {
+        fixture.execution.completeOnApproval = false;
+        fixture.execution.beforeReturn = () async => throw primary;
+      }
+      final Future<void> advancing = fixture.strategy.resolveApproval(
+        _decision(fixture.run, true),
+      );
+      if (fails) {
+        await expectLater(advancing, throwsA(same(primary)));
+      } else {
+        await advancing;
+      }
+      expect(fixture.execution.closeCalls, 1);
+      expect(fixture.run.state, fails ? RunState.failed : RunState.completed);
+      expect(fixture.run.failure, fails ? same(primary) : isNull);
+      final records = fixture.run.journal.records;
+      final Future<void> closing = fixture.strategy.close();
+      expect(fixture.strategy.close(), same(closing));
+      await expectLater(closing, throwsA(same(cleanup)));
+      await expectLater(fixture.strategy.close(), throwsA(same(cleanup)));
+      expect(fixture.execution.closeCalls, 1);
+      expect(fixture.run.journal.records, orderedEquals(records));
+    });
+  }
+
   for (final bool foreign in <bool>[true, false]) {
     test(
       'escaped ${foreign ? 'foreign' : 'used'} snapshot error fails the active Run with evidence',
@@ -125,7 +291,7 @@ void main() {
           isA<InvalidRunOperation>().having(
             (InvalidRunOperation error) => error.message,
             'activation guard',
-            contains('before its wrapper starts'),
+            contains('outside active strategy advancement'),
           ),
         );
         void probe(OrchestrationExecutionHost host) {
@@ -272,6 +438,7 @@ void main() {
       );
 
       expect(fixture.execution.startCalls, 0);
+      expect(fixture.execution.closeCalls, 1);
       expect(fixture.run.state, RunState.created);
       expect(fixture.run.failure, isNull);
       expect(fixture.run.journal.records, isEmpty);
@@ -488,6 +655,14 @@ void main() {
         );
         final Completer<void> entered = Completer<void>();
         final Completer<void> release = Completer<void>();
+        final Completer<void> cleanupEntered = Completer<void>();
+        final StateError cleanupFailure = StateError('Detached cleanup failed');
+        late List<ExecutionEventRecord> cleanupEvidence;
+        fixture.execution.onClose = () async {
+          cleanupEvidence = fixture.run.journal.records;
+          cleanupEntered.complete();
+          throw cleanupFailure;
+        };
         Future<void> suspend() async {
           entered.complete();
           await release.future;
@@ -535,6 +710,7 @@ void main() {
         );
         expect(fixture.events.whereType<ToolExecutionCompleted>(), isEmpty);
         expect(fixture.events.whereType<RunFailed>(), isEmpty);
+        expect(fixture.execution.closeCalls, 0);
         await expectLater(
           fixture.strategy.start(),
           throwsA(isA<InvalidRunOperation>()),
@@ -542,6 +718,7 @@ void main() {
         expect(fixture.run.journal.records, orderedEquals(inFlight));
         release.complete();
         await mechanics;
+        await cleanupEntered.future.timeout(const Duration(seconds: 1));
 
         expect(fixture.run.state, RunState.failed);
         expect(fixture.run.failure, same(misuse));
@@ -575,6 +752,99 @@ void main() {
             EffectCertainty.knownOccurred,
           );
         }
+        expect(cleanupEvidence, orderedEquals(fixture.run.journal.records));
+        expect(fixture.execution.closeCalls, 1);
+        final Future<void> closing = fixture.strategy.close();
+        expect(fixture.strategy.close(), same(closing));
+        await expectLater(closing, throwsA(same(cleanupFailure)));
+        await expectLater(
+          fixture.strategy.close(),
+          throwsA(same(cleanupFailure)),
+        );
+        expect(fixture.execution.closeCalls, 1);
+        expect(fixture.run.failure, same(misuse));
+        expect(fixture.run.journal.records, orderedEquals(cleanupEvidence));
+      },
+    );
+
+    test(
+      'close drains detached ${duringModel ? 'model' : 'tool'} after strategy callback settles, then releases exactly once',
+      () async {
+        final _Fixture fixture = await _Fixture.create(
+          decision: ToolPolicyDecision.allow,
+        );
+        final Completer<void> entered = Completer<void>();
+        final Completer<void> release = Completer<void>();
+        final Completer<void> cleanupEntered = Completer<void>();
+        final Completer<void> cleanupRelease = Completer<void>();
+        late List<ExecutionEventRecord> cleanupEvidence;
+        fixture.execution.onClose = () async {
+          cleanupEvidence = fixture.run.journal.records;
+          cleanupEntered.complete();
+          await cleanupRelease.future;
+        };
+        Future<void> suspend() async {
+          entered.complete();
+          await release.future;
+        }
+
+        late Future<Object> mechanics;
+        fixture.execution.beforeReturn = () async {
+          final host = fixture.execution.host;
+          final material = StrategyInferenceMaterial(input: const []);
+          if (duringModel) {
+            fixture.model.beforeSettlement = suspend;
+            mechanics = host.invokeModel(material);
+          } else {
+            final turn = await host.invokeModel(material);
+            fixture.tool.beforeTerminal = suspend;
+            mechanics = host.processProposal(
+              tools: turn.tools,
+              proposal:
+                  (turn.output.single as ModelToolProposalOutput).proposal,
+            );
+          }
+          await entered.future;
+        };
+
+        await fixture.strategy.start();
+        final records = fixture.run.journal.records;
+        bool closed = false;
+        final Future<void> closing = fixture.strategy.close();
+        final Future<void> observed = closing.then((_) => closed = true);
+        expect(fixture.strategy.close(), same(closing));
+        await Future<void>.delayed(Duration.zero);
+        expect(closed, isFalse);
+        expect(fixture.execution.closeCalls, 0);
+        expect(fixture.run.journal.records, orderedEquals(records));
+        await expectLater(
+          fixture.strategy.start(),
+          throwsA(isA<InvalidRunOperation>()),
+        );
+
+        release.complete();
+        await mechanics;
+        await cleanupEntered.future.timeout(const Duration(seconds: 1));
+        expect(fixture.execution.closeCalls, 1);
+        expect(closed, isFalse);
+        expect(fixture.strategy.close(), same(closing));
+        expect(fixture.run.state, RunState.running);
+        expect(fixture.run.failure, isNull);
+        expect(fixture.execution.approvalCalls, 0);
+        expect(
+          fixture.events.skip(records.length).map((event) => event.runtimeType),
+          [duringModel ? ModelInvocationSettled : ToolExecutionCompleted],
+        );
+        expect(cleanupEvidence, orderedEquals(fixture.run.journal.records));
+
+        cleanupRelease.complete();
+        await observed;
+        expect(closed, isTrue);
+        expect(fixture.strategy.close(), same(closing));
+        await fixture.strategy.close();
+        expect(fixture.execution.closeCalls, 1);
+        expect(fixture.run.state, RunState.running);
+        expect(fixture.run.journal.records, orderedEquals(cleanupEvidence));
       },
     );
 
@@ -810,7 +1080,7 @@ final class _Fixture {
 
   static Future<_Fixture> create({
     ToolPolicyDecision decision = ToolPolicyDecision.ask,
-    void Function(OrchestrationExecutionHost)? duringMaterialize,
+    FutureOr<void> Function(OrchestrationExecutionHost)? duringMaterialize,
     _Model? model,
     _Tool? tool,
   }) async {
@@ -821,8 +1091,8 @@ final class _Fixture {
       id: _extensionId,
       value: OrchestrationStrategyContribution(
         strategyId: _strategyId,
-        materialize: (OrchestrationStrategyHostContext context) {
-          duringMaterialize?.call(context.host);
+        materialize: (OrchestrationStrategyHostContext context) async {
+          await duringMaterialize?.call(context.host);
           return execution = _Execution(context.host);
         },
       ),
@@ -836,15 +1106,16 @@ final class _Fixture {
     final Session session = topology.createSession(_strategyId);
     model ??= _Model();
     tool ??= _Tool();
-    final SessionOrchestrationRun strategy = createSessionOrchestrationRun(
-      lifecycle: topology.lifecycle,
-      contextComposer: InferenceContextComposer(extensions),
-      sessionId: session.id,
-      runId: RunId('run-authority'),
-      model: model,
-      toolCatalog: _catalog(tool),
-      policy: _Policy(decision),
-    );
+    final SessionOrchestrationRun strategy =
+        await createSessionOrchestrationRun(
+          lifecycle: topology.lifecycle,
+          contextComposer: InferenceContextComposer(extensions),
+          sessionId: session.id,
+          runId: RunId('run-authority'),
+          model: model,
+          toolCatalog: _catalog(tool),
+          policy: _Policy(decision),
+        );
     return _Fixture._(
       extensions,
       registration,
@@ -877,6 +1148,9 @@ final class _Execution implements OrchestrationExecution {
   bool completeOnApproval = true;
   int startCalls = 0;
   int approvalCalls = 0;
+  int closeCalls = 0;
+  Future<void> Function()? onClose;
+  Future<void>? _closing;
   late StrategyModelTurn turn;
 
   @override
@@ -902,6 +1176,14 @@ final class _Execution implements OrchestrationExecution {
     );
     if (completeOnApproval) host.complete();
     await beforeReturn?.call();
+  }
+
+  @override
+  Future<void> close() {
+    closeCalls++;
+    return _closing ??= Future<void>.sync(() async {
+      await onClose?.call();
+    });
   }
 }
 

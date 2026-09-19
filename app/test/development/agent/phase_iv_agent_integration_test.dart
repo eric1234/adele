@@ -123,7 +123,7 @@ void main() {
               providerId: basicResourceInspectorProviderId,
             ),
           );
-      final _RunFixture happy = _runFixture(
+      final _RunFixture happy = await _runFixture(
         id: 'happy',
         userContent: 'Inspect the Phase IV resource.',
         model: happyModel,
@@ -219,7 +219,7 @@ void main() {
               providerId: basicResourceInspectorProviderId,
             ),
           );
-      final _RunFixture rejected = _runFixture(
+      final _RunFixture rejected = await _runFixture(
         id: 'rejected',
         userContent: 'Reject the inspection.',
         model: ModelProviderCapabilityAdapter(
@@ -275,7 +275,7 @@ void main() {
               providerId: basicResourceInspectorProviderId,
             ),
           );
-      final _RunFixture staleToolRun = _runFixture(
+      final _RunFixture staleToolRun = await _runFixture(
         id: 'stale-tool',
         userContent: 'Restart the tool before approval.',
         model: ModelProviderCapabilityAdapter(
@@ -362,7 +362,7 @@ void main() {
         modelRestartTool.registration,
         closeModelAfterTool,
       );
-      final _RunFixture staleModelRun = _runFixture(
+      final _RunFixture staleModelRun = await _runFixture(
         id: 'stale-model',
         userContent: 'Restart the model after tool completion.',
         model: staleModel,
@@ -400,7 +400,7 @@ void main() {
         hasLength(1),
       );
 
-      final _RunFixture fresh = _runFixture(
+      final _RunFixture fresh = await _runFixture(
         id: 'fresh',
         userContent: 'Use restarted provider generations.',
         model: replacementModel,
@@ -427,7 +427,7 @@ void main() {
               providerId: basicResourceInspectorProviderId,
             ),
           );
-      final _RunFixture containedFailure = _runFixture(
+      final _RunFixture containedFailure = await _runFixture(
         id: 'contained-failure',
         userContent: 'fixture:tool-domain-failure',
         model: ModelProviderCapabilityAdapter(
@@ -481,19 +481,19 @@ void main() {
   );
 }
 
-_RunFixture _runFixture({
+Future<_RunFixture> _runFixture({
   required String id,
   required String userContent,
   required ModelPort model,
   required ToolRegistration registration,
-}) {
+}) async {
   final ChatTestTopology topology = ChatTestTopology(SessionId('session-$id'));
   addTearDown(topology.close);
   final ChatSessionState session = topology.chat.sessions.obtain(
     topology.session.id,
   )..append(ChatUserMessage(userContent));
   final ToolCatalog catalog = ToolCatalog()..register(registration);
-  final SessionOrchestrationRun strategy = createSessionOrchestrationRun(
+  final SessionOrchestrationRun strategy = await createSessionOrchestrationRun(
     lifecycle: topology.lifecycle,
     sessionId: topology.session.id,
     runId: RunId('run-$id'),
@@ -502,6 +502,7 @@ _RunFixture _runFixture({
     toolCatalog: catalog,
     policy: const DevelopmentToolPolicy(ToolPolicyDecision.ask),
   );
+  addTearDown(strategy.close);
   return _RunFixture(session: session, run: strategy.run, strategy: strategy);
 }
 

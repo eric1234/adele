@@ -5,11 +5,13 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import 'remote_model_tool_host.dart';
+import 'remote_orchestration_host.dart';
 
 RemoteExtensionAdapterRegistry createRemoteExtensionAdapters() =>
     RemoteExtensionAdapterRegistry([
       const RemoteInferenceContextSourceAdapter(),
       const RemoteModelToolAdapter(),
+      const RemoteOrchestrationStrategyAdapter(),
     ]);
 
 /// Transport adaptation only; composition policy stays in the public composer.

@@ -1,6 +1,8 @@
 /// Public provider-neutral ADELE orchestration strategy execution API.
 library;
 
+import 'dart:async';
+
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 
@@ -46,7 +48,9 @@ final class OrchestrationStrategyContribution {
 
   /// Constructs an execution without starting Run or model/tool work. The host
   /// keeps execution disabled until the application enters the returned execution.
-  final OrchestrationExecution Function(OrchestrationStrategyHostContext)
+  final FutureOr<OrchestrationExecution> Function(
+    OrchestrationStrategyHostContext,
+  )
   materialize;
 }
 
@@ -54,6 +58,12 @@ abstract interface class OrchestrationExecution {
   Future<void> start();
 
   Future<void> resolveApproval(ToolApprovalResolution resolution);
+
+  /// Idempotently releases this execution after active advancement settles.
+  /// Prevents subsequent advancement without resolving approvals, changing Run
+  /// evidence, or deleting strategy-owned Session state. Cleanup remains valid
+  /// after binding retirement; repeated calls share completion or failure.
+  Future<void> close();
 }
 
 final class OrchestrationStrategyHostContext {
@@ -190,9 +200,12 @@ final class ResolvedOrchestrationStrategy {
 
   void validateBinding() => binding.validate();
 
-  /// Validates materialization; callers also guard the returned execution's
-  /// entrypoints with this exact binding.
-  OrchestrationExecution materialize(OrchestrationStrategyHostContext context) {
+  /// Validates before allocation and after asynchronous settlement. A rejected
+  /// allocation is closed without replacing the validation failure. Callers also
+  /// guard the returned execution's entrypoints with this exact binding.
+  Future<OrchestrationExecution> materialize(
+    OrchestrationStrategyHostContext context,
+  ) async {
     void validateContext() {
       validateBinding();
       if (context.session.strategyId != strategyId) {
@@ -205,8 +218,19 @@ final class ResolvedOrchestrationStrategy {
     }
 
     validateContext();
-    final OrchestrationExecution execution = contribution.materialize(context);
-    validateContext();
+    final OrchestrationExecution execution = await contribution.materialize(
+      context,
+    );
+    try {
+      validateContext();
+    } on Object {
+      try {
+        await execution.close();
+      } on Object {
+        // A newly allocated stale execution must not mask validation failure.
+      }
+      rethrow;
+    }
     return execution;
   }
 }

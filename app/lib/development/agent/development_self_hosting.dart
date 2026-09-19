@@ -640,7 +640,7 @@ Future<DevelopmentSelfHostingRunResult> executeDevelopmentSelfHostingRun({
     ..maxModelInvocations = maxModelInvocations
     ..append(ChatUserMessage(prompt));
   final int initialEntryCount = session.snapshot().entries.length;
-  final SessionOrchestrationRun execution = createSessionOrchestrationRun(
+  final SessionOrchestrationRun execution = await createSessionOrchestrationRun(
     lifecycle: lifecycle,
     contextComposer: contextComposer,
     sessionId: sessionId,
@@ -656,6 +656,12 @@ Future<DevelopmentSelfHostingRunResult> executeDevelopmentSelfHostingRun({
   } on Object catch (error, stackTrace) {
     executionFailure = error;
     executionStackTrace = stackTrace;
+  }
+  try {
+    await execution.close();
+  } on Object catch (error, stackTrace) {
+    executionFailure ??= error;
+    executionStackTrace ??= stackTrace;
   }
   final List<ChatEntry> entries = session.snapshot().entries;
   final ChatEntry? finalEntry =

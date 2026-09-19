@@ -18,6 +18,7 @@ Per-inference instruction-source capture and immutable context snapshots
 Shared application runtime with only headless Chat statically composed in process
 Prepared backend/frontend discovery and backend-owned capability/extension advertisements
 Remote instruction sources and model tools with scoped host reads/mutations and process streaming
+Generation-bound remote strategy execution with approval-safe semantic handles
 Typed Project selectors and prepared interpreted local-directory Project opening
 Normal title-only Task creation with a real Git primary Environment
 Normal stock Chat Sessions with approval-gated ChatGPT-backed Runs
@@ -209,8 +210,12 @@ budget snapshotted per Run. Intermediate model/native output, proposals, and too
 results remain Run-local; canonical history is reused across Runs.
 
 `createSessionOrchestrationRun` in `app/lib/core/orchestration_host.dart` resolves
-the canonical Session and its exact contribution once per Run, then materializes
-it against `KernelOrchestrationHost`. The public execution facade exposes semantic
+the canonical Session and its exact contribution once per Run, then asynchronously
+materializes it against `KernelOrchestrationHost`. Contributions may still return
+synchronously through `FutureOr<OrchestrationExecution>`; exact binding validation
+brackets settlement. Idempotent execution `close()` releases resources after active
+advancement without resolving waiting approvals or changing terminal evidence.
+The public execution facade exposes semantic
 model turns, opaque tool snapshots, proposal processing, and approval
 continuation, not kernel ports, catalogs, policy, `AgentRun`, or journal objects.
 Minimal semantic DTOs live in the existing `adele_orchestration` package and are
@@ -219,6 +224,20 @@ Missing or duplicate strategy IDs fail explicitly. Retained bindings are
 validated on operations, approval resume, and asynchronous settlement: stale
 active Runs fail rather than migrate, while a later Run in the same Session may
 freshly resolve a replacement under its unchanged strategy ID.
+
+Installed AOT generations can now contribute through that same strategy point via
+`RemoteOrchestrationStrategyAdapter`, with strict `strategyId`/`routeId` readiness
+metadata. Public orchestration owns separate generated transport and a reusable
+native backend host proxy. Materialization carries immutable product identities,
+not host authority. Each start/resume receives a fresh unary orchestration host
+invocation, revoked at settlement. Exact tool snapshots and proposal provenance
+survive approval waits only as execution-scoped opaque data handles. Approval is
+captured by the host for one resume and applied once without backend-selected
+resolution fields. Close/retirement releases retained state without retargeting
+replacement generations. Real-AOT deterministic probes exercise this substrate;
+stock Chat remains the only static plugin, with unchanged Session history and no
+installed Chat backend. Prepared topology remains eight installations, six backend
+AOTs, five frontend EVCs, and the shared backend host.
 
 The common `ModelProvider` capability uses generated streaming/cancellation,
 ordered semantic/provider-native items, explicit settlement, and exact

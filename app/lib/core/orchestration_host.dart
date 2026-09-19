@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 
@@ -6,7 +8,7 @@ import 'product_lifecycle.dart';
 import 'run_activity_projection.dart';
 
 /// Resolves only the canonical Session's stored strategy, once for this Run.
-SessionOrchestrationRun createSessionOrchestrationRun({
+Future<SessionOrchestrationRun> createSessionOrchestrationRun({
   required ProductLifecycleCoordinator lifecycle,
   required SessionId sessionId,
   required RunId runId,
@@ -14,7 +16,7 @@ SessionOrchestrationRun createSessionOrchestrationRun({
   required ModelPort model,
   required ToolCatalog toolCatalog,
   required ToolPolicy policy,
-}) {
+}) async {
   final Session? session = lifecycle.store.session(sessionId);
   if (session == null) {
     throw StateError('Session $sessionId is not published.');
@@ -34,19 +36,24 @@ SessionOrchestrationRun createSessionOrchestrationRun({
     toolCatalog: toolCatalog,
     policy: policy,
   ).._executionEnabled = false;
-  final OrchestrationExecution execution = binding.materialize(
+  final OrchestrationExecution execution = await binding.materialize(
     OrchestrationStrategyHostContext(session: session, host: host),
   );
   return SessionOrchestrationRun._(host, execution);
 }
 
 /// Application inspection surface; none of these kernel objects reach plugins.
+/// Owns execution release on terminal settlement or explicit close. Automatic
+/// release preserves Run results; explicit close reports any cleanup failure.
 final class SessionOrchestrationRun implements OrchestrationExecution {
   SessionOrchestrationRun._(this._host, this._execution);
 
   final KernelOrchestrationHost _host;
   final OrchestrationExecution _execution;
   bool _busy = false;
+  bool _closed = false;
+  Completer<void>? _advanceSettled;
+  Future<void>? _closing;
 
   AgentRun get run => _host._run;
   RunActivitySource get activity => _host.activity;
@@ -62,6 +69,9 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
       _advance(resolution: resolution);
 
   Future<void> _advance({ToolApprovalResolution? resolution}) async {
+    if (_closed) {
+      throw const InvalidRunOperation('The orchestration execution is closed.');
+    }
     if (_busy) {
       throw const InvalidRunOperation(
         'The strategy is already advancing this Run.',
@@ -89,6 +99,9 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
       }
     }
     _busy = true;
+    final Completer<void> settled = Completer<void>();
+    _advanceSettled = settled;
+    bool failed = false;
     try {
       _host._executionEnabled = true;
       _host.validateBinding();
@@ -103,11 +116,43 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
         _host.validateBinding();
       }
     } on Object catch (error) {
+      failed = true;
       _host._fail(error);
       rethrow;
     } finally {
       _busy = false;
+      _host._executionEnabled = false;
+      _advanceSettled = null;
+      settled.complete();
+      if (failed ||
+          run.state == RunState.completed ||
+          run.state == RunState.failed ||
+          run.state == RunState.cancelled) {
+        final cleanup = close().catchError((Object _) {
+          // Cleanup cannot rewrite terminal evidence or replace advancement's
+          // failure. Explicit close still reports the retained cleanup failure.
+        });
+        if (_host._busy) {
+          // Report strategy failure now; close still drains detached mechanics.
+          unawaited(cleanup);
+        } else {
+          await cleanup;
+        }
+      }
     }
+  }
+
+  @override
+  Future<void> close() {
+    _closed = true;
+    return _closing ??= Future<void>.microtask(() async {
+      await _advanceSettled?.future;
+      _host._executionEnabled = false;
+      if (_host._operationSettled case final Completer<void> operation) {
+        await operation.future;
+      }
+      await _execution.close();
+    });
   }
 }
 
@@ -145,6 +190,7 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
   // Direct adapter construction is trusted; canonical Runs enable at start.
   bool _executionEnabled = true;
   bool _busy = false;
+  Completer<void>? _operationSettled;
   Object? _deferredFailure;
   ToolInvocation? _pendingApproval;
   ToolApprovalResolution? _authorizedResolution;
@@ -562,6 +608,8 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
   Future<T> _operation<T>(Future<T> Function() operation) async {
     _requireIdle();
     _busy = true;
+    final Completer<void> settled = Completer<void>();
+    _operationSettled = settled;
     try {
       validateBinding();
       final T result = await operation();
@@ -578,13 +626,15 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
       final Object? failure = _deferredFailure;
       _deferredFailure = null;
       if (failure != null) _fail(failure);
+      _operationSettled = null;
+      settled.complete();
     }
   }
 
   void _requireIdle() {
     if (!_executionEnabled) {
       throw const InvalidRunOperation(
-        'The execution host is unavailable before its wrapper starts the Run.',
+        'The execution host is unavailable outside active strategy advancement.',
       );
     }
     if (_busy) {

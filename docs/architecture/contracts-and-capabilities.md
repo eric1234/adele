@@ -2,7 +2,7 @@
 
 ## Status
 
-Generated typed unary and server-streaming/cancellation transport, active one-to-many capability routing, exact generation bindings, configured OpenAI provider contexts, and the common ModelProvider capability are implemented in the maintained development foundation. Backend-ready extension advertisements, host adapters over the existing extension registry, and operation-scoped backend-to-host calls support remote inference sources and model tools. Model-tool execution uses host-to-backend server streaming; authorized reads/mutations use reverse unary calls and foreground processes use reverse server streaming. This is not general symmetric RPC.
+Generated typed unary and server-streaming/cancellation transport, active one-to-many capability routing, exact generation bindings, configured OpenAI provider contexts, and the common ModelProvider capability are implemented in the maintained development foundation. Backend-ready extension advertisements, host adapters over the existing extension registry, and operation-scoped backend-to-host calls support remote inference sources, model tools, and orchestration strategies. Model-tool execution uses host-to-backend server streaming; authorized reads/mutations and orchestration host calls use reverse unary calls, while foreground processes use reverse server streaming. This is not general symmetric RPC.
 
 The broader recursive extension model described in [`plugin-extension-model.md`](plugin-extension-model.md) is accepted architecture but mostly unimplemented. Capabilities should therefore be understood as one specialized callable part of that future extension architecture rather than as a universal registry for every kind of plugin participation.
 
@@ -341,6 +341,66 @@ package dependency is `adele_contract`, with no internal
 host or Flutter imports. It does not mint authority, grant service access, or
 implement general symmetric RPC. Profiles
 and general plugin configuration remain deferred; this boundary is not a sandbox.
+
+### Remote orchestration strategies
+
+Public `adele_orchestration/remote_orchestration.dart` owns generated unary
+`RemoteOrchestrationService` materialization, start, approval resume, and release,
+separate from native strategy APIs. The app registers
+`RemoteOrchestrationStrategyAdapter` in its normal adapter factory. Readiness
+accepts only nonblank `strategyId` and opaque `routeId` metadata and the supported
+generated service ID. Plugin identity remains connection-owned; no Session, Run,
+Environment, or provider identity belongs in readiness.
+
+Native materialization is `FutureOr<OrchestrationExecution>`; the resolved path
+validates exact binding before and after awaiting it. The remote materialize call
+receives route plus immutable canonical Session/Task/strategy/Run identities and
+no host invocation token. Its execution ID selects backend-owned state, not host
+authority. A stale post-validation closes the returned state best-effort.
+
+Each start/resume opens a new host invocation allowlisting only
+`RemoteOrchestrationHostService`. Its unary operations are `transition`,
+`invokeModel`, `processProposal`, and `applyCurrentApproval`. No operation selects
+Session/Environment/provider authority from a backend field. The backend support
+library `remote_orchestration_backend.dart` presents a native
+`OrchestrationExecutionHost`, mirrors synchronous state/lifecycle locally, and
+flushes transitions before work and operation settlement. Completion/failure must
+reach the actual host Run before the advance returns. Strategy-requested failures
+carry bounded code/message data, not live Dart exceptions. Already-collected
+model-turn failures, including provider transport failures and partial outputs,
+remain semantic result data. Failure of the orchestration RPC itself remains
+infrastructure failure and invalidates the backend host mirror.
+
+The app retains exact host snapshots and original proposal occurrences in private
+tables scoped to execution and backend generation. Transported snapshot/proposal
+handles identify those values only. They can outlive a start invocation during
+approval waiting but cannot independently invoke any host service. The backend
+maps reconstructed proposals by object identity to handles. Host lookup rejects
+fabricated, cross-snapshot/execution/generation, consumed, and released handles;
+it never selects a proposal by alias, call ID, or structural equality. Strategy
+code owns proposal order.
+
+For resume, the app captures the real host-issued approval in that fresh invocation.
+The backend proxy accepts only the identical reconstructed object supplied to the
+current resume, then calls no-argument `applyCurrentApproval()`. The host applies
+its captured resolution once, never plugin-supplied approval fields. Authorization
+is absent during start and cleared at settlement. Snapshot handles may survive
+the pause; invocation tokens and approval authorization may not.
+
+Execution `close()` is idempotent async resource cleanup, not cancellation or
+approval resolution. Terminal cleanup, registration retirement, and connection
+termination also release retained state. Runtime `RemoteExtensionContext.onRetire`
+lets adapters release resources after immediate invocation revocation, before
+activation retirement completes. Already-started host mechanics retain evidence;
+the orchestration adapter drains them without extending invocation authority.
+Cleanup cannot overwrite primary Run/transport failure. No general object-handle
+framework, client/bidirectional streaming, or ambient callbacks are introduced.
+An unacknowledged remote release closes only its captured connection generation
+rather than accumulating unreachable backend execution state.
+Automatic cleanup preserves an acknowledged terminal result; a failed backend
+close remains in its existing closing execution until explicit release surfaces
+that failure to the app's generation-close safeguard.
+Stock Chat stays static/local; both transport protocols and manifests remain 1.
 
 ### Remote model tools
 

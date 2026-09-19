@@ -181,6 +181,15 @@ history/composer. It depends on neither the headless implementation nor app/kern
 code. Its prepared installation is frontend-only; this split does not introduce
 a Chat AOT backend or discover its in-process strategy activation.
 
+The generic remote orchestration substrate is implemented independently of this
+stock layout: public `adele_orchestration` owns generated transport and a native
+backend host proxy; the app's normal remote adapter can register installed AOT
+strategies in the existing extension registry. Test-only AOT fixtures prove
+generation-bound execution and approval pause/resume. They are not prepared stock
+installations. Normal topology remains eight installations, six backend AOTs,
+five frontend EVCs, and one shared host; Chat history/store and self-hosting remain
+local.
+
 The generic app host consumes public Flutter `adele_ui` Session presentation
 contributions. Generic `ApplicationFrontendBootstrap` in `app/lib/frontend`
 loads and registers the prepared descriptors. `app/lib/plugins/stock_chat_frontend.dart`

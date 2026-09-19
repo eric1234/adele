@@ -82,6 +82,18 @@ AGENTS.md, Search, Filesystem Tools, and Command Tools have no production app
 dependency/import or static activation; their prepared backends supply contributions through generic
 remote extension activation.
 
+The normal adapter registry also supports independently installed orchestration
+strategies through the existing `orchestrationStrategyContributions` point.
+Materialization is async-capable and authority-free across AOT transport. Each
+start/resume uses fresh operation-scoped unary host authority; exact tool snapshot
+and proposal provenance survives approval pauses only as execution-scoped opaque
+data handles. Approval remains host-captured and single-use per resume. Execution
+close/retirement releases retained state without resolving waiting Runs or
+retargeting replacement generations. Public orchestration owns transport and a
+native backend host proxy; the app owns actual mechanics and authority. Stock
+Chat remains the only static plugin and has not migrated. See
+[remote orchestration](contracts-and-capabilities.md#remote-orchestration-strategies).
+
 The normal Stateful `AdeleApplication` constructs its runtime once synchronously
 in `initState`, not during rebuilds, then explicitly calls async
 `ApplicationPluginBootstrap.start`. Inputs are only the installation root, shared
