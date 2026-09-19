@@ -38,9 +38,19 @@ replacement; old bindings never silently retarget the new contribution.
 contribution with `OrchestrationStrategyHostContext(session, host)`. The context
 contains the canonical product `Session` and an `OrchestrationExecutionHost`.
 Materialization validates the exact binding and matching Session/host identities
-before and after the callback. It returns one `OrchestrationExecution`, whose
+before and after the callback settles. Contributions return
+`FutureOr<OrchestrationExecution>` so local materializers may remain synchronous;
+resolved materialization is awaited by the application. Retirement during that
+await closes the newly constructed execution before surfacing the stale binding.
+It returns one `OrchestrationExecution`, whose
 `start()` and `resolveApproval(ToolApprovalResolution)` methods drive that Run's
 strategy sequencing.
+
+Idempotent async `OrchestrationExecution.close()` releases execution-owned
+resources, not strategy-specific Session state. `SessionOrchestrationRun` owns
+forwarding cleanup after active advancement drains, including terminal cleanup.
+Closing a quiescent waiting execution does not resolve its approval, create a tool
+outcome, or change Run evidence. This is not Run cancellation.
 
 Materialization constructs an execution; it is not an execution entry point.
 The application host keeps Run/model/tool operations disabled until it enters
@@ -96,6 +106,63 @@ validate the retained strategy on subsequent operations, approval resume, and
 asynchronous settlement. A retired strategy cannot advance an old active Run;
 that Run fails explicitly rather than migrating. A later Run in the same Session
 may freshly resolve replacement B under the unchanged semantic strategy ID.
+
+### Remote Strategies
+
+`remote_orchestration.dart` declares data-only generated transport, separate from
+the native strategy facade. `RemoteOrchestrationService` provides unary
+`materialize`, `start`, `resolveApproval`, and `release`. Materialization receives
+only the implementation route and immutable Session/Task/strategy/Run identities,
+never an invocation token or host execution authority. It returns an opaque
+backend execution route; actual strategy configuration is captured then, not
+deferred until start.
+
+The app's `RemoteOrchestrationStrategyAdapter` registers an exact-generation
+contribution in `orchestrationStrategyContributions`. Readiness requires exactly
+nonblank `strategyId` and `routeId` metadata and the supported generated service.
+The existing resolver still owns unavailable/one/ambiguous results, without
+priority or fallback. Plugin identity is connection-owned; readiness includes no
+Session, Run, Environment, or provider selectors.
+
+`remote_orchestration_backend.dart` supplies `RemoteOrchestrationBackend`, a
+reusable adapter for native contributions. Its host proxy mirrors the current
+operation's lifecycle synchronously, flushing transitions through unary host calls
+before model/tool work and before returning from an advance. It reconstructs
+semantic model inputs/outputs, native metadata and safe presentation, settlements,
+usage, and tool results without provider interpretation. Bounded
+`RemoteOrchestrationFailure` data represents strategy-requested failure and
+already-collected model-turn failures, including partial model output. A failure
+of the orchestration RPC itself remains infrastructure failure, not an intentional
+Run failure; no arbitrary Dart causes cross the boundary.
+The support library remains in this pure-Dart public package; generic
+`adele_plugin_backend_support` has no orchestration dependency.
+
+Each start/resume creates a fresh `PluginHostInvocation` allowlisting only
+`RemoteOrchestrationHostService`: lifecycle transition, collected model invocation,
+proposal processing, and no-argument `applyCurrentApproval`. Settlement or
+retirement revokes it. No model-provider, Environment, policy, tool executable,
+catalog, kernel Run, or journal authority is given to the backend.
+
+The app retains each exact host tool snapshot and original proposal occurrence in
+private execution-scoped tables. Opaque snapshot/proposal handles may survive an
+approval pause as data identity, but cannot make calls without a fresh authorized
+invocation. Tables never resolve another execution or replacement generation;
+fabricated, foreign, and consumed handles fail. The backend proxy separately maps
+reconstructed proposals by object identity, not alias/call ID/structural equality.
+Strategies still choose proposal order; the host never drains a batch for them.
+
+On resume, the app captures the real host-issued approval for that operation.
+The backend proxy accepts only the exact reconstructed object supplied to its
+current resume, then calls `applyCurrentApproval()` without fields. The host
+applies its captured real resolution exactly once. Authorization disappears on
+settlement, unlike retained snapshot data; a backend cannot approve during start,
+substitute approval for rejection, or reuse authorization in another operation.
+
+Explicit close, terminal settlement, retirement, and connection shutdown release
+execution resources. Cleanup is authority-free and best-effort after failure;
+it cannot replace primary failure evidence or retarget a replacement generation.
+The deterministic app AOT fixtures prove this boundary. Stock Chat remains local,
+with retained `ChatSessionStore`; no Chat backend or remote history API is added.
 
 ## Shared Semantic Values
 

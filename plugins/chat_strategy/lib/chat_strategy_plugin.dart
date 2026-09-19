@@ -1,6 +1,8 @@
 /// Stock Chat sequencing over the public orchestration execution host.
 library;
 
+import 'dart:async';
+
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 
@@ -120,6 +122,9 @@ final class _ChatExecution implements OrchestrationExecution {
   final List<SemanticModelInputItem> _runItems = <SemanticModelInputItem>[];
   int _nextModelInvocation = 1;
   bool _busy = false;
+  bool _closed = false;
+  Completer<void>? _advanceSettled;
+  Future<void>? _closing;
   bool _pendingApproval = false;
   _ProposalBatch? _pendingBatch;
 
@@ -293,12 +298,17 @@ final class _ChatExecution implements OrchestrationExecution {
   }
 
   Future<void> _exclusive(Future<void> Function() operation) async {
+    if (_closed) {
+      throw const InvalidRunOperation('The Chat execution is closed.');
+    }
     if (_busy) {
       throw const InvalidRunOperation(
         'The Chat strategy is already advancing this Run.',
       );
     }
     _busy = true;
+    final Completer<void> settled = Completer<void>();
+    _advanceSettled = settled;
     try {
       await operation();
     } on InvalidRunOperation {
@@ -308,7 +318,19 @@ final class _ChatExecution implements OrchestrationExecution {
       Error.throwWithStackTrace(error, stackTrace);
     } finally {
       _busy = false;
+      _advanceSettled = null;
+      settled.complete();
     }
+  }
+
+  @override
+  Future<void> close() {
+    _closed = true;
+    return _closing ??= Future<void>.microtask(() async {
+      await _advanceSettled?.future;
+      _pendingBatch = null;
+      _runItems.clear();
+    });
   }
 }
 

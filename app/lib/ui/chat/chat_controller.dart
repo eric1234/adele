@@ -6,6 +6,7 @@ import 'package:adele_desktop/core/approval_gated_tool_policy.dart';
 import 'package:adele_desktop/core/model_provider_host.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
+import 'package:adele_desktop/core/resource_cleanup.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/ui/execution/pending_tool_approval.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
@@ -72,6 +73,8 @@ final class ChatController {
   bool _activityUpdateScheduled = false;
   int _visibleActivityCount = 0;
   SessionOrchestrationRun? _currentRun;
+  // Cleanup also owns late materialization that must not update presentation.
+  SessionOrchestrationRun? _ownedExecution;
   Future<void>? _activeRunFuture;
   Future<void>? _closing;
   bool _closed = false;
@@ -217,7 +220,7 @@ final class ChatController {
           environmentRuntime: _runtime.lifecycle.environmentRuntime,
           extensions: _runtime.extensions,
         );
-        execution = createSessionOrchestrationRun(
+        execution = await createSessionOrchestrationRun(
           lifecycle: _runtime.lifecycle,
           sessionId: session.id,
           runId: runId,
@@ -227,6 +230,7 @@ final class ChatController {
           policy: const ApprovalGatedToolPolicy(),
         );
         // Accepted work settles on close, without late presentation updates.
+        _ownedExecution = execution;
         if (!_closed) {
           _currentRun = execution;
           _observeActivity(execution.activity, _activeUserMessage);
@@ -423,15 +427,16 @@ final class ChatController {
     }
   }
 
-  /// Drains only in-flight advancement. A quiescent waiting Run is abandoned with
-  /// the window/runtime, without resolving or executing its pending invocation.
+  /// Drains in-flight advancement, then releases the current execution without
+  /// resolving or executing a quiescent waiting Run's pending invocation.
   Future<void> close() {
     _closed = true;
     _detachActivity();
-    return _closing ??= () async {
-      await _activeRunFuture;
-      _activityChanges.dispose();
-    }();
+    return _closing ??= closeResources([
+      () async => await _activeRunFuture,
+      () async => await _ownedExecution?.close(),
+      () async => _activityChanges.dispose(),
+    ]);
   }
 }
 

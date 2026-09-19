@@ -57,7 +57,7 @@ workbench UI APIs remain architectural direction.
 | `adele_model_provider` | Experimental plugin-facing | Dart SDK, `adele_contract`, and `adele_capabilities` | Flutter, internal host packages, application code, concrete providers |
 | `adele_product` | Experimental plugin-facing, pure Dart | Dart SDK and `adele_capabilities` | Flutter, internal host packages, application code, `adele_orchestration`, `adele_plugin_api`, `adele_core_extensions` |
 | `adele_model_tool` | Experimental plugin-facing, pure Dart; native tool API and generated remote transport | Dart SDK, `adele_contract`, `adele_plugin_api`, and `adele_product` | Flutter, internal host packages, application code, concrete tools |
-| `adele_orchestration` | Experimental plugin-facing, pure Dart | Dart SDK, `adele_contract`, `adele_product`, `adele_plugin_api`, and `adele_model_tool` | Flutter, `agent_kernel`, other internal host packages, application code, concrete strategies or sources |
+| `adele_orchestration` | Experimental plugin-facing, pure Dart; native strategy facade, generated remote transport, and native backend host proxy | Dart SDK, `adele_contract`, `adele_product`, `adele_plugin_api`, and `adele_model_tool` | Flutter, `agent_kernel`, other internal host packages, application code, concrete strategies or sources |
 | `adele_environment` | Experimental plugin-facing, pure Dart; provider/facet and separate generated authorized-read/mutation/process contracts | Dart SDK, `adele_contract`, `adele_capabilities`, and `adele_product` | Flutter, internal host packages, application code, concrete providers |
 | `adele_ui` | Experimental plugin-facing, Flutter; semantic presentation contracts and interpreted directory-picker stub | Flutter, `adele_plugin_api`, `adele_product`, `adele_orchestration`, and `adele_model_tool` | Internal host packages, application code, concrete plugins |
 | future broader extension/UI APIs | Experimental plugin-facing | Only lightweight public dependencies required by concrete interfaces | Internal host packages, application code, concrete plugins |
@@ -142,9 +142,21 @@ Internal `plugin_runtime` owns `PluginExtensionActivation`,
 plus extension rollback/retirement. Adapters are host implementations of known
 public contracts, not another contribution registry or public plugin API.
 Contributions still enter the existing `ExtensionRegistry` with exact liveness.
-The app owns `RemoteInferenceContextSourceAdapter`, `RemoteModelToolAdapter`, and
+The app owns `RemoteInferenceContextSourceAdapter`, `RemoteModelToolAdapter`,
+`RemoteOrchestrationStrategyAdapter`, and
 their point-specific metadata validation; runtime has no AGENTS.md, Search,
 Filesystem, or Command tool logic.
+
+Orchestration's `remote_orchestration.dart` owns generated data-only execution
+transport separately from the native semantic facade.
+`remote_orchestration_backend.dart` stays in that existing public pure-Dart package
+and adapts native strategy contributions to generated services with operation-local
+host proxies. Generic `adele_plugin_backend_support` does not depend on
+orchestration. The app alone retains exact host snapshot/proposal objects and
+captured approval authorization; opaque execution-scoped handles contain no host
+authority. Runtime supplies immediate invocation revocation and adapter retirement
+cleanup, not orchestration semantics. Stock Chat remains local, and no production
+Chat backend package or remote history boundary is added.
 
 Public `adele_orchestration` owns generated `RemoteInferenceContextSourceService`
 and `RemoteInferenceInstruction`; public `adele_model_tool/remote_model_tool.dart`

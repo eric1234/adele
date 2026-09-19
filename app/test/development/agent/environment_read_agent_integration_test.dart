@@ -393,15 +393,17 @@ void main() {
           ChatUserMessage('Inspect the maintained ADELE strategy source.'),
         );
       final _SearchReadModel model = _SearchReadModel();
-      final SessionOrchestrationRun strategy = createSessionOrchestrationRun(
-        lifecycle: lifecycle,
-        sessionId: sessionId,
-        runId: RunId('run-environment-read'),
-        contextComposer: InferenceContextComposer(extensions),
-        model: model,
-        toolCatalog: catalogA,
-        policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
-      );
+      final SessionOrchestrationRun strategy =
+          await createSessionOrchestrationRun(
+            lifecycle: lifecycle,
+            sessionId: sessionId,
+            runId: RunId('run-environment-read'),
+            contextComposer: InferenceContextComposer(extensions),
+            model: model,
+            toolCatalog: catalogA,
+            policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
+          );
+      addTearDown(strategy.close);
       final AgentRun run = strategy.run;
 
       await strategy.start();
@@ -714,15 +716,17 @@ void main() {
             'apply_patch call with ordered exact edits, validate it with '
             'git diff --check using direct arguments, then report the result.'
         ..append(ChatUserMessage('Update the strategy default safely.'));
-      final SessionOrchestrationRun strategy = createSessionOrchestrationRun(
-        lifecycle: lifecycle,
-        sessionId: sessionId,
-        runId: RunId('run-environment-patch'),
-        contextComposer: InferenceContextComposer(extensions),
-        model: model,
-        toolCatalog: catalog,
-        policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
-      );
+      final SessionOrchestrationRun strategy =
+          await createSessionOrchestrationRun(
+            lifecycle: lifecycle,
+            sessionId: sessionId,
+            runId: RunId('run-environment-patch'),
+            contextComposer: InferenceContextComposer(extensions),
+            model: model,
+            toolCatalog: catalog,
+            policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
+          );
+      addTearDown(strategy.close);
       final AgentRun run = strategy.run;
 
       expect(tools.tools.map((tool) => tool.modelDefinition.alias), <String>[
@@ -1067,15 +1071,17 @@ void main() {
         ..append(
           ChatUserMessage('Create, verify, and remove the transient file.'),
         );
-      final SessionOrchestrationRun strategy = createSessionOrchestrationRun(
-        lifecycle: lifecycle,
-        sessionId: sessionId,
-        runId: RunId('run-environment-create-delete'),
-        contextComposer: InferenceContextComposer(extensions),
-        model: model,
-        toolCatalog: catalog,
-        policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
-      );
+      final SessionOrchestrationRun strategy =
+          await createSessionOrchestrationRun(
+            lifecycle: lifecycle,
+            sessionId: sessionId,
+            runId: RunId('run-environment-create-delete'),
+            contextComposer: InferenceContextComposer(extensions),
+            model: model,
+            toolCatalog: catalog,
+            policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
+          );
+      addTearDown(strategy.close);
       final AgentRun run = strategy.run;
 
       await strategy.start();

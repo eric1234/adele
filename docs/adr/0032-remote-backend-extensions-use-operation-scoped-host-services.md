@@ -3,7 +3,8 @@
 ## Status
 
 Accepted; unary read/mutation and bounded server-streaming process host calls,
-remote inference-context sources, and remote model tools implemented; broader
+remote inference-context sources, remote model tools, and generation-bound remote
+orchestration strategies implemented; broader
 extension adaptation, client/bidirectional streaming, and ambient callbacks deferred
 
 ## Context
@@ -85,6 +86,24 @@ registry or moving host authority into plugins.
     artifacts receive no compatibility layer, negotiation, or shim, even when their
     version numbers match. Increment only when released artifacts establish a
     compatibility boundary. Installed-manifest versioning remains separate.
+13. Remote orchestration execution state may span several operations, but its
+    host-service authority may not. Every start/resume receives a fresh invocation.
+    Exact host-owned tool snapshots and proposal occurrences use private,
+    execution/generation-scoped opaque data handles that can survive an approval
+    pause. Those handles grant no host-service authority and are not a general
+    remote-object registry. Consumed, released, or foreign handles cannot select
+    another object or replacement generation.
+14. Approval authorization is captured by the host for exactly one resume. A
+    backend proxy accepts only the exact reconstructed resolution supplied to that
+    call; reverse approval application has no plugin-selected fields and applies
+    the host-captured real resolution once. Authorization disappears at settlement,
+    even when execution-scoped semantic handles remain.
+15. Strategy materialization is async-capable and grants no host authority.
+    Exact binding validation brackets settlement. Idempotent async execution
+    cleanup releases retained state after terminal settlement, explicit close,
+    retirement, or connection termination, without changing Run evidence or
+    resolving an abandoned waiting approval. Cleanup cannot replace a primary
+    failure or revive retired authority.
 
 ## Alternatives considered
 
@@ -150,9 +169,20 @@ protocol versions are 1; installed manifests remain version 1. Immutable executi
 snapshots carry no exception causes. These checks authorize host-service access,
 not native OS effects; they provide no sandbox or rollback of in-flight effects.
 
-These two remote extension points do not implement the complete recursive extension
-system. Chat and Local Directory Project Selector remain the two statically
-composed plugins; their migration is deferred. Client/bidirectional streaming,
+Remote orchestration adds unary materialize/start/resume/release transport and a
+unary execution-host service over the same mechanism. The backend support proxy
+preserves native strategy sequencing with an operation-local lifecycle mirror;
+start is flushed before model/tool work and complete/fail before returning. The
+app retains original tool snapshots/proposals, captured approval, actual mechanics,
+and Run evidence. Strategy-requested failure uses bounded data, not serialized
+exception objects. Runtime retirement revokes invocation authority before adapter
+resource cleanup; already-started host work may settle without regaining authority.
+A deterministic real-AOT test strategy proves multi-proposal approval pause/resume.
+
+These remote extension points do not implement the complete recursive extension
+system. Chat remains the only statically composed plugin; its migration is
+deferred. Local Directory Project Selector is already a prepared frontend-only
+behavioral extension. Client/bidirectional streaming,
 ambient callbacks, general symmetric RPC, and Profiles remain unimplemented.
 Normal prepared startup currently attempts valid discovered components; that startup policy does
 not define profile participation or grant invocation authority.

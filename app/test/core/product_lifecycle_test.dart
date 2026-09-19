@@ -18,6 +18,9 @@ final class _NoOpExecution implements OrchestrationExecution {
 
   @override
   Future<void> resolveApproval(ToolApprovalResolution resolution) async {}
+
+  @override
+  Future<void> close() async {}
 }
 
 void main() {

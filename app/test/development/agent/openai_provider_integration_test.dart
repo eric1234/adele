@@ -227,15 +227,17 @@ void main() {
         topology.session.id,
       )..append(ChatUserMessage('Inspect the three Phase IV resources.'));
       final ToolCatalog catalog = ToolCatalog()..register(tool.registration);
-      final SessionOrchestrationRun strategy = createSessionOrchestrationRun(
-        lifecycle: topology.lifecycle,
-        sessionId: topology.session.id,
-        runId: RunId('run-openai-b4'),
-        contextComposer: topology.contextComposer,
-        model: modelAdapter,
-        toolCatalog: catalog,
-        policy: const DevelopmentToolPolicy(ToolPolicyDecision.ask),
-      );
+      final SessionOrchestrationRun strategy =
+          await createSessionOrchestrationRun(
+            lifecycle: topology.lifecycle,
+            sessionId: topology.session.id,
+            runId: RunId('run-openai-b4'),
+            contextComposer: topology.contextComposer,
+            model: modelAdapter,
+            toolCatalog: catalog,
+            policy: const DevelopmentToolPolicy(ToolPolicyDecision.ask),
+          );
+      addTearDown(strategy.close);
       final AgentRun run = strategy.run;
 
       await strategy.start();
@@ -693,15 +695,17 @@ void main() {
             'Find where ChatSessionState is declared, inspect the source, and report its path and model invocation limit.',
           ),
         );
-      final SessionOrchestrationRun strategy = createSessionOrchestrationRun(
-        lifecycle: lifecycle,
-        sessionId: sessionId,
-        runId: RunId('run-source-coding'),
-        contextComposer: InferenceContextComposer(extensions),
-        model: modelAdapter,
-        toolCatalog: catalog,
-        policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
-      );
+      final SessionOrchestrationRun strategy =
+          await createSessionOrchestrationRun(
+            lifecycle: lifecycle,
+            sessionId: sessionId,
+            runId: RunId('run-source-coding'),
+            contextComposer: InferenceContextComposer(extensions),
+            model: modelAdapter,
+            toolCatalog: catalog,
+            policy: const DevelopmentToolPolicy(ToolPolicyDecision.allow),
+          );
+      addTearDown(strategy.close);
       final AgentRun run = strategy.run;
 
       await strategy.start();

@@ -241,6 +241,73 @@ void main() {
     expect(extensions.discover(_point), isEmpty);
   });
 
+  test(
+    'retirement revokes authority before draining adapter cleanup',
+    () async {
+      final connection = await connect({
+        'extensionExposures': [_exposure('first', 'default')],
+      });
+      final activation = await activate(connection);
+      final binding = extensions.discover(_point).single;
+      final context = binding.value.context;
+      final operationDone = Completer<void>();
+      late PluginHostInvocation invocation;
+      final operation = context.invoke({}, (opened) {
+        invocation = opened;
+        return operationDone.future;
+      });
+      final operationFailed = expectLater(
+        operation,
+        throwsA(isA<StaleExtensionBinding>()),
+      );
+      final cleanupDone = Completer<void>();
+      var cleanups = 0;
+      context.onRetire(() async {
+        cleanups++;
+        expect(invocation.isClosed, isTrue);
+        expect(context.validate, throwsA(isA<StaleExtensionBinding>()));
+        await cleanupDone.future;
+      });
+      final detach = context.onRetire(
+        () async => fail('Detached cleanup ran.'),
+      );
+      detach();
+      var retired = false;
+      final retiring = activation.retire().then((_) => retired = true);
+      expect(invocation.isClosed, isTrue);
+      expect(binding.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(cleanups, 1);
+      expect(retired, isFalse);
+      expect(() => context.onRetire(() async {}), throwsStateError);
+      operationDone.complete();
+      cleanupDone.complete();
+      await operationFailed;
+      await retiring;
+      await activation.retire();
+      expect(cleanups, 1);
+      await activation.close();
+    },
+  );
+
+  test(
+    'adapter cleanup failure does not retain registrations or skip cleanup',
+    () async {
+      final connection = await connect({
+        'extensionExposures': [_exposure('first', 'default')],
+      });
+      final activation = await activate(connection);
+      final context = extensions.discover(_point).single.value.context;
+      var cleaned = false;
+      context.onRetire(() async => throw StateError('cleanup failed'));
+      context.onRetire(() async => cleaned = true);
+      await expectLater(activation.retire(), throwsStateError);
+      expect(cleaned, isTrue);
+      expect(extensions.discover(_point), isEmpty);
+      await expectLater(activation.close(), throwsStateError);
+      expect(connection.isClosed, isTrue);
+    },
+  );
+
   group('stream-scoped host invocations', () {
     late PluginBackendConnection connection;
     late PluginBackendActivation activation;

@@ -171,7 +171,7 @@ void main() {
         extensions: runtime.extensions,
       );
       final _RecordingModel model = _RecordingModel();
-      final SessionOrchestrationRun run = createSessionOrchestrationRun(
+      final SessionOrchestrationRun run = await createSessionOrchestrationRun(
         lifecycle: runtime.lifecycle,
         sessionId: session.id,
         runId: RunId('runtime-run'),

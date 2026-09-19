@@ -135,8 +135,16 @@ point-specific metadata, and collisions fail activation with exact rollback.
 extension phases. Failure rolls back both and closes that attempt's connection;
 retirement removes both sets before connection close. Local failure and later
 termination do not remove unrelated registrations or replacements. The app supplies
-the inference-source and model-tool adapters; runtime owns neither point's metadata
-or composition rules.
+the inference-source, model-tool, and orchestration-strategy adapters; runtime
+owns none of those points' metadata or composition rules.
+
+`RemoteExtensionContext.onRetire` registers adapter-owned async resource cleanup
+and returns a detach callback. Retirement immediately revokes invocation authority
+and removes registrations, then drains all registered cleanup. A resource detaches
+only after its cleanup settles, so concurrent retirement joins an already-started
+release. Cleanup must use captured authority-free routes, not open new invocations
+through a stale context. Explicit retirement retains cleanup failures; termination
+observers do not create unhandled asynchronous errors.
 
 The runtime knows no Git/OpenAI/AGENTS.md/Search/Filesystem/Command source paths, credential
 schemas, or stock exposure tables. Startup argv is opaque plugin input. Profiles/enable-disable
@@ -200,6 +208,16 @@ Search execution is read-only and Command execution is process-only. Captured
 facets must share Session/Environment identity, with no re-resolution or authority
 chosen by transported IDs. Revocation does not roll back in-flight effects.
 See [the host-call contract](../../docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls).
+
+Remote orchestration uses only unary calls. The app opens a fresh invocation per
+start/resume with the orchestration execution-host service as its sole allowlist
+entry. Execution-scoped snapshot/proposal handles may survive an approval pause
+as data identity, never as invocation authority. Approval is captured by the host
+for one resume. The app adapter owns handle tables, native lifecycle settlement,
+and draining admitted host mechanics after revocation; runtime adds no strategy
+semantics or general object-handle facility. Materialization and release have no
+host invocation. See
+[remote orchestration](../../docs/architecture/contracts-and-capabilities.md#remote-orchestration-strategies).
 
 Plugins use public `adele_plugin_backend_support`, not this package, for their
 request/stream-channel multiplexer. This is operation-scoped unary and server-streaming

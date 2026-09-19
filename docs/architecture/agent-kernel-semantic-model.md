@@ -188,7 +188,11 @@ longer owns the loop or temporary development strategy registration.
 the canonical Session by `SessionId`, resolves its exact contribution once per
 Run, and materializes it using `OrchestrationStrategyHostContext(session, host)`
 against `KernelOrchestrationHost`. The result is `OrchestrationExecution`, with
-`start` and `resolveApproval` entry points for strategy sequencing.
+`start` and `resolveApproval` entry points for strategy sequencing. Materialization
+is async-capable through `FutureOr<OrchestrationExecution>` and the application
+awaits it, validating the exact binding before and after settlement. Idempotent
+async execution `close()` releases execution resources after active advancement,
+without altering terminal evidence or resolving a waiting approval.
 
 The public `OrchestrationExecutionHost` exposes only the concrete operations a
 strategy needs:
@@ -223,6 +227,25 @@ IDs alone does not authorize execution: a plugin cannot construct its own
 approval or substitute approval for rejection. Authorization is consumed on
 resolution and cleared when the resume call ends, so it cannot be reused later.
 This is distinct from the retained invocation's exact executable-generation check.
+
+Installed AOT strategy generations use the same extension point and native facade
+through generated orchestration transport and an app adapter. Authority-free
+materialization constructs remote execution state at materialization time. Each
+start/resume gets a fresh unary host invocation; a backend proxy mirrors lifecycle
+state and flushes start before mechanics and terminal transitions before returning.
+The actual Run, model, tool catalog/executables, policy, Environment authority,
+and evidence remain host-owned.
+
+The app retains exact snapshot/proposal provenance as execution-scoped opaque
+data handles. These may survive an approval pause, unlike invocation tokens.
+Foreign or consumed handles fail rather than selecting replacement objects.
+The backend proxy maps reconstructed proposal objects by identity, while the host
+resolves handles to its original objects. Per-resume approval is host-captured:
+the proxy accepts only the exact current reconstructed resolution and calls
+no-argument `applyCurrentApproval`, which consumes the real host authorization once.
+Close/retirement releases state, not approvals or history. This is an execution
+substrate proven by test AOTs; stock Chat remains static and its canonical history
+remains strategy-specific Session state.
 
 Self-hosting activates Chat, obtains retained state, sets Chat configuration,
 appends the prompt, and routes `SessionId` through lifecycle resolution and this
