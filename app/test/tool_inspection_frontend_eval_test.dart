@@ -63,10 +63,19 @@ void main() {
                 'main.dart': '''
 import 'package:flutter/material.dart';
 import 'package:adele_ui/session_execution_bridge.dart';
-Widget buildSession() => Column(children: [
-  const Text('Session'),
-  buildSessionActivity(readSessionExecution()['activity'] as String),
-]);
+Future<Widget> buildSession() async {
+  final runHandle = await startSessionRun();
+  final activity = readSessionRunActivity(runHandle);
+  final models = activity['models'] as List<Map<String, Object?>>;
+  final groupHandle = models[0]['handle'] as String;
+  return Column(children: [
+    const Text('Session'),
+    TextButton(
+      onPressed: () { inspectSessionActivity(groupHandle); },
+      child: const Text('ACTIVITY: Update and validate'),
+    ),
+  ]);
+}
 ''',
               },
               'adele_ui': {
@@ -830,6 +839,8 @@ Widget buildSession() => Column(children: [
           ),
         ),
       );
+      await tester.pumpAndSettle();
+      expect(source.activityRead, isTrue);
       final Element sessionElement = tester.element(find.text('Session'));
       expect(find.text('Apply Patch'), findsNothing);
       await tester.tap(find.text('ACTIVITY: Update and validate'));
@@ -1217,33 +1228,68 @@ class _InspectionSessionSource extends ChangeNotifier
   _InspectionSessionSource(this.openInspection);
 
   final VoidCallback openInspection;
+  bool _runStarted = false;
+  bool activityRead = false;
 
   @override
   String currentSessionId() => 'inspection-session';
 
   @override
-  Map<String, Object?> readExecution() => const {'activity': 'group'};
+  Map<String, Object?> readExecution() => {
+    'canStart': !_runStarted,
+    'running': _runStarted,
+    'advancing': false,
+  };
 
   @override
-  Future<String> startRun() => throw StateError('Read-only fixture.');
+  Future<String> startRun() async {
+    _runStarted = true;
+    return 'inspection-run';
+  }
 
   @override
-  Map<String, Object?> readRunActivity(String handle) => const {};
+  Map<String, Object?> readRunActivity(String handle) {
+    if (!_runStarted || handle != 'inspection-run') {
+      throw StateError('Run handle was not emitted by this fixture.');
+    }
+    activityRead = true;
+    return const {
+      'runHandle': 'inspection-run',
+      'state': 'waiting',
+      'models': [
+        {
+          'handle': 'group',
+          'sequence': 1,
+          'settlement': 'completed',
+          'outputs': [
+            {
+              'handle': 'patch',
+              'sequence': 2,
+              'kind': 'tool',
+              'alias': 'apply_patch',
+            },
+            {
+              'handle': 'command',
+              'sequence': 3,
+              'kind': 'tool',
+              'alias': 'run_command',
+            },
+          ],
+        },
+      ],
+    };
+  }
 
   @override
-  Widget buildActivity(String handle) => handle == 'group'
-      ? TextButton(
-          onPressed: () => inspectActivity(handle),
-          child: const Text('ACTIVITY: Update and validate'),
-        )
-      : const SizedBox.shrink();
+  Widget buildActivity(String handle) =>
+      throw StateError('The probe EVC owns its group presentation.');
 
   @override
   void invalidate() {}
 
   @override
   bool inspectActivity(String id) {
-    if (id != 'group') return false;
+    if (!activityRead || id != 'group') return false;
     openInspection();
     return true;
   }
