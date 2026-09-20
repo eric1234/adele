@@ -37,11 +37,12 @@ internal kernel without depending on it. B1 adds tiny pure-Dart
 `adele_core_extensions` for the concrete
 Project selector contract, depending only on `adele_plugin_api`. Public Flutter
 `adele_ui` supplies concrete Session, read-only tool Inspection, and model-native
-activity presentation contracts, depending on Flutter, `adele_plugin_api`,
+activity presentation contracts, depending on Flutter, `adele_contract`, `adele_plugin_api`,
 `adele_product`, `adele_orchestration`, and `adele_model_tool`. The latter two remain public pure-Dart
 packages; neither depends on UI. A separate `adele_ui/directory_picker_bridge.dart`
-library supplies only the interpreted `Future<String?> pickDirectory()` stub;
-native picker implementation and eval declarations belong to the app.
+library supplies only the interpreted `Future<String?> pickDirectory()` stub.
+Separate own-backend request and Session execution bridge libraries expose bounded
+interpreted operations; native implementations and eval declarations belong to the app.
 Plugin-defined extension API packages and broader
 workbench UI APIs remain architectural direction.
 
@@ -59,7 +60,7 @@ workbench UI APIs remain architectural direction.
 | `adele_model_tool` | Experimental plugin-facing, pure Dart; native tool API and generated remote transport | Dart SDK, `adele_contract`, `adele_plugin_api`, and `adele_product` | Flutter, internal host packages, application code, concrete tools |
 | `adele_orchestration` | Experimental plugin-facing, pure Dart; native strategy facade, generated remote transport, and native backend host proxy | Dart SDK, `adele_contract`, `adele_product`, `adele_plugin_api`, and `adele_model_tool` | Flutter, `agent_kernel`, other internal host packages, application code, concrete strategies or sources |
 | `adele_environment` | Experimental plugin-facing, pure Dart; provider/facet and separate generated authorized-read/mutation/process contracts | Dart SDK, `adele_contract`, `adele_capabilities`, and `adele_product` | Flutter, internal host packages, application code, concrete providers |
-| `adele_ui` | Experimental plugin-facing, Flutter; semantic presentation contracts and interpreted directory-picker stub | Flutter, `adele_plugin_api`, `adele_product`, `adele_orchestration`, and `adele_model_tool` | Internal host packages, application code, concrete plugins |
+| `adele_ui` | Experimental plugin-facing, Flutter; semantic presentation contracts and interpreted picker, own-backend, and Session execution bridges | Flutter, `adele_contract`, `adele_plugin_api`, `adele_product`, `adele_orchestration`, and `adele_model_tool` | Internal host packages, application code, concrete plugins |
 | future broader extension/UI APIs | Experimental plugin-facing | Only lightweight public dependencies required by concrete interfaces | Internal host packages, application code, concrete plugins |
 | plugin-defined public extension API | Experimental plugin-facing | Public/core APIs and other deliberately public interface packages needed by the concept | Another plugin's implementation packages, internal host packages, application code |
 | `plugin_runtime` | Internal, pure Dart | Dart SDK, public packages, and concrete acyclic internal dependencies | Flutter, application code, plugin implementations |
@@ -96,16 +97,18 @@ Existing ownership remains singular:
 
 ### Application backend composition
 
-`AdeleRuntime()` synchronously registers only the in-process Chat strategy and
-remains provider-free. Its pure-Dart `ApplicationPluginBootstrap` owns
+`AdeleRuntime()` synchronously constructs a provider-free host graph with no static
+stock activation. Its pure-Dart `ApplicationPluginBootstrap` owns
 application-lifetime backend resources on the same capability and extension
 registries used by lifecycle/composition. The runtime has no `includeCommandTools`
 option or selector dependency. Local Directory Project Selector is a prepared
-frontend-only contribution owned by the window's Flutter bootstrap. AGENTS.md, Search,
+frontend-only contribution owned by the window's Flutter bootstrap. Chat, AGENTS.md, Search,
 Filesystem Tools, and Command Tools are AOT backends, with
 no production app dependency/import, static activation, or in-process fallback.
 Semantic tool packages used by app tests remain development-only dependencies.
-Migration of headless Chat remains deferred.
+Normal `app/lib` imports neither Chat Contract nor its implementation; plugin-specific
+self-hosting code under `app/tool/self_hosting/` uses only Chat Contract as a
+development dependency and calls the same remote backend.
 Normal `AdeleApplication` explicitly calls `start` with an installation
 root, shared runtime/host paths, and optional generic startup argv. There is no
 stock callback table, required Git backend, or additional-OpenAI activation tier.
@@ -128,8 +131,8 @@ The app attempts all valid backend installations independently. A local startup,
 advertisement, or registration failure releases only that attempt's resources;
 termination retires only its exact generation. Shared-host failure is global.
 Read-only per-backend states and catalog issues do not imply a management UI.
-Close retires all registrations before generations, then the host, then in-process
-activations. Generic Task presentation submits through product lifecycle and never
+Close retires all registrations before generations, then the host. Generic Task
+presentation submits through product lifecycle and never
 parses opaque `providerState`; Environment providers own source validation.
 
 Backend entrypoints own ready `capabilityExposures` and `extensionExposures`.
@@ -144,7 +147,7 @@ public contracts, not another contribution registry or public plugin API.
 Contributions still enter the existing `ExtensionRegistry` with exact liveness.
 The app owns `RemoteInferenceContextSourceAdapter`, `RemoteModelToolAdapter`,
 `RemoteOrchestrationStrategyAdapter`, and
-their point-specific metadata validation; runtime has no AGENTS.md, Search,
+their point-specific metadata validation; runtime has no Chat, AGENTS.md, Search,
 Filesystem, or Command tool logic.
 
 Orchestration's `remote_orchestration.dart` owns generated data-only execution
@@ -155,8 +158,14 @@ host proxies. Generic `adele_plugin_backend_support` does not depend on
 orchestration. The app alone retains exact host snapshot/proposal objects and
 captured approval authorization; opaque execution-scoped handles contain no host
 authority. Runtime supplies immediate invocation revocation and adapter retirement
-cleanup, not orchestration semantics. Stock Chat remains local, and no production
-Chat backend package or remote history boundary is added.
+cleanup, not orchestration semantics. Chat's canonical
+`plugins/chat_strategy/packages/{contract,backend,frontend}` split replaces the
+root semantic package. Contract owns identities, immutable entry/configuration
+snapshots, and generated `ChatSessionService` transport. Backend owns canonical history,
+stable entry occurrence IDs, default instructions, the eight-invocation default,
+and sequencing. Its Session service and `RemoteOrchestrationBackend` share one
+store, with external mutations blocked from materialization through close.
+Frontend depends on Contract, never Backend; neither imports host implementations.
 
 Public `adele_orchestration` owns generated `RemoteInferenceContextSourceService`
 and `RemoteInferenceInstruction`; public `adele_model_tool/remote_model_tool.dart`
@@ -216,7 +225,7 @@ import their internals.
 
 Source selection/compilation and stock installation assembly belong to repository
 tooling and `plugin_builder`, outside the app startup import graph. The launcher
-still knows Git/OpenAI/AGENTS.md/Search/Filesystem/Command source paths; stock source layouts
+still knows Git/OpenAI/Chat/AGENTS.md/Search/Filesystem/Command source paths; stock source layouts
 need not use `adele_plugin.yaml`. Its separate temporary JSON file maps PluginId to string argv
 lists, outside installed manifests. The launcher derives OpenAI credential-file
 references and public OAuth/endpoint options, never tokens, and always uses
@@ -239,7 +248,7 @@ registry. General provider/model configuration remains deferred. Operational det
 live in [`app/README.md`](../../app/README.md#normal-backend-startup) and the
 [`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
 Self-hosting uses generic `registerAdvertised` but keeps its explicit
-artifact/host/profile topology, including `agentsMdArtifact`, `searchToolsArtifact`,
+artifact/host/profile topology, including Chat, `agentsMdArtifact`, `searchToolsArtifact`,
 `filesystemToolsArtifact`, and `commandToolsArtifact` on the same host via the same generic remote adapter
 activation, without a normal
 installation root. Its `includeCommandTools` switch controls explicit Command
@@ -249,8 +258,8 @@ contexts, potentially both OpenAI contexts, then explicitly resolves the selecte
 profile's provider ID without filtering advertisements.
 Self-hosting is selector-free and creates its Project from its explicitly known
 isolated source URI, with no frontend bootstrap or native picker import.
-The frontend owner consumes the normal catalog, as described below; only headless
-Chat's static activation remains outside installed-component discovery.
+The frontend owner consumes the normal catalog, as described below; no stock
+activation remains outside installed-component discovery in the normal runtime.
 These boundaries add no profile/enable-disable system, version solving, watching,
 client/bidirectional streaming, ambient callbacks, general symmetric RPC, hot upgrade, or production packaging.
 Normal startup attempts all discovered valid components. Profiles remain a separate,
@@ -259,8 +268,8 @@ unimplemented policy for activation participation, not installed descriptor stat
 The normal model adapter lives
 in `app/lib/core/model_provider_host.dart`, separate from development-only resource
 adapters. Session lifecycle remains strategy-neutral and Run hosting remains
-provider-neutral; normal Chat presentation composes each Run's model, tools, and
-approval-gated policy without adding plugin-specific behavior to those generic
+provider-neutral; generic Session execution composes each Run's model, tools, and
+approval-gated policy without adding Chat-specific behavior to those generic
 owners. Approval cards are window-local presentation over existing Run
 interruptions, not new public APIs or Chat-owned canonical history. Policy and
 exact-invocation authorization remain host-owned; tools and Environment providers
@@ -269,7 +278,7 @@ retain their execution and revision guarantees.
 ### Session presentation and frontend composition
 
 `packages/ui` (`adele_ui`) owns `SessionPresentationContribution` with
-`strategyId: OrchestrationStrategyId` and
+`strategyId: OrchestrationStrategyId`, `displayName: String`, and
 `createPresentation: Widget Function(Session)`, plus typed
 `sessionPresentationContributions`. It reuses `ExtensionRegistry`, not a second
 registry or Flutter additions to the pure-Dart registry/product packages. Exact
@@ -288,7 +297,7 @@ pure-Dart backend bootstrap before backend startup, on the runtime's existing
 `ExtensionRegistry`. It must not introduce another root/catalog, registry, or
 parallel frontend runtime. The pure-Dart catalog validates confined files and
 strict presentation-role and behavioral-kind descriptors, not executable EVC
-correctness. `frontend.extensions` is separate from the unchanged `presentations`
+correctness. `frontend.extensions` is separate from the `presentations`
 list; both can coexist under manifest version 1. The Flutter owner reads each
 frontend's immutable bytes once per generation through `PreparedFrontend.load`.
 It validates behavioral bytecode and descriptor entrypoint presence before
@@ -326,27 +335,32 @@ rejects late native results without forcibly closing a dialog; semantic failures
 stay operation-local. No backend RPC, authority token, Session/Environment access,
 or AOT selector is involved.
 
-`app/lib/plugins/stock_chat_frontend.dart` remains only a bounded native controller
-adapter: no artifact loading, contribution registration, or activation ownership.
-Prepared Session metadata selects `hostAdapter: 'stock-chat-controller-v1'` and
-the adapter validates the strategy; unsupported adapter/strategy combinations
-fail, without a PluginId switch or fallback. This internal bridge is not a public
-universal Session-controller seam or reverse-call API. `ChatController` intentionally
-remains in `app/lib/ui/chat` as provisional composition. Common `RunExecutionStatus`,
-`PendingToolApproval`, and approval display safety belong in `app/lib/ui/execution`;
-the stock adapter connects the controller without making those components Chat
-APIs. Host policy and exact-invocation approval remain the security authority.
+Session descriptors include `displayName`, `strategyId`, `extensionId`, `library`,
+and `entrypoint`, with optional `backendServices` and `strategyAffinity` under
+manifest version 1. `hostAdapter` and stock Chat adapters are removed. Public
+`adele_ui/owning_backend_bridge.dart` binds generated clients to a generic unary
+request bridge. Internal runtime captures the exact sibling backend connection
+and configuration context and enforces the explicit service allowlist. EVC cannot
+select a PluginId/configuration or retarget a stale channel.
 
-The separate `chat_strategy_frontend` Flutter package renders history/composer
-from prepared EVC, without importing the headless Chat implementation, app, or
-kernel. Its eval bridge carries only immutable primitive message/activity timeline
-snapshots, composer-enabled state, string submission returning synchronous
-boolean acceptance, and an opaque host-built activity-widget slot for IDs emitted
-to that presentation. The native slot owns inspect interaction and hosts a
-plugin-owned compact widget in its own prepared runtime. The stock adapter
-resolves only exact retained Run/model/output identities; no
-execution, kernel, controller, or approval objects cross it. The native
-Session presentation factory is distinct from this narrow eval bridge.
+For `strategyAffinity: 'owningBackend'`, the host proves the strategy's origin from
+exact registration ownership, not IDs, contribution value identity, or a discovery
+wrapper. Origin remains host-internal. `createSession` validates before publication;
+Run hosting receives and retains that same resolved strategy, while checking its
+canonical registry membership. Affinity cannot bypass unavailable/ambiguous or
+stale-binding errors. Backend and frontend startup remain independent.
+
+The separate `chat_strategy_frontend` uses Contract-generated `ChatSessionService` calls
+for asynchronous append and history refresh; configuration uses that same Contract
+service, not a generic core history API. It owns composer
+acceptance, grouping, and stable accepted-entry-to-opaque-Run association, never
+matching message text or array positions. The separate generic Session execution
+bridge exposes scheduling, immutable execution/activity reads, subscriptions, and
+inspectable widget slots for emitted handles. Core retains model/tools/policy,
+approval, activity evidence, and Inspection, not canonical Chat history or grouping.
+Common `RunExecutionStatus`, `PendingToolApproval`, and approval display safety
+remain in `app/lib/ui/execution`. No executable, kernel, controller, or approval
+objects cross these bridges. The native Session factory is a distinct boundary.
 
 The public Run activity source and immutable read model live in pure-Dart
 `adele_orchestration`. The application host translates internal journal evidence
@@ -445,14 +459,14 @@ Flutter build-time tooling compiles frontend source; normal runtime activation
 only consumes prepared artifacts. Checkout preparation is a stand-in for future
 installation/update compilation, not a cache or implemented plugin management
 system. The Linux launcher assembles eight installations in one root: frontend-only
-Chat and Local Directory Project Selector, backend-only Git, AGENTS.md, and Search,
-and combined Filesystem Tools, Command Tools, and OpenAI. It prepares six backend
+Local Directory Project Selector, backend-only Git, AGENTS.md, and Search,
+and combined Chat, Filesystem Tools, Command Tools, and OpenAI. It prepares seven backend
 snapshots plus the host and five EVCs. Local Directory uses
 `app/tool/local_directory_frontend_compiler.dart`
 through `app/tool/compile_local_directory_frontend.dart`.
 It supplies only the four generic root/host/runtime/startup-argv defines, not
-per-stock frontend artifact fields/defines or AGENTS-/Search-/Filesystem-/Command-specific
-configuration.
+per-stock frontend artifact fields/defines or Chat-/AGENTS-/Search-/Filesystem-/Command-specific
+startup configuration.
 Flutter/eval dependencies do not enter the shared headless runtime or the pure-Dart
 `plugin_builder` package.
 
@@ -508,7 +522,7 @@ Within a source plugin, dependencies have this shape:
          backend            frontend
 ```
 
-The backend and frontend depend on shared contract/API packages as needed. They do not depend on one another. Transport contracts do not depend on Flutter. A frontend may depend on Flutter and deliberately public UI APIs such as `adele_ui`. The same implementation split applies to in-process headless Chat and to the installed Filesystem and Command backends, each independent of its separate Flutter frontend. A backend may use full Dart capabilities subject to the runtime and eventual security model.
+The backend and frontend depend on shared contract/API packages as needed. They do not depend on one another. Transport contracts do not depend on Flutter. A frontend may depend on Flutter and deliberately public UI APIs such as `adele_ui`. The same implementation split applies to installed Chat, Filesystem, and Command backends, each independent of its separate Flutter frontend. A backend may use full Dart capabilities subject to the runtime and eventual security model.
 
 Plugin tests may use internal host packages as development-only dependencies to exercise integration boundaries. Those dependencies must remain under `dev_dependencies` and must not be imported by plugin production libraries or entrypoints. The `workspace_demo_backend` host integration test uses `plugin_runtime` on this basis; the backend's production dependency graph does not include it.
 

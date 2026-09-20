@@ -13,7 +13,6 @@ import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
-import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -350,9 +349,6 @@ void main() {
         final selection = Completer<String?>();
         picker.pick = () => selection.future;
         await mountPreparedSelector(tester);
-        final stockChat = runtime.lifecycle.strategyResolver.resolve(
-          chatStrategyId,
-        );
         final selector = runtime.extensions
             .discover(projectSelectorContributions)
             .single;
@@ -383,10 +379,6 @@ void main() {
 
         expect(ids.calls, isEmpty);
         expect(runtime.store.project(ProjectId('selected-1')), isNull);
-        expect(
-          stockChat.validateBinding,
-          throwsA(isA<StaleExtensionBinding>()),
-        );
         expect(selector.validate, throwsA(isA<StaleExtensionBinding>()));
         expect(picker.calls, 1);
         expect(tester.takeException(), isNull);

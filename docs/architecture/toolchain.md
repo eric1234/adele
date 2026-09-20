@@ -31,19 +31,19 @@ pipeline compiles backend source to native Dart AOT and frontend source to
 Windows and macOS behavior remain future packaging and validation work.
 
 Normal desktop runtime activation never compiles plugin source. The Linux checkout
-launcher compiles the shared host and six backend AOT artifacts (Git, OpenAI,
+launcher compiles the shared host and seven backend AOT artifacts (Git, OpenAI, Chat,
 AGENTS.md, Search, Filesystem Tools, and Command Tools) plus five stock frontend
 EVCs (Chat, Local Directory Project Selector, Filesystem Tools, Command Tools, and
 OpenAI activity) before launching or building Flutter, using the selected SDK.
 The eight prepared installations share one fresh installation root; the host
-snapshot is beside that root. Chat and Local Directory Project Selector are
+snapshot is beside that root. Local Directory Project Selector is
 frontend-only; Git, AGENTS.md, and Search are
-backend-only; Filesystem Tools, Command Tools, and OpenAI each combine backend and
+backend-only; Chat, Filesystem Tools, Command Tools, and OpenAI each combine backend and
 frontend. Filesystem's `filesystem-tools/backend.aot` and Command's
 `command-tools/backend.aot` use source under their plugins' `packages/backend`;
-their frontend EVCs remain independently activatable. AGENTS.md, Search,
+their frontend EVCs remain independently activatable. Chat, AGENTS.md, Search,
 Filesystem Tools, and Command Tools require no
-configuration or additional deployment defines. Both host and plugin protocols are
+startup configuration or additional deployment defines. Both host and plugin protocols are
 currently version 1, supporting unary authorized reads/mutations and reverse
 server-streaming processes: prepared hosts and backends must be rebuilt together,
 and protocol versions must match exactly. Before the first release, unstable wire
@@ -69,11 +69,25 @@ snapshot or additional deployment define. The old root selector package is retir
 `local_directory_project_selector_frontend` replaces it in workspace membership
 and maintained analysis/test discovery.
 
-Behavioral `frontend.extensions` metadata is separate from the unchanged
+Behavioral `frontend.extensions` metadata is separate from the
 `presentations` list under manifest version 1. Activation validates behavioral
 bytecode and entrypoint presence without executing plugin code; actual selection
 uses a fresh operation runtime and native bridge. Presentation-only corruption
 remains per-view. Runtime still compiles no source.
+
+Chat follows `plugins/chat_strategy/packages/{contract,backend,frontend}` rather
+than a root semantic package linked into the app. Its generated frontend client
+uses the generic own-backend bridge; Session execution uses the separate generic
+bridge. Build-time declarations and generated codecs are compiled into the EVC,
+not handwritten Chat RPC in the host. The Session descriptor supplies `displayName`,
+a `backendServices` allowlist containing generated `chatSessionServiceId`, and
+`strategyAffinity: 'owningBackend'` instead
+of `hostAdapter`, still under manifest version 1. Rebuild prepared artifacts and
+descriptors together. No deployment define is added.
+
+Plugin-specific self-hosting composition lives in `app/tool/self_hosting/`, outside
+the normal `app/lib` import graph. It uses Chat Contract as a development dependency
+and the same remote Chat backend, not an in-process strategy fallback.
 
 `tools/backend_artifacts.dart` still owns stock source entrypoints and writes
 `adele_plugin.installation.json` beside each installation's independently optional
@@ -105,7 +119,7 @@ prepared artifacts with local fake Responses for mixed
 reasoning/tool approvals and a separate reasoning-only final response. That scope
 does not establish live-provider summary support or broader SDK/platform
 compatibility. Generated safe-presentation transport, generic adapter mapping, and
-safe Chat activity without frontend activation are separate regression boundaries.
+safe Chat activity without rich activity frontend activation are separate regression boundaries.
 
 Future installation/update should own source compilation and artifact preparation,
 separate from activation consuming those artifacts. Current repository tooling is

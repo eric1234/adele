@@ -69,6 +69,12 @@ The separate sealed `PreparedFrontendExtension` currently has
 `displayName`, `library`, and `entrypoint`. Its optional `frontend.extensions` list
 defaults to empty and can coexist with the required, possibly empty `presentations`
 list; existing presentation roles and manifest version 1 are unchanged.
+Session descriptors require `displayName`, `strategyId`, `extensionId`, `library`,
+and `entrypoint`. Optional `backendServices` is a duplicate-free service-ID
+allowlist (default empty); optional `strategyAffinity` is `independent` (default)
+or `owningBackend`. The retired `hostAdapter` field is rejected. Stock Chat
+allowlists generated `chatSessionServiceId` and declares `owningBackend`; runtime does not know those stock
+identities or service semantics.
 Both descriptor families use existing public identity types without importing
 Flutter, `adele_ui`, eval, or concrete plugins. Strict role/kind-specific fields describe executable
 ABI/preparation data, not profile or activation state. The schema and failure rules
@@ -106,8 +112,8 @@ descriptor metadata. See
 The frontend-only Local Directory Project Selector uses this descriptor catalog,
 not `PluginBackendHost` or generated backend RPC. Its app-owned operation bridge
 and fresh eval runtime are distinct from backend host-invocation contexts and
-Session/Environment authority. Only headless Chat remains statically composed in
-`AdeleRuntime`; self-hosting stays selector-free and supplies its known Project
+Session/Environment authority. `AdeleRuntime` has no static stock activation;
+self-hosting stays selector-free and supplies its known Project
 source directly.
 
 ## Ready Registrations
@@ -146,9 +152,33 @@ release. Cleanup must use captured authority-free routes, not open new invocatio
 through a stale context. Explicit retirement retains cleanup failures; termination
 observers do not create unhandled asynchronous errors.
 
-The runtime knows no Git/OpenAI/AGENTS.md/Search/Filesystem/Command source paths, credential
+The runtime knows no Git/OpenAI/Chat/AGENTS.md/Search/Filesystem/Command source paths, credential
 schemas, or stock exposure tables. Startup argv is opaque plugin input. Profiles/enable-disable
 management, version solving, watching, and hot upgrade remain deferred.
+
+## Own-Backend Requests
+
+`OwningBackendChannel` is a presentation-local unary channel over one captured
+`PluginBackendConnection`, `ConfigurationContextId`, and explicit `backendServices`
+allowlist. It validates the presentation and owning activation before dispatch
+and after asynchronous settlement, snapshots request/response data, and rejects
+undeclared services. It exposes no PluginId or configuration selector and never
+re-resolves a replacement connection. Missing, retired, or mismatched ownership
+fails explicitly; this is not capability-provider selection or general symmetric RPC.
+
+`PluginBackendActivation.extensionOrigin` obtains a remote contribution's origin
+from exact registration ownership, not extension IDs, contribution value identity,
+or discovery-wrapper identity. The host uses that internal provenance to enforce
+`strategyAffinity: 'owningBackend'`: Session creation validates the selected
+strategy before publication, and Run materialization retains that same binding.
+Matching semantic IDs alone cannot join one backend's Session state to another
+backend's execution. Origins and connection objects are not plugin-facing metadata.
+
+The public interpreted adapter lives in `adele_ui/owning_backend_bridge.dart`;
+generated plugin clients use it without importing this internal package. Frontend
+startup remains independent of backend startup. Registration availability does not
+promise that a view's own-backend service is ready, and failure has no native or
+in-process fallback.
 
 ## Operation-Scoped Host Calls
 

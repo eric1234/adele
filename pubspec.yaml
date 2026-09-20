@@ -38,7 +38,8 @@ workspace:
   - plugins/command_tools/packages/frontend
   - plugins/agents_md
   - plugins/agents_md/packages/backend
-  - plugins/chat_strategy
+  - plugins/chat_strategy/packages/contract
+  - plugins/chat_strategy/packages/backend
   - plugins/chat_strategy/packages/frontend
   - plugins/local_directory_project_selector/packages/frontend
   - plugins/git_environment

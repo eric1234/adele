@@ -254,19 +254,56 @@ void main() {
       expect(lookupTestTarget('contract_codegen').name, 'contract_codegen');
     });
 
-    test('discovers Chat as a pure-Dart target with default CI policy', () {
-      final TestOptions options = parseTestOptions(<String>[
-        '--target',
-        'chat_strategy_plugin',
-        '--ci',
-      ]);
-      final TestTarget target = lookupTestTarget(options.target!);
+    test(
+      'discovers Chat backend as a pure-Dart target with default CI policy',
+      () {
+        final TestOptions options = parseTestOptions(<String>[
+          '--target',
+          'chat_strategy_backend',
+          '--ci',
+        ]);
+        final TestTarget target = lookupTestTarget(options.target!);
 
-      expect(target.path, 'plugins/chat_strategy');
-      expect(target.executable, 'dart');
-      expect(target.argumentsFor(ci: options.ci), <String>['test']);
-      expect(target.linuxDesktopDeps, isFalse);
-      expect(target.ciTestConcurrency, isNull);
+        expect(target.path, 'plugins/chat_strategy/packages/backend');
+        expect(target.executable, 'dart');
+        expect(target.argumentsFor(ci: options.ci), <String>['test']);
+        expect(target.linuxDesktopDeps, isFalse);
+        expect(target.ciTestConcurrency, isNull);
+      },
+    );
+
+    test('Chat contract and implementation stay outside production app', () {
+      final dependencies = File(
+        'app/pubspec.yaml',
+      ).readAsStringSync().split('dev_dependencies:').first;
+      expect(dependencies, isNot(contains('chat_strategy')));
+      expect(File('plugins/chat_strategy/pubspec.yaml').existsSync(), isFalse);
+      for (final component in ['contract', 'backend']) {
+        final path = 'plugins/chat_strategy/packages/$component';
+        final name = 'chat_strategy_$component';
+        expect(lookupTestTarget(name).path, path);
+        expect(
+          analysisTargets.singleWhere((target) => target.name == name).path,
+          path,
+        );
+        expect(
+          File('pubspec.yaml').readAsStringSync(),
+          contains('  - $path\n'),
+        );
+      }
+      final forbidden = RegExp(
+        r'package:chat_strategy|ChatController|StockChatFrontend|'
+        r'StockChatExecutionStatus|stock-chat-controller-v1|chatStrategyId|'
+        r'ChatStrategyPlugin|ChatSessionStore',
+      );
+      for (final file in Directory('app/lib').listSync(recursive: true)) {
+        if (file is! File || !file.path.endsWith('.dart')) continue;
+        expect(
+          forbidden.hasMatch(file.readAsStringSync()),
+          isFalse,
+          reason: 'Production host must remain Chat-independent: ${file.path}',
+        );
+      }
     });
 
     test(
@@ -378,7 +415,7 @@ void main() {
       for (final path in [
         'app/lib/core/adele_runtime.dart',
         'app/lib/core/application_plugin_bootstrap.dart',
-        'app/lib/development/agent/development_self_hosting.dart',
+        'app/tool/self_hosting/development_self_hosting.dart',
       ]) {
         expect(
           File(path).readAsStringSync(),
@@ -480,7 +517,8 @@ void main() {
       expect(target.flutter, isTrue);
     }
     for (final String name in [
-      'chat_strategy_plugin',
+      'chat_strategy_contract',
+      'chat_strategy_backend',
       'filesystem_tools_plugin',
       'command_tools_plugin',
       'openai_contract',
@@ -534,7 +572,7 @@ void main() {
                   RegExp(
                     (descriptor['kind'] == 'projectSelector'
                             ? r'\bFuture<String\?>\s+'
-                            : r'\bWidget\s+') +
+                            : r'\b(?:Widget|Future<Widget>)\s+') +
                         RegExp.escape(entrypoint) +
                         r'\s*\(',
                   ),
@@ -628,9 +666,9 @@ void main() {
 
   test('compact composition preserves plugin parsing and authority boundaries', () {
     final files = <File>[
-      File('app/lib/plugins/stock_chat_frontend.dart'),
       for (final path in [
-        'app/lib/ui/chat',
+        'app/lib/ui/session',
+        'app/lib/ui/execution',
         'app/lib/ui/activity',
         'app/lib/ui/inspection',
       ])
@@ -708,7 +746,8 @@ void main() {
         'command_tools_backend|dart|plugins/command_tools/packages/backend|test',
         'agents_md_plugin|dart|plugins/agents_md|test',
         'agents_md_backend|dart|plugins/agents_md/packages/backend|test',
-        'chat_strategy_plugin|dart|plugins/chat_strategy|test',
+        'chat_strategy_contract|dart|plugins/chat_strategy/packages/contract|test',
+        'chat_strategy_backend|dart|plugins/chat_strategy/packages/backend|test',
         'local_directory_project_selector_frontend|flutter|plugins/local_directory_project_selector/packages/frontend|test',
         'scripted_model_contract|dart|plugins/scripted_model/packages/contract|test --timeout 4m',
         'scripted_model_backend|dart|plugins/scripted_model/packages/backend|test',

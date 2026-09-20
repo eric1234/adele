@@ -4,15 +4,16 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/model_provider_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/resource_cleanup.dart';
-import 'package:adele_desktop/development/agent/development_self_hosting.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:agent_kernel/agent_kernel.dart';
-import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
+import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import '../../../tool/self_hosting/development_self_hosting.dart';
+
 const String sourceCodingStrategyPath =
-    'plugins/chat_strategy/lib/chat_strategy_plugin.dart';
+    'plugins/chat_strategy/packages/backend/lib/chat_strategy_backend.dart';
 const String sourceCodingPrompt =
     'Locate the maintained ADELE file that declares '
     'ChatSessionState. Use search to locate it, then use '
@@ -117,7 +118,8 @@ final class SourceCodingLiveHarness {
           identity: '$identity-source-live',
           lifecycle: _topology.lifecycle,
           contextComposer: _topology.contextComposer,
-          sessions: _topology.chat.sessions,
+          sessions: _topology.chatSession,
+          resolvedStrategy: _topology.resolvedStrategy,
           sessionId: sessionId,
           prompt: userPrompt,
           instructions: developmentInstructions,
@@ -131,7 +133,10 @@ final class SourceCodingLiveHarness {
         result.executionStackTrace!,
       );
     }
-    return SourceCodingLiveResult(run: result.run, session: result.session);
+    return SourceCodingLiveResult(
+      run: result.run,
+      session: result.sessionSnapshot,
+    );
   }
 
   String get projectSourcePath => _topology.projectSource.path;
@@ -214,7 +219,7 @@ final class SourceCodingLiveResult {
   const SourceCodingLiveResult({required this.run, required this.session});
 
   final AgentRun run;
-  final ChatSessionState session;
+  final ChatSessionSnapshot session;
 }
 
 /// A prepared tool invocation and its unique terminal outcome in a Run journal.
@@ -421,8 +426,8 @@ void expectSuccessfulSourceCodingRun({
     contains(sourceCodingStrategyPath),
   );
 
-  final String answer =
-      (result.session.snapshot().entries.last as ChatAssistantMessage).content;
+  expect(result.session.entries.last.role, 'assistant');
+  final String answer = result.session.entries.last.content;
   expect(answer.trim(), isNotEmpty);
   expect(answer, contains(sourceCodingStrategyPath));
   expect(answer.toLowerCase(), anyOf(contains('8'), contains('eight')));

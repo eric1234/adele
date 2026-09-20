@@ -7,8 +7,10 @@ const Map<String, List<Map<String, Object?>>> stockFrontendDescriptors = {
       'library': 'package:chat_strategy_frontend/chat_strategy_frontend.dart',
       'extensionId': 'dev.adele.plugin.chat-strategy.presentation',
       'strategyId': 'dev.adele.strategy.chat',
+      'displayName': 'Chat',
       'entrypoint': 'buildChat',
-      'hostAdapter': 'stock-chat-controller-v1',
+      'backendServices': ['chat.session'],
+      'strategyAffinity': 'owningBackend',
     },
   ],
   'dev.adele.plugin.filesystem-tools': [

@@ -5,12 +5,13 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
-import 'package:adele_desktop/development/agent/development_self_hosting.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
+
+import '../../tool/self_hosting/development_self_hosting.dart';
 
 const String _openAiPluginId = 'dev.adele.openai';
 

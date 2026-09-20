@@ -3,7 +3,7 @@ import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
-import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
+import 'package:chat_strategy_backend/chat_strategy_backend.dart';
 
 /// Canonical lifecycle for execution fixtures that do not access an Environment.
 final class ChatTestTopology {
@@ -43,6 +43,9 @@ final class ChatTestTopology {
   }
 
   final ChatStrategyPlugin chat = ChatStrategyPlugin();
+  late final ChatSessionBackend chatSession = ChatSessionBackend(chat.sessions);
+  ResolvedOrchestrationStrategy get resolvedStrategy =>
+      lifecycle.resolveSessionStrategy(session.id);
   late final ProductLifecycleCoordinator lifecycle;
   late final InferenceContextComposer contextComposer;
   late final Session session;

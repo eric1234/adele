@@ -161,8 +161,11 @@ substitute approval for rejection, or reuse authorization in another operation.
 Explicit close, terminal settlement, retirement, and connection shutdown release
 execution resources. Cleanup is authority-free and best-effort after failure;
 it cannot replace primary failure evidence or retarget a replacement generation.
-The deterministic app AOT fixtures prove this boundary. Stock Chat remains local,
-with retained `ChatSessionStore`; no Chat backend or remote history API is added.
+Installed `chat_strategy_backend` uses this boundary with a retained backend-owned
+`ChatSessionStore`. Its plugin-internal Session service and strategy share that
+store; the service is defined in Chat's contract, not in orchestration. Prepared
+Session hosting can pin a Run to the exact resolved strategy from the same backend
+connection used by its frontend, without exposing generation identities to plugins.
 
 ## Shared Semantic Values
 
@@ -388,14 +391,14 @@ rules are unchanged: already-resolved executable work cannot migrate.
 
 ## Boundaries
 
-The first executable consumer is headless stock `chat_strategy_plugin` under
-`plugins/chat_strategy`, registered as `dev.adele.strategy.chat` through the same
-in-process activation conventions as stock tool plugins. Chat owns conversation
-state and loop sequencing; this package owns neither Chat state nor Session
-lifecycle/storage. No new public package is required for this boundary.
-Chat's only direct production dependencies are `adele_orchestration` and
-`adele_plugin_api`; `agent_kernel` is absent from both its production and
-development dependencies.
+Stock Chat uses `plugins/chat_strategy/packages/{contract,backend,frontend}`.
+Its installed backend advertises `dev.adele.strategy.chat` through the generic
+remote strategy adapter and owns conversation state and loop sequencing. The
+root implementation package is retired. Backend and frontend share the
+plugin-owned Chat contract; neither orchestration nor the production application
+imports it. Backend execution depends on public orchestration and transport APIs,
+not `agent_kernel`. This package owns neither Chat history nor core Session
+lifecycle/storage.
 
 Chat contributes no context source and does not discover sources
 itself. It owns history, instructions (including automatic batch-narration

@@ -37,12 +37,15 @@ Runs own execution identity, a small lifecycle, interruptions, terminal failure,
 and a deterministic in-memory journal. Runs do not own durable strategy state,
 models, tool catalogs, context policy, or workflow sequencing.
 
-The bound orchestration strategy owns Session meaning. `chat_strategy_plugin`
-retains `ChatSessionState` by `SessionId`, with immutable canonical user/final
+The bound orchestration strategy owns Session meaning. Installed
+`chat_strategy_backend` retains `ChatSessionState` by `SessionId`, with immutable canonical user/final
 assistant snapshots reused across Runs. Intermediate model/native items,
 proposals, and tool results are Chat's Run-local replay, not canonical history.
 Instructions and a positive model-invocation budget are Chat-owned configuration
-snapshotted for each materialized Run.
+snapshotted for each materialized Run. Its remote strategy uses the public
+orchestration host surface; the kernel and application do not import Chat's
+contract or implementation. Chat's frontend reads canonical snapshots through its
+plugin-owned contract, separately from generic core Run activity and approval UI.
 
 The kernel has no `session.dart` or `context.dart`, and no `SessionEntry`,
 `UserSessionMessage`, `AssistantSessionMessage`, `SessionSnapshot`,

@@ -204,6 +204,18 @@ final class PluginExtensionActivation {
   final List<ExtensionRegistration> _registrations = [];
   Future<void>? _retiring;
 
+  /// Looks up the exact registration, never an extension ID or wrapper identity.
+  RemoteExtensionContext? originFor(ExtensionBinding<Object> binding) {
+    binding.validate();
+    for (final context in _contexts) {
+      if (context._registration?.owns(binding) ?? false) {
+        context.validate();
+        return context;
+      }
+    }
+    return null;
+  }
+
   static Future<PluginExtensionActivation> registerAdvertised({
     required PluginBackendConnection connection,
     required ExtensionRegistry registry,
@@ -275,6 +287,15 @@ final class PluginBackendActivation {
   final PluginCapabilityActivation _capabilities;
   final PluginExtensionActivation _extensions;
   Future<void>? _retiring;
+
+  RemoteExtensionContext? extensionOrigin(ExtensionBinding<Object> binding) =>
+      _extensions.originFor(binding);
+
+  void validate() {
+    if (_retiring != null || connection.isClosed) {
+      throw const PluginConnectionClosed('The backend activation is retired.');
+    }
+  }
 
   static Future<PluginBackendActivation> registerAdvertised({
     required PluginBackendConnection connection,

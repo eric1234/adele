@@ -26,6 +26,22 @@ Sources are listed in `contract_codegen.yaml` or passed with repeated `--source`
 options. Output is formatted, deterministic, and atomically replaced. Check
 mode reports stale output without writing.
 
+Frontend build tooling can call `ContractGenerator.generateEvalClient` to derive
+a client-only wire view from the same annotated contract. This bounded projection
+supports unary methods, scalar/nullable values, JSON maps, lists, value DTOs, and
+strict field validation using syntax supported by the pinned evaluator. Unsupported
+contract shapes fail generation; there is no native plugin-specific codec fallback.
+The projection is generated during EVC compilation rather than maintained as a
+second contract source or hand-written application adapter.
+
+`evalContractSupportSource` supplies the minimal interpreted request-channel and
+protocol-error types. A frontend combines its generated client with `adele_ui`'s
+owning-backend channel. Generic native hosting still enforces the prepared role's
+service allowlist, bounded structured data, exact backend generation, and
+presentation liveness. Native backend dispatchers continue using the normal
+generated part file. Channel failures remain failed Futures across the bounded
+eval client path; native generated clients retain declared-failure reconstruction.
+
 The generated part owns stable identifiers, codecs, typed clients, and backend
 dispatcher interfaces/implementations. Supported values are strings, booleans,
 integers, finite doubles, nullable forms, lists, enums, annotated values, and the

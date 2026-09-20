@@ -3,16 +3,20 @@ library;
 
 import 'dart:async';
 
+import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_orchestration/remote_orchestration.dart';
+import 'package:adele_orchestration/remote_orchestration_backend.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 
-final PluginId chatStrategyPluginId = PluginId(
-  'dev.adele.plugin.chat-strategy',
-);
+export 'package:chat_strategy_contract/chat_strategy_contract.dart';
 
-final OrchestrationStrategyId chatStrategyId = OrchestrationStrategyId(
-  'dev.adele.strategy.chat',
-);
+/// Stock Session instructions belong to Chat, not its host or presentation.
+const String chatDefaultInstructions =
+    'Inspect source with read/search tools as needed. Source mutations and '
+    'commands may be proposed when needed, but they require explicit user '
+    'approval before execution.';
 
 /// Chat-owned guidance included once in each Run's inference instructions.
 const String chatToolNarrationGuidance =
@@ -27,16 +31,249 @@ final class ChatStrategyPlugin {
 
   final ChatSessionStore sessions;
 
+  OrchestrationStrategyContribution get contribution =>
+      OrchestrationStrategyContribution(
+        strategyId: chatStrategyId,
+        materialize: (OrchestrationStrategyHostContext context) =>
+            _ChatExecution(context.host, sessions.obtain(context.session.id)),
+      );
+
   ExtensionRegistration activate(ExtensionRegistry extensions) =>
       extensions.register(
         point: orchestrationStrategyContributions,
-        id: ExtensionId('dev.adele.plugin.chat-strategy.orchestration'),
-        value: OrchestrationStrategyContribution(
-          strategyId: chatStrategyId,
-          materialize: (OrchestrationStrategyHostContext context) =>
-              _ChatExecution(context.host, sessions.obtain(context.session.id)),
-        ),
+        id: chatStrategyExtensionId,
+        value: contribution,
       );
+}
+
+/// The callable service and executable strategy share exactly one store.
+final class ChatSessionBackend implements ChatSessionService {
+  ChatSessionBackend(this.sessions);
+
+  final ChatSessionStore sessions;
+
+  ChatSessionState _session(String id) {
+    try {
+      return sessions.obtain(SessionId(id));
+    } on FormatException {
+      throw const ChatSessionFailure(
+        code: 'invalid_session',
+        message: 'Session identity must be nonempty with no outer whitespace.',
+        details: <String, Object?>{},
+      );
+    }
+  }
+
+  @override
+  Future<ChatSessionSnapshot> snapshot(String sessionId) async =>
+      _session(sessionId).snapshot();
+
+  @override
+  Future<ChatEntry> appendUserMessage(String sessionId, String content) async {
+    try {
+      return _session(sessionId).appendUserMessage(content);
+    } on FormatException {
+      throw const ChatSessionFailure(
+        code: 'invalid_content',
+        message: 'Chat message content must not be empty.',
+        details: <String, Object?>{},
+      );
+    }
+  }
+
+  @override
+  Future<void> configureSession(
+    String sessionId,
+    String instructions,
+    int maxModelInvocations,
+  ) async {
+    final session = _session(sessionId);
+    session._requireIdle();
+    try {
+      session.maxModelInvocations = maxModelInvocations;
+    } on ArgumentError {
+      throw const ChatSessionFailure(
+        code: 'invalid_configuration',
+        message: 'maxModelInvocations must be positive.',
+        details: <String, Object?>{},
+      );
+    }
+    session.instructions = instructions;
+  }
+}
+
+/// Publishes remote final history only after F3f acknowledges host completion.
+final class ChatRemoteOrchestrationBackend
+    implements RemoteOrchestrationService {
+  ChatRemoteOrchestrationBackend({
+    required this.sessions,
+    required AdeleRequestChannel Function(String context) hostChannel,
+  }) {
+    _backend = RemoteOrchestrationBackend(
+      routes: {
+        chatStrategyRouteId: OrchestrationStrategyContribution(
+          strategyId: chatStrategyId,
+          materialize: (context) {
+            final transaction = _materializing[context.session.id]!;
+            return transaction.execution = _ChatExecution(
+              context.host,
+              transaction.staged,
+            );
+          },
+        ),
+      },
+      hostChannel: hostChannel,
+    );
+  }
+
+  final ChatSessionStore sessions;
+  late final RemoteOrchestrationBackend _backend;
+  final Map<SessionId, _ChatHistoryTransaction> _materializing = {};
+  final Map<String, _ChatHistoryTransaction> _executions = {};
+  Future<void>? _closing;
+
+  @override
+  Future<String> materialize(
+    String routeId,
+    RemoteOrchestrationSession session,
+    String runId,
+  ) async {
+    _requireOpen();
+    final source = sessions.obtain(SessionId(session.sessionId));
+    final transaction = _ChatHistoryTransaction(source);
+    _materializing[source.id] = transaction;
+    try {
+      final id = await _backend.materialize(routeId, session, runId);
+      if (_closing != null) {
+        await _backend.release(id);
+        throw StateError('The Chat backend closed during materialization.');
+      }
+      _executions[id] = transaction;
+      return id;
+    } on Object {
+      transaction.finish(commit: false);
+      rethrow;
+    } finally {
+      _materializing.remove(source.id);
+    }
+  }
+
+  @override
+  Future<RemoteRunState> start(
+    String executionId,
+    String hostInvocationContext,
+  ) => _advance(executionId, hostInvocationContext, null);
+
+  @override
+  Future<RemoteRunState> resolveApproval(
+    String executionId,
+    RemoteApprovalResolution resolution,
+    String hostInvocationContext,
+  ) => _advance(executionId, hostInvocationContext, resolution);
+
+  Future<RemoteRunState> _advance(
+    String id,
+    String context,
+    RemoteApprovalResolution? resolution,
+  ) async {
+    _requireOpen();
+    final transaction = _executions[id];
+    if (transaction == null) {
+      throw const InvalidRunOperation('Unknown Chat execution.');
+    }
+    if (transaction.advancing != null || transaction.releasing != null) {
+      throw const InvalidRunOperation('The Chat execution is busy or closed.');
+    }
+    final settled = Completer<void>();
+    transaction.advancing = settled.future;
+    try {
+      final state = resolution == null
+          ? await _backend.start(id, context)
+          : await _backend.resolveApproval(id, resolution, context);
+      if (state != RemoteRunState.waiting) {
+        transaction.finish(commit: state == RemoteRunState.completed);
+        _executions.remove(id);
+      }
+      return state;
+    } on Object {
+      // F3f closes after advancement errors, but retains preflight rejections
+      // (such as another start while waiting) for a later valid operation.
+      if (transaction.execution!._closed) {
+        transaction.finish(commit: false);
+        _executions.remove(id);
+      }
+      rethrow;
+    } finally {
+      transaction.advancing = null;
+      settled.complete();
+    }
+  }
+
+  @override
+  Future<void> release(String executionId) {
+    final transaction = _executions[executionId];
+    if (transaction == null) return _backend.release(executionId);
+    return transaction.releasing ??= _release(executionId, transaction);
+  }
+
+  Future<void> _release(String id, _ChatHistoryTransaction transaction) async {
+    await transaction.advancing;
+    try {
+      await _backend.release(id);
+    } finally {
+      transaction.finish(commit: false);
+      _executions.remove(id);
+    }
+  }
+
+  Future<void> close() => _closing ??= _close();
+
+  Future<void> _close() async {
+    try {
+      await _backend.close();
+    } finally {
+      for (final transaction in {
+        ..._materializing.values,
+        ..._executions.values,
+      }) {
+        await transaction.advancing;
+        transaction.finish(commit: false);
+      }
+      _executions.clear();
+    }
+  }
+
+  void _requireOpen() {
+    if (_closing != null) throw StateError('The Chat backend is closed.');
+  }
+}
+
+final class _ChatHistoryTransaction {
+  _ChatHistoryTransaction(this.source)
+    : staged = ChatSessionState(source.id)
+        .._instructions = source.instructions
+        .._maxModelInvocations = source.maxModelInvocations
+        .._entries.addAll(source._entries)
+        .._nextEntry = source._nextEntry {
+    source._acquire(this);
+  }
+
+  final ChatSessionState source;
+  final ChatSessionState staged;
+  _ChatExecution? execution;
+  Future<void>? advancing;
+  Future<void>? releasing;
+  bool _finished = false;
+
+  void finish({required bool commit}) {
+    if (_finished) return;
+    if (commit) {
+      source._entries.addAll(staged._entries.skip(source._entries.length));
+      source._nextEntry = staged._nextEntry;
+    }
+    _finished = true;
+    source._release(this);
+  }
 }
 
 /// Retains Chat-owned conversation state by canonical product Session identity.
@@ -52,13 +289,23 @@ final class ChatSessionState {
   ChatSessionState(this.id);
 
   final SessionId id;
-  String instructions = '';
+  String _instructions = chatDefaultInstructions;
   int _maxModelInvocations = 8;
   final List<ChatEntry> _entries = <ChatEntry>[];
+  int _nextEntry = 0;
+  Object? _execution;
+
+  String get instructions => _instructions;
+
+  set instructions(String value) {
+    _requireIdle();
+    _instructions = value;
+  }
 
   int get maxModelInvocations => _maxModelInvocations;
 
   set maxModelInvocations(int value) {
+    _requireIdle();
     if (value < 1) {
       throw ArgumentError.value(
         value,
@@ -69,32 +316,46 @@ final class ChatSessionState {
     _maxModelInvocations = value;
   }
 
-  void append(ChatEntry entry) => _entries.add(entry);
+  ChatEntry appendUserMessage(String content) {
+    _requireIdle();
+    return _append('user', content);
+  }
 
-  ChatSessionSnapshot snapshot() =>
-      ChatSessionSnapshot(id: id, entries: _entries);
-}
+  ChatEntry _append(String role, String content) {
+    _requireContent(content);
+    final entry = ChatEntry(
+      id: ChatEntryId('entry-${_nextEntry++}').value,
+      role: role,
+      content: content,
+    );
+    _entries.add(entry);
+    return entry;
+  }
 
-sealed class ChatEntry {
-  const ChatEntry(this.content);
+  ChatSessionSnapshot snapshot() => ChatSessionSnapshot(
+    entries: _entries,
+    instructions: instructions,
+    maxModelInvocations: maxModelInvocations,
+  );
 
-  final String content;
-}
+  void _requireIdle() {
+    if (_execution != null) {
+      throw ChatSessionFailure(
+        code: 'session_busy',
+        message: 'The Chat Session has an active execution.',
+        details: <String, Object?>{'sessionId': id.value},
+      );
+    }
+  }
 
-final class ChatUserMessage extends ChatEntry {
-  ChatUserMessage(String content) : super(_requireContent(content));
-}
+  void _acquire(Object execution) {
+    _requireIdle();
+    _execution = execution;
+  }
 
-final class ChatAssistantMessage extends ChatEntry {
-  ChatAssistantMessage(String content) : super(_requireContent(content));
-}
-
-final class ChatSessionSnapshot {
-  ChatSessionSnapshot({required this.id, required Iterable<ChatEntry> entries})
-    : entries = List<ChatEntry>.unmodifiable(entries);
-
-  final SessionId id;
-  final List<ChatEntry> entries;
+  void _release(Object execution) {
+    if (identical(_execution, execution)) _execution = null;
+  }
 }
 
 String _requireContent(String content) {
@@ -113,6 +374,7 @@ final class _ChatExecution implements OrchestrationExecution {
     if (host.sessionId != session.id) {
       throw ArgumentError('Run and Session identities must match.');
     }
+    session._acquire(this);
   }
 
   final OrchestrationExecutionHost host;
@@ -164,9 +426,10 @@ final class _ChatExecution implements OrchestrationExecution {
         input: <SemanticModelInputItem>[
           for (final ChatEntry entry in session.snapshot().entries)
             SemanticMessageInput(
-              role: switch (entry) {
-                ChatUserMessage() => SemanticMessageRole.user,
-                ChatAssistantMessage() => SemanticMessageRole.assistant,
+              role: switch (entry.role) {
+                'user' => SemanticMessageRole.user,
+                'assistant' => SemanticMessageRole.assistant,
+                _ => throw StateError('Invalid canonical Chat role.'),
               },
               content: entry.content,
             ),
@@ -207,7 +470,7 @@ final class _ChatExecution implements OrchestrationExecution {
           return;
         }
         host.validateBinding();
-        session.append(ChatAssistantMessage(text.toString()));
+        session._append('assistant', text.toString());
         host.complete();
         return;
     }
@@ -217,7 +480,7 @@ final class _ChatExecution implements OrchestrationExecution {
         return;
       }
       host.validateBinding();
-      session.append(ChatAssistantMessage(text.toString()));
+      session._append('assistant', text.toString());
       host.complete();
       return;
     }
@@ -330,6 +593,7 @@ final class _ChatExecution implements OrchestrationExecution {
       await _advanceSettled?.future;
       _pendingBatch = null;
       _runItems.clear();
+      session._release(this);
     });
   }
 }

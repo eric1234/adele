@@ -17,7 +17,7 @@ import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
-import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
+import 'package:chat_strategy_backend/chat_strategy_backend.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:resource_inspector_contract/resource_inspector_contract.dart';
@@ -225,7 +225,7 @@ void main() {
       addTearDown(topology.close);
       final ChatSessionState session = topology.chat.sessions.obtain(
         topology.session.id,
-      )..append(ChatUserMessage('Inspect the three Phase IV resources.'));
+      )..appendUserMessage('Inspect the three Phase IV resources.');
       final ToolCatalog catalog = ToolCatalog()..register(tool.registration);
       final SessionOrchestrationRun strategy =
           await createSessionOrchestrationRun(
@@ -338,7 +338,7 @@ void main() {
       expect(outbound, hasLength(2));
       expect(outbound[1]['parallel_tool_calls'], isTrue);
       expect(
-        (session.snapshot().entries.last as ChatAssistantMessage).content,
+        session.snapshot().entries.last.content,
         'The resource inspections are complete.',
       );
       final List<Object?> secondInput = outbound[1]['input']! as List<Object?>;
@@ -398,7 +398,7 @@ void main() {
     'searches and reads real ADELE source through four shared-host AOT backends',
     () async {
       const String strategyPath =
-          'plugins/chat_strategy/lib/chat_strategy_plugin.dart';
+          'plugins/chat_strategy/packages/backend/lib/chat_strategy_backend.dart';
       final Directory container = await Directory.systemTemp.createTemp(
         'adele-openai-environment-source-',
       );
@@ -690,10 +690,8 @@ void main() {
       final ChatSessionState session = chat.sessions.obtain(sessionId)
         ..instructions =
             'Use search to locate the requested declaration, then use read_file with the returned relative path before answering.'
-        ..append(
-          ChatUserMessage(
-            'Find where ChatSessionState is declared, inspect the source, and report its path and model invocation limit.',
-          ),
+        ..appendUserMessage(
+          'Find where ChatSessionState is declared, inspect the source, and report its path and model invocation limit.',
         );
       final SessionOrchestrationRun strategy =
           await createSessionOrchestrationRun(
@@ -717,7 +715,7 @@ void main() {
       expect(model.requestCount, 0);
       expect(outbound, hasLength(3));
       expect(
-        (session.snapshot().entries.last as ChatAssistantMessage).content,
+        session.snapshot().entries.last.content,
         '$strategyPath declares ChatSessionState and defaults its model-invocation limit to 8.',
       );
       final List<ToolInvocationPrepared> prepared = run.journal.records
@@ -809,7 +807,7 @@ Future<void> _createSourceRepository({
   const List<String> sourcePaths = <String>[
     'README.md',
     'app/lib/development/agent/development_agent_support.dart',
-    'plugins/chat_strategy/lib/chat_strategy_plugin.dart',
+    'plugins/chat_strategy/packages/backend/lib/chat_strategy_backend.dart',
   ];
   await source.create(recursive: true);
   for (final String relativePath in sourcePaths) {

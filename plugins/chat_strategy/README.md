@@ -1,40 +1,92 @@
 # Chat Strategy
 
-`chat_strategy_plugin` is an independently activatable, pure-Dart stock plugin.
-It contributes `dev.adele.strategy.chat` through the public
+Chat is an independently activatable stock plugin. Its pure-Dart
+`chat_strategy_backend` contributes `dev.adele.strategy.chat` through the public
 `adele_orchestration` extension point. Its plugin identity is
 `dev.adele.plugin.chat-strategy`; its registration identity is
 `dev.adele.plugin.chat-strategy.orchestration`.
 
-The plugin also has a separate Flutter package at `packages/frontend`, named
-`chat_strategy_frontend`, for the minimal evaluated history/composer. The root
-`chat_strategy_plugin` package remains headless and pure Dart; neither package
-depends on the other's implementation.
+The plugin has three packages: pure-Dart `packages/contract`
+(`chat_strategy_contract`), pure-Dart `packages/backend`
+(`chat_strategy_backend`), and Flutter `packages/frontend`
+(`chat_strategy_frontend`). The root implementation package is retired.
+Backend and frontend depend on the contract, never on one another.
 
 ## Activation And State
 
-Create `ChatStrategyPlugin` and activate it with an `ExtensionRegistry` before
-creating a canonical Session bound to `chatStrategyId`. Application core looks
-up that Session by `SessionId`, resolves its stored strategy once per Run, and
-materializes the exact contribution with
+The backend entrypoint `packages/backend/bin/chat_strategy_backend.dart` owns
+its router and advertises only the existing orchestration strategy extension.
+The plugin-internal `ChatSessionService` remains callable on that same backend
+router without a capability advertisement or semantic provider discovery.
+Both dispatchers share one `ChatSessionStore`.
+Chat-owned `ChatRemoteOrchestrationBackend` composes the unchanged public F3f
+`RemoteOrchestrationBackend`, with fresh operation-scoped host calls on start/resume.
+Each exact remote execution runs the existing sequencing implementation against
+an execution-local copy of canonical history and configuration. Its final
+assistant entry is published only after F3f returns an acknowledged completed
+advancement. While the terminal host transition is pending, canonical snapshots
+still contain only previously accepted history. Rejected or mismatched terminal
+acknowledgements discard the candidate rather than exposing or rolling back a
+fabricated final entry. The canonical Session claim spans commit or discard as
+well as execution close; accepted user entries and prior history remain intact.
+No new extension point, host callback, or static production activation is needed.
+Backend availability is independent of the frontend and model credentials.
+
+Create a canonical Session using the strategy selected by its presentation.
+For Chat's `owningBackend` affinity, generic hosting validates and retains the
+exact strategy binding from its sibling backend before Session publication.
+Application core looks up that Session by `SessionId` and materializes the pinned
+contribution with
 `OrchestrationStrategyHostContext(session: ..., host: ...)`. Callers do not
 select another strategy ID after Session creation.
 The product `Session` retains its canonical identity and selected strategy;
-Chat owns conversation state separately in `plugin.sessions.obtain(session.id)`.
+Chat owns conversation state separately in its backend store.
 The returned execution exposes only the public `start` and `resolveApproval`
 operations, not a Chat-specific loop implementation.
 
-`ChatSessionStore` retains one `ChatSessionState` per Session ID. A store can be
-injected into a plugin instance. Standalone `ChatSessionState(id)` instances are
-also available for fixtures. Append `ChatUserMessage` before a Run; Chat appends
-`ChatAssistantMessage` only for a nonblank final answer or refusal. Messages
-reject blank content without trimming valid content. `snapshot()` returns an
-immutable copy of the canonical entries. No native items, tool proposals,
-intermediate assistant text, or tool results enter this conversation history.
+`ChatSessionServiceClient` and `ChatSessionServiceDispatcher` are generated from
+the annotated contract through `dart tools/adele.dart generate`. The public API is:
 
-Configure `instructions` and positive `maxModelInvocations` on the state before
-materialization. Each execution captures those two settings. The default budget
-is eight model invocations.
+```dart
+Future<ChatSessionSnapshot> snapshot(String sessionId);
+Future<ChatEntry> appendUserMessage(String sessionId, String content);
+Future<void> configureSession(
+  String sessionId, String instructions, int maxModelInvocations);
+```
+
+`ChatSessionSnapshot` contains immutable `entries`, `instructions`, and
+`maxModelInvocations`. Each `ChatEntry` contains `String id`, `String role`
+(`user` or `assistant`), and `String content`. `ChatEntryId` is a plugin-owned
+opaque occurrence identity, transported as a string to keep interpreted DTOs
+simple. IDs are allocated at append, unique within a retained Session, and
+stable across later snapshots even when messages have identical content.
+
+Only the strategy can append a final assistant answer or refusal; the service
+exposes no assistant/history-replacement operation. Blank messages are rejected
+without trimming valid content. Native items, tool proposals, intermediate
+assistant text, and tool results remain outside canonical history.
+
+`configureSession` replaces both settings atomically. The default budget is eight
+model invocations and must remain positive. Stock source-tool/approval guidance
+is `chatDefaultInstructions` in the backend, not a host/frontend default.
+Each execution captures configuration at materialization. Materialization claims
+the Session until execution close finishes, including approval waits and terminal
+host settlement. Appends, configuration, and another materialization cannot
+change a claimed Session. Snapshots and other Sessions remain usable.
+The service returns declared `ChatSessionFailure` codes `session_busy`,
+`invalid_session`, `invalid_content`, or `invalid_configuration`.
+The remote execution owner closes on terminal settlement or errors; explicit
+release and backend shutdown also release the claim without resolving approvals.
+The in-process `ChatStrategyPlugin.activate` helper is retained for backend/host
+fixtures; those callers must close each execution before reconfiguring or
+appending the next prompt.
+
+The generated service ID is `chat.session` and orchestration route is `chat`.
+The owning frontend uses its exact backend channel. Explicit native consumers
+and remote integration tests create `ChatSessionServiceClient` from
+`connection.channelFor(defaultConfigurationContext, chatSessionServiceId)` on
+the captured connection/context, not through the capability registry. Generic
+app activation therefore registers no semantic Chat Session service.
 
 ## Tool Narration Protocol
 
@@ -80,10 +132,13 @@ for a model continuation after every batch that does run.
 The public host owns lifecycle transitions, binding validity, inference,
 journaling, proposal resolution, policy, approval authorization, and tool
 execution. Chat consumes semantic results only and validates the binding before
-appending final assistant output and completing. This package has no kernel,
-provider, Flutter, or runtime dependency. Tests exercise activation, resolver
-materialization, conversation state, and sequencing through a fake public host;
-internal execution-evidence checks belong to the host adapter's tests.
+appending final assistant output and completing. Production contract/backend
+packages have no kernel, concrete provider, Flutter, or internal runtime dependency.
+The original state and sequencing tests are migrated, not duplicated, under
+`packages/backend/test`. Standalone entrypoint tests also exercise generated
+forward/reverse transport, advertisements, canonical IDs, configuration, active
+mutation guards, approvals, terminal/error cleanup, and shutdown. Internal
+execution-evidence checks belong to the host adapter's tests.
 
 Chat submits `StrategyInferenceMaterial` with its composed Chat guidance and
 Session instructions, ordered history projection, and Run-local replay. It
@@ -126,20 +181,24 @@ app run/build. Runtime activation only loads prepared bytecode; it never compile
 source or falls back to an app-owned native Chat view. Preparation and deployment
 inputs are documented in [`app/README.md`](../../app/README.md#prepared-chat-frontend).
 
-`app/lib/plugins/stock_chat_frontend.dart` is the provisional activation proxy and
-adapter to `ChatController`, which intentionally remains in `app/lib/ui/chat`.
-Immutable primitive message/activity snapshots, composer-enabled state,
-string submission with synchronous boolean acceptance, and a host-built activity
-widget slot for emitted opaque IDs cross the eval bridge. That native wrapper
-owns inspect interaction and hosts compact plugin UI in its own prepared runtime,
-without giving Chat plugin-specific fields or arbitrary identity construction.
-The canonical store and controller are not shared by identity with the frontend.
-Plugin frontend generations and individual presentation instances are distinct;
-view resources follow widget lifecycle and exact registration liveness.
+The evaluated frontend owns its generated `ChatSessionServiceClient` through the
+public owning-backend bridge. It reads canonical snapshots and appends a user
+message before asking the separate Session execution bridge to start a Run.
+The accepted entry ID anchors view-local activity to that exact occurrence.
+No canonical store, native Chat controller, or execution object is shared by
+identity with the frontend. The owning channel is generation-bound; it does not
+resolve a replacement backend or silently substitute local Chat state.
 
-The controller observes the Run through public `adele_orchestration`'s read-only
-`RunActivitySource`, not by passing a journal to the frontend. Each successfully
-completed model invocation counts its proposals and native
+The separate Session execution bridge supplies scheduling and read-only activity,
+not Chat canonical content. Host-built activity slots and inspect operations use
+only opaque handles issued to that presentation, without granting arbitrary
+identity construction or approval authority. Plugin frontend generations and
+individual presentation instances are distinct; view resources follow widget
+lifecycle and exact registration liveness.
+
+The host projects the Run through public `adele_orchestration`'s read-only
+`RunActivitySource`, not by passing a journal to the frontend. Chat's interpreted
+frontend counts each successfully completed model invocation's proposals and native
 `output.presentation != null` occurrences, excluding narration and opaque native
 items. One appears directly using plugin compact presentation or factual alias /
 safe compact-text fallback. Two or more form one lightweight group keyed by exact
@@ -152,25 +211,24 @@ The interpreted timeline places activity between the initiating user message and
 the final assistant response: one direct compact body or a clickable
 `ACTIVITY: ...` group summary, never rich tool bodies or execution controls.
 Completed activity and its structured evidence
-are retained separately from Chat history for the controller lifetime, including
+are retained separately from Chat history for the presentation lifetime, including
 follow-up prompts. Reconstructing a Session cannot restore historical activity
 until persistence exists. Raw native model output remains ordered and opaque in
 the read model, separate from immutable backend-supplied `ModelNativePresentation`.
 `adele_ui` contributions supply rich Inspection by exact safe presentation kind,
 not raw-output projection. Missing rich presentation leaves safe activity intact.
-Generic Chat escapes compact display controls and retains the compact bound after
-escaping; the provider frontend escapes full text. Generic Chat never parses
+Chat presentation escapes compact display controls and retains the compact bound after
+escaping; the provider frontend escapes full text. Chat never parses
 OpenAI envelopes or replays safe presentation. The common Inspection host
 interleaves compact tool/native rows by exact `output.sequence`. Common clicks
 prepend group or individual cards to a retained newest-first stack; each card
 independently collapses/expands or dismisses without changing other cards.
 See [model-native activity presentation](../../docs/architecture/overview.md#model-native-activity-presentation).
-Subscriptions detach on close; the bridge coalesces frontend updates post-frame
-and rejects late updates after disposal.
+Subscriptions detach on close and reject late updates after disposal.
 
 Common Run status, `PendingToolApproval`, approval cards, and display safety belong
 to `app/lib/ui/execution`, outside the evaluated widget. No execution or approval
-objects or approval decisions cross the Chat bridge. Host policy and exact
+objects or approval decisions cross the generic Session bridge. Host policy and exact
 invocation authorization remain the security authority. Missing or failed
 presentation does not invalidate the Session or backend execution.
 

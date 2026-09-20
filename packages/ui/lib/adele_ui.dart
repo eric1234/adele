@@ -24,10 +24,12 @@ sessionPresentationContributions =
 final class SessionPresentationContribution {
   const SessionPresentationContribution({
     required this.strategyId,
+    required this.displayName,
     required this.createPresentation,
   });
 
   final OrchestrationStrategyId strategyId;
+  final String displayName;
 
   /// Constructs presentation for the canonical Session without creating product
   /// state or starting execution. Presentation resources follow widget lifecycle.

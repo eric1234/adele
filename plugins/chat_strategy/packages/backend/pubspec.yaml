@@ -1,5 +1,5 @@
-name: chat_strategy_plugin
-description: Stock ADELE Chat orchestration strategy and in-memory conversation state.
+name: chat_strategy_backend
+description: Remote stock Chat strategy and canonical in-memory Session state.
 publish_to: none
 version: 0.1.0
 
@@ -9,8 +9,11 @@ environment:
 resolution: workspace
 
 dependencies:
+  adele_contract: ^0.1.0
   adele_orchestration: ^0.1.0
   adele_plugin_api: ^0.1.0
+  adele_plugin_backend_support: ^0.1.0
+  chat_strategy_contract: ^0.1.0
 
 dev_dependencies:
   adele_product: ^0.1.0

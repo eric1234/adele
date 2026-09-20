@@ -211,7 +211,10 @@ void main() {
         OrchestrationStrategyId(_session['strategyId']!),
       );
       expect(session.entrypoint, _session['entrypoint']);
-      expect(session.hostAdapter, _session['hostAdapter']);
+      expect(session.displayName, _session['displayName']);
+      expect(session.backendServices, isEmpty);
+      expect(session.strategyAffinity, PreparedStrategyAffinity.independent);
+      expect(() => session.backendServices.clear(), throwsUnsupportedError);
       final native =
           frontend.presentations[2] as PreparedModelNativeActivityPresentation;
       expect(native.library, _modelNativeActivity['library']);
@@ -334,6 +337,56 @@ void main() {
     expect(frontend.presentations.single, isA<PreparedSessionPresentation>());
     expect(frontend.extensions, isEmpty);
     expect(() => frontend.extensions.clear(), throwsUnsupportedError);
+  });
+
+  for (final affinity in PreparedStrategyAffinity.values) {
+    test(
+      'session metadata decodes ${affinity.name} and backend services',
+      () async {
+        await install(
+          'session',
+          _manifest(
+            components: {
+              'frontend': _frontend(
+                presentations: [
+                  {
+                    ..._session,
+                    'strategyAffinity': affinity.name,
+                    'backendServices': ['history.v1', 'testService'],
+                  },
+                ],
+              ),
+            },
+          ),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.issues, isEmpty);
+        final descriptor =
+            catalog.installations.single.frontend!.presentations.single
+                as PreparedSessionPresentation;
+        expect(descriptor.strategyAffinity, affinity);
+        expect(descriptor.backendServices, ['history.v1', 'testService']);
+      },
+    );
+  }
+
+  test('session constructor snapshots and validates the service allowlist', () {
+    PreparedSessionPresentation descriptor(List<String> services) =>
+        PreparedSessionPresentation(
+          extensionId: ExtensionId(_session['extensionId']!),
+          strategyId: OrchestrationStrategyId(_session['strategyId']!),
+          displayName: 'Session',
+          library: _session['library']!,
+          entrypoint: _session['entrypoint']!,
+          backendServices: services,
+        );
+    final services = ['history.v1'];
+    final prepared = descriptor(services);
+    services.clear();
+    expect(prepared.backendServices, ['history.v1']);
+    expect(() => prepared.backendServices.add('other'), throwsUnsupportedError);
+    expect(() => descriptor(['a', 'a']), throwsFormatException);
+    expect(() => descriptor(['not a service']), throwsFormatException);
   });
 
   test('OpenAI backend and native frontend are one installation', () async {
@@ -537,6 +590,36 @@ void main() {
     'unknown role': {..._session, 'role': 'future'},
     'case-sensitive role': {..._session, 'role': 'Session'},
     'foreign session field': {..._session, 'toolId': 'org.example.tool'},
+    'removed hostAdapter': {..._session, 'hostAdapter': 'example.session.v1'},
+    for (final value in <Object?>[
+      null,
+      true,
+      1,
+      [],
+      {},
+      '',
+      'owning-backend',
+      'OwningBackend',
+    ])
+      'invalid strategyAffinity $value': {
+        ..._session,
+        'strategyAffinity': value,
+      },
+    for (final value in <Object?>[
+      null,
+      true,
+      1,
+      '',
+      {},
+      ['a', 'a'],
+      [1],
+      [null],
+      [''],
+      [' spaced'],
+      ['path/service'],
+      ['a..b'],
+    ])
+      'invalid backendServices $value': {..._session, 'backendServices': value},
     'foreign tool field': {..._toolActivity, 'presentationKind': 'kind'},
     'foreign native field': {..._modelNativeActivity, 'hostAdapter': 'adapter'},
     for (final descriptor in [_session, _toolActivity, _modelNativeActivity])
@@ -1248,7 +1331,7 @@ const _session = {
   'extensionId': 'org.example.session',
   'strategyId': 'org.example.strategy',
   'entrypoint': 'buildSession',
-  'hostAdapter': 'example.session.v1',
+  'displayName': 'Example Session',
 };
 
 const _projectSelector = {

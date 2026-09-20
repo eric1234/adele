@@ -100,7 +100,7 @@ final class _ToolActivityCompactHostState
 
   @override
   Widget build(BuildContext context) {
-    _resolve();
+    if (!PreparedFrontendRetention.isRetaining(context)) _resolve();
     if (_ambiguous) {
       return Column(
         mainAxisSize: MainAxisSize.min,

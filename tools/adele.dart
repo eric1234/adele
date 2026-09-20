@@ -177,8 +177,14 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
-    name: 'chat_strategy_plugin',
-    path: 'plugins/chat_strategy',
+    name: 'chat_strategy_contract',
+    path: 'plugins/chat_strategy/packages/contract',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
+    name: 'chat_strategy_backend',
+    path: 'plugins/chat_strategy/packages/backend',
     executable: 'dart',
     arguments: <String>['test'],
   ),
@@ -319,7 +325,16 @@ analysisTargets = <({String name, String path, bool flutter})>[
     path: 'plugins/agents_md/packages/backend',
     flutter: false,
   ),
-  (name: 'chat_strategy_plugin', path: 'plugins/chat_strategy', flutter: false),
+  (
+    name: 'chat_strategy_contract',
+    path: 'plugins/chat_strategy/packages/contract',
+    flutter: false,
+  ),
+  (
+    name: 'chat_strategy_backend',
+    path: 'plugins/chat_strategy/packages/backend',
+    flutter: false,
+  ),
   (
     name: 'chat_strategy_frontend',
     path: 'plugins/chat_strategy/packages/frontend',

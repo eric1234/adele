@@ -12,7 +12,7 @@ import '../core/resource_cleanup.dart';
 import 'directory_picker_bridge.dart';
 import 'model_native_activity_bridge.dart';
 import 'prepared_frontend.dart';
-import 'prepared_session_adapter.dart';
+import 'prepared_session_host.dart';
 import 'tool_activity_inspection_bridge.dart';
 
 enum ApplicationFrontendState { unconfigured, starting, ready, closing, closed }
@@ -30,12 +30,12 @@ enum InstalledFrontendState {
 final class ApplicationFrontendBootstrap {
   ApplicationFrontendBootstrap({
     required ExtensionRegistry extensions,
-    Map<String, PreparedSessionAdapter> sessionAdapters = const {},
+    PreparedSessionHost? sessionHost,
   }) : _extensions = extensions,
-       _sessionAdapters = Map.unmodifiable(sessionAdapters);
+       _sessionHost = sessionHost;
 
   final ExtensionRegistry _extensions;
-  final Map<String, PreparedSessionAdapter> _sessionAdapters;
+  final PreparedSessionHost? _sessionHost;
   final List<InstalledFrontendActivation> _generations = [];
   final StreamController<ApplicationFrontendState> _changes =
       StreamController<ApplicationFrontendState>.broadcast();
@@ -63,7 +63,7 @@ final class ApplicationFrontendBootstrap {
           InstalledFrontendActivation._(
             installation,
             _extensions,
-            _sessionAdapters,
+            _sessionHost,
           ),
     ]);
     _setState(ApplicationFrontendState.starting);
@@ -98,6 +98,21 @@ final class ApplicationFrontendBootstrap {
     }
   }
 
+  /// Flutter awaits exit observers sequentially. Retain their mounted widgets
+  /// while revoking plugin authority; detach/dispose releases the retained UI.
+  void retainPresentations() {
+    stopStarting();
+    for (final generation in _generations) {
+      generation._generation?.retainPresentations();
+    }
+  }
+
+  void releasePresentations() {
+    for (final generation in _generations) {
+      generation._generation?.releasePresentations();
+    }
+  }
+
   Future<void> close() {
     if (_closing != null) return _closing!;
     stopStarting();
@@ -112,11 +127,7 @@ final class ApplicationFrontendBootstrap {
     try {
       await closeResources([
         () async => await Future.wait(retiring),
-        // One adapter can be named by several host-adapter keys.
-        for (final adapter
-            in Set<PreparedSessionAdapter>.identity()
-              ..addAll(_sessionAdapters.values))
-          adapter.close,
+        if (_sessionHost case final host?) host.close,
       ]);
     } finally {
       _setState(ApplicationFrontendState.closed);
@@ -136,12 +147,12 @@ final class InstalledFrontendActivation {
   InstalledFrontendActivation._(
     this.installation,
     this._extensions,
-    this._sessionAdapters,
+    this._sessionHost,
   );
 
   final PreparedPluginInstallation installation;
   final ExtensionRegistry _extensions;
-  final Map<String, PreparedSessionAdapter> _sessionAdapters;
+  final PreparedSessionHost? _sessionHost;
   final List<(String, ExtensionId, ExtensionRegistration)> _registrations = [];
   InstalledFrontendState _state = InstalledFrontendState.pending;
   Object? _failure;
@@ -182,29 +193,36 @@ final class InstalledFrontendActivation {
         if (_closed) return;
         switch (descriptor) {
           case PreparedSessionPresentation():
-            final adapter = _sessionAdapters[descriptor.hostAdapter];
-            if (adapter == null) {
-              throw StateError(
-                'Unknown prepared Session adapter: ${descriptor.hostAdapter}.',
-              );
-            }
-            adapter.validate(descriptor);
-            if (_closed) return;
             _register(
               point: sessionPresentationContributions,
               id: descriptor.extensionId,
-              contribution: (isActive) => SessionPresentationContribution(
-                strategyId: descriptor.strategyId,
-                createPresentation: (session) {
-                  _requireActive(isActive);
-                  return adapter.createPresentation(
-                    generation: generation,
-                    descriptor: descriptor,
-                    session: session,
-                    isActive: isActive,
-                  );
-                },
-              ),
+              contribution: (isActive) {
+                late final SessionPresentationContribution contribution;
+                contribution = SessionPresentationContribution(
+                  strategyId: descriptor.strategyId,
+                  displayName: descriptor.displayName,
+                  createPresentation: (session) {
+                    _requireActive(isActive);
+                    final host = _sessionHost;
+                    if (host == null) {
+                      throw StateError('Session hosting is unavailable.');
+                    }
+                    return host.createPresentation(
+                      generation: generation,
+                      contribution: contribution,
+                      descriptor: descriptor,
+                      session: session,
+                      isActive: isActive,
+                    );
+                  },
+                );
+                _sessionHost?.registerMetadata(
+                  contribution,
+                  installation,
+                  descriptor,
+                );
+                return contribution;
+              },
             );
           case PreparedToolActivityPresentation():
             Widget create(

@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart' show TaskId;
-import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
+import 'package:chat_strategy_backend/chat_strategy_backend.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -50,7 +50,10 @@ void main() {
       };
       final Future<void> advancing = fixture.execution.start();
       await entered.future;
-      fixture.state.instructions = 'Only for the next Run.';
+      expect(
+        () => fixture.state.instructions = 'Only for the next Run.',
+        throwsA(isA<ChatSessionFailure>()),
+      );
       bool closed = false;
       final Future<void> closing = fixture.execution.close();
       final Future<void> observed = closing.then((_) => closed = true);
@@ -313,7 +316,7 @@ void main() {
       fixture.host.onComplete = () {
         expect(
           fixture.state.snapshot().entries.last,
-          isA<ChatAssistantMessage>(),
+          isA<ChatEntry>().having((entry) => entry.role, 'role', 'assistant'),
         );
         expect(
           fixture.state.snapshot().entries.last.content,
@@ -925,13 +928,23 @@ void main() {
         maxModelInvocations: 2,
         turns: <StrategyModelTurn>[_batchTurn(proposalCount: 1), _batchTurn()],
       );
-      fixture.state
-        ..instructions = 'Changed after materialization.'
-        ..maxModelInvocations = 1;
+      expect(
+        () => fixture.state.instructions = 'Changed after materialization.',
+        throwsA(isA<ChatSessionFailure>()),
+      );
+      expect(
+        () => fixture.state.maxModelInvocations = 1,
+        throwsA(isA<ChatSessionFailure>()),
+      );
       fixture.host.onProposal = (tools, proposal) async {
-        fixture.state
-          ..instructions = 'Changed during execution.'
-          ..maxModelInvocations = 20;
+        expect(
+          () => fixture.state.instructions = 'Changed during execution.',
+          throwsA(isA<ChatSessionFailure>()),
+        );
+        expect(
+          () => fixture.state.maxModelInvocations = 20,
+          throwsA(isA<ChatSessionFailure>()),
+        );
         return StrategyToolContinuation(_outcome(proposal.providerCallId));
       };
 
@@ -962,8 +975,9 @@ void main() {
       final _Fixture fixture = await _Fixture.create(maxModelInvocations: 2);
       await fixture.execution.start();
       final ChatSessionSnapshot afterFirst = fixture.state.snapshot();
+      await fixture.execution.close();
       fixture.plugin.sessions.obtain(SessionId(fixture.session.id.value))
-        ..append(ChatUserMessage('Now explain.'))
+        ..appendUserMessage('Now explain.')
         ..instructions = 'Second Run instructions.'
         ..maxModelInvocations = 2;
       final _Host secondHost = _Host(
@@ -1041,13 +1055,8 @@ void main() {
         <String>['Perform steps.', 'Complete.', 'Now explain.', 'Explained.'],
       );
       expect(
-        fixture.state.snapshot().entries.map((entry) => entry.runtimeType),
-        <Type>[
-          ChatUserMessage,
-          ChatAssistantMessage,
-          ChatUserMessage,
-          ChatAssistantMessage,
-        ],
+        fixture.state.snapshot().entries.map((entry) => entry.role),
+        <String>['user', 'assistant', 'user', 'assistant'],
       );
     },
   );
@@ -1113,7 +1122,8 @@ void main() {
         <String>['Perform steps.', 'Complete.'],
       );
 
-      fixture.state.append(ChatUserMessage('Follow up.'));
+      await fixture.execution.close();
+      fixture.state.appendUserMessage('Follow up.');
       final _Host nextHost = _Host(
         RunId('run-presentation-followup'),
         fixture.session.id,
@@ -1345,7 +1355,7 @@ final class _Fixture {
     state = plugin.sessions.obtain(session.id)
       ..instructions = instructions
       ..maxModelInvocations = maxModelInvocations
-      ..append(ChatUserMessage('Perform steps.'));
+      ..appendUserMessage('Perform steps.');
     host = _Host(
       RunId('run-1'),
       session.id,

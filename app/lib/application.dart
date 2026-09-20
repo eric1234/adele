@@ -7,10 +7,11 @@ import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
-import 'package:adele_desktop/plugins/stock_chat_execution_status.dart';
-import 'package:adele_desktop/plugins/stock_chat_frontend.dart';
+import 'package:adele_desktop/frontend/prepared_frontend.dart';
+import 'package:adele_desktop/frontend/prepared_session_host.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
-import 'package:adele_desktop/ui/chat/chat_controller.dart';
+import 'package:adele_desktop/ui/execution/run_execution_status.dart';
+import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
 import 'package:adele_desktop/ui/session/session_presentation_host.dart';
@@ -18,10 +19,9 @@ import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_desktop/ui/shell/task_title_form.dart';
 import 'package:adele_desktop/ui/theme/adele_theme.dart';
 import 'package:adele_environment/adele_environment.dart';
-import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
-import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
+import 'package:adele_ui/adele_ui.dart';
 import 'package:flutter/material.dart';
 
 final class AdeleApplication extends StatefulWidget {
@@ -62,35 +62,37 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   String? _taskError;
   StockChatGptConfiguration? _chatGptConfiguration;
   bool _modelConfigurationFailed = false;
-  ChatController? _chat;
+  SessionExecutionController? _execution;
   Session? _session;
-  late final StockChatFrontend _chatFrontendAdapter;
+  late final PreparedSessionHost _sessionHost;
   late final ApplicationFrontendBootstrap _frontends;
   bool _frontendsStarted = false;
   String? _sessionError;
   final WindowInspection _inspection = WindowInspection();
+  final ValueNotifier<bool> _retainingPresentations = ValueNotifier(false);
 
   @override
   void initState() {
     super.initState();
     _runtime = widget.createRuntime();
-    _chatFrontendAdapter = StockChatFrontend(
+    _sessionHost = PreparedSessionHost(
       extensions: _runtime.extensions,
+      backends: _runtime.plugins,
       inspectActivity: _inspectActivity,
       controllerForSession: (session) {
-        final controller = _chat;
+        final controller = _execution;
         if (_closing != null ||
             controller == null ||
             controller.isClosed ||
             !identical(controller.session, session)) {
-          throw StateError('No stock interaction controller for this Session.');
+          throw StateError('No execution controller for this Session.');
         }
         return controller;
       },
     );
     _frontends = ApplicationFrontendBootstrap(
       extensions: _runtime.extensions,
-      sessionAdapters: {'stock-chat-controller-v1': _chatFrontendAdapter},
+      sessionHost: _sessionHost,
     );
     _inspection.addListener(_inspectionChanged);
     try {
@@ -105,19 +107,25 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         _frontendsStarted = true;
         unawaited(_frontends.start(catalog));
       }
-      _chatFrontendAdapter.refresh();
+      _execution?.refresh();
       if (mounted && _closing == null) setState(() {});
     });
     _extensionSubscription = _runtime.extensions.changes.listen((_) {
+      _execution?.refresh();
       if (mounted && _closing == null) setState(() {});
     });
     unawaited(_bootstrapPlugins());
     _lifecycleListener = AppLifecycleListener(
       onExitRequested: () async {
+        _retainingPresentations.value = true;
+        _frontends.retainPresentations();
         await _closeRuntime();
         return AppExitResponse.exit;
       },
-      onDetach: () => unawaited(_closeRuntime()),
+      onDetach: () {
+        _frontends.releasePresentations();
+        unawaited(_closeRuntime());
+      },
     );
   }
 
@@ -125,37 +133,30 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     if (mounted && _closing == null) setState(() {});
   }
 
-  bool _inspectActivity(
-    Session session,
-    RunId runId,
-    ModelInvocationId modelInvocationId,
-  ) {
-    final ChatController? chat = _chat;
+  bool _inspectActivity(Session session, InspectionTarget target) {
+    final execution = _execution;
     if (!mounted ||
         _closing != null ||
-        chat == null ||
+        execution == null ||
         !identical(_session, session) ||
-        chat.isClosed ||
-        chat.activitySummary(runId, modelInvocationId) == null) {
+        execution.isClosed ||
+        target.sessionId != session.id) {
       return false;
     }
-    final RunActivitySnapshot? activity = chat.activityForRun(runId);
+    final activity = execution.activityForRun(target.runId);
     if (activity == null) return false;
-    final outputSequence = chat
-        .activitySummary(runId, modelInvocationId)!
-        .outputSequence;
-    if (outputSequence != null) {
+    if (target is ModelOutputInspectionTarget) {
       return _inspection.inspectOutput(
         session: session,
         activity: activity,
-        modelInvocationId: modelInvocationId,
-        outputSequence: outputSequence,
+        modelInvocationId: target.modelInvocationId,
+        outputSequence: target.outputSequence,
       );
     }
     return _inspection.inspectActivity(
       session: session,
       activity: activity,
-      modelInvocationId: modelInvocationId,
+      modelInvocationId: target.modelInvocationId,
     );
   }
 
@@ -164,17 +165,16 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     InspectionCardId originCardId,
     ModelOutputInspectionTarget target,
   ) {
-    final chat = _chat;
+    final execution = _execution;
     if (!mounted ||
         _closing != null ||
-        chat == null ||
-        chat.isClosed ||
+        execution == null ||
+        execution.isClosed ||
         !identical(_session, session) ||
-        target.sessionId != session.id ||
-        chat.activitySummary(target.runId, target.modelInvocationId) == null) {
+        target.sessionId != session.id) {
       return;
     }
-    final activity = chat.activityForRun(target.runId);
+    final activity = execution.activityForRun(target.runId);
     if (activity == null) return;
     _inspection.inspectOutput(
       session: session,
@@ -195,12 +195,14 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     } on Object catch (error) {
       if (mounted && _closing == null) _bootstrapError = error;
     } finally {
-      _chatFrontendAdapter.refresh();
+      _execution?.refresh();
       if (mounted && _closing == null) setState(() {});
     }
   }
 
-  void _createSession() {
+  void _createSession(
+    ExtensionBinding<SessionPresentationContribution> choice,
+  ) {
     final Task? task = _task;
     if (!mounted ||
         _closing != null ||
@@ -211,42 +213,48 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       return;
     }
     try {
+      // Resolve presentation ambiguity, strategy and exact sibling affinity
+      // before canonical lifecycle publication. No strategy is a default.
+      final selection = _sessionHost.resolve(choice);
+      selection.validate();
       final Session session = _runtime.lifecycle.createSession(
         taskId: task.id,
-        strategyId: chatStrategyId,
+        strategyId: choice.value.strategyId,
+        resolvedStrategy: selection.strategy,
       );
       // Publication is independent of both presentation and controller setup.
       _session = session;
       _inspection.presentSession(session);
       final StockChatGptConfiguration? configuration = _chatGptConfiguration;
-      final ChatController chat = ChatController(
+      final controller = SessionExecutionController(
         runtime: _runtime,
         session: session,
         providerId: stockChatGptProviderId,
         model: configuration?.model,
+        strategy: selection.pinStrategy ? selection.strategy : null,
         runIds: widget.runIds,
         configurationUnavailableReason: _modelConfigurationFailed
-            ? 'ChatGPT configuration is invalid. Model execution is unavailable.'
+            ? 'Model configuration is invalid. Execution is unavailable.'
             : configuration == null
-            ? 'ChatGPT model selection is not configured.'
+            ? 'Model selection is not configured.'
             : null,
         onChanged: () {
-          _chatFrontendAdapter.refresh();
           if (mounted && _closing == null) setState(() {});
         },
         onActivityChanged: () {
           if (_inspection.cards.isNotEmpty) _inspectionChanged();
         },
       );
+      _execution = controller;
+      _sessionHost.bind(session, selection);
       setState(() {
-        _chat = chat;
         _sessionError = null;
       });
     } on Object {
       setState(
         () => _sessionError = _session == null
-            ? 'Could not create the stock Chat Session.'
-            : 'Session exists, but stock execution setup is unavailable.',
+            ? 'Could not create the selected Session.'
+            : 'Session exists, but execution setup is unavailable.',
       );
     }
   }
@@ -338,8 +346,8 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   Future<void> _closeRuntime() => _closing ??= () async {
     _frontends.stopStarting();
     _inspection.removeListener(_inspectionChanged);
-    _inspection.clear();
-    final Future<void>? settlingRun = _chat?.close();
+    if (!_retainingPresentations.value) _inspection.clear();
+    final Future<void>? settlingRun = _execution?.close();
     try {
       try {
         // Establishment owns real external work. Let it settle before bounded
@@ -356,8 +364,8 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       try {
         await _runtime.close();
       } finally {
-        // Keep the inert input mounted while exit observers await Run settlement.
-        // Removing it earlier disposes Flutter lifecycle listeners mid-dispatch.
+        // Registrations and actions retire now; exit-retained display subtrees
+        // are released only on detach/dispose, not in Flutter's async exit loop.
         await _frontends.close();
       }
     } on Object catch (error, stackTrace) {
@@ -401,7 +409,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   @override
   void didUpdateWidget(covariant AdeleApplication oldWidget) {
     super.didUpdateWidget(oldWidget);
-    _chatFrontendAdapter.refresh();
+    _execution?.refresh();
   }
 
   @override
@@ -409,120 +417,151 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     _lifecycleListener.dispose();
     unawaited(_pluginSubscription.cancel());
     unawaited(_extensionSubscription.cancel());
+    _frontends.releasePresentations();
     // Flutter disposal cannot await; graceful desktop exit awaits above.
     unawaited(_closeRuntime());
     _inspection.dispose();
+    _retainingPresentations.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final session = _session;
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      home: AdeleShell(
-        project: _project,
-        task: _task,
-        environment: _environment,
-        environmentReady: _environmentReady,
-        inspection: _inspection.cards.isEmpty
-            ? null
-            : InspectionStackHost(
-                cards: _inspection.cards,
-                cardBuilder: (context, card) => InspectionHost(
-                  card: card,
-                  activity: _chat?.activityForRun(card.target.runId),
-                  heading:
-                      _chat
-                          ?.activitySummary(
-                            card.target.runId,
-                            card.target.modelInvocationId,
-                          )
-                          ?.content ??
-                      'Activity is unavailable.',
-                  extensions: _runtime.extensions,
-                  onCollapse: () => _inspection.collapse(card.id),
-                  onExpand: () => _inspection.expand(card.id),
-                  onDismiss: () => _inspection.dismiss(card.id),
-                  onInspectOutput: session == null
-                      ? (_) {}
-                      : (target) => _inspectOutput(session, card.id, target),
-                ),
-              ),
-        taskControls: _session != null
-            ? null
-            : Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  if (_taskUnavailableReason case final String reason) ...[
-                    Semantics(liveRegion: true, child: Text(reason)),
-                    const SizedBox(height: 16),
-                  ],
-                  if (_editingTask)
-                    TaskTitleForm(
-                      creating: _creatingTask,
-                      enabled: _taskUnavailableReason == null,
-                      error: _taskError,
-                      onSubmit: _createTask,
-                      onCancel: () {
-                        if (_closing != null || _creatingTask) return;
-                        setState(() {
-                          _editingTask = false;
-                          _taskError = null;
-                        });
-                      },
-                    )
-                  else
-                    FilledButton(
-                      onPressed: _taskUnavailableReason == null
-                          ? () {
-                              if (!mounted ||
-                                  _closing != null ||
-                                  _session != null) {
-                                return;
-                              }
-                              setState(() => _editingTask = true);
-                            }
-                          : null,
-                      child: const Text('New Task'),
-                    ),
-                ],
-              ),
-        sessionControls: _session != null
-            ? Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  if (_sessionError case final String error) Text(error),
-                  SessionPresentationHost(
-                    session: _session!,
-                    extensions: _runtime.extensions,
-                  ),
-                  if (_chat case final ChatController controller)
-                    StockChatExecutionStatus(controller: controller),
-                ],
-              )
-            : _task != null && !_editingTask
-            ? Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  if (_sessionError case final String error)
-                    Semantics(liveRegion: true, child: Text(error)),
-                  FilledButton(
-                    onPressed: _closing == null && !_creatingTask
-                        ? _createSession
-                        : null,
-                    child: const Text('New Session'),
-                  ),
-                ],
-              )
-            : null,
-        selectors: _runtime.extensions.discover(projectSelectorContributions),
-        onSelectProject: _openProject,
-        openingProject: _openingProject,
-        projectError: _projectError,
+    final choices = <ExtensionBinding<SessionPresentationContribution>>[];
+    for (final candidate in _runtime.extensions.discover(
+      sessionPresentationContributions,
+    )) {
+      try {
+        _sessionHost.resolve(candidate);
+        choices.add(candidate);
+      } on Object {
+        // Unavailable/ambiguous strategy or affinity is not a usable choice.
+      }
+    }
+    return ValueListenableBuilder<bool>(
+      valueListenable: _retainingPresentations,
+      builder: (context, retaining, child) => PreparedFrontendRetention(
+        notifier: _retainingPresentations,
+        child: IgnorePointer(
+          ignoring: retaining,
+          child: ExcludeFocus(excluding: retaining, child: child!),
+        ),
       ),
-      theme: buildAdeleTheme(),
-      title: 'ADELE',
+      child: MaterialApp(
+        debugShowCheckedModeBanner: false,
+        home: AdeleShell(
+          project: _project,
+          task: _task,
+          environment: _environment,
+          environmentReady: _environmentReady,
+          inspection: _inspection.cards.isEmpty
+              ? null
+              : InspectionStackHost(
+                  cards: _inspection.cards,
+                  cardBuilder: (context, card) => InspectionHost(
+                    card: card,
+                    activity: _execution?.activityForRun(card.target.runId),
+                    heading: 'Run activity',
+                    extensions: _runtime.extensions,
+                    onCollapse: () => _inspection.collapse(card.id),
+                    onExpand: () => _inspection.expand(card.id),
+                    onDismiss: () => _inspection.dismiss(card.id),
+                    onInspectOutput: session == null
+                        ? (_) {}
+                        : (target) => _inspectOutput(session, card.id, target),
+                  ),
+                ),
+          taskControls: _session != null
+              ? null
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (_taskUnavailableReason case final String reason) ...[
+                      Semantics(liveRegion: true, child: Text(reason)),
+                      const SizedBox(height: 16),
+                    ],
+                    if (_editingTask)
+                      TaskTitleForm(
+                        creating: _creatingTask,
+                        enabled: _taskUnavailableReason == null,
+                        error: _taskError,
+                        onSubmit: _createTask,
+                        onCancel: () {
+                          if (_closing != null || _creatingTask) return;
+                          setState(() {
+                            _editingTask = false;
+                            _taskError = null;
+                          });
+                        },
+                      )
+                    else
+                      FilledButton(
+                        onPressed: _taskUnavailableReason == null
+                            ? () {
+                                if (!mounted ||
+                                    _closing != null ||
+                                    _session != null) {
+                                  return;
+                                }
+                                setState(() => _editingTask = true);
+                              }
+                            : null,
+                        child: const Text('New Task'),
+                      ),
+                  ],
+                ),
+          sessionControls: _session != null
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (_sessionError case final String error) Text(error),
+                    SessionPresentationHost(
+                      session: _session!,
+                      extensions: _runtime.extensions,
+                    ),
+                    if (_execution case final controller?)
+                      RunExecutionStatus(
+                        pendingApproval: controller.pendingApproval,
+                        enabled:
+                            !controller.isAdvancing && !controller.isClosed,
+                        isAdvancing: controller.isAdvancing,
+                        failureMessage: controller.failureMessage,
+                        unavailableReason: controller.unavailableReason,
+                        onDecision: (approval, approved) => controller
+                            .resolveApproval(approval, approved: approved),
+                      ),
+                  ],
+                )
+              : _task != null && !_editingTask
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (_sessionError case final String error)
+                      Semantics(liveRegion: true, child: Text(error)),
+                    if (choices.isEmpty)
+                      const Text('No Session presentations are available.')
+                    else
+                      for (final choice in choices)
+                        FilledButton(
+                          onPressed: _closing == null && !_creatingTask
+                              ? () => _createSession(choice)
+                              : null,
+                          child: Text(
+                            'New ${choice.value.displayName} Session',
+                          ),
+                        ),
+                  ],
+                )
+              : null,
+          selectors: _runtime.extensions.discover(projectSelectorContributions),
+          onSelectProject: _openProject,
+          openingProject: _openingProject,
+          projectError: _projectError,
+        ),
+        theme: buildAdeleTheme(),
+        title: 'ADELE',
+      ),
     );
   }
 }

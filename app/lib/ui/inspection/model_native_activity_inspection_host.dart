@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:flutter/widgets.dart';
@@ -103,7 +104,7 @@ final class _ModelNativeActivityInspectionHostState
 
   @override
   Widget build(BuildContext context) {
-    _resolvePresentation();
+    if (!PreparedFrontendRetention.isRetaining(context)) _resolvePresentation();
     return _presentation == null
         ? const SizedBox.shrink()
         : Padding(

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
@@ -29,9 +30,10 @@ enum InstalledBackendState {
 
 /// One startup attempt, retaining its exact generation rather than a provider ID.
 final class InstalledBackendActivation {
-  InstalledBackendActivation._(this.installation);
+  InstalledBackendActivation._(this.installation, this._validateBootstrap);
 
   final PreparedPluginInstallation installation;
+  final void Function() _validateBootstrap;
   InstalledBackendState _state = InstalledBackendState.pending;
   Object? _failure;
   PluginBackendConnection? _connection;
@@ -40,6 +42,58 @@ final class InstalledBackendActivation {
   InstalledBackendState get state => _state;
   Object? get failure => _failure;
   PluginBackendConnection? get connection => _connection;
+
+  void validate() {
+    _validateBootstrap();
+    if (_state != InstalledBackendState.active || _activation == null) {
+      throw StateError('The installed backend is not ready.');
+    }
+    _activation!.validate();
+  }
+
+  RemoteExtensionContext? strategyOrigin(
+    ExtensionBinding<OrchestrationStrategyContribution> binding,
+  ) {
+    validate();
+    return _activation!.extensionOrigin(binding);
+  }
+
+  /// Binds this presentation to the owning installation's exact ready backend.
+  /// Owning affinity also captures the strategy's advertised configuration route.
+  OwningBackendChannel openChannel({
+    required PreparedSessionPresentation presentation,
+    required ExtensionBinding<OrchestrationStrategyContribution>
+    strategyBinding,
+    required void Function() validatePresentation,
+  }) {
+    validate();
+    strategyBinding.validate();
+    if (strategyBinding.value.strategyId != presentation.strategyId) {
+      throw ArgumentError('Presentation and strategy identities must match.');
+    }
+    final origin = strategyOrigin(strategyBinding);
+    if (presentation.strategyAffinity ==
+            PreparedStrategyAffinity.owningBackend &&
+        (origin == null || !identical(origin.connection, _connection))) {
+      throw StateError('The strategy does not belong to the owning backend.');
+    }
+    final affinityOrigin =
+        presentation.strategyAffinity == PreparedStrategyAffinity.owningBackend
+        ? origin
+        : null;
+    return OwningBackendChannel(
+      connection: _connection!,
+      configurationContext:
+          affinityOrigin?.configurationContext ??
+          _connection!.defaultConfigurationContext,
+      backendServices: presentation.backendServices,
+      validateOwner: () {
+        validate();
+        affinityOrigin?.validate();
+      },
+      validatePresentation: validatePresentation,
+    );
+  }
 }
 
 /// Discovers a prepared startup snapshot and independently attempts every backend.
@@ -69,6 +123,28 @@ final class ApplicationPluginBootstrap {
   PluginBackendHost? get host => _host;
   List<InstalledBackendActivation> get backends => List.unmodifiable(_backends);
   Stream<ApplicationPluginState> get changes => _changes.stream;
+
+  /// Only this catalog snapshot's exact installation can acquire its backend.
+  InstalledBackendActivation? backendForInstallation(
+    PreparedPluginInstallation installation,
+  ) {
+    if (_state != ApplicationPluginState.ready) return null;
+    for (final backend in _backends) {
+      if (identical(backend.installation, installation) &&
+          backend.state == InstalledBackendState.active &&
+          !(backend.connection?.isClosed ?? true)) {
+        backend.validate();
+        return backend;
+      }
+    }
+    return null;
+  }
+
+  void _validateReady() {
+    if (_state != ApplicationPluginState.ready) {
+      throw StateError('Application backends are not ready.');
+    }
+  }
 
   /// Consumes prepared deployment artifacts only. An absent root is empty, not
   /// an instruction to discover source or prepare artifacts at runtime.
@@ -121,7 +197,7 @@ final class ApplicationPluginBootstrap {
       _backends.addAll([
         for (final installation in catalog.installations)
           if (installation.backendArtifactUri != null)
-            InstalledBackendActivation._(installation),
+            InstalledBackendActivation._(installation, _validateReady),
       ]);
       if (_state == ApplicationPluginState.closing) return;
       if (_backends.isEmpty) {

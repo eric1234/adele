@@ -1,6 +1,6 @@
 import 'dart:io';
 
-import 'package:adele_desktop/development/agent/development_self_hosting_runner.dart';
+import '../tool/self_hosting/development_self_hosting_runner.dart';
 
 Future<void> main(List<String> arguments) async {
   if (arguments.contains('--help') || arguments.contains('-h')) {

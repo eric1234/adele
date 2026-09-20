@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/ui/session/session_presentation_host.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
@@ -46,6 +47,37 @@ void main() {
           ),
         ),
       );
+
+  testWidgets(
+    'exit retention never remounts or disposes a retired presentation',
+    (tester) async {
+      final retaining = ValueNotifier(false);
+      final presenter = _Presenter('Original', strategyId);
+      final registration = register(presenter.contribution);
+      final binding = SessionPresentationResolver(
+        extensions,
+      ).resolve(strategyId);
+      await tester.pumpWidget(
+        PreparedFrontendRetention(notifier: retaining, child: host()),
+      );
+      final state = tester.state<_ProbeState>(find.byType(_Probe));
+      await tester.enterText(find.byType(TextField), 'Retained draft');
+      retaining.value = true;
+      await registration.close();
+      final replacement = _Presenter('Replacement', strategyId);
+      register(replacement.contribution);
+      await tester.pumpAndSettle();
+      expect(binding.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(tester.state(find.byType(_Probe)), same(state));
+      expect(state.controller.text, 'Retained draft');
+      expect(presenter.disposals, 0);
+      expect(replacement.mounts, 0);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(presenter.disposals, 1);
+      retaining.dispose();
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'no presentation is unavailable and later registration is observed',
@@ -244,6 +276,7 @@ void main() {
     int creations = 0;
     final ExtensionRegistration registration = register(
       SessionPresentationContribution(
+        displayName: 'Fixture',
         strategyId: strategyId,
         createPresentation: (_) {
           creations++;
@@ -265,6 +298,7 @@ void main() {
       int creations = 0;
       final ExtensionRegistration failed = register(
         SessionPresentationContribution(
+          displayName: 'Fixture',
           strategyId: strategyId,
           createPresentation: (received) {
             expect(received, same(session));
@@ -308,6 +342,7 @@ void main() {
     late ExtensionRegistration registration;
     registration = register(
       SessionPresentationContribution(
+        displayName: 'Fixture',
         strategyId: strategyId,
         createPresentation: (_) {
           creations++;
@@ -410,6 +445,7 @@ class _Presenter {
   late final Widget view = _Probe(this);
   late final SessionPresentationContribution contribution =
       SessionPresentationContribution(
+        displayName: 'Fixture',
         strategyId: strategyId,
         createPresentation: (session) {
           sessions.add(session);

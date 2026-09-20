@@ -2,11 +2,14 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
+import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/main.dart' as application;
+import 'package:adele_desktop/ui/session/session_presentation_host.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
@@ -15,9 +18,9 @@ import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
-import 'package:chat_strategy_plugin/chat_strategy_plugin.dart';
-import 'package:flutter/widgets.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../../tools/stock_frontend_descriptors.dart';
 
@@ -304,10 +307,10 @@ void main() {
       reason: 'A bare runtime has no model tools before plugin bootstrap.',
     );
     await tester.pumpWidget(AdeleApplication(createRuntime: createRuntime));
-    final ResolvedOrchestrationStrategy strategy = runtime
-        .lifecycle
-        .strategyResolver
-        .resolve(chatStrategyId);
+    expect(
+      runtime.extensions.discover(orchestrationStrategyContributions),
+      isEmpty,
+    );
     expect(
       runtime.registry.providersFor(environmentProviderCapability),
       isEmpty,
@@ -321,7 +324,6 @@ void main() {
 
     await tester.pumpWidget(AdeleApplication(createRuntime: createRuntime));
     expect(creations, 1);
-    expect(strategy.validateBinding, returnsNormally);
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
@@ -332,7 +334,6 @@ void main() {
     expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
     expect(runtime.extensions.discover(modelToolContributions), isEmpty);
     expect(runtime.extensions.discover(projectSelectorContributions), isEmpty);
-    expect(strategy.validateBinding, throwsA(isA<StaleExtensionBinding>()));
   });
 
   testWidgets('graceful application exit awaits runtime retirement', (
@@ -355,4 +356,127 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'Session choices are explicit, usable and revalidated before publication',
+    (tester) async {
+      final runtime = AdeleRuntime();
+      final registrations = <ExtensionRegistration>[];
+      addTearDown(() async {
+        for (final registration in registrations) {
+          await registration.close();
+        }
+      });
+      final environment = runtime.registry.register(
+        provider: ProviderDescriptor(
+          id: ProviderId('dev.example.environment'),
+          capability: environmentProviderCapability,
+          pluginId: 'dev.example.environment',
+          displayName: 'Test environment',
+          serviceId: environmentProviderServiceId,
+        ),
+        endpoint: AdeleRequestChannelEndpoint(
+          channel: _EnvironmentChannel(),
+          serviceId: environmentProviderServiceId,
+          isAvailable: () => true,
+        ),
+      );
+      addTearDown(environment.close);
+      registrations.add(
+        runtime.extensions.register(
+          point: projectSelectorContributions,
+          id: ExtensionId('dev.example.selector'),
+          value: ProjectSelectorContribution(
+            displayName: 'Open fixture',
+            selectProject: () async => Uri.parse('file:///fixture/'),
+          ),
+        ),
+      );
+      final presented = <Session>[];
+      ExtensionRegistration presentation(String name, {bool strategy = true}) {
+        final key = name.toLowerCase();
+        final id = OrchestrationStrategyId('dev.example.$key');
+        if (strategy) {
+          registrations.add(
+            runtime.extensions.register(
+              point: orchestrationStrategyContributions,
+              id: ExtensionId('dev.example.$key.strategy'),
+              value: OrchestrationStrategyContribution(
+                strategyId: id,
+                materialize: (_) => throw StateError('No Run should start.'),
+              ),
+            ),
+          );
+        }
+        final registration = runtime.extensions.register(
+          point: sessionPresentationContributions,
+          id: ExtensionId('dev.example.$key.presentation'),
+          value: SessionPresentationContribution(
+            strategyId: id,
+            displayName: name,
+            createPresentation: (session) {
+              presented.add(session);
+              return Text('$name presentation');
+            },
+          ),
+        );
+        registrations.add(registration);
+        return registration;
+      }
+
+      await tester.pumpWidget(
+        AdeleApplication(
+          createRuntime: () => runtime,
+          bootstrapPlugins: (_) async {},
+        ),
+      );
+      await tester.tap(find.text('Open fixture'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('New Task'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'Generic task');
+      await tester.tap(find.text('Create Task'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('No Session presentations are available.'),
+        findsOneWidget,
+      );
+      presentation('Unavailable', strategy: false);
+      final first = presentation('First');
+      presentation('Second');
+      await tester.pumpAndSettle();
+      expect(find.text('New Unavailable Session'), findsNothing);
+      expect(find.text('New First Session'), findsOneWidget);
+      expect(find.text('New Second Session'), findsOneWidget);
+      final stale = tester
+          .widget<FilledButton>(
+            find.widgetWithText(FilledButton, 'New First Session'),
+          )
+          .onPressed!;
+      await first.close();
+      stale();
+      await tester.pumpAndSettle();
+      expect(find.byType(SessionPresentationHost), findsNothing);
+      expect(presented, isEmpty);
+      await tester.tap(find.text('New Second Session'));
+      await tester.pumpAndSettle();
+      expect(presented.single.strategyId.value, 'dev.example.second');
+      expect(
+        runtime.store.session(presented.single.id),
+        same(presented.single),
+      );
+      expect(find.text('Second presentation'), findsOneWidget);
+      expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+      await tester.binding.handleRequestAppExit();
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    },
+  );
+}
+
+final class _EnvironmentChannel implements AdeleRequestChannel {
+  @override
+  Future<Object?> request(String method, Map<String, Object?> payload) async =>
+      {'providerState': <String, Object?>{}};
 }

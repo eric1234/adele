@@ -355,9 +355,13 @@ A strategy may register and execute through core facilities even if no Agent Int
 **Role:** conversational model/tool/model orchestration with strategy-owned
 history, message/activity presentation, and composer semantics.
 
-Chat should drive the public orchestration facade rather than import the kernel
-or redefine Run semantics. It owns conversation state, history projection,
-sequencing, and its invocation budget; core owns exact executable bindings,
+The maintained Chat implementation follows Contract/Backend/Frontend under
+`plugins/chat_strategy/packages/`, with the root semantic package retired. Backend
+drives the public remote orchestration facade rather than importing the kernel
+or redefining Run semantics. It owns conversation state, stable entry occurrence
+IDs, history projection, sequencing, default instructions, and its invocation budget;
+its generated `ChatSessionService` and remote executor share that canonical state.
+External mutation is guarded from materialization through execution close. Core owns exact executable bindings,
 policy, approval, and Environment authority. Instructions and model/tool choices
 must be captured at their appropriate Run or inference boundaries, not inferred
 from mutable widgets. Context sources are independent contributions, not
@@ -369,7 +373,19 @@ must never become replay input or a new canonical history entry. Activity
 retention is a presentation concern; durable restoration requires an explicit
 persistence design rather than inferring history from current widgets.
 
-Chat owns compact activity placement and narration. Related operations should
+Chat Frontend owns asynchronous composer acceptance, history refresh, grouping,
+and stable accepted-entry-to-opaque-Run association. It uses its generated client
+over a generic own-backend bridge, allowlisted to the exact sibling connection and
+configuration context, never selecting or retargeting by PluginId. Owning-backend
+affinity uses host-verified exact strategy registration origin; Session creation
+validates before publication and execution stays on that same binding. Generic
+core owns model/tools/policy, approvals, activity evidence, and Inspection, not
+canonical Chat history. Normal app code has no Chat imports or static activation;
+backend and frontend startup remain independent with no fallback. General
+provider/model configuration is still deferred; temporary app selection remains.
+
+Chat Frontend owns compact activity placement; Backend supplies narration guidance.
+Related operations should
 remain lightweight between messages, with drill-down into common Inspection.
 Tool-batch narration should express shared purpose, respect explicit user
 instructions, and require no extra inference; tool evidence, not prose,

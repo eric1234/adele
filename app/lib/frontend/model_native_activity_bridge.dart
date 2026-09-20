@@ -41,7 +41,7 @@ class ModelNativeActivityDeclarations implements EvalPlugin {
 /// Captures only safe primitive presentation data, never a native envelope.
 /// Each view owns one frozen snapshot with no subscription or authority surface.
 final class ModelNativeActivityBridge extends ModelNativeActivityDeclarations
-    implements PreparedFrontendBridge {
+    implements PreparedFrontendBridge, PreparedFrontendRetainable {
   ModelNativeActivityBridge({
     required ModelNativePresentation presentation,
     required bool Function() isActive,
@@ -50,6 +50,7 @@ final class ModelNativeActivityBridge extends ModelNativeActivityDeclarations
 
   $Value? _snapshot;
   final bool Function() _isActive;
+  bool _retaining = false;
 
   @override
   void configureForRuntime(Runtime runtime) {
@@ -59,7 +60,7 @@ final class ModelNativeActivityBridge extends ModelNativeActivityDeclarations
       _,
     ) {
       try {
-        if (_snapshot != null && _isActive()) return _snapshot;
+        if (_snapshot != null && (_retaining || _isActive())) return _snapshot;
       } on Object {
         // Do not expose liveness errors or restore a failed view's access.
       }
@@ -70,6 +71,9 @@ final class ModelNativeActivityBridge extends ModelNativeActivityDeclarations
 
   @override
   void invalidate() => _snapshot = null;
+
+  @override
+  void retainPresentation() => _retaining = true;
 }
 
 // Freeze eval containers too: an immutable native Map alone does not prevent
