@@ -242,6 +242,54 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
   );
 
   test(
+    'Linux smoke builds the tool entrypoint and runs the matching bundle',
+    () async {
+      final developmentEnvironment = <String, String>{
+        'ADELE_DEVELOPMENT_REPOSITORY_ROOT': root.path,
+        'ADELE_DEVELOPMENT_PLUGIN_DIRECTORY':
+            '${root.path}/plugins/workspace_demo',
+        'ADELE_DEVELOPMENT_DIRECTORY': '${root.path}/development',
+      };
+      environment.addAll(developmentEnvironment);
+      for (final (flag, mode) in [
+        (null, 'profile'),
+        ('--debug', 'profile'),
+        ('--profile', 'profile'),
+        ('--release', 'release'),
+      ]) {
+        final executable = File(
+          '${root.path}/app/build/linux/x64/$mode/bundle/adele_desktop',
+        );
+        executable.parent.createSync(recursive: true);
+        _script(executable, '''
+test "\$PWD" = '${root.path}' || exit 98
+test "\$#" = 0 || exit 97
+printf 'smoke-runtime|$mode\n' >> '${commands.path}'
+''');
+        final result = await invoke(['smoke', 'linux', ?flag]);
+        expect(result.exitCode, 0, reason: result.stderr.toString());
+        expect(commands.readAsLinesSync(), [
+          'inspect-sdk',
+          'flutter-launch',
+          'smoke-runtime|$mode',
+        ]);
+        expect(launchArguments.readAsLinesSync(), [
+          'build',
+          'linux',
+          '--$mode',
+          '--target=tool/development_runtime_smoke/main.dart',
+          for (final entry in developmentEnvironment.entries)
+            '--dart-define=${entry.key}=${entry.value}',
+          '--dart-define=ADELE_DEVELOPMENT_DART_EXECUTABLE=${root.path}/bin/dart',
+          '--dart-define=ADELE_DEVELOPMENT_DARTAOTRUNTIME_EXECUTABLE=${sdkBin.path}/dartaotruntime',
+          '--dart-define=ADELE_DEVELOPMENT_FLUTTER_EXECUTABLE=${root.path}/bin/flutter',
+        ]);
+        commands.deleteSync();
+      }
+    },
+  );
+
+  test(
     'Linux run and builds prepare one fresh eight-installation snapshot',
     () async {
       final Set<String> outputDirectories = <String>{};

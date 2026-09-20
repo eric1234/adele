@@ -1,8 +1,9 @@
 import 'dart:io';
 
-import 'package:adele_desktop/development/development_plugin_runtime.dart';
 import 'package:flutter/widgets.dart';
 import 'package:resource_inspector_contract/resource_inspector_contract.dart';
+
+import 'development_plugin_runtime.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();

@@ -69,6 +69,13 @@ a general workbench UI framework.
 
 ADELE has one Flutter desktop application, `adele_desktop`, under `app/`. The application owns the current shell, theme, private widgets, desktop integration, and composition of host systems. It is a composition root rather than the primary home of core logic.
 
+Its production dependencies contain no packages under `plugins/**`, including
+contracts, and `app/lib` imports no concrete plugin packages or development tooling.
+With zero installed plugins, the shell can construct, mount, and close; missing
+plugin functionality remains unavailable without built-in fallbacks. Generic
+third-party host libraries remain allowed; see
+[dependency rules](dependency-rules.md#application-backend-composition).
+
 `app/lib/core/adele_runtime.dart` defines the application-lifetime `AdeleRuntime`.
 It owns one `CapabilityRegistry`, `ExtensionRegistry`, `InMemoryProductStore`,
 `ProductLifecycleCoordinator.generated` wired to those same registries and store,
@@ -169,6 +176,8 @@ extension points; it is not another contribution registry or PluginId switch.
 Unsupported points and malformed metadata fail that backend attempt. There is no
 app-owned backend exposure table. `app/lib/plugins/temporary_chatgpt_selection.dart`
 retains the selected provider identity and model-only `StockChatGptConfiguration`.
+This is an intentional concrete-identity exception pending general configuration
+and profiles, not permission for plugin imports or production plugin dependencies.
 `fromEnvironment` always supplies a model default or override, with no credential
 field or presence gate. Provider availability comes from the active registry;
 the app does not inspect startup OAuth/credential configuration. The helper owns
@@ -247,7 +256,7 @@ Task Browser, persistence, and richer workbench UI remain deferred.
 
 Development/self-hosting owns an `AdeleRuntime` instance instead of duplicating
 these registries, lifecycle, and composer. Plugin-specific runner code lives in
-`app/tool/self_hosting/`, not `app/lib/development/agent/development_self_hosting*.dart`.
+`app/tool/self_hosting/`; it and app tests remain intentionally plugin-aware.
 Chat Contract is a development-only app dependency; the tooling configures,
 appends to, and snapshots the same remote Chat backend used by normal startup.
 Its surrounding topology/runner retains independent AOT artifacts and host ownership, provider
@@ -272,6 +281,12 @@ Self-hosting remains selector-free and creates its Project from the explicitly
 known isolated source URI. The shared runtime imports no selector, Flutter bridge,
 or native picker; no conditional picker import or headless picker fallback is
 needed. Normal selector activation likewise makes no OS call.
+
+The explicit development runtime smoke lives in
+`app/tool/development_runtime_smoke/main.dart`, with its fixture runtime and eval
+adapters alongside it. `dart tools/adele.dart smoke linux --profile` directly
+targets this Flutter entrypoint outside `lib`, without a separate package or
+changes to normal startup, self-hosting topology, or stock artifact preparation.
 
 Host implementations are split into small pure-Dart packages where Flutter is not required:
 
@@ -914,9 +929,8 @@ historical proof details, not current kernel APIs.
 Self-hosting uses a generated Chat Contract client to configure, append to, and
 snapshot the installed remote backend, then routes `SessionId` and the exact
 strategy binding through lifecycle and the core host.
-The app no longer has `simple_tool_loop_strategy.dart` or
-`development_strategy_registration.dart`;
-`development_agent_support.dart` contains only policy.
+`app/tool/self_hosting/development_agent_support.dart` owns the shared
+`DevelopmentToolPolicy` used by self-hosting and tests, outside production code.
 
 The kernel model boundary is streaming-shaped. The common ModelProvider transport supports generated streaming/cancellation, ordered semantic input/output, live observations, terminal settlement, and provider-native item metadata. Materialized model/tool bindings remain exact-generation bound.
 

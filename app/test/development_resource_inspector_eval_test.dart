@@ -3,10 +3,11 @@ import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
-import 'package:adele_desktop/development/resource_inspector/resource_inspector_eval_bridge.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:resource_inspector_contract/resource_inspector_contract.dart';
+
+import '../tool/development_runtime_smoke/resource_inspector/resource_inspector_eval_bridge.dart';
 
 void main() {
   test('interpreted consumer owns capability operation sequencing', () {

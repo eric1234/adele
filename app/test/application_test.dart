@@ -27,7 +27,7 @@ import '../../tools/stock_frontend_descriptors.dart';
 void main() {
   for (final bool missing in [false, true]) {
     testWidgets(
-      '${missing ? 'missing' : 'empty'} installation root keeps Project selection usable',
+      '${missing ? 'missing' : 'empty'} installation root boots without plugins and accepts a later selector',
       (WidgetTester tester) async {
         final Directory directory = Directory.systemTemp.createTempSync(
           'adele-empty-application-',
@@ -36,15 +36,6 @@ void main() {
         final AdeleRuntime runtime = AdeleRuntime();
         addTearDown(runtime.close);
         final Uri source = Uri.parse('https://example.test/SelectedProject');
-        final ExtensionRegistration selector = runtime.extensions.register(
-          point: projectSelectorContributions,
-          id: ExtensionId('dev.adele.test.empty-root-selector'),
-          value: ProjectSelectorContribution(
-            displayName: 'Open Test Project',
-            selectProject: () async => source,
-          ),
-        );
-        addTearDown(selector.close);
         late Future<void> starting;
         await tester.runAsync(() async {
           await tester.pumpWidget(
@@ -105,6 +96,31 @@ void main() {
         expect(runtime.extensions.discover(modelToolContributions), isEmpty);
         expect(runtime.extensions.discover(inferenceContextSources), isEmpty);
 
+        expect(
+          runtime.extensions.discover(orchestrationStrategyContributions),
+          isEmpty,
+        );
+        expect(
+          runtime.extensions.discover(projectSelectorContributions),
+          isEmpty,
+        );
+        expect(
+          find.text('No Project selectors are available.'),
+          findsOneWidget,
+        );
+        expect(find.byType(FilledButton), findsNothing);
+        expect(tester.takeException(), isNull);
+
+        final ExtensionRegistration selector = runtime.extensions.register(
+          point: projectSelectorContributions,
+          id: ExtensionId('dev.adele.test.empty-root-selector'),
+          value: ProjectSelectorContribution(
+            displayName: 'Open Test Project',
+            selectProject: () async => source,
+          ),
+        );
+        addTearDown(selector.close);
+        await tester.pumpAndSettle();
         await tester.tap(find.text('Open Test Project'));
         await tester.pumpAndSettle();
         final Project project = tester

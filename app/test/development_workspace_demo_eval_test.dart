@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:adele_desktop/development/workspace_demo/workspace_demo_eval_bridge.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
@@ -10,6 +9,8 @@ import 'package:flutter_eval/flutter_eval.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:workspace_demo_contract/workspace_demo_contract.dart';
+
+import '../tool/development_runtime_smoke/workspace_demo/workspace_demo_eval_bridge.dart';
 
 void main() {
   testWidgets('interpreted frontend calls typed service and renders text', (

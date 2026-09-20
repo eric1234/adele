@@ -5,8 +5,6 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/core/model_provider_host.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
-import 'package:adele_desktop/development/agent/agent_capability_adapters.dart';
-import 'package:adele_desktop/development/agent/development_agent_support.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:agent_kernel/agent_kernel.dart';
@@ -16,6 +14,8 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:resource_inspector_contract/resource_inspector_contract.dart';
 import 'package:scripted_model_contract/scripted_model_contract.dart';
 
+import '../../../tool/self_hosting/development_agent_support.dart';
+import '../../support/agent_capability_adapters.dart';
 import 'chat_test_topology.dart';
 
 void main() {

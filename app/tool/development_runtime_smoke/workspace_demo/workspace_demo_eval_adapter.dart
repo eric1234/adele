@@ -1,10 +1,11 @@
 import 'dart:io';
 
-import 'package:adele_desktop/development/workspace_demo/workspace_demo_eval_bridge.dart';
 import 'package:adele_desktop/frontend/interpreted_widget.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_eval/flutter_eval.dart';
+
+import 'workspace_demo_eval_bridge.dart';
 
 final class WorkspaceDemoEvalAdapter {
   WorkspaceDemoEvalAdapter._({

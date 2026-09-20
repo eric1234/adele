@@ -533,7 +533,7 @@ Future<void> main(List<String> arguments) async {
           'build',
           target,
           '--$mode',
-          '--target=lib/development_smoke.dart',
+          '--target=tool/development_runtime_smoke/main.dart',
           ...defines,
         ], workingDirectory: 'app');
         await _run(

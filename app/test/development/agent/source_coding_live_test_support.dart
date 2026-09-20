@@ -443,7 +443,7 @@ Future<void> _createSourceRepository({
 }) async {
   const List<String> sourcePaths = <String>[
     'README.md',
-    'app/lib/development/agent/development_agent_support.dart',
+    'app/tool/self_hosting/development_agent_support.dart',
     sourceCodingStrategyPath,
   ];
   await source.create(recursive: true);

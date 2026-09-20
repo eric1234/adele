@@ -8,8 +8,9 @@ root. It is an internal application, not a plugin-facing package.
 The app owns its minimal shell, theme, and private widgets. It retains the ADELE
 header and initially displays `No Project is open` with B1 Project selector
 buttons. After opening, it shows the Project source and initially `No Tasks yet`.
-B2 adds title-only Task creation and primary Environment status. Normal interaction
-supports one canonical stock Chat Session and approval-gated ChatGPT-backed Runs,
+B2 adds title-only Task creation and primary Environment status. With stock
+installations, normal interaction supports one canonical stock Chat Session and
+approval-gated ChatGPT-backed Runs,
 with plugin-owned evaluated history/composer, direct compact activity or groups, and
 retained window-local Inspection cards containing interpreted Apply Patch, Run Command, and
 OpenAI provider-supplied reasoning-summary cards.
@@ -137,10 +138,11 @@ inputs:
 | `ADELE_PLUGIN_INSTALLATION_ROOT` | Root containing prepared installation directories |
 | `ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE` | Optional file containing a JSON object mapping PluginId to string argv lists |
 
-With no inputs, startup reaches `ready` with no discovered backend or frontend
-components; Task Environment support, the AGENTS.md source,
+With zero installed plugins, the runtime can construct and the shell can mount
+and close. With no inputs, startup reaches `ready` with no discovered backend or
+frontend components; Task Environment support, the AGENTS.md source,
 Search/Filesystem/Command tools, Local Directory Project selection, and interpreted
-presentation and Chat execution are unavailable. There is no in-process Chat fallback.
+presentation and Chat execution are unavailable, without built-in plugin fallbacks.
 There is no source-path discovery,
 on-start compiler, or fallback provider. Task UI and lifecycle contain no stock Git IDs.
 
@@ -414,7 +416,9 @@ or process-environment scrubbing.
 `ApplicationPluginBootstrap` reads only the generic map and forwards opaque argv
 to `PluginBackendHost.startPlugin`; runtime and shared host stay OpenAI-unaware.
 `lib/plugins/temporary_chatgpt_selection.dart` retains the provisional selected
-provider identity and model-only `StockChatGptConfiguration`. Its `fromEnvironment`
+provider identity `dev.adele.openai.chatgpt-experimental` and model-only
+`StockChatGptConfiguration`. This intentional identity-only exception permits no
+plugin imports or production plugin dependencies. Its `fromEnvironment`
 always supplies `ADELE_OPENAI_CHATGPT_MODEL` or the default `gpt-6-astra`; it has no
 `credentialFile` field or credential-presence gate. Provider availability comes
 from the active registry, not app inspection of startup OAuth/credential
@@ -939,8 +943,11 @@ Host-service authorization is not an OS sandbox or rollback of in-flight effects
 [remote model tools](../docs/architecture/contracts-and-capabilities.md#remote-model-tools).
 
 The normal application does not display the `workspace_demo` reference plugin.
-The maintained `lib/development_smoke.dart` entrypoint exercises the plugin
-runtime only through the explicit root smoke command.
+The maintained `tool/development_runtime_smoke/main.dart` entrypoint exercises the
+plugin runtime through `dart tools/adele.dart smoke linux --profile` from the
+repository root. Flutter directly targets this file outside `lib`, without a new
+package. Its sibling `development_plugin_runtime.dart` and `workspace_demo/` and
+`resource_inspector/` subdirectories own the fixture runtime and eval adapters.
 
 ### B2 Task and primary Environment
 
@@ -1228,26 +1235,34 @@ flutter test --no-pub test/core/remote_inference_context_integration_test.dart
 
 These tests make no paid or live model-provider calls.
 
-The app has no `simple_tool_loop_strategy.dart` or
-`development_strategy_registration.dart`; `development_agent_support.dart`
-contains only development policy. The private Chat loop lives in the plugin.
+`tool/self_hosting/development_agent_support.dart` owns `DevelopmentToolPolicy`,
+shared by self-hosting and tests. The private Chat loop lives in the plugin.
 Rich Chat UI, persistence, profiles, child Sessions, strategy defaults, and general
 context material beyond instructions, provider-aware projection/cache planning,
 token budgets, and compaction remain deferred.
 
 ## Dependencies
 
-Allowed dependencies are Flutter, ADELE public packages, and internal host
-implementations required at the composition root. Normal `app/lib` has no Chat
-contract or implementation imports, and `AdeleRuntime` statically activates no
-stock plugins. Chat Contract is a development-only dependency for tooling under
-`app/tool/self_hosting/`, not a production dependency. `file_selector` belongs to the
-app's Flutter bridge, not the selector frontend or shared headless runtime.
+Production dependencies are Flutter, ADELE public packages, internal host
+implementations required at the composition root, and generic third-party host
+libraries such as `file_selector`, `dart_eval`, `flutter_eval`, and `crypto`.
+`app/pubspec.yaml` production `dependencies` contain no packages under
+`plugins/**`, including contracts; `app/lib` imports no concrete plugin packages
+or development tooling. `AdeleRuntime` statically activates no stock plugins.
+The picker library belongs to the app's Flutter bridge, not the selector frontend
+or shared headless runtime.
+
+Tests and development tooling, including `app/tool/self_hosting/`, remain
+intentionally plugin-aware through `dev_dependencies`. These include
+`chat_strategy_contract`, `openai_contract`, `resource_inspector_contract`,
+`scripted_model_contract`, `workspace_demo_contract`, and test-used semantic
+plugins; `plugin_builder` is also development-only. Test-only capability adapters
+live in `test/support/agent_capability_adapters.dart`.
+
 Normal backend bootstrap uses `plugin_runtime` and generic public metadata and
 capability/extension types, not linked Git/OpenAI/Chat/AGENTS.md/Search/Filesystem/Command
 implementations or stock exposure helpers. AGENTS.md, Search, Filesystem, and Command
 semantic/backend packages remain workspace members, not production app dependencies.
-Semantic tool packages used by app tests remain development-only dependencies.
 Environment consumers still use public Environment contracts. Source compilation
 belongs to `plugin_builder` and Flutter build-time/repository tooling, not the
 normal startup path. Chat's root semantic package is retired; Contract, Backend,
@@ -1322,9 +1337,8 @@ tools. The isolated repository does not share Git refs or a writable local
 origin with the launching checkout; final Git evidence records what actually
 remained clean. This is source-layout isolation, not a command sandbox.
 
-Plugin-specific runner/topology code lives in `app/tool/self_hosting/`, not
-`app/lib/development/agent/development_self_hosting*.dart`. It depends only on Chat
-Contract, through the app's development dependencies, and calls the same remote
+Plugin-specific runner/topology code lives in `app/tool/self_hosting/`. It consumes
+Chat Contract through the app's development dependencies and calls the same remote
 backend as normal startup. `DevelopmentSelfHostingTopology` owns an `AdeleRuntime`
 instance rather than duplicating its registries, store, lifecycle coordinator, or
 context composer. It remains selector-free: Project

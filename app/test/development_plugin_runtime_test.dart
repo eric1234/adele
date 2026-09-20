@@ -1,9 +1,10 @@
 import 'dart:io';
 
-import 'package:adele_desktop/development/development_plugin_runtime.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
+
+import '../tool/development_runtime_smoke/development_plugin_runtime.dart';
 
 void main() {
   test('validates explicit development configuration', () {
