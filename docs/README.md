@@ -58,8 +58,9 @@ experiments, and development docs according to the question, not exhaustively.
 
 | Question | Read |
 | --- | --- |
-| What does ADELE currently implement? | Source/tests, the architecture overview, and local READMEs |
+| What does ADELE currently implement? | Source/tests and local READMEs, reached through the [architecture source map](architecture/overview.md#source-map) |
 | Who owns a concept / what boundary must be preserved? | [Architecture](architecture/) |
+| Who owns Project, Task, Environment, Session, and Run semantics? | [Product model](architecture/product-model.md) |
 | Why was a design decision made? | [ADRs](adr/README.md) |
 | What UX are we aiming for? | [Product](product/README.md) |
 | What future technical shape are we considering? | [Direction](direction/README.md) |
@@ -91,9 +92,10 @@ product/direction update unless the design itself changed.
 ## Maintenance rules
 
 - **One canonical home.** A semantic fact has one primary explanatory home in
-  documentation. Other docs link rather than restate it. Once a later slice
-  establishes canonical product-domain architecture, Chat and other local docs
-  should explain how they participate rather than redefine Session.
+  documentation. Other docs link rather than restate it. The
+  [product model](architecture/product-model.md) owns shared product-domain
+  semantics; Chat and other local docs should explain how they participate rather
+  than redefine Session.
 - **Stable source anchors.** Prefer package/directory and library paths,
   class/type and method/function names, or extension-point/capability identities.
   Avoid source line numbers. References help navigation; they do not replace an

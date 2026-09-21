@@ -1,1116 +1,162 @@
 # ADELE Architecture Overview
 
-## Status
+Role: Canonical architecture
 
-ADELE's maintained Linux x64 foundation includes source compilation, generated unary and server-streaming/cancellation transport, interpreted frontend execution, active capability routing, configured provider contexts, bounded agent/source-inspection, conditional Environment mutation, foreground-process execution, and create/delete tooling. It includes the real OpenAI `ModelProvider`, an explicitly experimental ChatGPT configured instance, initial Project/Task/Environment lifecycle, canonical strategy-bound Session creation with separate Environment authority, generic extension/model-tool composition, executable strategy contributions, a Git Environment provider, and independent stock Filesystem Tools, Search Tools, and Command Tools that own Session-authorized `read_file`, `apply_patch`, `create_file`, `delete_file`, `search`, and `run_command`. Headless stock Chat owns conversation state and sequencing through a narrow public execution facade backed internally by the kernel.
+This is the cross-system map, not a feature inventory or implementation ledger.
+Read it after the [documentation map](../README.md), then follow the relevant
+architecture and local source anchors below. Accepted architecture can be ahead
+of implementation; source and tests establish what works today.
 
-The maintained source-inspection topology routes the canonical Session through core strategy resolution and Chat materialization, generic model-tool extension composition, plugin-owned Search, Session-authorized Environment access, plugin-owned Read File, maintained ADELE source, and model continuation. Search is bounded native Dart traversal over authorized Environment directory/file reads, not an Environment provider method. This implements neither ADELE's complete product/domain model nor the general recursive extension system.
+## ADELE at a glance
 
-Environment exposes provider-neutral opaque file revisions and conditional replacement of existing bounded UTF-8 text files. The Git Worktree provider serializes ADELE replacements within each live Environment and detects practical out-of-band changes immediately before promotion, but cannot provide portable atomic compare-and-replace against arbitrary external processes. Coherent read and mutation facets share one Session-authorized filesystem authority. Filesystem Tools' exact-unique `apply_patch` lowers localized model edits to complete-file conditional replacement. Deterministic real-Git integration covers Read-to-Revision-to-Patch continuation. Opt-in OpenAI API-key and experimental ChatGPT tests cover real-model revision flow, Task-worktree-only mutation, post-write observation, and continuation; recorded live results remain bounded interoperability evidence rather than a stable contract.
+ADELE separates shared product semantics and host responsibilities from the
+concrete behavior supplied by plugins:
 
-Filesystem Tools owns the model patch grammar, not `EnvironmentProvider`. It
-preflights the original opaque revision once and applies the non-empty `edits`
-array of `{search, replace}` objects in list order to a working string. Each
-non-empty search must be an exact, case-sensitive, literal unique match,
-including overlapping candidate starts; replacement text may be empty. Later
-edits see earlier replacements. A failed edit reports its zero-based
-`failedEditIndex` and total `editCount` with no writes; a final result identical
-to the original reports `no_change` with no writes. Only after all edits pass
-does the tool request one conditional whole-file replacement using the unchanged
-original expected revision.
-
-The Environment provider contract supports foreground process execution through one Session-authorized process view over the existing Environment authority. The stock Git Worktree provider supplies bounded stdout/stderr streaming, timeout and cancellation cleanup, confined cwd resolution, direct argv execution, and practical Linux x64 process-group ownership. Stock `run_command` projects that surface through structured stdout/stderr progress, bounded terminal model output, and the allow/deny/ask policy path. Deterministic real-Git integration covers source edit -> direct `git diff --check` -> model continuation in the Task worktree. Opt-in OpenAI API-key and experimental ChatGPT tests cover the same real-model sequence with revision provenance and Task/Project/checkout isolation. Fine-grained command classification, implicit shell syntax, background process resources, general build/test success, sandboxing, and complete self-hosting remain unproven.
-
-The Environment mutation facet and generated transport also support create-new and revision-conditional delete operations. Filesystem Tools projects them as `create_file` and `delete_file` with exact `sourceMutation` targets. The Git provider serializes create/replace/delete together, rejects indirect paths, never intentionally overwrites on create, and rechecks revisions immediately before delete. Deterministic real-Git integration covers model-visible create -> read -> delete revision provenance, policy/effect ordering, and final Task/Project/checkout isolation. General whole-file overwrite, directory/move/copy/binary mutation, portable filesystem transactions, and full self-hosting remain unimplemented.
-
-The following remain largely or entirely unimplemented:
-
-- Project/Task/Session/Environment disk persistence and complete lifecycle;
-- rich Chat/workbench UI and persistent strategy-specific state;
-- context sources beyond root AGENTS.md, broader Reference/Observation material, provider-aware projection/cache planning, compaction, and token budgets;
-- parent/child Session lifecycle;
-- plugin-defined extension ecosystems beyond registration, model tools, executable strategies, and instruction-context composition;
-- broader plugin-facing workbench UI composition beyond Session, tool Inspection, and model-native activity presentation;
-- application Command/Command Palette/keybinding infrastructure;
-- profile-aware provider preference and general configuration services;
-- additional Environment providers, process modes beyond the foreground surface, and broader mutable source tooling such as whole-file overwrite, directory/move/copy, and binary operations;
-- the expected stock plugin topology;
-- cross-platform release, packaging, and sandboxing.
-
-Public plugin-facing APIs remain experimental.
-
-Normal startup consumes a prepared installation snapshot with independently
-optional backend and frontend components. Backends advertise ready capabilities
-and extensions; frontends use separate metadata-driven presentation and behavioral
-extension registration. Generic host adapters and operation-scoped unary
-read/mutation and server-streaming process
-host calls support the AGENTS.md, Search, Filesystem Tools, and Command Tools AOT
-backends. Chat runs as an installed AOT strategy with its own canonical Session
-service; the runtime has no static stock activations. Local
-Directory Project Selector is a prepared frontend-only behavioral extension. This
-reuses existing registries, isolate ports/framing, and prepared EVC hosting, with
-per-view presentation decoding and fresh operation runtimes for selectors.
-Plugin installation, production packaging, profile/enable-disable
-management, version solving, filesystem watching, general symmetric RPC,
-client/bidirectional streaming, ambient callbacks, and hot upgrade remain unimplemented.
-
-The normal shell supports Project opening, title-only Task creation with a real
-Git primary Environment, and one stock Chat Session with sequential approval-gated
-Runs through the experimental ChatGPT subscription-backed ModelProvider. A narrow
-public Flutter Session presentation contract hosts the stock Chat plugin's
-evaluated mixed message/activity timeline and composer; common execution status
-and approvals remain host-owned. Compact Chat tool/native activity groups open one
-window-local Inspection, with common ordered group composition and separate
-interpreted Apply Patch, Run Command, and OpenAI reasoning-summary presentations.
-These reuse prepared frontend hosting without a native presentation fallback or
-a general workbench UI framework.
-
-## System shape
-
-ADELE has one Flutter desktop application, `adele_desktop`, under `app/`. The application owns the current shell, theme, private widgets, desktop integration, and composition of host systems. It is a composition root rather than the primary home of core logic.
-
-Its production dependencies contain no packages under `plugins/**`, including
-contracts, and `app/lib` imports no concrete plugin packages or development tooling.
-With zero installed plugins, the shell can construct, mount, and close; missing
-plugin functionality remains unavailable without built-in fallbacks. Generic
-third-party host libraries remain allowed; see
-[dependency rules](dependency-rules.md#application-backend-composition).
-
-`app/lib/core/adele_runtime.dart` defines the application-lifetime `AdeleRuntime`.
-It owns one `CapabilityRegistry`, `ExtensionRegistry`, `InMemoryProductStore`,
-`ProductLifecycleCoordinator.generated` wired to those same registries and store,
-`InferenceContextComposer` over the same extension registry, with no static stock
-activation, Chat imports, or `includeCommandTools` option. Construction is
-synchronous and provider-free. The
-runtime also owns pure-Dart `ApplicationPluginBootstrap` on those same capability
-and extension registries, without starting backend work in its constructor.
-Chat, AGENTS.md, Search, Filesystem Tools, and Command Tools have no production app
-dependency/import or static activation; their prepared backends supply contributions through generic
-remote extension activation.
-
-The normal adapter registry also supports independently installed orchestration
-strategies through the existing `orchestrationStrategyContributions` point.
-Materialization is async-capable and authority-free across AOT transport. Each
-start/resume uses fresh operation-scoped unary host authority; exact tool snapshot
-and proposal provenance survives approval pauses only as execution-scoped opaque
-data handles. Approval remains host-captured and single-use per resume. Execution
-close/retirement releases retained state without resolving waiting Runs or
-retargeting replacement generations. Public orchestration owns transport and a
-native backend host proxy; the app owns actual mechanics and authority. Stock
-Chat uses this same remote substrate, sharing canonical backend state with its
-generated `ChatSessionService`. See
-[remote orchestration](contracts-and-capabilities.md#remote-orchestration-strategies).
-
-The normal Stateful `AdeleApplication` constructs its runtime once synchronously
-in `initState`, not during rebuilds, then explicitly calls async
-`ApplicationPluginBootstrap.start`. Inputs are only the installation root, shared
-runtime/host locations, and optional generic startup argv. There are no stock
-activator callbacks or required-Git/additional-OpenAI tiers.
-
-`plugin_runtime.PreparedPluginCatalog.discover(rootPath)` reads a deterministic
-startup snapshot from immediate child directories' `adele_plugin.installation.json`
-files before host creation. The version-1 JSON schema contains `PluginMetadata`
-(`id`, opaque `version`, `displayName`, optional `description`) and `components`,
-with independently optional backend and frontend components. Backend supplies an
-artifact such as `backend.aot`; frontend supplies an artifact such as `frontend.evc`
-and strict `presentations` descriptors with roles `session`, `toolActivity`, or
-`modelNativeActivity`, plus an optional separate `extensions` list supporting
-`kind: 'projectSelector'`. Both lists coexist without changing presentation roles
-or manifest version 1. Artifact paths must be relative, confined, and existing.
-Descriptors are data-only executable ABI/preparation metadata, not profile state.
-There are no source paths, backend capability/extension exposures, configuration, or activation state
-in this manifest; the source/build
-`adele_plugin.yaml` has a different purpose. Stock source layouts are not normalized
-to it. See [`plugin-layout.md`](plugin-layout.md#prepared-installation-snapshot).
-
-An unconfigured, missing, or empty root succeeds with an empty catalog. Invalid
-installation envelopes are reported and excluded. Invalid components record typed
-backend/frontend issues and omit only the failed component while retaining the
-installation and healthy sibling. Readable valid identities are reserved before
-remaining validation, so duplicate IDs exclude all conflict members, including
-otherwise invalid manifests, without selecting a version winner. Root I/O failure
-reports generic bootstrap failure, not successful emptiness; core in-process
-functionality remains usable, but prepared Project selectors require successful discovery and
-frontend activation. There is no watching or rescan lifecycle.
-
-The backend bootstrap publishes the catalog through its existing snapshot change
-notification before backend startup. Window-owned Flutter
-`ApplicationFrontendBootstrap` in `app/lib/frontend` consumes that same snapshot
-and the runtime's existing `ExtensionRegistry`. It loads each frontend once per
-generation through `PreparedFrontend` and registers the descriptor-selected public
-UI roles and Project selector contributions, with no second root, catalog,
-registry, or frontend runtime mechanism.
-Local load/registration failure rolls back only that attempt's exact registrations
-and generation; frontend readiness does not depend on a backend, credentials, or
-another frontend. Retirement closes only captured exact registrations, not sibling
-roles or replacements. Generation close settles pending loads, retires its
-registrations, and invalidates view resources and operation bridges, including late
-loads after close.
-
-Catalog validation establishes strict descriptors and confined existing files,
-not executable EVC correctness. `PreparedFrontend.load` retains immutable bytes.
-Before registration, bootstrap validates behavioral bytecode and descriptor
-entrypoint presence through a validation runtime that intercepts execution before
-initializers or plugin code run, with no picker authority. A failure rejects only
-that frontend attempt. Presentation-only components retain per-view decoding and
-entrypoint execution: their readable corrupt bytecode can pass discovery and byte
-loading yet fail only when a view is created, without failing a Run or retiring
-healthy presentations.
-
-With no valid backend components, bootstrap succeeds without spawning a host even
-if runtime/host paths are invalid. Otherwise it starts one shared
-`PluginBackendHost` and independently attempts every valid backend. Local start,
-advertisement, or registration failure cleans up only that attempt's partial
-resources. Later termination retires only its own exact generation; shared-host
-failure invalidates all backends. The bootstrap exposes read-only per-backend
-states and catalog issues, not a plugin-management UI. Overall `ready` means
-startup settled, not that every backend succeeded or a model is usable.
-
-Git and OpenAI entrypoints own their ready capability advertisements; Chat,
-AGENTS.md, Search, Filesystem Tools, and Command Tools own their ready extension advertisements.
-Generic
-`PluginBackendActivation.registerAdvertised` coherently owns both capability and
-extension registration, rollback, and retirement through the existing registries.
-Internal `RemoteExtensionAdapterRegistry` selects host adapters for known public
-extension points; it is not another contribution registry or PluginId switch.
-Unsupported points and malformed metadata fail that backend attempt. There is no
-app-owned backend exposure table. `app/lib/plugins/temporary_chatgpt_selection.dart`
-retains the selected provider identity and model-only `StockChatGptConfiguration`.
-This is an intentional concrete-identity exception pending general configuration
-and profiles, not permission for plugin imports or production plugin dependencies.
-`fromEnvironment` always supplies a model default or override, with no credential
-field or presence gate. Provider availability comes from the active registry;
-the app does not inspect startup OAuth/credential configuration. The helper owns
-neither backend startup nor exposures. The launcher supplies OpenAI's credential-file
-reference and public OAuth/endpoint options through a separate temporary generic
-argv file, never token contents. It always selects `--chatgpt-only`: no configured
-reference means successful zero capabilities, not inherited API-key activation.
-Normal bootstrap independently sets `startupArgumentsOnly: true` on every
-`startPlugin` call; the shared host forwards it to the backend startup message.
-OpenAI disables environment fallback in this mode and advertises zero capabilities
-for empty argv or an absent configuration document, so root-only normal activation
-cannot inherit an API-key exposure even without the launcher map. Generic code
-uses no PluginId switch. This temporary mode is not environment scrubbing or
-settings/profile/credential infrastructure.
-General provider/model configuration remains deferred; this seam is intended
-to disappear with general plugin configuration/profiles. Runtime and shared host
-remain OpenAI-unaware. This is ownership separation, not process sandboxing.
-
-Application close synchronously blocks window actions and notifications and drains
-in-flight Task establishment and only the currently advancing Run start/resume
-before `runtime.close`, even on failure. A quiescent waiting Run is abandoned with
-runtime teardown, without resolving or executing its pending invocation or waiting
-indefinitely for approval. Draining is not cancellation or rollback. Desktop exit
-awaits the complete close; detach/dispose initiate the same cleanup and report
-runtime cleanup failures through `FlutterError`. Frontend cleanup runs even if
-runtime cleanup fails, retiring exact registrations and invalidating bridges after
-pending activation settles. Runtime close shares one completion across
-callers: all backend capability and extension registrations retire before their
-connections close, then the host closes. There are no static stock activations to retire.
-`app/lib/core/resource_cleanup.dart` supplies `closeResources`, shared with
-development teardown: every action is attempted before the first error is
-rethrown with its stack.
-
-The minimal themed shell retains its ADELE header. In B1, `AdeleApplication.build`
-discovers `projectSelectorContributions` and displays `No Project is open` with
-one button per contribution in deterministic registry registration order. Zero
-selectors is an explicit unavailable state; one or multiple contributions are
-independent actions, not a chooser/default-provider framework.
-
-Normal activation consumes one catalog of prepared backend/frontend installations,
-not source paths or a compiler. No active Environment capability leaves Task
-Environment support unavailable; missing Search, Filesystem, or Command backends leaves
-their tools unavailable without in-process fallback. Missing Chat backend leaves
-its strategy and Session service unavailable. Missing Chat, Filesystem Tools,
-Command Tools, or OpenAI activity EVC leaves the corresponding presentation unavailable
-independently of the other frontends and model backend support.
-Missing or invalid Local Directory frontend leaves its Project selector unavailable,
-without a static or native selector fallback.
-Artifact preparation belongs to repository/build-time tooling, not app startup;
-deployment inputs and source-checkout limitations are documented in
-[`app/README.md`](../../app/README.md#normal-backend-startup) and the
-[`plugin_builder` README](../../packages/plugin_builder/README.md#desktop-tooling).
-Checkout preparation stands in for future installation/update-time compilation;
-activation only consumes prepared artifacts. Caching, plugin management,
-production packaging, and profiles remain deferred. Linux tooling prepares eight
-installations in one `.dart_tool/adele/desktop-plugins/build-*/installations/` root:
-frontend-only Local Directory Project Selector, backend-only Git, AGENTS.md,
-and Search, and combined Chat, Filesystem Tools, Command Tools, and OpenAI. Each
-combined installation contains `backend.aot` and `frontend.evc` with independent
-component availability. Preparation produces
-seven backend snapshots plus the host and five EVCs, with no Chat-, AGENTS-, Search-,
-Filesystem-, or Command-specific startup configuration.
-`tools/stock_frontend_descriptors.dart` is the singular stock
-build-side source for presentation and behavioral extension descriptors; app runtime
-activation has no stock tool/native
-identity table. Deployment uses only `ADELE_PLUGIN_INSTALLATION_ROOT`,
-`ADELE_BACKEND_HOST_ARTIFACT`, `ADELE_DARTAOTRUNTIME_EXECUTABLE`, and
-`ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`, with no additional stock-specific defines.
-
-Flutter bootstrap reads and forwards only generic plugin argv; configuration
-interpretation and credential loading belong to the owning backend. Startup
-creates no Project, Task, Environment, or Session, builds no tool catalog, and
-starts no Run. Explicit user actions enter product lifecycle and Run composition.
-General provider/model configuration,
-Task Browser, persistence, and richer workbench UI remain deferred.
-
-Development/self-hosting owns an `AdeleRuntime` instance instead of duplicating
-these registries, lifecycle, and composer. Plugin-specific runner code lives in
-`app/tool/self_hosting/`; it and app tests remain intentionally plugin-aware.
-Chat Contract is a development-only app dependency; the tooling configures,
-appends to, and snapshots the same remote Chat backend used by normal startup.
-Its surrounding topology/runner retains independent AOT artifacts and host ownership, provider
-activation, isolated Git source, Project/Task/Environment/Session establishment,
-tool catalog, model selection, development IDs, execution, and evidence. The generic
-model capability adapter lives in `app/lib/core/model_provider_host.dart`; normal
-composition has no dependency on development code. Self-hosting uses generic
-`registerAdvertised` for backend-owned exposures but keeps its explicit
-artifact/host/profile topology, including Chat, `agentsMdArtifact`, `searchToolsArtifact`,
-`filesystemToolsArtifact`, and `commandToolsArtifact` on the same shared host through
-`PluginBackendActivation` and the same generic
-remote adapters. Self-hosting's `includeCommandTools` controls explicit Command
-backend start/registration, not runtime construction. It does not require a normal
-installation root or catalog discovery, consume normal bootstrap configuration, or
-start its backend owner. Its own
-profile environment configures the backend with the default
-`startupArgumentsOnly: false`; registration includes all advertised
-online contexts, potentially both OpenAI contexts. It then explicitly resolves
-the selected profile's provider ID rather than filtering registrations by profile.
-
-Self-hosting remains selector-free and creates its Project from the explicitly
-known isolated source URI. The shared runtime imports no selector, Flutter bridge,
-or native picker; no conditional picker import or headless picker fallback is
-needed. Normal selector activation likewise makes no OS call.
-
-The explicit development runtime smoke lives in
-`app/tool/development_runtime_smoke/main.dart`, with its fixture runtime and eval
-adapters alongside it. `dart tools/adele.dart smoke linux --profile` directly
-targets this Flutter entrypoint outside `lib`, without a separate package or
-changes to normal startup, self-hosting topology, or stock artifact preparation.
-
-Host implementations are split into small pure-Dart packages where Flutter is not required:
-
-| Package | Maintained/planned responsibility |
+| Domain | Responsibility |
 | --- | --- |
-| `plugin_runtime` | Prepared installation catalog, backend connections, capability/extension activation adapters, and operation-scoped unary/server-streaming host routing |
-| `plugin_builder` | Source resolution, contract checks/generation coordination, backend/frontend builds, diagnostics, provenance, and caching |
-| `plugin_backend_host` | Shared child-process entrypoint and one external AOT isolate group per active plugin backend |
-| `agent_kernel` | Provider-neutral Run/model/tool semantics, interruptions, policy boundary, structured outcomes, and typed execution observation |
+| Desktop composition root (`app/`) | Compose host systems, desktop integration, and the workbench shell. |
+| Public/plugin-facing architecture (`packages/`) | Define product identities, plugin/extension contracts, capabilities and transport contracts, Environment, orchestration, model tools/providers, and semantic UI roles. |
+| Internal host/runtime (`packages/`) | Implement plugin hosting, generic agent execution mechanics, and build/preparation tooling behind public boundaries. |
+| Plugins (`plugins/`) | Supply stock and reference providers, strategies, tools, integrations, and presentation using public contracts. |
 
-These are internal packages. Plugins must not import them.
+Core owns shared invariants and generic infrastructure, not a required set of
+stock implementations. A valid application may have zero installed plugins;
+missing plugin functionality remains unavailable rather than being replaced by
+built-in implementations. The [architectural principles](principles.md) and
+[dependency rules](dependency-rules.md) constrain all of these domains.
 
-Public pure-Dart `adele_plugin_backend_support` is separate: its only production
-dependency is `adele_contract`, and its reusable `AdeleHostRequestMultiplexer`
-binds generated clients to an `AdeleStreamChannel` supporting unary requests and
-server streams without internal host or Flutter imports.
+<a id="core-product-domain-direction"></a>
 
-The source-plugin runtime shape is:
-
-```text
-Flutter desktop host (main Flutter isolate)
-  |
-  +-- interpreted frontend from flutter_eval/dart_eval bytecode
-  |
-  +-- generated typed asynchronous transport
-  |
-  +-- one shared child dartaotruntime process
-        |
-        +-- one native Dart AOT isolate group per active plugin backend
-```
-
-This shape is proven only on Linux x64 Flutter profile mode. Direct external AOT loading inside stock Flutter failed. Backend process/isolate separation is not a security sandbox.
-
-Contract source can be shared by plugin frontend/backend packages. Generated transport hides ports, serialization, request IDs, stream protocol, cancellation, dispatch, and structured transport errors behind typed proxies/dispatchers. Values crossing runtime boundaries are reconstructed rather than shared by identity and should normally be immutable snapshots.
-
-## Recursive plugin extension direction
-
-ADELE's accepted long-term model is recursively extensible:
-
-```text
-ADELE core
-    -> typed extension points
-        -> plugins
-            -> plugin-defined typed extension points
-                -> other plugins
-```
-
-The broad rules are recorded in [`plugin-extension-model.md`](plugin-extension-model.md) and ADR 0030.
-
-Core owns durable shared identities/invariants and host infrastructure. Plugins provide much of the concrete product behavior. Plugins may publish deliberately public extension APIs for concepts they own, and other plugins may implement those interfaces without depending on one specific implementation plugin being active.
-
-Runtime composition should prefer typed interface discovery over hidden activation dependencies. Zero/one/many compatible registrations may be valid depending on the extension contract.
-
-Capabilities remain the implemented callable-provider mechanism for Actions and Services. Events are read-only fact notifications. Other extension points may collect UI fragments or structured operation contributions without being callable capabilities.
-
-The generic `ExtensionRegistry` supports typed registration/discovery, change notifications, retirement, and exact binding liveness. Current model-tool, orchestration-strategy, inference-context-source, Project selector, Session presentation, tool Inspection, and model-native activity presentation points reuse it with their own composition semantics; already-resolved bindings do not migrate to replacement generations. Instruction-source data becomes independent of binding liveness after safe capture, unlike executable work.
-
-Tiny pure-Dart `adele_core_extensions` imports only `adele_plugin_api` and owns
-core extension contracts with no natural existing public domain package, not all
-extension APIs. Product values, orchestration strategies/context, model tools,
-Environment providers, generic registry mechanics, and plugin-defined ecosystems
-keep their existing owners; see [`dependency-rules.md`](dependency-rules.md).
-
-Public Flutter `adele_ui` owns the concrete Session, tool Inspection, and
-model-native activity presentation contracts, depending on public
-`adele_orchestration` and `adele_model_tool` without adding Flutter to those
-packages, product, or the registry. Broader recursive composition,
-plugin-defined UI ecosystems, generic Event subscription,
-Commands/keybindings, and inference composition beyond instruction material remain
-direction rather than implemented production systems. Registry change
-notifications are not a general domain Event subscription system.
-
-## Contracts, capabilities, and providers
-
-Contracts answer how typed communication crosses a runtime boundary. Capabilities answer which compatible provider handles a callable semantic request. Extension points are the broader architecture for typed plugin participation.
-
-Implemented capability resolution is one-to-many. Several plugins may provide the same Action/Service, and one plugin runtime may expose multiple configured instances. The host-owned active registry implements provider discovery/enumeration, deterministic rank-based default resolution, explicit selection, exact-major matching, and exact generation-bound routing.
-
-The rank-based default is a deterministic development fallback, not the final preference system. ADELE owns preferred-provider selection; future profile/project/user policy may select contextual defaults and expose explicit alternatives.
-
-Configured capability instances such as `OpenAI Work` and `OpenAI Personal` are distinct from plugin installations/runtime instances. Temporary documents, terminals, browser sessions, and processes are runtime resources rather than configured providers.
-
-Backend startup carries optional `capabilityExposures` from isolate `ready` through
-host `pluginReady` to the exact connection. Each advertisement has `providerId`,
-`capabilityId`, `capabilityMajorVersion`, `serviceId`, `displayName`,
-`configurationContext`, and optional `rank` (default zero). Plugin identity comes
-authoritatively from installation/connection, never the advertisement. An omitted
-list is zero capabilities. `registerAdvertised` maps this metadata into existing
-`PluginCapabilityActivation.register`, not a new registry or RPC mechanism.
-Installed metadata does not establish readiness; only active registrations enter
-provider resolution. ADRs 0015, 0021, 0027, and 0028 retain the distinctions between
-installation, activation, active provider selection, generation-bound contexts,
-and plugin-owned credentials.
-
-Independent optional extension advertisements are adapted into exact-generation
-contributions in the existing `ExtensionRegistry`. `PluginBackendActivation` owns
-capability and extension registration together, including rollback and retirement;
-the adapter registry holds host implementations of known public points, not another
-plugin contribution registry.
-
-The app's `RemoteInferenceContextSourceAdapter` and `RemoteModelToolAdapter` connect
-remote instruction sources and model tools to their existing public composition
-contracts. Host-created operation contexts expose only
-allowlisted services backed by captured canonical Session authority, not authority
-chosen by transported Session/Run/Environment identifiers. The narrow Environment
-read service exposes the already-bound identity through no-argument `authority()`, plus file and
-directory reads, without mutation or process operations. Separate generated
-`AuthorizedEnvironmentMutationService` supplies only create-new, conditional
-replacement, and conditional deletion, with no authority query or selectors.
-The read service remains unchanged for other consumers.
-
-Separate generated `AuthorizedEnvironmentProcessService` exposes exactly
-`runForegroundProcess(EnvironmentForegroundProcessRequest request) ->
-Stream<EnvironmentProcessEvent>`, using existing DTOs and declared failures without
-authority queries, authority-selection IDs, reads, or mutations.
-
-Model-tool exposure `hostServices` declares the maximum read/mutation/process
-dependencies to capture. Every descriptor requires `executionHostServices`, a duplicate-free
-allowed subset defining its exact execution allowlist, not a grant or Profile.
-Materialization captures coherent facets for the same Session/Environment;
-synchronous validation checks every exact captured facet and the remote generation
-without re-resolution. Materialize and argument validation receive no token;
-description receives pure Session/Run/Environment identity data. Only execution
-after policy/approval receives a fresh token. Stream authority starts on listen and
-ends on done, error, cancellation, or exact registration/connection retirement.
-Late results cannot migrate to replacements; revocation does not roll back
-in-flight mutations.
-
-Filesystem's installed `plugins/filesystem_tools/packages/backend` reuses its root
-tool semantics: `read_file` gets read only, `apply_patch`/`delete_file` get read and
-mutation, and `create_file` gets mutation only. Search describes from pure identity
-and executes with read only. Command's installed `plugins/command_tools/packages/backend`
-reuses root semantics with process-only execution authority. Reverse reads/mutations
-remain unary; process streams use one-item credit, pause/resume, and cancellation.
-Revocation is immediate and precedes bounded cleanup of owned streams. Both
-transport protocols are version 1 under the
-[pre-release transport policy](contracts-and-capabilities.md#transport-version-policy);
-the installed manifest remains version 1.
-Backend/frontend availability is independent. Local Directory uses a prepared
-frontend bridge, not this backend
-transport or its authority tokens. These checks authorize the
-host-service API, not native OS access; process separation is not a sandbox.
-
-[`contracts-and-capabilities.md`](contracts-and-capabilities.md) is the detailed
-specification for advertisements, point metadata, host-call authority, transport,
-and protocol compatibility. See also
-[ADR 0032: Remote backend extensions use operation-scoped host services](../adr/0032-remote-backend-extensions-use-operation-scoped-host-services.md).
-
-## Core product-domain direction
-
-ADR 0031 accepts the following long-term shared domain identities:
+## Product domain
 
 ```text
 Project
-└── Task
-    ├── Environment(s)
-    └── Session(s)
-        ├── Run(s)
-        └── child Session(s)
+    |
+    v
+   Task
+    +-- Environment(s)
+    +-- Session(s)
+            |
+            v
+           Run(s)
 ```
 
-### Project
+These are relationships, not a storage or runtime-object hierarchy. The
+[product model](product-model.md) is the canonical home for their semantics,
+core/plugin ownership, Session-to-Environment authority, and the distinction
+between stable identities and live bindings.
 
-Project is an abstract core identity/lifecycle concept, not intrinsically a local
-directory. B1 implements `ProjectSelectorContribution` in
-`packages/core_extensions` (`adele_core_extensions`) with only
-`String displayName` and `Future<Uri?> Function() selectProject`. The typed
-`projectSelectorContributions` point has ID `dev.adele.extension.project-selectors`
-and permits zero, one, or multiple independent contributions, without priorities,
-defaults, categories, or applicability rules.
+## Plugin and composition model
 
-Stock `local_directory_project_selector_frontend` lives under
-`plugins/local_directory_project_selector/packages/frontend`, replacing the retired
-root implementation package. The frontend-only `local-directory-project-selector`
-installation describes `Open Local Directory...` through a `projectSelector`
-behavioral extension, not a presentation role or AOT backend. Its no-argument
-evaluated `Future<String?> selectProject()` calls the public interpreted-only
-`adele_ui/directory_picker_bridge.dart` stub, `Future<String?> pickDirectory()`.
-The EVC owns platform-path rules and lexical dot normalization, returning an
-absolute `file:` directory URI string or `null`, without Git/filesystem validation
-or symlink resolution.
+A source plugin may have shared contract, backend, and frontend components.
+Backend and frontend availability is independent: a plugin can execute without
+presentation, or contribute a frontend without a backend. An operation that needs
+both still requires its exact live counterparts. Current hosting uses interpreted
+Flutter frontends and native AOT backends in a shared child runtime; source
+preparation is separate from runtime activation.
 
-The app's compile-only `DirectoryPickerDeclarations` and operation-scoped
-`DirectoryPickerBridge` separate declaration from native access. The bridge wraps
-`file_selector.getDirectoryPath` asynchronously with `$Future.wrap`, returning the
-raw platform path and permitting one native call per operation. Internal
-`PreparedFrontend.invoke<T>` uses a fresh runtime, supplied bridge, and result
-decoder for the descriptor-selected no-argument entrypoint, then revokes in
-`finally`; it is not public arbitrary eval. The generic selector adapter validates
-only the returned URI and liveness, leaving local-directory path semantics in EVC.
-This grants no backend RPC or Session/Environment authority. See the
-[selector README](../../plugins/local_directory_project_selector/README.md).
+Core/runtime owns generic registries, lifecycle, routing, and hosting. Concrete
+behavior belongs to plugins, which cooperate through deliberately public typed
+interfaces rather than dependencies on another plugin's implementation. Production
+`app/lib` does not link concrete plugin packages, including their contracts.
+The temporary provider-selection identity exception is documented in
+[application composition boundaries](dependency-rules.md#application-backend-composition);
+it does not permit plugin imports or implementation dependencies.
 
-Only the app invokes the contribution and passes a selected URI to
-`runtime.lifecycle.createProject`, which publishes and returns the canonical
-Project. `_project` in application State is window-local presentation, never
-`runtime.currentProject`. Buttons are disabled during selection. `null` is
-cancellation and creates nothing; selector/lifecycle failure is an inline error
-without fallback or changing the presented Project. The app validates the exact
-retained binding after asynchronous selection and before creation; late results
-after disposal/exit are ignored. Retirement rejects late native picker results
-without forcibly closing an open OS dialog. Semantic path, picker, and result
-failures remain operation-local, not frontend-generation retirement.
+An **Extension Point** is broader than a **Capability**: callable Action/Service
+provider resolution is one composition pattern, not the universal shape of UI,
+strategy, or other contributions. Each point owns its selection, composition, and
+failure semantics. Installation does not imply activation; live registrations
+establish availability. New composition may discover changed registrations, but
+captured executable bindings retain their exact generation and must not silently
+migrate when it retires.
 
-The opened shell derives a leaf name from the URI, falling back to host or URI,
-and shows the source URI, `Project is open`, and initially `No Tasks yet`. No
-derived metadata is added to Project; `adele_product` stays unchanged and
-independent.
-Opening adds no Task, Environment, Session, model, tool catalog, or Run and does
-not trigger backend activation, which belongs to async application bootstrap.
-Project persistence, catalogs, deduplication, and GitHub/cloud
-or other selectors are not implemented. Command surfacing and Task Browser remain
-deferred; the buttons are temporary presentation, not a plugin-facing UI framework.
-
-### Task
-
-Task is the durable ADELE-owned unit of user intent. Plugins may attach state and behavior without owning Task identity. Task workflow category/status remains user/domain-owned rather than being inferred automatically from execution success.
-
-Task presentation submits a title through
-`runtime.lifecycle.createTask(projectId: ..., title: ...)` without a provider ID.
-Resolution retains the capability registry's descending-rank/ascending-identity
-default, not a Git-specific route or multiple-provider ambiguity rule. The
-selected provider owns source validation, including non-Git rejection; Project
-opening remains provider-independent.
-
-Only successful lifecycle completion presents the new canonical Task and primary
-Environment. Selection remains window-local, with no replacement on failure and
-no late updates after disposal/exit. Task Browser, a provider chooser, and Commands
-remain deferred.
-
-### Environment
-
-Environment is initially the practical filesystem/source + process context used by Task work. A Git worktree-backed Environment may isolate source changes without isolating ports/databases/caches/etc.; Docker or remote providers may have different properties. ADELE does not claim stronger isolation than the selected provider actually supplies.
-
-A separate first-class Workspace concept is not currently required architecture. It may return later if concrete requirements demonstrate an independent semantic identity.
-
-A Task normally has one primary Environment and may own additional Environments for delegated child Session work.
-
-Lifecycle publishes Task and finalized primary Environment together
-only after provider establishment succeeds and records the exact establishment
-materialization. Successful provider state is intentionally retained even if the
-generation retires immediately afterward. Presentation checks live exact-binding
-readiness without parsing opaque `providerState` or restoring/migrating to another
-generation. Retained product state and live readiness are distinct; exposing them
-does not change lifecycle settlement or generation semantics.
-
-### Session and Run
-
-Session is a core identity/lifecycle container permanently bound to one orchestration strategy. Core does not assume every Session is chat history; strategy-specific state defines the Session's semantic contents.
-
-The implemented `adele_product` value is final and immutable:
-`Session(id, taskId, strategyId)`. The semantic `OrchestrationStrategyId` also lives
-in product so product does not depend on orchestration. Public pure-Dart
-`adele_orchestration` defines
-`OrchestrationStrategyContribution(strategyId, materialize)`, the typed
-`orchestrationStrategyContributions` extension point, and thin
-`OrchestrationStrategyResolver.resolve(id)` over the existing `ExtensionRegistry`.
-It also supplies the narrow public execution facade, not a second registry or a
-new public package. Canonical Session contains no live binding, Environment
-authority, or Chat history.
-
-`ProductLifecycleCoordinator.createSession` requires `taskId` and `strategyId`
-and accepts optional `environmentId` and `resolvedStrategy`. It validates the
-existing Task, exactly one current strategy contribution, and the Task's primary or explicitly selected
-same-Task Environment. A supplied strategy must own the same exact current
-registration in this lifecycle's registry, not merely the same semantic ID. It
-allocates `SessionId`, revalidates before publication, then atomically publishes the
-canonical Session and separate Task/Environment authority, and returns `Session`.
-Failed validation publishes neither value. Publication is private; there is no
-public `associateSession` operation. `store.session(id)` reads the canonical value,
-while `requireSessionAuthority` remains the tool-host authority read path.
-
-`coordinator.resolveSessionStrategy(sessionId)` resolves the canonical Session's
-stored strategy ID. Zero matches produce an explicit unavailable error; multiple
-matches produce an explicit ambiguous error even under different `ExtensionId`
-values.
-`ResolvedOrchestrationStrategy` retains the exact `ExtensionBinding`; retirement
-makes it fail with generic `StaleExtensionBinding`. Only fresh resolution may use
-a replacement registration, with no fallback or rewrite of the stored strategy
-ID. The permanent semantic binding is not a lifetime activation-generation pin.
-
-Run remains the core unit of execution inside a Session. Chat's canonical source
-split is `plugins/chat_strategy/packages/{contract,backend,frontend}`; the root
-semantic package is retired. Backend's `RemoteOrchestrationBackend` and generated
-`ChatSessionService` snapshot/append/configuration operations share one in-memory canonical
-store. Immutable user/final assistant entries have stable occurrence IDs and are
-reused across Runs. Intermediate output, proposals, and tool results are Run-local
-replay. Default instructions and a positive invocation budget (default eight) are
-backend-owned configuration snapshotted per materialized Run, not product fields.
-External mutations are rejected from materialization until close, including
-approval waits. Session creation uses live contribution metadata, not a compiled
-Chat ID or universal default. Session validity is independent of model availability;
-current Session and presentation remain window-local, never runtime navigation state.
-
-The Chat frontend asynchronously appends a canonical user entry through its
-generated client, then associates that stable accepted entry ID with an opaque
-handle from generic Run scheduling. The application allocates a fresh Run ID,
-resolves the exact selected ModelProvider, and constructs
-its adapter, builds the Session-authorized tool catalog, and snapshots the normal
-approval-gated policy for that Run. Existing per-inference context composition
-supplies root AGENTS.md instructions from the Task Environment. Chat appends only the final
-assistant entry; failures preserve accepted user/history state separately from
-Run failure. A later prompt starts a new Run, not a reused execution object.
-Persistence, strategy defaults/profiles, and multi-Session navigation remain deferred.
-
-The accepted direction allows child Sessions for delegated work. They may share an Environment or use another Task-associated Environment and are primarily surfaced through the parent Session/orchestration experience. Child Session lifecycle remains deferred.
-
-### Session presentation
-
-`packages/ui` (`adele_ui`) defines `SessionPresentationContribution` with
-`strategyId: OrchestrationStrategyId`, `displayName: String`, and
-`createPresentation: Widget Function(Session)`. Typed
-`sessionPresentationContributions` uses the existing extension registry. The
-canonical Session's stored strategy ID is matched exactly: no match is
-unavailable, one match provides presentation, and multiple matches are explicitly
-ambiguous. Presentation selection neither supplies a default strategy nor changes
-the stored Session strategy identity. Prepared owning-backend affinity additionally
-requires exact backend origin for creation and execution, not a different
-selection/default rule.
-
-The generic `app/lib/ui/session/session_presentation_host.dart` hosts an existing
-Session without Chat identities or controller knowledge. It observes registry
-changes, validates its retained exact binding, and removes retired presentation
-widgets so their resources dispose. Only fresh resolution can select a replacement.
-Absent presentation or a factory/load failure does not invalidate the Session or
-backend execution; there is no native Chat fallback.
-
-The separate Flutter `chat_strategy_frontend` owns asynchronous composer acceptance,
-canonical history refresh, grouping, and timeline placement. It imports shared
-Chat Contract and public UI APIs, not Backend, app, or kernel. Its generated client
-uses `adele_ui/owning_backend_bridge.dart` over a presentation-local unary channel
-to the exact sibling backend connection and configuration context. An explicit
-`backendServices` allowlist bounds requests; no PluginId selection or replacement
-retargeting crosses the bridge.
-
-Session descriptors supply `displayName`, `strategyId`, `extensionId`, `library`,
-and `entrypoint`, with optional `backendServices` and `strategyAffinity`. Chat
-allowlists generated `chatSessionServiceId` and uses `owningBackend`. `hostAdapter`
-is removed under manifest
-version 1. The host verifies origin from exact registration ownership, not IDs,
-contribution value identity, or plugin claims. Affinity pins Run materialization to
-the strategy from that same backend/context; lifecycle validates before publishing
-the Session. Backend and frontend startup are independent, but operations needing
-an absent or retired owner fail without fallback.
-
-The separate generic `session_execution_bridge.dart` supplies immutable execution
-snapshots, subscriptions, async Run scheduling, retained activity reads, and native
-inspect/build slots over opaque emitted handles. It carries no canonical history.
-The frontend associates accepted entry IDs with Run handles rather than message
-text or list positions. Core owns model/tools/policy, approvals, activity evidence,
-and Inspection; plugin code owns Chat meaning. Executable and approval objects do
-not cross the bridge. Native slots retain exact presentation liveness and isolate
-child compact views in their own prepared runtimes.
-
-`app/lib/frontend` owns generic activation and prepared hosting without Chat imports
-or a stock adapter. Common execution status, approval cards, and display safety
-live under `app/lib/ui/execution`. Frontend generations and presentation instances
-remain distinct; broader workbench and third-party UI APIs remain deferred.
-
-### Activity Inspection
-
-One `WindowInspection` owned by application State retains newest-first cards, not
-activity copies or canonical history. Each card has a window-local
-`InspectionCardId` distinct from its semantic target: an
-`ActivityGroupInspectionTarget(SessionId, RunId, ModelInvocationId)` or a
-`ModelOutputInspectionTarget` additionally identifying exact output sequence.
-Opening always prepends a new card, including repeated targets. Existing cards
-keep their position and independent collapsed state. Collapse hides the body but
-retains the target; dismiss removes only that card. Stale card callbacks cannot
-act on another card. Changing the presented Session or disposing the window
-clears the stack; Run completion, follow-up prompts, and frontend retirement do
-not. The generic Session execution bridge validates opaque handles against exact activity emitted
-to that presentation, with current-Session and lifetime checks.
-
-Chat owns the single-versus-group decision separately for each completed model
-invocation. A presentable occurrence is one tool proposal or one native output
-with non-null safe presentation. Text narration and opaque native outputs do not
-count. One occurrence appears directly; two or more produce one group. Group
-headings prefer nonblank tool-batch narration when tools exist, then the first
-safe native compact text, then the presentable operation count. A single tool
-never falls back to a group count.
-
-`app/lib/ui/inspection/inspection_host.dart` owns card chrome and composes group
-rows in exact `output.sequence` order. Rows use compact presentations, never rich
-bodies. Common row interaction prepends an exact individual-output card without
-changing its group. Individual headers reuse compact presentation; expanded
-bodies use existing rich presenters. Unprepared and rejected proposals retain
-factual, inspectable placeholders, including proposals left unprocessed at Run
-termination. Exact output targets survive preparation and resolve to their tool
-invocation without replacing the card or duplicating the Chat entry. Retained
-cards reread live evidence; progress never inserts or reorders cards.
-Each prepared invocation has a read-only
-`ToolActivityInspectionSource`: a `Listenable` with an immutable
-`ToolInvocationActivity` snapshot and fixed invocation/tool identities.
-If a Run ends without a terminal result for a prepared invocation, the host
-explicitly labels its retained presentation as last-observed activity. It does
-not imply a current approval wait or manufacture a tool completion.
-
-Public Flutter `adele_ui` separately defines
-`ToolActivityCompactPresentationContribution(toolId, createPresentation)` and
-`ModelNativeActivityCompactPresentationContribution(presentationKind,
-createPresentation)`. Factories return bespoke Flutter widgets over the same
-read-only tool source or safe `ModelNativePresentation`, not a host visual-card
-DTO. Exact semantic identity resolution has zero/one/many outcomes: no presenter
-uses factual common fallback, one uses its exact binding, and many report
-ambiguity with fallback rather than choosing by order. Missing/failed/retired
-compact tool presentation retains a bounded model-visible alias; native fallback
-retains provider-approved `compactText`. Common code never parses tool arguments.
-Retirement removes only the custom view; replacement needs fresh exact resolution.
-
-Ownership is deliberately separate: Chat frontend owns grouping and timeline
-placement; common host/workbench owns inspect interaction and card stack/chrome;
-tool/provider plugins own compact and rich read-only bodies; Run/core owns
-evidence identity, order, and lifecycle; the approval host owns authorization.
-Compact factories receive no inspect, navigation, execution, or approval callback.
-
-Public Flutter `adele_ui` defines
-`ToolActivityInspectionContribution(toolId, createPresentation)` with a
-`Widget Function(ToolActivityInspectionSource)` factory and typed
-`toolActivityInspectionContributions`. Its resolver matches exact `ToolId`: zero
-is unavailable, one returns the existing registry binding, and multiple are
-ambiguous. The generic tool host retains the same source/view across updates,
-validates exact liveness, and removes retired widgets and resources. Only fresh
-resolution may select a replacement. Missing, failed, or retired presentation
-does not fail headless execution and has no native tool-card fallback.
-
-Filesystem Tools and Command Tools own separate interpreted frontend packages
-for `apply_patch` and `run_command`. Their widgets interpret plugin fields;
-`app/lib/frontend/tool_activity_inspection_bridge.dart` transports recursively
-immutable structured argument/terminal maps, latest non-progress common lifecycle,
-and outcome data, without tool-specific field switches or progress-history
-flattening. Coalesced snapshot notifications update the retained interpreted
-runtime/view. Command output previews are bounded terminal data, not a console.
-Prepared `toolActivity` descriptors supply identities and entrypoints to generic
-`ApplicationFrontendBootstrap` over the existing `PreparedFrontend` lifecycle;
-there is no stock tool activator or runtime tool identity table for activation.
-The same prepared artifacts expose compact entrypoints: Filesystem shows the
-relative patch target and canonical edit count, not invented Git line statistics;
-Command shows a bounded direct-argv representation without shell reconstruction.
-
-The prepared host contains decoding/entrypoint and Tool change-callback failures.
-Runtime-local guards also cover the current eval pin's interpreted `createState`,
-`initState`, `build`, and `dispose` calls, including native cast failures within
-those calls. A failure revokes observation and unmounts only that presentation;
-interpreted cleanup receives one attempt and native State disposal still completes.
-This is not a general Flutter error boundary: native Flutter errors outside those
-calls (including layout/paint) and arbitrary asynchronous callbacks are not
-intercepted. No global Flutter error handler is replaced.
-
-Inspection appears to the right on wide windows and below on narrow windows;
-placement is private app layout, not a public physical panel API. Tool and native
-cards are simultaneously accessible through an independent scroll area and are
-read-only; only common host approval UI offers Allow/Deny for the exact
-interruption. Arbitrary plugin drill-down beyond group-to-individual activity,
-Source/Diff/Console navigation, terminal/PTY and
-full-output views and persistence remain deferred.
-
-### Model-native activity presentation
-
-The provider backend supplies safe presentation alongside, never inside or instead
-of, exact raw native metadata. The source-of-truth common contract in
-`packages/model_provider/lib/adele_model_provider.dart` defines generated
-`ModelProviderNativePresentation(kind, compactText, data)`, with `String` identity
-and compact text and recursively immutable JSON-like `Map<String, Object?>` data.
-`ModelProviderOutput.nativePresentation` is a required nullable field, non-null
-only for native outputs. Nullability means semantic absence; the constructor
-argument and generated map key remain
-required under the existing coherent-schema convention. This is not mixed-schema
-wire compatibility or permission to hand-edit generated output.
-
-Public pure-Dart `adele_orchestration` owns immutable
-`ModelNativePresentation(kind, compactText, data)` in
-`packages/orchestration/lib/src/model.dart` and optional
-`ModelNativeOutput.presentation`. The adapter in
-`app/lib/core/model_provider_host.dart` maps the common DTO fields generically,
-without provider imports, classification, or redaction. Safe field selection and
-bounds are backend responsibilities; immutable containers validate/copy data but
-do not determine whether provider fields are safe. Raw `nativeMetadata` remains
-exact and the only native replay source. Safe presentation never enters replay,
-canonical Chat history, or a new persistence model.
-
-Public Flutter `adele_ui` defines
-`ModelNativeActivityPresentationContribution(presentationKind, createInspection)`
-at typed `modelNativeActivityPresentationContributions`. The factory has type
-`Widget Function(ModelNativePresentation)` and receives no raw envelope. There is
-no UI-owned projection type or projector callback.
-`ModelNativeActivityPresentationResolver` matches exact safe presentation kind
-through the existing registry: zero makes rich Inspection unavailable while safe
-activity still exists, one returns a retained binding, and many are explicitly
-ambiguous. There is no priority, applicability probing, or fallback. Retained views
-use exact-generation liveness; only fresh resolution can choose a replacement.
-
-OpenAI has only `plugins/openai/packages/{contract,backend,frontend}`. Pure-Dart
-`openai_contract` owns identities and payload schema, with no algorithms. It keeps
-`openAiResponsesItemKind = 'openai.responses.item.v1'` and
-`openAiResponsesItemVersion = 1` unchanged. Contract's
-`openAiReasoningSummaryPresentationKind` is
-`openai.responses.reasoning-summary.v1`, with
-`openAiReasoningSummaryPresentationVersion = 1`. Backend's
-`lib/src/openai_native_presentation.dart` owns
-`projectOpenAiReasoningSummary(ModelProviderNativeEnvelope)`; its output is attached
-in `lib/openai_model_provider_backend.dart` while raw native metadata is preserved.
-It emits only `{'summaryParts': List<String>, 'truncated': bool}` as safe data.
-Unsupported, malformed, empty, or oversized summary input produces no safe
-presentation without changing the raw item, decoding encrypted data, or treating
-compaction as reasoning-summary content.
-
-Before text processing, input is bounded to 1,024 parts and 262,144 aggregate UTF-16
-code units; all parts within that budget are validated, including discarded
-suffixes. Full presentation retains at most 32,768 Unicode code points across 128
-trimmed nonblank parts. `truncated` signals full-text loss, not merely compact
-shortening. Compact text is capped at 160 code points including its ellipsis.
-Generic Chat escapes unsafe display controls and reapplies the compact cap after
-escaping; the OpenAI frontend separately escapes full text. None of these display
-limits or escapes changes replay.
-
-The separate Flutter `openai_frontend` package under
-`plugins/openai/packages/frontend` supplies `buildOpenAiReasoningInspection` in
-`lib/openai_frontend.dart`. The common Inspection host preserves `output.sequence`
-order and passes only `ModelNativePresentation` to
-`app/lib/ui/inspection/model_native_activity_inspection_host.dart`. Only its safe
-`data` map crosses `app/lib/frontend/model_native_activity_bridge.dart`: no raw
-envelope, compatibility metadata, encrypted content, or
-execution/approval authority. Exact native/encrypted replay remains untouched in
-the backend and full Run evidence. Display projection is neither replay state nor
-a new canonical Chat entry, and summaries are not hidden chain of thought.
-
-OpenAI's one installation contains both backend and frontend components. Its
-`modelNativeActivity` descriptor supplies the safe kind and compact/rich entrypoints
-to generic `ApplicationFrontendBootstrap`, which loads, registers, and retires
-exact resources using existing `PreparedFrontend` hosting. There is no stock OpenAI
-frontend activator or identity switch; generic activation performs no projection,
-raw interpretation, or display escaping. The `app/tool` compile harness remains
-checkout tooling standing in for future installation/update-time preparation, not
-runtime activation.
-Frontend readiness is independent of the model backend and other frontends.
-Missing/corrupt artifacts, malformed safe data, factory failures, and contained EVC
-failures remain presentation-local without failing the Run, compiling source, or
-substituting a native card. Retirement removes the old view and resources but not
-captured safe activity; fresh resolution cannot retarget stale resources. See
-[`app/README.md`](../../app/README.md#model-native-activity-presentation) for
-composition and bridge ownership.
-
-OpenAI summary requests are a narrow provider-local `reasoning.summary: 'auto'`
-policy, not a common inference option or all-model support claim. Exact guarded
-model IDs and external evidence belong in the
-[OpenAI backend README](../../plugins/openai/packages/backend/README.md).
-Hidden chain-of-thought and encrypted reasoning are never user-presented.
-Reasoning deltas, compaction UI, and general
-provider/model configuration UI remain deferred.
+See the [plugin extension model](plugin-extension-model.md),
+[dependency rules](dependency-rules.md), [plugin layout](plugin-layout.md), and
+[contracts and capabilities](contracts-and-capabilities.md) for the deeper rules.
 
 ## Agent execution
 
-`agent_kernel` remains an internal provider-neutral execution substrate. Concrete models, tools, editors, SCM integrations, terminals, orchestration strategies, and presentation belong outside the kernel.
+A strategy-bound Session supplies the context for a bounded Run. A Run is an
+execution episode, not the Session's durable strategy state and not one model
+invocation. It may contain multiple model/tool turns and interruptions.
 
-`plugins/chat_strategy/packages/backend` supplies the installed stock Chat strategy
-through `RemoteOrchestrationBackend`, with semantic ID `dev.adele.strategy.chat`, distinct from
-plugin ID `dev.adele.plugin.chat-strategy` and extension ID
-`dev.adele.plugin.chat-strategy.orchestration`. The private Chat loop owns bounded
-sequential proposal batches, approval/rejection continuation, and invocation
-budget behavior. A final-slot proposal batch fails before preparation/execution
-because it has no continuation slot. This is not concurrent tool execution or a
-general workflow system.
+A model invocation produces output, potentially including tool proposals. A
+proposal is not tool execution or authorization: the host resolves and validates
+it against captured tools and applies policy and any required approval before
+execution. Provider-neutral mechanics keep invocation, proposal, execution,
+outcome, and observation distinct from a provider's protocol details.
 
-`createSessionOrchestrationRun` in `app/lib/core/orchestration_host.dart` looks up
-the canonical Session, resolves or validates its exact contribution once for the Run, and
-materializes against `KernelOrchestrationHost` via
-`OrchestrationStrategyHostContext(session, host)`. The callback returns
-`OrchestrationExecution` with `start` and `resolveApproval`.
-`SessionOrchestrationRun` retains that exact binding/execution and exposes
-internal Run/tool/journal evidence only to application callers.
+Strategy plugins own their Session semantics, input projection, and sequencing.
+The public orchestration facade exposes the execution operations they need;
+internal `agent_kernel` supplies generic mechanics without owning Chat history
+or concrete provider/tool behavior. Plugins do not import the kernel.
 
-The same host exposes a separate read-only activity source whose immutable public
-values belong to pure-Dart `adele_orchestration`. The application projects internal
-journal evidence; neither the journal nor the Run/executable authority reaches
-public consumers. Asynchronous coalesced journal invalidation supports live reads
-during model/tool work, with initial and terminal snapshots and detachable
-subscriptions. This is in-memory observation, not persistence or a public copy of
-kernel execution events.
+See [agent execution semantics](agent-kernel-semantic-model.md) for the detailed
+model, [orchestration](../../packages/orchestration/README.md) for the public
+boundary, and [application execution](../../app/README.md#normal-chat-interaction)
+for current Run composition and approval policy.
 
-Model invocations retain their exact `ModelInvocationId`, ordered output
-occurrences, settlement, and opaque native metadata. Each prepared tool retains
-its `ToolInvocationId` through policy, approval, execution, progress, and outcome,
-with explicit provenance to its originating model proposal. Arguments, effects,
-and structured outcome `hostData` remain data, without executable bindings,
-approval callbacks, or arbitrary exception objects. Evidence order follows the
-internal journal rather than reconstructed alias/provider-call matching.
+## Presentation and UI
 
-Chat decides direct compact activity versus a group per successfully completed
-model invocation, not per Run. One tool proposal or safe native output is one
-occurrence; one appears directly and two or more form one group. Presence is
-independent of frontend activation. Group heading precedence and compact fallback
-are defined in [Activity Inspection](#activity-inspection). A reasoning-only
-activity precedes the canonical assistant response; proposal-free final text is
-not repurposed as batch narration. Raw native items without safe presentation do
-not create visible activity; unavailable rich presentation does not hide safe activity.
-Stable Chat-owned inference guidance requests one brief shared-purpose statement
-per related tool batch and defers to explicit user instructions. Session
-instructions and independently composed sources are preserved, and guidance is
-not itself history. Model narration is ordinary user-facing output, not hidden
-reasoning. Raw `ModelNativeOutput` evidence is retained without generic parsing;
-the provider backend supplies safe presentation and its frontend renders rich
-Inspection, without changing raw replay.
+UI presents and invokes functionality; displaying a control does not make it the
+semantic owner of the operation. Plugin frontend presentation is dynamically
+hosted with its own lifecycle. Semantic UI roles describe meaning rather than
+physical center/right/bottom placement, allowing layout to change independently.
+The host retains common execution, authority, approval, and lifecycle duties.
 
-`SessionExecutionController` in `app/lib/ui/execution` retains activity snapshots separately from
-backend canonical Chat state. The plugin frontend's mixed presentation associates
-opaque Run handles with stable accepted entry IDs and inserts activity before the
-final assistant entry, keeping completed activity through follow-up prompts for
-that presentation's lifetime. Snapshots are built lazily from buffered evidence;
-host captures and frontend notifications are coalesced, not repeated per progress
-chunk. Observation detaches on close. Reopening/reconstructing a Session cannot restore
-historical activity until persistence exists. Inspection consumes this retained
-evidence separately from compact Chat narration; tool-specific fields belong to
-the interpreted tool frontend and native interpretation to its owning plugin,
-not a generic host-owned card schema.
+<a id="session-presentation"></a>
 
-The public `OrchestrationExecutionHost` exposes lifecycle operations and binding
-validation, `invokeModel(StrategyInferenceMaterial)`, `processProposal` using an
-opaque `StrategyToolSnapshot` and `ProviderToolProposal`, and approval resolution
-returning semantic continuation. Host validation covers subsequent operations,
-approval resume, and asynchronous settlement. Stale active Runs fail explicitly
-and do not migrate; a later Run in the same Session can freshly resolve B under
-the unchanged strategy ID. Already-started effects are not rolled back by
-retirement.
+Session presentation is optional and does not own Session identity or strategy
+state. Public [`adele_ui`](../../packages/ui/README.md) defines the implemented
+semantic contracts; the [UI extension architecture](plugin-extension-model.md#12-ui-extension-points-are-semantic-not-positional)
+sets the broader boundary. [Product direction](../product/README.md) and the
+[stock development UX](../mockups/README.md) describe intended experiences, not
+fixed core layout or claims that every surface is implemented.
 
-`invokeModel` returns a collected `StrategyModelTurn` with ordered output,
-settlement/metadata or failure, and the opaque tool snapshot. The host accepts
-only unused proposals from that exact completed turn. Approval continuation
-applies only the current host-supplied resolution to its retained invocation;
-Chat cannot manufacture approval or substitute a tool generation.
+<a id="activity-inspection"></a>
+<a id="model-native-activity-presentation"></a>
 
-Minimal semantic input/output, native-envelope, proposal/failure,
-settlement/metadata, and approval DTOs live in public `adele_orchestration` and
-are reused by the kernel. `SemanticModelRequest`, model ports/streams/collectors,
-tool catalogs, policy, `AgentRun`, and the journal remain internal. Neither the
-public package nor Chat depends on the kernel. The kernel has no Chat history
-port or generic `ContextAssembler`; the Session/context types in ADR 0022 are
-historical proof details, not current kernel APIs.
+For activity presentation, follow the local maps for
+[Inspection composition](../../app/README.md#activity-inspection) and
+[model-native presentation](../../app/README.md#model-native-activity-presentation).
+These views observe execution evidence; they neither define canonical strategy
+state nor grant execution or approval authority.
 
-Self-hosting uses a generated Chat Contract client to configure, append to, and
-snapshot the installed remote backend, then routes `SessionId` and the exact
-strategy binding through lifecycle and the core host.
-`app/tool/self_hosting/development_agent_support.dart` owns the shared
-`DevelopmentToolPolicy` used by self-hosting and tests, outside production code.
+## Configuration and persistence
 
-The kernel model boundary is streaming-shaped. The common ModelProvider transport supports generated streaming/cancellation, ordered semantic input/output, live observations, terminal settlement, and provider-native item metadata. Materialized model/tool bindings remain exact-generation bound.
+Profiles and general configuration are accepted architecture but largely
+unimplemented. Current product storage is in-memory; durable product and ordinary
+plugin-state persistence are not implemented. Configuration, durable product
+state, plugin-owned state, live runtime state, security policy, and workbench state
+are separate concerns, not one generic settings object. See
+[profiles and configuration](profiles-and-configuration.md) and the
+[product state boundary](product-model.md#durable-semantic-data-and-live-runtime-objects).
 
-Tool availability, materialization, policy, optional approval interruption, execution, progress, structured outcome, and effect certainty remain distinct.
+## Source map
 
-Normal `ApprovalGatedToolPolicy` allows singleton certain source reads and asks for
-singleton certain source mutations. Singleton process execution requires approval
-regardless of uncertainty; all other descriptions are denied. Policy, not aliases or
-presentation, is the authorization boundary. Development/self-hosting policy
-remains separate.
-
-Window-local cards project immutable effect summaries, uncertainty, identity,
-targets, and canonical arguments from the retained Run interruption. `Allow once`
-resolves that exact interruption; object-identity checks reject stale callbacks.
-User denial produces `userRejected` continuation without execution. Sequential
-approvals resume the same Run, with no inference between same-batch proposals.
-Cards remain outside the evaluated Chat frontend and are not canonical Chat
-entries. Approval preserves revision checks and exact-generation authority and is
-not sandboxing. Tool execution and Environment
-authority remain outside presentation. Configurable permissions, richer
-activity/console, diff/review, and steering remain deferred.
-
-The implemented inference path starts with `StrategyInferenceMaterial`, containing
-instructions and ordered `SemanticModelInputItem` values from Chat history
-projection plus Run-local replay. `InferenceContextComposer` in public
-`adele_orchestration` discovers `inferenceContextSources` over the same existing
-`ExtensionRegistry` for every new inference, including Chat continuation. It
-captures instruction-only material into immutable `InferenceContextSnapshot`
-groups and source results without changing semantic input. Strategy instructions
-come first, then lexicographic source `ExtensionId` order with local order
-preserved; sorting is not semantic authority and there is no numeric priority.
-
-Exact source binding validation brackets snapshot/copy/validation, including
-duplicate source-local keys, before data is committed. Required failure stops
-before invocation identity, model-start evidence, or provider work; optional
-failure omits the entire source with original diagnostics, distinct from
-successful empty output. No replacement is tried in the same capture. Captured
-data survives later source retirement; source freshness is source-owned without a
-generic refresh API. Executable strategy/tool binding rules are unchanged.
-
-The fresh app source context uses canonical Session and existing typed Environment
-authority. The host constructs internal
-`SemanticModelRequest(context, invocationId, tools)`.
-The current `ModelProviderCapabilityAdapter` calls orchestration's
-`renderInferenceInstructions` to lower groups to the unchanged provider instructions
-string, preserving zero-source bytes. Model/tool/policy and Environment selection
-are unchanged; Chat activates no source and remains AGENTS-unaware.
-
-The first stock source retains pure-Dart `agents_md_plugin` semantics under
-`plugins/agents_md`, with `agents_md_backend` in `packages/backend` supplying AOT
-execution. Normal discovery and explicit self-hosting use generic remote adapter
-activation, not a static app registration. Activation alone does not read a file.
-Each snapshot rereads root `AGENTS.md` through the generated authorized-read
-service backed by the captured Session's `AuthorizedEnvironmentFileReadFacet`.
-Missing (`not_found`) and blank files are successful empty results; other
-read/service/authority errors abort the required source. Nonblank exact text and
-its opaque Environment revision remain one material, separate from stable
-plugin-owned semantics giving explicit user instructions and direct requests
-precedence over AGENTS.md guidance. This adds no generic context infrastructure
-or ownership over Skills, roles, or repository maps.
-
-Broader inference preparation should use structured composition rather than
-arbitrary request mutation. Agent policy, model routing, orchestration/history,
-context, tool availability, and other plugins may contribute typed material into
-provider-neutral buckets whose resolution produces a stable invocation snapshot.
-These additional buckets remain deferred, as do Reference/Observation material,
-other context sources, provider-aware projection/cache planning, budgets, and
-compaction. Nested/scoped AGENTS.md, `AGENTS.override.md`, alternate names,
-global/home files, imports, and AGENTS.md caching remain deferred.
-
-See [`agent-kernel-semantic-model.md`](agent-kernel-semantic-model.md).
-
-## Expected stock development composition
-
-The default development UX is expected to be produced by a stock plugin/configuration set rather than by hard-coded ADELE core behavior. Directional stock responsibilities include:
-
-- Local Directory Project Selector (prepared frontend behavior with a native picker bridge and minimal Project opening);
-- Task Browser;
-- Git/Worktree Environment provider;
-- Agent Interaction + Chat strategy;
-- Agent Configuration/Policy;
-- Model Routing/Control;
-- Context Monitoring/Compaction;
-- AGENTS.md instruction source (root-only, supplied by a prepared AOT backend);
-- Accounting/Usage/Quota;
-- Filesystem/Search/Command/TODO/Plan tools;
-- Diff/Review;
-- Internal Source Editor;
-- Console/Terminal;
-- OpenAI provider.
-
-The detailed, deliberately speculative decomposition is in [`stock-plugin-direction.md`](stock-plugin-direction.md). The UX manifestation is in [`../mockups/README.md`](../mockups/README.md).
-
-Only the explicitly identified slices are implementation claims. The current app
-shell remains minimal, with Project opening and Task/primary Environment
-creation rather than the mockup Task Browser, and most listed plugins do not
-exist yet.
-
-## Profiles, configuration, commands, and workbench state
-
-Profiles are accepted as sparse named composition layers. One context may eventually use an ordered stack such as `Developer + Work`. They may contribute activation decisions, ordinary configuration overrides, provider availability, and provider preferences.
-
-Normal startup and development/self-hosting reuse the provider-free runtime and
-generic registration of backend-owned advertisements, while owning
-separate backend topologies. Normal startup attempts all discovered valid backend
-and frontend components; self-hosting retains explicit artifact/host/profile
-selection. Profiles are unimplemented activation-participation policy, separate
-from executable ABI/preparation descriptors. Prepared locations and the temporary
-generic argv file are deployment inputs, not a profile API.
-ChatGPT is provisional normal ModelProvider selection; general profile/configuration
-persistence, UI, and provider preference resolution are not implemented.
-
-Activation, ordinary configuration, provider preference, security/policy, workbench state, configured capability instances, and runtime state remain distinct domains.
-
-An effectively disabled plugin should remove its normal product/settings surface without deleting dormant persisted configuration.
-
-Core is expected to own application Commands, Command Palette/search, keybinding resolution, plugin-suggested defaults, and user rebinding. Those systems are architectural direction and are not yet a maintained production subsystem.
-
-Workbench extension APIs should be semantic rather than physical. Concepts such as Main Content, Session Status, Inspection, Navigation, and Stream/Console presentation should remain stable if the physical layout moves or becomes configurable.
-
-See [`profiles-and-configuration.md`](profiles-and-configuration.md) and [`plugin-extension-model.md`](plugin-extension-model.md).
-
-## Maintained self-inspection vertical
-
-`dev.adele.openai` implements the public OpenAI API-key Responses HTTP/SSE route with `store:false` canonical ordered replay. The same plugin generation exposes API-key and ChatGPT configured instances through separate generation-bound contexts. The ChatGPT subscription-backed route remains explicitly experimental interoperability evidence.
-
-The stock Search Tools plugin contributes literal `search` and composes only the Session-authorized Environment filesystem's read facet; Filesystem Tools independently contributes revision-bearing `read_file`, exact-unique `apply_patch`, create-new-only `create_file`, and revision-conditional `delete_file` over coherent read and mutation facets. Command Tools contributes direct-argv `run_command` over only the Session-authorized process facet. The OpenAI API-key and experimental ChatGPT source-coding consumers use the read/search tools rather than the retired Phase IV DevelopmentSource capability, and a separate API-key smoke exercises `read_file` and `apply_patch` without relying on Search.
-
-Deterministic inspection integration uses the real shared AOT host, OpenAI
-plugin, Git Environment provider, Project/Task/Environment lifecycle, Session
-authority, generic extension/model-tool composition, stock tools, and
-Session-routed Chat. Only remote model responses come from a local fake Responses
-endpoint. Coverage exercises recursive source discovery, model-visible
-Search-to-Read flow, and continuation. Separate deterministic sequences exercise
-Read-to-Patch mutation, direct `git diff --check` validation through
-`run_command`, and `create_file` -> `read_file` -> `delete_file` with model-visible
-revision provenance and final Task/Project/checkout isolation. Generation
-coverage checks that fresh tools replace retired Search-tool and
-Environment-provider bindings while old tools remain stale.
-
-The normal product regression scope uses real shared-host, Git, OpenAI, and
-AGENTS.md backend artifacts and prepared frontend EVCs against local fake Responses: direct reasoning
-activity followed by mixed groups, retained newest-first cards, compact group rows,
-individual rich cards, independent collapse/dismiss, and separate tool approvals.
-It checks live evidence and safe display projection
-without changing exact native/encrypted replay. This deterministic validation
-boundary does not establish live-provider summary support.
-
-Recorded opt-in live API-key and experimental ChatGPT evidence covers read/search,
-real-model existing-file edit, direct-argv command validation, continuation, and
-isolation. Paid live services have not been rerun against the current
-deterministically validated Chat path. No paid create/delete smoke is claimed.
-
-The bounded vertical covers self-inspection, conditional mutation, and
-command-backed validation. It does not establish stable ChatGPT/OpenAI
-third-party support, general filesystem mutation, production readiness, or full
-self-hosting.
-
-## Remaining runtime validation
-
-| Risk | Current status |
+| Concern | Primary anchors |
 | --- | --- |
-| Local backend AOT compilation | Proven with the temporary matched SDK. |
-| Shared process-host loading | Proven on Linux x64 profile mode. |
-| Eval compilation/rendering | Proven with pinned eval dependencies and documented workarounds. |
-| Generated typed communication | Proven across maintained unary and streaming plugin contracts. |
-| Typed streaming/cancellation | Proven through generated transport and ModelProvider with one-item flow control. |
-| Active capability/configuration routing | Proven for deterministic discovery, explicit selection, exact generations, and separate OpenAI configuration contexts. |
-| Real OpenAI provider | Deterministic HTTP/SSE/shared-AOT integration proven; live network tests remain opt-in. |
-| Experimental ChatGPT configured instance | Auth/routing tests, an opt-in read/search smoke, and an opt-in subscription-backed mutation/command/continuation smoke using the maintained classic Responses fallback provide interoperability evidence only. |
-| Model-to-source continuation | Read/search is proven through deterministic OpenAI integration and opt-in live API-key/experimental ChatGPT evidence. Deterministic integration and opt-in API-key plus experimental ChatGPT validation smokes prove model-visible `read_file` opaque-revision-to-`apply_patch` continuation for conditional existing-file mutation in the Task worktree, direct-argv `run_command` validation, continuation from its model-visible exit result, and Task/Project/checkout isolation. Deterministic integration also proves model-visible create/read/delete revision flow and final filesystem isolation. Broader filesystem administration remains unproven. |
-| Rebuild/reload | Proven for three cycles without orphan host processes. |
-| General recursive extension system | Accepted architecture; not implemented. |
-| B1 Project opening/native picker | Typed selector composition, cancellation/failure handling, canonical Project opening, and window lifetime are tested. Native picker adapters use fakes in CI. The recorded B1 Linux profile build passed with generated native registration; the minimum macOS `com.apple.security.files.user-selected.read-only` entitlement is present. Interactive OS picking and macOS/Windows builds remain unvalidated. The maintained tooling target guards the plain-Dart self-hosting import graph with CLI `--help`, without provider calls. |
-| Normal plugin bootstrap and Task creation | Prepared discovery supports independently optional backend/frontend components, generic presentation activation, and backend capability/extension activation, including the AGENTS.md AOT source. Task lifecycle uses live capability resolution; operational setup is maintained in [`app/README.md`](../../app/README.md#normal-backend-startup). |
-| Project/Task/Environment product model | Initial values, Task establishment, Git Environment materialization/restoration, Session-authorized read/mutation/process facets, bounded create/patch/delete text-file mutation, and generated foreground process streaming through the Git provider are proven; persistence and complete lifecycle remain unimplemented. |
-| Session-bound strategy execution | Canonical immutable Session creation, atomic publication with separate Environment authority, executable contributions, explicit unavailable/ambiguous resolution, and exact binding validation across Run operations/resume/settlement are implemented and deterministically validated. Headless Chat uses the public facade with validated state, sequencing, and application integration. Persistent strategy state, child Sessions, and disk persistence remain deferred. |
-| Inference context | Instruction-only source discovery, exact-binding capture, immutable snapshots, and adapter rendering are implemented. Root AGENTS.md is supplied through remote source activation and operation-scoped generated host reads. Other sources, broader material, provider-aware projection/cache planning, budgets, and compaction remain deferred. |
-| Production orchestration/UI/Commands | Stock Chat, minimal Project/Task/Environment presentation, prepared mixed Chat timeline/composer, plugin-owned compact activity, retained window-local Inspection cards with group-to-individual drill-down, interpreted Apply Patch/Run Command/OpenAI bodies, and host-owned approval-gated Runs are implemented; configurable permissions, reasoning deltas, compaction UI, arbitrary plugin drill-down, Source/Diff/Console and terminal/PTY/full-output views, Task Browser, rich workbench UI, and Commands remain directional. Hidden chain-of-thought and encrypted reasoning are never user-presented. |
-| Cross-platform/release | Unproven on Windows, macOS, and release mode. |
-| Packaging/sandboxing | Unproven; process isolation is not a sandbox. |
+| Product identities and immutable values | [`packages/product/`](../../packages/product/) |
+| Product lifecycle and Session/Environment authority | [`app/lib/core/product_lifecycle.dart`](../../app/lib/core/product_lifecycle.dart), `ProductLifecycleCoordinator` |
+| Extension registry and binding liveness | [`packages/plugin_api/`](../../packages/plugin_api/) |
+| Core-owned selection contracts | [`packages/core_extensions/`](../../packages/core_extensions/) |
+| Capability routing and transport contracts | [`packages/capabilities/`](../../packages/capabilities/), [`packages/contract/`](../../packages/contract/) |
+| Environment contract | [`packages/environment/`](../../packages/environment/) |
+| Orchestration and Run hosting | [`packages/orchestration/`](../../packages/orchestration/), [`app/lib/core/orchestration_host.dart`](../../app/lib/core/orchestration_host.dart) |
+| Model providers and tools | [`packages/model_provider/`](../../packages/model_provider/), [`packages/model_tool/`](../../packages/model_tool/) |
+| Internal execution mechanics | [`packages/agent_kernel/`](../../packages/agent_kernel/) |
+| Backend runtime | [`packages/plugin_runtime/`](../../packages/plugin_runtime/), [`packages/plugin_backend_host/`](../../packages/plugin_backend_host/) |
+| Desktop composition | [`app/lib/core/adele_runtime.dart`](../../app/lib/core/adele_runtime.dart), `AdeleRuntime` |
+| UI semantic contracts and frontend hosting | [`packages/ui/`](../../packages/ui/), [`app/lib/frontend/`](../../app/lib/frontend/) |
+| Source preparation and generation | [`tools/adele.dart`](../../tools/adele.dart), [`packages/plugin_builder/`](../../packages/plugin_builder/), [`packages/contract_codegen/`](../../packages/contract_codegen/) |
+| Stock and reference implementations | [`plugins/`](../../plugins/) |
 
-The long-term goal remains for ADELE to develop ADELE itself. That goal does not change the preference for small working boundaries over speculative framework implementation.
+## Where to read next
+
+- **Who owns Project, Task, Environment, Session, or Run?** [Product model](product-model.md).
+- **Where should an extension live and what may it depend on?** [Plugin extension model](plugin-extension-model.md) and [dependency rules](dependency-rules.md).
+- **How do plugin preparation, routing, and authority work?** [Plugin layout](plugin-layout.md) and [contracts and capabilities](contracts-and-capabilities.md).
+- **What must execution preserve?** [Agent execution semantics](agent-kernel-semantic-model.md), then the relevant orchestration/kernel/tool/provider README and tests.
+- **What is intended rather than implemented?** [Profiles and configuration](profiles-and-configuration.md), [product direction](../product/README.md), and [technical direction](../direction/README.md), with their stated qualifications.
+- **How do I work on the checkout?** [Development documentation](../development/README.md), [application README](../../app/README.md), and the relevant local package/plugin README.
