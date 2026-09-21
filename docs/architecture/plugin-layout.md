@@ -479,12 +479,19 @@ multiple extension points does not imply multiple plugin runtimes.
 
 ## Normal prepared composition
 
+The production app depends on no packages under `plugins/**`, including contracts,
+and `app/lib` imports no concrete plugin packages. Plugin-aware tests, development
+smoke, self-hosting, and explicit stock artifact preparation remain outside that
+boundary; see [app dependencies](../../app/README.md#dependencies).
+
 Synchronous, provider-free `AdeleRuntime()` has no static stock activations and
 owns generic `ApplicationPluginBootstrap` on its existing capability and
 extension registries. `AdeleApplication` explicitly calls `ApplicationPluginBootstrap.start`
 with only an installation root, shared runtime/host paths, and optional generic
 startup arguments. Discovery precedes host startup. If there are no valid backend
 components, startup succeeds without a child process, even with unusable host paths.
+With zero installed plugins, the shell can construct, mount, and close; missing
+functionality stays unavailable without built-in plugin fallbacks.
 
 The backend bootstrap publishes its catalog snapshot before backend startup.
 Window-owned Flutter `ApplicationFrontendBootstrap` consumes that notification
@@ -538,8 +545,9 @@ the default `false` and their existing environment-based configuration path.
 The flag is temporary deployment metadata, not manifest configuration or general
 settings/profile/credential infrastructure; generic code has no PluginId switch.
 `app/lib/plugins/temporary_chatgpt_selection.dart` retains provisional provider
-identity and model-only configuration, always supplying a default or override
-without a credential-presence gate. Availability comes from the active registry;
+identity and model-only configuration as an intentional identity-only exception,
+not permission for plugin imports or dependencies. It always supplies a default
+or override without a credential-presence gate. Availability comes from the active registry;
 the app inspects no startup OAuth/credential configuration and owns neither
 backend exposure metadata nor configuration argv construction.
 This seam is intended to disappear with general plugin configuration/profiles,

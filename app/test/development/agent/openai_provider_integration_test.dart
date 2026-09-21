@@ -9,8 +9,6 @@ import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/remote_inference_context_host.dart';
-import 'package:adele_desktop/development/agent/agent_capability_adapters.dart';
-import 'package:adele_desktop/development/agent/development_agent_support.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
@@ -22,6 +20,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:resource_inspector_contract/resource_inspector_contract.dart';
 
+import '../../../tool/self_hosting/development_agent_support.dart';
+import '../../support/agent_capability_adapters.dart';
 import 'chat_test_topology.dart';
 
 const String _gitEnvironmentPluginId = 'dev.adele.plugin.git-environment';
@@ -806,7 +806,7 @@ Future<void> _createSourceRepository({
 }) async {
   const List<String> sourcePaths = <String>[
     'README.md',
-    'app/lib/development/agent/development_agent_support.dart',
+    'app/tool/self_hosting/development_agent_support.dart',
     'plugins/chat_strategy/packages/backend/lib/chat_strategy_backend.dart',
   ];
   await source.create(recursive: true);

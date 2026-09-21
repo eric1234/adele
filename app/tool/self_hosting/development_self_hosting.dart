@@ -7,7 +7,6 @@ import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/remote_inference_context_host.dart';
 import 'package:adele_desktop/core/resource_cleanup.dart';
-import 'package:adele_desktop/development/agent/development_agent_support.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
@@ -16,6 +15,8 @@ import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
+
+import 'development_agent_support.dart';
 
 const String developmentSelfHostingApiKeyProviderId =
     'dev.adele.openai.api-key';

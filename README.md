@@ -59,6 +59,10 @@ their installed AOT backends, with no production app import/dependency, static
 activation, or in-process fallback.
 Local Directory Project Selector is supplied by a frontend-only prepared
 installation, not runtime composition.
+The app's production dependencies include no packages under `plugins/**`, and
+`app/lib` imports no concrete plugin packages, including plugin contracts. With
+zero installed plugins, the shell can construct, mount, and close; missing plugin
+functionality remains unavailable without built-in fallbacks.
 
 Normal `AdeleApplication` explicitly calls `ApplicationPluginBootstrap.start`
 asynchronously with an installation root, shared runtime/host paths, and optional
@@ -123,8 +127,10 @@ selected provider identity and model-only configuration, always supplying the
 model default or override without a credential-presence gate. Availability comes
 from the active registry; the app never inspects startup OAuth/credential
 configuration. General provider/model configuration remains deferred; this seam
-is intended to disappear with general plugin configuration/profiles. Startup compiles
-no source and creates no Project, Task, Environment, Session, tool catalog, or Run.
+is an intentional identity-only exception, not permission for plugin imports or
+dependencies, and is intended to disappear with general plugin configuration/profiles.
+Startup compiles no source and creates no Project, Task, Environment, Session,
+tool catalog, or Run.
 
 Application close immediately blocks window actions and notifications and drains
 any in-flight Task establishment and currently advancing Run start/resume before
@@ -670,8 +676,9 @@ See [the app README](app/README.md#normal-backend-startup) for source-checkout
 limitations and [remote-source coverage](app/README.md#orchestration-hosting)
 for deterministic integration scope and its focused validation command.
 
-The internal Linux profile smoke is explicit and does not alter normal app
-startup:
+The internal Linux profile smoke directly targets
+`app/tool/development_runtime_smoke/main.dart` outside `lib`, without a separate
+package or changes to normal app startup:
 
 ```sh
 ADELE_DEVELOPMENT_REPOSITORY_ROOT="$PWD" \
@@ -692,11 +699,10 @@ The workspace includes Chat's `plugins/chat_strategy/packages/{contract,backend,
 semantic `plugins/agents_md`,
 `plugins/search_tools`, `plugins/filesystem_tools`, and `plugins/command_tools`,
 their `packages/backend` packages, and `packages/plugin_backend_support`.
-The normal app depends on no Chat contract or implementation and no
-AGENTS.md, Search, Filesystem, or Command implementation. Chat Contract is an app
-development dependency for self-hosting tooling under `app/tool/self_hosting/`,
-not normal `app/lib` code. Semantic tool packages used by app tests also remain
-development-only dependencies. The driver includes maintained contracts, semantic
+Plugin contracts and implementations used by app tests and development tooling
+are app `dev_dependencies`, as is `plugin_builder`. Tests and
+`app/tool/self_hosting/` remain intentionally plugin-aware, outside the production
+`app/lib` boundary. The driver includes maintained contracts, semantic
 plugins, backends, and support packages in analysis/test discovery and
 `test-plan --json`; the retired root `chat_strategy_plugin` is not a target. Chat's
 pure-Dart targets are `chat_strategy_contract` and `chat_strategy_backend`.

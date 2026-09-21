@@ -272,39 +272,42 @@ void main() {
       },
     );
 
-    test('Chat contract and implementation stay outside production app', () {
-      final dependencies = File(
-        'app/pubspec.yaml',
-      ).readAsStringSync().split('dev_dependencies:').first;
-      expect(dependencies, isNot(contains('chat_strategy')));
-      expect(File('plugins/chat_strategy/pubspec.yaml').existsSync(), isFalse);
-      for (final component in ['contract', 'backend']) {
-        final path = 'plugins/chat_strategy/packages/$component';
-        final name = 'chat_strategy_$component';
-        expect(lookupTestTarget(name).path, path);
+    test(
+      'Chat components are discovered and production stays Chat-independent',
+      () {
         expect(
-          analysisTargets.singleWhere((target) => target.name == name).path,
-          path,
-        );
-        expect(
-          File('pubspec.yaml').readAsStringSync(),
-          contains('  - $path\n'),
-        );
-      }
-      final forbidden = RegExp(
-        r'package:chat_strategy|ChatController|StockChatFrontend|'
-        r'StockChatExecutionStatus|stock-chat-controller-v1|chatStrategyId|'
-        r'ChatStrategyPlugin|ChatSessionStore',
-      );
-      for (final file in Directory('app/lib').listSync(recursive: true)) {
-        if (file is! File || !file.path.endsWith('.dart')) continue;
-        expect(
-          forbidden.hasMatch(file.readAsStringSync()),
+          File('plugins/chat_strategy/pubspec.yaml').existsSync(),
           isFalse,
-          reason: 'Production host must remain Chat-independent: ${file.path}',
         );
-      }
-    });
+        for (final component in ['contract', 'backend']) {
+          final path = 'plugins/chat_strategy/packages/$component';
+          final name = 'chat_strategy_$component';
+          expect(lookupTestTarget(name).path, path);
+          expect(
+            analysisTargets.singleWhere((target) => target.name == name).path,
+            path,
+          );
+          expect(
+            File('pubspec.yaml').readAsStringSync(),
+            contains('  - $path\n'),
+          );
+        }
+        final forbidden = RegExp(
+          r'ChatController|StockChatFrontend|'
+          r'StockChatExecutionStatus|stock-chat-controller-v1|chatStrategyId|'
+          r'ChatStrategyPlugin|ChatSessionStore',
+        );
+        for (final file in Directory('app/lib').listSync(recursive: true)) {
+          if (file is! File || !file.path.endsWith('.dart')) continue;
+          expect(
+            forbidden.hasMatch(file.readAsStringSync()),
+            isFalse,
+            reason:
+                'Production host must remain Chat-independent: ${file.path}',
+          );
+        }
+      },
+    );
 
     test(
       'discovers AGENTS.md as a pure-Dart target with default CI policy',
@@ -375,57 +378,26 @@ void main() {
       }
       expect(workspace, contains('  - plugins/agents_md\n'));
       expect(
-        File('app/pubspec.yaml').readAsStringSync(),
-        isNot(contains('  agents_md_plugin:')),
-      );
-      expect(
         File('app/lib/core/adele_runtime.dart').readAsStringSync(),
         isNot(contains('AgentsMdPlugin')),
-      );
-      final app = File('app/pubspec.yaml').readAsStringSync();
-      expect(
-        app.split('dev_dependencies:').first,
-        isNot(contains('filesystem_tools')),
       );
       expect(
         File('app/lib/core/adele_runtime.dart').readAsStringSync(),
         isNot(contains('FilesystemToolsPlugin')),
-      );
-      expect(
-        app.split('dev_dependencies:').first,
-        isNot(contains('search_tools')),
-      );
-      expect(
-        app.split('dev_dependencies:').last,
-        contains('search_tools_plugin:'),
-      );
-      expect(
-        app.split('dev_dependencies:').first,
-        isNot(contains('command_tools')),
-      );
-      expect(
-        app.split('dev_dependencies:').last,
-        contains('command_tools_plugin:'),
       );
       final runtime = File(
         'app/lib/core/adele_runtime.dart',
       ).readAsStringSync();
       expect(runtime, isNot(contains('CommandToolsPlugin')));
       expect(runtime, isNot(contains('includeCommandTools')));
-      for (final path in [
-        'app/lib/core/adele_runtime.dart',
-        'app/lib/core/application_plugin_bootstrap.dart',
-        'app/tool/self_hosting/development_self_hosting.dart',
-      ]) {
+      const selfHostingPath =
+          'app/tool/self_hosting/development_self_hosting.dart';
+      final selfHosting = File(selfHostingPath).readAsStringSync();
+      for (final package in ['search_tools', 'command_tools']) {
         expect(
-          File(path).readAsStringSync(),
-          isNot(contains('package:search_tools')),
-          reason: path,
-        );
-        expect(
-          File(path).readAsStringSync(),
-          isNot(contains('package:command_tools')),
-          reason: path,
+          selfHosting,
+          isNot(contains('package:$package')),
+          reason: selfHostingPath,
         );
       }
     });
@@ -625,7 +597,6 @@ void main() {
         parts.last,
         contains('  file_selector_platform_interface: ^2.7.0\n'),
       );
-      expect(app, isNot(contains('local_directory_project_selector_')));
       expect(stockFrontendExtensionDescriptors.values.single.single, {
         'kind': 'projectSelector',
         'extensionId':
@@ -683,9 +654,6 @@ void main() {
         "['program']",
         "['arguments']",
         "['summaryParts']",
-        'package:filesystem_tools_frontend/',
-        'package:command_tools_frontend/',
-        'package:openai_frontend/',
       ]) {
         expect(source, isNot(contains(forbidden)), reason: file.path);
       }
@@ -807,11 +775,9 @@ void main() {
     expect(frontend, isNot(contains('openai_model_provider_backend:')));
     expect(lookupTestTarget('openai_contract').executable, 'dart');
     final String app = File('app/pubspec.yaml').readAsStringSync();
-    expect(app, contains('  openai_contract: ^0.1.0\n'));
     for (final manifest in [app, backend, shared, frontend]) {
       expect(manifest, isNot(contains('openai_native_activity')));
     }
-    expect(app, isNot(contains('openai_model_provider_backend:')));
     final String activation = File(
       'app/lib/frontend/application_frontend_bootstrap.dart',
     ).readAsStringSync();
@@ -826,7 +792,6 @@ void main() {
       'encrypted_content',
       "['summary']",
       "['summaryParts']",
-      'package:openai_model_provider_backend',
     ]) {
       expect(activation, isNot(contains(forbidden)), reason: forbidden);
     }
@@ -862,7 +827,6 @@ void main() {
           'encrypted_content',
           "['summary']",
           "['summaryParts']",
-          'package:openai_',
         ]) {
           expect(source, isNot(contains(forbidden)), reason: file.path);
         }

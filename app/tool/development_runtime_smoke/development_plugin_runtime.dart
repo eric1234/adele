@@ -1,16 +1,17 @@
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
-import 'package:adele_desktop/development/resource_inspector/resource_inspector_eval_adapter.dart';
-import 'package:adele_desktop/development/resource_inspector/resource_inspector_eval_bridge.dart';
-import 'package:adele_desktop/development/workspace_demo/workspace_demo_eval_adapter.dart';
-import 'package:adele_desktop/development/workspace_demo/workspace_demo_eval_bridge.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:flutter/widgets.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 import 'package:resource_inspector_contract/resource_inspector_contract.dart';
 import 'package:workspace_demo_contract/workspace_demo_contract.dart';
+
+import 'resource_inspector/resource_inspector_eval_adapter.dart';
+import 'resource_inspector/resource_inspector_eval_bridge.dart';
+import 'workspace_demo/workspace_demo_eval_adapter.dart';
+import 'workspace_demo/workspace_demo_eval_bridge.dart';
 
 final class DevelopmentRuntimeConfiguration {
   const DevelopmentRuntimeConfiguration({

@@ -6,7 +6,6 @@ import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/remote_inference_context_host.dart';
-import 'package:adele_desktop/development/agent/development_agent_support.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
@@ -16,6 +15,7 @@ import 'package:chat_strategy_backend/chat_strategy_backend.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import '../../../tool/self_hosting/development_agent_support.dart';
 import '../../../tool/self_hosting/development_self_hosting.dart';
 import 'source_read_evidence_test_support.dart';
 
@@ -25,7 +25,7 @@ const String _agentsMdPluginId = 'dev.adele.plugin.agents-md';
 const String _sourceRelativePath =
     'plugins/chat_strategy/packages/backend/lib/chat_strategy_backend.dart';
 const String _transientSourceRelativePath =
-    'app/lib/development/agent/phase_v_d1_transient_test_file.txt';
+    'app/tool/self_hosting/phase_v_d1_transient_test_file.txt';
 const String _transientSourceContent = 'transient ADELE content \u{1f642}\n';
 
 void main() {
@@ -1823,7 +1823,7 @@ Future<String> _createSourceRepository({
   await copiedSource.writeAsString(content);
   final List<String> supportingPaths = <String>[
     'README.md',
-    'app/lib/development/agent/development_agent_support.dart',
+    'app/tool/self_hosting/development_agent_support.dart',
   ];
   for (final String relativePath in supportingPaths) {
     final File maintained = File('$repository/$relativePath');

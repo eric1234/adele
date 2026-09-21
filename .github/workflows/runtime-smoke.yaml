@@ -4,8 +4,11 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - "app/lib/development/**"
-      - "app/lib/development_smoke.dart"
+      - "app/tool/development_runtime_smoke/**"
+      - "app/test/development_plugin_runtime_test.dart"
+      - "app/test/development_resource_inspector_eval_test.dart"
+      - "app/test/development_workspace_demo_eval_test.dart"
+      - "app/lib/frontend/interpreted_widget.dart"
       - "app/pubspec.yaml"
       - "packages/plugin_backend_host/**"
       - "packages/contract/**"

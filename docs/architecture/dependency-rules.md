@@ -67,7 +67,7 @@ workbench UI APIs remain architectural direction.
 | `plugin_backend_host` | Internal, pure Dart; shared AOT process/isolate host | Dart SDK, public contracts, and `plugin_runtime` framing | Flutter, application code, plugin implementations |
 | `plugin_builder` | Internal, pure Dart | Dart SDK, public packages, and build dependencies required by the implemented pipeline | Flutter UI, application code, plugin implementations as linked host dependencies |
 | `agent_kernel` | Internal, pure Dart | Dart SDK, public packages, and concrete acyclic internal dependencies | Flutter, application code, concrete providers, tools, editors, workflows, or plugin implementations |
-| `adele_desktop` | Private Flutter application | Flutter and any host package needed for composition | Definitions intended as public plugin APIs; plugin implementation logic |
+| `adele_desktop` | Private Flutter application (production) | Flutter, ADELE public APIs, internal host packages, and generic third-party host libraries needed for composition | Packages under `plugins/**`, including contracts; public plugin API definitions; plugin implementation logic |
 
 An allowed dependency is not a requirement. New edges must have an immediate, concrete use, remain acyclic, and preserve pure-Dart testability where Flutter is unnecessary.
 
@@ -97,6 +97,14 @@ Existing ownership remains singular:
 
 ### Application backend composition
 
+Production `dependencies` in `app/pubspec.yaml` contain no packages under
+`plugins/**`, and `app/lib` must not import concrete plugin packages, including
+their contracts. Generic host libraries such as `file_selector`, `dart_eval`,
+`flutter_eval`, and `crypto` remain allowed. Plugin-aware tests and development
+tooling stay outside `app/lib` and use `dev_dependencies`; `plugin_builder` is
+likewise development-only. See [app dependencies](../../app/README.md#dependencies)
+for the maintained development package and support-file boundaries.
+
 `AdeleRuntime()` synchronously constructs a provider-free host graph with no static
 stock activation. Its pure-Dart `ApplicationPluginBootstrap` owns
 application-lifetime backend resources on the same capability and extension
@@ -105,10 +113,10 @@ option or selector dependency. Local Directory Project Selector is a prepared
 frontend-only contribution owned by the window's Flutter bootstrap. Chat, AGENTS.md, Search,
 Filesystem Tools, and Command Tools are AOT backends, with
 no production app dependency/import, static activation, or in-process fallback.
-Semantic tool packages used by app tests remain development-only dependencies.
-Normal `app/lib` imports neither Chat Contract nor its implementation; plugin-specific
-self-hosting code under `app/tool/self_hosting/` uses only Chat Contract as a
-development dependency and calls the same remote backend.
+With zero installed plugins, runtime construction and shell mount/close still
+succeed; missing plugin functionality remains unavailable without built-in
+fallbacks. Plugin-specific self-hosting code under `app/tool/self_hosting/` consumes
+Chat Contract as a development dependency and calls the same remote backend.
 Normal `AdeleApplication` explicitly calls `start` with an installation
 root, shared runtime/host paths, and optional generic startup argv. There is no
 stock callback table, required Git backend, or additional-OpenAI activation tier.
@@ -240,9 +248,11 @@ without the launcher's map. Direct/self-hosting callers keep the flag's default
 plumbing intended to disappear with general configuration/profiles, not a settings
 schema, environment scrubber, or sandbox.
 
-`app/lib/plugins/temporary_chatgpt_selection.dart` retains selected provider
-identity and model-only configuration, not startup or exposures. `fromEnvironment`
-always returns the model default/override without inspecting credential presence
+`app/lib/plugins/temporary_chatgpt_selection.dart` is an intentional exception for
+concrete provider/model selection: `dev.adele.openai.chatgpt-experimental`, default
+`gpt-6-astra`, and the `ADELE_OPENAI_CHATGPT_MODEL` override. It permits no plugin
+imports or production plugin dependencies and owns neither startup nor exposures.
+`fromEnvironment` always returns the model default/override without inspecting credential presence
 or startup OAuth configuration. Provider availability comes from the active
 registry. General provider/model configuration remains deferred. Operational details
 live in [`app/README.md`](../../app/README.md#normal-backend-startup) and the
