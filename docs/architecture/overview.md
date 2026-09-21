@@ -155,6 +155,9 @@ are separate concerns, not one generic settings object. See
 ## Where to read next
 
 - **Who owns Project, Task, Environment, Session, or Run?** [Product model](product-model.md).
+- **How is stock Local Directory Project selection and native picking hosted today?**
+  See [B1 Project opening](../../app/README.md#b1-project-opening) and the
+  [Local Directory Project Selector](../../plugins/local_directory_project_selector/README.md).
 - **Where should an extension live and what may it depend on?** [Plugin extension model](plugin-extension-model.md) and [dependency rules](dependency-rules.md).
 - **How do plugin preparation, routing, and authority work?** [Plugin layout](plugin-layout.md) and [contracts and capabilities](contracts-and-capabilities.md).
 - **What must execution preserve?** [Agent execution semantics](agent-kernel-semantic-model.md), then the relevant orchestration/kernel/tool/provider README and tests.
