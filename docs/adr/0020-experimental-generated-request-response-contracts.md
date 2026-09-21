@@ -4,6 +4,17 @@
 
 Accepted for the Phase II experimental foundation
 
+### Generated-artifact lifecycle amendment
+
+The original decision below described committed generated client/codec/dispatcher
+files. That lifecycle is superseded: native transport is now deterministically
+materialized locally and Git-ignored, retaining exact sibling `.g.dart` parts and
+the same transport architecture. Bootstrap and maintained compile prerequisites
+generate from authoritative declarations; source-plugin preparation generates its
+explicit selected contract. CI checks materialized-output determinism rather than
+committed copies. See [Toolchain Policy](../architecture/toolchain.md#generated-contract-artifacts).
+This amendment changes no schemas, generated APIs, or protocol versions.
+
 ## Context
 
 Phase I proved the shared backend-host process and one external AOT isolate

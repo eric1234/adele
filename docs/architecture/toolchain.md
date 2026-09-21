@@ -23,6 +23,52 @@ frontends use this pin; they neither modernize eval
 nor establish a broad third-party
 Flutter compatibility surface.
 
+## Generated contract artifacts
+
+Authoritative annotated declarations produce native sibling parts, which then feed
+the analyzer and compiler:
+
+```text
+contract.dart -> contract_codegen -> contract.g.dart -> native tests / AOT / app
+```
+
+The `.g.dart` parts are Git-ignored local artifacts. Their physical sibling
+location and the declaration's `part` directive remain unchanged. Run
+`dart tools/adele.dart bootstrap` after checkout: workspace dependency resolution
+and listing precede generation of the sources in `contract_codegen.yaml`, leaving
+ordinary IDE analysis and direct Dart/Flutter compilation ready to use.
+
+`tools/adele.dart` regenerates before analysis and before starting test workers.
+Linux desktop preparation regenerates once with the selected Flutter SDK's Dart
+before any backend AOT or frontend harness compilation. Other desktop build/run
+commands and development smoke generate before launching Flutter. The SDK-only
+`app/bin/adele_self_host.dart` launcher generates before starting its native CLI
+consumer, which in turn compiles the self-hosting AOT artifacts. Low-level snapshot
+compilers remain generation-agnostic; direct Dart/Flutter or standalone frontend
+harness invocations require bootstrap/current generation first.
+
+Chat EVC compilation still derives its eval client directly from annotations with
+`generateEvalClient()`, not from the native part. Its native compiler harness has
+native imports, so repository preparation happens before starting that harness.
+`DevelopmentPluginBuilder.prepareBackend()` separately generates only its explicit
+selected-plugin contract source before backend compilation, not the repository set.
+
+Generation recomputes prospective output and writes only changed content. It can
+replace stale siblings left by branch switches without manual deletion; no timestamp
+dependency engine or alternate build system is involved. `generate --check` writes
+nothing and fails for missing/stale local outputs. Each independent CI consumer job
+bootstraps; the generated job runs bootstrap then check as an independent
+idempotence/freshness verification. Root `check` checks freshness before any
+automatic regeneration so it does not hide stale local output.
+
+`dart tools/adele.dart clean-contracts` is a narrow escape hatch: it removes the
+configured native contract outputs and recognizes orphan native parts by an
+ADELE-generator-specific marker and matching sibling `part of` declaration under
+`packages/` and `plugins/`. It does not follow symlinks or remove arbitrary
+`.g.dart`, authored files, build directories, or Dart/Flutter caches. Bootstrap or
+generate recreates current outputs. Cleaning is not required for normal branch
+switches; legacy unmarked outputs outside the configured set are left alone.
+
 ## Local plugin compilation
 
 Source is the canonical plugin distribution format. The integrated development

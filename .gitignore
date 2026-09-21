@@ -6,6 +6,17 @@
 build/
 coverage/
 
+# Native contract parts (contract_codegen.yaml); declarations remain authored.
+/packages/environment/lib/adele_environment.g.dart
+/packages/model_provider/lib/adele_model_provider.g.dart
+/packages/model_tool/lib/remote_model_tool.g.dart
+/packages/orchestration/lib/remote_inference_context.g.dart
+/packages/orchestration/lib/remote_orchestration.g.dart
+/plugins/chat_strategy/packages/contract/lib/chat_strategy_contract.g.dart
+/plugins/resource_inspector/packages/contract/lib/resource_inspector_contract.g.dart
+/plugins/scripted_model/packages/contract/lib/scripted_model_contract.g.dart
+/plugins/workspace_demo/packages/contract/lib/workspace_demo_contract.g.dart
+
 # Compiled plugin artifacts and local ADELE state
 *.aot
 *.dill

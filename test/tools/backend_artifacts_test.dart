@@ -4,9 +4,15 @@ import 'dart:io';
 import 'package:test/test.dart';
 
 // ignore: avoid_relative_lib_imports
+import '../../packages/plugin_builder/lib/plugin_builder.dart';
+// ignore: avoid_relative_lib_imports
 import '../../packages/plugin_runtime/lib/plugin_runtime.dart';
+import '../../tools/adele.dart' as tooling;
+import '../../tools/contract_artifacts.dart';
 import '../../tools/stock_frontend_descriptors.dart';
 
+const String _codegenEntrypoint =
+    'packages/contract_codegen/bin/contract_codegen.dart';
 const String _hostEntrypoint =
     'packages/plugin_backend_host/bin/adele_backend_host.dart';
 const String _gitEntrypoint =
@@ -35,6 +41,8 @@ void main() {
   late Directory root;
   late Directory sdkBin;
   late File commands;
+  late File generationArguments;
+  late File generatedContract;
   late File launchArguments;
   late File frontendArguments;
   late File frontendEnvironment;
@@ -46,6 +54,7 @@ void main() {
     for (final String path in <String>[
       'tools/adele.dart',
       'tools/backend_artifacts.dart',
+      'tools/contract_artifacts.dart',
       'tools/frontend_artifacts.dart',
       'tools/stock_frontend_descriptors.dart',
       'tools/test_runner.dart',
@@ -70,6 +79,7 @@ void main() {
       '${root.path}/app/$_localDirectoryFrontendHarness',
     ).writeAsStringSync('void main() {}');
     for (final String entrypoint in <String>[
+      _codegenEntrypoint,
       _hostEntrypoint,
       _gitEntrypoint,
       _openaiEntrypoint,
@@ -83,11 +93,19 @@ void main() {
       source.parent.createSync(recursive: true);
       source.writeAsStringSync('void main() {}');
     }
+    for (final path in <String>{
+      ...tooling.analysisTargets.map((target) => target.path),
+      ...tooling.testTargets.map((target) => target.path),
+    }) {
+      Directory('${root.path}/$path').createSync(recursive: true);
+    }
     final Directory bin = Directory('${root.path}/bin')..createSync();
     final Directory flutterRoot = Directory('${root.path}/flutter sdk');
     sdkBin = Directory('${flutterRoot.path}/bin/cache/dart-sdk/bin')
       ..createSync(recursive: true);
     commands = File('${root.path}/commands.txt');
+    generationArguments = File('${root.path}/generation-arguments.txt');
+    generatedContract = File('${root.path}/contract.g.dart');
     launchArguments = File('${root.path}/launch-arguments.txt');
     frontendArguments = File('${root.path}/frontend-arguments.txt');
     frontendEnvironment = File('${root.path}/frontend-environment.txt');
@@ -104,11 +122,50 @@ void main() {
       ])
         'ADELE_OPENAI_CHATGPT_$suffix': '',
     };
+    String generatorScript(String sdk) =>
+        '''
+if [ "\$1" = run ]; then
+  test "\$PWD" = '${root.path}' || exit 98
+  test "\$2" = '$_codegenEntrypoint' && test -f "\$2" || exit 97
+  if [ "\$#" = 3 ]; then
+    test "\$3" = --check || test "\$3" = --clean || exit 96
+  else
+    test "\$#" = 2 || exit 96
+  fi
+  printf 'generate|$sdk%s\n' "\${3:+|\$3}" >> '${commands.path}'
+  printf '%s\n' "\$@" > '${generationArguments.path}'
+  printf 'contract generator output\n'
+  if [ "\$ADELE_TEST_FAIL_GENERATION" = 1 ]; then
+    printf 'contract generator failed\n' >&2
+    exit 29
+  fi
+  if [ "\$3" = --check ]; then
+    if [ ! -f '${generatedContract.path}' ] || [ "\$(cat '${generatedContract.path}')" != 'generated contracts' ]; then
+      printf 'contract outputs are missing or stale\n' >&2
+      exit 31
+    fi
+  elif [ "\$3" = --clean ]; then
+    rm -f '${generatedContract.path}'
+  else
+    printf 'generated contracts\n' > '${generatedContract.path}'
+  fi
+  exit 0
+fi
+''';
     _script(File('${bin.path}/flutter'), '''
 if [ "\$1" = "--version" ]; then
   printf 'inspect-sdk\n' >> '${commands.path}'
   printf '%s\n' '${jsonEncode(<String, String>{'flutterRoot': flutterRoot.path})}'
+elif [ "\$1" = pub ]; then
+  test "\$PWD" = '${root.path}' || exit 98
+  test "\$#" = 2 && test "\$2" = get || exit 97
+  printf 'pub-get\n' >> '${commands.path}'
+  if [ "\$ADELE_TEST_FAIL_DEPENDENCY" = pub-get ]; then exit 19; fi
+elif [ "\$1" = analyze ] || { [ "\$1" = test ] && [ "\$2" != --no-pub ]; }; then
+  test -f '${generatedContract.path}' || exit 95
+  printf '%s|flutter|%s\n' "\$1" "\$PWD" >> '${commands.path}'
 elif [ "\$1" = test ]; then
+  test -f '${generatedContract.path}' || exit 95
   test "\$PWD" = '${root.path}/app' || exit 98
   test "\$#" = 5 && test "\$2" = --no-pub && test "\$3" = --concurrency && test "\$4" = 1 || exit 97
   test -f "\$5" || exit 96
@@ -159,15 +216,31 @@ elif [ "\$1" = test ]; then
   printf 'compiled|%s\n' "\$label" >> '${commands.path}'
   printf 'frontend compiler output\n'
 else
+  test -f '${generatedContract.path}' || exit 95
   test "\$PWD" = '${root.path}/app' || exit 98
   printf 'flutter-launch\n' >> '${commands.path}'
   printf '%s\n' "\$@" > '${launchArguments.path}'
 fi
 ''');
-    _script(File('${bin.path}/dart'), 'exit 99');
+    _script(File('${bin.path}/dart'), '''
+${generatorScript('path')}
+if [ "\$1" = pub ]; then
+  test "\$PWD" = '${root.path}' || exit 98
+  test "\$#" = 3 && test "\$2" = workspace && test "\$3" = list || exit 97
+  printf 'workspace-list\n' >> '${commands.path}'
+  if [ "\$ADELE_TEST_FAIL_DEPENDENCY" = workspace-list ]; then exit 19; fi
+elif [ "\$1" = analyze ] || [ "\$1" = test ]; then
+  test -f '${generatedContract.path}' || exit 95
+  printf '%s|dart|%s\n' "\$1" "\$PWD" >> '${commands.path}'
+else
+  exit 99
+fi
+''');
     _script(File('${sdkBin.path}/dartaotruntime'), 'exit 99');
     _script(File('${sdkBin.path}/dart'), '''
+${generatorScript('sdk')}
 test "\$PWD" = '${root.path}' || exit 98
+test -f '${generatedContract.path}' || exit 95
 test "\$1" = compile && test "\$2" = aot-snapshot && test "\$4" = -o || exit 97
 test -f "\$3" || exit 96
 printf 'compile|%s\n' "\$3" >> '${commands.path}'
@@ -190,6 +263,14 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
     environment: environment,
   );
 
+  void expectGenerationArguments([List<String> options = const []]) {
+    expect(generationArguments.readAsLinesSync(), [
+      'run',
+      _codegenEntrypoint,
+      ...options,
+    ]);
+  }
+
   String readStartupArguments() {
     const prefix = '--dart-define=ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE=';
     final argument = launchArguments.readAsLinesSync().singleWhere(
@@ -211,7 +292,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
   }
 
   test(
-    'test-plan runs pre-bootstrap without inspecting or compiling',
+    'test-plan runs pre-bootstrap without generating, inspecting or compiling',
     () async {
       final ProcessResult result = await invoke(<String>[
         'test-plan',
@@ -237,9 +318,267 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
         ]),
       );
       expect(commands.existsSync(), isFalse);
+      expect(generatedContract.existsSync(), isFalse);
       expect(Directory('${root.path}/.dart_tool').existsSync(), isFalse);
     },
   );
+
+  test('invalid test target fails before generation or workers', () async {
+    final result = await invoke(['test', '--target', 'not-a-target']);
+    expect(result.exitCode, 64);
+    expect(result.stderr, contains('Unknown test target: not-a-target'));
+    expect(commands.existsSync(), isFalse);
+    expect(generatedContract.existsSync(), isFalse);
+    expect(result.stdout, isNot(contains('START test:')));
+  });
+
+  test('bootstrap generates once after both dependency commands', () async {
+    final result = await invoke(['bootstrap']);
+    expect(result.exitCode, 0, reason: result.stderr.toString());
+    expect(commands.readAsLinesSync(), [
+      'pub-get',
+      'workspace-list',
+      'generate|path',
+    ]);
+    expectGenerationArguments();
+    expect(generatedContract.readAsStringSync(), 'generated contracts\n');
+  });
+
+  for (final dependency in ['pub-get', 'workspace-list']) {
+    test('bootstrap $dependency failure prevents generation', () async {
+      environment['ADELE_TEST_FAIL_DEPENDENCY'] = dependency;
+      final result = await invoke(['bootstrap']);
+      expect(result.exitCode, 19);
+      expect(commands.readAsLinesSync(), [
+        'pub-get',
+        if (dependency == 'workspace-list') 'workspace-list',
+      ]);
+      expect(generationArguments.existsSync(), isFalse);
+      expect(generatedContract.existsSync(), isFalse);
+    });
+  }
+
+  test('analyze generates once before every analysis subprocess', () async {
+    final result = await invoke(['analyze']);
+    expect(result.exitCode, 0, reason: result.stderr.toString());
+    expect(commands.readAsLinesSync(), [
+      'generate|path',
+      'analyze|dart|${root.path}',
+      'analyze|dart|${root.path}',
+      for (final target in tooling.analysisTargets)
+        'analyze|${target.flutter ? 'flutter' : 'dart'}|${root.path}/${target.path}',
+    ]);
+    expectGenerationArguments();
+  });
+
+  for (final targetName in ['adele_tools', 'adele_desktop', null]) {
+    test('test ${targetName ?? 'all'} generates once before workers', () async {
+      final result = await invoke([
+        'test',
+        if (targetName != null) ...[
+          '--target',
+          targetName,
+        ] else ...[
+          '--jobs',
+          '2',
+        ],
+      ]);
+      expect(result.exitCode, 0, reason: result.stderr.toString());
+      final targets = targetName == null
+          ? tooling.testTargets
+          : [tooling.lookupTestTarget(targetName)];
+      final recorded = commands.readAsLinesSync();
+      expect(recorded.first, 'generate|path');
+      expect(
+        recorded.skip(1),
+        unorderedEquals([
+          for (final target in targets)
+            'test|${target.executable}|${root.path}${target.path == '.' ? '' : '/${target.path}'}',
+        ]),
+      );
+      expectGenerationArguments();
+    });
+  }
+
+  test(
+    'generate materializes and --check verifies without rewriting',
+    () async {
+      final result = await invoke(['generate']);
+      expect(result.exitCode, 0, reason: result.stderr.toString());
+      expect(commands.readAsLinesSync(), ['generate|path']);
+      expectGenerationArguments();
+      expect(generatedContract.readAsStringSync(), 'generated contracts\n');
+      generatedContract.setLastModifiedSync(DateTime.utc(2000));
+      final modified = generatedContract.lastModifiedSync();
+
+      final checked = await invoke(['generate', '--check']);
+      expect(checked.exitCode, 0, reason: checked.stderr.toString());
+      expect(commands.readAsLinesSync(), [
+        'generate|path',
+        'generate|path|--check',
+      ]);
+      expectGenerationArguments(['--check']);
+      expect(generatedContract.readAsStringSync(), 'generated contracts\n');
+      expect(generatedContract.lastModifiedSync(), modified);
+    },
+  );
+
+  for (final command in [
+    <String>['generate', '--check'],
+    <String>['check'],
+  ]) {
+    for (final stale in [false, true]) {
+      test(
+        '${command.join(' ')} does not repair ${stale ? 'stale' : 'missing'} outputs',
+        () async {
+          if (stale) generatedContract.writeAsStringSync('stale contract');
+          final result = await invoke(command);
+          expect(result.exitCode, 31);
+          expect(
+            result.stderr,
+            contains('contract outputs are missing or stale'),
+          );
+          expect(commands.readAsLinesSync(), ['generate|path|--check']);
+          expectGenerationArguments(['--check']);
+          if (stale) {
+            expect(generatedContract.readAsStringSync(), 'stale contract');
+          } else {
+            expect(generatedContract.existsSync(), isFalse);
+          }
+        },
+      );
+    }
+  }
+
+  test(
+    'clean-contracts forwards only --clean without generating first',
+    () async {
+      generatedContract.writeAsStringSync('stale contract');
+      final result = await invoke(['clean-contracts']);
+      expect(result.exitCode, 0, reason: result.stderr.toString());
+      expect(commands.readAsLinesSync(), ['generate|path|--clean']);
+      expectGenerationArguments(['--clean']);
+      expect(generatedContract.existsSync(), isFalse);
+    },
+  );
+
+  for (final target in ['macos', 'windows']) {
+    for (final command in ['run', 'build']) {
+      test('$command $target generates once on PATH before Flutter', () async {
+        final result = await invoke([command, target]);
+        expect(result.exitCode, 0, reason: result.stderr.toString());
+        expect(commands.readAsLinesSync(), ['generate|path', 'flutter-launch']);
+        expectGenerationArguments();
+        expect(launchArguments.readAsLinesSync(), [
+          command,
+          if (command == 'run') '-d',
+          target,
+          '--debug',
+        ]);
+      });
+    }
+  }
+
+  for (final arguments in <List<String>>[
+    ['bootstrap'],
+    ['analyze'],
+    ['test', '--target', 'adele_tools'],
+    ['test', '--jobs', '2'],
+    ['run', 'linux'],
+    ['build', 'linux'],
+    ['run', 'macos'],
+    ['build', 'windows'],
+    ['smoke', 'linux'],
+  ]) {
+    test(
+      '${arguments.join(' ')} stops consumers on generation failure',
+      () async {
+        environment['ADELE_TEST_FAIL_GENERATION'] = '1';
+        // Even retained output must not let consumers bypass failed generation.
+        generatedContract.writeAsStringSync('retained contract');
+        if (arguments.first == 'smoke') {
+          environment.addAll({
+            'ADELE_DEVELOPMENT_REPOSITORY_ROOT': root.path,
+            'ADELE_DEVELOPMENT_PLUGIN_DIRECTORY':
+                '${root.path}/plugins/workspace_demo',
+            'ADELE_DEVELOPMENT_DIRECTORY': '${root.path}/development',
+          });
+        }
+        final result = await invoke(arguments);
+        expect(result.exitCode, 29);
+        expect(result.stdout, contains('contract generator output'));
+        expect(result.stderr, contains('contract generator failed'));
+        expect(
+          result.stderr,
+          contains('contract-generation failed with exit code 29'),
+        );
+        expect(commands.readAsLinesSync(), [
+          if (arguments.first == 'bootstrap') ...['pub-get', 'workspace-list'],
+          if (arguments.contains('linux')) 'inspect-sdk',
+          arguments.contains('linux') && arguments.first != 'smoke'
+              ? 'generate|sdk'
+              : 'generate|path',
+        ]);
+        expectGenerationArguments();
+        expect(result.stdout, isNot(contains('START test:')));
+        expect(generatedContract.readAsStringSync(), 'retained contract');
+        expect(launchArguments.existsSync(), isFalse);
+        expect(frontendArguments.existsSync(), isFalse);
+        expectNoPublishedInstallations();
+      },
+    );
+  }
+
+  test('generation failure retains structured process diagnostics', () async {
+    final dart = File('${root.path}/bin/failing-dart');
+    _script(dart, '''
+printf 'generator stdout'
+printf 'generator stderr' >&2
+exit 27
+''');
+    try {
+      await runContractCodegen(
+        repositoryRoot: root,
+        dartExecutable: dart.path,
+        options: ['--check'],
+      );
+      fail('Expected generation to fail.');
+    } on PluginBuildFailure catch (failure) {
+      expect(
+        failure.message,
+        contains('contract-generation failed with exit code 27'),
+      );
+      final diagnostic = failure.diagnostic!;
+      expect(diagnostic.stage, 'contract-generation');
+      expect(diagnostic.command, [
+        dart.path,
+        'run',
+        _codegenEntrypoint,
+        '--check',
+      ]);
+      expect(diagnostic.workingDirectory, root.path);
+      expect(diagnostic.exitCode, 27);
+      expect(diagnostic.stdoutText, 'generator stdout');
+      expect(diagnostic.stderrText, 'generator stderr');
+    }
+  });
+
+  test('generation process start failure is a PluginBuildFailure', () async {
+    await expectLater(
+      runContractCodegen(
+        repositoryRoot: root,
+        dartExecutable: '${root.path}/missing-dart',
+      ),
+      throwsA(
+        isA<PluginBuildFailure>().having(
+          (failure) => failure.message,
+          'message',
+          contains('contract-generation could not start'),
+        ),
+      ),
+    );
+    expect(commands.existsSync(), isFalse);
+  });
 
   test(
     'Linux smoke builds the tool entrypoint and runs the matching bundle',
@@ -270,9 +609,11 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(result.exitCode, 0, reason: result.stderr.toString());
         expect(commands.readAsLinesSync(), [
           'inspect-sdk',
+          'generate|path',
           'flutter-launch',
           'smoke-runtime|$mode',
         ]);
+        expectGenerationArguments();
         expect(launchArguments.readAsLinesSync(), [
           'build',
           'linux',
@@ -311,6 +652,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(result.exitCode, 0, reason: result.stderr.toString());
         expect(commands.readAsLinesSync(), <String>[
           'inspect-sdk',
+          'generate|sdk',
           'compile|$_hostEntrypoint',
           'compiled|$_hostEntrypoint',
           'compile|$_gitEntrypoint',
@@ -340,6 +682,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           'flutter-launch',
         ]);
         expect(result.stdout, contains('frontend compiler output'));
+        expectGenerationArguments();
         expect(frontendArguments.readAsLinesSync(), <String>[
           'test',
           '--no-pub',
@@ -891,6 +1234,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(result.stderr, contains('failed with exit code 17'));
         expect(commands.readAsLinesSync(), <String>[
           'inspect-sdk',
+          'generate|sdk',
           'compile|$_hostEntrypoint',
           if (failedEntrypoint != _hostEntrypoint) ...<String>[
             'compiled|$_hostEntrypoint',
@@ -979,6 +1323,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             }
             expect(commands.readAsLinesSync(), <String>[
               'inspect-sdk',
+              'generate|sdk',
               'compile|$_hostEntrypoint',
               'compiled|$_hostEntrypoint',
               'compile|$_gitEntrypoint',
@@ -1067,6 +1412,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     expect(result.stderr, contains('produced no artifact'));
     expect(commands.readAsLinesSync(), <String>[
       'inspect-sdk',
+      'generate|sdk',
       'compile|$_hostEntrypoint',
       'compiled|$_hostEntrypoint',
     ]);

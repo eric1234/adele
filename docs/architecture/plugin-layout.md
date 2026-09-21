@@ -34,9 +34,10 @@ draft ADELE source/build manifest, not the installed runtime manifest.
 For development builds, `packages.contract` selects the plugin's transport
 contract package. The builder reads its Dart package name from `pubspec.yaml`,
 derives `lib/<package-name>.dart`, resolves that source to an absolute path, and
-runs `contract_codegen --check --source <path>` after validating Dart but before
-backend compilation. Repository-wide generator configuration is not used to
-choose a requested plugin's contract.
+runs `contract_codegen --source <path>` after validating Dart but before backend
+compilation. This materializes the ignored native sibling part instead of assuming
+plugins ship committed transport. Repository-wide generator configuration is not
+used to choose a requested plugin's contract.
 
 Stock source directories have not been normalized to this fixture's
 `adele_plugin.yaml` layout. In particular, the desktop launcher still knows the

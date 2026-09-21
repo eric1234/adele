@@ -47,7 +47,7 @@ jobs:
       - name: Bootstrap workspace
         run: dart tools/adele.dart bootstrap
 
-      - name: Check generated contracts
+      - name: Check materialized contract determinism
         run: dart tools/adele.dart generate --check
 
   analyze:

@@ -8,7 +8,7 @@ void main() {
   late Directory plugin;
 
   setUp(() {
-    root = Directory.systemTemp.createTempSync('adele-builder-');
+    root = Directory.systemTemp.createTempSync('adele builder ');
     plugin = Directory('${root.path}/plugin')..createSync();
     File('${plugin.path}/adele_plugin.yaml').writeAsStringSync('''
 manifestVersion: 1
@@ -44,7 +44,11 @@ name: temporary_contract
   tearDown(() => root.deleteSync(recursive: true));
 
   test('reports a toolchain mismatch with captured diagnostics', () async {
-    final File fake = _script(root, 'fake', 'echo "Dart 0.0" >&2');
+    final File log = File('${root.path}/commands.txt');
+    final File fake = _script(root, 'fake', '''
+printf '%s\n' "\$*" >> '${log.path}'
+echo "Dart 0.0" >&2
+''');
     await expectLater(
       const DevelopmentPluginBuilder().prepareBackend(
         repositoryRoot: root,
@@ -68,6 +72,7 @@ name: temporary_contract
             ),
       ),
     );
+    expect(log.readAsLinesSync(), <String>['--version']);
   });
 
   test('does not activate a build without both artifacts', () async {
@@ -92,55 +97,181 @@ name: temporary_contract
     );
   });
 
-  test('validates Dart before generated contracts', () async {
-    final File fake = _script(root, 'fake', '''
-echo "Dart 3.10.9" >&2
-if [ "\$1" = "run" ]; then
-  echo "stale generated files" >&2
-  exit 7
+  for (final bool stale in <bool>[false, true]) {
+    test(
+      'generates the selected ${stale ? 'stale' : 'missing'} contract before compilation',
+      () async {
+        final File source = File(
+          '${plugin.path}/packages/contract/lib/temporary_contract.dart',
+        );
+        final File generated = File(
+          '${plugin.path}/packages/contract/lib/temporary_contract.g.dart',
+        );
+        if (stale) generated.writeAsStringSync('stale contract');
+        final String generator =
+            '${root.path}/packages/contract_codegen/bin/contract_codegen.dart';
+        final File log = File('${root.path}/commands.txt');
+        final File fake = _script(root, 'fake', '''
+printf '%s\n' "\$1" >> '${log.path}'
+if [ "\$1" = "--version" ]; then
+  printf 'Dart 3.10.9\n{"frameworkVersion":"3.38.10"}\n'
+elif [ "\$1" = "run" ]; then
+  [ "\$#" = "4" ] && [ "\$2" = '$generator' ] &&
+    [ "\$3" = "--source" ] && [ "\$4" = '${source.path}' ] || exit 98
+  printf 'generated contract' > "\${4%.dart}.g.dart"
+  printf 'generation output'
+  printf 'generation diagnostics' >&2
+elif [ "\$1" = "compile" ]; then
+  [ "\$(cat '${generated.path}')" = 'generated contract' ] || exit 97
+  printf snapshot > "\$5"
+elif [ "\$1" != "pub" ]; then
+  exit 99
 fi
 ''');
 
-    await expectLater(
-      const DevelopmentPluginBuilder().prepareBackend(
-        repositoryRoot: root,
-        pluginDirectory: plugin,
-        dartExecutable: fake.path,
-        flutterExecutable: fake.path,
-        expectedDartVersion: '3.10.9',
-        expectedFlutterVersion: '3.38.10',
-      ),
-      throwsA(
-        isA<PluginBuildFailure>()
-            .having(
-              (PluginBuildFailure value) => value.diagnostic?.stage,
-              'stage',
-              'contract-generation-verification',
-            )
-            .having(
-              (PluginBuildFailure value) => value.diagnostic?.stderrText,
-              'stderr',
-              contains('stale generated files'),
-            ),
-      ),
-    );
-  });
+        final PluginBuildResult build = await const DevelopmentPluginBuilder()
+            .prepareBackend(
+              repositoryRoot: root,
+              pluginDirectory: plugin,
+              dartExecutable: fake.path,
+              flutterExecutable: fake.path,
+              expectedDartVersion: '3.10.9',
+              expectedFlutterVersion: '3.38.10',
+            );
 
-  test(
-    'checks the requested plugin contract source before compilation',
-    () async {
-      final File log = File('${root.path}/commands.txt');
-      final File fake = _script(root, 'fake', '''
-printf '%s\n' "\$*" >> '${log.path}'
+        expect(generated.readAsStringSync(), 'generated contract');
+        expect(build.backendArtifact.readAsStringSync(), 'snapshot');
+        expect(log.readAsLinesSync(), <String>[
+          '--version',
+          'run',
+          '--version',
+          'pub',
+          'compile',
+        ]);
+        expect(
+          build.diagnostics.map((PluginBuildDiagnostic value) => value.stage),
+          <String>[
+            'configuration',
+            'contract-generation',
+            'configuration',
+            'dependency-resolution',
+            'backend-compilation',
+          ],
+        );
+        final PluginBuildDiagnostic generation = build.diagnostics[1];
+        expect(generation.command, <String>[
+          fake.path,
+          'run',
+          generator,
+          '--source',
+          source.absolute.path,
+        ]);
+        expect(generation.workingDirectory, root.absolute.path);
+        expect(generation.exitCode, 0);
+        expect(generation.stdoutText, 'generation output');
+        expect(generation.stderrText, 'generation diagnostics');
+      },
+    );
+  }
+
+  for (final (String kind, int exitCode, String stderr)
+      in <(String, int, String)>[
+        ('generation', 7, 'cannot write generated output'),
+        (
+          'schema',
+          1,
+          'temporary_contract.dart:1:1: unsupported contract schema',
+        ),
+        ('tooling', 64, 'contract_codegen.dart: tool unavailable'),
+      ]) {
+    test(
+      'stops on $kind failure with captured generation diagnostics',
+      () async {
+        final File log = File('${root.path}/commands.txt');
+        final List<String> arguments = <String>[
+          'run',
+          '${root.path}/packages/contract_codegen/bin/contract_codegen.dart',
+          '--source',
+          '${plugin.path}/packages/contract/lib/temporary_contract.dart',
+        ];
+        final File fake = _script(root, 'fake', '''
+printf '%s\n' "\$@" >> '${log.path}'
 if [ "\$1" = "--version" ]; then
   echo "Dart 3.10.9" >&2
   exit 0
 fi
 if [ "\$1" = "run" ]; then
-  echo "stale generated files" >&2
-  exit 7
+  printf 'generation output'
+  printf '%s' '$stderr' >&2
+  exit $exitCode
 fi
 exit 99
+''');
+
+        await expectLater(
+          const DevelopmentPluginBuilder().prepareBackend(
+            repositoryRoot: root,
+            pluginDirectory: plugin,
+            dartExecutable: fake.path,
+            flutterExecutable: fake.path,
+            expectedDartVersion: '3.10.9',
+            expectedFlutterVersion: '3.38.10',
+          ),
+          throwsA(
+            isA<PluginBuildFailure>()
+                .having(
+                  (PluginBuildFailure value) => value.message,
+                  'message',
+                  'contract-generation failed with exit code $exitCode.',
+                )
+                .having(
+                  (PluginBuildFailure value) => value.diagnostic?.stage,
+                  'stage',
+                  'contract-generation',
+                )
+                .having(
+                  (PluginBuildFailure value) => value.diagnostic?.command,
+                  'command',
+                  <String>[fake.path, ...arguments],
+                )
+                .having(
+                  (PluginBuildFailure value) =>
+                      value.diagnostic?.workingDirectory,
+                  'working directory',
+                  root.absolute.path,
+                )
+                .having(
+                  (PluginBuildFailure value) => value.diagnostic?.exitCode,
+                  'exit code',
+                  exitCode,
+                )
+                .having(
+                  (PluginBuildFailure value) => value.diagnostic?.stdoutText,
+                  'stdout',
+                  'generation output',
+                )
+                .having(
+                  (PluginBuildFailure value) => value.diagnostic?.stderrText,
+                  'stderr',
+                  stderr,
+                ),
+          ),
+        );
+
+        expect(log.readAsLinesSync(), <String>['--version', ...arguments]);
+        expect(Directory('${root.path}/.dart_tool').existsSync(), isFalse);
+      },
+    );
+  }
+
+  test(
+    'reports a generator process-start failure before compilation',
+    () async {
+      final File log = File('${root.path}/commands.txt');
+      final File fake = _script(root, 'fake', '''
+printf '%s\n' "\$*" >> '${log.path}'
+echo "Dart 3.10.9" >&2
+rm "\$0"
 ''');
 
       await expectLater(
@@ -153,27 +284,24 @@ exit 99
           expectedFlutterVersion: '3.38.10',
         ),
         throwsA(
-          isA<PluginBuildFailure>().having(
-            (PluginBuildFailure value) => value.diagnostic?.stage,
-            'stage',
-            'contract-generation-verification',
-          ),
+          isA<PluginBuildFailure>()
+              .having(
+                (PluginBuildFailure value) => value.message,
+                'message',
+                allOf(
+                  contains('contract-generation could not start'),
+                  contains(fake.path),
+                ),
+              )
+              .having(
+                (PluginBuildFailure value) => value.diagnostic,
+                'diagnostic',
+                isNull,
+              ),
         ),
       );
-
-      final List<String> commands = log.readAsLinesSync();
-      expect(commands.first, '--version');
-      expect(commands, hasLength(2));
-      expect(commands.last, contains('--check --source'));
-      expect(
-        commands.last,
-        endsWith(
-          File(
-            '${plugin.path}/packages/contract/lib/temporary_contract.dart',
-          ).absolute.path,
-        ),
-      );
-      expect(commands.last, isNot(contains('contract_codegen.yaml')));
+      expect(log.readAsLinesSync(), <String>['--version']);
+      expect(Directory('${root.path}/.dart_tool').existsSync(), isFalse);
     },
   );
 

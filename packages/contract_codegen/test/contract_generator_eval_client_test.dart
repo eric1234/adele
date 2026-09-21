@@ -1,4 +1,5 @@
 import 'package:analyzer/dart/analysis/utilities.dart';
+import 'package:analyzer/diagnostic/diagnostic.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
 
@@ -66,13 +67,15 @@ final class SessionFailure implements Exception {
                   .getResolvedUnit(emitted.path)
               as ResolvedUnitResult;
       expect(
-        unit.diagnostics.where((error) => error.severity.name == 'ERROR'),
+        unit.diagnostics.where((error) => error.severity == Severity.error),
         isEmpty,
       );
       final native = await generator.generate(fixture.source);
       expect(native.contents, contains('SessionServiceDispatcher'));
       expect(native.contents, contains('switch'));
     },
+    // Repeated native/eval generation and analysis use fresh analyzer contexts.
+    timeout: const Timeout(Duration(minutes: 2)),
   );
 
   test(

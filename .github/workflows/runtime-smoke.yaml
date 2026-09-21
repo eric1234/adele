@@ -20,6 +20,8 @@ on:
       - "plugins/workspace_demo/**"
       - "plugins/resource_inspector/**"
       - "tools/adele.dart"
+      - "tools/contract_artifacts.dart"
+      - "contract_codegen.yaml"
       - "pubspec.yaml"
       - "pubspec.lock"
       - "toolchain.json"
@@ -45,7 +47,7 @@ jobs:
           flutter-version: 3.38.10
           cache: true
       - run: dart tools/adele.dart bootstrap
-      - name: Verify generated contracts
+      - name: Check materialized contract determinism
         run: dart tools/adele.dart generate --check
       - name: Run profile vertical smoke
         env:

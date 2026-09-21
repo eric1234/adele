@@ -260,8 +260,8 @@ operations without a native controller or in-process fallback.
 directories before launching or building the app. Chat compilation invokes
 `app/tool/compile_chat_frontend.dart` with the selected Flutter SDK and takes
 `ADELE_REPOSITORY_ROOT` and `ADELE_CHAT_FRONTEND_OUTPUT` as build-time environment
-inputs. From `app/`, with an existing output parent directory, the standalone
-invocation is:
+inputs. After repository bootstrap/current native contract generation, from
+`app/`, with an existing output parent directory, the standalone invocation is:
 
 ```sh
 ADELE_REPOSITORY_ROOT="$(git rev-parse --show-toplevel)" \
@@ -1304,6 +1304,12 @@ remain unimplemented.
 `app/bin/adele_self_host.dart` is experimental developer infrastructure for
 repeatable ADELE-authored source-development experiments. It is not ADELE's
 final CLI or product orchestration interface.
+
+After workspace bootstrap, this SDK-only launcher regenerates native contract
+parts before starting `app/tool/self_hosting/cli.dart`. That process boundary
+ensures even the runner's own native imports compile against current transport,
+before its AOT compilation begins. Generated parts are ignored local artifacts;
+generation does not change the clean authored-source baseline required below.
 
 The temporary runner currently requires Linux x64 and an executable
 `/usr/bin/setsid` or `/bin/setsid`. This mirrors the current Git Environment

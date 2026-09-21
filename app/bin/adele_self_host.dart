@@ -1,54 +1,25 @@
 import 'dart:io';
 
-import '../tool/self_hosting/development_self_hosting_runner.dart';
+// This launcher must compile even when every generated contract part is absent.
+// ignore: avoid_relative_lib_imports
+import '../../packages/plugin_builder/lib/plugin_builder.dart';
+import '../../tools/contract_artifacts.dart';
 
 Future<void> main(List<String> arguments) async {
-  if (arguments.contains('--help') || arguments.contains('-h')) {
-    _usage();
-    return;
-  }
-  final DevelopmentSelfHostingOptions options;
+  final repository = Directory.fromUri(Platform.script.resolve('../../'));
   try {
-    options = DevelopmentSelfHostingOptions.parse(arguments);
-  } on DevelopmentSelfHostingUsageException catch (error) {
-    stderr.writeln('ERROR: ${error.message}');
-    _usage();
-    exitCode = 64;
+    await runContractCodegen(
+      repositoryRoot: repository,
+      dartExecutable: Platform.resolvedExecutable,
+    );
+  } on PluginBuildFailure catch (failure) {
+    stderr.writeln('FAILED: $failure');
+    exitCode = failure.diagnostic?.exitCode ?? 1;
     return;
   }
-
-  final DevelopmentSelfHostingRunnerResult result;
-  try {
-    result = await const DevelopmentSelfHostingRunner().run(options);
-  } on DevelopmentSelfHostingOutputRootException catch (error) {
-    stderr.writeln('ERROR: ${error.message}');
-    exitCode = 64;
-    return;
-  }
-  stdout.writeln('Run evidence: ${result.runDirectory.path}');
-  stdout.writeln(
-    'Project source: ${result.projectSource?.path ?? 'unavailable'}',
-  );
-  stdout.writeln(
-    'Task worktree: ${result.taskWorktree?.path ?? 'unavailable'}',
-  );
-  stdout.writeln('ADELE Run state: ${result.runState?.name ?? 'unavailable'}');
-  if (result.failure != null) stderr.writeln('FAILED: ${result.failure}');
-  exitCode = result.exitCode;
-}
-
-void _usage() {
-  stdout.writeln('''
-Usage: dart run app/bin/adele_self_host.dart \\
-  --prompt-file <path> \\
-  --instructions-file <path> \\
-  --task-title <text> \\
-  --max-model-invocations <positive-int> \\
-  --output-dir <path> \\
-  [--profile chatgpt|api-key]
-
-Runs one developer-only ADELE self-hosting experiment. The default profile is
-chatgpt. Project source, Task worktree, raw journal, deterministic reports, and
-Git evidence are preserved below a new run directory in --output-dir.
-''');
+  final process = await Process.start(Platform.resolvedExecutable, <String>[
+    File.fromUri(repository.uri.resolve('app/tool/self_hosting/cli.dart')).path,
+    ...arguments,
+  ], mode: ProcessStartMode.inheritStdio);
+  exitCode = await process.exitCode;
 }

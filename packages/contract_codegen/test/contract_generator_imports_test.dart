@@ -160,23 +160,30 @@ void main() {
     "import 'package:adele_plugin_api/adele_plugin_api.dart' as api show ResourceRef;",
     "import 'package:adele_plugin_api/adele_plugin_api.dart' as api hide ResourceRef;",
     "import 'package:adele_plugin_api/src/resource_ref.dart' as resource;",
-    "import 'package:adele_plugin_api/other.dart' as api_other;",
+    "import 'package:adele_plugin_api/src/plugin_id.dart' as api_other;",
   ]) {
     test(
       'allows prefixed plugin import without ResourceRef $pluginImport',
       () async {
-        expect(
-          await generateContract('''
-import 'support.dart' as support;
+        final fixture = await fixtureWithSupport('''
 import 'package:path/path.dart' as path;
-import 'package:adele_contract/src/annotations.dart' as annotations;
+import 'package:adele_contract/adele_contract.dart' as annotations;
 $pluginImport
-${minimalContract(namedValue: true)}'''),
-          isNotEmpty,
+${minimalContract(namedValue: true)}''', '');
+        final generated = await const ContractGenerator().generate(
+          fixture.source,
         );
+        expect(generated.contents, isNotEmpty);
       },
     );
   }
+
+  test('rejects a missing authored prefixed import', () async {
+    await expectDiagnostic(
+      "import 'missing.dart' as helper;\n${minimalContract(namedValue: true)}",
+      "Target of URI doesn't exist: 'missing.dart'",
+    );
+  });
 
   for (final import in <String>[
     "import 'support.dart' if (dart.library.io) 'package:adele_contract/adele_contract.dart' as support;",

@@ -177,12 +177,17 @@ final class DevelopmentPluginBuilder {
     final String generator = File(
       '${repositoryRoot.absolute.path}${Platform.pathSeparator}packages${Platform.pathSeparator}contract_codegen${Platform.pathSeparator}bin${Platform.pathSeparator}contract_codegen.dart',
     ).path;
-    final PluginBuildDiagnostic generation = await _run(
-      'contract-generation-verification',
-      dartExecutable,
-      <String>['run', generator, '--check', '--source', contractSource.path],
-      repositoryRoot.absolute.path,
-    );
+    final PluginBuildDiagnostic generation;
+    try {
+      generation = await _run('contract-generation', dartExecutable, <String>[
+        'run',
+        generator,
+        '--source',
+        contractSource.path,
+      ], repositoryRoot.absolute.path);
+    } on ProcessException catch (error) {
+      throw PluginBuildFailure('contract-generation could not start: $error');
+    }
     diagnostics.add(generation);
     _requireSuccess(generation);
 

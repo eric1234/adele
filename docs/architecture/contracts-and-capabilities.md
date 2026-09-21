@@ -48,7 +48,20 @@ Supported core and async types are checked by exact semantic library identity, n
 
 `ContractDiagnostic` locations retain the precise import, annotation, method, parameter, field, constructor, enum, or enum-value source node when available; whole-library constraints use the compilation unit.
 
-Committed transport is checked in normal CI. Development plugin preparation also checks the requested plugin independently: the manifest-selected contract package's `pubspec.yaml` name determines `lib/<package-name>.dart`, and that absolute source is passed explicitly to `contract_codegen --check --source`. This keeps stale transport failure local to the plugin and ahead of compilation.
+Native transport is an ignored local generated artifact, not committed source.
+The declaration keeps its exact sibling `part '<basename>.g.dart'` directive so
+ordinary Dart analysis, native tests, and AOT compilation consume the materialized
+part. Repository bootstrap resolves dependencies before generating the configured
+contracts; maintained analysis/test/build launchers refresh them before compilation.
+Generation compares content rather than timestamps and does not rewrite identical
+output. `generate --check` independently verifies materialized content in CI, not
+equality with Git. See [toolchain lifecycle](toolchain.md#generated-contract-artifacts).
+
+Development plugin preparation materializes only the requested plugin's contract:
+the manifest-selected contract package's `pubspec.yaml` name determines
+`lib/<package-name>.dart`, and that absolute source is passed explicitly to
+`contract_codegen --source`. Generation/schema/tooling failures retain build
+diagnostics and stop preparation before backend compilation.
 
 Server-streaming uses the existing shared backend-host path. Generated clients open lazily and decode ordered typed items. Generated dispatchers hide producer iteration, cancellation, and terminal failure mapping. A fixed one-item credit window means paused consumers stop producer advancement after the already-granted item and cancellation reaches the producer iterator. Streams remain bound to their exact provider generation and fail rather than migrating when that generation disappears.
 

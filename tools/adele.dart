@@ -6,6 +6,7 @@ import 'dart:math' as math;
 // ignore: avoid_relative_lib_imports
 import '../packages/plugin_builder/lib/plugin_builder.dart';
 import 'backend_artifacts.dart';
+import 'contract_artifacts.dart';
 import 'test_runner.dart';
 
 const int _maximumDefaultTestJobs = 2;
@@ -427,6 +428,7 @@ Future<void> main(List<String> arguments) async {
           'workspace',
           'list',
         ]);
+        await runContractCodegen(repositoryRoot: Directory.current);
         return;
       case 'format':
         final bool check = arguments.skip(1).contains('--check');
@@ -437,13 +439,24 @@ Future<void> main(List<String> arguments) async {
         ]);
         return;
       case 'generate':
-        await _run('contract generation', 'dart', <String>[
-          'run',
-          'packages/contract_codegen/bin/contract_codegen.dart',
-          if (arguments.skip(1).contains('--check')) '--check',
-        ]);
+        await runContractCodegen(
+          repositoryRoot: Directory.current,
+          options: <String>[
+            if (arguments.skip(1).contains('--check')) '--check',
+          ],
+        );
+        return;
+      case 'clean-contracts':
+        if (arguments.length != 1) {
+          throw const TestUsageException('clean-contracts takes no options.');
+        }
+        await runContractCodegen(
+          repositoryRoot: Directory.current,
+          options: const <String>['--clean'],
+        );
         return;
       case 'analyze':
+        await runContractCodegen(repositoryRoot: Directory.current);
         await _run('repository tools', 'dart', <String>[
           'analyze',
           '--fatal-infos',
@@ -492,6 +505,9 @@ Future<void> main(List<String> arguments) async {
         final String flutter = target == 'linux'
             ? _which('flutter')
             : 'flutter';
+        if (target != 'linux') {
+          await runContractCodegen(repositoryRoot: Directory.current);
+        }
         final List<String> defines = target == 'linux'
             ? await prepareDesktopPluginDefines(
                 repositoryRoot: Directory.current,
@@ -529,6 +545,7 @@ Future<void> main(List<String> arguments) async {
             'Development smoke requires repository, plugin, and development directories.',
           );
         }
+        await runContractCodegen(repositoryRoot: Directory.current);
         await _run('adele_desktop $target $mode build', 'flutter', <String>[
           'build',
           target,
@@ -677,6 +694,7 @@ Future<int> _runTests(TestOptions options) async {
   final List<TestTarget> targets = options.target == null
       ? testTargets
       : <TestTarget>[lookupTestTarget(options.target!)];
+  await runContractCodegen(repositoryRoot: Directory.current);
   stdout.writeln(
     'Running ${targets.length} test targets with up to ${options.jobs} jobs.',
   );
@@ -803,9 +821,10 @@ void _usage() {
 Usage: dart tools/adele.dart <command>
 
 Commands:
-  bootstrap          Resolve the complete pub workspace.
+  bootstrap          Resolve the pub workspace and generate native contracts.
   format [--check]   Format or verify formatting for all Dart files.
-  generate [--check] Generate or verify committed contract transport files.
+  generate [--check] Materialize or verify local native contract transport.
+  clean-contracts    Remove ADELE native contract outputs, including marked orphans.
   analyze            Analyze every package and identify failures.
   test [--jobs N]    Run tests with at most N package processes (default: up to 2).
   test --target NAME [--ci]
