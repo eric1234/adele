@@ -731,6 +731,9 @@ extension architecture.
 
 ## Repository
 
+See [docs/README.md](docs/README.md) for the documentation map, reading guide,
+and document-authority policy.
+
 ```text
 app/                         single Flutter desktop application
 packages/plugin_api/         adele_plugin_api (experimental public)
