@@ -28,6 +28,8 @@ When adding a package or plugin, verify workspace membership and the maintained 
 
 For generated contracts or transport, modify the source-of-truth inputs and use the maintained generation workflow rather than treating generated output as the design source. See `packages/contract_codegen/README.md` and `contract_codegen.yaml`.
 
+Native contract `.g.dart` siblings are ignored local artifacts, not committed source. `dart tools/adele.dart bootstrap` resolves dependencies and materializes them for IDEs and direct Dart/Flutter use. Maintained analysis, test, and build/run commands regenerate before compiling consumers. `generate --check` verifies current local content without writing; `clean-contracts` removes contract outputs (including marked orphans), not Dart/Flutter caches. Keep the sibling `part` declarations and add an exact ignore entry for any newly configured output.
+
 ## Working and validation
 
 Inspect the relevant architecture and neighboring implementation before editing. Prefer targeted discovery over reconstructing the whole repository when maintained documentation already identifies the relevant area.

@@ -4,6 +4,7 @@ import 'dart:io';
 // Keep the launcher import graph SDK-only so test-plan works before bootstrap.
 // ignore: avoid_relative_lib_imports
 import '../packages/plugin_builder/lib/plugin_builder.dart';
+import 'contract_artifacts.dart';
 import 'frontend_artifacts.dart';
 import 'stock_frontend_descriptors.dart';
 
@@ -47,6 +48,11 @@ Future<List<String>> prepareDesktopPluginDefines({
       );
     }
   }
+
+  await runContractCodegen(
+    repositoryRoot: repositoryRoot,
+    dartExecutable: dart.path,
+  );
 
   final Directory parent = Directory.fromUri(
     repositoryRoot.absolute.uri.resolve('.dart_tool/adele/desktop-plugins/'),

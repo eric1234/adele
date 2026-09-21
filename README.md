@@ -687,13 +687,20 @@ ADELE_DEVELOPMENT_DIRECTORY=/path/to/demo-root \
 dart tools/adele.dart smoke linux --profile
 ```
 
-`bootstrap` uses the standard Dart pub workspace through Flutter's pub command.
-`generate` deterministically updates committed experimental contract transport;
-`generate --check` rejects stale outputs and is included in `check`.
+`bootstrap` uses the standard Dart pub workspace through Flutter's pub command,
+then materializes native contract transport beside its declarations. These
+`.g.dart` parts are ignored local artifacts, not committed source. `generate`
+deterministically refreshes them without rewriting unchanged content;
+`generate --check` rejects missing/stale local outputs and is included in `check`.
+Maintained analysis, tests, builds, and runs regenerate before compiling native
+consumers. `clean-contracts` removes contract outputs, including marked orphans
+left after branch switches, without deleting authored source or SDK caches.
+Normal branch switching needs regeneration, not cleaning.
 The command driver runs package test suites through a bounded worker pool and
 reports every failed package after all targets settle. `check` verifies
-formatting, analysis, and all implemented tests, including committed
-generated-output freshness.
+formatting, analysis, and all implemented tests, including materialized
+generated-output freshness. Each CI consumer job bootstraps independently;
+the generated-contract job checks reproducibility after materialization.
 
 The workspace includes Chat's `plugins/chat_strategy/packages/{contract,backend,frontend}`,
 semantic `plugins/agents_md`,

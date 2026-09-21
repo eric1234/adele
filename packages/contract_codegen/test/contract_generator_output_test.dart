@@ -86,10 +86,68 @@ void main() {
       expect(await generator.apply(fixture.source, check: false), isFalse);
       expect(await File(generated.path).readAsString(), generated.contents);
       expect(await generator.apply(fixture.source, check: true), isTrue);
+      final destination = File(generated.path);
+      await destination.setLastModified(DateTime.utc(2000));
+      final modified = await destination.lastModified();
+      expect(await generator.apply(fixture.source, check: false), isTrue);
+      expect(await destination.lastModified(), modified);
     },
     // Each generate/apply call creates a fresh analyzer resolution context.
     timeout: const Timeout(Duration(minutes: 2)),
   );
+
+  for (final stale in <String, String>{
+    'wrong part-of': "part of 'old_contract.dart';\n",
+    'poisoned annotation': "part of 'fixture.dart';\nconst AdeleService = 0;\n",
+    'poisoned SDK type': "part of 'fixture.dart';\nclass Future<T> {}\n",
+  }.entries) {
+    test(
+      'regenerates a stale sibling with ${stale.key}',
+      () async {
+        final source = minimalContract(namedValue: true);
+        final fixture = await createFixture(source);
+        const generator = ContractGenerator();
+        final generated = await generator.generate(fixture.source);
+        final destination = File(generated.path);
+        await destination.writeAsString(stale.value);
+        await destination.setLastModified(DateTime.utc(2000));
+        final modified = await destination.lastModified();
+
+        expect(await generator.apply(fixture.source, check: true), isFalse);
+        expect(await destination.readAsString(), stale.value);
+        expect(await destination.lastModified(), modified);
+        expect(await generator.apply(fixture.source, check: false), isFalse);
+        expect(await destination.readAsString(), generated.contents);
+        expect(await generator.apply(fixture.source, check: true), isTrue);
+        expect(await fixture.source.readAsString(), source);
+      },
+      timeout: const Timeout(Duration(minutes: 2)),
+    );
+  }
+
+  test('stale siblings do not hide authored analyzer errors', () async {
+    final fixture = await createFixture(
+      '${minimalContract(namedValue: true)}\nconst int invalid = "text";\n',
+    );
+    final destination = File(p.setExtension(fixture.source.path, '.g.dart'));
+    const stale = "part of 'old_contract.dart';\n";
+    await destination.writeAsString(stale);
+    final diagnostic = await readDiagnostic(fixture.source);
+    expect(diagnostic.message, contains("'String'"));
+    expect(diagnostic.line, 21);
+    expect(diagnostic.path, fixture.source.path);
+    expect(await destination.readAsString(), stale);
+  });
+
+  test('stale siblings do not hide authored schema errors', () async {
+    final fixture = await createFixture(minimalContract());
+    final destination = File(p.setExtension(fixture.source.path, '.g.dart'));
+    const stale = "part of 'old_contract.dart';\n";
+    await destination.writeAsString(stale);
+    final diagnostic = await readDiagnostic(fixture.source);
+    expect(diagnostic.message, contains('required and named'));
+    expect(await destination.readAsString(), stale);
+  });
 
   for (final part in <String>[
     'other.g.dart',

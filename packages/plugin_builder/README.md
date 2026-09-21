@@ -2,15 +2,20 @@
 
 `plugin_builder` is an internal, pure-Dart package. It implements narrow
 development manifest parsing, exact toolchain checks, dependency resolution,
-fresh build directories, generated-contract verification, backend AOT
+fresh build directories, selected-source contract generation, backend AOT
 compilation, captured process diagnostics, and complete-build activation.
 
 `prepareBackend` validates the Dart toolchain before running build tooling. It
 resolves `packages.contract` from the requested plugin manifest, reads that
-package's name from `pubspec.yaml`, and checks the absolute
-`lib/<package-name>.dart` source with `contract_codegen --check --source`.
-Missing or stale plugin contract sources fail before Flutter validation,
-dependency resolution, or backend compilation.
+package's name from `pubspec.yaml`, and passes the absolute
+`lib/<package-name>.dart` source to `contract_codegen --source`. Generation
+materializes or refreshes the ignored sibling `lib/<package-name>.g.dart`
+artifact; it is not generated-output validation. The explicit source selects only
+that plugin contract, never the repository-wide configured sources. Missing
+sources, invalid schemas, and generator/tooling failures stop before Flutter
+validation, dependency resolution, or backend compilation. The
+`contract-generation` diagnostic retains the command, working directory, exit
+code, stdout, and stderr; a process-start failure reports `PluginBuildFailure`.
 
 `compileAotSnapshot` is the reusable single-snapshot primitive. Callers select
 the Dart executable, working directory, entrypoint, output artifact, and diagnostic
@@ -19,7 +24,8 @@ captured `PluginBuildDiagnostic` output (including failures), and throws
 `PluginBuildFailure` on process-start failure, a nonzero exit, or missing output.
 The optional diagnostic callback is awaited before checking the result, preserving
 the builder's stdout/stderr files even on compiler failure. Source discovery,
-toolchain selection, dependency resolution, and artifact lifetime stay with callers.
+toolchain selection, contract generation, dependency resolution, and artifact
+lifetime stay with callers. The primitive is generation agnostic.
 The development builder, self-hosting compiler, and resource-inspector smoke
 compiler share this primitive.
 
@@ -31,12 +37,16 @@ AGENTS.md, Search, Filesystem Tools, and Command Tools), and five frontend EVCs
 (Chat, Local Directory Project Selector, Filesystem Tools, Command Tools, and OpenAI
 activity) before launching the Flutter run/build command. Backend compilation
 runs outside Flutter; frontend compilation uses Flutter build-time tooling. This also
-applies to explicit Linux debug/release modes; non-Linux commands and the explicit
-development smoke entry remain unchanged. `prepareDesktopPluginDefines` in
+applies to explicit Linux debug/release modes. Non-Linux commands and the explicit
+development smoke keep their existing compilation topology, with current contract
+generation before Flutter starts. `prepareDesktopPluginDefines` in
 `tools/backend_artifacts.dart` owns backend source paths and unified stock
 installation assembly, not the normal app runtime or the snapshot primitive.
 Stock source directories are not required to have the
 reference fixture's draft `adele_plugin.yaml` source/build manifest.
+Repository tooling owns configured contract generation once at its
+prerequisite boundary, before desktop artifact compilation. Neither individual
+snapshot compilations nor frontend preparation repeat that repository-wide step.
 
 The launcher inspects its selected Flutter executable and uses that SDK's bundled
 `dart` and sibling `dartaotruntime`, not a potentially unrelated `dart` on PATH.
@@ -238,7 +248,7 @@ Frontend EVC compilation belongs to Flutter build-time tooling under `app/tool`,
 not the normal app runtime or generic prepared frontend host. This package stays
 pure Dart and must not depend on eval or Flutter. Production
 caching, installation, signing, and invalidation remain deferred. Generation is
-owned by `contract_codegen`; this package rejects stale generated files before
-compilation and never activates an incomplete build. Its tests create isolated
-temporary plugin layouts so verification cannot accidentally depend on the
+owned by `contract_codegen`; this package invokes it for the selected plugin
+contract before compilation and never activates an incomplete build. Its tests
+create isolated temporary plugin layouts so preparation cannot depend on the
 repository's generator configuration or maintained fixture.
