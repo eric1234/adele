@@ -4,7 +4,7 @@
 
 Generated typed unary and server-streaming/cancellation transport, active one-to-many capability routing, exact generation bindings, configured OpenAI provider contexts, and the common ModelProvider capability are implemented in the maintained development foundation. Backend-ready extension advertisements, host adapters over the existing extension registry, and operation-scoped backend-to-host calls support remote inference sources, model tools, and orchestration strategies. Model-tool execution uses host-to-backend server streaming; authorized reads/mutations and orchestration host calls use reverse unary calls, while foreground processes use reverse server streaming. This is not general symmetric RPC.
 
-The broader recursive extension model described in [`plugin-extension-model.md`](plugin-extension-model.md) is accepted architecture but mostly unimplemented. Capabilities should therefore be understood as one specialized callable part of that future extension architecture rather than as a universal registry for every kind of plugin participation.
+The broader recursive extension model described in [`plugin-system.md`](plugin-system.md) is accepted architecture but mostly unimplemented. Capabilities should therefore be understood as one specialized callable part of that future extension architecture rather than as a universal registry for every kind of plugin participation.
 
 ## Separate questions
 

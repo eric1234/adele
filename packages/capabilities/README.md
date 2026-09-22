@@ -58,7 +58,7 @@ Plugins may also cooperate through deliberately public extension interfaces
 defined by core or another plugin/component. Depending on such an interface is
 not the same as depending on one specific implementation plugin being active.
 See `docs/architecture/dependency-rules.md` and
-`docs/architecture/plugin-extension-model.md`.
+`docs/architecture/plugin-system.md`.
 
 ## Deferred
 

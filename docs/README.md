@@ -61,6 +61,7 @@ experiments, and development docs according to the question, not exhaustively.
 | What does ADELE currently implement? | Source/tests and local READMEs, reached through the [architecture source map](architecture/overview.md#source-map) |
 | Who owns a concept / what boundary must be preserved? | [Architecture](architecture/) |
 | Who owns Project, Task, Environment, Session, and Run semantics? | [Product model](architecture/product-model.md) |
+| How do plugins participate, compose, and retain live bindings? | [Plugin system](architecture/plugin-system.md) |
 | Why was a design decision made? | [ADRs](adr/README.md) |
 | What UX are we aiming for? | [Product](product/README.md) |
 | What future technical shape are we considering? | [Direction](direction/README.md) |

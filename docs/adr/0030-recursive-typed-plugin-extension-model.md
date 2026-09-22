@@ -30,7 +30,7 @@ ADELE adopts a recursive typed extension model.
 12. ADELE core owns application Command registration, Command Palette/search, keybinding resolution, and user overrides. Plugins register Commands and suggested bindings; UI affordances should normally invoke the same domain/Command behavior rather than define UI-only functionality.
 13. UI is presentation/controller over domain behavior. A plugin rendering an action does not become the semantic owner of the underlying operation merely because it displays the control.
 
-The detailed direction is recorded in `docs/architecture/plugin-extension-model.md`.
+The detailed direction is recorded in `docs/architecture/plugin-system.md`.
 
 ## Implementation status
 

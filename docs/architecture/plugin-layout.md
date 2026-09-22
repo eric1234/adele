@@ -186,7 +186,7 @@ General plugin-defined extension packaging is accepted direction but not yet
 implemented as a manifest or lifecycle system.
 
 See [`dependency-rules.md`](dependency-rules.md) and
-[`plugin-extension-model.md`](plugin-extension-model.md).
+[`plugin-system.md`](plugin-system.md).
 
 ### Stock Chat split
 

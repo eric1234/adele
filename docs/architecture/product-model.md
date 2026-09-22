@@ -235,7 +235,7 @@ merely because persistence is eventually required.
 
 Host persistence facilities may support these owners without making plugin state
 ordinary cascading configuration or window layout part of Session state. The
-[plugin state boundary](plugin-extension-model.md#15-plugin-owned-state-and-persistence)
+[plugin state boundary](plugin-system.md#plugin-owned-state-and-persistence)
 and [profiles/configuration architecture](profiles-and-configuration.md) retain
 those distinctions, including domains where external systems remain authoritative.
 

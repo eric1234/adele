@@ -859,7 +859,7 @@ A Capability is callable runtime interoperability: which compatible provider can
 
 ## Extension point
 
-An Extension Point is the broader typed composition concept described in [`plugin-extension-model.md`](plugin-extension-model.md). Capabilities, UI summary regions, structured inference composition, and plugin-defined ecosystems may use different extension semantics.
+An Extension Point is the broader typed composition concept described in [`plugin-system.md`](plugin-system.md). Capabilities, UI summary regions, structured inference composition, and plugin-defined ecosystems may use different extension semantics.
 
 Plugins may define their own public extension APIs. Depending on such an interface is distinct from requiring one implementation plugin to be active.
 

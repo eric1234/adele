@@ -208,4 +208,4 @@ not define profile participation or grant invocation authority.
 Current transport and authority rules are maintained in
 [`contracts-and-capabilities.md`](../architecture/contracts-and-capabilities.md).
 The implemented subset and broader typed composition model are maintained in
-[`plugin-extension-model.md`](../architecture/plugin-extension-model.md).
+[`plugin-system.md`](../architecture/plugin-system.md).

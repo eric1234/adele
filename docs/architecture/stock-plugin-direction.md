@@ -10,7 +10,7 @@ It is not a committed package list, activation dependency graph, or implementati
 
 The expected stock composition should be read alongside:
 
-- [`plugin-extension-model.md`](plugin-extension-model.md), which defines the durable recursive extension model;
+- [`plugin-system.md`](plugin-system.md), which defines the durable recursive extension model;
 - [`agent-kernel-semantic-model.md`](agent-kernel-semantic-model.md), which defines provider-neutral execution semantics;
 - [`agent-tooling-direction.md`](agent-tooling-direction.md), which describes model tools and execution presentation;
 - [`../mockups/README.md`](../mockups/README.md), which shows the default development UX produced by a stock plugin/configuration set.
@@ -94,7 +94,7 @@ Run/core owns evidence identity, order, and lifecycle. Read-only presentation do
 not grant execution or approval authority, and unavailable rich UI must not
 invalidate execution or erase safe
 activity. Concrete Session/tool/native presentation contracts live in
-[`plugin-extension-model.md`](plugin-extension-model.md#122-implemented-presentation-boundaries),
+[`adele_ui`](../../packages/ui/README.md),
 separately from the broader workbench hypotheses below.
 
 ```text

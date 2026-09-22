@@ -16,7 +16,7 @@ This document should be read alongside:
 
 - [`../mockups/README.md`](../mockups/README.md), which describes the stock development-workflow UX direction;
 - [`agent-kernel-semantic-model.md`](agent-kernel-semantic-model.md), which describes lower-level Run, ToolInvocation, progress, outcome, interruption, runtime-resource, and execution-observation semantics;
-- [`plugin-extension-model.md`](plugin-extension-model.md), which defines the broader recursive extension model;
+- [`plugin-system.md`](plugin-system.md), which defines the broader recursive extension model;
 - [`stock-plugin-direction.md`](stock-plugin-direction.md), which places expected tools into the speculative default plugin topology.
 
 The mockups currently place compact activity in Chat, structured inspection on the right, and stream/terminal presentation at the bottom. Those are stock layout choices; plugin-facing extension APIs should use semantic roles rather than encode those physical coordinates.

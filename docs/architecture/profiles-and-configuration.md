@@ -35,7 +35,7 @@ See also:
 
 - ADR 0029 for the accepted ordered-profile decision;
 - ADR 0031 for Project/Task/Session/Environment direction;
-- [`plugin-extension-model.md`](plugin-extension-model.md) for the recursive extension model.
+- [`plugin-system.md`](plugin-system.md) for the recursive extension model.
 
 ## Goals
 
