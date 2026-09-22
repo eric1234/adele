@@ -1,5 +1,8 @@
 # ADELE Product
 
+See the canonical [product model](../../docs/architecture/product-model.md) for
+cross-system semantics and ownership of Project, Task, Environment, Session, and Run.
+
 `adele_product` defines the canonical immutable `Project`, `Task`, `Environment`,
 and `Session` values. `Project` retains a typed source `Uri`; `Task` owns only
 its Project relationship; and `Environment` owns its Task relationship, role,
