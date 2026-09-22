@@ -1529,5 +1529,5 @@ external Astra/5.6 interoperability evidence from ADELE's Astra-specific proof;
 Lite is deferred unless concrete compatibility pressure requires it. The route
 remains experimental.
 
-See `docs/architecture/overview.md`, `docs/architecture/plugin-extension-model.md`,
+See `docs/architecture/overview.md`, `docs/architecture/plugin-system.md`,
 and ADR 0031.

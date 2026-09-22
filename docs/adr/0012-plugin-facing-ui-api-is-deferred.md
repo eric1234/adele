@@ -36,6 +36,6 @@ distinction between plugin identity and package identity or requiring plugins to
 claim fixed workbench coordinates.
 
 Implementation should follow ADR 0030 and
-`docs/architecture/plugin-extension-model.md` when the first concrete
+`docs/architecture/plugin-system.md` when the first concrete
 plugin-facing UI vertical is designed, while still introducing only the minimum
 API needed by that vertical.

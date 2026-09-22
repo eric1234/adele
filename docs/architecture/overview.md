@@ -71,7 +71,7 @@ establish availability. New composition may discover changed registrations, but
 captured executable bindings retain their exact generation and must not silently
 migrate when it retires.
 
-See the [plugin extension model](plugin-extension-model.md),
+See the [plugin system](plugin-system.md),
 [dependency rules](dependency-rules.md), [plugin layout](plugin-layout.md), and
 [contracts and capabilities](contracts-and-capabilities.md) for the deeper rules.
 
@@ -109,7 +109,7 @@ The host retains common execution, authority, approval, and lifecycle duties.
 
 Session presentation is optional and does not own Session identity or strategy
 state. Public [`adele_ui`](../../packages/ui/README.md) defines the implemented
-semantic contracts; the [UI extension architecture](plugin-extension-model.md#12-ui-extension-points-are-semantic-not-positional)
+semantic contracts; the [UI extension architecture](plugin-system.md#ui-and-presentation)
 sets the broader boundary. [Product direction](../product/README.md) and the
 [stock development UX](../mockups/README.md) describe intended experiences, not
 fixed core layout or claims that every surface is implemented.
@@ -158,7 +158,7 @@ are separate concerns, not one generic settings object. See
 - **How is stock Local Directory Project selection and native picking hosted today?**
   See [B1 Project opening](../../app/README.md#b1-project-opening) and the
   [Local Directory Project Selector](../../plugins/local_directory_project_selector/README.md).
-- **Where should an extension live and what may it depend on?** [Plugin extension model](plugin-extension-model.md) and [dependency rules](dependency-rules.md).
+- **Where should an extension live and what may it depend on?** [Plugin system](plugin-system.md) and [dependency rules](dependency-rules.md).
 - **How do plugin preparation, routing, and authority work?** [Plugin layout](plugin-layout.md) and [contracts and capabilities](contracts-and-capabilities.md).
 - **What must execution preserve?** [Agent execution semantics](agent-kernel-semantic-model.md), then the relevant orchestration/kernel/tool/provider README and tests.
 - **What is intended rather than implemented?** [Profiles and configuration](profiles-and-configuration.md), [product direction](../product/README.md), and [technical direction](../direction/README.md), with their stated qualifications.
