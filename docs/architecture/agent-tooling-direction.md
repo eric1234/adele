@@ -15,7 +15,7 @@ The purpose is to preserve the reasoning behind the current direction so later i
 This document should be read alongside:
 
 - [`../mockups/README.md`](../mockups/README.md), which describes the stock development-workflow UX direction;
-- [`execution-model.md`](execution-model.md), which describes lower-level Run, ToolInvocation, progress, outcome, interruption, runtime-resource, and execution-observation semantics;
+- [`execution-model.md`](execution-model.md), which describes lower-level Run, ToolInvocation, progress, outcome, interruption, and execution-observation semantics;
 - [`plugin-system.md`](plugin-system.md), which defines the broader recursive extension model;
 - [`stock-plugin-direction.md`](stock-plugin-direction.md), which places expected tools into the speculative default plugin topology.
 
