@@ -32,7 +32,7 @@ For canonical architectural boundaries, see:
 
 - [`../architecture/plugin-system.md`](../architecture/plugin-system.md);
 - [`../architecture/stock-plugin-direction.md`](../architecture/stock-plugin-direction.md);
-- [`../architecture/agent-kernel-semantic-model.md`](../architecture/agent-kernel-semantic-model.md);
+- [`../architecture/execution-model.md`](../architecture/execution-model.md);
 - ADR 0031 for Project/Task/Session/Environment direction.
 
 ---

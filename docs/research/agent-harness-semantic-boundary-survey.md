@@ -8,7 +8,7 @@ This document records the research that informed ADELE's agent-execution archite
 
 The purpose of the survey was not to copy another harness or predesign every future feature. The purpose was to identify semantic distinctions that repeatedly become important once an agent harness supports persistence, tools, approvals, background work, model providers, delegation, rich results, and isolated execution environments.
 
-Accepted ADELE conclusions derived from this research belong in [`../architecture/agent-kernel-semantic-model.md`](../architecture/agent-kernel-semantic-model.md).
+Accepted ADELE conclusions derived from this research belong in [`../architecture/execution-model.md`](../architecture/execution-model.md).
 
 ## Why this survey was done
 
@@ -805,5 +805,5 @@ Future investigators should prefer:
 
 1. this research document for the synthesized findings;
 2. current source at the recorded upstream commits when implementation evidence needs verification;
-3. [`../architecture/agent-kernel-semantic-model.md`](../architecture/agent-kernel-semantic-model.md) for ADELE's accepted direction;
+3. [`../architecture/execution-model.md`](../architecture/execution-model.md) for ADELE's accepted direction;
 4. current ADELE `main` for actual implemented behavior.

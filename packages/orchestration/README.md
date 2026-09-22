@@ -98,8 +98,9 @@ are not treated as invalid arguments. Remote tool transport belongs to
 `adele_model_tool`, not this strategy facade.
 
 Application composition in `app/lib/core/orchestration_host.dart` resolves a
-canonical Session by `SessionId`, resolves its stored strategy exactly once per
-Run, and materializes it against `KernelOrchestrationHost`.
+canonical Session by `SessionId`, resolves its stored strategy or validates a
+supplied exact selection, and materializes it against `KernelOrchestrationHost`.
+Canonical registration membership is checked before and after materialization.
 `SessionOrchestrationRun` retains that execution and exact binding, exposing
 internal Run/journal/tool evidence only to application callers. Host operations
 validate the retained strategy on subsequent operations, approval resume, and
@@ -219,13 +220,15 @@ provenance, canonical arguments, known effect/policy/approval state, progress, a
 data-only outcomes including structured immutable `hostData`; arbitrary exception
 objects, host diagnostics, bindings, and callable authority are not projected.
 
-Chat's compact grouping is a consumer rule, not a core invariant: one successfully
-completed model invocation with tools or `output.presentation != null` yields one
-group, independently of rich frontend activation. Chat needs no negative projection
-cache or registry-change retry machinery. Headings prefer explicit tool-batch
-narration only when tools are present, then safe compact text,
-then a structural tool count, with no extra inference. Reasoning-only groups
-precede canonical final Chat text. Activity is not canonical Chat history
+Chat's compact activity is a consumer rule, not a core invariant: for each
+successfully completed model invocation, one qualifying occurrence appears
+directly; two or more form one group. Each tool proposal and each native output
+with `presentation != null` counts once; narration and opaque-only native outputs
+do not count. This is independent of rich frontend activation. Chat needs no
+negative projection cache or registry-change retry machinery. Headings prefer
+explicit tool-batch narration only when tools are present, then safe compact text,
+then a structural occurrence count (`N operations`), with no extra inference.
+Reasoning-only activity precedes canonical final Chat text. Activity is not canonical Chat history
 and is not persisted. Completed activity retained by a current presentation cannot
 be reconstructed after reopening until persistence exists. Chat groups can open
 window-owned Inspection, where public Flutter `adele_ui` selects read-only
@@ -250,7 +253,7 @@ projects its own canonical history and adds Run-local replay into this value.
 `InferenceContextComposer(registry).compose(strategyMaterial: ...,
 sourceContext: ...)` discovers current instruction sources over the **same existing
 `ExtensionRegistry`**, not a second registry or source runtime. The host composes
-before allocating model invocation identity, materializing tools, recording
+before allocating model invocation identity, taking its tool snapshot, recording
 model-start evidence, or calling the provider. It then constructs internal
 `SemanticModelRequest(context: snapshot, invocationId: ..., tools: ...)`.
 Model/tool/policy/Environment selection remains with its existing owners.
@@ -415,8 +418,8 @@ retained as `AGENTS.md` material, separate from stable `semantics` material stat
 that explicit user instructions and direct requests take precedence. This is
 plugin-owned guidance, not a generic precedence or repository-instructions API.
 
-There are no kernel, Flutter, app, or plugin-runtime imports. Scheduling,
-general plugin management, broader Chat UI, persistence, profiles,
+There are no kernel, Flutter, app, or plugin-runtime imports. General background
+scheduling, general plugin management, broader Chat UI, persistence, profiles,
 and child Sessions remain deferred. The generic context contract remains instruction-only. Nested/scoped
 AGENTS.md, aliases/overrides, global/home files, imports, and AGENTS.md caching are
 deferred; time, Skills, roles, and repository maps remain independent, unimplemented

@@ -62,6 +62,7 @@ experiments, and development docs according to the question, not exhaustively.
 | Who owns a concept / what boundary must be preserved? | [Architecture](architecture/) |
 | Who owns Project, Task, Environment, Session, and Run semantics? | [Product model](architecture/product-model.md) |
 | How do plugins participate, compose, and retain live bindings? | [Plugin system](architecture/plugin-system.md) |
+| What must Run/model/tool/policy/approval execution preserve? | [Execution model](architecture/execution-model.md) |
 | Why was a design decision made? | [ADRs](adr/README.md) |
 | What UX are we aiming for? | [Product](product/README.md) |
 | What future technical shape are we considering? | [Direction](direction/README.md) |
