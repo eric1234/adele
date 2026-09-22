@@ -53,11 +53,26 @@ OpenAI's no-fallback and empty-configuration behavior.
 
 ## Prepared Catalog
 
+This section maps the current installed schema and catalog behavior. The
+[catalog parser and prepared types](lib/src/prepared_plugin_catalog.dart) define
+the exact JSON fields, defaults, descriptor variants, and validation rules;
+[catalog tests](test/prepared_plugin_catalog_test.dart) exercise schema, path,
+identity-conflict, and failure behavior. Source/tests are authoritative for those
+implementation details. The architectural source/prepared/live boundaries belong
+to [plugin layout](../../docs/architecture/plugin-layout.md#prepared-installation-snapshot).
+
 [`PreparedPluginCatalog.discover(rootPath)`](lib/src/prepared_plugin_catalog.dart)
 reads a deterministic startup snapshot of immediate child directories'
 `adele_plugin.installation.json` files, not source `adele_plugin.yaml` manifests.
-It validates metadata and independently optional backend/frontend components with
-confined prepared files, without starting processes, compiling source, loading
+The version-1 envelope contains `manifestVersion`, `metadata`, and `components`.
+`metadata` supplies `PluginMetadata`; the required `components` object may be
+empty, retaining an inert metadata-only installation. A backend component supplies
+an `artifact` path; a frontend supplies an `artifact` path and descriptors.
+The in-memory catalog captures parsed metadata and validated locations, not an
+atomic filesystem snapshot or artifact bytes. Later component loading can fail
+even after discovery succeeds.
+Discovery validates metadata and independently optional backend/frontend components
+with confined prepared files, without starting processes, compiling source, loading
 EVC, or watching for changes. `PreparedPluginInstallation` retains optional
 `backendArtifactUri` and `frontend`; `PreparedFrontendComponent` contains the
 artifact URI and separate immutable presentation and behavioral extension
@@ -77,9 +92,7 @@ allowlists generated `chatSessionServiceId` and declares `owningBackend`; runtim
 identities or service semantics.
 Both descriptor families use existing public identity types without importing
 Flutter, `adele_ui`, eval, or concrete plugins. Strict role/kind-specific fields describe executable
-ABI/preparation data, not profile or activation state. The schema and failure rules
-live in
-[`plugin-layout.md`](../../docs/architecture/plugin-layout.md#prepared-installation-snapshot).
+ABI/preparation data, not profile or activation state.
 
 Unconfigured, missing, or empty roots succeed empty. Malformed/unreadable
 installation envelopes produce installation-wide issues and are excluded. An

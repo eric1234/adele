@@ -77,7 +77,7 @@ coexist; presentation roles and manifest version 1 are unchanged. All artifact f
 must be existing and confined to the installation. Descriptors specify executable
 ABI/preparation data, not profile state; the manifest contains no backend exposures,
 source paths, configuration, or activation state. See the exact schema in
-[`plugin-layout.md`](../docs/architecture/plugin-layout.md#prepared-installation-snapshot).
+[the runtime catalog reference](../packages/plugin_runtime/README.md#prepared-catalog).
 
 An unconfigured, missing, or empty root succeeds with an empty catalog. Malformed
 installation envelopes become catalog issues and are excluded independently.

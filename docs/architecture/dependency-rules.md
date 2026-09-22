@@ -133,7 +133,7 @@ with invalid host paths. Invalid envelopes exclude installations; invalid compon
 record typed issues and retain healthy siblings. Readable valid identities remain
 reserved for duplicate-ID exclusion even if the rest is invalid. Root I/O failure
 becomes generic bootstrap failure without disabling the in-process core. See
-[`plugin-layout.md`](plugin-layout.md#prepared-installation-snapshot).
+[catalog validation and failure behavior](../../packages/plugin_runtime/README.md#prepared-catalog).
 
 The app attempts all valid backend installations independently. A local startup,
 advertisement, or registration failure releases only that attempt's resources;

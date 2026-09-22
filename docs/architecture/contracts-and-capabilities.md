@@ -186,7 +186,7 @@ Ready metadata is not a new registry, a host-call authorization grant, or a gene
 dynamic configuration protocol. It preserves the distinctions accepted in ADRs 0015,
 0021, 0027, and 0028. See
 [`plugin-layout.md`](plugin-layout.md#prepared-installation-snapshot) for catalog
-semantics and [`app/README.md`](../../app/README.md#normal-backend-startup) for ownership.
+boundaries and [`app/README.md`](../../app/README.md#normal-backend-startup) for ownership.
 
 ### Extension advertisements
 
@@ -228,7 +228,7 @@ coexist. Its supported `kind: 'projectSelector'` descriptor has `extensionId`,
 `displayName`, `library`, and `entrypoint`. The Flutter owner adapts it to the
 existing `ProjectSelectorContribution` in the same extension registry, not a new
 capability or backend exposure. The exact schema is in
-[`plugin-layout.md`](plugin-layout.md#prepared-installation-snapshot).
+[the runtime catalog reference](../../packages/plugin_runtime/README.md#prepared-catalog).
 
 Bootstrap validates behavioral bytecode and entrypoint presence without executing
 initializers or plugin code, using a validation runtime that intercepts dispatch.
@@ -270,7 +270,7 @@ plugin-declared claim. Lifecycle validates the supplied strategy in its canonica
 registry before publishing a Session; Run hosting retains that same binding and
 revalidates through asynchronous materialization. A retired or foreign binding
 fails explicitly. The old `hostAdapter` field is removed, with manifest version 1
-unchanged. See the [installed schema](plugin-layout.md#prepared-installation-snapshot).
+unchanged. See the [installed schema](../../packages/plugin_runtime/README.md#prepared-catalog).
 
 Chat's `backendServices` allowlists generated `chatSessionServiceId`; its
 `strategyAffinity` is `owningBackend`. Descriptor and dispatcher must use the same
