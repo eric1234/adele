@@ -22,8 +22,12 @@ node budget only when they supply `maxNodes`.
 `toMap()` reifies immutable metadata into plain sendable containers for separate
 AOT isolate groups without changing the immutable public value.
 This is ready-handshake metadata, not an installed manifest, generated semantic
-method payload, active registry, or host-call authorization. Field definitions and
-registration semantics live in
+method payload, active registry, or host-call authorization. Exact exposure fields
+and validation belong to `AdeleCapabilityExposure` and `AdeleExtensionExposure` in
+[`lib/adele_contract.dart`](lib/adele_contract.dart), covered by
+[`test/adele_contract_test.dart`](test/adele_contract_test.dart). Registration and
+rollback mechanics belong to [`plugin_runtime`](../plugin_runtime/README.md#ready-registrations).
+The cross-system advertisement boundary is defined in
 [`contracts-and-capabilities.md`](../../docs/architecture/contracts-and-capabilities.md#backend-ready-advertisements).
 
 `adelePluginBackendProtocolVersion` is 1, as is the internal shared-host protocol
