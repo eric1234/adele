@@ -20,7 +20,7 @@ Prepared Session descriptors use generic hosting, not stock adapter names. They
 supply `displayName`, `strategyId`, `extensionId`, `library`, and `entrypoint`, with
 optional `backendServices` and `strategyAffinity`. Manifest version remains 1;
 `hostAdapter` is no longer supported. See the exact
-[installed schema](../../docs/architecture/plugin-layout.md#prepared-installation-snapshot).
+[installed schema](../plugin_runtime/README.md#prepared-catalog).
 
 ## Interpreted Bridges
 

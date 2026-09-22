@@ -3,7 +3,7 @@
 `plugin_builder` is an internal, pure-Dart package. It implements narrow
 development manifest parsing, exact toolchain checks, dependency resolution,
 fresh build directories, selected-source contract generation, backend AOT
-compilation, captured process diagnostics, and complete-build activation.
+compilation, captured process diagnostics, and development build-pointer publication.
 
 `prepareBackend` validates the Dart toolchain before running build tooling. It
 resolves `packages.contract` from the requested plugin manifest, reads that
@@ -16,6 +16,16 @@ sources, invalid schemas, and generator/tooling failures stop before Flutter
 validation, dependency resolution, or backend compilation. The
 `contract-generation` diagnostic retains the command, working directory, exit
 code, stdout, and stderr; a process-start failure reports `PluginBuildFailure`.
+
+`prepareBackend` produces the backend artifact and returns a destination for the
+frontend artifact; frontend compilation is caller-owned. Despite its name,
+`DevelopmentPluginBuilder.activate` publishes the development build's `current.json`
+pointer after both artifact files exist. It does not start components, establish
+readiness, or register contributions, and the pointer is not an installed runtime
+manifest. The narrow source-manifest reader is `_readManifest` in
+[`development_plugin_builder.dart`](lib/src/development_plugin_builder.dart),
+not a separate typed or general-purpose YAML schema. Exact preparation and
+publication behavior is covered by [builder tests](test/development_plugin_builder_test.dart).
 
 `compileAotSnapshot` is the reusable single-snapshot primitive. Callers select
 the Dart executable, working directory, entrypoint, output artifact, and diagnostic
@@ -113,7 +123,7 @@ version 1. Session descriptors include `displayName` and may declare an explicit
 ABI/preparation data, not profile state. Manifests contain no source paths, backend
 capability/extension exposures, configuration, or activation state. Their runtime schema and catalog failure rules
 are maintained in
-[`plugin-layout.md`](../../docs/architecture/plugin-layout.md#prepared-installation-snapshot).
+[the runtime catalog reference](../plugin_runtime/README.md#prepared-catalog).
 The runtime discovers this snapshot before starting a host and shares it with the
 Flutter frontend owner; it does not run the source builder or know stock source
 layouts. Catalog validation checks confined existing files, not executable EVC
@@ -249,6 +259,6 @@ not the normal app runtime or generic prepared frontend host. This package stays
 pure Dart and must not depend on eval or Flutter. Production
 caching, installation, signing, and invalidation remain deferred. Generation is
 owned by `contract_codegen`; this package invokes it for the selected plugin
-contract before compilation and never activates an incomplete build. Its tests
-create isolated temporary plugin layouts so preparation cannot depend on the
-repository's generator configuration or maintained fixture.
+contract before compilation. Build-pointer publication requires both expected
+artifact files. Its tests create isolated temporary plugin layouts so preparation
+cannot depend on the repository's generator configuration or maintained fixture.

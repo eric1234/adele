@@ -80,7 +80,7 @@ Source/build preparation and runtime activation are separate concerns. Normal
 activation consumes prepared artifacts, not source compilation. Prepared frontend
 and backend availability, failure, and retirement can be independent; an operation
 that needs both still requires its exact live counterparts. See
-[plugin layout](plugin-layout.md) for current source/prepared structure and
+[plugin layout](plugin-layout.md) for source/prepared component boundaries and
 [development documentation](../development/README.md) for the build workflow.
 
 ## Recursive typed extension points
@@ -289,5 +289,5 @@ with rationale in [ADR 0032](../adr/0032-remote-backend-extensions-use-operation
 | Shared backend process host | [`packages/plugin_backend_host/`](../../packages/plugin_backend_host/) |
 | Backend activation/composition | [`app/lib/core/application_plugin_bootstrap.dart`](../../app/lib/core/application_plugin_bootstrap.dart) |
 | Frontend activation/composition | [`app/lib/frontend/application_frontend_bootstrap.dart`](../../app/lib/frontend/application_frontend_bootstrap.dart) |
-| Source/prepared physical layout | [`plugin-layout.md`](plugin-layout.md) |
+| Source/prepared component boundaries | [`plugin-layout.md`](plugin-layout.md) |
 | Concrete implementations | [`plugins/`](../../plugins/) |
