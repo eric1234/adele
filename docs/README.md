@@ -13,7 +13,6 @@ source listing or a development-history journal.
 ## Authority
 
 Document role determines how to read a claim, not just its directory or filename.
-The legacy-path exceptions below apply during migration.
 
 | Role / home | Authority |
 | --- | --- |
@@ -136,24 +135,3 @@ Role: Non-normative research
 These are semantic cues, not machine-readable frontmatter or a rigid status
 taxonomy. Preserve section-level qualifications; one header cannot make every
 detail accepted or implemented. Do not retrofit the existing corpus wholesale.
-
-## Staged migration
-
-The current directory layout is being migrated in focused slices. For now, read
-these existing locations according to their semantic roles, not their paths:
-
-| Existing location | Role and migration |
-| --- | --- |
-| [`docs/mockups/**`](mockups/README.md) | Product direction: reviewed development-workflow UX, largely to be preserved and later moved under `docs/product/`. |
-| [`docs/architecture/agent-tooling-direction.md`](architecture/agent-tooling-direction.md) | Technical direction; later move under `docs/direction/`. |
-| [`docs/architecture/stock-plugin-direction.md`](architecture/stock-plugin-direction.md) | Technical direction; later move under `docs/direction/`. |
-| [`docs/architecture/toolchain.md`](architecture/toolchain.md) | Primarily development workflow/policy; later move under `docs/development/`. |
-| [`docs/experiments/phase-1-runtime-findings.md`](experiments/phase-1-runtime-findings.md) | Retained experiment evidence; preserve its current path and contents in this slice. |
-
-The remaining architecture corpus will be reconciled in later focused slices.
-These classifications do not rewrite existing claims or their qualifications;
-existing major paths remain valid.
-
-**Do not create duplicate copies at the target location while an existing
-canonical document remains at its legacy path. Link to the existing document
-until its migration slice occurs.**

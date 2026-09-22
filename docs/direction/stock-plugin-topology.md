@@ -1,21 +1,23 @@
 # Expected Stock Plugin Direction
 
+Role: Reviewed technical direction
+
 ## Status and purpose
 
 **Directional product/architecture hypothesis; mostly unimplemented and explicitly subject to change.**
 
 This document applies ADELE's accepted extension architecture to a concrete default software-development composition. Its purpose is to make the intended plugin boundaries specific enough to guide implementation and expose bad abstractions early.
 
-It is not a committed package list, activation dependency graph, or implementation sequence. Plugins may be merged, split, renamed, or replaced as real self-hosting use reveals better boundaries. Interfaces described here are provisional unless another architecture document or ADR says otherwise.
+It is not a committed package list, activation dependency graph, or implementation sequence. Plugins may be merged, split, renamed, or replaced as real self-hosting use reveals better boundaries. Interfaces described here are provisional unless an accepted architecture document or ADR says otherwise.
 
 The expected stock composition should be read alongside:
 
-- [`plugin-system.md`](plugin-system.md), which defines the durable recursive extension model;
-- [`execution-model.md`](execution-model.md), which defines provider-neutral execution semantics;
-- [`agent-tooling-direction.md`](agent-tooling-direction.md), which describes model tools and execution presentation;
-- [`../mockups/README.md`](../mockups/README.md), which shows the default development UX produced by a stock plugin/configuration set.
+- [`../architecture/plugin-system.md`](../architecture/plugin-system.md), which defines the durable recursive extension model;
+- [`../architecture/execution-model.md`](../architecture/execution-model.md), which defines provider-neutral execution semantics;
+- [`agent-tooling.md`](agent-tooling.md), which describes model tools and execution presentation;
+- [`../product/development-workflow/README.md`](../product/development-workflow/README.md), which shows the default development UX produced by a stock plugin/configuration set.
 
-For the cross-system architecture map, see [`overview.md`](overview.md).
+For the cross-system architecture map, see [`../architecture/overview.md`](../architecture/overview.md).
 For current implementation, source/tests are authoritative; consult the owning
 application, package, or plugin README for its local map. This document describes
 likely ownership and collaboration, not an inventory of packages, artifacts,
@@ -81,7 +83,7 @@ Some responsibilities may ultimately share one plugin. Session Forking may stay 
 
 Names below describe semantic roles. For concrete implemented contracts and
 current limits, consult the owning package/application documentation and
-source/tests; [`overview.md`](overview.md) provides the cross-system map.
+source/tests; [`../architecture/overview.md`](../architecture/overview.md) provides the cross-system map.
 
 ## 2.1 Workbench/UI semantics
 
@@ -232,7 +234,7 @@ The selector does **not** own Task, Environment, Git, editing, persisted
 associations, or deduplication. Zero selectors should be unavailable; multiple
 selectors can be independent choices rather than a priority competition. Future
 GitHub/cloud/catalog or recent-Project selectors can supply the same semantic
-boundary. Public contract ownership follows [`dependency-rules.md`](dependency-rules.md).
+boundary. Public contract ownership follows [`../architecture/dependency-rules.md`](../architecture/dependency-rules.md).
 Retirement rejects late native results without forcibly closing dialogs; semantic
 selection failures stay operation-local. The selector receives no backend RPC or
 Session/Environment authority. Headless self-hosting remains selector-free and uses

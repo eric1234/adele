@@ -111,7 +111,7 @@ Session presentation is optional and does not own Session identity or strategy
 state. Public [`adele_ui`](../../packages/ui/README.md) defines the implemented
 semantic contracts; the [UI extension architecture](plugin-system.md#ui-and-presentation)
 sets the broader boundary. [Product direction](../product/README.md) and the
-[stock development UX](../mockups/README.md) describe intended experiences, not
+[stock development UX](../product/development-workflow/README.md) describe intended experiences, not
 fixed core layout or claims that every surface is implemented.
 
 <a id="activity-inspection"></a>

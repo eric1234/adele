@@ -1,5 +1,7 @@
 # ADELE Development Workflow UX Direction
 
+Role: Product direction
+
 ## Status and purpose
 
 This document captures the current UX direction for ADELE's **primary software-development workflows with the expected stock development plugin set and default configuration**.
@@ -28,12 +30,12 @@ The current physical layout shown here is also product direction rather than plu
 
 Some ideas in this document may not be part of the immediate implementation needed to make ADELE self-hosting. Once ADELE is used for real development, experience may show that some decisions should change. The near-term implementation may therefore be a subset of this design.
 
-For canonical architectural boundaries, see:
+For architectural constraints, related technical direction, and decision rationale, see:
 
-- [`../architecture/plugin-system.md`](../architecture/plugin-system.md);
-- [`../architecture/stock-plugin-direction.md`](../architecture/stock-plugin-direction.md);
-- [`../architecture/execution-model.md`](../architecture/execution-model.md);
-- ADR 0031 for Project/Task/Session/Environment direction.
+- [`../../architecture/plugin-system.md`](../../architecture/plugin-system.md);
+- [`../../direction/stock-plugin-topology.md`](../../direction/stock-plugin-topology.md);
+- [`../../architecture/execution-model.md`](../../architecture/execution-model.md);
+- [ADR 0031](../../adr/0031-project-task-session-environment-domain-direction.md) for Project/Task/Session/Environment decision rationale.
 
 ---
 
@@ -1187,7 +1189,7 @@ Edits may flush after a short debounce, with Save forcing immediate flush if ret
 
 External modification is expected because Agents and shells can change open files. Reload clean external changes while preserving view state; never silently overwrite conflicting local/external edits.
 
-Environment filesystem reads/mutations should expose/use the same opaque resource revision or equivalent observed-state precondition described in `agent-tooling-direction.md`, so editors and agent tools share one consistency boundary rather than invent separate stale-write rules. The strength of atomic protection against arbitrary out-of-band filesystem writers is provider-specific; the stock local filesystem integration should detect and surface conflicts as strongly as practical without claiming a portable compare-and-replace guarantee it cannot provide.
+Environment filesystem reads/mutations should expose/use the same opaque resource revision or equivalent observed-state precondition described in [`agent-tooling.md`](../../direction/agent-tooling.md), so editors and agent tools share one consistency boundary rather than invent separate stale-write rules. The strength of atomic protection against arbitrary out-of-band filesystem writers is provider-specific; the stock local filesystem integration should detect and surface conflicts as strongly as practical without claiming a portable compare-and-replace guarantee it cannot provide.
 
 ---
 

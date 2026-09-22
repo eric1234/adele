@@ -12,7 +12,7 @@ materialized locally and Git-ignored, retaining exact sibling `.g.dart` parts an
 the same transport architecture. Bootstrap and maintained compile prerequisites
 generate from authoritative declarations; source-plugin preparation generates its
 explicit selected contract. CI checks materialized-output determinism rather than
-committed copies. See [Toolchain Policy](../architecture/toolchain.md#generated-contract-artifacts).
+committed copies. See [Toolchain Policy](../development/toolchain.md#generated-contract-artifacts).
 This amendment changes no schemas, generated APIs, or protocol versions.
 
 ## Context

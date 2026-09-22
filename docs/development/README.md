@@ -10,9 +10,7 @@ See the [documentation policy](../README.md) for maintenance rules.
 
 ## Current contents
 
-Current toolchain, build, bootstrap, and generation material remains in
-[`docs/architecture/toolchain.md`](../architecture/toolchain.md) pending a later
-migration. Link there rather than creating a second copy. Toolchain, self-hosting,
-and testing material is not being split in this slice.
+- [Toolchain policy](toolchain.md): current toolchain, build, bootstrap, and
+  generation policy.
 
 New repository developer-workflow documents belong in `docs/development/`.
