@@ -1,5 +1,7 @@
 # Agent Tooling Direction
 
+Role: Reviewed technical direction
+
 ## Status and purpose
 
 **Guiding product/architecture direction; not a frozen tool catalog or public API.**
@@ -14,10 +16,10 @@ The purpose is to preserve the reasoning behind the current direction so later i
 
 This document should be read alongside:
 
-- [`../mockups/README.md`](../mockups/README.md), which describes the stock development-workflow UX direction;
-- [`execution-model.md`](execution-model.md), which describes lower-level Run, ToolInvocation, progress, outcome, interruption, and execution-observation semantics;
-- [`plugin-system.md`](plugin-system.md), which defines the broader recursive extension model;
-- [`stock-plugin-direction.md`](stock-plugin-direction.md), which places expected tools into the speculative default plugin topology.
+- [`../product/development-workflow/README.md`](../product/development-workflow/README.md), which describes the stock development-workflow UX direction;
+- [`../architecture/execution-model.md`](../architecture/execution-model.md), which describes lower-level Run, ToolInvocation, progress, outcome, interruption, and execution-observation semantics;
+- [`../architecture/plugin-system.md`](../architecture/plugin-system.md), which defines the broader recursive extension model;
+- [`stock-plugin-topology.md`](stock-plugin-topology.md), which places expected tools into the speculative default plugin topology.
 
 The mockups currently place compact activity in Chat, structured inspection on the right, and stream/terminal presentation at the bottom. Those are stock layout choices; plugin-facing extension APIs should use semantic roles rather than encode those physical coordinates.
 
@@ -311,7 +313,7 @@ CommandInvocation
     output stream
 ```
 
-This should not be confused with a new generic kernel-wide execution-attempt identity. `execution-model.md` intentionally keeps one ToolInvocation/one execution phase as the current assumption. A command executor may still have a domain-specific invocation/resource identity useful for observation and presentation.
+This should not be confused with a new generic kernel-wide execution-attempt identity. `../architecture/execution-model.md` intentionally keeps one ToolInvocation/one execution phase as the current assumption. A command executor may still have a domain-specific invocation/resource identity useful for observation and presentation.
 
 A nonzero process exit code is normally command-domain data, not necessarily failure of ADELE's execution infrastructure.
 
@@ -855,7 +857,7 @@ Model-callable tools are one projection over deeper ADELE capabilities and servi
 
 A semantic operation such as `read_file` may be implemented over the current Environment's filesystem/source Service. `run_command` may project the Environment process-execution Service. MCP functions may be dynamically contributed without becoming first-class ADELE capabilities.
 
-This follows the existing distinction in `execution-model.md`:
+This follows the existing distinction in `../architecture/execution-model.md`:
 
 ```text
 ADELE capability/service

@@ -71,7 +71,7 @@ unary-only surface rather than all native transport shapes.
 
 Exact bootstrap, generation, checking, cleaning, and filesystem procedures belong
 to [`contract_codegen`](../../packages/contract_codegen/README.md) and the
-[development toolchain](toolchain.md#generated-contract-artifacts).
+[development toolchain](../development/toolchain.md#generated-contract-artifacts).
 
 ### Transport version policy
 

@@ -227,7 +227,7 @@ their core relationships. Core must preserve those invariants independently of
 which optional plugins or presentations are active.
 
 Strategy/plugin-specific durable state remains with its semantic owner. Chat
-conversation and the Draft Request described by [product direction](../mockups/README.md#10-persistent-draft-request)
+conversation and the Draft Request described by [product direction](../product/development-workflow/README.md#10-persistent-draft-request)
 belong to Chat, not the core Session schema; other plugins own their own associated
 state. This is ownership architecture, not a claim that persistent Draft Request
 or generic plugin storage is implemented. Core must not absorb plugin schemas

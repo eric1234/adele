@@ -10,8 +10,7 @@ See the [documentation policy](../README.md) for authority and update criteria.
 
 ## Current contents
 
-The reviewed [development-workflow UX direction](../mockups/README.md) and its
-mockups remain at `docs/mockups/` until a later migration. Read and link to that
-existing document rather than copying or rewriting it here.
+- [Development-workflow UX direction](development-workflow/README.md): reviewed
+  software-development UX/product direction and mockups for the stock composition.
 
 New product-direction documents belong in `docs/product/`, not `architecture/`.

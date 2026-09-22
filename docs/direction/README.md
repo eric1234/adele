@@ -10,12 +10,8 @@ it is implemented. See the [documentation policy](../README.md).
 
 ## Current contents
 
-The existing directional documents remain at their legacy paths until later
-migration:
+- [Agent tooling](agent-tooling.md): model-callable tools, execution, and presentation direction.
+- [Stock plugin topology](stock-plugin-topology.md): reviewed hypothesis for default plugin division and composition.
 
-- [Agent tooling direction](../architecture/agent-tooling-direction.md)
-- [Stock plugin direction](../architecture/stock-plugin-direction.md)
-
-Link to those documents rather than creating duplicate copies here. New reviewed
-technical-direction documents belong in `docs/direction/`; accepted cross-system
+New reviewed technical hypotheses belong in `docs/direction/`; accepted cross-system
 constraints belong in [architecture](../architecture/).

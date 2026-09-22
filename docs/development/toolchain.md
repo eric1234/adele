@@ -1,5 +1,7 @@
 # Toolchain Policy
 
+Role: Current repository development policy
+
 ## Temporary integrated pin
 
 | Component | Identity |
@@ -95,7 +97,7 @@ server-streaming processes: prepared hosts and backends must be rebuilt together
 and protocol versions must match exactly. Before the first release, unstable wire
 changes may retain that version; prior development artifacts are unsupported even
 when their version numbers match. The installed manifest remains version 1; see
-the [pre-release transport policy](contracts-and-capabilities.md#transport-version-policy).
+the [pre-release transport policy](../architecture/contracts-and-capabilities.md#transport-version-policy).
 `tools/frontend_artifacts.dart` invokes
 `app/tool/compile_chat_frontend.dart`, `app/tool/compile_local_directory_frontend.dart`,
 `app/tool/compile_tool_inspection_frontends.dart`, and
@@ -142,7 +144,7 @@ receives `ADELE_PLUGIN_INSTALLATION_ROOT`, the shared runtime/host paths, and th
 temporary generic `ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`, not per-stock backend
 or frontend artifact defines or source paths. Installed manifests are distinct from the draft
 `adele_plugin.yaml` source/build manifest; stock source layouts are not normalized
-to it. See [`plugin-layout.md`](plugin-layout.md#prepared-installation-snapshot).
+to it. See [`../architecture/plugin-layout.md`](../architecture/plugin-layout.md#prepared-installation-snapshot).
 
 The OpenAI activity compiler takes build-time environment inputs
 `ADELE_REPOSITORY_ROOT` and `ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT`. Its output is
@@ -162,7 +164,7 @@ workspace membership and maintained analysis/test discovery in `tools/adele.dart
 `openai_frontend` is a Flutter analysis target whose EVC compilation and product
 integration belong to app build-time/test tooling. The regression scope uses real
 prepared artifacts with local fake Responses for mixed
-reasoning/tool approvals and a separate reasoning-only final response. That scope
+reasoning/tool approvals. That scope
 does not establish live-provider summary support or broader SDK/platform
 compatibility. Generated safe-presentation transport, generic adapter mapping, and
 safe Chat activity without rich activity frontend activation are separate regression boundaries.

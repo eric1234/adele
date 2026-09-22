@@ -30,7 +30,7 @@ tools/     repository development/build tooling
 
 ## Getting started
 
-Use the repository's [pinned toolchain](docs/architecture/toolchain.md), with its
+Use the repository's [pinned toolchain](docs/development/toolchain.md), with its
 Flutter and bundled Dart available on `PATH`. From the repository root:
 
 ```sh
