@@ -15,7 +15,7 @@ The purpose is to preserve the reasoning behind the current direction so later i
 This document should be read alongside:
 
 - [`../mockups/README.md`](../mockups/README.md), which describes the stock development-workflow UX direction;
-- [`agent-kernel-semantic-model.md`](agent-kernel-semantic-model.md), which describes lower-level Run, ToolInvocation, progress, outcome, interruption, runtime-resource, and execution-observation semantics;
+- [`execution-model.md`](execution-model.md), which describes lower-level Run, ToolInvocation, progress, outcome, interruption, runtime-resource, and execution-observation semantics;
 - [`plugin-system.md`](plugin-system.md), which defines the broader recursive extension model;
 - [`stock-plugin-direction.md`](stock-plugin-direction.md), which places expected tools into the speculative default plugin topology.
 
@@ -311,7 +311,7 @@ CommandInvocation
     output stream
 ```
 
-This should not be confused with a new generic kernel-wide execution-attempt identity. `agent-kernel-semantic-model.md` intentionally keeps one ToolInvocation/one execution phase as the current assumption. A command executor may still have a domain-specific invocation/resource identity useful for observation and presentation.
+This should not be confused with a new generic kernel-wide execution-attempt identity. `execution-model.md` intentionally keeps one ToolInvocation/one execution phase as the current assumption. A command executor may still have a domain-specific invocation/resource identity useful for observation and presentation.
 
 A nonzero process exit code is normally command-domain data, not necessarily failure of ADELE's execution infrastructure.
 
@@ -855,7 +855,7 @@ Model-callable tools are one projection over deeper ADELE capabilities and servi
 
 A semantic operation such as `read_file` may be implemented over the current Environment's filesystem/source Service. `run_command` may project the Environment process-execution Service. MCP functions may be dynamically contributed without becoming first-class ADELE capabilities.
 
-This follows the existing distinction in `agent-kernel-semantic-model.md`:
+This follows the existing distinction in `execution-model.md`:
 
 ```text
 ADELE capability/service

@@ -177,7 +177,7 @@ execution observation is not itself a persistence model.
 Exact executable bindings apply during a Run. Retained strategy, model, and tool
 bindings must not silently switch generations on continuation or approval resume.
 Binding retirement does not promise rollback of effects already in flight.
-The [agent execution architecture](agent-kernel-semantic-model.md) defines the
+The [agent execution architecture](execution-model.md) defines the
 deeper mechanics; `RunId` lives in product, while `AgentRun` is an internal
 execution object rather than another immutable product value.
 

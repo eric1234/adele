@@ -184,7 +184,7 @@ discover replacements, but the current capture does not silently retry through o
 The public [extension registry API](../../packages/plugin_api/lib/src/extension_registry.dart)
 defines `ExtensionRegistry`, `ExtensionBinding`, and `StaleExtensionBinding`.
 [Capability bindings](../../packages/capabilities/README.md),
-[execution semantics](agent-kernel-semantic-model.md), and the
+[execution semantics](execution-model.md), and the
 [product model](product-model.md) explain their domain-specific lifetimes.
 
 ## Backend and frontend composition

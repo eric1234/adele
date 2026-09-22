@@ -1,140 +1,82 @@
 # Agent Kernel
 
 `agent_kernel` is ADELE's internal, pure-Dart, provider-neutral execution
-substrate. It owns Run execution, streaming-shaped model invocation,
-immutable tool materialization, proposal resolution, invocation-specific effects,
-policy, interruptions, structured tool
-execution outcomes, and typed execution observation.
-
-The canonical product `Session` contains only `id`, `taskId`, and `strategyId`.
-It is permanently bound to a semantic strategy identity, not to Chat history or
-one activation generation. The kernel consumes and re-exports the canonical
-`adele_product` `SessionId`; it does not define a competing identity or Session
-aggregate. Stock Chat owns its in-memory conversation state outside this package.
-
-## Dependencies
-
-It may depend on public typed contracts and small pure-Dart implementation
-packages required by proven execution mechanics. Flutter, `adele_desktop`,
-plugin implementations, and provider-specific SDKs or formats are prohibited.
-Plugins must not depend on this package.
-
-`adele_orchestration` is the public strategy execution and context boundary.
-Minimal semantic model input/output, native envelope, proposal/failure,
-settlement/metadata, Run state, and approval-resolution values are defined there and reused/re-exported
-here, not duplicated. Public orchestration and Chat do not depend on the kernel;
-the kernel depends on the public values.
-
-Those values include immutable `ModelNativePresentation(kind, compactText, data)`
-on optional `ModelNativeOutput.presentation`. The kernel retains backend-supplied
-safe presentation without interpreting provider fields or depending on UI
-activation. Raw native metadata remains exact and the only native replay source;
-safe presentation is never replayed or added to canonical Chat history.
+substrate. It implements generic mechanics underneath the public orchestration
+boundary; it is not the owner of the whole execution architecture. See the
+[canonical execution model](../../docs/architecture/execution-model.md) for
+cross-system semantics and binding lifetimes.
 
 ## Ownership
 
-Runs own execution identity, a small lifecycle, interruptions, terminal failure,
-and a deterministic in-memory journal. Runs do not own durable strategy state,
-models, tool catalogs, context policy, or workflow sequencing.
+The package implements Run lifecycle and interruptions, model-stream collection,
+tool contribution composition and immutable snapshots, proposal resolution,
+effect/policy gates, authorized execution starts, outcome handling, and typed
+execution evidence. `AgentRun` owns lifecycle, interruptions, terminal failure,
+and its journal, not the model/tool loop.
 
-The bound orchestration strategy owns Session meaning. Installed
-`chat_strategy_backend` retains `ChatSessionState` by `SessionId`, with immutable canonical user/final
-assistant snapshots reused across Runs. Intermediate model/native items,
-proposals, and tool results are Chat's Run-local replay, not canonical history.
-Instructions and a positive model-invocation budget are Chat-owned configuration
-snapshotted for each materialized Run. Its remote strategy uses the public
-orchestration host surface; the kernel and application do not import Chat's
-contract or implementation. Chat's frontend reads canonical snapshots through its
-plugin-owned contract, separately from generic core Run activity and approval UI.
+It deliberately does not own product lifecycle, strategy-specific Session state
+or sequencing, model/provider selection, inference-source discovery, Environment
+selection/authority, concrete tools/providers, transport, persistence, or UI.
+Application [`KernelOrchestrationHost`](../../app/lib/core/orchestration_host.dart)
+adapts public strategy operations to these mechanics. Strategies receive semantic
+turns and opaque handles through public orchestration, not kernel objects.
 
-The kernel has no `session.dart` or `context.dart`, and no `SessionEntry`,
-`UserSessionMessage`, `AssistantSessionMessage`, `SessionSnapshot`,
-`SessionHistoryPort`, `ContextAssembler`, or `ContextAssemblyInput`. ADR 0022's
-Chat-shaped Session/context types describe the historical Phase IV proof, not
-the current kernel API.
+Minimal prepared Chat and activity presentation already exist outside this
+package; richer/final product UX remains incomplete. Their current ownership and
+behavior belong to the [application](../../app/README.md) and
+[Chat plugin](../../plugins/chat_strategy/README.md), not a kernel UI roadmap.
 
-Model ports return semantic event streams. The maintained common ModelProvider
-application path consumes generated server streaming and cancellation; the
-scripted fixture's unary method remains regression/reference infrastructure.
-Tools have semantic IDs independent from model aliases and retain exact
-executable objects in immutable per-model-invocation materializations.
+## Dependencies
 
-`SemanticModelRequest`, model ports/streams/collectors, tool catalogs, policy,
-`AgentRun`, and the journal stay internal. Application `KernelOrchestrationHost`
-adapts public strategy operations to these mechanics. Its
-`SessionOrchestrationRun` wrapper exposes internal evidence only to app callers;
-Chat receives semantic turns, opaque tool-snapshot handles, and continuation
-items instead. The host retains and validates the exact strategy binding on
-operations, approval resume, and asynchronous settlement. Stale active Runs fail
-without migrating; a new Run may resolve a replacement under the same Session's
-stored strategy ID.
+Plugins and public APIs must not depend on this package. The kernel may depend
+on public contracts and small acyclic pure-Dart implementation dependencies needed
+for concrete mechanics; it must not depend on Flutter, application code, concrete
+plugins, or provider-specific SDKs/protocols. See
+[dependency rules](../../docs/architecture/dependency-rules.md).
 
-Chat projects history plus Run-local replay into `StrategyInferenceMaterial`
-(instructions and ordered semantic input). Before model invocation identity,
-model-start evidence, or provider work, the app host uses public
-`InferenceContextComposer` over the existing `ExtensionRegistry` to capture an
-immutable `InferenceContextSnapshot`. Internal
-`SemanticModelRequest(context, invocationId, tools)` carries that snapshot and
-host-owned execution mechanics; semantic input is unchanged. The current app
-`ModelProviderCapabilityAdapter` calls orchestration's `renderInferenceInstructions`
-to lower typed instruction groups to the unchanged common provider instructions
-string, preserving zero-source bytes.
+Product owns `SessionId`/`RunId`. Public
+[`adele_orchestration`](../orchestration/README.md) owns shared Run state,
+invocation/interruption identities, model/proposal values, approval resolutions,
+and context snapshots. Public [`adele_model_tool`](../model_tool/) owns tool
+contracts, effects, progress, outcomes, and `collectToolExecution`. The kernel
+reuses/reexports these values rather than defining competing models.
 
-Each genuinely new inference, including Chat continuation, discovers current
-instruction sources. Required capture failure stops composition; optional failure
-omits the entire source with original diagnostics, distinct from successful empty
-output. Safely captured data survives source retirement without weakening
-executable strategy/tool binding checks. Source freshness is source-owned, without
-a generic refresh API. The kernel owns neither source discovery nor Session
-service authority; see `../orchestration/README.md` for the capture contract.
+## Internal entrypoints
 
-The independent stock AGENTS.md source is supplied by `agents_md_backend` in normal
-prepared startup and explicit development/self-hosting, not activated by Chat or
-the kernel. It reuses pure-Dart `agents_md_plugin` semantics and rereads root
-`AGENTS.md` through generated authorized reads backed by the captured Session's
-Environment read facet. Generic remote adapter activation and operation-scoped
-unary host authorization stay outside the kernel. See
-[`plugins/agents_md`](../../plugins/agents_md/README.md) for its bounded source semantics.
+| Anchor | Responsibility |
+| --- | --- |
+| [`lib/agent_kernel.dart`](lib/agent_kernel.dart) | Internal package barrel, including reused public model-tool values. |
+| [`lib/src/identifiers.dart`](lib/src/identifiers.dart) | Reexports shared product and orchestration identities. |
+| [`lib/src/model.dart`](lib/src/model.dart) | `SemanticModelRequest`, streaming `ModelPort`/events, and `collectModelInvocation`; validates invocation identity and explicit terminal settlement. |
+| [`lib/src/tool.dart`](lib/src/tool.dart) | `ModelToolComposer`, `ToolCatalog`, `MaterializedToolSet`, `ToolInvocationResolver`, and `ToolPolicy`; retains exact executables and validates canonical arguments. |
+| [`lib/src/run.dart`](lib/src/run.dart) | `AgentRun`, `RunInterruption`, `ToolPolicyGate`, single-start execution guards, typed `ExecutionEvent` values, and `RunJournal`. |
+| [`test/`](test/) | Deterministic lifecycle, model collection, materialization, resolution, policy/approval, and stale-binding tests. |
 
-Concrete model providers, concrete tools, editors, Git, terminals, Environment
-implementations, coding-agent orchestration strategies, profile management, and
-provider account management do not belong here.
-
-## Environment
-
-The kernel may execute in the context of a Task-associated Environment but does
-not implement Environment lifecycle or filesystem/process behavior. The generic
-tool context still identifies only Run and Session; application composition now
-uses authoritative Session association to construct an Environment-bound host
-context for plugin-contributed `read_file`, `apply_patch`, `create_file`,
-`delete_file`, `search`, and `run_command`. Application composition supplies tool
-policy; the policy gates and approval mechanics remain kernel-backed.
-Filesystem Tools owns file-tool interpretation, Command Tools owns command
-projection and terminal retention, and the host supplies only the authorized
-Environment facets.
-Environment is the accepted practical filesystem/source + process context; a
-separate first-class Workspace concept is not required architecture unless
-future concrete needs justify it.
-
-Source-coding consumers use Session-authorized Environment tooling, not the
-retired DevelopmentSource capability.
+Policy and journal mechanics are in `run.dart`, not separate subsystems or
+strategy implementations. Tool execution context identifies Run/Session only;
+application adapters capture authorized Environment facets outside the kernel.
 
 ## Journal
 
-`RunJournal` is deterministic observation for tests and inspection. It is not
-durable storage, replay, recovery, or an event-sourcing decision.
+`RunJournal` records deterministic Run-local sequence numbers and supports
+in-memory snapshots/suffix reads with asynchronous coalesced change notifications.
+It is mechanics/test/projection infrastructure, not durable Run storage, canonical
+strategy history, event sourcing, replay, or recovery.
 
-## Deferred
+The application's
+[`RunActivityProjection`](../../app/lib/core/run_activity_projection.dart) supplies
+the separate immutable public observation facade. Public consumers do not receive
+internal events, executable objects, journal objects, or raw exception causes.
 
-Other context sources, material beyond instructions (including directional
-Reference/Observation concepts), provider-aware projection/cache planning,
-token budgets, compaction,
-persistent product/Chat/Run storage, profiles, Chat UI,
-parent/child Session lifecycle, parallel tool execution, complete effect/content
-taxonomies, durable approval, broader Environment/runtime-resource integration,
-artifacts, recovery, and multi-agent abstractions remain deferred. Executable
-strategy registration and headless stock Chat are implemented, not deferred
-production UI or persistence claims.
+## Validation
 
-See `docs/architecture/agent-kernel-semantic-model.md` and ADRs 0022/0031 for
-the detailed implemented-versus-directional boundary.
+From the repository root, run the maintained focused target:
+
+```sh
+dart tools/adele.dart test --target agent_kernel
+```
+
+Cross-system composition and authority tests live under
+[`app/test/core/`](../../app/test/core/); the public API packages test their own
+contracts. See [development guidance](../../docs/development/README.md) for broader
+validation.

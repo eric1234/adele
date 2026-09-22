@@ -92,7 +92,7 @@ The public orchestration facade exposes the execution operations they need;
 internal `agent_kernel` supplies generic mechanics without owning Chat history
 or concrete provider/tool behavior. Plugins do not import the kernel.
 
-See [agent execution semantics](agent-kernel-semantic-model.md) for the detailed
+See [agent execution semantics](execution-model.md) for the detailed
 model, [orchestration](../../packages/orchestration/README.md) for the public
 boundary, and [application execution](../../app/README.md#normal-chat-interaction)
 for current Run composition and approval policy.
@@ -160,6 +160,6 @@ are separate concerns, not one generic settings object. See
   [Local Directory Project Selector](../../plugins/local_directory_project_selector/README.md).
 - **Where should an extension live and what may it depend on?** [Plugin system](plugin-system.md) and [dependency rules](dependency-rules.md).
 - **How do plugin preparation, routing, and authority work?** [Plugin layout](plugin-layout.md) and [contracts and capabilities](contracts-and-capabilities.md).
-- **What must execution preserve?** [Agent execution semantics](agent-kernel-semantic-model.md), then the relevant orchestration/kernel/tool/provider README and tests.
+- **What must execution preserve?** [Agent execution semantics](execution-model.md), then the relevant orchestration/kernel/tool/provider README and tests.
 - **What is intended rather than implemented?** [Profiles and configuration](profiles-and-configuration.md), [product direction](../product/README.md), and [technical direction](../direction/README.md), with their stated qualifications.
 - **How do I work on the checkout?** [Development documentation](../development/README.md), [application README](../../app/README.md), and the relevant local package/plugin README.
