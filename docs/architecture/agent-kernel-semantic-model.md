@@ -334,8 +334,10 @@ the existing `ExtensionRegistry`. It captures canonical
 `InferenceContextSourceContext` to supply authorized file reads; transported
 Session/Run identifiers cannot select authority. Runtime/host code owns
 operation-scoped service access, exact-generation routing, and revocation, not
-kernel mechanics. The detailed transport and authorization specification is in
+kernel mechanics. The cross-system authority model is in
 [`contracts-and-capabilities.md`](contracts-and-capabilities.md#operation-scoped-host-calls).
+Exact source transport belongs to [`orchestration`](../../packages/orchestration/README.md#remote-source-transport)
+and host-call mechanics to [`plugin_runtime`](../../packages/plugin_runtime/README.md#operation-scoped-host-calls).
 
 The sealed `InferenceContextMaterial` root currently has only final
 `InferenceInstructionMaterial`: a nonblank source-local `String key`, nonblank

@@ -208,8 +208,10 @@ streams. Both transport protocols are version 1 under the
 [pre-release transport policy](contracts-and-capabilities.md#transport-version-policy);
 installed manifests remain version 1. Host-service authority is not an OS sandbox
 or rollback of already-started effects.
-The detailed advertisement and host-call specification is in
+The cross-system advertisement and host-authority model is in
 [`contracts-and-capabilities.md`](contracts-and-capabilities.md#backend-ready-advertisements).
+Exact exposure fields belong to [`contract`](../../packages/contract/README.md),
+and host-call mechanics to [`plugin_runtime`](../../packages/plugin_runtime/README.md#operation-scoped-host-calls).
 
 `packages/plugin_backend_support` supplies public pure-Dart
 `AdeleHostRequestMultiplexer`, whose `bind` returns an `AdeleStreamChannel` supporting

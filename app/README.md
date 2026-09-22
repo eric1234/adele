@@ -111,13 +111,15 @@ selects host adapters by extension-point identity, not PluginId. Unsupported poi
 and malformed metadata fail the whole backend attempt, rolling back both kinds of
 registration without leaving a partially active generation or dropping unrelated
 backends. The installation/connection supplies authoritative `PluginId`.
-Git/OpenAI own provider capability exposures; Chat owns its Session service
-capability and strategy exposure. AGENTS.md owns its source exposure, while
+Git/OpenAI own provider capability exposures; Chat advertises only its
+orchestration strategy extension, not its plugin-internal Session service.
+AGENTS.md owns its source exposure, while
 Search, Filesystem Tools, and Command Tools own their model-tool extension exposures;
 all use the same registration owner.
 Each omitted list means zero registrations of that kind. Installed metadata alone
-never registers a provider or source. Advertisement fields and
-configuration-context semantics are maintained in
+never registers a provider or source. Advertisement fields belong to
+[`adele_contract`](../packages/contract/README.md); the live exposure and
+configuration-context boundaries are maintained in
 [`contracts-and-capabilities.md`](../docs/architecture/contracts-and-capabilities.md#backend-ready-advertisements).
 
 The owner exposes `unconfigured`, `starting`, `ready`, `failed`, `closing`, and
@@ -1217,7 +1219,9 @@ connection retires. The read service also exposes no-argument `authority()` for
 the already-bound Session/Environment identity and `readDirectory(path)`, but no
 authority-selection IDs, mutation, or process access. AGENTS.md uses only the file
 read. See [operation-scoped host calls](../docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls)
-for the generated contracts, metadata schema, transport, and lifetime rules.
+for authority and lifetime rules, [`orchestration`](../packages/orchestration/README.md#remote-source-transport)
+for source contracts/metadata, and [`plugin_runtime`](../packages/plugin_runtime/README.md#operation-scoped-host-calls)
+for transport mechanics.
 
 `test/core/remote_inference_context_integration_test.dart` separately exercises the
 real shared host and AGENTS AOT backend through the normal composer. Deterministic

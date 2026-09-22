@@ -1,592 +1,359 @@
 # Contracts and Capabilities
 
-## Status
+Role: Canonical architecture
 
-Generated typed unary and server-streaming/cancellation transport, active one-to-many capability routing, exact generation bindings, configured OpenAI provider contexts, and the common ModelProvider capability are implemented in the maintained development foundation. Backend-ready extension advertisements, host adapters over the existing extension registry, and operation-scoped backend-to-host calls support remote inference sources, model tools, and orchestration strategies. Model-tool execution uses host-to-backend server streaming; authorized reads/mutations and orchestration host calls use reverse unary calls, while foreground processes use reverse server streaming. This is not general symmetric RPC.
+Implementation status: Partial
 
-The broader recursive extension model described in [`plugin-system.md`](plugin-system.md) is accepted architecture but mostly unimplemented. Capabilities should therefore be understood as one specialized callable part of that future extension architecture rather than as a universal registry for every kind of plugin participation.
+This document owns the cross-system semantic boundary between typed transport,
+callable provider selection, exact live bindings, and host invocation authority.
+Local packages own exact APIs, schemas, generator grammar, and runtime framing;
+source/tests establish current behavior. This is not an IDL reference, protocol
+manual, remote-extension implementation guide, or stock-provider inventory.
 
-## Separate questions
+## Distinct concepts
 
-Contracts and capabilities solve different problems:
-
-| Concern | Question |
+| Concept | Question |
 | --- | --- |
-| Contract | How do typed values and asynchronous operations cross a runtime boundary? |
-| Capability | Which compatible provider handles a callable semantic request? |
-| Extension point | Where and how may plugins participate in a typed composition? |
+| Contract | How do typed values and operations cross a runtime boundary? |
+| Capability | Which compatible provider handles callable semantic work? |
+| Extension Point | Where and how may components participate in typed composition? |
+| Live binding | Which exact active generation is this resolved operation bound to? |
+| Host invocation authority | Which host services may this exact remote operation call right now? |
 
-A capability can be implemented using a generated contract when the operation crosses a runtime boundary, but capability identity/selection is separate from transport. Likewise, a UI summary extension or inference-context extension may be an extension point without being a callable capability.
-
-The constrained Phase II-A generated unary transport and Phase II-B generated server-streaming/cancellation transport are implemented and used by maintained plugin contracts where applicable. The scripted model fixture retains a generated unary reference method, while the Phase IV application adapter consumes generated ModelProvider streams and emits kernel semantic model events incrementally.
-
-The public `adele_model_provider` package defines capability major 1 with generated streaming, typed ordered input, live text observations, authoritative completed output, and explicit semantic terminal settlement. Ordered input/output wrappers exclusively own optional provider item identity and native metadata; tool-proposal payloads own only tool-call correlation, name, and arguments. The ordered input/output union also has one native-only item whose required opaque envelope occupies an independent list position without semantic text/tool payload. This preserves provider item cardinality and order while keeping provider-specific reasoning or compaction outside common semantics.
-
-Capability transport plus Phase III active provider registration, deterministic discovery, exact-major resolution, and generated-client invocation are implemented for the maintained resource-inspector fixture and common ModelProvider path.
+Transport does not choose semantic provider identity, and provider identity does
+not grant host authority. Extension registration does not imply Capability
+semantics. A generated callable service can be directly routed without being an
+advertised Capability. The [plugin system](plugin-system.md) owns broader typed
+composition and each extension point's selection/composition rules.
 
 ## Contracts
 
-Plugin contract source is shared by frontend and backend packages and should normally describe immutable snapshot values. A value received across a runtime boundary is reconstructed; its object identity is not shared with the sender.
+Authored annotated declarations are the semantic source of truth for transported
+values and operations. Values received across a runtime boundary are reconstructed
+values, not shared Dart object identity or transparent remote objects. Prefer
+immutable snapshot-style values; reconstruction alone does not guarantee deep
+immutability of every authored value.
 
-The internal generator treats contracts as a constrained IDL embedded in Dart and provides typed clients, dispatchers, codecs, request handling, and structured errors. A contract library declares one or more local, non-empty `@AdeleService` services with unary `Future<T>` and server-streaming `Stream<T>` methods. Each service has its own client/dispatcher while sharing local DTO/failure codecs; Environment's provider, authorized-read, authorized-mutation, and authorized-process services share its value and failure declarations. Zero declared `@AdeleFailure` types is valid, as in remote inference-source transport: no domain-specific failure is required, and unrecognized remote failures retain their transport semantics.
+Generated clients, dispatchers, and codecs hide ports, framing, request IDs,
+subscriptions, and serialization from normal plugin code. Declaration packages
+remain lightweight and separate from compiler/generation tooling, following
+[ADR 0004](../adr/0004-generated-typed-asynchronous-contracts.md) and
+[ADR 0013](../adr/0013-contract-declarations-and-generation-are-separate.md).
 
-Values use one unnamed generative constructor with required named parameters, schema enums and values must be declared in the contract source library rather than imported, wire IDs use a conservative ASCII segment grammar, and every transported double must be finite. Client/bidirectional streaming, ambient callbacks, general symmetric RPC, replay, and broader schema composition remain future work.
+Current native transport supports unary request/response and server streaming.
+Streams open on listen, preserve item order, propagate subscription cancellation,
+and apply backpressure: pausing limits producer advancement without retracting
+work already admitted. Unary requests do not acquire a general cancellation API
+merely because streaming supports cancellation. Transport completion and domain
+settlement remain distinct; a domain contract may require an explicit semantic
+terminal result rather than interpreting stream EOF as success.
 
-The contract annotation import is exactly canonical, unprefixed, and without combinators or configurations. The plugin API import has the same shape exactly when the extracted schema semantically uses canonical `ResourceRef`; prefixed plugin API imports do not require it otherwise. Additional imports from either package, including repeated canonical URIs with `show` or `hide`, and every other import must be prefixed. Conditional imports whose default or configured URI is within either package are rejected. Every import prefix shares the generated top-level collision namespace with contract declarations, generated identifiers, unqualified ADELE runtime names, and SDK names; `ResourceRef` is reserved conditionally.
+ADELE does not currently provide general symmetric RPC, client streaming,
+bidirectional streaming, ambient arbitrary callbacks, or general transparent remote
+objects. Calls in both directions through explicitly scoped channels do not imply
+those mechanisms. Exact declaration restrictions and generated behavior belong to
+[`contract`](../../packages/contract/README.md) and
+[`contract_codegen`](../../packages/contract_codegen/README.md), not this document.
 
-Schema names match `[A-Za-z][A-Za-z0-9_]*` across annotated declarations and members plus reachable enums and enum values. Private, dollar-prefixed, and non-ASCII names are outside the IDL, although unrelated unreachable private helpers and enums remain ordinary implementation details. These restrictions may be permanent rather than promises of future Dart-language parity.
+### Generated artifacts
 
-Generated code should hide ports, wire formats, request IDs, subscriptions, and transport details from plugin code. Contract declarations remain lightweight and independent of compiler or generation tooling.
+```text
+authored contract declaration
+    -> generated local transport implementation
+    -> native/eval consumers
+```
 
-The generated transport layers over the proven process-hosted communication path through a transport-neutral request channel. Its annotations and generator remain experimental; no general schema compatibility policy is accepted yet. Dispatch explicitly decodes the envelope and method, decodes arguments, invokes the service, and encodes the result as separate stages. Malformed requests are `invalid_request`; every service-thrown undeclared exception, including `AdeleProtocolException`, is `internal_error`; and backend results or declared failure details that violate the generated response contract become opaque `backend_contract_violation` failures. URI values, including `ResourceRef.uri`, must be reconstructible absolute URIs.
+Declaration and generated implementation are separate concerns. Native generated
+parts are derived, ignored local artifacts, not authoritative or committed source.
+Frontend eval clients can be derived from the same declarations without creating
+a second semantic contract; the current eval projection supports a narrower,
+unary-only surface rather than all native transport shapes.
 
-The same absolute-URI rule applies recursively to direct values, `ResourceRef.uri`, annotated value fields, lists, and nested lists. Clients perform request encoding before invoking the channel, so invalid local URIs are preflight failures. JSON map transport rejects map, list, and mutual cycles and container depth beyond 64 while accepting shared acyclic subgraphs. Value constructor exceptions are opaque malformed-value failures at the client and dispatcher boundaries, and each dispatcher failure remains isolated to its request.
-
-Annotation interpretation is multiplicity-aware: repeated role, method, and field annotations and mixed class roles are invalid regardless of declaration order. Generated implementation state and temporaries occupy indexed `_adele` names rather than contract namespaces, and public schema methods such as `dispatch` coexist with the generated client, dispatcher, and backend service. Every contract-derived string entering generated Dart source is emitted through one single-quoted literal escaping path.
-
-Supported core and async types are checked by exact semantic library identity, not spelling: core scalars, collections, `Uri`, and `Object` come from `dart:core`, method wrappers are exact `dart:async` `Future` or `Stream`, and `ResourceRef` is the exact canonical plugin API declaration. Type aliases are excluded from the transported closure recursively, including the outer wrapper, while unused implementation aliases remain permitted. Service parameters are explicitly typed required positionals; optional, named, covariant, initializing-formal, super-formal, function-typed, and implicitly dynamic forms are rejected.
-
-`ContractDiagnostic` locations retain the precise import, annotation, method, parameter, field, constructor, enum, or enum-value source node when available; whole-library constraints use the compilation unit.
-
-Native transport is an ignored local generated artifact, not committed source.
-The declaration keeps its exact sibling `part '<basename>.g.dart'` directive so
-ordinary Dart analysis, native tests, and AOT compilation consume the materialized
-part. Repository bootstrap resolves dependencies before generating the configured
-contracts; maintained analysis/test/build launchers refresh them before compilation.
-Generation compares content rather than timestamps and does not rewrite identical
-output. `generate --check` independently verifies materialized content in CI, not
-equality with Git. See [toolchain lifecycle](toolchain.md#generated-contract-artifacts).
-
-Development plugin preparation materializes only the requested plugin's contract:
-the manifest-selected contract package's `pubspec.yaml` name determines
-`lib/<package-name>.dart`, and that absolute source is passed explicitly to
-`contract_codegen --source`. Generation/schema/tooling failures retain build
-diagnostics and stop preparation before backend compilation.
-
-Server-streaming uses the existing shared backend-host path. Generated clients open lazily and decode ordered typed items. Generated dispatchers hide producer iteration, cancellation, and terminal failure mapping. A fixed one-item credit window means paused consumers stop producer advancement after the already-granted item and cancellation reaches the producer iterator. Streams remain bound to their exact provider generation and fail rather than migrating when that generation disappears.
+Exact bootstrap, generation, checking, cleaning, and filesystem procedures belong
+to [`contract_codegen`](../../packages/contract_codegen/README.md) and the
+[development toolchain](toolchain.md#generated-contract-artifacts).
 
 ### Transport version policy
 
-Both `backendHostProtocolVersion` and `adelePluginBackendProtocolVersion` are
-currently 1. Before the first release, the unstable wire may change in place
-without incrementing these versions. Increment a transport version only when
-released artifacts establish a compatibility boundary, not for unreleased
-development changes.
+Backend-host and plugin-backend protocols currently require exact version matching
+and both use version 1. Before the first release, unreleased wire changes may
+retain version 1. Prepared runtime, host, and backend artifacts must be rebuilt
+coherently after wire changes: matching version numbers do not make old development
+artifacts compatible, and no compatibility shim is promised for them.
 
-Artifacts must match the relevant protocol version exactly, and the runtime,
-shared host, and backends must be rebuilt as one coherent set after wire changes.
-Matching version numbers do not make prior development artifacts compatible;
-those artifacts are unsupported. There is no compatibility layer, negotiation, or
-shim for them. These transport versions are separate from capability majors and
-the unchanged version-1 installed manifest.
+Increment transport versions when released artifacts establish a real
+compatibility boundary. Transport protocol versions are distinct from Capability
+majors and installed-manifest schema versions; changing one does not implicitly
+change the others.
 
 ## Capability semantics
 
-| Kind | Semantics | Directional examples |
-| --- | --- | --- |
-| Action | Brokered one-shot request/response operation | `DisplaySourceFile`, create/open a resource, perform one review operation |
-| Service | Sustained typed capability | `ModelProvider`, Environment filesystem/process access, `ConsoleService` |
-| Event | Fact that has occurred | `SessionCreated`, `ModelInvocationSettled`, plugin-defined domain events |
+A Capability selects a compatible provider for callable Action/Service work. It is
+one specialization of extension composition, not a registry for every kind of
+participation or every generated service.
 
-Actions, Services, and Events retain distinct semantics even if they eventually share some registration or transport infrastructure.
+| Kind | Semantics |
+| --- | --- |
+| Action | One-shot callable operation. |
+| Service | Sustained typed callable capability. |
+| Event | Notification of a fact, not provider-selected work. |
 
-Events are not provider-selected callable operations. They are read-only fact notifications: a subscriber cannot change whether the announced fact occurred, and subscriber failure normally does not retroactively fail the producer. Events do not imply durable replay/history. A domain that needs historical queries should expose that separately.
+These describe semantic roles, not transport shapes. Events are not Capabilities
+merely because they may later share registration or transport infrastructure.
+Observers cannot change whether an announced fact occurred; generic Event
+publication/subscription remains unimplemented. See
+[ADR 0005](../adr/0005-actions-services-and-events-have-distinct-semantics.md)
+for the decision rationale.
 
-The final public mechanism for generic Event publication/subscription is not implemented.
+Compatible providers may number zero, one, or many; callers cannot assume exactly
+one. ADELE owns default-provider selection, and a provider cannot declare itself
+globally primary. Where the domain exposes alternatives, callers can explicitly
+choose one. Explicit resolution must fail rather than silently fall back.
 
-## Capabilities inside the extension model
+The current registry uses exact Capability-major matching and deterministic
+rank/provider-ID ordering. That implementation is not the final preference or
+Profile system. Resolution captures one exact generation-bound binding, not a
+standing instruction to keep finding whichever provider currently has that ID.
+See [`capabilities`](../../packages/capabilities/README.md) for registry behavior
+and [profiles and configuration](profiles-and-configuration.md) for the separate
+configuration/preference model.
 
-ADELE's long-term architecture uses **Extension Point** as the broader composition concept.
-
-Capabilities are appropriate when another component needs callable functionality from one of potentially several compatible implementations. Other extension points may instead collect all applicable UI fragments, gather structured inference contributions, or implement plugin-specific composition semantics.
-
-The existing capability registry should therefore remain focused on callable provider resolution rather than becoming a universal registry for every UI, Event, Command, or composition extension.
-
-Plugins may define extension APIs of their own. Depending on a shared interface definition is acceptable; depending on a specific implementation plugin being active is generally not required. Runtime composition should prefer typed discovery and graceful zero/one/many behavior over hidden activation chains.
-
-## One-to-many provider resolution
-
-Several plugins may implement one Action or Service:
-
-```text
-DisplaySourceFile
-|-- ADELE Internal Source Editor
-`-- External Editor launcher
-```
-
-The Phase III active registry allows a caller to:
-
-- check whether a compatible provider is available;
-- enumerate all compatible providers;
-- invoke ADELE's deterministic default provider;
-- explicitly select and invoke another provider.
-
-Callers must handle zero, one, or many providers. The in-memory host-owned active registry orders discovery by higher provider rank and then stable provider ID; default resolution selects the first result, while explicit resolution never falls back. Exact positive major-version matching is provisional. Bindings retain one runtime generation and become stale when its registration closes.
-
-ADELE owns deterministic default resolution; a provider cannot declare itself globally primary. The current rank-based default is an implemented deterministic fallback, not the final user/profile preference system. Persistent preferences, profile-aware routing, richer compatibility negotiation, dynamic suitability, and contextual default policy remain deferred.
-
-The long-term convention is host-owned contextual default selection with explicit alternatives when useful. For example, the Internal Source Editor and External Editor may both provide `DisplaySourceFile`; configuration can choose the normal provider while a UI exposes alternates. Likewise, Git Worktree and Docker may later provide the same Environment-provider interface.
-
-Public capability, provider, and plugin identities share a lowercase reverse-domain ASCII grammar. Dot-separated segments begin with a letter and may contain digits or internal hyphens; underscores are not valid identity characters. A missing capability and a capability available only at other active major versions are separate structured resolution failures.
-
-## Live discovery and stable binding
-
-Future composition should be able to react when providers appear or disappear. That does not change the existing execution rule:
+## Live discovery and exact binding
 
 ```text
-live provider set
-    may change for future operations
-
-resolved binding
-    remains tied to one exact active generation
+current provider/extension set
+    may change
+fresh resolution
+    can see a new generation
+captured binding
+    remains tied to one exact generation
+retirement
+    makes that binding stale
+replacement
+    requires fresh resolution
 ```
 
-An already-resolved model/tool operation must not silently migrate to a restarted provider. A new generation can participate only in a new resolution/materialization cycle.
+Stable semantic IDs do not make stale executable bindings live again. Consumers
+retain and validate their exact bindings at invocation and relevant asynchronous
+settlement boundaries; they must not silently re-resolve on continuation. This
+applies to Capability providers, remote extension contributions, owning-backend
+frontend calls, and execution-scoped remote operations that capture a binding.
+
+Binding lifetime and transport-resource lifetime are not identical: registration
+retirement invalidates access through a Capability binding, but is not a universal
+revocation mechanism for previously extracted low-level channels. Those channels
+remain tied to their captured connection, never a replacement. Consumers must
+still enforce the retained binding's liveness. See the
+[general registration/binding model](plugin-system.md#live-discovery-and-exact-captured-bindings)
+and [`plugin_runtime`](../../packages/plugin_runtime/README.md).
 
 ## Backend-ready advertisements
 
-Installed metadata stays separate from active capability and extension registration.
-`adele_plugin.installation.json` identifies prepared components; it declares no
-providers or configuration contexts and is not proof of readiness. The owning
-backend entrypoint supplies optional `capabilityExposures` on its existing isolate
-`ready` message. The shared host forwards that list on `pluginReady`, and runtime
-retains it on the exact `PluginBackendConnection`. Omission means zero capabilities,
-not a stock fallback or a failed handshake.
+```text
+prepared installation
+    backend artifact exists
+backend starts
+    -> ready handshake advertises live capability/extension exposures
+host activation
+    -> registers exact-generation providers/contributions
+```
 
-Public pure-Dart `adele_contract.AdeleCapabilityExposure` carries:
+Installed metadata describes prepared availability, not live backend Capability
+or extension exposure. Each omitted exposure list means zero contributions of
+that kind, independently of the other list. `PluginId` comes from the installation
+and connection, not the advertisement payload. Advertisements belong to that
+exact backend generation; readiness alone is not a registry registration.
 
-| Field | Meaning |
-| --- | --- |
-| `providerId` | Stable public provider identity |
-| `capabilityId` | Public capability identity |
-| `capabilityMajorVersion` | Positive exact-match capability major |
-| `serviceId` | Generated contract service routed by the endpoint |
-| `displayName` | Nonblank provider display name |
-| `configurationContext` | Explicit context token scoped to this connection generation |
-| `rank` | Optional integer, default zero; existing deterministic selection semantics |
+Host activation validates and adapts advertisements into the existing registries.
+Invalid or unsupported exposures and registration failures fail the attempt with
+coherent rollback of its partial registrations, not unrelated registrations.
+Retirement removes only the owning generation's registrations, never replacements.
+This is rollback across the registration attempt, not a promise of transactionally
+invisible publication across registries.
 
-Plugin identity is deliberately absent: the installation/connection is authoritative
-and the advertisement cannot replace it. Malformed advertisements fail that backend
-attempt. `PluginCapabilityActivation.registerAdvertised` maps advertisements to
-existing `PluginCapabilityExposure` values and delegates to `register`, preserving
-registry validation, registration-group rollback, scoped channels, and exact
-generation liveness. A registration failure rolls back that attempt's partial
-registrations, not unrelated providers. Termination retires only the owning
-generation; stale bindings never move to a replacement.
+Ready advertisements are neither invocation authority nor general configuration
+or Profile state. Exact exposure fields belong to
+[`contract`](../../packages/contract/README.md); registration, rollback, and
+retirement mechanics belong to
+[`plugin_runtime`](../../packages/plugin_runtime/README.md#ready-registrations).
+See [plugin layout](plugin-layout.md#prepared-installation-snapshot) for the
+installed-metadata boundary.
 
-Git and OpenAI entrypoints own their advertisements rather than app-side exposure
-helpers. Normal startup discovers prepared installations and attempts all valid
-backends independently. Self-hosting uses the same generic registration path with
-its own explicit artifact/host/profile topology, without requiring normal discovery.
-It configures the backend through its own profile environment, registers all
-advertised online contexts, and explicitly resolves the selected profile's provider
-ID. Both OpenAI contexts may be registered when configured; selection does not
-filter advertisements or imply a fallback to another provider.
-Ready metadata is not a new registry, a host-call authorization grant, or a general
-dynamic configuration protocol. It preserves the distinctions accepted in ADRs 0015,
-0021, 0027, and 0028. See
-[`plugin-layout.md`](plugin-layout.md#prepared-installation-snapshot) for catalog
-boundaries and [`app/README.md`](../../app/README.md#normal-backend-startup) for ownership.
+### Configuration context
 
-### Extension advertisements
+A configured semantic/provider instance is a persistent/logical concept. Its live
+endpoint instead routes through a `configurationContext`: an opaque backend-local
+context for configured service state within one exact generation. Several
+providers/services may share a context, and one plugin generation may expose
+several provider instances and contexts without separate installations.
 
-Optional `extensionExposures` follow the same isolate `ready` -> host
-`pluginReady` -> exact connection path. Public pure-Dart
-`adele_contract.AdeleExtensionExposure` has exactly these required fields:
-
-| Field | Meaning |
-| --- | --- |
-| `extensionPointId` | Public typed extension-point identity understood by a host adapter |
-| `extensionId` | Public registration identity in the existing `ExtensionRegistry` |
-| `serviceId` | Generated service implementing the remote contribution |
-| `configurationContext` | Backend route scoped to the exact connection generation |
-| `metadata` | Recursively copied, immutable JSON-compatible point-specific data |
-
-Unknown exposure keys are rejected. There is no `PluginId`, priority, rank, or
-provider selection in this value. Plugin identity remains connection-owned.
-Metadata rejects unsupported values, non-finite doubles, cycles, and container
-nesting deeper than 64; its semantic schema belongs to the extension adapter.
-Omitting `extensionExposures` means zero extensions, independently of capabilities.
-
-Internal `plugin_runtime.PluginExtensionActivation` uses
-`RemoteExtensionAdapterRegistry` to find the host adapter for an advertised point,
-build an exact-generation proxy contribution, and register it in the existing
-`ExtensionRegistry`. The adapter registry holds host implementations of known
-contracts, not plugin contributions or another public discovery system.
-Unsupported points, invalid metadata, and registration collisions fail that
-backend attempt rather than silently dropping an exposure.
-`PluginBackendActivation.registerAdvertised` owns both capability and extension
-registration phases, rolls back both on failure, and retires their exact
-registrations before connection close. Termination cannot retarget old bindings.
-
-## Frontend behavioral operations
-
-Prepared frontend behavior is separate from generated backend RPC and capability
-selection. Under installed `manifestVersion: 1`, `frontend.extensions` is an
-optional list distinct from the `frontend.presentations` list; both may
-coexist. Its supported `kind: 'projectSelector'` descriptor has `extensionId`,
-`displayName`, `library`, and `entrypoint`. The Flutter owner adapts it to the
-existing `ProjectSelectorContribution` in the same extension registry, not a new
-capability or backend exposure. The exact schema is in
-[the runtime catalog reference](../../packages/plugin_runtime/README.md#prepared-catalog).
-
-Bootstrap validates behavioral bytecode and entrypoint presence without executing
-initializers or plugin code, using a validation runtime that intercepts dispatch.
-Presentation-only corruption remains per-view. Internal `PreparedFrontend.invoke<T>`
-executes a descriptor-selected no-argument entrypoint in a fresh eval runtime with
-a supplied bridge and result decoder, revoking the bridge in `finally`. This is not
-a public arbitrary-eval interface or remote-object API.
-
-Local Directory's EVC calls the interpreted-only public
-`adele_ui/directory_picker_bridge.dart` `Future<String?> pickDirectory()` stub. App
-`DirectoryPickerDeclarations` carries compile-time ABI only; operation-scoped
-`DirectoryPickerBridge` uses `$Future.wrap` over `file_selector.getDirectoryPath`,
-returning the raw platform path and allowing one native call per operation. EVC
-owns path validation and normalization into an absolute `file:` URI string or
-`null`. The generic adapter validates the URI result and liveness; the app validates
-the exact binding and window lifetime before creating a Project. Retirement rejects
-late native results without forcibly closing a dialog, and semantic failures stay
-operation-local. No AOT selector, backend host-invocation token, generated backend
-RPC, or Session/Environment authority is involved. The backend host-service rules
-below remain a distinct boundary.
+The route captures connection, configuration context, and service; semantic method
+payloads do not select or override them. A routing context is not a persistent
+account record, Profile state, a credential, semantic provider identity, or a
+general host-authority token. General configured-instance persistence and Profile
+management are not established by these live routes. See
+[ADR 0027](../adr/0027-generation-bound-plugin-configuration-contexts.md),
+[profiles and configuration](profiles-and-configuration.md), and
+[`capabilities`](../../packages/capabilities/README.md).
 
 ## Own-backend frontend requests
 
-Session frontends can use generated unary clients over
-`adele_ui/owning_backend_bridge.dart`. The prepared descriptor's `backendServices`
-is an explicit, duplicate-free service-ID allowlist. Internal `OwningBackendChannel`
-captures one exact sibling `PluginBackendConnection` and configuration context,
-validates presentation/activation liveness before dispatch and after settlement,
-and transports copied immutable data. Neither PluginId nor configuration selection
-crosses the frontend bridge. It does not perform capability resolution, arbitrary
-backend lookup, replacement retargeting, or general symmetric RPC.
+Prepared frontends can use generated unary clients to call explicitly allowlisted
+services on their captured owning backend. This is direct routing to one exact
+backend generation and configuration context, not Capability provider discovery.
+The prepared descriptor constrains allowed services; interpreted frontend code
+cannot select an arbitrary PluginId, configuration context, or service.
 
-Session descriptors include `displayName`, `strategyId`, `extensionId`, `library`,
-and `entrypoint`; optional `strategyAffinity` is `independent` or `owningBackend`.
-For owning-backend affinity, the host verifies the resolved strategy's exact
-registration origin against the captured connection/context. Origin is internal
-registration ownership, not matching IDs, contribution value identity, or a
-plugin-declared claim. Lifecycle validates the supplied strategy in its canonical
-registry before publishing a Session; Run hosting retains that same binding and
-revalidates through asynchronous materialization. A retired or foreign binding
-fails explicitly. The old `hostAdapter` field is removed, with manifest version 1
-unchanged. See the [installed schema](../../packages/plugin_runtime/README.md#prepared-catalog).
+The host validates captured ownership and presentation lifetime before dispatch
+and after settlement. Where owning-backend strategy affinity is required, it must
+prove the strategy's exact registration origin, not merely matching semantic IDs.
+Missing, retired, or mismatched ownership fails explicitly, without retargeting or
+native/in-process fallback. Same-plugin identity alone grants no arbitrary service
+access.
 
-Chat's `backendServices` allowlists generated `chatSessionServiceId`; its
-`strategyAffinity` is `owningBackend`. Descriptor and dispatcher must use the same
-generated service identity, not independently coined spellings.
-`ChatSessionService` supplies generated `snapshot`, `appendUserMessage`, and
-`configureSession` methods, with immutable `ChatEntry` and `ChatSessionSnapshot`
-values and declared `ChatSessionFailure`. Backend also advertises its Session
-capability for typed headless consumers such as self-hosting; this does not turn
-the frontend bridge into a provider selector. That service and Backend's
-`RemoteOrchestrationBackend` share one canonical in-memory store, with stable
-entry occurrence IDs. Backend owns default instructions and the eight-invocation
-default, snapshotted per Run. External mutations are rejected from materialization
-until execution close, including approval waits; snapshots remain readable while
-busy. Only user/final assistant entries
-are canonical; intermediate output and tool outcomes remain Run-local replay.
+Chat's `ChatSessionService` is a generated plugin-internal service reached through
+direct/owning-backend routing; it is not an advertised Chat Session Capability.
+Chat installs its Session dispatcher on the backend router but advertises only its
+orchestration strategy through extension exposures. Explicit native consumers,
+including self-hosting, likewise use the captured backend/context rather than
+Capability resolution.
 
-The separate generic Session execution bridge supplies asynchronous scheduling,
-immutable execution/activity reads, subscriptions, and Inspection/widget slots
-over emitted opaque handles. Chat Frontend owns composer acceptance, history
-refresh, grouping, and stable accepted-entry-to-Run association. Core owns
-model/tools/policy, approval, activity evidence, and Inspection, not canonical Chat
-history. Backend and frontend activation are independent; absent services or stale
-ownership fail without fallback. Normal app code imports no Chat contract or
-implementation; self-hosting tooling uses Contract as a development dependency and
-the same remote backend path.
+Exact channel and descriptor behavior belongs to
+[`plugin_runtime`](../../packages/plugin_runtime/README.md#own-backend-requests)
+and [`ui`](../../packages/ui/README.md#interpreted-bridges). Chat-specific ownership
+belongs to the [Chat README](../../plugins/chat_strategy/README.md).
+
+### Frontend behavioral operations
+
+Frontend behavioral extensions can execute through host-supplied bridges without
+becoming backend Capabilities or receiving backend host-invocation authority.
+Their composition and prepared-component boundaries belong to the
+[plugin system](plugin-system.md#backend-and-frontend-composition) and
+[plugin layout](plugin-layout.md#prepared-frontend-descriptors). Bridge APIs and
+the Local Directory example belong to [`ui`](../../packages/ui/README.md#interpreted-bridges)
+and the [Local Directory plugin](../../plugins/local_directory_project_selector/README.md).
 
 ## Operation-scoped host calls
 
-The hosting decision is recorded in
-[ADR 0032: Remote backend extensions use operation-scoped host services](../adr/0032-remote-backend-extensions-use-operation-scoped-host-services.md).
+Backend-to-host access is explicitly supplied for one authorized operation:
 
-The app's `RemoteInferenceContextSourceAdapter` adapts the generated orchestration
-`RemoteInferenceContextSourceService.snapshot(sessionId, runId,
-hostInvocationContext)` to an `InferenceContextSourceContribution`. The unary
-result is `List<RemoteInferenceInstruction>` with `key`, `text`, and required
-nullable `revision`. Its only metadata is `failureMode: 'required'` or
-`'optional'`; other keys/values fail activation. Composer ordering, validation,
-required/optional failure, and immutable capture semantics are unchanged.
+```text
+remote operation begins
+    -> host captures canonical local authority and exact bindings
+    -> host creates a fresh opaque invocation context
+       + exact backend generation
+       + explicit service allowlist
+    -> backend may call only those host services
+operation settles / cancels / retires
+    -> authority is revoked
+```
 
-For each authorized operation, the host creates a cryptographically random opaque
-`hostInvocationContext` and a service allowlist tied to the exact connection and
-registration. This token is distinct from the backend's `configurationContext`.
-The supplied generated Environment `AuthorizedEnvironmentReadService` exposes
-`authority() -> AuthorizedEnvironmentIdentity`, `readFile(relativePath) ->
-EnvironmentTextFile`, and `readDirectory(relativePath) -> EnvironmentDirectoryListing`
-as unary operations. `authority()` takes no arguments and returns the already-bound
-`sessionId` and `environmentId`; it does not select authority. Reads preserve declared
-`EnvironmentFailure`, including `not_found`. No method accepts Session, Task,
-Environment, provider, or other authority-selection IDs. Mutation and process
-operations are absent from this host service.
+The host mints authority. Backend/plugin IDs do not mint it, and transported
+Session, Task, Run, or Environment IDs do not select it. Domain adapters supply
+services from captured canonical local authority, not by reconstructing authority
+from remote identity strings. A point may acquire an authorized facet lazily from
+that captured context; it must retain and validate the resulting exact binding.
 
-The separate generated unary `AuthorizedEnvironmentMutationService` exposes only
-`createTextFile(relativePath, text)`, `replaceExistingTextFile(relativePath,
-replacementText, expectedRevision)`, and `deleteExistingTextFile(relativePath,
-expectedRevision)`. It reuses existing mutation results and declared
-`EnvironmentFailure`, with no authority query, authority-selection IDs, reads, or
-process operations. The read service remains unchanged for inference sources and
-other consumers; granting mutation never implicitly grants reads.
+| Context | Meaning |
+| --- | --- |
+| `configurationContext` | Backend-local live route for configured service state in one generation. |
+| `hostInvocationContext` | Host-issued authority for one operation's explicit host-service allowlist. |
 
-Separate generated `AuthorizedEnvironmentProcessService` exposes exactly
-`runForegroundProcess(EnvironmentForegroundProcessRequest request) ->
-Stream<EnvironmentProcessEvent>`. It reuses the existing request/event DTOs and
-declared `EnvironmentFailure`. It has no authority query, authority-selection IDs,
-file reads, or mutations. The host routes it through the captured
-`AuthorizedEnvironmentProcessFacet`, not a plugin-selected Environment. Granting
-this service does not implicitly grant either filesystem service.
+The invocation token is opaque and operation-local. It must not be persisted or
+reused as a general capability, and possessing a route or communication channel
+does not grant it. Allowlisting one service does not implicitly grant other
+services. Access remains tied to the exact backend generation and registration;
+liveness is checked at dispatch and across asynchronous settlement.
 
-For remote inference sources, the read dispatcher captures the canonical
-`InferenceContextSourceContext` supplied by the composer and obtains its
-`AuthorizedEnvironmentFileReadFacet`. It never
-reconstructs authority from the transported Session/Run strings. Binding checks
-bracket the read, including failure settlement. The remote source cannot choose
-another Environment through this service.
+Settlement, cancellation, registration retirement, or connection termination
+revokes the invocation. Late results cannot revive it or reach a replacement.
+Revocation prevents future calls; it is not rollback of effects already started.
+The allowlist limits host-service access, not every possible effect of native
+plugin code. Process/isolate boundaries and scoped host APIs are not an OS sandbox.
+[ADR 0032](../adr/0032-remote-backend-extensions-use-operation-scoped-host-services.md)
+records the authority decision and rationale.
 
-Unary `hostRequest`/`hostResponse` messages reuse the existing isolate ports and
-framed shared-host transport. Successful `hostResponse` messages carry `ok: true`
-and `payload`, not `result`. The shared host stamps plugin identity and the
-host-issued exact connection generation from the owning isolate, not plugin input;
-replies route back to that captured generation. Runtime checks invocation liveness
-and the service allowlist before dispatch, then rechecks liveness after asynchronous
-settlement.
-`RemoteExtensionContext.invoke` revokes the token in `finally`.
-`RemoteExtensionContext.invokeStream` is single-subscription and creates authority
-only on listen. It retains that authority across the host-to-backend stream and
-revokes it on done, first error, cancellation, or retirement, before waiting for
-producer cancellation. Registration retirement, connection shutdown, and termination
-also revoke contexts and settle pending host calls without waiting for arbitrary
-host service code, including while the outer stream is idle or paused. Late results
-cannot revive authority or reach a replacement generation. Revocation is not
-cancellation or rollback of an already-started read or mutation.
+### Reverse unary and streaming calls
 
-Reverse server streams reuse those same ports, framing, and exact-generation
-routing under the current transport protocol. They open lazily and use a fixed
-one-item credit window: pausing stops producer advancement after the already-granted item, and
-cancellation reaches the producer. The invocation's allowlist and liveness apply
-to stream opening and delivery, not just unary dispatch. Outer-operation
-settlement, cancellation, registration retirement, and connection termination
-revoke authority immediately and cancel owned reverse streams. Cleanup is bounded
-and cannot keep authority alive while arbitrary producer cleanup is pending.
-Late items and terminals cannot revive a revoked operation or reach a replacement.
-Cancellation acknowledgement means cancellation was dispatched, not that arbitrary
-producer cleanup or operating-system process termination has completed. Bounded
-transport cleanup does not promise to interrupt arbitrary host service code.
-This supplies foreground-process streaming, not client/bidirectional streaming,
-ambient callbacks, or a general remote-object system.
-Host process adapters forward subscription cancellation even when a producer is
-idle or paused; delivery of a primary failure does not await producer cleanup.
+Backend-to-host calls reuse the existing host/backend communication substrate.
+Bounded reads, mutations, and orchestration mechanics use unary host requests;
+naturally streaming operations, such as foreground process events, use server
+streaming. The plugin-side channel helper does not mint authority.
 
-The reverse stream family is `hostStreamOpen`, `hostStreamCredit`, and
-`hostStreamCancel` from the backend, and `hostStreamItem`, `hostStreamDone`,
-`hostStreamFailure`, and `hostStreamCancelled` from the runtime. Opens carry the
-plugin-local request ID, invocation token, service, method, and payload. The shared
-host correlates its own request ID and stamps PluginId/generation; backend frames
-cannot supply those identities. Unary calls and stream opens share a monotonically
-increasing plugin-local ID space, so replay needs no unbounded historical ID set.
-`hostStreamCancelled` is sent after output is revoked and producer cancellation
-is initiated, without waiting for cleanup. A backend `hostStreamAck` confirms
-terminal receipt, allowing bounded terminal records to absorb controls already
-in flight without reopening authority. Missing receipt retires only the offending
-generation after the existing plugin lifecycle deadline; it does not accumulate
-terminal records indefinitely. Excess credit and unknown/replayed controls are
-protocol violations, not another producer window.
+For a streaming remote operation, authority begins on listen, not merely on
+construction of a stream or possession of a channel. It ends on enclosing-operation
+completion, error, cancellation, or retirement, not merely delivery of a domain
+terminal item. Pausing/backpressure neither expands authority nor protects it from
+revocation. Cancelling an individual reverse stream stops that stream; cancelling
+the enclosing operation revokes its invocation and cancels owned reverse streams.
 
-Public pure-Dart `adele_plugin_backend_support` supplies only the reusable
-`AdeleHostRequestMultiplexer`; its `bind` returns an `AdeleStreamChannel` supporting
-both unary requests and server streams for generated clients. Its only production
-package dependency is `adele_contract`, with no internal
-host or Flutter imports. It does not mint authority, grant service access, or
-implement general symmetric RPC. Profiles
-and general plugin configuration remain deferred; this boundary is not a sandbox.
+Revocation does not wait for arbitrary producer cleanup. Bounded transport cleanup
+does not promise arbitrary host-code interruption or completed OS-process
+termination; already-started mechanics may still need to settle and retain their
+evidence. Exact framing and cleanup behavior belong to
+[`plugin_runtime`](../../packages/plugin_runtime/README.md#operation-scoped-host-calls),
+[`plugin_backend_support`](../../packages/plugin_backend_support/README.md), and
+[`plugin_backend_host`](../../packages/plugin_backend_host/README.md).
 
 ### Remote orchestration strategies
 
-Public `adele_orchestration/remote_orchestration.dart` owns generated unary
-`RemoteOrchestrationService` materialization, start, approval resume, and release,
-separate from native strategy APIs. The app registers
-`RemoteOrchestrationStrategyAdapter` in its normal adapter factory. Readiness
-accepts only nonblank `strategyId` and opaque `routeId` metadata and the supported
-generated service ID. Plugin identity remains connection-owned; no Session, Run,
-Environment, or provider identity belongs in readiness.
+Materialization establishes backend-owned strategy execution state without host
+invocation authority. Start and approval resume each receive fresh operation-scoped
+host services over the retained exact binding/generation. Approval remains
+host-captured; the backend cannot manufacture authorization from transported
+approval fields or matching IDs.
 
-Native materialization is `FutureOr<OrchestrationExecution>`; the resolved path
-validates exact binding before and after awaiting it. The remote materialize call
-receives route plus immutable canonical Session/Task/strategy/Run identities and
-no host invocation token. Its execution ID selects backend-owned state, not host
-authority. A stale post-validation closes the returned state best-effort.
-
-Each start/resume opens a new host invocation allowlisting only
-`RemoteOrchestrationHostService`. Its unary operations are `transition`,
-`invokeModel`, `processProposal`, and `applyCurrentApproval`. No operation selects
-Session/Environment/provider authority from a backend field. The backend support
-library `remote_orchestration_backend.dart` presents a native
-`OrchestrationExecutionHost`, mirrors synchronous state/lifecycle locally, and
-flushes transitions before work and operation settlement. Completion/failure must
-reach the actual host Run before the advance returns. Strategy-requested failures
-carry bounded code/message data, not live Dart exceptions. Already-collected
-model-turn failures, including provider transport failures and partial outputs,
-remain semantic result data. Failure of the orchestration RPC itself remains
-infrastructure failure and invalidates the backend host mirror.
-
-The app retains exact host snapshots and original proposal occurrences in private
-tables scoped to execution and backend generation. Transported snapshot/proposal
-handles identify those values only. They can outlive a start invocation during
-approval waiting but cannot independently invoke any host service. The backend
-maps reconstructed proposals by object identity to handles. Host lookup rejects
-fabricated, cross-snapshot/execution/generation, consumed, and released handles;
-it never selects a proposal by alias, call ID, or structural equality. Strategy
-code owns proposal order.
-
-For resume, the app captures the real host-issued approval in that fresh invocation.
-The backend proxy accepts only the identical reconstructed object supplied to the
-current resume, then calls no-argument `applyCurrentApproval()`. The host applies
-its captured resolution once, never plugin-supplied approval fields. Authorization
-is absent during start and cleared at settlement. Snapshot handles may survive
-the pause; invocation tokens and approval authorization may not.
-
-Execution `close()` is idempotent async resource cleanup, not cancellation or
-approval resolution. Terminal cleanup, registration retirement, and connection
-termination also release retained state. Runtime `RemoteExtensionContext.onRetire`
-lets adapters release resources after immediate invocation revocation, before
-activation retirement completes. Already-started host mechanics retain evidence;
-the orchestration adapter drains them without extending invocation authority.
-Cleanup cannot overwrite primary Run/transport failure. No general object-handle
-framework, client/bidirectional streaming, or ambient callbacks are introduced.
-An unacknowledged remote release closes only its captured connection generation
-rather than accumulating unreachable backend execution state.
-Automatic cleanup preserves an acknowledged terminal result; a failed backend
-close remains in its existing closing execution until explicit release surfaces
-that failure to the app's generation-close safeguard.
-Stock Chat uses `RemoteOrchestrationBackend` over this substrate; canonical history
-is shared with its separate `ChatSessionService`, not copied into core execution.
-Both transport protocols and installed manifests remain 1.
+Execution routes and retained snapshot/proposal handles identify state or data,
+not authority. They may survive an approval wait while invocation tokens do not.
+Release and retirement clean backend execution state without retargeting or
+resolving approvals. Exact mechanics and lifecycle APIs belong to
+[`orchestration`](../../packages/orchestration/README.md#remote-strategies).
 
 ### Remote model tools
 
-Public `adele_model_tool/remote_model_tool.dart` declares generated
-`RemoteModelToolService` (`remoteModelToolServiceId`): unary `materialize`,
-`validateAndNormalize`, and `describe`, plus server-streaming `execute`. Immutable
-descriptors carry semantic tool identity/description, model alias/description/schema,
-an opaque `routeId`, and required `executionHostServices`. Canonical arguments,
-effect descriptions, progress, and terminal outcomes cross as immutable snapshots.
-Outcome classification, effect
-certainty, model content, structured `hostData`, and diagnostic text are preserved;
-arbitrary exception `cause` objects are not transported. Route IDs identify backend
-executables only within the captured connection generation. They are not persistent
-handles, model aliases, or authority tokens.
+Materialization captures the exact remote contribution and required Session-bound
+Environment facets/dependencies. Declared dependencies are not permission grants.
+Validation and description receive no effect authority; only execution through the
+normal host policy/approval path receives the exact required host services.
 
-The app's `RemoteModelToolAdapter` registers `ModelToolContribution` proxies through
-the existing adapter and extension registries. It requires the generated service ID
-and exactly one metadata key: `hostServices`, a duplicate-free list drawn from
-`authorizedEnvironmentRead`, `authorizedEnvironmentMutation`, and
-`authorizedEnvironmentProcess`, including an
-empty list. Unknown keys, services, or duplicates fail activation. This exposure
-declares the maximum dependencies to capture, not permission grants or Profiles.
-Each descriptor's required `executionHostServices` is a duplicate-free subset of
-that exposure, not an inherited default. Unknown, duplicate, or undeclared services
-fail materialization. The subset is the exact service allowlist for that tool's
-execution; a read-only descriptor never receives mutation or process authority
-because its contribution also supplies effectful tools.
+Read, mutation, and process services remain separable, even when one contribution
+provides tools with different needs. Transported IDs cannot choose another
+Environment. Captured bindings are validated rather than re-resolved on execution
+or continuation, and execution authority lasts only for the enclosing operation.
+Detailed contracts and adapters belong to [`model_tool`](../../packages/model_tool/)
+and [`plugin_runtime`](../../packages/plugin_runtime/README.md#operation-scoped-host-calls).
+Tool-specific declarations and behavior belong to their owning plugins, for
+example the [Filesystem Tools](../../plugins/filesystem_tools/README.md) and
+[Command Tools](../../plugins/command_tools/README.md) READMEs.
 
-Materialization captures every requested Session-bound read/mutation/process facet and its
-exact Environment-provider binding, alongside the exact remote registration. All
-facets must belong to the materializing Session and the same Environment; incoherent
-facets fail rather than being substituted or re-resolved.
-The existing composer still owns zero-or-many tools, duplicate Tool IDs, and alias
-collisions; the adapter adds no provider selection or tool registry.
+### Remote inference sources
 
-Preparation carries data, not host-service authority:
+Remote inference sources register through the extension model, not Capability
+provider selection. Snapshot execution receives only the host services authorized
+by that point. The current AGENTS.md source receives read-only Session/Environment
+authority; transported Session/Run IDs cannot reconstruct or redirect it.
 
-- `materialize(sessionId)` receives no invocation token.
-- `validateAndNormalize(routeId, proposedArguments)` receives no host authority.
-- `describe(routeId, arguments, sessionId, runId, environmentId?)` receives pure identity data, without a token or host calls.
-- `execute(routeId, arguments, sessionId, runId, environmentId?, hostInvocationContext?)` receives identity data and, when services are required, a fresh invocation token allowlisting exactly the descriptor's services.
+Executable bindings are validated through capture. Safely captured immutable
+material may outlive source registration according to the owning extension
+contract; that does not keep the executable binding or invocation authority alive.
+The next capture can discover a replacement without retrying the current capture
+through it. See [`orchestration`](../../packages/orchestration/README.md#inference-context)
+and the [AGENTS.md plugin](../../plugins/agents_md/README.md) for source semantics,
+transport contracts, and their tests.
 
-The nullable Environment identity describes the host-captured binding; it cannot
-select or reconstruct authority. `environmentId` and `hostInvocationContext` are
-required nullable arguments, not optional wire fields. Environment identity is null
-when no Environment facets were captured; the execution token is null for an empty
-service subset. The executable retains host-side bindings, never
-a reusable invocation token. Synchronous `validateBinding()` checks the remote
-generation and every captured facet, including dependencies outside an individual
-descriptor's execution subset. No operation re-resolves a binding. Retirement
-fails old work rather than selecting a replacement.
+## Source map
 
-Only execution after the normal policy/approval decision can receive model-tool
-host authority. Execute-stream authority starts on listen and is revoked on done,
-error, cancellation, or exact registration/connection retirement. Denied, rejected,
-or waiting invocations receive no execution token. Host calls and asynchronous
-settlement validate the exact captured bindings; semantic Session/Run/Environment
-IDs do not grant access. This controls the host-service API, not native backend
-operating-system access, and is not an OS sandbox.
-
-Local `ToolExecutable.validateAndNormalize` returns
-`FutureOr<CanonicalToolArguments>`, preserving synchronous local validators.
-`ToolInvocationResolver.resolve` returns a Future, awaited by normal proposal
-processing, and checks exact binding around validation. Unknown alias, invalid
-arguments, stale binding, and unavailable binding remain distinct. Only declared
-`RemoteToolArgumentValidationFailure` is translated to local argument-validation
-failure; malformed transport and other backend/protocol failures are not relabeled
-as invalid model arguments. Host effect description, policy, approval, execution
-collection, and continuation remain on the normal path.
-
-Stock Search, Filesystem Tools, and Command Tools use this point without capability exposures.
-Their backends advertise `dev.adele.extension.model-tools` with their existing
-`dev.adele.plugin.search-tools.model-tools`,
-`dev.adele.plugin.filesystem-tools.model-tools`, and
-`dev.adele.plugin.command-tools.model-tools` registration IDs, generated service
-ID `modelTool`, and default configuration context. All reuse their pure-Dart root semantics.
-Search declares only `authorizedEnvironmentRead`, describes effects from pure
-identity data, and receives read authority only during execution. Filesystem
-declares read and mutation dependencies; Command declares process only. Their exact
-execution subsets are:
-
-| Tool | `executionHostServices` |
+| Concern | Primary anchors |
 | --- | --- |
-| `search` | `['authorizedEnvironmentRead']` |
-| `read_file` | `['authorizedEnvironmentRead']` |
-| `apply_patch` | `['authorizedEnvironmentRead', 'authorizedEnvironmentMutation']` |
-| `create_file` | `['authorizedEnvironmentMutation']` |
-| `delete_file` | `['authorizedEnvironmentRead', 'authorizedEnvironmentMutation']` |
-| `run_command` | `['authorizedEnvironmentProcess']` |
-
-Command declares only `authorizedEnvironmentProcess` and describes effects from
-pure identity and argument data. Its backend uses reverse process streaming only
-during authorized execution. Read and mutation calls remain unary; the separate
-host services change neither tool semantics nor policy/effect ordering. Command's
-installed backend and frontend are independently available. Client/bidirectional
-streaming, ambient callbacks, and general symmetric
-RPC remain deferred; the Local Directory selector is already a prepared frontend,
-not a consumer of backend host-service authority.
-
-## Configured capability instances
-
-One plugin runtime may expose multiple named configurations of the same capability:
-
-```text
-OpenAI plugin runtime
-|-- Model provider: Work
-`-- Model provider: Personal
-```
-
-Accounts, providers, clusters, connections, endpoints, and devices are configured capability instances. They do not require separate plugin installations, backend copies, or runtime instances. A future ADELE profile may make several instances available, prefer one, and apply optional configuration overrides.
-
-Active capability endpoints are bound to one opaque, generation-specific configuration context. Several provider descriptors and services may share one context, while one plugin generation may host several contexts. Context and the endpoint's exact service ID are transport metadata supplied by the scoped endpoint channel, not semantic contract data or provider identity. Request and stream-open carry them separately from generated method payloads; later stream control remains request-ID based.
-
-ADELE does not yet have a generic host-wide configured-instance persistence,
-account, or secrets framework. The OpenAI plugin has a private experimental
-credential implementation for its ChatGPT proof; that implementation does not
-define a generic capability contract. Ready advertisements expose callable
-providers with live context tokens, not a general configured-instance catalog,
-management/selection UI, persistence model, or profile-aware lifecycle.
-
-The retired DevelopmentSource plugin historically illustrated the distinction between a sustained capability and model tools: application composition projected its generation-bound read/search Service into source-search and source-read tools. Phase V-A replaced that provisional path with stock plugin-contributed tools over Session-authorized Environment access; neither design makes each model tool a separate ADELE capability.
-
-## Runtime resources
-
-Browser sessions, terminal sessions, open documents, processes, temporary connections, and active tool executions are runtime resources. They are normally represented by temporary handles or session objects. They are not persistent configured capability instances, plugin runtime instances, or plugin installations.
-
-Future `ConsoleService` or Environment APIs may expose operations over runtime resources without turning each runtime resource into another plugin or configured provider instance.
+| Contract annotations, channels, and exposure values | [`packages/contract/`](../../packages/contract/) |
+| Generator and generated client/dispatcher behavior | [`packages/contract_codegen/`](../../packages/contract_codegen/) |
+| Capability registry and resolution | [`packages/capabilities/`](../../packages/capabilities/) |
+| Backend-ready registration, adapters, and exact channels | [`packages/plugin_runtime/`](../../packages/plugin_runtime/) |
+| Plugin-side reverse-call multiplexer | [`packages/plugin_backend_support/`](../../packages/plugin_backend_support/) |
+| Shared backend host transport | [`packages/plugin_backend_host/`](../../packages/plugin_backend_host/) |
+| Remote orchestration and inference contracts | [`packages/orchestration/`](../../packages/orchestration/) |
+| Remote model-tool contract | [`packages/model_tool/`](../../packages/model_tool/) |
+| Environment authorized host services | [`packages/environment/`](../../packages/environment/) |
+| App-side remote adapters | [`remote_inference_context_host.dart`](../../app/lib/core/remote_inference_context_host.dart), [`remote_model_tool_host.dart`](../../app/lib/core/remote_model_tool_host.dart), [`remote_orchestration_host.dart`](../../app/lib/core/remote_orchestration_host.dart) |
+| Canonical local authority and Environment facets | [`product_lifecycle.dart`](../../app/lib/core/product_lifecycle.dart), [`model_tool_host.dart`](../../app/lib/core/model_tool_host.dart), [`inference_context_host.dart`](../../app/lib/core/inference_context_host.dart) |
+| Prepared frontend ownership and bridges | [`packages/ui/`](../../packages/ui/), [`app/lib/frontend/`](../../app/lib/frontend/) |
