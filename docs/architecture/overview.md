@@ -60,7 +60,7 @@ behavior belongs to plugins, which cooperate through deliberately public typed
 interfaces rather than dependencies on another plugin's implementation. Production
 `app/lib` does not link concrete plugin packages, including their contracts.
 The temporary provider-selection identity exception is documented in
-[application composition boundaries](dependency-rules.md#application-backend-composition);
+[application composition boundaries](dependency-rules.md#application-composition);
 it does not permit plugin imports or implementation dependencies.
 
 An **Extension Point** is broader than a **Capability**: callable Action/Service
