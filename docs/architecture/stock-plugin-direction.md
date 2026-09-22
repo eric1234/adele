@@ -15,9 +15,11 @@ The expected stock composition should be read alongside:
 - [`agent-tooling-direction.md`](agent-tooling-direction.md), which describes model tools and execution presentation;
 - [`../mockups/README.md`](../mockups/README.md), which shows the default development UX produced by a stock plugin/configuration set.
 
-For maintained implementation scope, code paths, and validation, see
-[`overview.md`](overview.md). This document describes likely ownership and
-collaboration, not an inventory of packages, artifacts, or completed phases.
+For the cross-system architecture map, see [`overview.md`](overview.md).
+For current implementation, source/tests are authoritative; consult the owning
+application, package, or plugin README for its local map. This document describes
+likely ownership and collaboration, not an inventory of packages, artifacts,
+completed phases, or current feature status.
 
 ---
 
@@ -77,8 +79,9 @@ Some responsibilities may ultimately share one plugin. Session Forking may stay 
 
 # 2. Likely core/public extension surfaces
 
-Names below describe semantic roles; concrete public contracts and current limits
-are maintained in [`overview.md`](overview.md) and the owning package documentation.
+Names below describe semantic roles. For concrete implemented contracts and
+current limits, consult the owning package/application documentation and
+source/tests; [`overview.md`](overview.md) provides the cross-system map.
 
 ## 2.1 Workbench/UI semantics
 
