@@ -46,10 +46,12 @@ Flutter application
 
 `AdeleRuntime()` statically activates zero stock plugins. Construction is
 provider-free: it starts no backend host or compiler, loads no credentials, and
-creates no Project, Task, Environment, Session, or Run. It shares one
-`CapabilityRegistry`, `ExtensionRegistry`, and `InMemoryProductStore` with
-`ProductLifecycleCoordinator.generated`, `InferenceContextComposer`, and backend
-bootstrap.
+creates no Project, Task, Environment, Session, or Run.
+
+The runtime owns one `CapabilityRegistry`, one `ExtensionRegistry`, and one
+`InMemoryProductStore`. `ProductLifecycleCoordinator.generated` receives all
+three; `InferenceContextComposer` uses only the shared extension registry; and
+`ApplicationPluginBootstrap` uses the shared capability and extension registries.
 
 Normal startup consumes prepared artifacts, never plugin source. Backend and
 frontend availability are independent, but both owners consume the same catalog
