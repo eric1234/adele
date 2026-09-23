@@ -1,168 +1,124 @@
 # Profiles and Configuration
 
-## Status
+Role: Canonical architecture
 
-ADELE profiles and general configuration management are accepted architectural direction but are not yet implemented. Normal startup and explicit development/self-hosting use separate fixed compositions; the self-hosting CLI's provider-selection profiles are not the composition layers described here. There is no profile manager, selector, persistence model, profile-aware router, generic configuration service, or production workbench-state store.
+Implementation status: Mostly unimplemented
 
-Normal startup discovers one prepared installation snapshot and separately
-attempts every valid backend and frontend component, including the AGENTS.md
-instruction source and Search, Filesystem Tools, and Command Tools AOT backends,
-plus the frontend-only Local Directory Project Selector and Chat's independently
-activated backend and frontend. No stock plugin is statically composed outside
-that discovery. This fixed participation
-policy is not profile activation or enable/disable management. Installed metadata contains neither configuration nor
-activation state; the temporary generic PluginId-to-argv startup file is outside
-the manifest and is intended to disappear with general configuration/profiles.
+This document defines how Profiles, activation, ordinary configuration, configured
+providers, credentials, workbench state, and execution-time configuration relate
+without becoming one generic settings or plugin-state model. These are accepted
+architectural constraints, principally recorded in
+[ADR 0029](../adr/0029-ordered-profile-composition-and-configuration-direction.md),
+not a proposed API or storage design.
 
-Backend-ready exposure metadata describes live contributions, not activation
-participation or permission grants. Host-created operation contexts allow access
-only to explicitly supplied services for one operation and exact generation;
-they are not profiles or general permissions. AGENTS.md, Search, Filesystem Tools,
-and Command Tools require no configuration. Prepared frontend presentation and
-behavioral extension descriptors likewise describe executable ABI, not profile state;
-the selector's native picker bridge grants no backend Session/Environment authority.
-Session descriptors can allowlist services on their exact owning backend and
-require the Session strategy to originate from that connection. This is component
-plumbing, not profile policy or operation-scoped backend-to-host authority.
-See [`contracts-and-capabilities.md`](contracts-and-capabilities.md#operation-scoped-host-calls)
-for the host-call authority boundary.
+Current normal startup uses a fixed participation policy, not profile-aware
+activation. The self-hosting CLI's `chatgpt` / `api-key` provider-selection
+"profiles" are unrelated implementation terminology. Prepared installation
+metadata, backend-ready advertisements, generation-bound configuration contexts,
+and host invocation contexts are not Profiles; their boundaries belong to
+[plugin layout](plugin-layout.md) and
+[contracts and capabilities](contracts-and-capabilities.md).
 
-This document records intended product and architecture direction beyond the immediate implementation horizon. ADR 0031 now defines `Project` as an abstract core identity and `Environment` as the practical filesystem/source + process context for Task work; the earlier Project/Workspace identity question is no longer intentionally open.
+## Profiles and ordered stacks
 
-A profile is a named, sparse operating-mode layer. Profiles may contribute plugin activation decisions, configuration overrides, provider availability/preferences, and other profile-scoped behavior. Profiles are not plugin installations, provider configurations, accounts, runtime instances, Projects, Tasks, Sessions, or Environments.
+A **Profile** is a named, sparse composition layer. It may contribute opinions
+about plugin activation, ordinary configuration overrides, configured-provider
+availability, provider preference, and other explicitly profile-scoped choices.
+It records only choices for which it has an opinion, not a complete copy of the
+application's configuration or plugin list.
 
-See also:
+A Profile is not a plugin installation, plugin runtime, configured account/provider
+instance, Project, Task, Session, Environment, runtime resource, or workbench/window
+instance. Profiles do not select plugin versions: installation, source, build, and
+version selection belong to the installation/toolchain domain.
 
-- ADR 0029 for the accepted ordered-profile decision;
-- ADR 0031 for Project/Task/Session/Environment direction;
-- [`plugin-system.md`](plugin-system.md) for the recursive extension model.
+A window/context may use an ordered stack of **zero or more** Profiles:
 
-## Goals
+- Profiles are flat: they do not inherit from, include, or activate other Profiles.
+- A Profile appears at most once in one active stack.
+- Where a domain uses ordinary precedence, later Profiles have higher precedence.
+- The architecture imposes no arbitrary small maximum stack size, although UX may
+  optimize for one or two.
 
-The intended model should support all of the following without forcing users to think in terms of plugin implementation details:
+For example, `Developer + Work` and `Developer + Personal` reuse a development
+composition with different provider/configuration choices. `Vibe` may deliberately
+expose a smaller surface while leaving omitted tooling installed. These examples
+do not prescribe a required stock composition.
 
-- A `Developer` profile can enable editors, diffs, terminals, SCM views, and other inspection-oriented tooling.
-- A `Vibe` profile can deliberately expose a much smaller surface, such as primarily agent chat, while leaving omitted tooling installed for other profiles.
-- A `Work` profile can add work-specific providers, policy, or configuration to another profile such as `Developer`.
-- A `Personal` profile can similarly compose with the same development setup.
-- One Project can normally reopen with `Developer + Work` while another reopens with `Developer + Personal`.
-- Project- or resource-specific settings can override broader defaults when that setting meaningfully supports those scopes.
-- Shareable configuration can use a stable human-readable form suitable for normal tooling/version control where appropriate.
-- Settings UX is organized around user concepts rather than plugin ownership.
-- Different open windows can present the same Project, Task, Session, Environment, or runtime resource with independent UI state.
+If repeated stacks eventually need convenience, a separate named stack/preset may
+expand to an explicit ordered list. It must not introduce Profile inheritance;
+the preset mechanism remains deferred.
 
-The design should remain understandable for the common one- or two-profile case without imposing an arbitrary architectural limit on larger profile stacks.
-
-## Distinct concepts
-
-| Concept | Meaning |
-| --- | --- |
-| Installed plugin | Plugin source and compiled artifacts available to the ADELE installation |
-| Profile | Named sparse layer of activation, configuration, availability, and preference decisions |
-| Active profile stack | Ordered list of profiles applied to one window/context |
-| Plugin activation | Whether an installed plugin is effectively active in a context |
-| Configuration declaration | Host- or plugin-owned description of a stable setting and editing/validation metadata |
-| Configuration override | Value intentionally supplied by one eligible configuration scope |
-| Effective configuration | Result of resolving relevant configuration layers for a subject/context |
-| Provider availability | Whether a configured capability instance may participate in a context |
-| Provider preference | Host-owned preference among compatible available providers/configured instances |
-| Configured capability instance | Persistent named account/provider/connection/endpoint/cluster/device configuration or similar plugin-managed instance |
-| Plugin runtime instance | Running plugin created from an activation context; normally one per context |
-| Configuration context | Opaque generation-bound runtime execution scope for configured plugin state shared by one or more capability providers/services |
-| Project | Core persistent product identity selected/associated through replaceable Project providers/selectors |
-| Task | Core durable unit of user intent within a Project |
-| Session | Core orchestration container bound to one strategy |
-| Environment | Task-associated practical filesystem/source + process context supplied by an Environment provider |
-| Runtime resource | Temporary process, terminal, browser, document, connection, or active execution |
-| Window state | Live presentation state owned by one open window/view context |
-| Remembered workbench state | Persisted local state used to seed future windows without forcing existing windows to change |
-
-Installation, activation, configuration, provider selection, runtime instances, configured instances, product identities, runtime resources, and UI state must remain distinct. They may evaluate against related context but must not collapse into one generic plugin-state object.
-
-## Ordered profile stacks
-
-A window/context may activate an ordered list of profiles. Profiles are flat; they do not inherit from or include other profiles. Where a domain uses normal precedence semantics, later profiles have higher precedence than earlier profiles.
-
-For example:
+## Active and remembered profile stacks
 
 ```text
-ADELE defaults
-    |
-user / all-profiles configuration
-    |
-Developer
-    |
-Work
-    |
-Project-specific configuration
+active profile stack
+    live context/window state
+remembered project profile stack
+    local persisted default for future windows
 ```
 
-`Developer + Work` and `Developer + Personal` are natural compositions. A profile should record only values for which it has an opinion rather than duplicate every value established by earlier layers.
+Changing the stack normally changes the current window immediately and updates
+the remembered local default for that Project. It does not change another open
+window's active stack.
 
-ADELE should not impose an arbitrary small maximum profile count. The normal UX may optimize for one or two active profiles, but four or more remain valid. A profile should appear at most once in one stack, and UI must make ordering/precedence understandable.
+If A and B share a Project and start with `Developer + Work`, B can switch to
+`Developer + Personal` without changing A. A later window C can start from the
+new remembered default. A subsequent change in A may update that default again,
+but must not mutate B or C.
 
-Profiles should not activate/include other profiles. If repeated complex stacks eventually need a convenience abstraction, that should be a separate named stack/preset that expands to an explicit ordered profile list rather than another inheritance mechanism.
+The remembered stack is local ADELE state, not automatically repository-shared
+configuration. Its exact persistence key is deferred, as is an optional explicit
+switch-without-remembering operation.
 
-Plugin versions are not profile properties. Installation/source/build artifacts/generation availability belong to the ADELE installation/toolchain environment. Profiles control activation/configuration of available plugins rather than selecting conflicting installed versions as another cascade dimension.
+## Ordinary configuration resolution
 
-## Remembering a Project's active profile stack
-
-The active profile stack is window/context state with a remembered local default for reopening the same Project context.
-
-If windows A and B start with `Developer + Work` and B changes to `Developer + Personal`, A remains on `Developer + Work`. The remembered value becomes `Developer + Personal`, so a subsequently opened window C starts with that stack. Later changes from A may replace the remembered value without mutating B/C.
-
-A separate explicit temporary/try-without-remembering operation may be useful later, but persistence-by-default is the intended normal behavior.
-
-The remembered profile stack is local ADELE state. It is not repository configuration other users automatically inherit.
-
-Project is now an accepted core identity, but its concrete association need not be a filesystem root. A local-directory Project, remote/cloud Project, or another Project implementation can all have remembered profile state without changing profile semantics.
-
-## Configuration layers
-
-Ordinary settings should support layered resolution. A useful conceptual model is:
+Profiles are inputs to configuration resolution, not the resolver or its entire
+scope model. An ordinary setting may resolve through eligible layers such as:
 
 ```text
-host/plugin defaults
-        |
-user / all-profiles overrides
-        |
-ordered active profiles
-        |
-Project overrides
-        |
-optional narrower subject-specific overrides
+host/plugin default
+    -> user/all-profiles override
+    -> ordered active profiles
+    -> Project override
+    -> optional narrower subject-specific override
 ```
 
-Possible narrower subjects include resources/directories, Tasks, Sessions, Environments, or Runs, but they are not universal layers. A setting declaration determines which scopes are meaningful and legal.
+Scopes are setting-specific, not universal. Task, Session, Environment, resource,
+and Run overrides are not automatically available to every setting. The setting's
+declaration determines which subjects and layers are meaningful and legal.
 
-Application theme, model account selection, formatter behavior, Agent instructions, Environment-specific execution configuration, and per-resource test settings do not necessarily share the same valid scope set.
+Absence means "continue resolving." Explicit `null`, where legal, is a value
+distinct from absence. Effective values should retain provenance so Settings and
+diagnostics can explain their contributing layers and overridden values. This
+resolution model does not prescribe a configuration storage or API schema.
 
-A missing value means "inherit/continue resolving." An explicit `null`, where valid, is distinct from absence.
+## Shared context, distinct composition
 
-The host should retain provenance for effective values so UI/diagnostics can explain which layer supplied a value and which lower-precedence values were overridden.
+Profiles and product/resource context can supply inputs to several systems.
+Sharing those inputs does not give the systems one composition algorithm:
 
-## Context is shared; composition semantics are not universal
-
-Profiles, Project context, resource context, Task/Session context, and runtime context provide common inputs to several host-owned resolvers. They do not imply one universal last-writer-wins algorithm.
-
-At minimum, ADELE should treat these as distinct systems:
-
-| Domain | Intended direction |
+| Domain | Composition semantics |
 | --- | --- |
-| Ordinary settings | Ordered override/cascade, with setting-specific merge rules where declared |
-| Plugin activation | Sparse tri-state composition plus lifecycle/availability validation |
-| Provider availability/preference | Host-owned filtering and deterministic/contextual preference resolution |
-| Security/permissions/approvals/policy | Constraint/policy composition; not ordinary last-writer-wins settings |
-| Extension applicability/ordering | Defined by each extension contract; not a configuration deep merge |
-| Inference instruction context | Implemented immutable source capture; strategy first, then lexicographic source identity and preserved local order, not settings precedence |
-| Workbench/window state | Independent live window state with remembered persistence for future windows |
-| Product/runtime state | Domain semantics rather than configuration inheritance |
+| Ordinary settings | Precedence/cascade, with declared merge behavior. |
+| Plugin activation | Sparse tri-state composition, subject to lifecycle/availability validation. |
+| Provider availability/preference | Host-owned filtering and preference among compatible available instances. |
+| Security/policy/approval | Policy/constraint composition, not normal last-writer-wins. |
+| Extension applicability/order | Defined by the owning extension contract. |
+| Inference/context material | Defined by the execution/context contract, not a settings cascade. |
+| Workbench state | Independent live state plus remembered defaults. |
+| Product/runtime state | Domain semantics, not configuration inheritance. |
 
-A lower-trust Project/resource scope must not automatically weaken security merely because it is more specific. Exact security/policy composition remains deferred.
+A more-specific Project or resource layer must not automatically weaken security
+because it has higher ordinary-setting precedence. Exact security-policy
+composition remains deferred; neither activation nor provider availability grants
+invocation authority.
 
 ## Plugin activation
 
-Profile activation should be sparse and effectively tri-state:
+Installation makes an implementation available; it does not imply activation.
+Activation is contextual, not an intrinsic installed-metadata flag. Profiles store
+sparse activation opinions using a tri-state model:
 
 ```text
 unspecified / inherit
@@ -170,221 +126,226 @@ enabled
 disabled
 ```
 
-An unspecified profile has no opinion and resolution continues. A later explicit activation decision can override an earlier profile decision, subject to host validation and future policy constraints.
+An unspecified entry has no opinion and resolution continues. Later explicit
+decisions may override earlier Profile decisions where host validation and policy
+allow. This is not a requirement to copy complete plugin lists into Profiles.
 
-Installing a plugin never implies global activation. Activation is contextual and must not be stored as an intrinsic property of installed-plugin metadata.
+When a plugin is effectively disabled in a context, its normal user-facing
+presence should disappear from that context, normally including:
 
-When a plugin is effectively inactive in a context, its normal product surface should normally be absent:
+- workbench/UI contributions;
+- Commands and keybindings;
+- capabilities and extension registrations;
+- contributed settings and custom settings UI.
 
-- no plugin workbench/selection UI;
-- no plugin Commands or suggested keybindings;
-- no plugin-provided runtime capabilities;
-- no plugin-defined active extension registrations;
-- no plugin-contributed ordinary settings/custom settings UI.
+This is intentional product simplification, not merely hiding a toolbar.
+**Disabling a plugin does not delete its persisted configuration.** Re-enabling
+should be able to restore the plugin with its dormant configuration. Host-owned
+plugin-management metadata may still expose the installed plugin for management
+while its normal product/settings surfaces are hidden. Deactivation does not
+uninstall it.
 
-Disabling a plugin must not delete its persisted configuration. Re-enabling should restore its contributions using previously stored values. From the user's perspective, however, an inactive plugin should largely cease to exist in that context rather than leave settings clutter.
+Plugins must not silently activate concrete complementary plugins. They cooperate
+through public interfaces and runtime discovery; missing participation follows the
+owning extension contract's availability/failure semantics. See the
+[plugin system](plugin-system.md#identity-and-lifecycle-distinctions).
 
-The F1 prepared catalog makes installation metadata available without starting
-plugins. Host-owned plugin/profile management, contextual activation decisions,
-and enable/disable controls remain deferred; see
-[`plugin-layout.md`](plugin-layout.md#prepared-installation-snapshot).
+## Settings ownership and UX
 
-Plugins should not silently activate arbitrary other plugin implementations. Complementary behavior should normally use public typed interfaces and runtime discovery. Missing compatible providers/extensions should be diagnosable or simply make an affordance unavailable according to that extension contract.
+Technical setting ownership identifies a stable ID/schema owner. Settings UX
+organization follows user/product concepts, not a plugin list. Common settings
+should be declarative so ADELE can provide consistent native editing.
 
-## Settings declarations and UX
+A future declaration may describe a stable ID, value type, label/description,
+default, category/search metadata, allowed scopes, validation, merge/apply behavior,
+and portability/sensitivity metadata. These are illustrative categories, not an
+API specification.
 
-Each ordinary setting needs a stable technical identity/owner, but technical ownership should not dictate Settings organization. Plugins may contribute settings to product-oriented categories such as models/providers, editing/review, execution/Environment, source control, appearance, security/approvals, or other concepts.
+Plugins may supply custom editors where generic editing is inadequate. Such UI
+must use host-owned configuration and persistence APIs, not establish a separate
+settings store. Scope, provenance, reset, validation, and persistence semantics
+remain consistent with declarative editing.
 
-The common case should be declarative. A setting declaration may eventually include:
-
-```text
-stable setting id
-value type
-label and description
-default value
-category/group/order/search metadata
-allowed scopes
-validation constraints
-merge behavior
-apply/restart behavior
-sensitivity/portability metadata
-```
-
-The exact schema is deferred.
-
-ADELE should provide native editors for common declarative types. A plugin may provide a custom settings editor when generic property editing would be poor UX, for example account management, model-provider setup, MCP server management, or complex approval rules.
-
-A custom editor does not own configuration persistence. It edits through ADELE-owned APIs so scope selection, validation, transactions, provenance, reset/inheritance semantics, and persistence remain consistent.
-
-Normal Settings UX should select the target editing scope at a higher level rather than putting a scope selector beside every control. For example, the user might edit `All Profiles`, `Developer`, `Work`, or `This Project`, with controls indicating inherited provenance.
-
-Resetting an override removes that layer's value so normal resolution resumes; it does not copy the parent value into the child scope.
-
-Resource/Environment/Session configuration, when supported, should be exposed contextually rather than forcing every user to reason about every possible scope at all times.
+Normal Settings UX should expose the editing scope at a higher level, for example
+`All Profiles`, `Developer`, `Work`, or `This Project`, with controls indicating
+inherited provenance. Supported narrower subjects can expose configuration
+contextually rather than requiring every control to display every possible scope.
+Reset removes the current-layer override so resolution resumes; it must not copy
+the parent value downward.
 
 ## Merge behavior
 
-Simple scalar settings naturally use the more specific/later explicit value.
+Scalar/simple settings normally use the highest-precedence explicit value.
+Replacement is the conservative default for compound values: there is no universal
+deep merge for arbitrary objects or lists. A setting may explicitly declare another
+well-defined merge semantic. Complex durable records may be better modeled as
+identified records than as giant nested settings. Effective resolution should
+preserve provenance, including when several layers contribute to a merged value.
 
-ADELE should not invent a universal deep-merge algorithm for arbitrary objects/lists. Replacement is the conservative default for compound values unless a setting explicitly declares well-defined merge semantics such as ordered union, append, keyed merge, or another domain-specific operation.
+## Configured instances and provider selection
 
-Complex persistent records may be better represented as separately identified records rather than one deeply nested setting.
+A configured capability instance is a persistent/logical account, provider,
+endpoint, connection, or similar named configuration, not a Profile. One plugin
+runtime may represent several such instances, derived from shared configuration
+and applicable overrides, without another installation or backend process for each.
 
-Effective-value resolution should preserve provenance even when an explicit merge strategy combines values from multiple layers.
+Profiles may influence two separate decisions:
 
-## Providers, accounts, credentials, and defaults
+1. **Availability:** may this configured instance participate in this context?
+2. **Preference:** which compatible available instance should normally be chosen?
 
-Configured capability instances remain distinct from profiles. One plugin runtime may expose several named accounts/providers/endpoints/clusters/connections/devices. Profiles can participate in deciding which configured instances are available and which compatible instance is preferred without duplicate plugin installs/runtime copies.
+Making a work account available need not prefer it. Preference does not make an
+unavailable instance usable. ADELE/host owns preference resolution; providers do
+not declare themselves globally primary. Explicit provider selection and failure
+semantics remain governed by
+[contracts and capabilities](contracts-and-capabilities.md#capability-semantics).
 
-Availability and preference are separate. A profile may make a work account available, prefer it, do both, or do neither.
+A persistent configured instance is not a generation-bound `configurationContext`.
+The latter is live routing metadata, not the durable record; see
+[configuration contexts](contracts-and-capabilities.md#configuration-context).
 
-ADELE owns preferred-provider resolution. Providers cannot declare themselves globally primary.
+## Credentials and secrets
 
-The same host-owned default-selection concept may eventually apply to interchangeable extension interfaces beyond the currently implemented capability registry, such as choosing the default source-display provider or Environment provider. Exact generalized preference plumbing remains unimplemented.
+Secrets are not ordinary serialized configuration values. Ordinary configuration
+should reference managed credentials or configured instances rather than embed
+secrets. Credential storage and account-management APIs remain deferred; this
+architecture does not choose a secure-storage technology.
 
-Credentials/secrets are not ordinary configuration values. Ordinary configuration should reference a managed credential/configured instance rather than serialize the secret itself. Exact secure storage remains deferred.
+## Configuration persistence
 
-Normal selection provisionally uses experimental ChatGPT with the existing OpenAI
-credential store. Checkout tooling snapshots only the store reference and public
-OAuth/endpoint options into a separate generic startup-argv file, never tokens.
-The app forwards argv without interpreting OpenAI configuration. The launcher
-always supplies `--chatgpt-only`, adding a JSON argument only when configured;
-unconfigured mode advertises zero capabilities, not an inherited API-key provider.
-Normal bootstrap independently sends `startupArgumentsOnly: true`, forwarded to
-backend startup without plugin-specific switching. OpenAI then forbids environment
-fallback even when argv is empty or no configuration document is supplied, so
-OpenAI advertises zero capabilities in root-only normal activation. Direct/self-hosting
-callers keep the default `false` and their environment configuration path. This
-temporary deployment rule is not settings/profile/credential infrastructure.
-The backend owns configuration interpretation, credentials, and ready exposures.
-The app retains provisional selected provider identity and model-only configuration:
-the environment reader always supplies a model default or override, with no
-credential-presence gate or startup OAuth/credential inspection. Provider
-availability comes from the active registry. Defines contain deployment locations, not credentials or
-model values. No profile, settings, or provider preference system is implied. Each
-new normal Run resolves its provider/tools and uses the narrow approval-gated
-policy; per-invocation approval is not persisted permission configuration. Session validity does not
-depend on model availability.
+Persisted configuration can outlive activation and plugin versions. Stable setting
+identities, validation, migration, and deprecation therefore matter. ADELE must not
+casually discard persisted or unrecognized configuration merely because its owning
+plugin is inactive or unavailable.
 
-## Persistence, portability, and schema evolution
+Shareable/Project configuration should support a stable human-readable
+representation suitable for ordinary tooling and version control where appropriate.
+Machine-local operational state may use a different store; not every persistence
+domain needs the same representation. Portable/local overlays and exact storage
+mechanics remain deferred.
 
-Shareable or Project-version-controlled configuration should have a stable human-readable representation and remain editable through ADELE APIs/UI and ordinary tooling. This does not require every class of persistence to use the same textual storage mechanism.
+Plugin-owned domain state is not automatically ordinary cascading configuration,
+even when host persistence facilities store it. Storage does not transfer semantic
+ownership to core. External systems may remain authoritative when that is part of
+the domain. See [plugin-owned state](plugin-system.md#plugin-owned-state-and-persistence)
+and [product state](product-model.md#core-owned-and-plugin-owned-durable-state).
 
-Machine-local configuration, remembered UI state, caches, runtime state, and operational metadata may use another internal store. A future design may distinguish portable/local overlays at the same conceptual scope when needed.
+## Stable configuration for execution
 
-Persisted configuration outlives individual plugin activations and may outlive plugin versions. Stable setting IDs, validation, deprecation, migration, and unknown-value preservation therefore matter. Exact migration protocols are deferred, but ADELE should not casually discard unrecognized persisted configuration merely because its owner is inactive/unavailable.
+Changing persisted configuration is distinct from mutating an already-running
+operation. Execution-sensitive work needs a defined application boundary, such as:
 
-Plugin-owned domain state may use ADELE persistence facilities but is not automatically ordinary cascading configuration. Chat Session state, TODO progress, Task summaries, or artifact metadata have their own domain semantics.
-
-External systems may remain authoritative where their persistence semantics are part of the feature; for example, Git staging may represent approved review hunks.
-
-## Runtime application and stable snapshots
-
-Changing persisted configuration and changing an already-running operation are separate concerns.
-
-Settings may eventually declare/apply behavior such as:
-
-- live for future observations in existing UI;
-- next operation/Run/inference;
-- plugin reconfiguration/restart;
+- future observation;
+- next inference;
+- next Run;
+- plugin restart/reconfiguration;
 - application restart.
 
-Execution-sensitive work should normally use a stable resolved configuration/context snapshot rather than have provider selection, Agent/model choices, tool policy, or approval behavior mutate unpredictably halfway through an operation because another window changed Settings.
+The boundary and mechanism are setting/domain-specific. An in-flight execution
+must not unpredictably change provider, tool, policy, or configuration semantics
+merely because another window edits Settings. Stable resolved configuration/context
+boundaries preserve that invariant without requiring every change to wait for the
+same event.
 
-The same principle applies to structured inference composition: UI/model-tool changes made after a model invocation is resolved affect a subsequent invocation, not the in-flight one.
-
-The implemented instruction-only `InferenceContextComposer` captures current
-sources over the existing `ExtensionRegistry` for each new inference, including
-Chat continuation. Its immutable `InferenceContextSnapshot` survives source
-retirement after safe capture; a later inference discovers replacements.
-Executable binding rules remain unchanged. Sources own freshness through rereads,
-watches, caches, or versions, not a generic refresh API or settings cascade.
-
-This source order has no numeric priority and grants no semantic authority.
-Neither this bounded snapshot nor the current adapter's instruction-string
-rendering implements profile/configuration resolution. No production context
-source is activated by Chat; broader material, provider-aware projection/cache
-planning, token budgets, compaction, and general configuration/reconfiguration
-mechanics remain deferred.
+Stability does not keep retired executable bindings alive or authorize silent
+replacement. The [execution model](execution-model.md#generation-bound-execution)
+owns executable snapshot and binding lifetimes; inference/context composition is
+not another settings cascade.
 
 ## Workbench and window state
 
-Workbench state is not ordinary configuration. Profiles influence which plugins/extensions exist, while splitter positions, selected tabs, view visibility, scroll position, and similar presentation state belong to windows/views.
+Workbench presentation state is not ordinary cascading configuration. Profiles
+influence available extensions; each open window owns independent live presentation
+state, such as splitters, selected tabs, view visibility, and scroll position.
+Windows may present shared domain data without sharing their live arrangement.
 
-Different windows over the same Project/Task/Session may have independent live workbench state while presenting shared underlying domain data.
+Remembered local state seeds future windows. Changes may update that remembered
+state but must not rearrange already-open windows. Writes must be fine-grained
+enough that one window's stale whole-layout snapshot does not overwrite another
+window's newer, unrelated property. Concurrent writes to the same remembered
+property may use last-writer-wins without losing unrelated changes.
 
-ADELE should maintain remembered local workbench state used to initialize future windows. Once opened, each window owns an independent live copy. Changes write through to remembered state but do not push into already-open windows.
+Remembered state for temporarily unavailable extensions may remain dormant and
+return when the extension becomes available again. Physical placement is not a
+plugin extension's semantic identity. Ordinary splitter dragging must not silently
+become shared Profile configuration; a future explicit save-as-default operation
+would be a separate choice. Exact remembered-state keying and garbage collection
+remain deferred.
 
-For example:
+## Runtime activation context
 
-```text
-remembered console height = 300
+The intended model is normally one plugin runtime per activation context. One
+active generation can expose multiple configured instances. Its generation-bound
+`configurationContext` is runtime routing metadata derived from configured state,
+not a persistent configuration record, Profile, account identity, or invocation
+authority. Several providers/services may share a context, and one generation may
+have several contexts.
 
-Window A opens -> 300
-Window B opens -> 300
-Window B changes to 400
-  Window B = 400
-  remembered = 400
-  Window A remains 300
+Temporary processes, terminals, connections, and active executions are runtime
+resources, not Profiles or configured instances. See
+[contracts and capabilities](contracts-and-capabilities.md#configuration-context)
+for live routing and its separation from host invocation authority.
 
-Window C opens -> 400
-Window A changes to 200
-  Window A = 200
-  remembered = 200
-  Window B and C remain 400
+## Product-context inputs
 
-Window D opens -> 200
-```
+Profile/configuration resolution may use product identities as contextual inputs
+where the setting or domain supports them. Product lifecycle is not configuration.
+Profiles may influence Environment-provider availability/preference, but
+Environment establishment, release, and destruction remain product/provider
+lifecycle responsibilities. No separate Workspace identity is required.
 
-Persistence must be fine-grained enough that one window changing a sidebar width does not overwrite another window's newer remembered console height through a stale full-layout snapshot. Last-writer-wins is acceptable for concurrent writes to the same remembered property; unrelated properties should not overwrite one another.
+The [product model](product-model.md) owns Project, Task, Session, Environment,
+and Run semantics; this document does not redefine them as configuration scopes
+or lifecycle objects.
 
-The exact persistence key remains open. ADELE should be able to remember materially different arrangements for Project/profile contexts whose active plugin surfaces differ, but this document does not require the key to be exact Project ID + exact profile stack.
+## Implementation status
 
-Changing active profiles can substantially change which semantic workbench extensions exist. UI extensions should therefore have stable identities, and remembered state for a temporarily unavailable extension may remain dormant so it can be restored when that extension returns.
+Implemented foundations and current limits:
 
-Plugin-facing UI extension names should describe semantics rather than current physical position. A Session-status extension should remain the same extension if the stock layout moves it from right to left or makes placement user-configurable.
+- Installation/catalog metadata remains distinct from activation/configuration.
+- Capability endpoints have generation-bound configuration contexts.
+- Normal startup uses a fixed participation policy, attempting discovered valid
+  components rather than resolving Profiles.
+- Current provisional provider selection and temporary source-checkout configuration
+  do not implement this architecture; operational details belong in the
+  [application documentation](../../app/README.md#chatgpt-source-checkout-configuration).
 
-A future explicit operation may allow saving an arrangement as a profile/layout default. Ordinary splitter dragging should not silently become shared profile configuration.
-
-## Runtime activation contexts
-
-The intended default remains one plugin runtime per activation context, while activation-context lifecycle is not yet implemented. One active plugin generation may expose multiple configured capability instances through one or more explicit configuration contexts without requiring another plugin install/backend copy.
-
-Each active capability endpoint executes under an explicit generation-bound configuration context. The context is runtime metadata derived from persistent configuration/activation decisions; it is not the persistent configuration record itself. Several providers/services may share a context when they operate over the same configured plugin state, and one generation may host several contexts.
-
-Temporary terminals, browsers, documents, processes, Runs, and active tool executions remain runtime resources rather than profiles, persistent configured instances, or plugin runtime instances.
-
-## Project, Task, Session, and Environment context
-
-ADR 0031 supplies the product-domain identities that profile/configuration systems may use as contextual inputs:
-
-- Project is an abstract persistent identity, not necessarily a directory.
-- Task is the durable user-intent object.
-- Session is permanently bound to an orchestration strategy.
-- Environment is the practical filesystem/source + process context for Task work.
-
-A Task normally has one primary Environment and may own additional Environments for child Session work. Environment lifecycle is not ordinary profile/configuration state; profiles/configuration may influence which Environment provider is available/preferred, while core Task lifecycle and the selected provider own Environment establishment/release/destruction semantics.
-
-A separate first-class Workspace concept is not currently part of accepted architecture. It should be reintroduced only if concrete requirements show that Environment cannot cleanly represent an independent needed identity.
+Not implemented: Profile manager/persistence, profile-aware activation, a generic
+settings declaration/resolution service, configured-instance management UI,
+profile-aware provider routing, or production workbench-state persistence.
 
 ## Deferred decisions
 
-This document intentionally does not settle:
+- Profile CRUD/import/export UX and storage.
+- Optional named stack presets and non-remembering Profile switches.
+- Exact configuration serialization/local-store technology and portable/local overlays.
+- Setting declaration/migration APIs and specific non-default merge semantics.
+- Exact narrower subject scopes and their override semantics.
+- Security/policy/approval composition.
+- Credential storage and account-management APIs.
+- Plugin reconfiguration/restart rules.
+- Richer provider suitability/default policy, including non-capability selection.
+- Remembered workbench-state keying and garbage collection.
 
-- profile create/delete/import/export UX and persistence format;
-- whether named profile-stack presets are useful;
-- exact serialized configuration format or local store technology;
-- portable-vs-local overlay mechanics;
-- exact setting declaration/schema/migration APIs;
-- exact complex-value merge strategies beyond conservative defaults;
-- exact Project/resource/Task/Session/Environment override semantics;
-- security/permission/policy constraint composition;
-- credential storage/account-management APIs;
-- dynamic plugin reconfiguration versus restart boundaries;
-- exact provider/default matching and suitability policy;
-- exact remembered-workbench-state keying/garbage collection;
-- whether profile stack switching supports explicit non-remembered mode;
-- implementation staging for the currently implicit development profile;
-- generalized default-selection infrastructure for non-capability extension interfaces.
+These deferrals do not reopen ordered flat Profile composition or the product
+identities accepted by ADRs 0029 and 0031. They leave storage layouts, schemas,
+migration protocols, and APIs for concrete implementation needs.
 
-The product-domain identity question formerly deferred here is now governed by ADR 0031 rather than remaining undefined.
+## Related architecture
+
+- [ADR 0029](../adr/0029-ordered-profile-composition-and-configuration-direction.md):
+  ordered Profile decisions and rationale.
+- [Plugin system](plugin-system.md): installation, activation, and runtime distinctions;
+  [ADR 0015](../adr/0015-plugin-installation-differs-from-profile-activation.md) and
+  [ADR 0017](../adr/0017-one-plugin-runtime-may-expose-multiple-configured-capability-instances.md)
+  record the activation and multiple-instance decisions.
+- [Plugin layout](plugin-layout.md): prepared installation metadata boundary.
+- [Contracts and capabilities](contracts-and-capabilities.md): configured instances,
+  live contexts, provider selection, and authority;
+  [ADR 0027](../adr/0027-generation-bound-plugin-configuration-contexts.md) records
+  the generation-bound context decision.
+- [Product model](product-model.md): product identities and state, with rationale in
+  [ADR 0031](../adr/0031-project-task-session-environment-domain-direction.md).
+- [Execution model](execution-model.md): stable execution and binding snapshots.
+- [Product UX direction](../product/development-workflow/README.md): intended Settings
+  and workbench experience, not architecture authority.
