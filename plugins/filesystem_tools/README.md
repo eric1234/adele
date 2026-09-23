@@ -39,7 +39,7 @@ The host captures coherent read/mutation facets for the same Session/Environment
 and synchronously validates every exact captured binding without re-resolution.
 Only execution after policy/approval receives a fresh invocation token allowlisting
 exactly that tool's services. Stream authority starts on listen and ends on
-settlement, cancellation, or retirement. The [backend](#backend) uses public generated
+settlement, cancellation, or retirement. The [backend](packages/backend/) uses public generated
 contracts and `adele_plugin_backend_support`, not app or internal host imports.
 
 Separate generated `AuthorizedEnvironmentMutationService` exposes only

@@ -47,9 +47,13 @@ on optional `ModelNativeOutput.presentation`, without OpenAI interpretation.
 [Frontend](../frontend/README.md) renders only the safe payload and escapes full
 display text. Generic Chat escapes compact display text and derives activity
 presence from non-null presentation, independently of rich frontend activation.
-Stock app activation imports Contract identity only to load/register/retire the
-prepared presentation; it owns no provider algorithms and remains provisional
-until frontend discovery/profiles replace hard-coded selection.
+Production `app/lib/**` imports no plugin packages, including OpenAI Contract.
+Prepared presentation activation is generic and descriptor/catalog-driven through
+[`ApplicationFrontendBootstrap`](../../../../app/lib/frontend/application_frontend_bootstrap.dart).
+Build/preparation tooling supplies stock identities through
+[`stock_frontend_descriptors.dart`](../../../../tools/stock_frontend_descriptors.dart);
+that is not production application activation. Generic adapters and presentation
+hosts carry public semantic presentation data without OpenAI interpretation.
 
 Raw `nativeMetadata` remains exact and the only native replay source. Safe
 presentation is never replayed, added to canonical Chat history, or persisted by

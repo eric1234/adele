@@ -2,22 +2,29 @@
 
 `adele_capabilities` is an experimental public, pure-Dart package for concepts
 used to select which provider handles callable inter-plugin work. It includes
-capability/provider identities, descriptors, active registrations,
-exact-generation bindings, structured resolution failures, and the in-memory
-active registry.
+`CapabilityId`, `ProviderId`, `CapabilityKey`, `ProviderDescriptor`,
+`CapabilityEndpoint`, active registrations, exact registration-bound
+`ProviderBinding`s, structured resolution failures, and the in-memory
+`CapabilityRegistry`. The public entrypoint is
+[`adele_capabilities.dart`](lib/adele_capabilities.dart).
 
-Capabilities are one callable specialization within ADELE's broader accepted
-Extension Point architecture. The current registry should remain focused on
-provider selection for Actions/Services rather than become a universal registry
-for UI contributions, Events, Commands, or structured operation composition.
-The broader extension runtime is not yet implemented.
+Capabilities are one callable specialization within ADELE's
+[Extension Point architecture](../../docs/architecture/plugin-system.md).
+Generic typed registration/discovery and binding liveness are implemented in
+[`adele_plugin_api`](../plugin_api/README.md) and used by maintained domain extension
+points. `adele_capabilities` owns specialized Action/Service provider selection,
+not that generic registry or universal composition for UI, strategies, or Events.
 
 ## Semantics
 
-Actions are brokered one-shot request/response operations. Directional future
-examples include displaying a source file or performing one review operation.
-Services are sustained typed capabilities, such as `ModelProvider`, future
-Environment filesystem/process access, or a future `ConsoleService`.
+Actions are brokered one-shot operations. Services are sustained typed
+capabilities, such as model providers and the implemented Environment provider
+capability. [`adele_environment`](../environment/README.md) owns Environment
+establishment/restoration and filesystem/process semantics. Session-authorized
+read, mutation, and process facets and their generated host services are not
+separately selected Capability providers: they are captured operation
+authorities/services over the selected Environment. See
+[operation-scoped host calls](../../docs/architecture/contracts-and-capabilities.md#operation-scoped-host-calls).
 
 Events report facts that occurred. They are semantically read-only
 notifications: subscribers do not change whether the fact occurred, and a
@@ -25,17 +32,26 @@ subscriber failure normally does not retroactively fail the producer. Generic
 public Event publication/subscription is not yet implemented and Events do not
 imply a durable replay log.
 
-Several plugins may provide one Action or Service. For example, a future
-`DisplaySourceFile` capability may be handled by ADELE's Internal Source Editor
-or an external-editor launcher. Current callers can detect availability,
-enumerate compatible active providers, invoke the deterministic default, and
-explicitly select an alternative. Providers cannot declare themselves globally
-primary.
+A `CapabilityKey` matches a capability ID and exact positive major version.
+`CapabilityRegistry.providersFor` returns an unmodifiable snapshot of zero, one,
+or many currently available providers, ordered by descending rank and then
+ascending lexical provider ID. Default resolution chooses the first; explicit
+provider selection fails rather than silently falling back to another provider.
 
-The current default is deterministic rank/ID ordering. It is an implemented
-fallback, not the final preference model. Accepted architecture keeps default
-selection host-owned and allows future user/profile/Project context to choose a
-preferred provider while callers may expose explicit alternatives.
+Resolution captures one exact registration in a `ProviderBinding`.
+`endpointAs<T>()` checks registration liveness, endpoint availability, and type.
+Closing its `CapabilityRegistration` makes the binding stale even if the same
+provider ID is registered again. `CapabilityRegistrationGroup` supports grouped
+retirement. Closing a registration does not dispose its endpoint or universally
+revoke already extracted channels; consumers/adapters must retain and validate
+the exact binding at invocation and relevant asynchronous settlement boundaries.
+See the [registry source](lib/src/capability_registry.dart) and
+[tests](test/capability_registry_test.dart) for exact failure distinctions.
+
+Rank/ID ordering is the current deterministic default, not the final preference
+model or a provider declaration of global primacy. Default selection remains
+host-owned; future user/Profile/Project preferences belong to
+[profiles and configuration](../../docs/architecture/profiles-and-configuration.md).
 
 A single plugin runtime may expose several configured instances of one
 capability. The OpenAI plugin proves this with separately routed API-key and
@@ -57,15 +73,17 @@ Flutter and internal packages (`plugin_runtime`, `plugin_builder`,
 Plugins may also cooperate through deliberately public extension interfaces
 defined by core or another plugin/component. Depending on such an interface is
 not the same as depending on one specific implementation plugin being active.
-See `docs/architecture/dependency-rules.md` and
-`docs/architecture/plugin-system.md`.
+See [dependency rules](../../docs/architecture/dependency-rules.md) and the
+[plugin system](../../docs/architecture/plugin-system.md).
 
 ## Deferred
 
 Persistent preferences, generic configured-instance discovery/management,
 generic Event subscription, profile-aware routing, richer compatibility
-negotiation, dynamic suitability, generalized default selection for
-non-capability interfaces, and durable handles remain deferred.
+negotiation, dynamic suitability, and durable handles remain deferred. Not every
+proposed extension point or composition policy is implemented; non-capability
+composition belongs to its point/domain, not a generalized provider-selection
+mechanism here.
 
 The current registry implements deterministic rank/ID ordering, exact-major
 resolution, and explicit/default generation-bound binding; generated clients
