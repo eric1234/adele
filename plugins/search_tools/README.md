@@ -59,16 +59,21 @@ See [Environment](../../packages/environment/README.md) and
 
 ## Search Semantics
 
-- `query` is a nonempty, case-sensitive literal substring, not a regular expression.
+- `query` is a nonempty, single-line, NUL-free string of at most 256 UTF-16 code
+  units. Single-line excludes LF (`\n`), CR (`\r`), U+2028, and U+2029. Matching
+  is case-sensitive literal substring matching, not a regular expression.
   `path` is the only optional argument; omitted or empty scope searches the
   Environment root. Directory scopes recurse; file scopes search only that file.
 - Paths stay Environment-relative. Validation canonicalizes redundant `/` and `.`
   segments and rejects a leading `/`, `..` segments, NUL, and malformed Unicode. The
   Environment provider owns filesystem confinement and read eligibility. A failed
   requested scope never broadens to root.
-- Stock defaults exclude `.git`, `.dart_tool`, `build`, and `node_modules`
-  directories case-insensitively, including rejection of explicit excluded scopes.
-  This is not `.gitignore` interpretation or a configurable exclusion system.
+- Stock traversal skips directories named `.git`, `.dart_tool`, `build`, and
+  `node_modules`, case-insensitively. An explicit scope is rejected before
+  file/directory lookup if any canonical path segment matches one of those names
+  case-insensitively, including the final segment even if it would resolve to a
+  file. This is a stock Search rule, not `.gitignore` interpretation or a
+  configurable exclusion system.
 - Directory entries are sorted by relative path and traversed depth-first; matching
   lines retain ascending line order. Each matching line yields one result with
   Environment-relative path, one-based line number, and a bounded snippet.
