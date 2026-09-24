@@ -10,15 +10,30 @@ atomic instruction/invocation-budget configuration. Accepted appends return the
 canonical entry, including its stable Session-local ID. Assistant append and
 arbitrary history replacement are not public operations.
 
-`chat_strategy_contract.dart` is the annotated source of truth. The maintained
-generation command emits its native client, dispatcher, codecs, and service ID:
+`chat_strategy_contract.dart` is the annotated source of truth and retains
+`part 'chat_strategy_contract.g.dart';`. Its native sibling is configured in
+[`contract_codegen.yaml`](../../../../contract_codegen.yaml), is Git-ignored local
+output rather than committed source, and supplies the native client, dispatcher,
+codecs, and service ID. From the repository root:
 
 ```sh
+# Materialize or update native contract siblings.
+dart tools/adele.dart generate
+
+# Verify existing local siblings without writing.
 dart tools/adele.dart generate --check
 ```
 
-EVC preparation derives a bounded eval-compatible client from the same annotations
-using generic `contract_codegen` tooling. No application-owned Chat codec exists.
+The check fails when local output is missing or stale. Manual generation is
+normally unnecessary: maintained bootstrap, analyze, test, and build/run flows
+materialize output at their prerequisite boundary. See
+[`contract_codegen`](../../../../packages/contract_codegen/README.md) and the
+[toolchain workflow](../../../../docs/development/toolchain.md#generated-contract-artifacts).
+
+EVC preparation uses `ContractGenerator.generateEvalClient` to derive a bounded
+eval-compatible client directly from the same annotated declarations. That
+projection is compiled into the EVC; it is not the native sibling or a second
+hand-maintained semantic contract. No application-owned Chat codec exists.
 The frontend supplies an `OwningBackendRequestChannel` for the explicitly
 allowlisted service; native headless tooling can use the captured backend's
 configuration-scoped channel. The service is plugin-internal, not a core extension

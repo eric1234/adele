@@ -1,21 +1,30 @@
 # Plugin Builder
 
 `plugin_builder` is an internal, pure-Dart package. It implements narrow
-development manifest parsing, exact toolchain checks, dependency resolution,
-fresh build directories, selected-source contract generation, backend AOT
+development manifest parsing, expected Dart/Flutter version checks, dependency
+resolution, fresh build directories, selected-source contract generation, backend AOT
 compilation, captured process diagnostics, and development build-pointer publication.
 
-`prepareBackend` validates the Dart toolchain before running build tooling. It
+`prepareBackend` checks the expected Dart version before running build tooling. It
 resolves `packages.contract` from the requested plugin manifest, reads that
 package's name from `pubspec.yaml`, and passes the absolute
 `lib/<package-name>.dart` source to `contract_codegen --source`. Generation
 materializes or refreshes the ignored sibling `lib/<package-name>.g.dart`
-artifact; it is not generated-output validation. The explicit source selects only
+artifact; it is not a `--check` invocation. The explicit source selects only
 that plugin contract, never the repository-wide configured sources. Missing
-sources, invalid schemas, and generator/tooling failures stop before Flutter
-validation, dependency resolution, or backend compilation. The
+sources, invalid schemas, and generator/tooling failures stop before the Flutter
+version check, dependency resolution, or backend compilation. The
 `contract-generation` diagnostic retains the command, working directory, exit
 code, stdout, and stderr; a process-start failure reports `PluginBuildFailure`.
+
+The caller supplies the executable paths and expected version strings. Dart
+`--version` must succeed and include the expected text in stdout or stderr.
+The later Flutter `--version --machine` check looks for the expected
+`frameworkVersion` text in stdout rather than parsing JSON. These narrow checks
+do not independently verify the complete Flutter framework revision, engine, and
+bundled-Dart identity or prove that the selected executables belong to the same
+SDK. The repository-wide desktop preparation and pin remain owned by the
+[toolchain policy](../../docs/development/toolchain.md).
 
 `prepareBackend` produces the backend artifact and returns a destination for the
 frontend artifact; frontend compilation is caller-owned. Despite its name,

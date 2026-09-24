@@ -114,11 +114,31 @@ prohibited.
 ## Deferred
 
 The Phase II annotations cover unary and server-streaming services and immutable
-values. Annotated values use one unnamed constructor with final fields and
-matching required named field-formal parameters of exactly the same type.
+values. Annotated values use one unnamed generative constructor with non-late
+final fields. Each field normally has a same-name required named field-formal
+parameter of exactly the field's type. Two collection-snapshot forms also permit
+ordinary (non-field-formal) parameters, still required named and matching the
+field's name and exact type:
+
+- A `List<T>` field may use a direct SDK `List.unmodifiable` initializer, such as
+  `List<T>.unmodifiable(parameter)`.
+- A canonical `Map<String, Object?>` field may use the unqualified canonical
+  `adeleSnapshotJsonMap(parameter)` from `adele_contract`.
+
+Each field initializer must be that snapshot expression with the corresponding
+bare parameter as its sole argument. Arbitrary helpers, casts, reordered
+collection inputs, and different or additional arguments do not qualify. Other
+fields remain field-formal.
+
 Recursive annotated value schemas are rejected. JSON-compatible maps reject
 active-path identity cycles and nesting deeper than 64 containers. Actions,
 client/bidirectional streaming, replay, typed handles, compatibility policy,
 and general schema evolution remain deferred. Serialization and
-generation do not belong here; the separate internal `contract_codegen` package
-owns them.
+generation do not belong here; the separate internal
+[`contract_codegen`](../contract_codegen/README.md) package owns them.
+
+Annotated declarations and `part '<basename>.g.dart';` remain authored source.
+Native generated siblings are derived, Git-ignored local artifacts, not committed
+source. See the [toolchain workflow](../../docs/development/toolchain.md#generated-contract-artifacts)
+for materialization before native compilation, bootstrap for IDE/direct tool use,
+read-only freshness checking, and narrow cleanup.
