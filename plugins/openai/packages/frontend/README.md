@@ -107,8 +107,8 @@ survives follow-up prompts for the controller lifetime, not in canonical history
 
 ## Prepared Artifact
 
-The Linux launcher prepares the OpenAI EVC alongside Chat, Local Directory Project
-Selector, Filesystem Tools, and Command Tools. It installs `frontend.evc` alongside
+The Linux launcher prepares the OpenAI EVC alongside Chat, Local Directory Project,
+Filesystem Tools, and Command Tools. It installs `frontend.evc` alongside
 `backend.aot` in the one
 `dev.adele.openai` installation, with descriptors from
 `tools/stock_frontend_descriptors.dart`. Runtime discovers both components from

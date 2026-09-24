@@ -430,15 +430,12 @@ void main() {
     test('discovers the local selector without Linux desktop dependencies', () {
       final TestOptions options = parseTestOptions(<String>[
         '--target',
-        'local_directory_project_selector_frontend',
+        'local_directory_project_frontend',
         '--ci',
       ]);
       final TestTarget target = lookupTestTarget(options.target!);
 
-      expect(
-        target.path,
-        'plugins/local_directory_project_selector/packages/frontend',
-      );
+      expect(target.path, 'plugins/local_directory_project/packages/frontend');
       expect(target.executable, 'flutter');
       expect(target.argumentsFor(), <String>['test']);
       expect(target.argumentsFor(ci: options.ci), <String>['test']);
@@ -447,13 +444,8 @@ void main() {
     });
 
     test('discovers the local provider as a pure-Dart target', () {
-      final target = lookupTestTarget(
-        'local_directory_project_selector_backend',
-      );
-      expect(
-        target.path,
-        'plugins/local_directory_project_selector/packages/backend',
-      );
+      final target = lookupTestTarget('local_directory_project_backend');
+      expect(target.path, 'plugins/local_directory_project/packages/backend');
       expect(target.executable, 'dart');
       expect(target.argumentsFor(ci: true), ['test']);
       expect(target.linuxDesktopDeps, isFalse);
@@ -497,8 +489,8 @@ void main() {
           ),
           (name: 'openai_frontend', path: 'plugins/openai/packages/frontend'),
           (
-            name: 'local_directory_project_selector_frontend',
-            path: 'plugins/local_directory_project_selector/packages/frontend',
+            name: 'local_directory_project_frontend',
+            path: 'plugins/local_directory_project/packages/frontend',
           ),
         ]) {
       final target = analysisTargets.singleWhere(
@@ -577,68 +569,71 @@ void main() {
     },
   );
 
-  test(
-    'selector frontend replaces the root package without a native dependency',
-    () {
-      const root = 'plugins/local_directory_project_selector';
-      const path = '$root/packages/frontend';
-      final workspace = File('pubspec.yaml').readAsStringSync();
+  test('Local Directory Project components are separate workspace members', () {
+    const root = 'plugins/local_directory_project';
+    final workspace = File('pubspec.yaml').readAsStringSync();
+    expect(workspace, isNot(contains('  - $root\n')));
+    expect(File('$root/pubspec.yaml').existsSync(), isFalse);
+    expect(analysisTargets.any((target) => target.path == root), isFalse);
+    for (final component in ['backend', 'frontend']) {
+      final path = '$root/packages/$component';
+      final name = 'local_directory_project_$component';
       expect(workspace, contains('  - $path\n'));
-      expect(workspace, contains('  - $root/packages/backend\n'));
-      expect(workspace, isNot(contains('  - $root\n')));
-      expect(File('$root/pubspec.yaml').existsSync(), isFalse);
       expect(
-        File(
-          '$root/lib/local_directory_project_selector_plugin.dart',
-        ).existsSync(),
-        isFalse,
+        File('$path/pubspec.yaml').readAsStringSync(),
+        startsWith('name: $name\n'),
       );
+      expect(lookupTestTarget(name).path, path);
       expect(
-        () => lookupTestTarget('local_directory_project_selector_plugin'),
-        throwsA(isA<TestUsageException>()),
+        analysisTargets.singleWhere((target) => target.name == name).path,
+        path,
       );
-      expect(analysisTargets.any((target) => target.path == root), isFalse);
-      final frontend = File('$path/pubspec.yaml').readAsStringSync();
-      expect(frontend, contains('  adele_ui: ^0.1.0\n'));
-      expect(frontend, contains('resolution: workspace\n'));
-      final backend = File(
-        '$root/packages/backend/pubspec.yaml',
-      ).readAsStringSync();
-      expect(backend, contains('  adele_core_extensions: ^0.1.0\n'));
-      expect(backend, contains('resolution: workspace\n'));
-      expect(backend, isNot(contains('flutter:')));
-      expect(
-        backend,
-        isNot(contains('local_directory_project_selector_frontend:')),
-      );
-      for (final forbidden in [
-        'file_selector:',
-        'adele_desktop:',
-        'plugin_runtime:',
-        'adele_product:',
-      ]) {
-        expect(frontend, isNot(contains(forbidden)));
-      }
-      final app = File('app/pubspec.yaml').readAsStringSync();
-      final parts = app.split('dev_dependencies:');
-      expect(parts.first, contains('  file_selector: ^1.1.0\n'));
-      expect(parts.first, isNot(contains('file_selector_platform_interface:')));
-      expect(
-        parts.last,
-        contains('  file_selector_platform_interface: ^2.7.0\n'),
-      );
-      expect(stockFrontendExtensionDescriptors.values.single.single, {
-        'kind': 'projectSelector',
-        'extensionId':
-            'dev.adele.plugin.local-directory-project-selector.project-selector',
-        'projectProviderId': 'dev.adele.project.local-directory',
-        'displayName': 'Open Local Directory...',
-        'library':
-            'package:local_directory_project_selector_frontend/local_directory_project_selector_frontend.dart',
-        'entrypoint': 'selectProject',
-      });
-    },
-  );
+    }
+    final frontend = File(
+      '$root/packages/frontend/pubspec.yaml',
+    ).readAsStringSync();
+    expect(frontend, contains('  adele_ui: ^0.1.0\n'));
+    expect(frontend, contains('resolution: workspace\n'));
+    final backend = File(
+      '$root/packages/backend/pubspec.yaml',
+    ).readAsStringSync();
+    expect(backend, contains('  adele_core_extensions: ^0.1.0\n'));
+    expect(backend, contains('resolution: workspace\n'));
+    expect(backend, isNot(contains('flutter:')));
+    expect(backend, isNot(contains('local_directory_project_frontend:')));
+    for (final forbidden in [
+      'local_directory_project_backend:',
+      'file_selector:',
+      'adele_desktop:',
+      'plugin_runtime:',
+      'adele_product:',
+    ]) {
+      expect(frontend, isNot(contains(forbidden)));
+    }
+    final app = File('app/pubspec.yaml').readAsStringSync();
+    final parts = app.split('dev_dependencies:');
+    expect(parts.first, contains('  file_selector: ^1.1.0\n'));
+    expect(parts.first, isNot(contains('file_selector_platform_interface:')));
+    expect(
+      parts.last,
+      contains('  file_selector_platform_interface: ^2.7.0\n'),
+    );
+    expect(
+      stockFrontendExtensionDescriptors['dev.adele.plugin.local-directory-project'],
+      [
+        {
+          'kind': 'projectSelector',
+          'extensionId':
+              'dev.adele.plugin.local-directory-project.project-selector',
+          'projectProviderId': 'dev.adele.project.local-directory',
+          'displayName': 'Open Local Directory...',
+          'library':
+              'package:local_directory_project_frontend/local_directory_project_frontend.dart',
+          'entrypoint': 'selectProject',
+        },
+      ],
+    );
+  });
 
   test('tool frontends are workspace members isolated from headless tools', () {
     final String workspace = File('pubspec.yaml').readAsStringSync();
@@ -747,8 +742,8 @@ void main() {
         'agents_md_backend|dart|plugins/agents_md/packages/backend|test',
         'chat_strategy_contract|dart|plugins/chat_strategy/packages/contract|test',
         'chat_strategy_backend|dart|plugins/chat_strategy/packages/backend|test',
-        'local_directory_project_selector_backend|dart|plugins/local_directory_project_selector/packages/backend|test',
-        'local_directory_project_selector_frontend|flutter|plugins/local_directory_project_selector/packages/frontend|test',
+        'local_directory_project_backend|dart|plugins/local_directory_project/packages/backend|test',
+        'local_directory_project_frontend|flutter|plugins/local_directory_project/packages/frontend|test',
         'scripted_model_contract|dart|plugins/scripted_model/packages/contract|test --timeout 4m',
         'scripted_model_backend|dart|plugins/scripted_model/packages/backend|test',
         'openai_model_provider_backend|dart|plugins/openai/packages/backend|test --timeout 4m',

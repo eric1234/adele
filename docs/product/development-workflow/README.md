@@ -12,7 +12,7 @@ This document is **directional rather than contractual** and is not a definition
 
 The mockups should be read as one concrete composition approximately involving stock responsibilities such as:
 
-- Local Directory Project Selector;
+- Local Directory Project;
 - Task Browser;
 - Git-backed Environment provider;
 - Agent Interaction + Chat strategy;
@@ -82,7 +82,7 @@ Task
 
 A Project is an abstract ADELE-owned identity/lifecycle concept, not intrinsically a directory.
 
-The expected stock development composition provides a **Local Directory Project Selector** that uses the normal operating-system directory-selection UI and associates/resolves a Project from that directory.
+The expected stock development composition provides a **Local Directory Project** plugin that uses the normal operating-system directory-selection UI and associates/resolves a Project from that directory.
 
 Other selectors may later present recent Projects, a database/catalog, a cloud service, or another Project source without changing core Project semantics.
 

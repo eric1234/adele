@@ -1,12 +1,12 @@
-# Local Directory Project Selector
+# Local Directory Project
 
 Stock Local Directory Project selection and backing provider. The plugin root is
 not a Dart package. It contains independent components under one plugin identity:
 
 | Component | Responsibility |
 | --- | --- |
-| `packages/frontend`, `local_directory_project_selector_frontend` | Interpreted Flutter picker entrypoint and lexical path-to-URI conversion through public `adele_ui`. |
-| [`packages/backend`](packages/backend/README.md), `local_directory_project_selector_backend` | Pure-Dart AOT source validation and relative database placement through public `adele_core_extensions`. |
+| `packages/frontend`, `local_directory_project_frontend` | Interpreted Flutter picker entrypoint and lexical path-to-URI conversion through public `adele_ui`. |
+| [`packages/backend`](packages/backend/README.md), `local_directory_project_backend` | Pure-Dart AOT source validation and relative database placement through public `adele_core_extensions`. |
 
 Neither component imports app code, host internals, or the other's implementation.
 The frontend descriptor registers the public Project selector through the existing
@@ -14,10 +14,11 @@ extension registry; the ready backend separately advertises the Project provider
 capability. There is no static selector or native selection-semantics fallback.
 Loading and registration do not open a picker or database.
 
-- Plugin ID: `dev.adele.plugin.local-directory-project-selector`.
+- Plugin ID: `dev.adele.plugin.local-directory-project`.
+- Plugin display name: `Local Directory Project`.
 - Extension ID:
-  `dev.adele.plugin.local-directory-project-selector.project-selector`.
-- Display name: `Open Local Directory...`.
+  `dev.adele.plugin.local-directory-project.project-selector`.
+- Selector label: `Open Local Directory...`.
 - Project provider ID: `dev.adele.project.local-directory`.
 
 ## Selection
@@ -64,11 +65,13 @@ responsibility, not this plugin's backing validation.
 
 ## Preparation
 
-`app/tool/local_directory_frontend_compiler.dart` compiles this package with the
-host's `DirectoryPickerDeclarations`; `app/tool/compile_local_directory_frontend.dart`
-is the Flutter build-time harness. It requires `ADELE_REPOSITORY_ROOT` and
-`ADELE_LOCAL_DIRECTORY_FRONTEND_OUTPUT`. Normal repository preparation adds
-`local-directory-project-selector/frontend.evc` and `backend.aot` to one prepared
+`compileLocalDirectoryProjectFrontend` in
+`app/tool/local_directory_project_frontend_compiler.dart` compiles the frontend
+with the host's `DirectoryPickerDeclarations`;
+`app/tool/compile_local_directory_project_frontend.dart` is the Flutter build-time
+harness. It requires `ADELE_REPOSITORY_ROOT` and
+`ADELE_LOCAL_DIRECTORY_PROJECT_FRONTEND_OUTPUT`. Normal repository preparation adds
+`local-directory-project/frontend.evc` and `backend.aot` to one prepared
 installation in the shared catalog. `tools/backend_artifacts.dart` prepares the
 backend; stock frontend executable metadata and its provider ID remain centralized
 in `tools/stock_frontend_descriptors.dart`.
@@ -91,7 +94,7 @@ not by silently editing users' root ignore files.
 ## Validation
 
 After workspace dependency resolution, run
-`dart tools/adele.dart test --target local_directory_project_selector_frontend`
+`dart tools/adele.dart test --target local_directory_project_frontend`
 from the repository root. This uses `flutter test` without Linux desktop build
 dependencies. Tests compile and execute the actual frontend source with a fake
 picker bridge, covering POSIX/Windows paths, escaping, normalization, cancellation,

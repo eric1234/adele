@@ -1,4 +1,4 @@
-name: local_directory_project_selector_backend
+name: local_directory_project_backend
 description: Local directory backing placement for ADELE Projects.
 publish_to: none
 version: 0.1.0

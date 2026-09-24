@@ -30,9 +30,9 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
     ),
     (name: 'openai', directory: 'openai', pluginId: 'dev.adele.openai'),
     (
-      name: 'local-directory',
-      directory: 'local-directory-project-selector',
-      pluginId: 'dev.adele.plugin.local-directory-project-selector',
+      name: 'local-directory-project',
+      directory: 'local-directory-project',
+      pluginId: 'dev.adele.plugin.local-directory-project',
     ),
   ]) {
     final File artifact = File.fromUri(
@@ -44,7 +44,8 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
     final String stage = '${frontend.name}-frontend-compilation';
     final bool chat = frontend.name == 'chat';
     final bool openai = frontend.name == 'openai';
-    final bool localDirectory = frontend.name == 'local-directory';
+    final bool localDirectoryProject =
+        frontend.name == 'local-directory-project';
     final List<String> arguments = <String>[
       'test',
       '--no-pub',
@@ -54,8 +55,8 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
           ? 'tool/compile_chat_frontend.dart'
           : openai
           ? 'tool/compile_openai_activity_frontend.dart'
-          : localDirectory
-          ? 'tool/compile_local_directory_frontend.dart'
+          : localDirectoryProject
+          ? 'tool/compile_local_directory_project_frontend.dart'
           : 'tool/compile_tool_inspection_frontends.dart',
     ];
     stdout.writeln('==> $stage');
@@ -69,9 +70,9 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
           'ADELE_REPOSITORY_ROOT': root.path,
           if (chat) 'ADELE_CHAT_FRONTEND_OUTPUT': artifact.path,
           if (openai) 'ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT': artifact.path,
-          if (localDirectory)
-            'ADELE_LOCAL_DIRECTORY_FRONTEND_OUTPUT': artifact.path,
-          if (!chat && !openai && !localDirectory) ...{
+          if (localDirectoryProject)
+            'ADELE_LOCAL_DIRECTORY_PROJECT_FRONTEND_OUTPUT': artifact.path,
+          if (!chat && !openai && !localDirectoryProject) ...{
             'ADELE_TOOL_INSPECTION_FRONTEND': frontend.name,
             'ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT': artifact.path,
           },

@@ -1,4 +1,4 @@
-name: local_directory_project_selector_frontend
+name: local_directory_project_frontend
 description: Interpreted local directory Project selection for ADELE.
 publish_to: none
 version: 0.1.0

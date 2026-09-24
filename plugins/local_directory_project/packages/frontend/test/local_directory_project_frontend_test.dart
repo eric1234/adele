@@ -7,7 +7,7 @@ import 'package:dart_eval/stdlib/core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _library =
-    'package:local_directory_project_selector_frontend/local_directory_project_selector_frontend.dart';
+    'package:local_directory_project_frontend/local_directory_project_frontend.dart';
 const _bridgeLibrary = 'package:adele_ui/directory_picker_bridge.dart';
 
 void main() {
@@ -21,9 +21,9 @@ void main() {
               ..addPlugin(_Picker())
               ..entrypoints.add(_library))
             .compile({
-              'local_directory_project_selector_frontend': {
-                'local_directory_project_selector_frontend.dart': File(
-                  'lib/local_directory_project_selector_frontend.dart',
+              'local_directory_project_frontend': {
+                'local_directory_project_frontend.dart': File(
+                  'lib/local_directory_project_frontend.dart',
                 ).readAsStringSync(),
               },
             });
