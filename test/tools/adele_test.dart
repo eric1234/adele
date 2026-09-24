@@ -572,6 +572,9 @@ void main() {
   test('Local Directory Project components are separate workspace members', () {
     const root = 'plugins/local_directory_project';
     final workspace = File('pubspec.yaml').readAsStringSync();
+    expect(workspace, isNot(contains('  - $root\n')));
+    expect(File('$root/pubspec.yaml').existsSync(), isFalse);
+    expect(analysisTargets.any((target) => target.path == root), isFalse);
     for (final component in ['backend', 'frontend']) {
       final path = '$root/packages/$component';
       final name = 'local_directory_project_$component';
