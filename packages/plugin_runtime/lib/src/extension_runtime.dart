@@ -291,6 +291,11 @@ final class PluginBackendActivation {
   RemoteExtensionContext? extensionOrigin(ExtensionBinding<Object> binding) =>
       _extensions.originFor(binding);
 
+  bool ownsProvider(ProviderBinding binding) {
+    validate();
+    return _capabilities.owns(binding);
+  }
+
   void validate() {
     if (_retiring != null || connection.isClosed) {
       throw const PluginConnectionClosed('The backend activation is retired.');

@@ -190,6 +190,12 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
+    name: 'local_directory_project_selector_backend',
+    path: 'plugins/local_directory_project_selector/packages/backend',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
     name: 'local_directory_project_selector_frontend',
     path: 'plugins/local_directory_project_selector/packages/frontend',
     executable: 'flutter',
@@ -340,6 +346,11 @@ analysisTargets = <({String name, String path, bool flutter})>[
     name: 'chat_strategy_frontend',
     path: 'plugins/chat_strategy/packages/frontend',
     flutter: true,
+  ),
+  (
+    name: 'local_directory_project_selector_backend',
+    path: 'plugins/local_directory_project_selector/packages/backend',
+    flutter: false,
   ),
   (
     name: 'local_directory_project_selector_frontend',

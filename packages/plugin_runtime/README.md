@@ -80,10 +80,11 @@ descriptor lists. The sealed, data-only
 `PreparedPresentationDescriptor` variants are `PreparedSessionPresentation`,
 `PreparedToolActivityPresentation`, and `PreparedModelNativeActivityPresentation`.
 The separate sealed `PreparedFrontendExtension` currently has
-`PreparedProjectSelectorExtension`, with `kind: 'projectSelector'`, `extensionId`,
-`displayName`, `library`, and `entrypoint`. Its optional `frontend.extensions` list
-defaults to empty and can coexist with the required, possibly empty `presentations`
-list; existing presentation roles and manifest version 1 are unchanged.
+`PreparedProjectSelectorExtension`, with `kind: 'projectSelector'` and required
+`extensionId`, `projectProviderId`, `displayName`, `library`, and `entrypoint`.
+Its optional `frontend.extensions` list defaults to empty and can coexist with the
+required, possibly empty `presentations` list; existing presentation roles and
+manifest version 1 are unchanged.
 Session descriptors require `displayName`, `strategyId`, `extensionId`, `library`,
 and `entrypoint`. Optional `backendServices` is a duplicate-free service-ID
 allowlist (default empty); optional `strategyAffinity` is `independent` (default)
@@ -122,12 +123,20 @@ independently activatable. Profiles are unimplemented participation policy, not
 descriptor metadata. See
 [`app/README.md`](../../app/README.md#normal-backend-startup) for bootstrap ownership.
 
-The frontend-only Local Directory Project Selector uses this descriptor catalog,
-not `PluginBackendHost` or generated backend RPC. Its app-owned operation bridge
-and fresh eval runtime are distinct from backend host-invocation contexts and
-Session/Environment authority. `AdeleRuntime` has no static stock activation;
-self-hosting stays selector-free and supplies its known Project
-source directly.
+Project selector descriptors name the provider for backing preparation, not a
+capability advertisement. Every prepared selector requires a capability
+registration from its exact ready owning backend; there is no optional affinity
+enum. The app joins frontend and backend through the same
+`PreparedPluginInstallation` and exact registration ownership, not `PluginId`
+matching. Activation can still be independent while an opening operation needs
+both components. See [selector ownership](../../docs/architecture/plugin-system.md#project-selector-ownership).
+
+Local Directory combines an interpreted selector and an AOT Project provider.
+Its app-native picker bridge remains distinct from generated provider RPC,
+backend host-invocation contexts, and Session/Environment authority. Headless
+durable callers supply a known source and exact provider binding without a
+selector. Development callers may explicitly use volatile Project construction;
+neither path makes `AdeleRuntime` statically activate a stock plugin.
 
 ## Ready Registrations
 
@@ -156,6 +165,14 @@ retirement removes both sets before connection close. Local failure and later
 termination do not remove unrelated registrations or replacements. The app supplies
 the inference-source, model-tool, and orchestration-strategy adapters; runtime
 owns none of those points' metadata or composition rules.
+
+`PluginBackendActivation.ownsProvider` delegates to
+`PluginCapabilityActivation.owns` and generic capability registration `.owns`
+checks. This proves the binding belongs to that activation's exact registration;
+semantic provider/plugin IDs alone cannot establish ownership. Liveness is
+validated separately from registration identity. The application uses this for
+prepared Project selector/provider pairing, without adding a stock-provider table
+or another registry to runtime.
 
 `RemoteExtensionContext.onRetire` registers adapter-owned async resource cleanup
 and returns a detach callback. Retirement immediately revokes invocation authority

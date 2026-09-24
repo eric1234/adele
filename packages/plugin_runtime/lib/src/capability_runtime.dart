@@ -53,6 +53,13 @@ final class PluginCapabilityActivation {
   final CapabilityRegistrationGroup registrations;
   Future<void>? _retiring;
 
+  bool owns(ProviderBinding binding) {
+    binding.endpointAs<CapabilityEndpoint>();
+    return _retiring == null &&
+        !connection.isClosed &&
+        registrations.owns(binding);
+  }
+
   static Future<PluginCapabilityActivation> registerAdvertised({
     required PluginBackendConnection connection,
     required CapabilityRegistry registry,

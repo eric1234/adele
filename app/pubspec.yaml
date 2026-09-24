@@ -28,6 +28,7 @@ dependencies:
     sdk: flutter
   flutter_eval: 0.8.2
   plugin_runtime: ^0.1.0
+  sqlite3: ^3.5.2
 
 dev_dependencies:
   adele_plugin_backend_support: ^0.1.0

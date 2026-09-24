@@ -71,9 +71,11 @@ implementations into the normal application runtime.
 ### Special ownership rules
 
 - **`adele_core_extensions`** owns only core-owned extension contracts with no
-  natural existing public domain owner. The Project selector is a narrow example,
-  not a template for moving all extension points here. New APIs normally belong
-  with their product, orchestration, tool, Environment, UI, or plugin-domain owner.
+  natural existing public domain owner. Project selection and provider backing
+  preparation are narrow examples, not a template for moving all extension points
+  here. These pure-Dart contracts use public capability/transport APIs, not SQLite
+  or filesystem hosting. New APIs normally belong with their product,
+  orchestration, tool, Environment, UI, or plugin-domain owner.
 - **`adele_product`** remains independent of executable strategy/runtime/UI layers
   and extension registration. Its `adele_capabilities` dependency supplies generic
   `ProviderId` values; the transitive `adele_plugin_api` dependency does not mean
@@ -94,6 +96,12 @@ The app is the generic composition root. It may depend on public ADELE APIs,
 internal host packages, and generic host/native third-party libraries required
 for bridges and composition. It must not become the implementation owner of
 concrete plugin behavior or define public plugin contracts in application code.
+
+The private Project database and its `sqlite3` dependency belong in `app`, not
+`adele_product`, `adele_core_extensions`, or the provider backend. The provider
+describes source-relative placement through public values; the host owns
+filesystem confinement, schema coordination, connection lifetime, and canonical
+publication. This adds no public persistence package or production plugin import.
 
 Tests, development tooling, and self-hosting may know concrete stock plugins when
 their role requires it. Keep those dependencies development-only and outside

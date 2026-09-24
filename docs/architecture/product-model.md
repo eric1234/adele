@@ -6,10 +6,10 @@ Implementation status: Partial
 
 This document defines the shared product-domain semantics and ownership that
 ADELE core and unrelated plugins must agree on. It combines accepted constraints
-with the current implementation, without defining a persistence API or schema.
-"Durable" describes semantic lifetime across execution attempts and live resource
-generations, not a claim that storage across application restarts exists today.
-Current product and Chat stores are in-memory.
+with the current implementation. Project identity and source have per-Project
+SQLite storage; other product and Chat state remain in memory. Elsewhere,
+"durable" describes semantic lifetime across execution attempts and live resource
+generations, not a claim that every such record survives application restart.
 
 ## Core relationship
 
@@ -37,12 +37,101 @@ intrinsically a local directory. Its source or association is represented
 generically; the current `Project` in `adele_product` retains a typed source URI,
 not a filesystem handle or a Git repository definition.
 
-Project selectors/providers are replaceable plugin behavior. The current
-`ProjectSelectorContribution` returns a source URI or cancellation; core
-`ProductLifecycleCoordinator` creates the canonical Project. Local Directory
-selection is stock behavior, not Project semantics. Provider-specific validation
-of whether a source can support Task work belongs to the relevant provider, not
-the universal definition of Project.
+Project selectors/providers are replaceable plugin behavior. A
+`ProjectSelectorContribution` names an explicit `ProviderId` and returns a source
+URI or cancellation. The selected `ProjectProviderService` validates/describes
+backing; core `ProductLifecycleCoordinator.openProject` loads or creates the
+canonical Project. The public contract lives in pure-Dart `adele_core_extensions`,
+not in product values or a concrete plugin. Local Directory selection and backing
+placement are stock behavior, not Project semantics. Whether the source can
+support particular Task work remains the Environment provider's responsibility.
+
+### Project storage
+
+Use ordinary inspectable SQLite with explicit SQL per Project, not opaque
+key/value serialization or an ORM. A Project implementation supplies
+`ProjectBacking(sourceLocation, databaseRelativePath)`. The relative location is
+its placement policy, not a core directory convention; the stock Local Directory
+backend chooses `.adele/data.db`. The backing retains the selected source, not an
+unrelated location silently substituted by the provider.
+
+The application-private `ProjectDatabase` owns the connection, filesystem
+validation/confinement, migration coordination, and database lifetime. Current
+backing support requires an existing absolute local `file:` directory URI
+supported on the host; network authorities, query/fragment components, and
+unsupported paths fail explicitly. The host resolves the source root and validates
+a relative forward-slash file path, rejecting traversal, URI/absolute syntax,
+unsafe components, symlinked backing parents/files, and symlinked SQLite sidecars.
+Missing backing parents may be created only along that confined path. A provider's
+description grants no ambient filesystem authority and exposes no database handle.
+
+The current schema is deliberately small:
+
+| Table | Owner and meaning |
+| --- | --- |
+| `adele_schema_versions(owner_id, version)` | Host migration metadata, keyed by semantic schema owner. |
+| `adele_product_projects(id, source_location)` | Product owner `dev.adele.product`, schema version 1; the database holds one Project's stable ID and current source URI. |
+
+Private `MigrationCoordinator` applies ordered owner migrations and version
+updates in a transaction. Product owns its table semantics and migration SQL;
+generic host coordination does not become the semantic owner of future plugin
+tables. Other owners' tables and version records remain untouched, not adopted or
+deleted by the product migration. There is no public plugin migration registry or
+persistence API.
+Unsupported, malformed, or newer core storage must fail non-destructively,
+not be reset, downgraded, assigned replacement identity, or hidden behind volatile
+fallback. A failed transaction is rolled back; opening need not undo already
+created backing directories or a separately committed schema initialization.
+
+An empty initialized Project table receives a new ID. Reopening reads the existing
+ID without allocating another. Moving the source together with its database,
+then reopening it, preserves that ID and commits the newly selected source URI.
+The historical URI must remain valid local-source data, but need not be addressable
+on the current host; only the new selected location undergoes filesystem checks.
+This does not restore moved Environment state or create a recent-project catalog.
+Within one lifecycle, reopening the same backing/source returns the published
+Project; a conflicting already-open location for that ID fails rather than
+retargeting live state. Complete copy/move conflict management is not implied.
+
+### Opening and publication
+
+`resolveProjectProvider(ProviderId)` is explicit-only. `openProject` accepts
+`sourceLocation`, an exact `ProviderBinding` from that lifecycle, and optional
+host-owned `validateSelection`. Headless callers need no selector frontend.
+`createProject` remains an explicitly volatile development/fixture path, never
+the production fallback when durable opening fails.
+
+For UI opening, the host captures the selector and provider and validates both
+before picking, after picking, and after asynchronous provider preparation.
+Every prepared selector also requires exact same-installation backend ownership,
+as defined by the [plugin system](plugin-system.md#project-selector-ownership).
+Cancellation is a no-op; missing, failed, or retired participants cannot be replaced
+inside an in-flight operation. SQLite work follows the final validation
+synchronously, with the identity/source transaction committed before publication
+in `InMemoryProductStore`. No asynchronous generation change can interleave that
+commit/publication sequence. Later retirement does not invalidate a published
+Project or permanently pin it to the opening generations.
+
+Runtime close stops new lifecycle work, joins accepted Project provider calls and
+database cleanup with backend teardown, and rejects late publication after closing
+starts. Backend teardown starts without waiting for preparation so normal connection
+revocation can settle pending remote opens. Window-owned Task/Run draining remains
+separate. Shutdown does not force
+an OS picker to close or promise general cancellation or bounded completion.
+
+### Storage scope and limits
+
+Only Project identity and source are currently stored across restarts. Tasks,
+Environments and provider state, Sessions and Session/Environment authority,
+Runs, Chat, configuration, Profiles, and general plugin state are not made durable
+by this database. Live bindings and authority must never be serialized.
+
+Small synchronous host operations can block on filesystem/SQLite work. Confinement
+is preflight validation, not a guarantee against hostile concurrent filesystem
+symlink races. Git-ignore ergonomics remain follow-up work without automatically
+editing a user's root ignore rules. Cloud sync, remote SQL, and a public migration
+registry are deferred; none is implicit in choosing SQLite. Native integration and
+platform validation limits belong to [the app](../../app/README.md#project-opening).
 
 ## Task
 
@@ -203,7 +292,7 @@ Semantic product identities, relationships, and retained provider/plugin data
 are not the same as live runtime bindings. The following must not be treated as
 durable product identity or state:
 
-- `ExtensionBinding` and resolved orchestration contribution objects;
+- `ExtensionBinding`, `ProviderBinding`, and resolved executable contributions;
 - backend connections and activation-generation handles;
 - Environment materializations and live authorized facets;
 - host authority tokens;
@@ -215,9 +304,10 @@ an identity does not make a missing provider/strategy available or authorize
 fallback to a different one. Re-establishing runtime authority is distinct from
 loading semantic data.
 
-Current product storage is `InMemoryProductStore`; durable product/plugin storage
-and complete restoration remain future work. This boundary does not select a
-storage API, database schema, migration mechanism, or plugin persistence API.
+`InMemoryProductStore` remains the live product graph. [Project storage](#project-storage)
+loads only Project identity/source into it; the other records and authority are
+not restored across restarts. General product/plugin persistence and complete
+restoration remain future work, not an implied extension of the private database.
 
 ## Core-owned and plugin-owned durable state
 
@@ -245,8 +335,9 @@ those distinctions, including domains where external systems remain authoritativ
 | --- | --- |
 | Canonical immutable product values and IDs | [`packages/product/`](../../packages/product/), `Project`, `Task`, `Environment`, `Session`, `RunId` |
 | Product lifecycle and Session/Environment authority | [`app/lib/core/product_lifecycle.dart`](../../app/lib/core/product_lifecycle.dart), `ProductLifecycleCoordinator`, `InMemoryProductStore.requireSessionAuthority` |
+| Private Project SQL and migration coordination | [`app/lib/core/project_database.dart`](../../app/lib/core/project_database.dart), `ProjectDatabase`, `MigrationCoordinator` |
 | Live Environment materialization | [`app/lib/core/product_lifecycle.dart`](../../app/lib/core/product_lifecycle.dart), `EnvironmentRuntime`, `EnvironmentMaterialization` |
-| Project selection contract | [`packages/core_extensions/`](../../packages/core_extensions/), `ProjectSelectorContribution` |
+| Project selection and backing contracts | [`packages/core_extensions/`](../../packages/core_extensions/), `ProjectSelectorContribution`, `ProjectProviderService`, `ProjectBacking` |
 | Provider-neutral Environment contract | [`packages/environment/`](../../packages/environment/), `EnvironmentProvider`, authorized read/mutation/process facets |
 | Strategy identity resolution and execution facade | [`packages/orchestration/`](../../packages/orchestration/), `OrchestrationStrategyResolver`, `ResolvedOrchestrationStrategy` |
 | Session-routed execution host | [`app/lib/core/orchestration_host.dart`](../../app/lib/core/orchestration_host.dart), `createSessionOrchestrationRun`, `KernelOrchestrationHost` |
@@ -256,6 +347,8 @@ those distinctions, including domains where external systems remain authoritativ
 
 [ADR 0031](../adr/0031-project-task-session-environment-domain-direction.md)
 records the product-domain decision rationale and history.
+[ADR 0033](../adr/0033-durable-project-storage-and-provider-backing.md) records
+durable Project storage and provider-selected backing.
 [ADR 0030](../adr/0030-recursive-typed-plugin-extension-model.md) records the
 core/plugin extension ownership decision; [ADR 0022](../adr/0022-agent-execution-semantic-foundation.md)
 retains the earlier Run execution rationale, not the current universal Session

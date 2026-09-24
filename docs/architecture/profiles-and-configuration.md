@@ -224,6 +224,12 @@ Machine-local operational state may use a different store; not every persistence
 domain needs the same representation. Portable/local overlays and exact storage
 mechanics remain deferred.
 
+The implemented [per-Project SQLite store](product-model.md#project-storage)
+persists Project identity/source only. It is not the configuration store, a
+remembered Profile stack, configured-provider state, or general plugin
+persistence. Its owner-keyed migration metadata does not establish a public
+setting/plugin migration API or change the human-readable configuration boundary.
+
 Plugin-owned domain state is not automatically ordinary cascading configuration,
 even when host persistence facilities store it. Storage does not transfer semantic
 ownership to core. External systems may remain authoritative when that is part of
@@ -304,6 +310,8 @@ Implemented foundations and current limits:
 
 - Installation/catalog metadata remains distinct from activation/configuration.
 - Capability endpoints have generation-bound configuration contexts.
+- Durable Project identity/source provide no Profile, configuration, or general
+  plugin-state persistence.
 - Normal startup uses a fixed participation policy, attempting discovered valid
   components rather than resolving Profiles.
 - Current provisional provider selection and temporary source-checkout configuration
@@ -328,8 +336,9 @@ profile-aware provider routing, or production workbench-state persistence.
 - Remembered workbench-state keying and garbage collection.
 
 These deferrals do not reopen ordered flat Profile composition or the product
-identities accepted by ADRs 0029 and 0031. They leave storage layouts, schemas,
-migration protocols, and APIs for concrete implementation needs.
+identities accepted by ADRs 0029 and 0031. Configuration storage layouts, schemas,
+migration protocols, and APIs remain open; [ADR 0033](../adr/0033-durable-project-storage-and-provider-backing.md)
+separately settles the narrower Project backing/storage decision.
 
 ## Related architecture
 

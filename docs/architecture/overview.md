@@ -126,11 +126,13 @@ state nor grant execution or approval authority.
 ## Configuration and persistence
 
 Profiles and general configuration are accepted architecture but largely
-unimplemented. Current product storage is in-memory; durable product and ordinary
-plugin-state persistence are not implemented. Configuration, durable product
-state, plugin-owned state, live runtime state, security policy, and workbench state
-are separate concerns, not one generic settings object. See
-[profiles and configuration](profiles-and-configuration.md) and the
+unimplemented. Project identity/source use host-owned per-Project SQLite with
+provider-selected backing; other product and ordinary plugin state remain
+non-durable. The live product graph is still in memory. Configuration, durable
+product state, plugin-owned state, live runtime state, security policy, and
+workbench state are separate concerns, not one generic settings object. See
+[profiles and configuration](profiles-and-configuration.md),
+[Project storage](product-model.md#project-storage) and
 [product state boundary](product-model.md#durable-semantic-data-and-live-runtime-objects).
 
 ## Source map
@@ -139,8 +141,9 @@ are separate concerns, not one generic settings object. See
 | --- | --- |
 | Product identities and immutable values | [`packages/product/`](../../packages/product/) |
 | Product lifecycle and Session/Environment authority | [`app/lib/core/product_lifecycle.dart`](../../app/lib/core/product_lifecycle.dart), `ProductLifecycleCoordinator` |
+| Private Project storage | [`app/lib/core/project_database.dart`](../../app/lib/core/project_database.dart), `ProjectDatabase`, `MigrationCoordinator` |
 | Extension registry and binding liveness | [`packages/plugin_api/`](../../packages/plugin_api/) |
-| Core-owned selection contracts | [`packages/core_extensions/`](../../packages/core_extensions/) |
+| Core-owned Project selection/backing contracts | [`packages/core_extensions/`](../../packages/core_extensions/) |
 | Capability routing and transport contracts | [`packages/capabilities/`](../../packages/capabilities/), [`packages/contract/`](../../packages/contract/) |
 | Environment contract | [`packages/environment/`](../../packages/environment/) |
 | Orchestration and Run hosting | [`packages/orchestration/`](../../packages/orchestration/), [`app/lib/core/orchestration_host.dart`](../../app/lib/core/orchestration_host.dart) |
@@ -156,7 +159,7 @@ are separate concerns, not one generic settings object. See
 
 - **Who owns Project, Task, Environment, Session, or Run?** [Product model](product-model.md).
 - **How is stock Local Directory Project selection and native picking hosted today?**
-  See [B1 Project opening](../../app/README.md#b1-project-opening) and the
+  See [Project opening](../../app/README.md#b1-project-opening) and the
   [Local Directory Project Selector](../../plugins/local_directory_project_selector/README.md).
 - **Where should an extension live and what may it depend on?** [Plugin system](plugin-system.md) and [dependency rules](dependency-rules.md).
 - **How do plugin preparation, routing, and authority work?** [Plugin layout](plugin-layout.md) and [contracts and capabilities](contracts-and-capabilities.md).

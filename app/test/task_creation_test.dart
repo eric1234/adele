@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
 import 'package:adele_capabilities/adele_capabilities.dart';
@@ -19,17 +20,31 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import 'support/project_provider.dart';
+
 void main() {
   late AdeleRuntime runtime;
   late _RecordingIds ids;
   late _EnvironmentChannel channel;
   late int runtimeCreations;
-  final Uri source = Uri.parse('file:///task-fixture/Project%20Name/');
+  late Uri source;
   final ProviderId providerId = ProviderId('dev.adele.environment.task-test');
 
   setUp(() {
     ids = _RecordingIds();
     runtime = AdeleRuntime(ids: ids);
+    final directory = Directory.systemTemp.createTempSync(
+      'adele-task-project-',
+    );
+    source = (Directory('${directory.path}/Project Name')..createSync()).uri;
+    final projectProvider = TestProjectProvider(runtime.registry);
+    addTearDown(() async {
+      if (runtime.plugins.state != ApplicationPluginState.closed) {
+        await runtime.close();
+      }
+      await projectProvider.close();
+      directory.deleteSync(recursive: true);
+    });
     channel = _EnvironmentChannel();
     runtimeCreations = 0;
     final ExtensionRegistration selector = runtime.extensions.register(
@@ -37,6 +52,7 @@ void main() {
       id: ExtensionId('dev.adele.test.task-project-selector'),
       value: ProjectSelectorContribution(
         displayName: 'Open Test Project...',
+        projectProviderId: testProjectProviderId,
         selectProject: () async => source,
       ),
     );
@@ -90,6 +106,12 @@ void main() {
     expect(project.id, ProjectId('project-1'));
     expect(project.sourceLocation, source);
     expect(runtime.store.project(project.id), same(project));
+    expect(
+      File.fromUri(
+        source.resolve(TestProjectProvider.databaseRelativePath),
+      ).existsSync(),
+      isTrue,
+    );
     expect(find.text('Project is open'), findsOneWidget);
     expect(find.text('No Tasks yet'), findsOneWidget);
     expect(ids.calls, <String>['project']);

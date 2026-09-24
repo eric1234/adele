@@ -3,10 +3,11 @@ import 'dart:io';
 
 import '../../../tools/stock_frontend_descriptors.dart';
 
-/// Prepares frontend-only installations using the launcher's stock metadata.
+/// Prepares frontends and optional backends using the launcher's stock metadata.
 Future<Directory> prepareFrontendInstallations({
   required Directory root,
   required Map<String, File> artifacts,
+  Map<String, File> backendArtifacts = const {},
 }) async {
   await root.create(recursive: true);
   for (final entry in artifacts.entries) {
@@ -20,6 +21,12 @@ Future<Directory> prepareFrontendInstallations({
     await entry.value.copy(
       File.fromUri(directory.uri.resolve('frontend.evc')).path,
     );
+    final backend = backendArtifacts[entry.key];
+    if (backend != null) {
+      await backend.copy(
+        File.fromUri(directory.uri.resolve('backend.aot')).path,
+      );
+    }
     await File.fromUri(
       directory.uri.resolve('adele_plugin.installation.json'),
     ).writeAsString(
@@ -31,6 +38,7 @@ Future<Directory> prepareFrontendInstallations({
           'displayName': entry.key,
         },
         'components': {
+          if (backend != null) 'backend': {'artifact': 'backend.aot'},
           'frontend': {
             'artifact': 'frontend.evc',
             'presentations': presentations ?? const [],

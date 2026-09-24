@@ -23,6 +23,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../../tools/stock_frontend_descriptors.dart';
+import 'support/project_provider.dart';
 
 void main() {
   for (final bool missing in [false, true]) {
@@ -35,7 +36,7 @@ void main() {
         addTearDown(() => directory.deleteSync(recursive: true));
         final AdeleRuntime runtime = AdeleRuntime();
         addTearDown(runtime.close);
-        final Uri source = Uri.parse('https://example.test/SelectedProject');
+        final Uri source = directory.uri;
         late Future<void> starting;
         await tester.runAsync(() async {
           await tester.pumpWidget(
@@ -111,11 +112,14 @@ void main() {
         expect(find.byType(FilledButton), findsNothing);
         expect(tester.takeException(), isNull);
 
+        final provider = TestProjectProvider(runtime.registry);
+        addTearDown(provider.close);
         final ExtensionRegistration selector = runtime.extensions.register(
           point: projectSelectorContributions,
           id: ExtensionId('dev.adele.test.empty-root-selector'),
           value: ProjectSelectorContribution(
             displayName: 'Open Test Project',
+            projectProviderId: provider.providerId,
             selectProject: () async => source,
           ),
         );
@@ -128,6 +132,13 @@ void main() {
             .project!;
         expect(project.sourceLocation, source);
         expect(runtime.store.project(project.id), same(project));
+        expect(provider.calls, [source]);
+        expect(
+          File.fromUri(
+            source.resolve(TestProjectProvider.databaseRelativePath),
+          ).existsSync(),
+          isTrue,
+        );
         expect(runtime.store.tasksFor(project.id), isEmpty);
         expect(find.text('Project is open'), findsOneWidget);
         expect(find.text('No Tasks yet'), findsOneWidget);
@@ -377,6 +388,17 @@ void main() {
     'Session choices are explicit, usable and revalidated before publication',
     (tester) async {
       final runtime = AdeleRuntime();
+      final source = Directory.systemTemp.createTempSync(
+        'adele-session-project-',
+      );
+      final projectProvider = TestProjectProvider(runtime.registry);
+      addTearDown(() async {
+        if (runtime.plugins.state != ApplicationPluginState.closed) {
+          await runtime.close();
+        }
+        await projectProvider.close();
+        source.deleteSync(recursive: true);
+      });
       final registrations = <ExtensionRegistration>[];
       addTearDown(() async {
         for (final registration in registrations) {
@@ -404,7 +426,8 @@ void main() {
           id: ExtensionId('dev.example.selector'),
           value: ProjectSelectorContribution(
             displayName: 'Open fixture',
-            selectProject: () async => Uri.parse('file:///fixture/'),
+            projectProviderId: projectProvider.providerId,
+            selectProject: () async => source.uri,
           ),
         ),
       );

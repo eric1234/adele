@@ -1,5 +1,5 @@
-name: adele_core_extensions
-description: Narrow public ADELE core-owned extension contracts.
+name: local_directory_project_selector_backend
+description: Local directory backing placement for ADELE Projects.
 publish_to: none
 version: 0.1.0
 
@@ -9,9 +9,8 @@ environment:
 resolution: workspace
 
 dependencies:
-  adele_capabilities: ^0.1.0
   adele_contract: ^0.1.0
-  adele_plugin_api: ^0.1.0
+  adele_core_extensions: ^0.1.0
 
 dev_dependencies:
   test: ^1.26.3

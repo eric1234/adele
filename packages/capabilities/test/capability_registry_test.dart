@@ -17,6 +17,43 @@ void main() {
     );
   });
 
+  test(
+    'ownership uses exact registrations across discovery and replacement',
+    () async {
+      final registry = CapabilityRegistry();
+      final provider = _provider(capability, 'dev.adele.inspector.alpha');
+      final endpoint = _Endpoint();
+      final group = CapabilityRegistrationGroup();
+      final registration = registry.register(
+        provider: provider,
+        endpoint: endpoint,
+      );
+      group.add(registration);
+      final first = registry.resolve(capability);
+      final second = registry.resolve(capability);
+      expect(first.isSameRegistration(second), isTrue);
+      expect(registration.owns(second), isTrue);
+      expect(group.owns(second), isTrue);
+      final foreign = CapabilityRegistry()
+        ..register(provider: provider, endpoint: endpoint);
+      expect(registration.owns(foreign.resolve(capability)), isFalse);
+      await registration.close();
+      final replacement = registry.register(
+        provider: provider,
+        endpoint: endpoint,
+      );
+      final fresh = registry.resolve(capability);
+      expect(first.isSameRegistration(fresh), isFalse);
+      expect(registration.owns(first), isTrue);
+      expect(replacement.owns(first), isFalse);
+      expect(group.owns(fresh), isFalse);
+      expect(
+        () => first.endpointAs<CapabilityEndpoint>(),
+        throwsA(isA<ProviderUnavailable>()),
+      );
+    },
+  );
+
   test('ProviderId validates the public identifier grammar', () {
     expect(
       ProviderId('dev.adele.inspector.basic').value,

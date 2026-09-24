@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
@@ -47,12 +48,16 @@ sealed class PreparedFrontendExtension {
 final class PreparedProjectSelectorExtension extends PreparedFrontendExtension {
   const PreparedProjectSelectorExtension({
     required this.extensionId,
+    required this.projectProviderId,
     required this.displayName,
     required super.library,
     required this.entrypoint,
   });
 
   final ExtensionId extensionId;
+
+  /// Always resolved from this selector's exact owning backend installation.
+  final ProviderId projectProviderId;
   final String displayName;
   final String entrypoint;
 
@@ -60,6 +65,7 @@ final class PreparedProjectSelectorExtension extends PreparedFrontendExtension {
   Map<String, Object?> toJson() => {
     'kind': 'projectSelector',
     'extensionId': extensionId.value,
+    'projectProviderId': projectProviderId.value,
     'displayName': displayName,
     'library': library,
     'entrypoint': entrypoint,
@@ -391,6 +397,7 @@ PreparedFrontendExtension _extension(Object? value, String label) {
       _object(value, label, {
         'kind',
         'extensionId',
+        'projectProviderId',
         'displayName',
         'library',
         'entrypoint',
@@ -411,8 +418,15 @@ PreparedFrontendExtension _extension(Object? value, String label) {
           '$label.entrypoint must be a single top-level Dart identifier.',
         );
       }
+      final ProviderId projectProviderId;
+      try {
+        projectProviderId = ProviderId(text('projectProviderId'));
+      } on InvalidCapabilityIdentity catch (error) {
+        throw FormatException('$label.projectProviderId: ${error.message}');
+      }
       return PreparedProjectSelectorExtension(
         extensionId: ExtensionId(text('extensionId')),
+        projectProviderId: projectProviderId,
         displayName: text('displayName'),
         library: library,
         entrypoint: entrypoint,
