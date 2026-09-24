@@ -20,11 +20,12 @@ and [architecture overview](../docs/architecture/overview.md) for cross-system c
 | Normal prepared backend bootstrap and window-owned frontend activation | Source preparation/build semantics: [plugin layout](../docs/architecture/plugin-layout.md), [plugin builder](../packages/plugin_builder/README.md); backend hosting: [plugin runtime](../packages/plugin_runtime/README.md). |
 | App-native implementations of public bridges, including the directory picker | Public presentation/bridge contracts: [UI](../packages/ui/README.md); local-path selection semantics: [Local Directory selector](../plugins/local_directory_project_selector/README.md). |
 | Product lifecycle composition and publication | Product identity definitions: [product model](../docs/architecture/product-model.md), [product package](../packages/product/README.md); provider behavior: [Environment](../packages/environment/README.md), [Git Environment](../plugins/git_environment/README.md). |
+| Private per-Project SQLite hosting, confinement, migrations, and connection lifetime | Source semantics/backing placement: [Project provider contract](../packages/core_extensions/README.md#project-provider) and [Local Directory backend](../plugins/local_directory_project_selector/packages/backend/README.md). |
 | Session execution hosting and provider/tool/context adaptation | Public [orchestration](../packages/orchestration/README.md), [model-tool](../packages/model_tool/), and [model-provider](../packages/model_provider/) contracts; generic mechanics in [agent kernel](../packages/agent_kernel/README.md). |
 | Host policy, exact-invocation approval, and Run activity projection | Concrete strategy sequencing, conversation state/history, and grouping: [Chat](../plugins/chat_strategy/README.md). |
 | Generic shell, Session/Inspection hosting, and application-local window state | Tool behavior and bespoke cards: [Filesystem](../plugins/filesystem_tools/README.md), [Command](../plugins/command_tools/README.md), and [Search](../plugins/search_tools/README.md). |
 | Temporary source-checkout provider/model selection | OpenAI protocol, credentials, and provider algorithms: [OpenAI backend](../plugins/openai/packages/backend/README.md). |
-| Current in-memory composition and fixed startup participation | General installation/Profile management and durable product/plugin storage, which are not implemented: [profiles and configuration](../docs/architecture/profiles-and-configuration.md). |
+| Live in-memory product graph and fixed startup participation | General installation/Profile management and persistence beyond Project identity/source remain unimplemented: [profiles and configuration](../docs/architecture/profiles-and-configuration.md), [storage scope](../docs/architecture/product-model.md#storage-scope-and-limits). |
 
 ## Normal startup
 
@@ -52,6 +53,8 @@ The runtime owns one `CapabilityRegistry`, one `ExtensionRegistry`, and one
 `InMemoryProductStore`. `ProductLifecycleCoordinator.generated` receives all
 three; `InferenceContextComposer` uses only the shared extension registry; and
 `ApplicationPluginBootstrap` uses the shared capability and extension registries.
+Lifecycle additionally owns private `ProjectDatabase` instances for durable opens;
+constructing the runtime does not open a database.
 
 Normal startup consumes prepared artifacts, never plugin source. Backend and
 frontend availability are independent, but both owners consume the same catalog
@@ -215,18 +218,39 @@ is a prepared interpreted frontend, not an app-linked implementation. Its evalua
 `selectProject` calls the public [directory-picker bridge](../packages/ui/README.md#interpreted-bridges).
 The app's [`DirectoryPickerBridge`](lib/frontend/directory_picker_bridge.dart)
 owns native `file_selector.getDirectoryPath`; the evaluated frontend owns lexical
-local-path normalization into a `file:` URI. The app revalidates the selected
-binding and passes the URI to lifecycle to create the canonical Project.
+local-path normalization into a `file:` URI. The contribution also names an
+explicit Project provider; its independently prepared AOT backend validates source
+semantics and describes backing placement through public `ProjectProviderService`.
+
+The app resolves the provider before invoking the picker and validates exact
+selector/provider liveness and same-installation ownership before picking, after
+picking, and after provider preparation. Every prepared selector requires its
+exact ready owning backend, proven by owned capability registration rather than
+matching semantic IDs. See [selector ownership](../docs/architecture/plugin-system.md#project-selector-ownership).
+
+`ProductLifecycleCoordinator.openProject` accepts the selected `sourceLocation`,
+exact `ProviderBinding`, and optional host `validateSelection` callback. Private
+[`ProjectDatabase`](lib/core/project_database.dart) validates source/backing paths
+and symlinks, hosts `sqlite3`, and coordinates explicit SQL migrations. After final
+binding validation, SQLite work is synchronous and the identity/source transaction
+commits before the Project enters the live store and window presentation. Later
+provider/frontend retirement does not invalidate the published Project.
+Schema, reopen/move behavior, and failure rules have one canonical home in
+[Project storage](../docs/architecture/product-model.md#project-storage).
 
 Cancellation creates nothing; failures are local and do not try another selector.
 Pending selection blocks duplicate actions. Retirement or window close prevents
 late results from publishing a Project, without forcibly closing an open OS dialog
-or migrating the operation. Selection uses no selector backend RPC, AOT selector,
-or Session/Environment authority. Opening a directory does not validate it as a
-Git source; that belongs to later Environment establishment.
+or migrating the operation. Picking uses the frontend/native bridge, while backing
+preparation uses generated backend RPC; neither obtains Session/Environment
+authority. Opening a directory does not validate it as a Git source; that belongs
+to later Environment establishment. A headless caller can open a known source
+through the same provider/lifecycle path without a frontend. `createProject` is
+explicitly volatile for development/deterministic fixtures, not a durable-open fallback.
 
-Native integration includes the minimum macOS user-selected read-only entitlement,
-`com.apple.security.files.user-selected.read-only`, in both
+Native integration requires writable access for SQLite and its sidecars. The macOS
+user-selected entitlement is `com.apple.security.files.user-selected.read-write`,
+replacing picker-only read access, in both
 [Debug/Profile](macos/Runner/DebugProfile.entitlements) and
 [Release](macos/Runner/Release.entitlements). Generated
 [Linux](linux/flutter/generated_plugin_registrant.cc),
@@ -234,12 +258,20 @@ Native integration includes the minimum macOS user-selected read-only entitlemen
 [Windows](windows/flutter/generated_plugin_registrant.cc) registrants wire the
 native picker plugin. These files establish wiring, not platform feature parity.
 
-Recorded validation includes successful Linux profile builds, including after the
-interpreted-selector migration. Interactive OS picking and macOS/Windows builds
-have not been validated in the maintained record. Evaluated tests use a fake
+Interactive OS picking and macOS/Windows builds are not established by these
+registrants, entitlements, or path-conversion tests. Evaluated tests use a fake
 native picker; Windows path-conversion cases are not Windows integration proof.
 See [Project opening tests](test/project_opening_test.dart),
+[durable lifecycle tests](test/core/durable_project_lifecycle_test.dart),
+[database tests](test/core/project_database_test.dart),
 [bridge tests](test/directory_picker_bridge_test.dart), and the plugin's own tests.
+
+`AdeleRuntime.close` stops new lifecycle work and joins in-flight Project opens and
+database closure with backend teardown. Starting teardown allows normal connection
+revocation to settle pending remote opens. Window disposal/exit still owns existing
+Task establishment and Run draining; this is not general cancellation or a bounded
+shutdown deadline. Closing rejects late Project publication without replacing a
+provider or serializing its binding.
 
 <a id="b2-task-and-primary-environment"></a>
 ### Task and primary Environment
@@ -377,7 +409,7 @@ owns rendering. The app does not parse OpenAI fields or recover hidden reasoning
 Production `dependencies` in [`pubspec.yaml`](pubspec.yaml) and imports/exports
 under `lib/` contain no package under `plugins/**`, including plugin contracts.
 The app may use public ADELE APIs, internal generic host packages, Flutter, and
-generic native/host libraries such as `file_selector` and eval runtime libraries.
+generic native/host libraries such as `file_selector`, `sqlite3`, and eval runtime libraries.
 
 Plugin-aware tests, source preparation, and self-hosting use development dependencies
 outside the normal runtime graph. Source/build tooling is not a normal runtime
@@ -405,7 +437,8 @@ Application changes should use the repository's
 [application validation map](../docs/development/testing.md#application-validation-map)
 and dependency-boundary checks. Local starting points include
 [`adele_runtime_test.dart`](test/core/adele_runtime_test.dart),
-[`product_lifecycle_test.dart`](test/core/product_lifecycle_test.dart), and
+[`product_lifecycle_test.dart`](test/core/product_lifecycle_test.dart),
+[`durable_project_lifecycle_test.dart`](test/core/durable_project_lifecycle_test.dart), and
 [`orchestration_authority_test.dart`](test/core/orchestration_authority_test.dart).
 
 ### Live tests
@@ -416,8 +449,10 @@ validation belongs to the [OpenAI backend](../plugins/openai/packages/backend/RE
 
 ## Current limits
 
-The app has no durable product/Chat persistence, Task Browser/general Session
-navigation, or general Profile/plugin-management UI. Current provider selection is
+Only Project identity/source are durable. Tasks, Environments/provider state,
+Sessions/authority, Runs, Chat, configuration, Profiles, and general plugin state
+are not restored across restarts. Task Browser/general Session navigation and
+general Profile/plugin-management UI remain absent. Current model-provider selection is
 the source-checkout seam above, not finished settings. Intended UX belongs to
 [product direction](../docs/product/README.md); future technical work belongs to
 [technical direction](../docs/direction/README.md) and
@@ -433,6 +468,7 @@ repository-wide deferred-feature ledger here.
 | Backend bootstrap | [`lib/core/application_plugin_bootstrap.dart`](lib/core/application_plugin_bootstrap.dart): `ApplicationPluginBootstrap` |
 | Frontend generations/activation | [`lib/frontend/application_frontend_bootstrap.dart`](lib/frontend/application_frontend_bootstrap.dart), [`lib/frontend/prepared_frontend.dart`](lib/frontend/prepared_frontend.dart) |
 | Product lifecycle/Environment authority | [`lib/core/product_lifecycle.dart`](lib/core/product_lifecycle.dart): `ProductLifecycleCoordinator`, `EnvironmentRuntime` |
+| Private Project persistence | [`lib/core/project_database.dart`](lib/core/project_database.dart): `ProjectDatabase`, `MigrationCoordinator` |
 | Session selection/presentation | [`lib/frontend/prepared_session_host.dart`](lib/frontend/prepared_session_host.dart), [`lib/ui/session/session_presentation_host.dart`](lib/ui/session/session_presentation_host.dart) |
 | Session execution/orchestration | [`lib/ui/execution/session_execution_controller.dart`](lib/ui/execution/session_execution_controller.dart), [`lib/core/orchestration_host.dart`](lib/core/orchestration_host.dart) |
 | Model-provider adaptation | [`lib/core/model_provider_host.dart`](lib/core/model_provider_host.dart): `ModelProviderCapabilityAdapter` |

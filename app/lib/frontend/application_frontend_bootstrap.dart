@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_ui/adele_ui.dart';
@@ -8,6 +9,7 @@ import 'package:dart_eval/stdlib/core.dart';
 import 'package:flutter/widgets.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import '../core/application_plugin_bootstrap.dart';
 import '../core/resource_cleanup.dart';
 import 'directory_picker_bridge.dart';
 import 'model_native_activity_bridge.dart';
@@ -49,6 +51,32 @@ final class ApplicationFrontendBootstrap {
   List<InstalledFrontendActivation> get generations =>
       List.unmodifiable(_generations);
   Stream<ApplicationFrontendState> get changes => _changes.stream;
+
+  /// Prepared selectors require their exact installation's provider registration,
+  /// not merely a matching PluginId declared by an unrelated endpoint.
+  void validateProjectProvider(
+    ExtensionBinding<ProjectSelectorContribution> selector,
+    ProviderBinding provider,
+    ApplicationPluginBootstrap backends,
+  ) {
+    selector.validate();
+    provider.endpointAs<CapabilityEndpoint>();
+    if (selector.value.projectProviderId != provider.provider.id) {
+      throw StateError('The selector names another Project provider.');
+    }
+    for (final generation in _generations) {
+      if (generation.registrations.any((entry) => entry.owns(selector))) {
+        final owner = backends.backendForInstallation(generation.installation);
+        if (owner == null) {
+          throw StateError(
+            'The Project selector owning backend is unavailable.',
+          );
+        }
+        owner.validateProviderOwnership(provider);
+        return;
+      }
+    }
+  }
 
   /// The caller shares the same discovered catalog with any other component
   /// owners. Startup never rescans, compiles, or consults backend availability.
@@ -316,6 +344,7 @@ final class InstalledFrontendActivation {
               id: descriptor.extensionId,
               contribution: (isActive) => ProjectSelectorContribution(
                 displayName: descriptor.displayName,
+                projectProviderId: descriptor.projectProviderId,
                 selectProject: () async {
                   _requireActive(isActive);
                   late DirectoryPickerBridge bridge;

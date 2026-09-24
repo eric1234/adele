@@ -446,6 +446,25 @@ void main() {
       expect(target.ciTestConcurrency, isNull);
     });
 
+    test('discovers the local provider as a pure-Dart target', () {
+      final target = lookupTestTarget(
+        'local_directory_project_selector_backend',
+      );
+      expect(
+        target.path,
+        'plugins/local_directory_project_selector/packages/backend',
+      );
+      expect(target.executable, 'dart');
+      expect(target.argumentsFor(ci: true), ['test']);
+      expect(target.linuxDesktopDeps, isFalse);
+      expect(target.ciTestConcurrency, isNull);
+      final analysis = analysisTargets.singleWhere(
+        (item) => item.name == target.name,
+      );
+      expect(analysis.path, target.path);
+      expect(analysis.flutter, isFalse);
+    });
+
     test('rejects an unknown target', () {
       expect(
         () => lookupTestTarget('missing'),
@@ -565,6 +584,7 @@ void main() {
       const path = '$root/packages/frontend';
       final workspace = File('pubspec.yaml').readAsStringSync();
       expect(workspace, contains('  - $path\n'));
+      expect(workspace, contains('  - $root/packages/backend\n'));
       expect(workspace, isNot(contains('  - $root\n')));
       expect(File('$root/pubspec.yaml').existsSync(), isFalse);
       expect(
@@ -581,6 +601,16 @@ void main() {
       final frontend = File('$path/pubspec.yaml').readAsStringSync();
       expect(frontend, contains('  adele_ui: ^0.1.0\n'));
       expect(frontend, contains('resolution: workspace\n'));
+      final backend = File(
+        '$root/packages/backend/pubspec.yaml',
+      ).readAsStringSync();
+      expect(backend, contains('  adele_core_extensions: ^0.1.0\n'));
+      expect(backend, contains('resolution: workspace\n'));
+      expect(backend, isNot(contains('flutter:')));
+      expect(
+        backend,
+        isNot(contains('local_directory_project_selector_frontend:')),
+      );
       for (final forbidden in [
         'file_selector:',
         'adele_desktop:',
@@ -601,6 +631,7 @@ void main() {
         'kind': 'projectSelector',
         'extensionId':
             'dev.adele.plugin.local-directory-project-selector.project-selector',
+        'projectProviderId': 'dev.adele.project.local-directory',
         'displayName': 'Open Local Directory...',
         'library':
             'package:local_directory_project_selector_frontend/local_directory_project_selector_frontend.dart',
@@ -716,6 +747,7 @@ void main() {
         'agents_md_backend|dart|plugins/agents_md/packages/backend|test',
         'chat_strategy_contract|dart|plugins/chat_strategy/packages/contract|test',
         'chat_strategy_backend|dart|plugins/chat_strategy/packages/backend|test',
+        'local_directory_project_selector_backend|dart|plugins/local_directory_project_selector/packages/backend|test',
         'local_directory_project_selector_frontend|flutter|plugins/local_directory_project_selector/packages/frontend|test',
         'scripted_model_contract|dart|plugins/scripted_model/packages/contract|test --timeout 4m',
         'scripted_model_backend|dart|plugins/scripted_model/packages/backend|test',

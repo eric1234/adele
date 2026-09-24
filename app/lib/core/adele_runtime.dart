@@ -27,7 +27,11 @@ final class AdeleRuntime {
   late final ApplicationPluginBootstrap plugins;
   Future<void>? _closing;
 
-  /// Closes the installed backend resources owned by this runtime.
+  /// Stops product admission and joins database cleanup with backend shutdown.
+  /// Starting backend teardown lets its normal request revocation settle opens.
   /// Concurrent and subsequent callers observe the same completion or failure.
-  Future<void> close() => _closing ??= plugins.close();
+  Future<void> close() => _closing ??= Future.wait<void>([
+    lifecycle.close(),
+    plugins.close(),
+  ]).then((_) {});
 }

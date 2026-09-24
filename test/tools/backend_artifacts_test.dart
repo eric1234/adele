@@ -29,6 +29,19 @@ const String _commandToolsEntrypoint =
     'plugins/command_tools/packages/backend/bin/command_tools_backend.dart';
 const String _chatEntrypoint =
     'plugins/chat_strategy/packages/backend/bin/chat_strategy_backend.dart';
+const String _localDirectoryEntrypoint =
+    'plugins/local_directory_project_selector/packages/backend/bin/local_directory_project_selector_backend.dart';
+const _backendEntrypoints = [
+  _hostEntrypoint,
+  _gitEntrypoint,
+  _openaiEntrypoint,
+  _agentsMdEntrypoint,
+  _searchToolsEntrypoint,
+  _filesystemToolsEntrypoint,
+  _commandToolsEntrypoint,
+  _chatEntrypoint,
+  _localDirectoryEntrypoint,
+];
 const String _frontendHarness = 'tool/compile_chat_frontend.dart';
 const String _toolFrontendHarness =
     'tool/compile_tool_inspection_frontends.dart';
@@ -80,14 +93,7 @@ void main() {
     ).writeAsStringSync('void main() {}');
     for (final String entrypoint in <String>[
       _codegenEntrypoint,
-      _hostEntrypoint,
-      _gitEntrypoint,
-      _openaiEntrypoint,
-      _agentsMdEntrypoint,
-      _searchToolsEntrypoint,
-      _filesystemToolsEntrypoint,
-      _commandToolsEntrypoint,
-      _chatEntrypoint,
+      ..._backendEntrypoints,
     ]) {
       final File source = File('${root.path}/$entrypoint');
       source.parent.createSync(recursive: true);
@@ -314,6 +320,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           'search_tools_backend',
           'filesystem_tools_backend',
           'command_tools_backend',
+          'local_directory_project_selector_backend',
           'local_directory_project_selector_frontend',
         ]),
       );
@@ -669,6 +676,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           'compiled|$_commandToolsEntrypoint',
           'compile|$_chatEntrypoint',
           'compiled|$_chatEntrypoint',
+          'compile|$_localDirectoryEntrypoint',
+          'compiled|$_localDirectoryEntrypoint',
           'compile|$_frontendHarness',
           'compiled|$_frontendHarness',
           'compile|$_toolFrontendHarness|filesystem',
@@ -751,6 +760,11 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         );
         final File chat = File.fromUri(
           installations.uri.resolve('chat-strategy/backend.aot'),
+        );
+        final File localDirectory = File.fromUri(
+          installations.uri.resolve(
+            'local-directory-project-selector/backend.aot',
+          ),
         );
         expect(host.uri.isAbsolute, isTrue);
         expect(git.uri.isAbsolute, isTrue);
@@ -843,7 +857,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             directory: 'local-directory-project-selector',
             id: 'dev.adele.plugin.local-directory-project-selector',
             name: 'Local Directory Project Selector',
-            backend: false,
+            backend: true,
           ),
         ]) {
           final directory = Directory.fromUri(
@@ -909,7 +923,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.backendArtifactUri != null,
           ),
-          hasLength(7),
+          hasLength(8),
         );
         expect(
           catalog.installations.where(
@@ -973,6 +987,10 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         );
         expect(frontend.readAsStringSync(), 'frontend bytecode\n');
         expect(chat.readAsStringSync(), 'snapshot $_chatEntrypoint\n');
+        expect(
+          localDirectory.readAsStringSync(),
+          'snapshot $_localDirectoryEntrypoint\n',
+        );
         retainedArtifacts[host.path] = host.readAsStringSync();
         for (final MapEntry<String, String> artifact
             in retainedArtifacts.entries) {
@@ -1018,7 +1036,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.backendArtifactUri != null,
           ),
-          hasLength(missing == PreparedPluginComponent.backend ? 6 : 7),
+          hasLength(missing == PreparedPluginComponent.backend ? 7 : 8),
         );
         expect(
           catalog.installations.where(
@@ -1030,7 +1048,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     );
   }
 
-  test('missing selector EVC leaves no selector backend or frontend', () async {
+  test('missing selector EVC retains its owning backend', () async {
     final result = await invoke(['run', 'linux']);
     expect(result.exitCode, 0, reason: result.stderr.toString());
     const prefix = '--dart-define=ADELE_PLUGIN_INSTALLATION_ROOT=';
@@ -1050,7 +1068,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           installation.metadata.id.value ==
           'dev.adele.plugin.local-directory-project-selector',
     );
-    expect(selector.backendArtifactUri, isNull);
+    expect(selector.backendArtifactUri, isNotNull);
     expect(selector.frontend, isNull);
     expect(
       catalog.installations.where(
@@ -1211,16 +1229,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     },
   );
 
-  for (final String failedEntrypoint in <String>[
-    _hostEntrypoint,
-    _gitEntrypoint,
-    _openaiEntrypoint,
-    _agentsMdEntrypoint,
-    _searchToolsEntrypoint,
-    _filesystemToolsEntrypoint,
-    _commandToolsEntrypoint,
-    _chatEntrypoint,
-  ]) {
+  for (final String failedEntrypoint in _backendEntrypoints) {
     for (final String command in <String>['run', 'build']) {
       test('$command never launches after $failedEntrypoint fails', () async {
         environment['ADELE_TEST_FAIL_ENTRYPOINT'] = failedEntrypoint;
@@ -1235,49 +1244,11 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(commands.readAsLinesSync(), <String>[
           'inspect-sdk',
           'generate|sdk',
-          'compile|$_hostEntrypoint',
-          if (failedEntrypoint != _hostEntrypoint) ...<String>[
-            'compiled|$_hostEntrypoint',
-            'compile|$_gitEntrypoint',
-          ],
-          if (failedEntrypoint == _openaiEntrypoint ||
-              failedEntrypoint == _agentsMdEntrypoint ||
-              failedEntrypoint == _searchToolsEntrypoint ||
-              failedEntrypoint == _filesystemToolsEntrypoint ||
-              failedEntrypoint == _commandToolsEntrypoint ||
-              failedEntrypoint == _chatEntrypoint) ...<String>[
-            'compiled|$_gitEntrypoint',
-            'compile|$_openaiEntrypoint',
-          ],
-          if (failedEntrypoint == _agentsMdEntrypoint ||
-              failedEntrypoint == _searchToolsEntrypoint ||
-              failedEntrypoint == _filesystemToolsEntrypoint ||
-              failedEntrypoint == _commandToolsEntrypoint ||
-              failedEntrypoint == _chatEntrypoint) ...<String>[
-            'compiled|$_openaiEntrypoint',
-            'compile|$_agentsMdEntrypoint',
-          ],
-          if (failedEntrypoint == _searchToolsEntrypoint ||
-              failedEntrypoint == _filesystemToolsEntrypoint ||
-              failedEntrypoint == _commandToolsEntrypoint ||
-              failedEntrypoint == _chatEntrypoint) ...<String>[
-            'compiled|$_agentsMdEntrypoint',
-            'compile|$_searchToolsEntrypoint',
-          ],
-          if (failedEntrypoint == _filesystemToolsEntrypoint ||
-              failedEntrypoint == _commandToolsEntrypoint ||
-              failedEntrypoint == _chatEntrypoint) ...<String>[
-            'compiled|$_searchToolsEntrypoint',
-            'compile|$_filesystemToolsEntrypoint',
-          ],
-          if (failedEntrypoint == _commandToolsEntrypoint ||
-              failedEntrypoint == _chatEntrypoint) ...<String>[
-            'compiled|$_filesystemToolsEntrypoint',
-            'compile|$_commandToolsEntrypoint',
-          ],
-          if (failedEntrypoint == _chatEntrypoint) ...<String>[
-            'compiled|$_commandToolsEntrypoint',
-            'compile|$_chatEntrypoint',
+          for (final entrypoint in _backendEntrypoints.take(
+            _backendEntrypoints.indexOf(failedEntrypoint) + 1,
+          )) ...[
+            'compile|$entrypoint',
+            if (entrypoint != failedEntrypoint) 'compiled|$entrypoint',
           ],
         ]);
         expect(launchArguments.existsSync(), isFalse);
@@ -1340,6 +1311,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               'compiled|$_commandToolsEntrypoint',
               'compile|$_chatEntrypoint',
               'compiled|$_chatEntrypoint',
+              'compile|$_localDirectoryEntrypoint',
+              'compiled|$_localDirectoryEntrypoint',
               'compile|$_frontendHarness',
               if (kind != 'chat' || failure != 'exit')
                 'compiled|$_frontendHarness',

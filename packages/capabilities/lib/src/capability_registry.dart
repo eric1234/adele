@@ -96,6 +96,10 @@ final class ProviderBinding {
 
   ProviderDescriptor get provider => _registration.provider;
 
+  /// Registration identity, not semantic identity or a resolution wrapper.
+  bool isSameRegistration(ProviderBinding other) =>
+      identical(_registration, other._registration);
+
   T endpointAs<T extends CapabilityEndpoint>() {
     final CapabilityEndpoint endpoint = _registration.endpoint;
     if (!_registration.active) {
@@ -126,6 +130,10 @@ final class CapabilityRegistration {
 
   bool get isClosed => !_registration.active;
 
+  /// Exact ownership survives retirement; callers must separately check liveness.
+  bool owns(ProviderBinding binding) =>
+      identical(_registration, binding._registration);
+
   Future<void> close() async {
     _registry._remove(_registration);
   }
@@ -135,6 +143,9 @@ final class CapabilityRegistrationGroup {
   final List<CapabilityRegistration> _registrations =
       <CapabilityRegistration>[];
   bool _closed = false;
+
+  bool owns(ProviderBinding binding) =>
+      _registrations.any((registration) => registration.owns(binding));
 
   void add(CapabilityRegistration registration) {
     if (_closed) {

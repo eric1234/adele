@@ -58,6 +58,13 @@ final class InstalledBackendActivation {
     return _activation!.extensionOrigin(binding);
   }
 
+  void validateProviderOwnership(ProviderBinding binding) {
+    validate();
+    if (!_activation!.ownsProvider(binding)) {
+      throw StateError('The provider does not belong to the owning backend.');
+    }
+  }
+
   /// Binds this presentation to the owning installation's exact ready backend.
   /// Owning affinity also captures the strategy's advertised configuration route.
   OwningBackendChannel openChannel({

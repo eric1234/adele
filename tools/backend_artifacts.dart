@@ -85,6 +85,9 @@ Future<List<String>> prepareDesktopPluginDefines({
   final File chat = File.fromUri(
     installations.uri.resolve('chat-strategy/backend.aot'),
   );
+  final File localDirectory = File.fromUri(
+    installations.uri.resolve('local-directory-project-selector/backend.aot'),
+  );
   for (final ({String entrypoint, File artifact, String stage}) target
       in <({String entrypoint, File artifact, String stage})>[
         (
@@ -135,6 +138,12 @@ Future<List<String>> prepareDesktopPluginDefines({
           artifact: chat,
           stage: 'chat-strategy-compilation',
         ),
+        (
+          entrypoint:
+              'plugins/local_directory_project_selector/packages/backend/bin/local_directory_project_selector_backend.dart',
+          artifact: localDirectory,
+          stage: 'local-directory-project-selector-compilation',
+        ),
       ]) {
     stdout.writeln('==> ${target.stage}');
     await compileAotSnapshot(
@@ -155,7 +164,7 @@ Future<List<String>> prepareDesktopPluginDefines({
     installationRoot: installations,
   );
   // Publish each installation once, only after all components are prepared.
-  for (final plugin in [
+  for (final plugin in <({File? backend, String id, String displayName})>[
     (
       backend: git,
       id: 'dev.adele.plugin.git-environment',
@@ -174,7 +183,7 @@ Future<List<String>> prepareDesktopPluginDefines({
     ),
     (backend: chat, id: 'dev.adele.plugin.chat-strategy', displayName: 'Chat'),
     (
-      backend: null,
+      backend: localDirectory,
       id: 'dev.adele.plugin.local-directory-project-selector',
       displayName: 'Local Directory Project Selector',
     ),

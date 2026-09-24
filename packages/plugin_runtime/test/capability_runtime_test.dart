@@ -62,6 +62,17 @@ void main() {
             providerId: ProviderId(exposure.providerId),
           );
           expect(binding.provider.pluginId, connection.pluginId);
+          expect(activation.owns(binding), isTrue);
+          final unrelated = CapabilityRegistry();
+          unrelated.register(
+            provider: binding.provider,
+            endpoint: binding.endpointAs<AdeleRequestChannelEndpoint>(),
+          );
+          expect(
+            activation.owns(unrelated.resolve(capability)),
+            isFalse,
+            reason: 'Even the same descriptor and endpoint are not ownership.',
+          );
           expect(binding.provider.displayName, exposure.displayName);
           expect(binding.provider.rank, exposure.rank);
           final channel = binding.requestChannel;
@@ -158,6 +169,7 @@ void main() {
             registry: registry,
           );
       final oldBinding = registry.resolve(capability);
+      expect(firstActivation.owns(oldBinding), isTrue);
       final oldChannel = oldBinding.requestChannel;
       final oldContext = first.configurationContext('opaque-first');
       await expectLater(
@@ -177,6 +189,8 @@ void main() {
             registry: registry,
           );
       await firstActivation.close();
+      expect(firstActivation.owns(registry.resolve(capability)), isFalse);
+      expect(replacementActivation.owns(registry.resolve(capability)), isTrue);
       expect(replacement.isClosed, isFalse);
       expect(registry.providersFor(capability), hasLength(2));
       expect(

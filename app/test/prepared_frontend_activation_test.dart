@@ -308,6 +308,11 @@ Future<String?> nativeSelector() async => await pickDirectory();
       final binding = extensions.discover(projectSelectorContributions).single;
       expect(binding.id.value, 'dev.example.selector.selector');
       expect(binding.value.displayName, 'Open prepared Project...');
+      expect(
+        binding.value.projectProviderId,
+        ProviderId('dev.example.project'),
+      );
+      expect(owner.catalog!.installations.single.backendArtifactUri, isNull);
       expect(owner.generations.single.registrations, hasLength(2));
       await artifact.writeAsBytes([0, 1, 2]);
       expect(
@@ -772,6 +777,7 @@ Map<String, Object?> _selectorDescriptor(String name, String entrypoint) => {
   'library': _library,
   'extensionId': 'dev.example.$name.selector',
   'displayName': 'Open prepared Project...',
+  'projectProviderId': 'dev.example.project',
   'entrypoint': entrypoint,
 };
 

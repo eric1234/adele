@@ -1,10 +1,12 @@
 import 'dart:async';
 
+import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:test/test.dart';
 
 void main() {
+  final providerId = ProviderId('dev.adele.test.project-provider');
   test('the stable typed point permits zero selectors', () {
     expect(
       projectSelectorContributions,
@@ -27,14 +29,16 @@ void main() {
         id: selectedId,
         value: ProjectSelectorContribution(
           displayName: 'Choose Project...',
+          projectProviderId: providerId,
           selectProject: () async => location,
         ),
       );
       registry.register(
         point: projectSelectorContributions,
         id: cancelledId,
-        value: const ProjectSelectorContribution(
+        value: ProjectSelectorContribution(
           displayName: 'Choose Project...',
+          projectProviderId: providerId,
           selectProject: _cancelSelection,
         ),
       );
@@ -52,6 +56,7 @@ void main() {
         (binding) => binding.id == cancelledId,
       );
       expect(selected.value.displayName, 'Choose Project...');
+      expect(selected.value.projectProviderId, providerId);
       selected.validate();
       expect(await selected.value.selectProject(), location);
       selected.validate();
@@ -73,6 +78,7 @@ void main() {
           id: id,
           value: ProjectSelectorContribution(
             displayName: 'A',
+            projectProviderId: providerId,
             selectProject: () => selection.future,
           ),
         );
@@ -88,6 +94,7 @@ void main() {
           id: id,
           value: ProjectSelectorContribution(
             displayName: 'B',
+            projectProviderId: providerId,
             selectProject: () async {
               replacementCalls++;
               return Uri.parse('catalog:project/replacement');

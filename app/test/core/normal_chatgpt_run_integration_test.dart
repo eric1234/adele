@@ -285,13 +285,13 @@ void main() {
           catalog.installations.where(
             (entry) => entry.backendArtifactUri != null,
           ),
-          hasLength(7),
+          hasLength(8),
         );
         expect(
           catalog.installations.where((entry) => entry.frontend != null),
           hasLength(5),
         );
-        expect(runtime.plugins.backends, hasLength(7));
+        expect(runtime.plugins.backends, hasLength(8));
         for (final backend in runtime.plugins.backends) {
           expect(
             backend.state,
@@ -694,7 +694,7 @@ void main() {
           final healthy = runtime.plugins.backends.where(
             (entry) => entry.installation.metadata.id.value != _chatPluginId,
           );
-          expect(healthy, hasLength(6));
+          expect(healthy, hasLength(7));
           for (final backend in healthy) {
             expect(
               backend.state,
@@ -818,7 +818,7 @@ void main() {
   }
 
   // Preserve the focused installed-tool startup regression while using the same
-  // seven prepared AOT artifacts, rather than reintroducing semantic fallbacks.
+  // prepared AOT artifacts, rather than reintroducing semantic fallbacks.
   for (final pluginId in [
     _searchPluginId,
     _filesystemPluginId,
@@ -836,7 +836,7 @@ void main() {
           },
         );
         expect(runtime.plugins.state, ApplicationPluginState.ready);
-        expect(runtime.plugins.backends, hasLength(7));
+        expect(runtime.plugins.backends, hasLength(8));
         for (final backend in runtime.plugins.backends) {
           expect(
             backend.state,
@@ -918,8 +918,10 @@ final class _PreparedProduct {
           'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart',
       _chatPluginId:
           'plugins/chat_strategy/packages/backend/bin/chat_strategy_backend.dart',
+      _selectorPluginId:
+          'plugins/local_directory_project_selector/packages/backend/bin/local_directory_project_selector_backend.dart',
     };
-    for (final id in [...entrypoints.keys, _selectorPluginId]) {
+    for (final id in entrypoints.keys) {
       final installed = await Directory('${root.path}/$id').create();
       await File(
         '${installed.path}/adele_plugin.installation.json',
@@ -928,8 +930,7 @@ final class _PreparedProduct {
           'manifestVersion': 1,
           'metadata': {'id': id, 'version': '1.0.0', 'displayName': id},
           'components': {
-            if (entrypoints.containsKey(id))
-              'backend': {'artifact': 'backend.aot'},
+            'backend': {'artifact': 'backend.aot'},
             if (stockFrontendDescriptors.containsKey(id) ||
                 stockFrontendExtensionDescriptors.containsKey(id))
               'frontend': {
@@ -1129,6 +1130,7 @@ final class _ProductFixture {
     final project = shell(tester).project!;
     expect(project.sourceLocation, source.uri);
     expect(runtime.store.project(project.id), same(project));
+    expect(await File('${source.path}/.adele/data.db').exists(), isTrue);
     expect(runtime.store.tasksFor(project.id), isEmpty);
     await _tap(tester, 'New Task');
     await tester.enterText(

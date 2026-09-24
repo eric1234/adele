@@ -57,6 +57,7 @@ stockFrontendExtensionDescriptors = {
       'kind': 'projectSelector',
       'extensionId':
           'dev.adele.plugin.local-directory-project-selector.project-selector',
+      'projectProviderId': 'dev.adele.project.local-directory',
       'displayName': 'Open Local Directory...',
       'library':
           'package:local_directory_project_selector_frontend/local_directory_project_selector_frontend.dart',

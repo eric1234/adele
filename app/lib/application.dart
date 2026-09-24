@@ -389,11 +389,32 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       _projectError = null;
     });
     try {
+      selector.validate();
+      final provider = _runtime.lifecycle.resolveProjectProvider(
+        selector.value.projectProviderId,
+      );
+      void validateSelection() {
+        if (!mounted || _closing != null) {
+          throw StateError('Project selection is closed.');
+        }
+        _frontends.validateProjectProvider(
+          selector,
+          provider,
+          _runtime.plugins,
+        );
+      }
+
+      validateSelection();
       final Uri? source = await selector.value.selectProject();
       if (source == null || !mounted || _closing != null) return;
       // A retired selector must not publish a late result into the lifecycle.
-      selector.validate();
-      final Project project = _runtime.lifecycle.createProject(source);
+      validateSelection();
+      final Project project = await _runtime.lifecycle.openProject(
+        sourceLocation: source,
+        provider: provider,
+        validateSelection: validateSelection,
+      );
+      if (!mounted || _closing != null) return;
       setState(() => _project = project);
     } on Object catch (error) {
       if (mounted && _closing == null) {

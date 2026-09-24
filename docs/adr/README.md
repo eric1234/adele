@@ -26,3 +26,9 @@ the `NNNN-descriptive-title.md` numbering convention for new records. Read each
 record's own status and supersession/amendment notes: historical wording includes
 proposed, deferred, qualified acceptance, and partial supersession, not a uniform
 status taxonomy to normalize during documentation reorganization.
+
+The latest record is [ADR 0033: Durable Project storage and provider-selected
+backing](0033-durable-project-storage-and-provider-backing.md), following
+[ADR 0032](0032-remote-backend-extensions-use-operation-scoped-host-services.md).
+It amends ADR 0031's Project opening/storage boundary while preserving product
+semantic ownership and the distinction between durable data and live bindings.

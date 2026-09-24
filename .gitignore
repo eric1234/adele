@@ -7,6 +7,7 @@ build/
 coverage/
 
 # Native contract parts (contract_codegen.yaml); declarations remain authored.
+/packages/core_extensions/lib/project_provider.g.dart
 /packages/environment/lib/adele_environment.g.dart
 /packages/model_provider/lib/adele_model_provider.g.dart
 /packages/model_tool/lib/remote_model_tool.g.dart

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
@@ -260,12 +261,16 @@ void main() {
         final PreparedFrontendExtension selector =
             PreparedProjectSelectorExtension(
               extensionId: ExtensionId(_projectSelector['extensionId']!),
+              projectProviderId: ProviderId(
+                _projectSelector['projectProviderId']!,
+              ),
               displayName: _projectSelector['displayName']!,
               library: _projectSelector['library']!,
               entrypoint: _projectSelector['entrypoint']!,
             );
         final secondSelector = PreparedProjectSelectorExtension(
           extensionId: ExtensionId('org.example.another-selector'),
+          projectProviderId: ProviderId('org.example.another-provider'),
           displayName: ' Another Project... ',
           library: 'package:example_frontend/src/another_selector.g.dart',
           entrypoint: '_selectAnotherProject2',
@@ -298,6 +303,10 @@ void main() {
           ExtensionId(_projectSelector['extensionId']!),
         );
         expect(decoded.displayName, _projectSelector['displayName']);
+        expect(
+          decoded.projectProviderId,
+          ProviderId(_projectSelector['projectProviderId']!),
+        );
         expect(decoded.library, _projectSelector['library']);
         expect(decoded.entrypoint, _projectSelector['entrypoint']);
         expect(
@@ -674,6 +683,15 @@ void main() {
       'org.example.selector ',
     ])
       'invalid ExtensionId $id': {..._projectSelector, 'extensionId': id},
+    for (final id in [
+      'provider',
+      'not namespaced',
+      'org.Example.provider',
+      'org.example.provider-',
+      ' org.example.provider',
+      'org.example.provider ',
+    ])
+      'invalid ProviderId $id': {..._projectSelector, 'projectProviderId': id},
     for (final library in [
       'lib/selector.dart',
       'file:///selector.dart',
@@ -1337,6 +1355,7 @@ const _session = {
 const _projectSelector = {
   'kind': 'projectSelector',
   'extensionId': 'org.example.project-selector',
+  'projectProviderId': 'org.example.project-provider',
   'displayName': 'Open Project...',
   'library': 'package:example_frontend/project_selector.dart',
   'entrypoint': 'selectProject',

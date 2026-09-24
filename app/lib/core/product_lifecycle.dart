@@ -1,9 +1,13 @@
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
+
+import 'project_database.dart';
+import 'resource_cleanup.dart';
 
 typedef EnvironmentProviderForBinding =
     EnvironmentProvider Function(ProviderBinding binding);
@@ -379,6 +383,7 @@ final class ProductLifecycleCoordinator {
          providerForBinding: providerForBinding,
        ),
        strategyResolver = OrchestrationStrategyResolver(extensions),
+       _registry = registry,
        _ids = ids;
 
   factory ProductLifecycleCoordinator.generated({
@@ -398,8 +403,117 @@ final class ProductLifecycleCoordinator {
   final EnvironmentRuntime environmentRuntime;
   final OrchestrationStrategyResolver strategyResolver;
   final ProductIdSource _ids;
+  final CapabilityRegistry _registry;
+  final Map<ProjectId, ProjectDatabase> _projectDatabases = {};
+  final Set<Future<Project>> _projectOpens = {};
+  Future<void>? _closing;
 
+  ProviderBinding resolveProjectProvider(ProviderId providerId) {
+    _requireOpen();
+    final binding = _registry.resolve(
+      projectProviderCapability,
+      providerId: providerId,
+    );
+    _validateProjectProvider(binding);
+    return binding;
+  }
+
+  void _validateProjectProvider(ProviderBinding binding) {
+    binding.endpointAs<CapabilityEndpoint>();
+    if (binding.provider.capability != projectProviderCapability ||
+        binding.provider.serviceId != projectProviderServiceId ||
+        !binding.isSameRegistration(
+          _registry.resolve(
+            projectProviderCapability,
+            providerId: binding.provider.id,
+          ),
+        )) {
+      throw ArgumentError('Project provider must belong to this lifecycle.');
+    }
+  }
+
+  /// Opens durable identity through one captured provider. Headless callers supply
+  /// a known source and binding; optional selection validation is host-owned.
+  Future<Project> openProject({
+    required Uri sourceLocation,
+    required ProviderBinding provider,
+    void Function()? validateSelection,
+  }) {
+    _requireOpen();
+    final opening = _openProject(sourceLocation, provider, validateSelection);
+    _projectOpens.add(opening);
+    opening.then(
+      (_) => _projectOpens.remove(opening),
+      onError: (Object _, StackTrace _) => _projectOpens.remove(opening),
+    );
+    return opening;
+  }
+
+  Future<Project> _openProject(
+    Uri sourceLocation,
+    ProviderBinding provider,
+    void Function()? validateSelection,
+  ) async {
+    _validateProjectProvider(provider);
+    validateSelection?.call();
+    final backing = await ProjectProviderServiceClient(
+      provider.requestChannel,
+    ).prepareSource(sourceLocation);
+    _requireOpen();
+    _validateProjectProvider(provider);
+    validateSelection?.call();
+    if (backing.sourceLocation != sourceLocation) {
+      throw StateError('Project backing must retain the selected source.');
+    }
+    // Immutable backing is accepted only after both exact bindings settle live.
+    // SQLite work and publication are synchronous: no generation can interleave.
+    final database = ProjectDatabase.open(backing);
+    try {
+      final project = database.openProject(
+        sourceLocation: backing.sourceLocation,
+        nextProjectId: _ids.nextProjectId,
+      );
+      final current = store.project(project.id);
+      if (current != null) {
+        if (_projectDatabases[project.id]?.path != database.path ||
+            current.sourceLocation != project.sourceLocation) {
+          throw StateError('This Project identity is already open elsewhere.');
+        }
+        database.close();
+        return current;
+      }
+      store.publishProject(project);
+      _projectDatabases[project.id] = database;
+      return project;
+    } on Object {
+      database.close();
+      rethrow;
+    }
+  }
+
+  void _requireOpen() {
+    if (_closing != null) throw StateError('Product lifecycle is closing.');
+  }
+
+  /// Stops admission immediately, drains accepted provider calls, then releases
+  /// owned databases. Open failures remain with callers, not shutdown cleanup.
+  Future<void> close() => _closing ??= _close();
+
+  Future<void> _close() async {
+    await Future.wait([
+      for (final opening in _projectOpens.toList())
+        opening.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+    ]);
+    await closeResources([
+      for (final database in _projectDatabases.values)
+        () async => database.close(),
+    ]);
+    _projectDatabases.clear();
+  }
+
+  /// Explicitly volatile construction for development and deterministic fixtures.
   Project createProject(Uri sourceLocation) {
+    _requireOpen();
     final Project project = Project(
       id: _ids.nextProjectId(),
       sourceLocation: sourceLocation,
@@ -414,6 +528,7 @@ final class ProductLifecycleCoordinator {
     EnvironmentId? environmentId,
     ResolvedOrchestrationStrategy? resolvedStrategy,
   }) {
+    _requireOpen();
     if (store.task(taskId) == null) {
       throw StateError('Task $taskId is not published.');
     }
@@ -468,6 +583,7 @@ final class ProductLifecycleCoordinator {
     required String title,
     ProviderId? providerId,
   }) async {
+    _requireOpen();
     final Project? project = store.project(projectId);
     if (project == null) {
       throw StateError('Project $projectId is not published.');

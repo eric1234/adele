@@ -150,6 +150,7 @@ Examples illustrate different contracts, not a universal rule:
 | Inference-context sources | [Inference context](../../packages/orchestration/README.md#inference-context) composes zero or many sources under its own capture, ordering, and required/optional failure rules. |
 | Model tools | [Model-tool API](../../packages/model_tool/) defines contextual contributions; its composition has distinct tool-identity and model-alias collision semantics. |
 | Project selectors | [Core extension contracts](../../packages/core_extensions/README.md) expose independent actions, not interchangeable default providers. |
+| Project providers | The same public package defines backing preparation through an explicitly selected capability provider, without default substitution. |
 
 Prefer structured typed contributions when an extension influences an operation,
 not opaque mutation of host objects through universal `beforeX`/`afterX` hooks.
@@ -222,6 +223,32 @@ missing or retired counterparts fail explicitly rather than retargeting. See
 [contracts and capabilities](contracts-and-capabilities.md) for own-backend requests,
 operation-scoped host calls, service allowlists, and transport mechanics.
 
+### Project selector ownership
+
+Every prepared `PreparedProjectSelectorExtension` declares a required
+`projectProviderId`. The corresponding `ProjectSelectorContribution` retains
+`selectProject` for source selection, while the host resolves that provider's
+Project capability. There is no optional affinity enum: all prepared selectors
+require the exact ready backend belonging to the same
+`PreparedPluginInstallation` as their frontend.
+
+The host proves ownership through the backend's owned capability registrations,
+using generic registration `.owns` checks. Matching `PluginId`, `ProviderId`,
+endpoint metadata, or a contribution's value does not establish provenance.
+Neither a foreign same-ID endpoint nor a replacement generation may satisfy an
+already captured operation. Validate the selector/provider before picking, after
+picking, and after provider preparation, before accepting backing for storage.
+
+Frontend activation remains independent of backend readiness: a selector can be
+registered but unable to open a Project. The Project provider can serve headless
+callers without the frontend. The stock Local Directory plugin uses an interpreted
+Flutter picker frontend and a pure-Dart AOT backing provider; production app code
+links neither implementation. Its picker bridge conveys no Session/Environment
+authority and the provider receives no host database handle. After successful
+Project publication, neither component generation remains a permanent identity
+pin. See [Project lifecycle/storage](product-model.md#opening-and-publication) and
+the [public contract map](../../packages/core_extensions/README.md).
+
 ## UI and presentation
 
 Plugin-facing UI extension points describe semantic roles, not fixed physical
@@ -249,10 +276,14 @@ Application Commands are distinct from model tools that execute external program
 
 ## Plugin-owned state and persistence
 
-Plugins retain semantic ownership of their domain-specific state. Host persistence
+Plugins retain semantic ownership of their domain-specific state. The implemented
+[Project database](product-model.md#project-storage) persists only core Project
+identity/source, not provider state or arbitrary plugin data. Host persistence
 facilities are intended to support ordinary plugin-owned state associated with
-stable product identities without absorbing plugin schemas into core. Such general
-persistence facilities are not implemented; this boundary defines no storage API.
+stable product identities without absorbing plugin schemas into core. Explicit
+owner-defined SQL/schema semantics remain with those owners; the private Project
+database does not expose a generic key/value store, ORM, database connection, or
+public migration registry. General plugin persistence facilities are not implemented.
 Plugin state should normally survive deactivation, while domain-native external
 systems may remain authoritative where that is part of the feature.
 
