@@ -39,7 +39,7 @@ dart tools/adele.dart run linux
 ```
 
 The maintained entrypoint is [`tools/adele.dart`](tools/adele.dart).
-`dart tools/adele.dart check` runs repository checks; analysis and focused test
-commands are also available. See [development documentation](docs/development/README.md)
-for toolchain, generation, and validation guidance, and the
+See [toolchain and generation](docs/development/toolchain.md),
+[testing and validation](docs/development/testing.md), and
+[developer self-hosting](docs/development/self-hosting.md) for repository workflows, and the
 [application README](app/README.md) for local launch configuration and limitations.
