@@ -29,8 +29,8 @@ const String _commandToolsEntrypoint =
     'plugins/command_tools/packages/backend/bin/command_tools_backend.dart';
 const String _chatEntrypoint =
     'plugins/chat_strategy/packages/backend/bin/chat_strategy_backend.dart';
-const String _localDirectoryEntrypoint =
-    'plugins/local_directory_project_selector/packages/backend/bin/local_directory_project_selector_backend.dart';
+const String _localDirectoryProjectEntrypoint =
+    'plugins/local_directory_project/packages/backend/bin/local_directory_project_backend.dart';
 const _backendEntrypoints = [
   _hostEntrypoint,
   _gitEntrypoint,
@@ -40,15 +40,15 @@ const _backendEntrypoints = [
   _filesystemToolsEntrypoint,
   _commandToolsEntrypoint,
   _chatEntrypoint,
-  _localDirectoryEntrypoint,
+  _localDirectoryProjectEntrypoint,
 ];
 const String _frontendHarness = 'tool/compile_chat_frontend.dart';
 const String _toolFrontendHarness =
     'tool/compile_tool_inspection_frontends.dart';
 const String _openaiFrontendHarness =
     'tool/compile_openai_activity_frontend.dart';
-const String _localDirectoryFrontendHarness =
-    'tool/compile_local_directory_frontend.dart';
+const String _localDirectoryProjectFrontendHarness =
+    'tool/compile_local_directory_project_frontend.dart';
 
 void main() {
   late Directory root;
@@ -89,7 +89,7 @@ void main() {
       '${root.path}/app/$_openaiFrontendHarness',
     ).writeAsStringSync('void main() {}');
     File(
-      '${root.path}/app/$_localDirectoryFrontendHarness',
+      '${root.path}/app/$_localDirectoryProjectFrontendHarness',
     ).writeAsStringSync('void main() {}');
     for (final String entrypoint in <String>[
       _codegenEntrypoint,
@@ -186,10 +186,10 @@ elif [ "\$1" = test ]; then
     kind=openai
     output="\$ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT"
     label='$_openaiFrontendHarness'
-  elif [ "\$5" = '$_localDirectoryFrontendHarness' ]; then
-    kind=local-directory
-    output="\$ADELE_LOCAL_DIRECTORY_FRONTEND_OUTPUT"
-    label='$_localDirectoryFrontendHarness'
+  elif [ "\$5" = '$_localDirectoryProjectFrontendHarness' ]; then
+    kind=local-directory-project
+    output="\$ADELE_LOCAL_DIRECTORY_PROJECT_FRONTEND_OUTPUT"
+    label='$_localDirectoryProjectFrontendHarness'
   else
     test "\$5" = '$_toolFrontendHarness' || exit 92
     kind="\$ADELE_TOOL_INSPECTION_FRONTEND"
@@ -320,8 +320,8 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           'search_tools_backend',
           'filesystem_tools_backend',
           'command_tools_backend',
-          'local_directory_project_selector_backend',
-          'local_directory_project_selector_frontend',
+          'local_directory_project_backend',
+          'local_directory_project_frontend',
         ]),
       );
       expect(commands.existsSync(), isFalse);
@@ -640,6 +640,15 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
   test(
     'Linux run and builds prepare one fresh eight-installation snapshot',
     () async {
+      for (final path in [
+        _localDirectoryProjectEntrypoint,
+        'plugins/local_directory_project/packages/backend/lib/local_directory_project_backend.dart',
+        'plugins/local_directory_project/packages/frontend/lib/local_directory_project_frontend.dart',
+        'app/$_localDirectoryProjectFrontendHarness',
+        'app/tool/local_directory_project_frontend_compiler.dart',
+      ]) {
+        expect(File(path).existsSync(), isTrue, reason: path);
+      }
       final Set<String> outputDirectories = <String>{};
       final Map<String, String> retainedArtifacts = <String, String>{};
       // Preparation must replace inherited inputs with this checkout's paths.
@@ -649,7 +658,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           '/wrong-tool-output';
       environment['ADELE_TOOL_INSPECTION_FRONTEND'] = 'wrong-tool';
       environment['ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT'] = '/wrong-openai';
-      environment['ADELE_LOCAL_DIRECTORY_FRONTEND_OUTPUT'] = '/wrong-selector';
+      environment['ADELE_LOCAL_DIRECTORY_PROJECT_FRONTEND_OUTPUT'] =
+          '/wrong-local-directory-project';
       for (final List<String> arguments in <List<String>>[
         <String>['run', 'linux'],
         <String>['build', 'linux'],
@@ -676,8 +686,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           'compiled|$_commandToolsEntrypoint',
           'compile|$_chatEntrypoint',
           'compiled|$_chatEntrypoint',
-          'compile|$_localDirectoryEntrypoint',
-          'compiled|$_localDirectoryEntrypoint',
+          'compile|$_localDirectoryProjectEntrypoint',
+          'compiled|$_localDirectoryProjectEntrypoint',
           'compile|$_frontendHarness',
           'compiled|$_frontendHarness',
           'compile|$_toolFrontendHarness|filesystem',
@@ -686,8 +696,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           'compiled|$_toolFrontendHarness|command',
           'compile|$_openaiFrontendHarness',
           'compiled|$_openaiFrontendHarness',
-          'compile|$_localDirectoryFrontendHarness',
-          'compiled|$_localDirectoryFrontendHarness',
+          'compile|$_localDirectoryProjectFrontendHarness',
+          'compiled|$_localDirectoryProjectFrontendHarness',
           'flutter-launch',
         ]);
         expect(result.stdout, contains('frontend compiler output'));
@@ -761,10 +771,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         final File chat = File.fromUri(
           installations.uri.resolve('chat-strategy/backend.aot'),
         );
-        final File localDirectory = File.fromUri(
-          installations.uri.resolve(
-            'local-directory-project-selector/backend.aot',
-          ),
+        final File localDirectoryProject = File.fromUri(
+          installations.uri.resolve('local-directory-project/backend.aot'),
         );
         expect(host.uri.isAbsolute, isTrue);
         expect(git.uri.isAbsolute, isTrue);
@@ -806,7 +814,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             'chat-strategy',
             'filesystem-tools',
             'command-tools',
-            'local-directory-project-selector',
+            'local-directory-project',
           ]),
         );
         final installedIds = <String>{};
@@ -854,9 +862,9 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             backend: true,
           ),
           (
-            directory: 'local-directory-project-selector',
-            id: 'dev.adele.plugin.local-directory-project-selector',
-            name: 'Local Directory Project Selector',
+            directory: 'local-directory-project',
+            id: 'dev.adele.plugin.local-directory-project',
+            name: 'Local Directory Project',
             backend: true,
           ),
         ]) {
@@ -931,6 +939,34 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           ),
           hasLength(5),
         );
+        final localDirectoryProjectInstallation = catalog.installations
+            .singleWhere(
+              (installation) =>
+                  installation.metadata.id.value ==
+                  'dev.adele.plugin.local-directory-project',
+            );
+        expect(
+          localDirectoryProjectInstallation.backendArtifactUri,
+          localDirectoryProject.uri,
+        );
+        expect(
+          localDirectoryProjectInstallation.frontend!.artifactUri,
+          installations.uri.resolve('local-directory-project/frontend.evc'),
+        );
+        expect(
+          localDirectoryProjectInstallation.frontend!.extensions.single
+              .toJson(),
+          {
+            'kind': 'projectSelector',
+            'extensionId':
+                'dev.adele.plugin.local-directory-project.project-selector',
+            'projectProviderId': 'dev.adele.project.local-directory',
+            'displayName': 'Open Local Directory...',
+            'library':
+                'package:local_directory_project_frontend/local_directory_project_frontend.dart',
+            'entrypoint': 'selectProject',
+          },
+        );
         for (final installation in catalog.installations) {
           final descriptors =
               stockFrontendDescriptors[installation.metadata.id.value];
@@ -988,8 +1024,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(frontend.readAsStringSync(), 'frontend bytecode\n');
         expect(chat.readAsStringSync(), 'snapshot $_chatEntrypoint\n');
         expect(
-          localDirectory.readAsStringSync(),
-          'snapshot $_localDirectoryEntrypoint\n',
+          localDirectoryProject.readAsStringSync(),
+          'snapshot $_localDirectoryProjectEntrypoint\n',
         );
         retainedArtifacts[host.path] = host.readAsStringSync();
         for (final MapEntry<String, String> artifact
@@ -1056,20 +1092,18 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         .readAsLinesSync()
         .singleWhere((argument) => argument.startsWith(prefix))
         .substring(prefix.length);
-    await File(
-      '$rootPath/local-directory-project-selector/frontend.evc',
-    ).delete();
+    await File('$rootPath/local-directory-project/frontend.evc').delete();
 
     final catalog = await PreparedPluginCatalog.discover(rootPath);
     expect(catalog.installations, hasLength(8));
     expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
-    final selector = catalog.installations.singleWhere(
+    final localDirectoryProject = catalog.installations.singleWhere(
       (installation) =>
           installation.metadata.id.value ==
-          'dev.adele.plugin.local-directory-project-selector',
+          'dev.adele.plugin.local-directory-project',
     );
-    expect(selector.backendArtifactUri, isNotNull);
-    expect(selector.frontend, isNull);
+    expect(localDirectoryProject.backendArtifactUri, isNotNull);
+    expect(localDirectoryProject.frontend, isNull);
     expect(
       catalog.installations.where(
         (installation) => installation.frontend != null,
@@ -1241,6 +1275,14 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(result.exitCode, 17);
         expect(result.stderr, contains('snapshot compiler failed'));
         expect(result.stderr, contains('failed with exit code 17'));
+        if (failedEntrypoint == _localDirectoryProjectEntrypoint) {
+          expect(
+            result.stderr,
+            contains(
+              'local-directory-project-compilation failed with exit code 17',
+            ),
+          );
+        }
         expect(commands.readAsLinesSync(), <String>[
           'inspect-sdk',
           'generate|sdk',
@@ -1263,7 +1305,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       'filesystem',
       'command',
       'openai',
-      'local-directory',
+      'local-directory-project',
     ]) {
       for (final String failure in <String>['exit', 'missing', 'empty']) {
         test(
@@ -1311,34 +1353,34 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               'compiled|$_commandToolsEntrypoint',
               'compile|$_chatEntrypoint',
               'compiled|$_chatEntrypoint',
-              'compile|$_localDirectoryEntrypoint',
-              'compiled|$_localDirectoryEntrypoint',
+              'compile|$_localDirectoryProjectEntrypoint',
+              'compiled|$_localDirectoryProjectEntrypoint',
               'compile|$_frontendHarness',
               if (kind != 'chat' || failure != 'exit')
                 'compiled|$_frontendHarness',
               if (kind != 'chat') 'compile|$_toolFrontendHarness|filesystem',
               if (kind == 'command' ||
                   kind == 'openai' ||
-                  kind == 'local-directory' ||
+                  kind == 'local-directory-project' ||
                   (kind == 'filesystem' && failure != 'exit'))
                 'compiled|$_toolFrontendHarness|filesystem',
               if (kind == 'command' ||
                   kind == 'openai' ||
-                  kind == 'local-directory')
+                  kind == 'local-directory-project')
                 'compile|$_toolFrontendHarness|command',
               if (kind == 'openai' ||
-                  kind == 'local-directory' ||
+                  kind == 'local-directory-project' ||
                   (kind == 'command' && failure != 'exit'))
                 'compiled|$_toolFrontendHarness|command',
-              if (kind == 'openai' || kind == 'local-directory')
+              if (kind == 'openai' || kind == 'local-directory-project')
                 'compile|$_openaiFrontendHarness',
-              if (kind == 'local-directory' ||
+              if (kind == 'local-directory-project' ||
                   (kind == 'openai' && failure != 'exit'))
                 'compiled|$_openaiFrontendHarness',
-              if (kind == 'local-directory')
-                'compile|$_localDirectoryFrontendHarness',
-              if (kind == 'local-directory' && failure != 'exit')
-                'compiled|$_localDirectoryFrontendHarness',
+              if (kind == 'local-directory-project')
+                'compile|$_localDirectoryProjectFrontendHarness',
+              if (kind == 'local-directory-project' && failure != 'exit')
+                'compiled|$_localDirectoryProjectFrontendHarness',
             ]);
             expect(launchArguments.existsSync(), isFalse);
             expectNoPublishedInstallations();

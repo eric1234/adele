@@ -4,10 +4,10 @@ import 'dart:isolate';
 
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
-import 'package:local_directory_project_selector_backend/local_directory_project_selector_backend.dart';
+import 'package:local_directory_project_backend/local_directory_project_backend.dart';
 import 'package:test/test.dart';
 
-import '../bin/local_directory_project_selector_backend.dart' as backend;
+import '../bin/local_directory_project_backend.dart' as backend;
 
 void main() {
   test(

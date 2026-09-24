@@ -41,8 +41,8 @@ workspace:
   - plugins/chat_strategy/packages/contract
   - plugins/chat_strategy/packages/backend
   - plugins/chat_strategy/packages/frontend
-  - plugins/local_directory_project_selector/packages/backend
-  - plugins/local_directory_project_selector/packages/frontend
+  - plugins/local_directory_project/packages/backend
+  - plugins/local_directory_project/packages/frontend
   - plugins/git_environment
 
 dev_dependencies:

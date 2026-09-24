@@ -231,7 +231,7 @@ Their composition and prepared-component boundaries belong to the
 [plugin system](plugin-system.md#backend-and-frontend-composition) and
 [plugin layout](plugin-layout.md#prepared-frontend-descriptors). Bridge APIs and
 the Local Directory example belong to [`ui`](../../packages/ui/README.md#interpreted-bridges)
-and the [Local Directory plugin](../../plugins/local_directory_project_selector/README.md).
+and the [Local Directory Project plugin](../../plugins/local_directory_project/README.md).
 
 ## Operation-scoped host calls
 

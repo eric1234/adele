@@ -51,10 +51,10 @@ compiler share this primitive.
 ## Desktop Tooling
 
 Normal `dart tools/adele.dart run linux` and `build linux --profile` prepare the
-shared host AOT snapshot, seven backend AOT snapshots (Git Environment, OpenAI, Chat,
-AGENTS.md, Search, Filesystem Tools, and Command Tools), and five frontend EVCs
-(Chat, Local Directory Project Selector, Filesystem Tools, Command Tools, and OpenAI
-activity) before launching the Flutter run/build command. Backend compilation
+shared host AOT snapshot, eight backend AOT snapshots (Git Environment, OpenAI, Chat,
+AGENTS.md, Search, Filesystem Tools, Command Tools, and Local Directory Project),
+and five frontend EVCs (Chat, Local Directory Project, Filesystem Tools, Command
+Tools, and OpenAI activity) before launching the Flutter run/build command. Backend compilation
 runs outside Flutter; frontend compilation uses Flutter build-time tooling. This also
 applies to explicit Linux debug/release modes. Non-Linux commands and the explicit
 development smoke keep their existing compilation topology, with current contract
@@ -69,7 +69,8 @@ snapshot compilations nor frontend preparation repeat that repository-wide step.
 
 The launcher inspects its selected Flutter executable and uses that SDK's bundled
 `dart` and sibling `dartaotruntime`, not a potentially unrelated `dart` on PATH.
-It compiles the host and Git, OpenAI, Chat, AGENTS.md, Search, Filesystem Tools, and Command Tools backends.
+It compiles the host and Git, OpenAI, Chat, AGENTS.md, Search, Filesystem Tools,
+Command Tools, and Local Directory Project backends.
 `tools/frontend_artifacts.dart` prepares all five stock EVCs in the same installation
 root with the selected Flutter SDK. `tools/stock_frontend_descriptors.dart` is the
 singular stock build-side source for presentation and behavioral extension
@@ -83,8 +84,9 @@ preparation succeeds. The launcher passes only four generic deployment defines:
 - `ADELE_PLUGIN_STARTUP_ARGUMENTS_FILE`: absolute generic startup-arguments JSON file.
 
 Eight installation directories are immediate children of the one installation root;
-Chat, Filesystem Tools, Command Tools, and OpenAI each share one manifest and PluginId across their
-independently activatable backend and frontend components:
+Chat, Local Directory Project, Filesystem Tools, Command Tools, and OpenAI each
+share one manifest and PluginId across their independently activatable backend and
+frontend components:
 
 ```text
 desktop-plugins/build-*/
@@ -95,8 +97,9 @@ desktop-plugins/build-*/
     |   |-- adele_plugin.installation.json
     |   |-- backend.aot
     |   `-- frontend.evc
-    |-- local-directory-project-selector/
+    |-- local-directory-project/
     |   |-- adele_plugin.installation.json
+    |   |-- backend.aot
     |   `-- frontend.evc
     |-- filesystem-tools/
     |   |-- adele_plugin.installation.json
@@ -146,10 +149,11 @@ The generated Chat frontend client is prepared with the generic own-backend and
 Session execution bridge declarations, not a native Chat controller.
 Filesystem's backend source is under `plugins/filesystem_tools/packages/backend`.
 Command's is under `plugins/command_tools/packages/backend`, with entrypoint
-`bin/command_tools_backend.dart`. Chat, AGENTS.md, Search, Filesystem Tools, and Command
-Tools need no startup configuration/arguments or
-extra deployment defines. Their entrypoints own ready extension advertisements; the app uses generic
-remote extension activation rather than linking their semantic plugins in production.
+`bin/command_tools_backend.dart`. Chat, AGENTS.md, Search, Filesystem Tools, Command
+Tools, and Local Directory Project need no startup configuration/arguments or
+extra deployment defines. Their entrypoints own ready capability/extension
+advertisements; the app uses generic remote capability/extension activation rather
+than linking their semantic plugins in production.
 Both host and plugin-backend protocols use version 1 with exact protocol-version
 matching. Rebuild all host/backend artifacts as a coherent set after wire changes,
 including pre-release changes that retain the version; prior development artifacts
@@ -187,23 +191,26 @@ The same launcher invokes `app/tool/compile_tool_inspection_frontends.dart` once
 for each owning tool frontend, using `ADELE_TOOL_INSPECTION_FRONTEND` and
 `ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT` alongside the repository root. It also
 invokes `app/tool/compile_openai_activity_frontend.dart` with build-time inputs
-`ADELE_REPOSITORY_ROOT` and `ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT`. Local Directory
-uses `app/tool/compile_local_directory_frontend.dart` with the exact helper
-`app/tool/local_directory_frontend_compiler.dart`, `ADELE_REPOSITORY_ROOT`, and
-`ADELE_LOCAL_DIRECTORY_FRONTEND_OUTPUT`. It compiles
-`plugins/local_directory_project_selector/packages/frontend` using compile-only
+`ADELE_REPOSITORY_ROOT` and `ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT`. Local Directory Project
+uses `app/tool/compile_local_directory_project_frontend.dart` with the exact helper
+`app/tool/local_directory_project_frontend_compiler.dart`, `ADELE_REPOSITORY_ROOT`, and
+`ADELE_LOCAL_DIRECTORY_PROJECT_FRONTEND_OUTPUT`. It compiles
+`plugins/local_directory_project/packages/frontend` using compile-only
 picker declarations, not a native picker call. Each stage
 must produce nonempty EVC before application launch; failure never silently reuses
 an older artifact. These Flutter compiler entrypoints remain outside this package
 and the normal application startup import graph.
 
-`local_directory_project_selector_frontend` replaces the retired root selector
-package in workspace membership and maintained analysis/test discovery. Its
-`local-directory-project-selector` installation is frontend-only, with no AOT
-selector or additional deployment define. The evaluated operation owns path
-normalization; app hosting supplies a single-use asynchronous directory-picker
-bridge and validates the returned URI. This does not add backend RPC or
-Session/Environment authority.
+`local_directory_project_frontend` and `local_directory_project_backend` both
+participate in workspace membership and maintained analysis/test discovery. Their
+`local-directory-project/` installation combines interpreted `frontend.evc` with
+the provider's `backend.aot`, without additional deployment defines. The evaluated
+selector owns path normalization; app hosting supplies a single-use asynchronous
+directory-picker bridge and validates the returned URI. Picking uses no backend
+RPC or Session/Environment authority. Opening additionally requires the exact
+owning provider binding and generated backend RPC for source validation and backing
+placement; the host owns SQLite and Project publication. See
+[Project opening](../../app/README.md#project-opening).
 
 The OpenAI source split is Contract/Backend/Frontend under
 `plugins/openai/packages/{contract,backend,frontend}`. Contract is pure-Dart

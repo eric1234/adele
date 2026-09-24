@@ -3,7 +3,7 @@ import 'dart:isolate';
 
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
-import 'package:local_directory_project_selector_backend/local_directory_project_selector_backend.dart';
+import 'package:local_directory_project_backend/local_directory_project_backend.dart';
 
 Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   if (arguments.isNotEmpty || bootstrapMessage is! Map) {

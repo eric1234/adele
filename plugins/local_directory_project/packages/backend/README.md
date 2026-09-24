@@ -1,13 +1,13 @@
 # Local Directory Project Backend
 
-`local_directory_project_selector_backend` is the pure-Dart AOT backing provider
-for `dev.adele.plugin.local-directory-project-selector`. Its sibling interpreted
+`local_directory_project_backend` is the pure-Dart AOT backing provider
+for `dev.adele.plugin.local-directory-project`. Its sibling interpreted
 Flutter selector is optional for headless use and is not an implementation
 dependency. See the [plugin map](../../README.md) for composition and preparation.
 
 ## Ownership
 
-[`LocalDirectoryProjectProviderService`](lib/local_directory_project_selector_backend.dart)
+[`LocalDirectoryProjectProviderService`](lib/local_directory_project_backend.dart)
 implements public `ProjectProviderService.prepareSource`. It validates local source
 URI semantics and returns `ProjectBacking` with the unchanged source and relative
 path `.adele/data.db`. That path is this implementation's policy, not a core
@@ -27,7 +27,7 @@ for the canonical storage and failure boundaries.
 - Capability: `dev.adele.project.provider`, major version 1.
 - Generated service constant: `projectProviderServiceId`, value
   `dev.adele.project.provider`.
-- Entrypoint: [`bin/local_directory_project_selector_backend.dart`](bin/local_directory_project_selector_backend.dart).
+- Entrypoint: [`bin/local_directory_project_backend.dart`](bin/local_directory_project_backend.dart).
 
 The entrypoint advertises its capability on readiness and dispatches the generated
 service in the supplied configuration context. It accepts no plugin startup
@@ -45,7 +45,7 @@ semantic IDs. Missing or retired providers fail without fallback.
 ## Validation
 
 From the repository root, use
-`dart tools/adele.dart test --target local_directory_project_selector_backend`.
+`dart tools/adele.dart test --target local_directory_project_backend`.
 The package participates in root workspace membership and maintained analysis/test
 discovery. App lifecycle tests own database publication, reopen/move, and
 confinement checks; prepared composition and launcher checks belong to the app and

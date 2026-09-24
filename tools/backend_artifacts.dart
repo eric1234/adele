@@ -85,8 +85,8 @@ Future<List<String>> prepareDesktopPluginDefines({
   final File chat = File.fromUri(
     installations.uri.resolve('chat-strategy/backend.aot'),
   );
-  final File localDirectory = File.fromUri(
-    installations.uri.resolve('local-directory-project-selector/backend.aot'),
+  final File localDirectoryProject = File.fromUri(
+    installations.uri.resolve('local-directory-project/backend.aot'),
   );
   for (final ({String entrypoint, File artifact, String stage}) target
       in <({String entrypoint, File artifact, String stage})>[
@@ -140,9 +140,9 @@ Future<List<String>> prepareDesktopPluginDefines({
         ),
         (
           entrypoint:
-              'plugins/local_directory_project_selector/packages/backend/bin/local_directory_project_selector_backend.dart',
-          artifact: localDirectory,
-          stage: 'local-directory-project-selector-compilation',
+              'plugins/local_directory_project/packages/backend/bin/local_directory_project_backend.dart',
+          artifact: localDirectoryProject,
+          stage: 'local-directory-project-compilation',
         ),
       ]) {
     stdout.writeln('==> ${target.stage}');
@@ -183,9 +183,9 @@ Future<List<String>> prepareDesktopPluginDefines({
     ),
     (backend: chat, id: 'dev.adele.plugin.chat-strategy', displayName: 'Chat'),
     (
-      backend: localDirectory,
-      id: 'dev.adele.plugin.local-directory-project-selector',
-      displayName: 'Local Directory Project Selector',
+      backend: localDirectoryProject,
+      id: 'dev.adele.plugin.local-directory-project',
+      displayName: 'Local Directory Project',
     ),
     (
       backend: filesystemTools,

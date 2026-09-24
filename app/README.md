@@ -18,9 +18,9 @@ and [architecture overview](../docs/architecture/overview.md) for cross-system c
 | --- | --- |
 | Construction of the shared `AdeleRuntime` and its registries/store/coordinators | Generic Extension Point semantics: [plugin system](../docs/architecture/plugin-system.md), [plugin API](../packages/plugin_api/README.md). |
 | Normal prepared backend bootstrap and window-owned frontend activation | Source preparation/build semantics: [plugin layout](../docs/architecture/plugin-layout.md), [plugin builder](../packages/plugin_builder/README.md); backend hosting: [plugin runtime](../packages/plugin_runtime/README.md). |
-| App-native implementations of public bridges, including the directory picker | Public presentation/bridge contracts: [UI](../packages/ui/README.md); local-path selection semantics: [Local Directory selector](../plugins/local_directory_project_selector/README.md). |
+| App-native implementations of public bridges, including the directory picker | Public presentation/bridge contracts: [UI](../packages/ui/README.md); local-path selection semantics: [Local Directory Project](../plugins/local_directory_project/README.md). |
 | Product lifecycle composition and publication | Product identity definitions: [product model](../docs/architecture/product-model.md), [product package](../packages/product/README.md); provider behavior: [Environment](../packages/environment/README.md), [Git Environment](../plugins/git_environment/README.md). |
-| Private per-Project SQLite hosting, confinement, migrations, and connection lifetime | Source semantics/backing placement: [Project provider contract](../packages/core_extensions/README.md#project-provider) and [Local Directory backend](../plugins/local_directory_project_selector/packages/backend/README.md). |
+| Private per-Project SQLite hosting, confinement, migrations, and connection lifetime | Source semantics/backing placement: [Project provider contract](../packages/core_extensions/README.md#project-provider) and [Local Directory Project backend](../plugins/local_directory_project/packages/backend/README.md). |
 | Session execution hosting and provider/tool/context adaptation | Public [orchestration](../packages/orchestration/README.md), [model-tool](../packages/model_tool/), and [model-provider](../packages/model_provider/) contracts; generic mechanics in [agent kernel](../packages/agent_kernel/README.md). |
 | Host policy, exact-invocation approval, and Run activity projection | Concrete strategy sequencing, conversation state/history, and grouping: [Chat](../plugins/chat_strategy/README.md). |
 | Generic shell, Session/Inspection hosting, and application-local window state | Tool behavior and bespoke cards: [Filesystem](../plugins/filesystem_tools/README.md), [Command](../plugins/command_tools/README.md), and [Search](../plugins/search_tools/README.md). |
@@ -134,7 +134,7 @@ infrastructure, not on-start compilation or a plugin installer.
 | Harness under `app/` | Build-time inputs in addition to `ADELE_REPOSITORY_ROOT` |
 | --- | --- |
 | [`tool/compile_chat_frontend.dart`](tool/compile_chat_frontend.dart) | `ADELE_CHAT_FRONTEND_OUTPUT` |
-| [`tool/compile_local_directory_frontend.dart`](tool/compile_local_directory_frontend.dart) | `ADELE_LOCAL_DIRECTORY_FRONTEND_OUTPUT` |
+| [`tool/compile_local_directory_project_frontend.dart`](tool/compile_local_directory_project_frontend.dart) | `ADELE_LOCAL_DIRECTORY_PROJECT_FRONTEND_OUTPUT` |
 | [`tool/compile_tool_inspection_frontends.dart`](tool/compile_tool_inspection_frontends.dart) | `ADELE_TOOL_INSPECTION_FRONTEND` (`filesystem` or `command`), `ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT` |
 | [`tool/compile_openai_activity_frontend.dart`](tool/compile_openai_activity_frontend.dart) | `ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT` |
 
@@ -213,7 +213,7 @@ The [product model](../docs/architecture/product-model.md) owns their semantics.
 ### Project opening
 
 The shell renders live `ProjectSelectorContribution` actions from the existing
-registry. The stock [Local Directory selector](../plugins/local_directory_project_selector/README.md)
+registry. The stock [Local Directory Project selector](../plugins/local_directory_project/README.md)
 is a prepared interpreted frontend, not an app-linked implementation. Its evaluated
 `selectProject` calls the public [directory-picker bridge](../packages/ui/README.md#interpreted-bridges).
 The app's [`DirectoryPickerBridge`](lib/frontend/directory_picker_bridge.dart)

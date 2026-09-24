@@ -33,7 +33,7 @@ import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../../../tools/stock_frontend_descriptors.dart';
 import '../../tool/chat_frontend_compiler.dart';
-import '../../tool/local_directory_frontend_compiler.dart';
+import '../../tool/local_directory_project_frontend_compiler.dart';
 import '../../tool/openai_activity_frontend_compiler.dart';
 import '../../tool/tool_inspection_frontend_compiler.dart';
 
@@ -44,7 +44,8 @@ const _filesystemPluginId = 'dev.adele.plugin.filesystem-tools';
 const _commandPluginId = 'dev.adele.plugin.command-tools';
 const _openAiPluginId = 'dev.adele.openai';
 const _chatPluginId = 'dev.adele.plugin.chat-strategy';
-const _selectorPluginId = 'dev.adele.plugin.local-directory-project-selector';
+const _localDirectoryProjectPluginId =
+    'dev.adele.plugin.local-directory-project';
 const _sourcePath = 'lib/task_answer.dart';
 const _taskText = 'const taskAnswer = "task-worktree-only";\n';
 const _patchedText = 'const taskAnswer = "approved-task-value";\n';
@@ -918,8 +919,8 @@ final class _PreparedProduct {
           'plugins/openai/packages/backend/bin/openai_model_provider_backend.dart',
       _chatPluginId:
           'plugins/chat_strategy/packages/backend/bin/chat_strategy_backend.dart',
-      _selectorPluginId:
-          'plugins/local_directory_project_selector/packages/backend/bin/local_directory_project_selector_backend.dart',
+      _localDirectoryProjectPluginId:
+          'plugins/local_directory_project/packages/backend/bin/local_directory_project_backend.dart',
     };
     for (final id in entrypoints.keys) {
       final installed = await Directory('${root.path}/$id').create();
@@ -946,8 +947,10 @@ final class _PreparedProduct {
       repositoryRoot: repository,
       artifact: File('${root.path}/$_chatPluginId/frontend.evc'),
     );
-    await File('${root.path}/$_selectorPluginId/frontend.evc').writeAsBytes(
-      await compileLocalDirectoryFrontend(repositoryRoot: repository),
+    await File(
+      '${root.path}/$_localDirectoryProjectPluginId/frontend.evc',
+    ).writeAsBytes(
+      await compileLocalDirectoryProjectFrontend(repositoryRoot: repository),
     );
     await File('${root.path}/$_openAiPluginId/frontend.evc').writeAsBytes(
       await compileOpenAiActivityFrontend(repositoryRoot: repository),

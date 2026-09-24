@@ -75,7 +75,7 @@ Its source is listed in root `contract_codegen.yaml`; use the maintained
 [generation workflow](../contract_codegen/README.md), not hand edits.
 Lifecycle, SQL/schema/migrations, recents, defaults/Profiles, and selection UI are
 outside this package. The [product model](../../docs/architecture/product-model.md#project-storage)
-owns storage semantics; [Local Directory](../../plugins/local_directory_project_selector/README.md)
+owns storage semantics; [Local Directory Project](../../plugins/local_directory_project/README.md)
 maps the stock provider and selector.
 
 ## Validation

@@ -1,6 +1,6 @@
 import 'dart:io';
 
-import 'package:local_directory_project_selector_backend/local_directory_project_selector_backend.dart';
+import 'package:local_directory_project_backend/local_directory_project_backend.dart';
 import 'package:test/test.dart';
 
 void main() {

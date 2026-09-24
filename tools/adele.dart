@@ -190,14 +190,14 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
-    name: 'local_directory_project_selector_backend',
-    path: 'plugins/local_directory_project_selector/packages/backend',
+    name: 'local_directory_project_backend',
+    path: 'plugins/local_directory_project/packages/backend',
     executable: 'dart',
     arguments: <String>['test'],
   ),
   TestTarget(
-    name: 'local_directory_project_selector_frontend',
-    path: 'plugins/local_directory_project_selector/packages/frontend',
+    name: 'local_directory_project_frontend',
+    path: 'plugins/local_directory_project/packages/frontend',
     executable: 'flutter',
     arguments: <String>['test'],
   ),
@@ -348,13 +348,13 @@ analysisTargets = <({String name, String path, bool flutter})>[
     flutter: true,
   ),
   (
-    name: 'local_directory_project_selector_backend',
-    path: 'plugins/local_directory_project_selector/packages/backend',
+    name: 'local_directory_project_backend',
+    path: 'plugins/local_directory_project/packages/backend',
     flutter: false,
   ),
   (
-    name: 'local_directory_project_selector_frontend',
-    path: 'plugins/local_directory_project_selector/packages/frontend',
+    name: 'local_directory_project_frontend',
+    path: 'plugins/local_directory_project/packages/frontend',
     flutter: true,
   ),
   (

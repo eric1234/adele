@@ -24,11 +24,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
-import '../tool/local_directory_frontend_compiler.dart';
+import '../tool/local_directory_project_frontend_compiler.dart';
 import 'support/prepared_frontend_installations.dart';
 import 'support/project_provider.dart';
 
-const _selectorPluginId = 'dev.adele.plugin.local-directory-project-selector';
+const _localDirectoryProjectPluginId =
+    'dev.adele.plugin.local-directory-project';
 
 void main() {
   late AdeleRuntime runtime;
@@ -46,9 +47,9 @@ void main() {
   setUpAll(() async {
     temporary = await Directory.systemTemp.createTemp('adele-project-opening-');
     final repository = Directory.current.parent;
-    frontendArtifact = await File('${temporary.path}/selector.evc')
+    frontendArtifact = await File('${temporary.path}/frontend.evc')
         .writeAsBytes(
-          await compileLocalDirectoryFrontend(
+          await compileLocalDirectoryProjectFrontend(
             repositoryRoot: Directory.current.parent,
           ),
         );
@@ -58,14 +59,14 @@ void main() {
         Platform.isWindows ? 'dartaotruntime.exe' : 'dartaotruntime',
       ),
     ).path;
-    backendArtifact = File('${temporary.path}/selector.aot');
+    backendArtifact = File('${temporary.path}/backend.aot');
     for (final (entrypoint, artifact) in [
       (
         'packages/plugin_backend_host/bin/adele_backend_host.dart',
         File('${temporary.path}/host.aot'),
       ),
       (
-        'plugins/local_directory_project_selector/packages/backend/bin/local_directory_project_selector_backend.dart',
+        'plugins/local_directory_project/packages/backend/bin/local_directory_project_backend.dart',
         backendArtifact,
       ),
     ]) {
@@ -79,12 +80,12 @@ void main() {
     }
     installations = await prepareFrontendInstallations(
       root: Directory('${temporary.path}/installed'),
-      artifacts: {_selectorPluginId: frontendArtifact},
-      backendArtifacts: {_selectorPluginId: backendArtifact},
+      artifacts: {_localDirectoryProjectPluginId: frontendArtifact},
+      backendArtifacts: {_localDirectoryProjectPluginId: backendArtifact},
     );
     frontendOnly = await prepareFrontendInstallations(
       root: Directory('${temporary.path}/frontend-only'),
-      artifacts: {_selectorPluginId: frontendArtifact},
+      artifacts: {_localDirectoryProjectPluginId: frontendArtifact},
     );
   });
   tearDownAll(() => temporary.delete(recursive: true));
@@ -148,6 +149,14 @@ void main() {
     }
     expect(runtime.plugins.catalog!.issues, isEmpty);
     expect(runtime.plugins.catalog!.installations, hasLength(1));
+    expect(
+      runtime.plugins.catalog!.installations.single.metadata.id.value,
+      _localDirectoryProjectPluginId,
+    );
+    expect(
+      runtime.extensions.discover(projectSelectorContributions).single.id.value,
+      'dev.adele.plugin.local-directory-project.project-selector',
+    );
     expect(find.text('Open Local Directory...'), findsOneWidget);
     expect(
       picker.calls,
@@ -429,7 +438,7 @@ void main() {
         final provider = spoof
             ? registerProvider(
                 providerId: ProviderId('dev.adele.project.local-directory'),
-                pluginId: _selectorPluginId,
+                pluginId: _localDirectoryProjectPluginId,
               )
             : null;
         await mountPreparedSelector(
@@ -453,16 +462,18 @@ void main() {
   testWidgets(
     'active owning backend rejects an unrelated provider registration',
     (tester) async {
-      final provider = registerProvider(pluginId: _selectorPluginId);
+      final provider = registerProvider(
+        pluginId: _localDirectoryProjectPluginId,
+      );
       late Directory root;
       await tester.runAsync(() async {
         root = await prepareFrontendInstallations(
           root: Directory('${source.parent.path}/wrong-provider'),
-          artifacts: {_selectorPluginId: frontendArtifact},
-          backendArtifacts: {_selectorPluginId: backendArtifact},
+          artifacts: {_localDirectoryProjectPluginId: frontendArtifact},
+          backendArtifacts: {_localDirectoryProjectPluginId: backendArtifact},
         );
         final manifest = File(
-          '${root.path}/$_selectorPluginId/adele_plugin.installation.json',
+          '${root.path}/$_localDirectoryProjectPluginId/adele_plugin.installation.json',
         );
         final data =
             jsonDecode(await manifest.readAsString()) as Map<String, dynamic>;
@@ -560,7 +571,7 @@ void main() {
       });
       final replacement = registerProvider(
         providerId: providerId,
-        pluginId: _selectorPluginId,
+        pluginId: _localDirectoryProjectPluginId,
       );
       selection.complete(source.path);
       await tester.pumpAndSettle();

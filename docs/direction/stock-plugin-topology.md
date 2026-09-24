@@ -43,7 +43,7 @@ Core ADELE
 └── broad core extension points/capabilities/events
 
 Stock project/task/environment plugins
-├── Local Directory Project Selector
+├── Local Directory Project
 ├── Task Browser
 └── Git
 
@@ -212,21 +212,26 @@ maintained in its [README](../../plugins/agents_md/README.md).
 
 # 3. Project and task plugins
 
-## 3.1 Local Directory Project Selector
+## 3.1 Local Directory Project
 
-**Role:** native directory selection, returning only a source URI or cancellation.
+**Role:** local-directory Project selection and provider-defined backing.
 
-The selector owns selection behavior and path-to-source-URI semantics, not native
-picker plumbing, Project identity, or lifecycle. The maintained Local Directory
-implementation is `local_directory_project_selector_frontend` under
-`plugins/local_directory_project_selector/packages/frontend`, replacing the retired
-root package. It is a frontend-only prepared installation, not an AOT backend or
-static `AdeleRuntime` activation. EVC calls the narrow public interpreted picker
-stub and normalizes the result to an absolute `file:` URI string or cancellation;
-the app supplies one asynchronous native picker call per operation through a
-revocable bridge. The generic adapter validates URI shape without owning path rules.
-The app invokes the contribution and separately calls core lifecycle after exact
-binding and window-lifetime validation, as section 12.1 describes.
+The selector frontend owns selection behavior and path-to-source-URI semantics,
+not native picker plumbing, Project identity, or lifecycle. The maintained plugin
+combines `local_directory_project_frontend` and `local_directory_project_backend`
+under `plugins/local_directory_project/packages/{frontend,backend}` in one prepared
+installation, without static `AdeleRuntime` activation. Frontend EVC calls the narrow
+public interpreted picker stub and normalizes the result to an absolute `file:` URI
+string or cancellation; the app supplies one asynchronous native picker call per
+operation through a revocable bridge. The generic adapter validates URI shape without
+owning path rules.
+The contribution explicitly names the Project provider. Its AOT backend validates
+source semantics and describes relative database placement; the host owns SQLite,
+schema/migrations, and Project publication. The app retains exact selector and
+same-installation provider bindings through selection and backing preparation,
+as section 12.1 describes. Canonical storage and opening rules belong to the
+[product model](../architecture/product-model.md#project-storage); the
+[plugin map](../../plugins/local_directory_project/README.md) details the components.
 Directory selection must not imply Git validation or Environment creation; the
 selected Environment provider owns source suitability for its own operations.
 
@@ -236,8 +241,9 @@ selectors can be independent choices rather than a priority competition. Future
 GitHub/cloud/catalog or recent-Project selectors can supply the same semantic
 boundary. Public contract ownership follows [`../architecture/dependency-rules.md`](../architecture/dependency-rules.md).
 Retirement rejects late native results without forcibly closing dialogs; semantic
-selection failures stay operation-local. The selector receives no backend RPC or
-Session/Environment authority. Headless self-hosting remains selector-free and uses
+selection failures stay operation-local. The picker bridge uses no backend RPC or
+Session/Environment authority; the host separately uses generated provider RPC for
+backing preparation. Headless self-hosting remains selector-free and uses
 an explicitly known source URI directly.
 
 ## 3.2 Task Browser
@@ -756,9 +762,13 @@ while later work may freshly resolve a replacement under the same semantic ident
 
 ```text
 user invokes a Project selector (stock: native directory picker)
+    -> app captures selector and explicit exact owning provider binding
+    -> app validates both bindings and window lifetime before picking
     -> selector returns a source URI or cancellation
-    -> app validates window lifetime and the retained selector binding
-    -> core lifecycle creates/resolves the canonical Project
+    -> app revalidates window lifetime and both retained bindings
+    -> core lifecycle asks that provider to prepare source backing
+    -> host revalidates bindings and window lifetime after preparation
+    -> host validates backing and commits storage before Project publication
     -> window navigation presents the Project
 ```
 
