@@ -50,6 +50,10 @@ void main() {
       })
       fixture = await _createRepository();
       addTearDown(() => fixture.container.delete(recursive: true));
+      final shim = await _createGitRepairShim(fixture.container, 'unavailable');
+      final String childPath =
+          'relative-bin:${shim.directory.path}:'
+          '${Platform.environment['PATH'] ?? '/usr/bin:/bin'}';
       final String gitDirVariable = Platform.isWindows ? 'git_dir' : 'GIT_DIR';
       final String ceilingVariable = Platform.isWindows
           ? 'Git_Ceiling_Directories'
@@ -65,8 +69,7 @@ void main() {
           'GIT_DISCOVERY_ACROSS_FILESYSTEM': 'false',
           'ADELE_PROCESS_SECRET_SHOULD_NOT_LEAK': 'sentinel',
           'OPENAI_API_KEY': 'sentinel',
-          'PATH':
-              'relative-bin:${Platform.environment['PATH'] ?? '/usr/bin:/bin'}',
+          'PATH': childPath,
         },
       );
       addTearDown(() async {
@@ -86,7 +89,7 @@ void main() {
         title: 'AOT Generation Proof',
       );
       final Environment provisional = Environment(
-        id: EnvironmentId('environment-aot'),
+        id: EnvironmentId('environment-\taot'),
         taskId: task.id,
         role: EnvironmentRole.primary,
         providerId: providerId,
@@ -112,6 +115,30 @@ void main() {
           );
       final EnvironmentProviderResult established = await providerA.establish(
         LocalEnvironment(project: project, task: task, value: provisional),
+      );
+      final String worktreePath = <String>[
+        fixture.projectSourceA.path,
+        ...(established.providerState['worktreeRelativePath']! as String).split(
+          '/',
+        ),
+      ].join(Platform.pathSeparator);
+      expect(
+        established.providerState.keys,
+        unorderedEquals(<String>[
+          'schemaVersion',
+          'environmentId',
+          'sourceRelativePath',
+          'worktreeRelativePath',
+          'branch',
+          'baselineCommit',
+        ]),
+      );
+      expect(established.providerState['schemaVersion'], allOf(isA<int>(), 2));
+      expect(established.providerState['environmentId'], 'environment-\taot');
+      expect(established.providerState['sourceRelativePath'], 'project-source');
+      expect(
+        established.providerState['worktreeRelativePath'],
+        matches(r'^\.adele/worktrees/[a-z0-9-]+$'),
       );
       final Environment durable = Environment(
         id: provisional.id,
@@ -173,7 +200,7 @@ void main() {
         processEvents,
       ).trim().split('\n');
       expect(processLines, hasLength(2));
-      expect(processLines.first, established.providerState['worktreePath']);
+      expect(processLines.first, worktreePath);
       expect(processLines.last, 'project-source/');
       expect(processEvents.last.kind, EnvironmentProcessEventKind.completed);
       expect(processEvents.last.completed!.exitCode, 0);
@@ -207,17 +234,11 @@ void main() {
         ),
         isTrue,
       );
+      expect(childEnvironment, contains('PATH=$childPath'));
       expect(
         childEnvironment,
         contains(
-          'PATH=relative-bin:'
-          '${Platform.environment['PATH'] ?? '/usr/bin:/bin'}',
-        ),
-      );
-      expect(
-        childEnvironment,
-        contains(
-          'PWD=${established.providerState['worktreePath']}'
+          'PWD=$worktreePath'
           '${Platform.pathSeparator}project-source',
         ),
       );
@@ -247,7 +268,7 @@ void main() {
           .toList();
       expect(
         _stdoutText(relativePathProcess),
-        'relative-path:${established.providerState['worktreePath']}'
+        'relative-path:$worktreePath'
         '${Platform.pathSeparator}project-source',
       );
       expect(relativePathProcess.last.completed!.exitCode, 0);
@@ -358,12 +379,222 @@ void main() {
           .toList();
       expect(freshProcess.last.completed!.exitCode, 0);
       expect(_stdoutText(freshProcess), contains('M README.md'));
+      expect(
+        await shim.log.exists(),
+        isFalse,
+        reason:
+            'A healthy restore must not require Git worktree repair support.',
+      );
 
       await activationB.close();
       await host.close();
     },
     timeout: const Timeout(Duration(minutes: 4)),
   );
+
+  for (final String mode in <String>[
+    'unavailable',
+    'failure',
+    'no-op',
+    'corrupt-after-repair',
+  ]) {
+    test(
+      'AOT relocation rejects repair $mode without publishing an Environment',
+      () async {
+        final fixture = await _createRepository();
+        addTearDown(() => fixture.container.delete(recursive: true));
+        final shim = await _createGitRepairShim(fixture.container, mode);
+        final PluginBackendHost host = await PluginBackendHost.start(
+          dartaotruntimeExecutable: dartaotruntime,
+          hostArtifactPath: hostArtifact.path,
+          environment: <String, String>{
+            'PATH':
+                '${shim.directory.path}:${Platform.environment['PATH'] ?? '/usr/bin:/bin'}',
+          },
+        );
+        addTearDown(() async {
+          if (!host.isClosed) await host.close(graceful: false);
+        });
+        final CapabilityRegistry registry = CapabilityRegistry();
+        final ProviderId providerId = ProviderId(
+          gitWorktreeEnvironmentProviderId,
+        );
+        final Project project = Project(
+          id: ProjectId('project-repair'),
+          sourceLocation: fixture.projectSourceA.uri,
+        );
+        final Task task = Task(
+          id: TaskId('task-repair'),
+          projectId: project.id,
+          title: 'Repair failure',
+        );
+        final Environment provisional = Environment(
+          id: EnvironmentId('environment-repair'),
+          taskId: task.id,
+          role: EnvironmentRole.primary,
+          providerId: providerId,
+          providerState: null,
+        );
+        final PluginCapabilityActivation activationA = await _register(
+          await host.startPlugin(
+            pluginId: gitEnvironmentPluginId,
+            artifactUri: pluginArtifact.uri,
+          ),
+          registry,
+        );
+        final GeneratedEnvironmentProvider providerA =
+            GeneratedEnvironmentProvider(
+              providerId: providerId,
+              service: EnvironmentProviderServiceClient(
+                registry
+                    .resolve(
+                      environmentProviderCapability,
+                      providerId: providerId,
+                    )
+                    .requestChannel,
+              ),
+            );
+        final EnvironmentProviderResult established = await providerA.establish(
+          LocalEnvironment(project: project, task: task, value: provisional),
+        );
+        final Environment durable = Environment(
+          id: provisional.id,
+          taskId: task.id,
+          role: provisional.role,
+          providerId: providerId,
+          providerState: established.providerState,
+        );
+        final String relative =
+            established.providerState['worktreeRelativePath']! as String;
+        final String oldRoot = '${fixture.projectSourceA.path}/$relative';
+        await providerA.createTextFile(
+          durable.id,
+          'retained.txt',
+          'preserved across failed restore',
+        );
+        await activationA.close();
+        final Directory movedRepository = await fixture.sourceA.rename(
+          '${fixture.container.path}/moved-source',
+        );
+        final Directory movedSource = Directory(
+          '${movedRepository.path}/project-source',
+        );
+        final String expectedRoot = '${movedSource.path}/$relative';
+        expect(await Directory(oldRoot).exists(), isFalse);
+        expect(await Directory(expectedRoot).exists(), isTrue);
+        final String inventory = await _git(movedRepository, <String>[
+          'worktree',
+          'list',
+          '--porcelain',
+          '-z',
+        ]);
+        expect(inventory.split('\u0000'), contains('worktree $oldRoot'));
+        final PluginCapabilityActivation activationB = await _register(
+          await host.startPlugin(
+            pluginId: gitEnvironmentPluginId,
+            artifactUri: pluginArtifact.uri,
+          ),
+          registry,
+        );
+        final GeneratedEnvironmentProvider providerB =
+            GeneratedEnvironmentProvider(
+              providerId: providerId,
+              service: EnvironmentProviderServiceClient(
+                registry
+                    .resolve(
+                      environmentProviderCapability,
+                      providerId: providerId,
+                    )
+                    .requestChannel,
+              ),
+            );
+        final String code = switch (mode) {
+          'unavailable' || 'failure' => 'restore_worktree_repair_failed',
+          'no-op' => 'restore_worktree_mismatch',
+          _ => 'restore_worktree_invalid',
+        };
+        await expectLater(
+          providerB.restore(
+            LocalEnvironment(
+              project: Project(id: project.id, sourceLocation: movedSource.uri),
+              task: task,
+              value: durable,
+            ),
+          ),
+          throwsA(
+            isA<EnvironmentFailure>()
+                .having(
+                  (EnvironmentFailure failure) => failure.code,
+                  'code',
+                  code,
+                )
+                .having(
+                  (EnvironmentFailure failure) => failure.message,
+                  'message',
+                  isNotEmpty,
+                )
+                .having(
+                  (EnvironmentFailure failure) =>
+                      failure.details.toString().length,
+                  'bounded diagnostics',
+                  lessThanOrEqualTo(2000),
+                )
+                .having(
+                  (EnvironmentFailure failure) =>
+                      mode == 'unavailable' || mode == 'failure'
+                      ? failure.details['gitError']
+                      : '',
+                  'repair diagnostic',
+                  mode == 'unavailable'
+                      ? contains('repair unsupported')
+                      : mode == 'failure'
+                      ? allOf(
+                          startsWith('repair denied:'),
+                          hasLength(lessThanOrEqualTo(1000)),
+                        )
+                      : isEmpty,
+                ),
+          ),
+        );
+        await expectLater(
+          providerB.readFile(durable.id, 'README.md'),
+          throwsA(_failureWithCode('environment_not_live')),
+        );
+        final List<String> repairArguments = await shim.log.readAsLines();
+        expect(
+          repairArguments.where((String argument) => argument == 'repair'),
+          hasLength(1),
+        );
+        expect(repairArguments, contains(expectedRoot));
+        expect(repairArguments, isNot(contains(oldRoot)));
+        expect(
+          await File(
+            '$expectedRoot/project-source/retained.txt',
+          ).readAsString(),
+          'preserved across failed restore',
+        );
+        expect(durable.providerState, established.providerState);
+        final String after = await _git(movedRepository, <String>[
+          'worktree',
+          'list',
+          '--porcelain',
+          '-z',
+        ]);
+        if (mode == 'corrupt-after-repair') {
+          expect(after.split('\u0000'), contains('worktree $expectedRoot'));
+          expect(after.split('\u0000'), isNot(contains('worktree $oldRoot')));
+        } else {
+          expect(after, inventory);
+        }
+        await activationB.close();
+        await host.close();
+      },
+      timeout: const Timeout(Duration(minutes: 4)),
+      skip: Platform.isWindows
+          ? 'The Git PATH shim uses a POSIX shell.'
+          : false,
+    );
+  }
 }
 
 String _stdoutText(List<EnvironmentProcessEvent> events) => events
@@ -379,6 +610,46 @@ Matcher _failureWithCode(String code) => isA<EnvironmentFailure>().having(
   'code',
   code,
 );
+
+Future<({Directory directory, File log})> _createGitRepairShim(
+  Directory container,
+  String mode,
+) async {
+  final ProcessResult lookup = await Process.run('/bin/sh', <String>[
+    '-c',
+    'command -v git',
+  ]);
+  if (lookup.exitCode != 0) throw StateError(lookup.stderr.toString());
+  final String git = lookup.stdout.toString().trim();
+  final Directory directory = Directory('${container.path}/git-shim')
+    ..createSync();
+  final File log = File('${container.path}/repair.log');
+  final File wrapper = File('${directory.path}/git');
+  final String repair = switch (mode) {
+    'unavailable' =>
+      "printf '%s\\n' 'repair unsupported by this Git' >&2\nexit 129",
+    'failure' => "printf '%s\\n' 'repair denied:${'x' * 16000}' >&2\nexit 1",
+    'no-op' => 'exit 0',
+    'corrupt-after-repair' =>
+      '${_shellQuote(git)} "\$@" || exit \$?\nprintf broken > "\$5/.git"\nexit 0',
+    _ => throw ArgumentError.value(mode),
+  };
+  await wrapper.writeAsString('''#!/bin/sh
+if [ "\$1" = "-C" ] && [ "\$3" = "worktree" ] && [ "\$4" = "repair" ]; then
+  printf '%s\\n' "\$@" >> ${_shellQuote(log.path)}
+  $repair
+fi
+exec ${_shellQuote(git)} "\$@"
+''');
+  final ProcessResult chmod = await Process.run('chmod', <String>[
+    '755',
+    wrapper.path,
+  ]);
+  if (chmod.exitCode != 0) throw StateError(chmod.stderr.toString());
+  return (directory: directory, log: log);
+}
+
+String _shellQuote(String value) => "'${value.replaceAll("'", "'\\''")}'";
 
 Future<PluginCapabilityActivation> _register(
   PluginBackendConnection connection,

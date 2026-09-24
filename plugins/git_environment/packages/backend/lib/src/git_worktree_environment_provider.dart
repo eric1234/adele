@@ -9,7 +9,7 @@ import 'foreground_process.dart';
 import 'ids.dart';
 import 'worktree_environment.dart';
 
-const int gitEnvironmentProviderStateSchemaVersion = 1;
+const int gitEnvironmentProviderStateSchemaVersion = 2;
 
 // Git documents repository-local entries through `rev-parse --local-env-vars`.
 const Set<String> _gitEnvironmentVariablesToClear = <String>{
@@ -69,16 +69,18 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
       message: 'The Git source does not have a baseline commit.',
     );
     final _GitResourceNames resources = await _allocateGitResourceNames(
-      repository.root,
+      source,
       environment,
     );
     final String branch = resources.branch;
-    final String worktreePath = resources.worktreePath;
+    final String worktreePath = _scopeWithinWorktree(
+      source.scope,
+      resources.worktreeRelativePath,
+    ).path;
     bool branchCreated = false;
     bool worktreeAddAttempted = false;
-    bool worktreeAddSucceeded = false;
     try {
-      await Directory(worktreePath).parent.create(recursive: true);
+      await _providerDirectory(source.scope, '.adele/worktrees');
       await _gitOutput(
         repository.root,
         <String>['branch', branch, baselineCommit],
@@ -86,6 +88,15 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
         message: 'Git could not create the Task branch.',
       );
       branchCreated = true;
+      await _providerDirectory(source.scope, '.adele/worktrees');
+      if (await FileSystemEntity.type(worktreePath, followLinks: false) !=
+          FileSystemEntityType.notFound) {
+        throw _environmentFailure(
+          'worktree_establishment_failed',
+          'The allocated Task worktree path is no longer available.',
+          environmentId: environment.id,
+        );
+      }
       worktreeAddAttempted = true;
       await _gitOutput(
         repository.root,
@@ -93,9 +104,9 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
         code: 'worktree_establishment_failed',
         message: 'Git could not create the Task worktree.',
       );
-      worktreeAddSucceeded = true;
-      final Directory worktreeRoot = Directory(
-        await Directory(worktreePath).resolveSymbolicLinks(),
+      final Directory worktreeRoot = await _providerDirectory(
+        source.scope,
+        resources.worktreeRelativePath,
       );
       final WorktreeEnvironment live = _scopedWorktreeEnvironment(
         environmentId: environment.id,
@@ -110,20 +121,19 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
         providerState: _providerState(
           environmentId: environment.id,
           source: source,
-          worktreePath: worktreeRoot.path,
+          worktreeRelativePath: resources.worktreeRelativePath,
           branch: branch,
           baselineCommit: baselineCommit,
         ),
       );
     } on Object catch (error) {
       await _cleanupFailedEstablishment(
-        repository.root,
-        worktreePath,
+        source,
+        resources.worktreeRelativePath,
         branch,
         baselineCommit: baselineCommit,
         branchCreated: branchCreated,
         worktreeAddAttempted: worktreeAddAttempted,
-        worktreeAddSucceeded: worktreeAddSucceeded,
       );
       if (error is EnvironmentFailure) rethrow;
       throw _environmentFailure(
@@ -148,36 +158,35 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
       environment.task.project.sourceLocation,
     );
     final _GitRepository repository = source.repository;
-    if (source.scope.path != state.sourcePath ||
-        repository.root.path != state.repositoryPath ||
-        source.relativePath != state.sourceRelativePath ||
-        repository.commonDirectory.path != state.commonGitDirectory) {
+    if (source.relativePath != state.sourceRelativePath) {
       throw _environmentFailure(
         'restore_source_mismatch',
         'The retained worktree belongs to another Project source.',
         environmentId: environment.id,
       );
     }
-    final Directory worktreeRoot;
-    try {
-      worktreeRoot = Directory(
-        await Directory(state.worktreePath).resolveSymbolicLinks(),
-      );
-      if (await FileSystemEntity.type(worktreeRoot.path, followLinks: true) !=
-          FileSystemEntityType.directory) {
-        throw FileSystemException(
-          'Retained worktree is not a directory.',
-          state.worktreePath,
-        );
-      }
-    } on FileSystemException catch (error) {
+    final Directory worktreeRoot = await _providerDirectory(
+      source.scope,
+      state.worktreeRelativePath,
+    );
+    if (await FileSystemEntity.type(
+          _childPath(worktreeRoot.path, '.git'),
+          followLinks: false,
+        ) !=
+        FileSystemEntityType.file) {
       throw _environmentFailure(
-        'restore_worktree_missing',
-        'The retained Git worktree is unavailable.',
+        'restore_worktree_invalid',
+        'The retained path must contain a direct linked-worktree gitfile.',
         environmentId: environment.id,
-        details: <String, Object?>{'reason': error.message},
       );
     }
+    await _restoreRegistration(
+      environment.id,
+      repository,
+      worktreeRoot,
+      state.branch,
+    );
+    await _providerDirectory(source.scope, state.worktreeRelativePath);
     final _GitRepository worktree = await _inspectRepository(
       worktreeRoot,
       failureCode: 'restore_worktree_invalid',
@@ -240,7 +249,7 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
       providerState: _providerState(
         environmentId: environment.id,
         source: source,
-        worktreePath: worktreeRoot.path,
+        worktreeRelativePath: state.worktreeRelativePath,
         branch: state.branch,
         baselineCommit: state.baselineCommit,
       ),
@@ -333,13 +342,22 @@ final class _GitRepository {
 }
 
 final class _GitResourceNames {
-  const _GitResourceNames({required this.branch, required this.worktreePath});
+  const _GitResourceNames({
+    required this.branch,
+    required this.worktreeRelativePath,
+  });
 
   final String branch;
-  final String worktreePath;
+  final String worktreeRelativePath;
 }
 
 enum _WorktreeRegistrationState { registered, notRegistered, unknown }
+
+typedef _GitWorktreeRegistration = ({
+  String path,
+  String? branchRef,
+  String? head,
+});
 
 final class _GitSource {
   const _GitSource({
@@ -355,11 +373,8 @@ final class _GitSource {
 
 final class _GitProviderState {
   const _GitProviderState({
-    required this.sourcePath,
-    required this.repositoryPath,
     required this.sourceRelativePath,
-    required this.commonGitDirectory,
-    required this.worktreePath,
+    required this.worktreeRelativePath,
     required this.branch,
     required this.baselineCommit,
   });
@@ -368,7 +383,18 @@ final class _GitProviderState {
     EnvironmentId environmentId,
     Map<String, Object?>? state,
   ) {
+    const fields = <String>{
+      'schemaVersion',
+      'environmentId',
+      'sourceRelativePath',
+      'worktreeRelativePath',
+      'branch',
+      'baselineCommit',
+    };
     if (state == null ||
+        state.length != fields.length ||
+        !state.keys.every(fields.contains) ||
+        state['schemaVersion'] is! int ||
         state['schemaVersion'] != gitEnvironmentProviderStateSchemaVersion) {
       throw _environmentFailure(
         'invalid_provider_state',
@@ -376,9 +402,12 @@ final class _GitProviderState {
         environmentId: environmentId,
       );
     }
-    String requireString(String name) {
+    String requireString(String name, {bool allowEmpty = false}) {
       final Object? value = state[name];
-      if (value is! String || value.isEmpty) {
+      if (value is! String ||
+          (!allowEmpty && value.isEmpty) ||
+          (name != 'environmentId' &&
+              RegExp(r'[\x00-\x1f\x7f]').hasMatch(value))) {
         throw _environmentFailure(
           'invalid_provider_state',
           'The Git Environment provider state is malformed.',
@@ -398,32 +427,48 @@ final class _GitProviderState {
       );
     }
 
+    final String sourceRelativePath = requireString(
+      'sourceRelativePath',
+      allowEmpty: true,
+    );
+    final String worktreeRelativePath = requireString('worktreeRelativePath');
+    final String branch = requireString('branch');
+    final String baselineCommit = requireString('baselineCommit');
+    if (!_validSourceRelativePath(sourceRelativePath) ||
+        !RegExp(
+          r'^\.adele/worktrees/[a-z0-9][a-z0-9-]*$',
+        ).hasMatch(worktreeRelativePath) ||
+        !RegExp(r'^adele-[a-z0-9-]+$').hasMatch(branch) ||
+        !RegExp(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$').hasMatch(baselineCommit)) {
+      throw _environmentFailure(
+        'invalid_provider_state',
+        'The Git Environment provider state contains invalid paths or Git identities.',
+        environmentId: environmentId,
+      );
+    }
     return _GitProviderState(
-      sourcePath: requireString('sourcePath'),
-      repositoryPath: requireString('repositoryPath'),
-      sourceRelativePath: state['sourceRelativePath'] is String
-          ? state['sourceRelativePath']! as String
-          : throw _environmentFailure(
-              'invalid_provider_state',
-              'The Git Environment provider state is malformed.',
-              environmentId: environmentId,
-              details: const <String, Object?>{'field': 'sourceRelativePath'},
-            ),
-      commonGitDirectory: requireString('commonGitDirectory'),
-      worktreePath: requireString('worktreePath'),
-      branch: requireString('branch'),
-      baselineCommit: requireString('baselineCommit'),
+      sourceRelativePath: sourceRelativePath,
+      worktreeRelativePath: worktreeRelativePath,
+      branch: branch,
+      baselineCommit: baselineCommit,
     );
   }
 
-  final String sourcePath;
-  final String repositoryPath;
   final String sourceRelativePath;
-  final String commonGitDirectory;
-  final String worktreePath;
+  final String worktreeRelativePath;
   final String branch;
   final String baselineCommit;
 }
+
+bool _validSourceRelativePath(String value) =>
+    value.isEmpty ||
+    (!RegExp(r'[\\:\x00-\x1f\x7f]').hasMatch(value) &&
+        value
+            .split('/')
+            .every(
+              (String component) =>
+                  component.isNotEmpty && component != '.' && component != '..',
+            ));
 
 Future<_GitSource> _sourceFor(Uri sourceLocation) async {
   if (sourceLocation.scheme != 'file') {
@@ -474,6 +519,14 @@ Future<_GitSource> _sourceFor(Uri sourceLocation) async {
     failureCode: 'invalid_git_source',
     failureMessage: 'The local Project source is outside its Git worktree.',
   );
+  if (!_validSourceRelativePath(relativePath)) {
+    throw const EnvironmentFailure(
+      code: 'invalid_git_source',
+      message:
+          'The Project source scope cannot be retained as a portable path.',
+      details: <String, Object?>{},
+    );
+  }
   return _GitSource(
     scope: source,
     repository: repository,
@@ -558,6 +611,55 @@ Directory _scopeWithinWorktree(Directory worktree, String relativePath) =>
           ...relativePath.split('/'),
         ].join(Platform.pathSeparator),
       );
+
+Future<Directory> _providerDirectory(
+  Directory source,
+  String relativePath, {
+  bool create = false,
+}) async {
+  Directory current = source;
+  try {
+    for (final String component in relativePath.split('/')) {
+      current = Directory(_childPath(current.path, component));
+      FileSystemEntityType type = await FileSystemEntity.type(
+        current.path,
+        followLinks: false,
+      );
+      if (type == FileSystemEntityType.notFound && create) {
+        await current.create();
+        type = await FileSystemEntity.type(current.path, followLinks: false);
+      }
+      if (type == FileSystemEntityType.notFound) {
+        throw const EnvironmentFailure(
+          code: 'restore_worktree_missing',
+          message: 'The retained Git worktree is unavailable.',
+          details: <String, Object?>{},
+        );
+      }
+      if (type != FileSystemEntityType.directory ||
+          !_sameLocalPath(await current.resolveSymbolicLinks(), current.path)) {
+        throw const EnvironmentFailure(
+          code: 'invalid_worktree_storage',
+          message: 'Git provider storage must use direct Project directories.',
+          details: <String, Object?>{},
+        );
+      }
+      _relativePathWithin(
+        source,
+        current,
+        failureCode: 'invalid_worktree_storage',
+        failureMessage: 'Git provider storage must remain within the Project.',
+      );
+    }
+    return current;
+  } on FileSystemException catch (error) {
+    throw EnvironmentFailure(
+      code: 'invalid_worktree_storage',
+      message: 'Git provider storage could not be validated.',
+      details: <String, Object?>{'reason': error.message},
+    );
+  }
+}
 
 WorktreeEnvironment _scopedWorktreeEnvironment({
   required EnvironmentId environmentId,
@@ -648,17 +750,14 @@ Future<void> _requireLinkedWorktree(
 Map<String, Object?> _providerState({
   required EnvironmentId environmentId,
   required _GitSource source,
-  required String worktreePath,
+  required String worktreeRelativePath,
   required String branch,
   required String baselineCommit,
 }) => <String, Object?>{
   'schemaVersion': gitEnvironmentProviderStateSchemaVersion,
   'environmentId': environmentId.value,
-  'sourcePath': source.scope.path,
-  'repositoryPath': source.repository.root.path,
   'sourceRelativePath': source.relativePath,
-  'commonGitDirectory': source.repository.commonDirectory.path,
-  'worktreePath': worktreePath,
+  'worktreeRelativePath': worktreeRelativePath,
   'branch': branch,
   'baselineCommit': baselineCommit,
 };
@@ -670,35 +769,38 @@ String _branchName(LocalEnvironment environment) {
       '${_stableHash(environment.id.value)}';
 }
 
-String _worktreePath(Directory source, LocalEnvironment environment) {
-  final String repositoryName = _entityName(source.path);
-  final String parentName =
-      '.adele-worktrees-'
-      '${_truncate(_slug(repositoryName, fallback: 'repository'), 64)}-'
-      '${_stableHash(source.path)}';
+String _worktreeRelativePath(LocalEnvironment environment) {
   final String worktreeName =
       '${_truncate(_slug(environment.task.title, fallback: 'task'), 32)}-'
       '${_truncate(_slug(environment.id.value, fallback: 'environment'), 16)}-'
       '${_stableHash(environment.id.value)}';
-  return _childPath(_childPath(source.parent.path, parentName), worktreeName);
+  return '.adele/worktrees/$worktreeName';
 }
 
 Future<_GitResourceNames> _allocateGitResourceNames(
-  Directory repository,
+  _GitSource source,
   LocalEnvironment environment,
 ) async {
   final String baseBranch = _branchName(environment);
-  final String baseWorktreePath = _worktreePath(repository, environment);
+  final String baseWorktreePath = _worktreeRelativePath(environment);
+  await _providerDirectory(source.scope, '.adele/worktrees', create: true);
   for (int candidate = 1; ; candidate++) {
     final String suffix = candidate == 1 ? '' : '-$candidate';
     final String branch = '$baseBranch$suffix';
-    final String worktreePath = '$baseWorktreePath$suffix';
-    if (await _branchExists(repository, branch)) continue;
+    final String relativePath = '$baseWorktreePath$suffix';
+    final String worktreePath = _scopeWithinWorktree(
+      source.scope,
+      relativePath,
+    ).path;
+    if (await _branchExists(source.repository.root, branch)) continue;
     if (await FileSystemEntity.type(worktreePath, followLinks: false) !=
         FileSystemEntityType.notFound) {
       continue;
     }
-    return _GitResourceNames(branch: branch, worktreePath: worktreePath);
+    return _GitResourceNames(
+      branch: branch,
+      worktreeRelativePath: relativePath,
+    );
   }
 }
 
@@ -802,16 +904,30 @@ Future<bool> _branchExists(Directory repository, String branch) async {
 }
 
 Future<void> _cleanupFailedEstablishment(
-  Directory repository,
-  String worktreePath,
+  _GitSource source,
+  String worktreeRelativePath,
   String branch, {
   required String baselineCommit,
   required bool branchCreated,
   required bool worktreeAddAttempted,
-  required bool worktreeAddSucceeded,
 }) async {
   if (!branchCreated) return;
+  final Directory repository = source.repository.root;
+  final String worktreePath = _scopeWithinWorktree(
+    source.scope,
+    worktreeRelativePath,
+  ).path;
   if (worktreeAddAttempted) {
+    try {
+      await _providerDirectory(source.scope, '.adele/worktrees');
+      if (await FileSystemEntity.type(worktreePath, followLinks: false) !=
+          FileSystemEntityType.notFound) {
+        await _providerDirectory(source.scope, worktreeRelativePath);
+      }
+    } on EnvironmentFailure {
+      // Never clean through a replaced storage parent or worktree alias.
+      return;
+    }
     final _WorktreeRegistrationState registration =
         await _worktreeRegistrationForBranch(repository, worktreePath, branch);
     if (registration == _WorktreeRegistrationState.unknown) return;
@@ -828,14 +944,6 @@ Future<void> _cleanupFailedEstablishment(
         return;
       }
       if (removal.exitCode != 0) return;
-    }
-  }
-  if (worktreeAddSucceeded) {
-    final Directory worktree = Directory(worktreePath);
-    try {
-      if (await worktree.exists()) await worktree.delete(recursive: true);
-    } on FileSystemException {
-      // The path is known to have been created by the successful Git add.
     }
   }
   try {
@@ -867,19 +975,330 @@ Future<_WorktreeRegistrationState> _worktreeRegistrationForBranch(
     return _WorktreeRegistrationState.unknown;
   }
   if (result.exitCode != 0) return _WorktreeRegistrationState.unknown;
-  String? listedPath;
-  for (final String field in result.stdout.toString().split('\u0000')) {
-    if (field.isEmpty) {
-      listedPath = null;
-    } else if (field.startsWith('worktree ')) {
-      listedPath = field.substring('worktree '.length);
-    } else if (listedPath != null &&
-        _sameLocalPath(listedPath, worktreePath) &&
-        field == 'branch refs/heads/$branch') {
+  for (final registration in _parseWorktreeInventory(
+    result.stdout.toString(),
+  )) {
+    if (_sameLocalPath(registration.path, worktreePath) &&
+        registration.branchRef == 'refs/heads/$branch') {
       return _WorktreeRegistrationState.registered;
     }
   }
   return _WorktreeRegistrationState.notRegistered;
+}
+
+List<_GitWorktreeRegistration> _parseWorktreeInventory(String output) {
+  final registrations = <_GitWorktreeRegistration>[];
+  String? path;
+  String? branchRef;
+  String? head;
+  for (final String field in output.split('\u0000')) {
+    if (field.isEmpty) {
+      if (path != null) {
+        registrations.add((path: path, branchRef: branchRef, head: head));
+      }
+      path = null;
+      branchRef = null;
+      head = null;
+    } else if (field.startsWith('worktree ')) {
+      path = field.substring('worktree '.length);
+    } else if (field.startsWith('branch ')) {
+      branchRef = field.substring('branch '.length);
+    } else if (field.startsWith('HEAD ')) {
+      head = field.substring('HEAD '.length);
+    }
+  }
+  return registrations;
+}
+
+Future<List<_GitWorktreeRegistration>> _worktreeInventory(
+  Directory repository,
+) async => _parseWorktreeInventory(
+  await _gitOutput(
+    repository,
+    const <String>['worktree', 'list', '--porcelain', '-z'],
+    code: 'restore_worktree_invalid',
+    message: 'Git could not inspect the retained worktree registration.',
+  ),
+);
+
+Future<void> _restoreRegistration(
+  EnvironmentId environmentId,
+  _GitRepository repository,
+  Directory worktree,
+  String branch,
+) async {
+  final String expectedRef = 'refs/heads/$branch';
+  final inventory = await _worktreeInventory(repository.root);
+  final registrations = inventory
+      .where((entry) => entry.branchRef == expectedRef)
+      .toList();
+  if (registrations.length != 1) {
+    throw _environmentFailure(
+      'restore_branch_mismatch',
+      'Git must register exactly one worktree for the retained branch.',
+      environmentId: environmentId,
+    );
+  }
+  final String registeredPath = registrations.single.path;
+  if (_sameLocalPath(registeredPath, worktree.path)) return;
+  if (inventory.any((entry) => !_isAbsolutePath(entry.path))) {
+    throw _environmentFailure(
+      'restore_worktree_invalid',
+      'Git repair requires absolute registered worktree paths.',
+      environmentId: environmentId,
+    );
+  }
+  if (!await _pathIsAbsent(registeredPath)) {
+    throw _environmentFailure(
+      'restore_worktree_conflict',
+      'The retained branch is registered at another existing path.',
+      environmentId: environmentId,
+    );
+  }
+
+  await _validateRepairGitfile(
+    repository,
+    worktree,
+    registrations.single,
+    allowStale: true,
+  );
+  // Git repair also visits every other registered linked checkout. Validate
+  // those live paths first so it cannot "fix" a foreign checkout or alias.
+  for (final entry in inventory.skip(1)) {
+    if (_sameLocalPath(entry.path, registeredPath) ||
+        await _pathIsAbsent(entry.path)) {
+      continue;
+    }
+    if (inventory
+            .skip(1)
+            .where(
+              (other) =>
+                  other.branchRef == entry.branchRef &&
+                  other.head == entry.head,
+            )
+            .length !=
+        1) {
+      throw _environmentFailure(
+        'restore_worktree_conflict',
+        'Another live worktree registration is ambiguous; repair is unsafe.',
+        environmentId: environmentId,
+      );
+    }
+    await _validateRepairGitfile(repository, Directory(entry.path), entry);
+  }
+  final latest = await _worktreeInventory(repository.root);
+  if (latest.length != inventory.length ||
+      inventory.indexed.any((entry) => latest[entry.$1] != entry.$2)) {
+    throw _environmentFailure(
+      'restore_worktree_conflict',
+      'Git worktree registrations changed during repair validation.',
+      environmentId: environmentId,
+    );
+  }
+  await _gitOutput(
+    repository.root,
+    <String>['worktree', 'repair', worktree.path],
+    code: 'restore_worktree_repair_failed',
+    message:
+        'Git could not repair the moved worktree. Relocation requires '
+        'Git worktree repair support.',
+  );
+  final repaired = (await _worktreeInventory(
+    repository.root,
+  )).where((entry) => entry.branchRef == expectedRef).toList();
+  if (repaired.length != 1 ||
+      !_sameLocalPath(repaired.single.path, worktree.path)) {
+    throw _environmentFailure(
+      'restore_worktree_mismatch',
+      'Git repair did not register the retained branch at its expected path.',
+      environmentId: environmentId,
+    );
+  }
+}
+
+Future<bool> _pathIsAbsent(String path) async {
+  if (await FileSystemEntity.type(path, followLinks: false) !=
+      FileSystemEntityType.notFound) {
+    return false;
+  }
+  // A failed stat can also mean inaccessible, not missing. Confirm absence
+  // against the nearest readable parent before permitting relocation writes.
+  final Directory parent = Directory(path).parent;
+  if (!_sameLocalPath(parent.path, path)) {
+    try {
+      return !await parent
+          .list(followLinks: false)
+          .any((entry) => _sameLocalPath(entry.path, path));
+    } on FileSystemException {
+      if (await _pathIsAbsent(parent.path)) return true;
+    }
+  }
+  throw const EnvironmentFailure(
+    code: 'restore_worktree_invalid',
+    message: 'Git worktree path absence could not be verified safely.',
+    details: <String, Object?>{},
+  );
+}
+
+Future<void> _validateRepairGitfile(
+  _GitRepository repository,
+  Directory worktree,
+  _GitWorktreeRegistration registration, {
+  bool allowStale = false,
+}) async {
+  const String code = 'restore_worktree_mismatch';
+  const String message = 'A worktree Git marker cannot be safely repaired.';
+  const failure = EnvironmentFailure(
+    code: code,
+    message: message,
+    details: <String, Object?>{},
+  );
+  try {
+    final File gitfile = File(_childPath(worktree.path, '.git'));
+    if (await FileSystemEntity.type(worktree.path, followLinks: false) !=
+            FileSystemEntityType.directory ||
+        !_sameLocalPath(await worktree.resolveSymbolicLinks(), worktree.path) ||
+        await FileSystemEntity.type(gitfile.path, followLinks: false) !=
+            FileSystemEntityType.file) {
+      throw failure;
+    }
+    String gitDirectory;
+    bool stale = false;
+    try {
+      // Resolve the gitfile without loading a possibly foreign configuration.
+      gitDirectory = await _gitOutput(
+        repository.root,
+        <String>['rev-parse', '--resolve-git-dir', gitfile.path],
+        code: code,
+        message: message,
+      );
+    } on EnvironmentFailure catch (error) {
+      if (!allowStale || error.code != code) rethrow;
+      stale = true;
+      // Inspect only the documented checkout gitfile, never private worktree
+      // registration files. Git remains authoritative for branch/registration.
+      if (await gitfile.length() > 16384) throw failure;
+      final String marker = _stripTerminalLineEnding(
+        await gitfile.readAsString(),
+      );
+      if (!marker.startsWith('gitdir: ')) throw failure;
+      final String target = marker.substring('gitdir: '.length);
+      final String oldGitDirectory = _isAbsolutePath(target)
+          ? target
+          : _childPath(worktree.path, target);
+      if (!await _pathIsAbsent(oldGitDirectory)) {
+        throw failure;
+      }
+      final String id = target
+          .split(Platform.isWindows ? RegExp(r'[\\/]') : '/')
+          .last;
+      if (!RegExp(r'^[a-z0-9][a-z0-9-]*$').hasMatch(id) ||
+          RegExp(r'[\x00-\x1f\x7f]').hasMatch(id)) {
+        throw failure;
+      }
+      gitDirectory = _childPath(
+        _childPath(repository.commonDirectory.path, 'worktrees'),
+        id,
+      );
+    }
+    if (Platform.isWindows) {
+      gitDirectory = gitDirectory.replaceAll('/', Platform.pathSeparator);
+    }
+    final String relative = _relativePathWithin(
+      repository.commonDirectory,
+      Directory(gitDirectory),
+      failureCode: code,
+      failureMessage: message,
+    );
+    if (relative.split('/').length != 2 || !relative.startsWith('worktrees/')) {
+      throw failure;
+    }
+    final Directory metadata = await _providerDirectory(
+      repository.commonDirectory,
+      relative,
+    );
+    final String backlinkPath = await _gitOutput(
+      repository.root,
+      <String>[
+        '--git-dir=${metadata.path}',
+        'rev-parse',
+        '--git-path',
+        'gitdir',
+      ],
+      code: code,
+      message: message,
+    );
+    if (!_sameLocalPath(backlinkPath, _childPath(metadata.path, 'gitdir')) ||
+        await FileSystemEntity.type(backlinkPath, followLinks: false) !=
+            FileSystemEntityType.file) {
+      throw failure;
+    }
+    // Git omits unreadable/empty backlinks from inventory. Check membership
+    // prerequisites without parsing private registration contents; also forbid
+    // a symlink here because repair writes this file.
+    final RandomAccessFile backlink = await File(backlinkPath).open();
+    try {
+      if (await backlink.readByte() == -1) throw failure;
+    } finally {
+      await backlink.close();
+    }
+    final String common = await _gitOutput(
+      repository.root,
+      <String>['--git-dir=${metadata.path}', 'rev-parse', '--git-common-dir'],
+      code: code,
+      message: message,
+    );
+    final Directory commonDirectory = Directory(
+      _isAbsolutePath(common)
+          ? common
+          : _childPath(repository.root.path, common),
+    );
+    if (!_sameLocalPath(
+      await commonDirectory.resolveSymbolicLinks(),
+      repository.commonDirectory.path,
+    )) {
+      throw failure;
+    }
+    final String actualHead = await _gitOutput(
+      repository.root,
+      <String>['--git-dir=${metadata.path}', 'rev-parse', 'HEAD'],
+      code: code,
+      message: message,
+    );
+    final String actualRef = await _gitOutput(
+      repository.root,
+      <String>[
+        '--git-dir=${metadata.path}',
+        'rev-parse',
+        '--symbolic-full-name',
+        'HEAD',
+      ],
+      code: code,
+      message: message,
+    );
+    if (actualHead != registration.head ||
+        actualRef != (registration.branchRef ?? 'HEAD')) {
+      throw failure;
+    }
+    if (!stale) {
+      final _GitRepository existing = await _inspectRepository(
+        worktree,
+        failureCode: code,
+        failureMessage: message,
+      );
+      if (!_sameLocalPath(existing.root.path, worktree.path) ||
+          !_sameLocalPath(
+            existing.commonDirectory.path,
+            repository.commonDirectory.path,
+          )) {
+        throw failure;
+      }
+    }
+  } on FileSystemException {
+    throw failure;
+  } on FormatException {
+    throw failure;
+  }
 }
 
 Future<ProcessResult> _runGit(
@@ -926,14 +1345,6 @@ String _childPath(String parent, String child) =>
     parent.endsWith(Platform.pathSeparator)
     ? '$parent$child'
     : '$parent${Platform.pathSeparator}$child';
-
-String _entityName(String path) {
-  final List<String> parts = path.split(Platform.pathSeparator);
-  return parts.lastWhere(
-    (String part) => part.isNotEmpty,
-    orElse: () => 'root',
-  );
-}
 
 EnvironmentFailure _environmentFailure(
   String code,

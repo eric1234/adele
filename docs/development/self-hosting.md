@@ -128,9 +128,9 @@ launching clean ADELE checkout
 builds fresh host and backend snapshots from the launching checkout, not a cached
 normal desktop installation. The Project clone checks out the captured HEAD
 detached and removes its `origin`. Git Environment establishes a distinct Task
-branch/worktree from that Project source. Only committed source is cloned: ignored
-dependencies, generated parts, and caches are not copied. Task-local validation
-may therefore need its own bootstrap/preparation.
+branch/worktree beneath that Project clone's `.adele/worktrees/`. Only committed
+source is cloned: ignored dependencies, generated parts, and caches are not copied.
+Task-local validation may therefore need its own bootstrap/preparation.
 
 `DevelopmentSelfHostingTopology` owns an `AdeleRuntime`, explicitly starts its host
 and backends, and uses ordinary registries, product lifecycle, Session authority,
@@ -157,7 +157,7 @@ worktree directory name is provider-generated rather than a fixed `task/` path.
 | Run-directory content | Purpose |
 | --- | --- |
 | `state/project/` | Detached clone of the launching HEAD. |
-| Task worktree under `state/` | Retained Task source and agent changes, separate from Project source. |
+| `state/project/.adele/worktrees/<allocated-name>/` | Distinct linked Task checkout and agent changes, physically beneath the Project clone. |
 | `manifest.json` | Source SHA, paths, product identities, Task branch/baseline, preset/model, input hashes, timings, and failure information. |
 | `journal.json` | Captured Chat entries and Run/model/tool events. |
 | `summary.json` | Structured execution, usage, tool, Git, and final-response summary. |
@@ -172,6 +172,12 @@ deleting them. Caught setup/execution failures also attempt to retain available
 state and reports. Do not expect a complete evidence bundle after every failure:
 generation/usage errors can occur before a run directory exists, and filesystem
 failures or forced termination can prevent report completion.
+
+The topology derives the current absolute Task worktree path from the current
+Project source and Git provider-state v2 `worktreeRelativePath`. The report's
+absolute `taskWorktreePath` is execution evidence, not provider-state restoration
+authority. Git evidence verifies the Task checkout root rather than accepting an
+enclosing Project repository if the nested worktree's Git marker is missing.
 
 Inspect the evidence rather than treating runner success as proof that all
 requested validation passed. Individual tool/command failures and whitespace-check

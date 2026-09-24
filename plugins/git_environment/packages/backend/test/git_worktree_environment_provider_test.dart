@@ -20,13 +20,15 @@ void main() {
     final LocalEnvironment first = _environment(
       fixture.source.uri,
       taskId: 'task-first',
-      environmentId: 'environment-first',
+      environmentId: 'environment-\tfirst',
       title: 'Build Parser Support',
     );
 
     final EnvironmentProviderResult firstResult = await generationA.establish(
       first,
     );
+    _expectV2State(first, firstResult.providerState);
+    expect(firstResult.providerState['environmentId'], 'environment-\tfirst');
     expect(
       firstResult.providerState['baselineCommit'],
       await _gitOutput(fixture.source, <String>['rev-parse', 'HEAD']),
@@ -34,6 +36,10 @@ void main() {
     final WorktreeEnvironment firstLive = liveObjects.resolve(first.id);
     final String retainedPath = firstLive.root.path;
     expect(retainedPath, isNot(fixture.source.path));
+    expect(
+      retainedPath,
+      _worktreeRoot(fixture.source, firstResult.providerState).path,
+    );
     expect(await Directory(retainedPath).exists(), isTrue);
     expect(
       (await generationA.readFile(first.id, 'README.md')).text,
@@ -116,7 +122,7 @@ void main() {
       providerId: first.providerId,
       providerState: <String, Object?>{
         ...firstResult.providerState,
-        'worktreePath': fixture.source.path,
+        'worktreeRelativePath': '.',
         'branch': sourceBranch,
       },
     );
@@ -128,7 +134,7 @@ void main() {
           value: sourceCheckoutState,
         ),
       ),
-      throwsA(_failureWithCode('restore_worktree_mismatch')),
+      throwsA(_failureWithCode('invalid_provider_state')),
     );
 
     final Environment symbolicBaselineState = Environment(
@@ -199,10 +205,14 @@ void main() {
     );
     final String firstBranch = firstResult.providerState['branch']! as String;
     final String secondBranch = secondResult.providerState['branch']! as String;
-    final String firstPath =
-        firstResult.providerState['worktreePath']! as String;
-    final String secondPath =
-        secondResult.providerState['worktreePath']! as String;
+    final String firstPath = _worktreeRoot(
+      fixture.source,
+      firstResult.providerState,
+    ).path;
+    final String secondPath = _worktreeRoot(
+      fixture.source,
+      secondResult.providerState,
+    ).path;
 
     expect(secondBranch, '$firstBranch-2');
     expect(secondPath, '$firstPath-2');
@@ -304,8 +314,11 @@ void main() {
       final EnvironmentProviderResult established = await generationA.establish(
         environment,
       );
-      expect(established.providerState['sourcePath'], fixture.source.path);
-      expect(established.providerState['repositoryPath'], fixture.source.path);
+      _expectV2State(environment, established.providerState);
+      expect(
+        generationA.liveObjects.resolve(environment.id).root.path,
+        _worktreeRoot(fixture.source, established.providerState).path,
+      );
       expect(
         (await generationA.readFile(environment.id, 'README.md')).text,
         contains('fixture source'),
@@ -359,8 +372,11 @@ void main() {
       final EnvironmentProviderResult established = await generationA.establish(
         environment,
       );
-      expect(established.providerState['sourcePath'], fixture.source.path);
-      expect(established.providerState['repositoryPath'], fixture.source.path);
+      _expectV2State(environment, established.providerState);
+      expect(
+        generationA.liveObjects.resolve(environment.id).root.path,
+        _worktreeRoot(fixture.source, established.providerState).path,
+      );
       expect(
         (await generationA.readFile(environment.id, 'README.md')).text,
         contains('fixture source'),
@@ -426,8 +442,14 @@ void main() {
     final WorktreeEnvironment firstLive = generationA.liveObjects.resolve(
       environment.id,
     );
-    final Directory worktreeRoot = Directory(
-      established.providerState['worktreePath']! as String,
+    _expectV2State(
+      environment,
+      established.providerState,
+      sourceRelativePath: 'project-source',
+    );
+    final Directory worktreeRoot = _worktreeRoot(
+      projectSource,
+      established.providerState,
     );
     expect(
       firstLive.root.path,
@@ -467,6 +489,11 @@ void main() {
       value: durable,
     );
     await firstLive.root.delete(recursive: true);
+    await expectLater(
+      generationB.restore(retained),
+      throwsA(_failureWithCode('restore_source_scope_missing')),
+    );
+    expect(await firstLive.root.exists(), isFalse);
     final Link redirectedScope = Link(firstLive.root.path);
     await redirectedScope.create(worktreeRoot.path);
     await expectLater(
@@ -505,6 +532,1364 @@ void main() {
       throwsA(_failureWithCode('not_found')),
     );
   });
+
+  test('places storage under the canonical selected Project source', () async {
+    final fixture = await _createRepository();
+    addTearDown(() => fixture.container.delete(recursive: true));
+    final Directory selectedSource = Directory('${fixture.source.path}/lib');
+    final Link alias = Link('${fixture.container.path}/source-alias');
+    await alias.create(selectedSource.path);
+    final LocalEnvironment environment = _environment(
+      Directory(alias.path).uri,
+      taskId: 'task-canonical',
+      environmentId: 'environment-canonical',
+      title: 'Canonical source',
+    );
+    final GitWorktreeEnvironmentProvider generationA =
+        GitWorktreeEnvironmentProvider();
+    addTearDown(generationA.close);
+    final EnvironmentProviderResult established = await generationA.establish(
+      environment,
+    );
+    _expectV2State(
+      environment,
+      established.providerState,
+      sourceRelativePath: 'lib',
+    );
+    final Directory worktree = _worktreeRoot(
+      selectedSource,
+      established.providerState,
+    );
+    expect(
+      generationA.liveObjects.resolve(environment.id).root.path,
+      '${worktree.path}/lib',
+    );
+    expect(
+      await Directory('${selectedSource.path}/.adele/worktrees').exists(),
+      isTrue,
+    );
+    expect(await Directory('${fixture.source.path}/.adele').exists(), isFalse);
+    await generationA.close();
+    await alias.delete();
+    final GitWorktreeEnvironmentProvider generationB =
+        GitWorktreeEnvironmentProvider();
+    addTearDown(generationB.close);
+    final EnvironmentProviderResult restored = await generationB.restore(
+      _retainedEnvironment(
+        environment,
+        established.providerState,
+        sourceLocation: selectedSource.uri,
+      ),
+    );
+    expect(restored.providerState, established.providerState);
+    expect(
+      (await generationB.readFile(environment.id, 'main.dart')).text,
+      'void main() {}\n',
+    );
+  });
+
+  for (final String scope in <String>['', 'project-source']) {
+    test(
+      'restores ${scope.isEmpty ? 'root' : 'scoped'} source after a real repository move',
+      () async {
+        final fixture = await _createRepository();
+        addTearDown(() => fixture.container.delete(recursive: true));
+        final Directory selectedSource = scope.isEmpty
+            ? fixture.source
+            : Directory('${fixture.source.path}/$scope');
+        if (scope.isNotEmpty) {
+          await selectedSource.create();
+          await File(
+            '${selectedSource.path}/README.md',
+          ).writeAsString('scoped source\n');
+          await _gitOutput(fixture.source, <String>['add', '.']);
+          await _gitOutput(fixture.source, <String>[
+            'commit',
+            '-m',
+            'Add scoped source',
+          ]);
+        }
+        final LocalEnvironment environment = _environment(
+          selectedSource.uri,
+          taskId: 'task-moved',
+          environmentId: 'environment-moved',
+          title: 'Moved repository',
+        );
+        final GitWorktreeEnvironmentProvider generationA =
+            GitWorktreeEnvironmentProvider();
+        addTearDown(generationA.close);
+        final EnvironmentProviderResult established = await generationA
+            .establish(environment);
+        final Map<String, Object?> state = Map<String, Object?>.of(
+          established.providerState,
+        );
+        _expectV2State(environment, state, sourceRelativePath: scope);
+        final Directory oldWorktree = _worktreeRoot(selectedSource, state);
+        final Directory oldLiveRoot = generationA.liveObjects
+            .resolve(environment.id)
+            .root;
+        expect(
+          oldLiveRoot.path,
+          scope.isEmpty ? oldWorktree.path : '${oldWorktree.path}/$scope',
+        );
+        await _gitOutput(oldWorktree, <String>[
+          'commit',
+          '--allow-empty',
+          '-m',
+          'Advance retained branch',
+        ]);
+        final String retainedHead = await _gitOutput(oldWorktree, <String>[
+          'rev-parse',
+          'HEAD',
+        ]);
+        await _gitOutput(fixture.source, <String>[
+          'commit',
+          '--allow-empty',
+          '-m',
+          'Advance source branch',
+        ]);
+        expect(retainedHead, isNot(state['baselineCommit']));
+        expect(
+          await _gitOutput(fixture.source, <String>['rev-parse', 'HEAD']),
+          isNot(state['baselineCommit']),
+        );
+        await File(
+          '${oldLiveRoot.path}/README.md',
+        ).writeAsString('retained uncommitted content\n');
+        await generationA.createTextFile(
+          environment.id,
+          'untracked.txt',
+          'retained untracked content\n',
+        );
+        await generationA.close();
+        expect(generationA.liveObjects.length, 0);
+
+        final Directory movedRepository = await fixture.source.rename(
+          '${fixture.container.path}/moved repository',
+        );
+        final Directory movedSource = scope.isEmpty
+            ? movedRepository
+            : Directory('${movedRepository.path}/$scope');
+        final Directory movedWorktree = _worktreeRoot(movedSource, state);
+        expect(
+          await Directory('${movedRepository.path}/.git').exists(),
+          isTrue,
+        );
+        expect(await Directory('${movedSource.path}/.adele').exists(), isTrue);
+        expect(await oldWorktree.exists(), isFalse);
+        expect(await movedWorktree.exists(), isTrue);
+        final String before = await _gitOutput(movedRepository, <String>[
+          'worktree',
+          'list',
+          '--porcelain',
+          '-z',
+        ]);
+        expect(
+          before.split('\u0000'),
+          contains('worktree ${oldWorktree.path}'),
+        );
+        expect(
+          before.split('\u0000'),
+          isNot(contains('worktree ${movedWorktree.path}')),
+        );
+
+        final GitWorktreeEnvironmentProvider generationB =
+            GitWorktreeEnvironmentProvider();
+        addTearDown(generationB.close);
+        final LocalEnvironment retained = _retainedEnvironment(
+          environment,
+          state,
+          sourceLocation: movedSource.uri,
+        );
+        expect(retained.task.project.id, environment.task.project.id);
+        expect(
+          retained.task.project.sourceLocation,
+          isNot(environment.task.project.sourceLocation),
+        );
+        final EnvironmentProviderResult restored = await generationB.restore(
+          retained,
+        );
+        expect(restored.providerState, state);
+        expect(established.providerState, state);
+        expect(generationB.liveObjects.length, 1);
+        expect(
+          generationB.liveObjects.resolve(environment.id).root.path,
+          scope.isEmpty ? movedWorktree.path : '${movedWorktree.path}/$scope',
+        );
+        expect(
+          (await generationB.readFile(environment.id, 'README.md')).text,
+          'retained uncommitted content\n',
+        );
+        expect(
+          (await generationB.readFile(environment.id, 'untracked.txt')).text,
+          'retained untracked content\n',
+        );
+        expect(
+          await _gitOutput(movedWorktree, <String>['symbolic-ref', 'HEAD']),
+          'refs/heads/${state['branch']}',
+        );
+        expect(
+          await _gitOutput(movedWorktree, <String>['rev-parse', 'HEAD']),
+          retainedHead,
+        );
+        expect(
+          await _gitOutput(movedWorktree, <String>[
+            'rev-parse',
+            '--verify',
+            '${state['baselineCommit']}^{commit}',
+          ]),
+          state['baselineCommit'],
+        );
+        final String after = await _gitOutput(movedRepository, <String>[
+          'worktree',
+          'list',
+          '--porcelain',
+          '-z',
+        ]);
+        expect(
+          after.split('\u0000'),
+          contains('worktree ${movedWorktree.path}'),
+        );
+        expect(
+          after.split('\u0000'),
+          isNot(contains('worktree ${oldWorktree.path}')),
+        );
+        expect(await oldWorktree.exists(), isFalse);
+      },
+    );
+  }
+
+  test('strictly rejects malformed schema v2 provider state', () async {
+    final fixture = await _createRepository();
+    addTearDown(() => fixture.container.delete(recursive: true));
+    final GitWorktreeEnvironmentProvider generationA =
+        GitWorktreeEnvironmentProvider();
+    addTearDown(generationA.close);
+    final LocalEnvironment environment = _environment(
+      fixture.source.uri,
+      taskId: 'task-schema',
+      environmentId: 'environment-schema',
+      title: 'Schema validation',
+    );
+    final EnvironmentProviderResult established = await generationA.establish(
+      environment,
+    );
+    final Map<String, Object?> state = established.providerState;
+    _expectV2State(environment, state);
+    await generationA.close();
+    final GitWorktreeEnvironmentProvider generationB =
+        GitWorktreeEnvironmentProvider();
+    addTearDown(generationB.close);
+    final Map<String, Map<String, Object?>?> malformed =
+        <String, Map<String, Object?>?>{
+          'absent state': null,
+          'empty state': <String, Object?>{},
+          for (final String field in state.keys)
+            'missing $field': Map<String, Object?>.of(state)..remove(field),
+          for (final String field in state.keys)
+            for (final Object? value in <Object?>[
+              null,
+              true,
+              <Object?>[],
+              <String, Object?>{},
+            ])
+              '$field type ${value.runtimeType}': <String, Object?>{
+                ...state,
+                field: value,
+              },
+          for (final Object version in <Object>[1, 3, 2.0, '2'])
+            'version $version (${version.runtimeType})': <String, Object?>{
+              ...state,
+              'schemaVersion': version,
+            },
+          for (final String field in state.keys.where(
+            (String field) => field != 'schemaVersion',
+          ))
+            '$field integer': <String, Object?>{...state, field: 2},
+          for (final String field in <String>[
+            'environmentId',
+            'worktreeRelativePath',
+            'branch',
+            'baselineCommit',
+          ])
+            '$field empty': <String, Object?>{...state, field: ''},
+          for (final String field in <String>[
+            'sourcePath',
+            'repositoryPath',
+            'commonGitDirectory',
+            'worktreePath',
+            'unexpected',
+          ])
+            'extra $field': <String, Object?>{
+              ...state,
+              field: fixture.source.path,
+            },
+          for (final String field in <String>[
+            'sourceRelativePath',
+            'worktreeRelativePath',
+          ])
+            for (final String path in <String>[
+              '/absolute/path',
+              'C:/absolute/path',
+              r'C:\absolute\path',
+              r'\\server\share',
+              '..',
+              '../outside',
+              'inside/../outside',
+              '.',
+              './inside',
+              'inside/./child',
+              'inside//child',
+              'inside/',
+              r'inside\child',
+              'inside\u0000child',
+            ])
+              '$field path $path': <String, Object?>{...state, field: path},
+          for (final String path in <String>[
+            '.adele',
+            '.adele/worktrees',
+            '.adele/worktrees/',
+            '.adele/worktrees/flat/nested',
+            '.adele/other/flat',
+            'other/worktrees/flat',
+            '.adele/worktrees/../flat',
+            '.adele/worktrees/./flat',
+            '.adele//worktrees/flat',
+            r'.adele\worktrees\flat',
+          ])
+            'worktree shape $path': <String, Object?>{
+              ...state,
+              'worktreeRelativePath': path,
+            },
+          for (final String branch in <String>[
+            'HEAD',
+            '-option',
+            '/branch',
+            'branch/',
+            'branch//child',
+            'branch..name',
+            'branch.lock',
+            'branch name',
+            'branch@{1}',
+            r'branch\name',
+            'branch:name',
+            'branch~name',
+            'branch^name',
+            'branch?name',
+            'branch[name',
+            'branch\nname',
+          ])
+            'branch $branch': <String, Object?>{...state, 'branch': branch},
+          for (final String baseline in <String>[
+            'HEAD',
+            'a' * 39,
+            'a' * 41,
+            'a' * 63,
+            'a' * 65,
+            'A' * 40,
+            'A' * 64,
+            'g' * 40,
+            'g' * 64,
+            '${'a' * 40}\n',
+          ])
+            'baseline $baseline': <String, Object?>{
+              ...state,
+              'baselineCommit': baseline,
+            },
+        };
+    final String inventory = await _gitOutput(fixture.source, <String>[
+      'worktree',
+      'list',
+      '--porcelain',
+      '-z',
+    ]);
+    for (final entry in malformed.entries) {
+      await expectLater(
+        generationB.restore(_retainedEnvironment(environment, entry.value)),
+        throwsA(_failureWithCode('invalid_provider_state')),
+        reason: entry.key,
+      );
+      expect(generationB.liveObjects.length, 0, reason: entry.key);
+    }
+    expect(
+      await _gitOutput(fixture.source, <String>[
+        'worktree',
+        'list',
+        '--porcelain',
+        '-z',
+      ]),
+      inventory,
+    );
+    expect(
+      (await generationB.restore(
+        _retainedEnvironment(environment, state),
+      )).providerState,
+      state,
+    );
+  });
+
+  test(
+    'rejects a changed Project source scope without binding or relocation',
+    () async {
+      final fixture = await _createRepository();
+      addTearDown(() => fixture.container.delete(recursive: true));
+      final GitWorktreeEnvironmentProvider generationA =
+          GitWorktreeEnvironmentProvider();
+      addTearDown(generationA.close);
+      final LocalEnvironment environment = _environment(
+        fixture.source.uri,
+        taskId: 'task-scope-mismatch',
+        environmentId: 'environment-scope-mismatch',
+        title: 'Source scope mismatch',
+      );
+      final EnvironmentProviderResult established = await generationA.establish(
+        environment,
+      );
+      await generationA.close();
+      final GitWorktreeEnvironmentProvider generationB =
+          GitWorktreeEnvironmentProvider();
+      addTearDown(generationB.close);
+      await expectLater(
+        generationB.restore(
+          _retainedEnvironment(
+            environment,
+            established.providerState,
+            sourceLocation: Directory('${fixture.source.path}/lib').uri,
+          ),
+        ),
+        throwsA(_failureWithCode('restore_source_mismatch')),
+      );
+      expect(generationB.liveObjects.length, 0);
+      expect(
+        await Directory('${fixture.source.path}/lib/.adele').exists(),
+        isFalse,
+      );
+      expect(
+        await _worktreeRoot(fixture.source, established.providerState).exists(),
+        isTrue,
+      );
+    },
+  );
+
+  test('does not recreate a missing retained worktree', () async {
+    final fixture = await _createRepository();
+    addTearDown(() => fixture.container.delete(recursive: true));
+    final GitWorktreeEnvironmentProvider generationA =
+        GitWorktreeEnvironmentProvider();
+    addTearDown(generationA.close);
+    final LocalEnvironment environment = _environment(
+      fixture.source.uri,
+      taskId: 'task-missing',
+      environmentId: 'environment-missing',
+      title: 'Missing worktree',
+    );
+    final EnvironmentProviderResult established = await generationA.establish(
+      environment,
+    );
+    final Directory root = _worktreeRoot(
+      fixture.source,
+      established.providerState,
+    );
+    await generationA.close();
+    await root.delete(recursive: true);
+    final String inventory = await _gitOutput(fixture.source, <String>[
+      'worktree',
+      'list',
+      '--porcelain',
+      '-z',
+    ]);
+    final List<String> branches = await _branchNames(fixture.source);
+    final GitWorktreeEnvironmentProvider generationB =
+        GitWorktreeEnvironmentProvider();
+    addTearDown(generationB.close);
+    await expectLater(
+      generationB.restore(
+        _retainedEnvironment(environment, established.providerState),
+      ),
+      throwsA(_failureWithCode('restore_worktree_missing')),
+    );
+    expect(generationB.liveObjects.length, 0);
+    expect(await root.exists(), isFalse);
+    expect(await _branchNames(fixture.source), branches);
+    expect(
+      await _gitOutput(fixture.source, <String>[
+        'worktree',
+        'list',
+        '--porcelain',
+        '-z',
+      ]),
+      inventory,
+    );
+  });
+
+  test(
+    'rejects a worktree no longer registered on the retained branch',
+    () async {
+      final fixture = await _createRepository();
+      addTearDown(() => fixture.container.delete(recursive: true));
+      final GitWorktreeEnvironmentProvider generationA =
+          GitWorktreeEnvironmentProvider();
+      addTearDown(generationA.close);
+      final LocalEnvironment environment = _environment(
+        fixture.source.uri,
+        taskId: 'task-branch-mismatch',
+        environmentId: 'environment-branch-mismatch',
+        title: 'Branch mismatch',
+      );
+      final EnvironmentProviderResult established = await generationA.establish(
+        environment,
+      );
+      final Directory root = _worktreeRoot(
+        fixture.source,
+        established.providerState,
+      );
+      await generationA.close();
+      await _gitOutput(root, <String>['checkout', '-b', 'replacement-branch']);
+      final String inventory = await _gitOutput(fixture.source, <String>[
+        'worktree',
+        'list',
+        '--porcelain',
+        '-z',
+      ]);
+      final GitWorktreeEnvironmentProvider generationB =
+          GitWorktreeEnvironmentProvider();
+      addTearDown(generationB.close);
+      await expectLater(
+        generationB.restore(
+          _retainedEnvironment(environment, established.providerState),
+        ),
+        throwsA(_failureWithCode('restore_branch_mismatch')),
+      );
+      expect(generationB.liveObjects.length, 0);
+      expect(
+        await _gitOutput(root, <String>['branch', '--show-current']),
+        'replacement-branch',
+      );
+      expect(
+        await _gitOutput(fixture.source, <String>[
+          'worktree',
+          'list',
+          '--porcelain',
+          '-z',
+        ]),
+        inventory,
+      );
+    },
+  );
+
+  test(
+    'accepts full lower-hex baseline syntax but rejects unavailable commits',
+    () async {
+      final fixture = await _createRepository();
+      addTearDown(() => fixture.container.delete(recursive: true));
+      final GitWorktreeEnvironmentProvider generationA =
+          GitWorktreeEnvironmentProvider();
+      addTearDown(generationA.close);
+      final LocalEnvironment environment = _environment(
+        fixture.source.uri,
+        taskId: 'task-baseline',
+        environmentId: 'environment-baseline',
+        title: 'Missing baseline',
+      );
+      final EnvironmentProviderResult established = await generationA.establish(
+        environment,
+      );
+      await generationA.close();
+      final GitWorktreeEnvironmentProvider generationB =
+          GitWorktreeEnvironmentProvider();
+      addTearDown(generationB.close);
+      for (final int length in <int>[40, 64]) {
+        await expectLater(
+          generationB.restore(
+            _retainedEnvironment(environment, <String, Object?>{
+              ...established.providerState,
+              'baselineCommit': 'f' * length,
+            }),
+          ),
+          throwsA(_failureWithCode('restore_baseline_missing')),
+        );
+        expect(generationB.liveObjects.length, 0);
+      }
+    },
+  );
+
+  test(
+    'rejects a retained path linked to a different common repository',
+    () async {
+      final fixture = await _createRepository();
+      final foreign = await _createRepository();
+      addTearDown(() => fixture.container.delete(recursive: true));
+      addTearDown(() => foreign.container.delete(recursive: true));
+      final GitWorktreeEnvironmentProvider generationA =
+          GitWorktreeEnvironmentProvider();
+      addTearDown(generationA.close);
+      final LocalEnvironment environment = _environment(
+        fixture.source.uri,
+        taskId: 'task-foreign',
+        environmentId: 'environment-foreign',
+        title: 'Different repository',
+      );
+      final EnvironmentProviderResult established = await generationA.establish(
+        environment,
+      );
+      final Directory root = _worktreeRoot(
+        fixture.source,
+        established.providerState,
+      );
+      await generationA.close();
+      await root.delete(recursive: true);
+      await _gitOutput(foreign.source, <String>[
+        'worktree',
+        'add',
+        '-b',
+        established.providerState['branch']! as String,
+        root.path,
+      ]);
+      final String inventory = await _gitOutput(fixture.source, <String>[
+        'worktree',
+        'list',
+        '--porcelain',
+        '-z',
+      ]);
+      final GitWorktreeEnvironmentProvider generationB =
+          GitWorktreeEnvironmentProvider();
+      addTearDown(generationB.close);
+      await expectLater(
+        generationB.restore(
+          _retainedEnvironment(environment, established.providerState),
+        ),
+        throwsA(_failureWithCode('restore_worktree_mismatch')),
+      );
+      expect(generationB.liveObjects.length, 0);
+      expect(
+        await _gitOutput(fixture.source, <String>[
+          'worktree',
+          'list',
+          '--porcelain',
+          '-z',
+        ]),
+        inventory,
+      );
+      expect(
+        await _gitOutput(root, <String>['rev-parse', '--git-common-dir']),
+        '${foreign.source.path}/.git',
+      );
+    },
+  );
+
+  test(
+    'repair preflight does not repoint another same-repository branch',
+    () async {
+      final fixture = await _createRepository();
+      addTearDown(() => fixture.container.delete(recursive: true));
+      final GitWorktreeEnvironmentProvider generationA =
+          GitWorktreeEnvironmentProvider();
+      addTearDown(generationA.close);
+      final LocalEnvironment environment = _environment(
+        fixture.source.uri,
+        taskId: 'task-repair-alias',
+        environmentId: 'environment-repair-alias',
+        title: 'Repair alias',
+      );
+      final EnvironmentProviderResult established = await generationA.establish(
+        environment,
+      );
+      final Directory oldRoot = _worktreeRoot(
+        fixture.source,
+        established.providerState,
+      );
+      await generationA.close();
+      final Directory moved = await fixture.source.rename(
+        '${fixture.container.path}/moved',
+      );
+      final Directory expectedRoot = _worktreeRoot(
+        moved,
+        established.providerState,
+      );
+      final File candidateGitfile = File('${expectedRoot.path}/.git');
+      final String retainedMarker = await candidateGitfile.readAsString();
+      final Directory sibling = Directory('${fixture.container.path}/branch-b');
+      await _gitOutput(moved, <String>[
+        'worktree',
+        'add',
+        '-b',
+        'branch-b',
+        sibling.path,
+      ]);
+      final String siblingMarker = await File(
+        '${sibling.path}/.git',
+      ).readAsString();
+      final String siblingMetadata = await _gitOutput(moved, <String>[
+        'rev-parse',
+        '--resolve-git-dir',
+        '${sibling.path}/.git',
+      ]);
+      expect(
+        await _gitOutput(sibling, <String>['rev-parse', 'HEAD']),
+        established.providerState['baselineCommit'],
+      );
+      await candidateGitfile.writeAsString(siblingMarker);
+      final String inventory = await _gitInventory(moved);
+      expect(await oldRoot.exists(), isFalse);
+      expect(inventory.split('\u0000'), contains('worktree ${oldRoot.path}'));
+
+      final GitWorktreeEnvironmentProvider generationB =
+          GitWorktreeEnvironmentProvider();
+      addTearDown(generationB.close);
+      final LocalEnvironment retained = _retainedEnvironment(
+        environment,
+        established.providerState,
+        sourceLocation: moved.uri,
+      );
+      await expectLater(
+        generationB.restore(retained),
+        throwsA(_failureWithCode('restore_worktree_mismatch')),
+      );
+      expect(generationB.liveObjects.length, 0);
+      expect(await _gitInventory(moved), inventory);
+      expect(await candidateGitfile.readAsString(), siblingMarker);
+      expect(await File('${sibling.path}/.git').readAsString(), siblingMarker);
+      expect(
+        await _gitOutput(moved, <String>[
+          'rev-parse',
+          '--resolve-git-dir',
+          '${sibling.path}/.git',
+        ]),
+        siblingMetadata,
+      );
+      expect(
+        await _gitOutput(sibling, <String>['symbolic-ref', 'HEAD']),
+        'refs/heads/branch-b',
+      );
+
+      await candidateGitfile.writeAsString(retainedMarker);
+      expect(
+        (await generationB.restore(retained)).providerState,
+        established.providerState,
+      );
+      expect(
+        await _gitOutput(sibling, <String>['symbolic-ref', 'HEAD']),
+        'refs/heads/branch-b',
+      );
+    },
+  );
+
+  test(
+    'repair preflight rejects foreign metadata without loading malformed foreign config',
+    () async {
+      final fixture = await _createRepository();
+      final foreign = await _createRepository();
+      addTearDown(() => fixture.container.delete(recursive: true));
+      addTearDown(() => foreign.container.delete(recursive: true));
+      final GitWorktreeEnvironmentProvider generationA =
+          GitWorktreeEnvironmentProvider();
+      addTearDown(generationA.close);
+      final LocalEnvironment environment = _environment(
+        fixture.source.uri,
+        taskId: 'task-repair-foreign',
+        environmentId: 'environment-repair-foreign',
+        title: 'Foreign repair metadata',
+      );
+      final EnvironmentProviderResult established = await generationA.establish(
+        environment,
+      );
+      final Directory oldRoot = _worktreeRoot(
+        fixture.source,
+        established.providerState,
+      );
+      await generationA.close();
+      final Directory moved = await fixture.source.rename(
+        '${fixture.container.path}/moved',
+      );
+      final Directory expectedRoot = _worktreeRoot(
+        moved,
+        established.providerState,
+      );
+      final Directory foreignCheckout = Directory(
+        '${foreign.container.path}/linked',
+      );
+      await _gitOutput(foreign.source, <String>[
+        'worktree',
+        'add',
+        '-b',
+        'foreign-branch',
+        foreignCheckout.path,
+      ]);
+      final String marker = await File(
+        '${foreignCheckout.path}/.git',
+      ).readAsString();
+      final File candidateGitfile = File('${expectedRoot.path}/.git');
+      await candidateGitfile.writeAsString(marker);
+      final String metadata = await _gitOutput(moved, <String>[
+        'rev-parse',
+        '--resolve-git-dir',
+        candidateGitfile.path,
+      ]);
+      final String inventory = await _gitInventory(moved);
+      final String foreignInventory = await _gitInventory(foreign.source);
+      final File foreignConfig = File('${foreign.source.path}/.git/config');
+      final String validConfig = await foreignConfig.readAsString();
+      final String brokenConfig = '$validConfig\n[invalid section\n';
+      await foreignConfig.writeAsString(brokenConfig);
+      final ProcessResult foreignProbe = await Process.run('git', <String>[
+        '-C',
+        foreignCheckout.path,
+        'rev-parse',
+        '--git-common-dir',
+      ]);
+      expect(foreignProbe.exitCode, isNot(0));
+      expect(
+        await _gitOutput(moved, <String>[
+          'rev-parse',
+          '--resolve-git-dir',
+          candidateGitfile.path,
+        ]),
+        metadata,
+      );
+      expect(await oldRoot.exists(), isFalse);
+      expect(inventory.split('\u0000'), contains('worktree ${oldRoot.path}'));
+
+      final GitWorktreeEnvironmentProvider generationB =
+          GitWorktreeEnvironmentProvider();
+      addTearDown(generationB.close);
+      await expectLater(
+        generationB.restore(
+          _retainedEnvironment(
+            environment,
+            established.providerState,
+            sourceLocation: moved.uri,
+          ),
+        ),
+        throwsA(_failureWithCode('restore_worktree_mismatch')),
+      );
+      expect(generationB.liveObjects.length, 0);
+      expect(await candidateGitfile.readAsString(), marker);
+      expect(await File('${foreignCheckout.path}/.git').readAsString(), marker);
+      expect(await foreignConfig.readAsString(), brokenConfig);
+      expect(
+        await _gitOutput(moved, <String>[
+          'rev-parse',
+          '--resolve-git-dir',
+          candidateGitfile.path,
+        ]),
+        metadata,
+      );
+      expect(await _gitInventory(moved), inventory);
+      await foreignConfig.writeAsString(validConfig);
+      expect(await _gitInventory(foreign.source), foreignInventory);
+      expect(
+        await _gitOutput(foreignCheckout, <String>['symbolic-ref', 'HEAD']),
+        'refs/heads/foreign-branch',
+      );
+    },
+  );
+
+  for (final String replacement in <String>[
+    'foreign checkout',
+    'checkout symlink',
+    'gitfile symlink',
+  ]) {
+    test(
+      'repair preflight preserves another registration reused by a $replacement',
+      () async {
+        final fixture = await _createRepository();
+        final foreign = await _createRepository();
+        addTearDown(() => fixture.container.delete(recursive: true));
+        addTearDown(() => foreign.container.delete(recursive: true));
+        final GitWorktreeEnvironmentProvider generationA =
+            GitWorktreeEnvironmentProvider();
+        addTearDown(generationA.close);
+        final LocalEnvironment environment = _environment(
+          fixture.source.uri,
+          taskId: 'task-repair-sibling',
+          environmentId: 'environment-repair-sibling',
+          title: 'Repair sibling',
+        );
+        final EnvironmentProviderResult established = await generationA
+            .establish(environment);
+        final Directory oldRoot = _worktreeRoot(
+          fixture.source,
+          established.providerState,
+        );
+        final Directory sibling = Directory(
+          '${fixture.container.path}/other-registration',
+        );
+        await _gitOutput(fixture.source, <String>[
+          'worktree',
+          'add',
+          '-b',
+          'other-branch',
+          sibling.path,
+        ]);
+        await generationA.close();
+        final Directory moved = await fixture.source.rename(
+          '${fixture.container.path}/moved',
+        );
+        final Directory expectedRoot = _worktreeRoot(
+          moved,
+          established.providerState,
+        );
+        final File candidateGitfile = File('${expectedRoot.path}/.git');
+        final String candidateMarker = await candidateGitfile.readAsString();
+        if (replacement != 'gitfile symlink') {
+          await sibling.rename('${fixture.container.path}/saved-sibling');
+        }
+        final Directory foreignCheckout = replacement == 'foreign checkout'
+            ? sibling
+            : Directory('${foreign.container.path}/linked');
+        await _gitOutput(foreign.source, <String>[
+          'worktree',
+          'add',
+          '-b',
+          'foreign-branch',
+          foreignCheckout.path,
+        ]);
+        if (replacement == 'checkout symlink') {
+          await Link(sibling.path).create(foreignCheckout.path);
+        } else if (replacement == 'gitfile symlink') {
+          await File('${sibling.path}/.git').delete();
+          await Link(
+            '${sibling.path}/.git',
+          ).create('${foreignCheckout.path}/.git');
+        }
+        final String foreignMarker = await File(
+          '${foreignCheckout.path}/.git',
+        ).readAsString();
+        final String foreignMetadata = await _gitOutput(moved, <String>[
+          'rev-parse',
+          '--resolve-git-dir',
+          '${foreignCheckout.path}/.git',
+        ]);
+        final String inventory = await _gitInventory(moved);
+        final String foreignInventory = await _gitInventory(foreign.source);
+        expect(await oldRoot.exists(), isFalse);
+        expect(
+          inventory.split('\u0000'),
+          containsAll(<String>[
+            'worktree ${oldRoot.path}',
+            'worktree ${sibling.path}',
+          ]),
+        );
+
+        final GitWorktreeEnvironmentProvider generationB =
+            GitWorktreeEnvironmentProvider();
+        addTearDown(generationB.close);
+        await expectLater(
+          generationB.restore(
+            _retainedEnvironment(
+              environment,
+              established.providerState,
+              sourceLocation: moved.uri,
+            ),
+          ),
+          throwsA(_failureWithCode('restore_worktree_mismatch')),
+        );
+        expect(generationB.liveObjects.length, 0);
+        expect(await candidateGitfile.readAsString(), candidateMarker);
+        expect(
+          await File('${foreignCheckout.path}/.git').readAsString(),
+          foreignMarker,
+        );
+        expect(
+          await File('${sibling.path}/.git').readAsString(),
+          foreignMarker,
+        );
+        expect(await _gitInventory(moved), inventory);
+        expect(await _gitInventory(foreign.source), foreignInventory);
+        expect(
+          await _gitOutput(moved, <String>[
+            'rev-parse',
+            '--resolve-git-dir',
+            '${foreignCheckout.path}/.git',
+          ]),
+          foreignMetadata,
+        );
+        if (replacement == 'checkout symlink') {
+          expect(await Link(sibling.path).target(), foreignCheckout.path);
+        } else if (replacement == 'gitfile symlink') {
+          expect(
+            await Link('${sibling.path}/.git').target(),
+            '${foreignCheckout.path}/.git',
+          );
+        }
+      },
+    );
+  }
+
+  for (final String siblingKind in <String>[
+    'branch',
+    'detached',
+    'ambiguous detached',
+  ]) {
+    test('repair preflight handles live $siblingKind siblings', () async {
+      final fixture = await _createRepository();
+      addTearDown(() => fixture.container.delete(recursive: true));
+      await _gitOutput(fixture.source, <String>['checkout', '--detach']);
+      final GitWorktreeEnvironmentProvider generationA =
+          GitWorktreeEnvironmentProvider();
+      addTearDown(generationA.close);
+      final LocalEnvironment environment = _environment(
+        fixture.source.uri,
+        taskId: 'task-repair-live',
+        environmentId: 'environment-repair-live',
+        title: 'Repair with live sibling',
+      );
+      final EnvironmentProviderResult established = await generationA.establish(
+        environment,
+      );
+      final Directory oldRoot = _worktreeRoot(
+        fixture.source,
+        established.providerState,
+      );
+      await generationA.close();
+      final Directory moved = await fixture.source.rename(
+        '${fixture.container.path}/moved',
+      );
+      final Directory expectedRoot = _worktreeRoot(
+        moved,
+        established.providerState,
+      );
+      final File candidateGitfile = File('${expectedRoot.path}/.git');
+      final String candidateMarker = await candidateGitfile.readAsString();
+      final Directory sibling = Directory(
+        '${fixture.container.path}/live-sibling',
+      );
+      await _gitOutput(moved, <String>[
+        'worktree',
+        'add',
+        if (siblingKind == 'branch') ...<String>['-b', 'live-sibling'] else
+          '--detach',
+        sibling.path,
+      ]);
+      if (siblingKind == 'ambiguous detached') {
+        await _gitOutput(moved, <String>[
+          'worktree',
+          'add',
+          '--detach',
+          '${fixture.container.path}/duplicate-sibling',
+        ]);
+      }
+      final String siblingMarker = await File(
+        '${sibling.path}/.git',
+      ).readAsString();
+      final String siblingMetadata = await _gitOutput(moved, <String>[
+        'rev-parse',
+        '--resolve-git-dir',
+        '${sibling.path}/.git',
+      ]);
+      final String inventory = await _gitInventory(moved);
+      final String siblingRegistration = inventory
+          .split('\u0000\u0000')
+          .singleWhere(
+            (String entry) =>
+                entry.startsWith('worktree ${sibling.path}\u0000'),
+          );
+      await File(
+        '${sibling.path}/README.md',
+      ).writeAsString('uncommitted sibling content');
+      expect(await oldRoot.exists(), isFalse);
+      expect(inventory.split('\u0000'), contains('worktree ${oldRoot.path}'));
+
+      final GitWorktreeEnvironmentProvider generationB =
+          GitWorktreeEnvironmentProvider();
+      addTearDown(generationB.close);
+      final LocalEnvironment retained = _retainedEnvironment(
+        environment,
+        established.providerState,
+        sourceLocation: moved.uri,
+      );
+      if (siblingKind == 'ambiguous detached') {
+        await expectLater(
+          generationB.restore(retained),
+          throwsA(_failureWithCode('restore_worktree_conflict')),
+        );
+        expect(generationB.liveObjects.length, 0);
+        expect(await _gitInventory(moved), inventory);
+        expect(await candidateGitfile.readAsString(), candidateMarker);
+      } else {
+        expect(
+          (await generationB.restore(retained)).providerState,
+          established.providerState,
+        );
+        expect(
+          generationB.liveObjects.resolve(environment.id).root.path,
+          expectedRoot.path,
+        );
+        expect(
+          (await generationB.readFile(environment.id, 'README.md')).text,
+          'fixture source\n',
+        );
+        final String after = await _gitInventory(moved);
+        expect(
+          after.split('\u0000'),
+          contains('worktree ${expectedRoot.path}'),
+        );
+        expect(
+          after.split('\u0000'),
+          isNot(contains('worktree ${oldRoot.path}')),
+        );
+        expect(after.split('\u0000\u0000'), contains(siblingRegistration));
+      }
+      expect(await File('${sibling.path}/.git').readAsString(), siblingMarker);
+      expect(
+        await File('${sibling.path}/README.md').readAsString(),
+        'uncommitted sibling content',
+      );
+      expect(
+        await _gitOutput(moved, <String>[
+          'rev-parse',
+          '--resolve-git-dir',
+          '${sibling.path}/.git',
+        ]),
+        siblingMetadata,
+      );
+      expect(
+        await _gitOutput(sibling, <String>[
+          'rev-parse',
+          '--symbolic-full-name',
+          'HEAD',
+        ]),
+        siblingKind == 'branch' ? 'refs/heads/live-sibling' : 'HEAD',
+      );
+    });
+  }
+
+  test(
+    'rejects a copied repository while the old registered worktree exists',
+    () async {
+      final fixture = await _createRepository();
+      addTearDown(() => fixture.container.delete(recursive: true));
+      final GitWorktreeEnvironmentProvider generationA =
+          GitWorktreeEnvironmentProvider();
+      addTearDown(generationA.close);
+      final LocalEnvironment environment = _environment(
+        fixture.source.uri,
+        taskId: 'task-copy',
+        environmentId: 'environment-copy',
+        title: 'Copy conflict',
+      );
+      final EnvironmentProviderResult established = await generationA.establish(
+        environment,
+      );
+      final Directory original = _worktreeRoot(
+        fixture.source,
+        established.providerState,
+      );
+      await generationA.close();
+      final Directory copiedSource = Directory(
+        '${fixture.container.path}/copied-source',
+      );
+      await _copyDirectory(fixture.source, copiedSource);
+      final Directory copied = _worktreeRoot(
+        copiedSource,
+        established.providerState,
+      );
+      final String inventory = await _gitOutput(copiedSource, <String>[
+        'worktree',
+        'list',
+        '--porcelain',
+        '-z',
+      ]);
+      expect(inventory.split('\u0000'), contains('worktree ${original.path}'));
+      final GitWorktreeEnvironmentProvider generationB =
+          GitWorktreeEnvironmentProvider();
+      addTearDown(generationB.close);
+      await expectLater(
+        generationB.restore(
+          _retainedEnvironment(
+            environment,
+            established.providerState,
+            sourceLocation: copiedSource.uri,
+          ),
+        ),
+        throwsA(_failureWithCode('restore_worktree_conflict')),
+      );
+      expect(generationB.liveObjects.length, 0);
+      expect(await original.exists(), isTrue);
+      expect(await copied.exists(), isTrue);
+      expect(
+        await File('${copied.path}/.git').readAsString(),
+        await File('${original.path}/.git').readAsString(),
+      );
+      expect(
+        await _gitOutput(copiedSource, <String>[
+          'worktree',
+          'list',
+          '--porcelain',
+          '-z',
+        ]),
+        inventory,
+      );
+    },
+  );
+
+  for (final String component in <String>['.adele', '.adele/worktrees']) {
+    for (final String kind in <String>[
+      'internal symlink',
+      'escaping symlink',
+      'file',
+    ]) {
+      test('creation rejects $kind at storage $component', () async {
+        final fixture = await _createRepository();
+        addTearDown(() => fixture.container.delete(recursive: true));
+        final String path = '${fixture.source.path}/$component';
+        await Directory(path).parent.create(recursive: true);
+        final Directory target = Directory(
+          kind == 'internal symlink'
+              ? '${fixture.source.path}/redirected-storage'
+              : '${fixture.container.path}/outside-storage',
+        );
+        await target.create();
+        if (kind == 'file') {
+          await File(path).writeAsString('do not replace');
+        } else {
+          await Link(path).create(target.path);
+        }
+        final List<String> branches = await _branchNames(fixture.source);
+        final GitWorktreeEnvironmentProvider provider =
+            GitWorktreeEnvironmentProvider();
+        addTearDown(provider.close);
+        await expectLater(
+          provider.establish(
+            _environment(
+              fixture.source.uri,
+              taskId: 'task-storage',
+              environmentId: 'environment-storage',
+              title: 'Storage confinement',
+            ),
+          ),
+          throwsA(_failureWithCode('invalid_worktree_storage')),
+        );
+        expect(provider.liveObjects.length, 0);
+        expect(await _branchNames(fixture.source), branches);
+        expect(await target.list().toList(), isEmpty);
+        if (kind == 'file') {
+          expect(await File(path).readAsString(), 'do not replace');
+        }
+      });
+    }
+  }
+
+  for (final String component in <String>[
+    '.adele',
+    '.adele/worktrees',
+    'root',
+  ]) {
+    for (final String kind in <String>[
+      'internal symlink',
+      'escaping symlink',
+      'file',
+    ]) {
+      test('restore rejects $kind at storage $component', () async {
+        final fixture = await _createRepository();
+        addTearDown(() => fixture.container.delete(recursive: true));
+        final GitWorktreeEnvironmentProvider generationA =
+            GitWorktreeEnvironmentProvider();
+        addTearDown(generationA.close);
+        final LocalEnvironment environment = _environment(
+          fixture.source.uri,
+          taskId: 'task-storage',
+          environmentId: 'environment-storage',
+          title: 'Storage confinement',
+        );
+        final EnvironmentProviderResult established = await generationA
+            .establish(environment);
+        await generationA.close();
+        final Directory storage = component == 'root'
+            ? _worktreeRoot(fixture.source, established.providerState)
+            : Directory('${fixture.source.path}/$component');
+        final Directory target = await storage.rename(
+          kind == 'internal symlink'
+              ? '${fixture.source.path}/redirected-storage'
+              : '${fixture.container.path}/outside-storage',
+        );
+        if (kind == 'file') {
+          await File(storage.path).writeAsString('do not replace');
+        } else {
+          await Link(storage.path).create(target.path);
+        }
+        final String inventory = await _gitOutput(fixture.source, <String>[
+          'worktree',
+          'list',
+          '--porcelain',
+          '-z',
+        ]);
+        final GitWorktreeEnvironmentProvider generationB =
+            GitWorktreeEnvironmentProvider();
+        addTearDown(generationB.close);
+        await expectLater(
+          generationB.restore(
+            _retainedEnvironment(environment, established.providerState),
+          ),
+          throwsA(_failureWithCode('invalid_worktree_storage')),
+        );
+        expect(generationB.liveObjects.length, 0);
+        expect(await target.exists(), isTrue);
+        expect(
+          await _gitOutput(fixture.source, <String>[
+            'worktree',
+            'list',
+            '--porcelain',
+            '-z',
+          ]),
+          inventory,
+        );
+        if (kind == 'file') {
+          expect(await File(storage.path).readAsString(), 'do not replace');
+        }
+      });
+    }
+  }
+
+  test(
+    'creation skips a symbolic-link worktree name without following it',
+    () async {
+      final fixture = await _createRepository();
+      addTearDown(() => fixture.container.delete(recursive: true));
+      final GitWorktreeEnvironmentProvider generationA =
+          GitWorktreeEnvironmentProvider();
+      addTearDown(generationA.close);
+      final LocalEnvironment environment = _environment(
+        fixture.source.uri,
+        taskId: 'task-root-alias',
+        environmentId: 'environment-root-alias',
+        title: 'Root alias',
+      );
+      final EnvironmentProviderResult first = await generationA.establish(
+        environment,
+      );
+      await generationA.close();
+      final Directory root = _worktreeRoot(fixture.source, first.providerState);
+      await _gitOutput(fixture.source, <String>[
+        'worktree',
+        'remove',
+        root.path,
+      ]);
+      await _gitOutput(fixture.source, <String>[
+        'branch',
+        '-D',
+        first.providerState['branch']! as String,
+      ]);
+      final Directory outside = Directory('${fixture.container.path}/outside')
+        ..createSync();
+      await Link(root.path).create(outside.path);
+      final GitWorktreeEnvironmentProvider generationB =
+          GitWorktreeEnvironmentProvider();
+      addTearDown(generationB.close);
+      final EnvironmentProviderResult second = await generationB.establish(
+        environment,
+      );
+      expect(
+        _worktreeRoot(fixture.source, second.providerState).path,
+        '${root.path}-2',
+      );
+      expect(
+        await FileSystemEntity.type(root.path, followLinks: false),
+        FileSystemEntityType.link,
+      );
+      expect(await outside.list().toList(), isEmpty);
+    },
+  );
 
   test(
     'uses a flat branch and removes its branch after checkout failure',
@@ -1855,6 +3240,75 @@ final bool _runningAsRoot =
     Platform.isLinux &&
     Process.runSync('id', const <String>['-u']).stdout.toString().trim() == '0';
 
+void _expectV2State(
+  LocalEnvironment environment,
+  Map<String, Object?> state, {
+  String sourceRelativePath = '',
+}) {
+  expect(
+    state.keys,
+    unorderedEquals(<String>[
+      'schemaVersion',
+      'environmentId',
+      'sourceRelativePath',
+      'worktreeRelativePath',
+      'branch',
+      'baselineCommit',
+    ]),
+  );
+  expect(state['schemaVersion'], allOf(isA<int>(), 2));
+  expect(state['environmentId'], environment.id.value);
+  expect(state['sourceRelativePath'], sourceRelativePath);
+  expect(
+    state['worktreeRelativePath'],
+    matches(r'^\.adele/worktrees/[a-z0-9-]+$'),
+  );
+  expect(state['branch'], isA<String>());
+  expect(state['baselineCommit'], matches(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})$'));
+}
+
+Directory _worktreeRoot(Directory projectSource, Map<String, Object?> state) =>
+    Directory(
+      <String>[
+        projectSource.path,
+        ...(state['worktreeRelativePath']! as String).split('/'),
+      ].join(Platform.pathSeparator),
+    );
+
+LocalEnvironment _retainedEnvironment(
+  LocalEnvironment original,
+  Map<String, Object?>? state, {
+  Uri? sourceLocation,
+}) => LocalEnvironment(
+  project: Project(
+    id: original.task.project.id,
+    sourceLocation: sourceLocation ?? original.task.project.sourceLocation,
+  ),
+  task: original.task.value,
+  value: Environment(
+    id: original.id,
+    taskId: original.task.id,
+    role: original.role,
+    providerId: original.providerId,
+    providerState: state,
+  ),
+);
+
+Future<void> _copyDirectory(Directory source, Directory target) async {
+  await target.create();
+  await for (final FileSystemEntity entity in source.list(followLinks: false)) {
+    final String destination =
+        '${target.path}${Platform.pathSeparator}${_entityName(entity.path)}';
+    if (entity is Directory) {
+      await _copyDirectory(entity, Directory(destination));
+    } else if (entity is File) {
+      await entity.copy(destination);
+    } else if (entity is Link) {
+      await Link(destination).create(await entity.target());
+    }
+  }
+}
+
 LocalEnvironment _environment(
   Uri sourceLocation, {
   required String taskId,
@@ -1919,6 +3373,9 @@ Future<String> _gitOutput(Directory directory, List<String> arguments) async {
   }
   return result.stdout.toString().trim();
 }
+
+Future<String> _gitInventory(Directory repository) =>
+    _gitOutput(repository, <String>['worktree', 'list', '--porcelain', '-z']);
 
 Future<List<String>> _branchNames(Directory repository) async =>
     (await _gitOutput(repository, <String>[

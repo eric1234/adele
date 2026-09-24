@@ -6,6 +6,7 @@ import 'package:adele_desktop/core/remote_inference_context_host.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_orchestration/remote_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_backend/chat_strategy_backend.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -63,14 +64,68 @@ void main() {
         ]),
       );
       final git = await _createGitFixture(container);
+      DevelopmentSelfHostingRetainedState? retainedState;
       final topology = await DevelopmentSelfHostingTopology.start(
         artifacts: artifacts,
         projectSource: git.project,
         hostEnvironment: const {},
         identity: 'remote-context',
         taskTitle: 'Explicit backend composition',
+        onTaskEstablished: (state) => retainedState = state,
       );
       addTearDown(topology.close);
+      final state = topology.environment.providerState!;
+      final relativePath = state['worktreeRelativePath']! as String;
+      expect(relativePath, matches(r'^\.adele/worktrees/[^/]+$'));
+      expect(state, <String, Object?>{
+        'schemaVersion': 2,
+        'environmentId': topology.environment.id.value,
+        'sourceRelativePath': '',
+        'worktreeRelativePath': relativePath,
+        'branch': topology.taskBranch,
+        'baselineCommit': git.startingHead,
+      });
+      final worktree = Directory(topology.taskWorktreePath);
+      expect(
+        worktree.path,
+        await Directory(
+          '${git.project.path}/$relativePath',
+        ).resolveSymbolicLinks(),
+      );
+      expect(
+        worktree.parent.path,
+        '${await git.project.resolveSymbolicLinks()}${Platform.pathSeparator}'
+        '.adele${Platform.pathSeparator}worktrees',
+      );
+      expect(await File('${worktree.path}/.git').exists(), isTrue);
+      for (final badPath in <String>[
+        '../outside',
+        '/outside',
+        r'C:\outside',
+        '.adele/worktrees/../outside',
+      ]) {
+        expect(
+          () => developmentGitWorktreePath(
+            topology.project,
+            Environment(
+              id: topology.environment.id,
+              taskId: topology.environment.taskId,
+              role: topology.environment.role,
+              providerId: topology.environment.providerId,
+              providerState: {...state, 'worktreeRelativePath': badPath},
+            ),
+          ),
+          throwsStateError,
+        );
+      }
+      expect(retainedState, isNotNull);
+      expect(retainedState!.taskWorktreePath, worktree.path);
+      expect(retainedState!.projectSource, git.project);
+      expect(retainedState!.projectId, topology.project.id);
+      expect(retainedState!.taskId, topology.task.id);
+      expect(retainedState!.environmentId, topology.environment.id);
+      expect(retainedState!.taskBranch, topology.taskBranch);
+      expect(retainedState!.baselineCommit, git.startingHead);
       expect(topology.runtime.plugins.host, isNull);
       expect(topology.runtime.plugins.backends, isEmpty);
       expect(
@@ -360,6 +415,68 @@ void main() {
           onTaskEstablished: (_) => fail('Chat must start before the Task.'),
         ),
         throwsA(isA<PluginRemoteFailure>()),
+      );
+
+      final healthy = await collectDevelopmentSelfHostingGitEvidence(
+        launchingRepository: git.launching,
+        projectSource: git.project,
+        taskWorktree: worktree,
+        taskBaseline: topology.baselineCommit,
+      );
+      expect(healthy.collectionSucceeded, isTrue);
+      expect(healthy.taskHead, git.startingHead);
+      expect(healthy.changedFiles, ['AGENTS.md']);
+      expect(healthy.taskDiff, contains(guidance.trim()));
+      expect(healthy.taskDiff, isNot(contains('Project guidance')));
+
+      // Without its gitfile this nested worktree still has a Git ancestor.
+      // Required evidence must fail instead of reporting Project changes as Task.
+      await File('${worktree.path}/.git').delete();
+      expect(
+        await _git(worktree, ['rev-parse', '--show-toplevel']),
+        await git.project.resolveSymbolicLinks(),
+      );
+      final missingGitfile = await collectDevelopmentSelfHostingGitEvidence(
+        launchingRepository: git.launching,
+        projectSource: git.project,
+        taskWorktree: worktree,
+        taskBaseline: topology.baselineCommit,
+      );
+      expect(missingGitfile.collectionSucceeded, isFalse);
+      expect(
+        missingGitfile.collectionFailures.single.label,
+        'Task worktree root',
+      );
+      expect(missingGitfile.collectionFailures.single.arguments, [
+        'rev-parse',
+        '--show-toplevel',
+      ]);
+      expect(
+        missingGitfile.collectionFailures.single.message,
+        contains('does not match worktree'),
+      );
+      expect(missingGitfile.launchingHead, git.startingHead);
+      expect(missingGitfile.projectHead, git.startingHead);
+      expect(missingGitfile.taskHead, isNull);
+      expect(missingGitfile.taskMergeBase, isNull);
+      expect(missingGitfile.taskAheadBehind, isNull);
+      expect(
+        missingGitfile.taskStatus,
+        contains('Task Git evidence unavailable'),
+      );
+      expect(missingGitfile.taskDiff, isEmpty);
+      expect(missingGitfile.taskDiffStat, isEmpty);
+      expect(missingGitfile.taskDiffCheckExitCode, isNull);
+      expect(missingGitfile.changedFiles, isEmpty);
+      expect(
+        DevelopmentSelfHostingRunnerResult(
+          runDirectory: container,
+          projectSource: git.project,
+          taskWorktree: worktree,
+          runState: result.run.state,
+          failure: missingGitfile.failure,
+        ).exitCode,
+        1,
       );
     },
     timeout: const Timeout(Duration(minutes: 4)),

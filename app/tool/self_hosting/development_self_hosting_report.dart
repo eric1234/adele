@@ -245,7 +245,35 @@ collectDevelopmentSelfHostingGitEvidence({
   if (projectStatus != null) {
     requireGitResult('Project status', statusArguments, projectStatus);
   }
-  if (taskWorktree == null) {
+  String? taskUnavailable;
+  if (taskWorktree != null) {
+    const List<String> rootArguments = <String>['rev-parse', '--show-toplevel'];
+    _GitResult root = await runGit(taskWorktree, rootArguments);
+    if (root.success) {
+      try {
+        final String expected = await taskWorktree.resolveSymbolicLinks();
+        final String actual = await Directory(
+          root.stdout.trim(),
+        ).resolveSymbolicLinks();
+        // A missing nested worktree gitfile lets Git discover the Project repo.
+        if (actual != expected) {
+          root = _GitResult(
+            exitCode: -1,
+            stdout: '',
+            stderr:
+                'Task Git root $actual does not match worktree $expected.\n',
+          );
+        }
+      } on FileSystemException catch (error) {
+        root = _GitResult(exitCode: -1, stdout: '', stderr: '$error\n');
+      }
+    }
+    requireGitResult('Task worktree root', rootArguments, root);
+    if (!root.success) {
+      taskUnavailable = 'Task Git evidence unavailable: ${root.rendered}';
+    }
+  }
+  if (taskWorktree == null || taskUnavailable != null) {
     return DevelopmentSelfHostingGitEvidence(
       launchingHead: launchingHead.success ? launchingHead.stdout.trim() : null,
       launchingStatus: launchingStatus.rendered,
@@ -255,10 +283,10 @@ collectDevelopmentSelfHostingGitEvidence({
       projectStatus:
           projectStatus?.rendered ?? 'Project setup did not complete.\n',
       taskHead: null,
-      taskStatus: 'Task setup did not complete.\n',
+      taskStatus: taskUnavailable ?? 'Task setup did not complete.\n',
       taskDiff: '',
       taskDiffStat: '',
-      taskDiffCheck: 'Task setup did not complete.\n',
+      taskDiffCheck: taskUnavailable ?? 'Task setup did not complete.\n',
       taskDiffCheckExitCode: null,
       taskMergeBase: null,
       taskAheadBehind: null,

@@ -26,6 +26,42 @@ const String developmentSelfHostingChatGptDefaultModel = 'gpt-6-astra';
 
 typedef DevelopmentSelfHostingLog = void Function(String message);
 
+// Development diagnostics may interpret stock Git state; production core keeps
+// it opaque. This is the linked-worktree root, not its selected source scope.
+String developmentGitWorktreePath(Project project, Environment environment) {
+  final state = environment.providerState;
+  if (state?['schemaVersion'] is! int ||
+      state?['schemaVersion'] != 2 ||
+      state?['environmentId'] != environment.id.value) {
+    throw StateError('Development Git diagnostics require matching v2 state.');
+  }
+  final String source = Directory.fromUri(
+    project.sourceLocation,
+  ).resolveSymbolicLinksSync();
+  final String relativePath = _providerStateString(
+    environment,
+    'worktreeRelativePath',
+  );
+  if (!RegExp(
+        r'^\.adele/worktrees/[a-z0-9][a-z0-9-]*$',
+      ).hasMatch(relativePath) ||
+      RegExp(r'[\x00-\x1f\x7f]').hasMatch(relativePath)) {
+    throw StateError(
+      'Development Git diagnostics require a Project-relative worktree.',
+    );
+  }
+  final String path = <String>[
+    source,
+    ...relativePath.split('/'),
+  ].join(Platform.pathSeparator);
+  if (Directory(path).resolveSymbolicLinksSync() != path) {
+    throw StateError(
+      'Development Git diagnostics require direct Project storage.',
+    );
+  }
+  return path;
+}
+
 Map<String, String> developmentSelfHostingGitProcessEnvironment({
   Map<String, String>? inheritedEnvironment,
 }) {
@@ -452,9 +488,9 @@ final class DevelopmentSelfHostingTopology {
             projectId: project.id,
             taskId: created.task.id,
             environmentId: created.environment.id,
-            taskWorktreePath: _providerStateString(
+            taskWorktreePath: developmentGitWorktreePath(
+              project,
               created.environment,
-              'worktreePath',
             ),
             taskBranch: _providerStateString(created.environment, 'branch'),
             baselineCommit: _providerStateString(
@@ -557,7 +593,10 @@ final class DevelopmentSelfHostingTopology {
     return materialization;
   }
 
-  String get taskWorktreePath => _requiredProviderStateString('worktreePath');
+  String get taskWorktreePath => developmentGitWorktreePath(
+    store.project(project.id)!,
+    store.environment(environment.id)!,
+  );
 
   String get taskBranch => _requiredProviderStateString('branch');
 
@@ -580,13 +619,8 @@ final class DevelopmentSelfHostingTopology {
     runtime.close,
   ]);
 
-  String _requiredProviderStateString(String name) {
-    final Object? value = environment.providerState?[name];
-    if (value is! String || value.isEmpty) {
-      throw StateError('The Git Environment has no $name value.');
-    }
-    return value;
-  }
+  String _requiredProviderStateString(String name) =>
+      _providerStateString(store.environment(environment.id)!, name);
 }
 
 final class DevelopmentSelfHostingRetainedState {

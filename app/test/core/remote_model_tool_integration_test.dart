@@ -20,6 +20,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import '../../tool/self_hosting/development_self_hosting.dart';
+
 const _searchId = 'dev.adele.plugin.search-tools';
 const _filesystemId = 'dev.adele.plugin.filesystem-tools';
 const _commandId = 'dev.adele.plugin.command-tools';
@@ -189,7 +191,7 @@ void main() {
       command: command,
       git: git,
       worktree: Directory(
-        created.environment.providerState!['worktreePath']! as String,
+        developmentGitWorktreePath(project, created.environment),
       ),
       context: SessionModelToolHostContext(
         sessionId: session.id,
@@ -1202,7 +1204,7 @@ void main() {
           .currentMaterialization(created.environment.id)!;
       expect(authority.environmentId, created.environment.id);
       final worktree = Directory(
-        created.environment.providerState!['worktreePath']! as String,
+        developmentGitWorktreePath(project, materializationA.environment),
       );
       expect(worktree.path, isNot(source.path));
       final taskFile = File.fromUri(worktree.uri.resolve('src/fixture.txt'));
