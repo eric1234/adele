@@ -46,4 +46,4 @@ Keep tests aligned with the boundary being changed. Verify integration/discovery
 
 Reconcile only the appropriate canonical documentation when the change affects its role, following the documentation discipline above.
 
-Prefer focused tests and analysis for changed areas, using maintained targets in `tools/adele.dart` where available. Run broader validation when the scope warrants it. Format changed Dart files and run `git diff --check` before considering source work complete.
+Use [testing and validation](docs/development/testing.md) to choose proportional checks and maintained targets for the change. Format changed Dart files and run `git diff --check` before considering source work complete.

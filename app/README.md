@@ -328,8 +328,9 @@ Binding validation is boundary-specific, not an eager retirement-to-failure sign
 Native and remote paths are not fully symmetric: the native Run wrapper does not
 itself enforce the remote settle-or-wait check, and native Environment read facets
 do not universally postvalidate after awaiting a read. Do not infer those stronger
-guarantees from remote-adapter coverage. The authority/host tests below capture the
-current boundaries; this map does not redefine them.
+guarantees from remote-adapter coverage. The
+[authority/host tests](../docs/development/testing.md#application-validation-map)
+capture the current boundaries; this map does not redefine them.
 
 Public semantics belong to [orchestration](../packages/orchestration/README.md),
 [execution architecture](../docs/architecture/execution-model.md), and
@@ -387,115 +388,31 @@ production manifest dependencies and import/export directives.
 
 ## Developer Self-Hosting Runner
 
-[`bin/adele_self_host.dart`](bin/adele_self_host.dart) is the SDK-only launcher for
-headless developer source-development runs, not a final product CLI. It regenerates
-native contracts before starting [`tool/self_hosting/cli.dart`](tool/self_hosting/cli.dart).
-The runner currently requires Linux x64, executable `/usr/bin/setsid` or
-`/bin/setsid`, and a clean bootstrapped checkout.
+[`bin/adele_self_host.dart`](bin/adele_self_host.dart) and
+[`tool/self_hosting/cli.dart`](tool/self_hosting/cli.dart) are the developer-only
+headless entrypoints. Runner, topology, and report owners live under
+[`tool/self_hosting/`](tool/self_hosting/), deliberately outside `app/lib` because
+they know concrete plugins. They reuse application/core runtime composition and
+normal remote execution boundaries, not desktop frontend composition.
 
-| Runner provider preset | Required configuration |
-| --- | --- |
-| `chatgpt` (default) | `ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE`; optional `ADELE_OPENAI_CHATGPT_TEST_MODEL`, default `gpt-6-astra`, and the OAuth/endpoint options above. Masks an inherited API key. |
-| `api-key` | `OPENAI_API_KEY` and `ADELE_OPENAI_TEST_MODEL`; optional `ADELE_OPENAI_ENDPOINT`. |
-
-These `--profile` choices are runner presets, not ADELE Profiles. They resolve the
-selected provider explicitly without fallback. `ADELE_OPENAI_CHATGPT_MODEL` does
-not select the self-hosting model. From the repository root, with credentials
-configured:
-
-```sh
-dart run app/bin/adele_self_host.dart \
-  --prompt-file /absolute/path/to/prompt.md \
-  --instructions-file /absolute/path/to/instructions.md \
-  --task-title "Implement the focused development task" \
-  --max-model-invocations 40 \
-  --output-dir .dart_tool/adele/self-hosting
-```
-
-All five shown options are required; `40` is an example, not a default. Output must
-be outside the launching checkout or Git-ignored. Each invocation creates a unique
-run directory, compiles fresh AOT artifacts, clones exact launching HEAD without a
-retained origin, and establishes a distinct Git Task worktree and Chat Session.
-The runner uses an allow policy, not the normal window's approval UI. This is
-source-layout isolation, not a command sandbox.
-
-`DevelopmentSelfHostingTopology` owns an `AdeleRuntime` and uses the same remote
-plugin/execution paths, but explicitly starts its own host/artifacts rather than
-consuming the normal installation catalog. It uses a known Project source URI;
-there is no frontend bootstrap, EVC, or native picker dependency.
-
-The run directory retains Project/Task source, `manifest.json`, `journal.json`,
-`summary.json`, `summary.md`, `runner.log`, and `git/` evidence after success or
-failure. Teardown removes transient `.artifacts`; it does not automatically remove
-retained source, commit, push, or open a PR. Runner/topology/report owners live in
-[`tool/self_hosting/`](tool/self_hosting/); deterministic validation is listed below.
+See [developer self-hosting](../docs/development/self-hosting.md) for usage,
+prerequisites, provider presets, topology, retained outputs, and validation.
 
 ## Focused validation
 
-Use the pinned [development toolchain](../docs/development/toolchain.md) and
-[repository workflow](../docs/development/README.md). From the repository root:
-
-```sh
-dart tools/adele.dart bootstrap
-dart tools/adele.dart test --target adele_desktop
-dart tools/adele.dart test --target adele_tools
-dart test test/tools/app_plugin_boundary_test.dart
-```
-
-`dart tools/adele.dart analyze` regenerates and analyzes all maintained targets;
-there is no `analyze --target` option. For app-only analysis after bootstrap/current
-generation, run `flutter analyze --no-pub --fatal-infos` from `app/`. For focused
-tests, run `flutter test --no-pub <test-path> ...` there, selecting from this map:
-
-| Changed boundary | Representative app test paths |
-| --- | --- |
-| Zero-plugin construction/shell | [`test/core/adele_runtime_test.dart`](test/core/adele_runtime_test.dart), [`test/application_test.dart`](test/application_test.dart) |
-| Backend/frontend startup | [`test/core/application_plugin_bootstrap_test.dart`](test/core/application_plugin_bootstrap_test.dart), [`test/prepared_frontend_activation_test.dart`](test/prepared_frontend_activation_test.dart), [`test/prepared_frontend_failure_test.dart`](test/prepared_frontend_failure_test.dart) |
-| Project/native bridge and Task/Environment lifecycle | [`test/project_opening_test.dart`](test/project_opening_test.dart), [`test/directory_picker_bridge_test.dart`](test/directory_picker_bridge_test.dart), [`test/task_creation_test.dart`](test/task_creation_test.dart), [`test/core/product_lifecycle_test.dart`](test/core/product_lifecycle_test.dart) |
-| Session presentation/Run/approval | [`test/session_presentation_host_test.dart`](test/session_presentation_host_test.dart), [`test/session_execution_test.dart`](test/session_execution_test.dart), [`test/core/approval_gated_tool_policy_test.dart`](test/core/approval_gated_tool_policy_test.dart) |
-| Execution adaptation/authority | [`test/core/orchestration_host_test.dart`](test/core/orchestration_host_test.dart), [`test/core/orchestration_authority_test.dart`](test/core/orchestration_authority_test.dart), [`test/core/model_tool_host_test.dart`](test/core/model_tool_host_test.dart), [`test/core/remote_inference_context_integration_test.dart`](test/core/remote_inference_context_integration_test.dart) |
-| Activity/Inspection | [`test/core/run_activity_projection_test.dart`](test/core/run_activity_projection_test.dart), [`test/inspection_host_test.dart`](test/inspection_host_test.dart), [`test/inspection_stack_test.dart`](test/inspection_stack_test.dart), [`test/openai_activity_frontend_eval_test.dart`](test/openai_activity_frontend_eval_test.dart) |
-| Real prepared normal composition, no live model | [`test/core/normal_task_git_integration_test.dart`](test/core/normal_task_git_integration_test.dart), [`test/core/normal_chatgpt_run_integration_test.dart`](test/core/normal_chatgpt_run_integration_test.dart) (local fake SSE/credentials and native picker) |
-| Self-hosting determinism | [`test/development/agent/development_self_hosting_test.dart`](test/development/agent/development_self_hosting_test.dart), [`test/development/agent/environment_read_agent_integration_test.dart`](test/development/agent/environment_read_agent_integration_test.dart) |
-
-Checkout preparation and plain-Dart self-hosting CLI checks also live in
-[`backend_artifacts_test.dart`](../test/tools/backend_artifacts_test.dart),
-[`adele_test.dart`](../test/tools/adele_test.dart), and
-[`self_hosting_cli_test.dart`](../test/tools/self_hosting_cli_test.dart) in the tools target.
-Native contract outputs are ignored local artifacts; direct Flutter commands do
-not regenerate them. Use `dart tools/adele.dart generate` after declaration changes.
-
-For native Linux packaging use `dart tools/adele.dart build linux --profile`.
-The separate `dart tools/adele.dart smoke linux --profile` exercises
-[`tool/development_runtime_smoke/main.dart`](tool/development_runtime_smoke/main.dart),
-not normal product picking. Configure its existing directories through
-`ADELE_DEVELOPMENT_REPOSITORY_ROOT`, `ADELE_DEVELOPMENT_PLUGIN_DIRECTORY`, and
-`ADELE_DEVELOPMENT_DIRECTORY` as in the [smoke workflow](../.github/workflows/runtime-smoke.yaml).
-Neither a build nor the reference-fixture smoke proves interactive native picking.
+Application changes should use the repository's
+[testing and validation workflow](../docs/development/testing.md), including its
+[application validation map](../docs/development/testing.md#application-validation-map)
+and dependency-boundary checks. Local starting points include
+[`adele_runtime_test.dart`](test/core/adele_runtime_test.dart),
+[`product_lifecycle_test.dart`](test/core/product_lifecycle_test.dart), and
+[`orchestration_authority_test.dart`](test/core/orchestration_authority_test.dart).
 
 ### Live tests
 
-Live tests require explicit opt-in (`1`) and may incur provider charges or consume
-subscription limits. Normal CI discovers but skips these cases because it supplies
-neither gates nor credentials; `--ci` is not an environment-scrubbing mechanism.
-
-| App case | Enable variable | Provider / purpose |
-| --- | --- | --- |
-| [`openai_source_coding_live_test.dart`](test/development/agent/openai_source_coding_live_test.dart) | `ADELE_OPENAI_SOURCE_CODING_LIVE_TEST` | API key; search/read and continuation. |
-| [`openai_source_mutation_live_test.dart`](test/development/agent/openai_source_mutation_live_test.dart) | `ADELE_OPENAI_SOURCE_MUTATION_LIVE_TEST` | API key; read/patch and continuation. |
-| API-key case in [`openai_source_validation_live_test.dart`](test/development/agent/openai_source_validation_live_test.dart) | `ADELE_OPENAI_SOURCE_VALIDATION_LIVE_TEST` | API key; read/patch/direct-argv validation. |
-| [`chatgpt_source_coding_live_test.dart`](test/development/agent/chatgpt_source_coding_live_test.dart) | `ADELE_OPENAI_CHATGPT_LIVE_TEST` | ChatGPT; search/read and continuation. |
-| ChatGPT case in [`openai_source_validation_live_test.dart`](test/development/agent/openai_source_validation_live_test.dart) | `ADELE_OPENAI_CHATGPT_SOURCE_VALIDATION_LIVE_TEST` | ChatGPT; read/patch/direct-argv validation. |
-
-API-key cases require `OPENAI_API_KEY` and `ADELE_OPENAI_TEST_MODEL`. ChatGPT cases
-require `ADELE_OPENAI_CHATGPT_CREDENTIAL_FILE`, honor optional configuration above,
-and use `ADELE_OPENAI_CHATGPT_TEST_MODEL` (default `gpt-6-astra`). Command-validation
-cases require Linux x64 process support; both currently contain a stale catalog-order
-assertion before provider activation. This table maps gates/purpose, not live success.
-
-Provider-only smokes belong to the [OpenAI backend](../plugins/openai/packages/backend/README.md):
-`ADELE_OPENAI_LIVE_TEST=1` enables its API-key case; the shared
-`ADELE_OPENAI_CHATGPT_LIVE_TEST=1` also enables its ChatGPT case when that suite runs.
+Opt-in app/provider cases, gates, costs, and known blockers are documented in
+[live testing guidance](../docs/development/testing.md#live-tests). Provider-only
+validation belongs to the [OpenAI backend](../plugins/openai/packages/backend/README.md).
 
 ## Current limits
 

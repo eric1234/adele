@@ -10,7 +10,8 @@ See the [documentation policy](../README.md) for maintenance rules.
 
 ## Current contents
 
-- [Toolchain policy](toolchain.md): current toolchain, build, bootstrap, and
-  generation policy.
+- [Toolchain policy](toolchain.md): SDK/toolchain, bootstrap, generation, and build/preparation.
+- [Testing and validation](testing.md): proportional validation and maintained analysis/test/check workflow.
+- [Developer self-hosting](self-hosting.md): headless runner usage, topology, and retained evidence.
 
 New repository developer-workflow documents belong in `docs/development/`.
