@@ -9,7 +9,7 @@ import 'foreground_process.dart';
 import 'ids.dart';
 import 'worktree_environment.dart';
 
-const int gitEnvironmentProviderStateSchemaVersion = 2;
+const int gitEnvironmentProviderStateSchemaVersion = 1;
 
 // Git documents repository-local entries through `rev-parse --local-env-vars`.
 const Set<String> _gitEnvironmentVariablesToClear = <String>{

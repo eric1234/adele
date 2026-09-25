@@ -112,7 +112,7 @@ final class AdeleShell extends StatelessWidget {
                                           ),
                                       ] else
                                         Text(
-                                          'No Tasks yet',
+                                          'No Task selected',
                                           style: textTheme.titleMedium,
                                         ),
                                       if (taskControls

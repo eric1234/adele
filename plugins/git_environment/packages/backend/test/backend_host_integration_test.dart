@@ -133,7 +133,7 @@ void main() {
           'baselineCommit',
         ]),
       );
-      expect(established.providerState['schemaVersion'], allOf(isA<int>(), 2));
+      expect(established.providerState['schemaVersion'], allOf(isA<int>(), 1));
       expect(established.providerState['environmentId'], 'environment-\taot');
       expect(established.providerState['sourceRelativePath'], 'project-source');
       expect(

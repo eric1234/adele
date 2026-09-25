@@ -113,7 +113,7 @@ void main() {
       isTrue,
     );
     expect(find.text('Project is open'), findsOneWidget);
-    expect(find.text('No Tasks yet'), findsOneWidget);
+    expect(find.text('No Task selected'), findsOneWidget);
     expect(ids.calls, <String>['project']);
     return project;
   }
@@ -218,7 +218,7 @@ void main() {
     expect(find.text('Task: Establish a Task'), findsOneWidget);
     expect(find.text('Primary Environment ready'), findsOneWidget);
     expect(find.text('Environment: ${environment.id}'), findsOneWidget);
-    expect(find.text('No Tasks yet'), findsNothing);
+    expect(find.text('No Task selected'), findsNothing);
     expect(find.byType(TaskTitleForm), findsNothing);
 
     await tester.pumpWidget(AdeleApplication(createRuntime: createRuntime));
@@ -230,6 +230,60 @@ void main() {
     expect(ids.calls, <String>['project', 'task', 'environment']);
     expect(channel.calls, hasLength(1));
     expect(tester.takeException(), isNull);
+    await disposeApplication(tester);
+  });
+
+  testWidgets('reopened Tasks remain unselected in the shell', (tester) async {
+    registerProvider();
+    final project = await runtime.lifecycle.openProject(
+      sourceLocation: source,
+      provider: runtime.lifecycle.resolveProjectProvider(testProjectProviderId),
+    );
+    final creating = runtime.lifecycle.createTask(
+      projectId: project.id,
+      title: 'Retained Task',
+    );
+    channel.succeed();
+    final created = await creating;
+    await runtime.close();
+
+    runtime = AdeleRuntime(ids: ids);
+    final projectProvider = TestProjectProvider(runtime.registry);
+    addTearDown(projectProvider.close);
+    final selector = runtime.extensions.register(
+      point: projectSelectorContributions,
+      id: ExtensionId('dev.adele.test.reopened-project-selector'),
+      value: ProjectSelectorContribution(
+        displayName: 'Reopen Project',
+        projectProviderId: projectProvider.providerId,
+        selectProject: () async => source,
+      ),
+    );
+    addTearDown(selector.close);
+    await tester.pumpWidget(AdeleApplication(createRuntime: createRuntime));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Reopen Project'));
+    await tester.pumpAndSettle();
+
+    expect(shell(tester).project!.id, project.id);
+    expect(runtime.store.task(created.task.id)!.title, 'Retained Task');
+    expect(
+      runtime.store.environment(created.environment.id)!.providerState,
+      created.environment.providerState,
+    );
+    expect(
+      runtime.lifecycle.environmentRuntime.currentMaterialization(
+        created.environment.id,
+      ),
+      isNull,
+    );
+    expect(shell(tester).task, isNull);
+    expect(shell(tester).environment, isNull);
+    expect(find.text('No Task selected'), findsOneWidget);
+    expect(find.text('Task: Retained Task'), findsNothing);
+    expect(find.text('New Task'), findsOneWidget);
+    expect(ids.calls, ['project', 'task', 'environment']);
+    expect(channel.calls, hasLength(1));
     await disposeApplication(tester);
   });
 
@@ -354,7 +408,7 @@ void main() {
     expect(runtime.store.tasksFor(project.id), isEmpty);
     expect(shell(tester).task, isNull);
     expect(shell(tester).environment, isNull);
-    expect(find.text('No Tasks yet'), findsOneWidget);
+    expect(find.text('No Task selected'), findsOneWidget);
     expect(
       tester.widget<TextField>(find.byType(TextField)).controller!.text,
       '  Retry this title  ',
@@ -535,7 +589,7 @@ void main() {
             expect(shell(tester).project, same(project));
             expect(shell(tester).task, isNull);
             expect(shell(tester).environment, isNull);
-            expect(find.text('No Tasks yet'), findsOneWidget);
+            expect(find.text('No Task selected'), findsOneWidget);
           } else {
             expect(find.byType(AdeleShell), findsNothing);
           }

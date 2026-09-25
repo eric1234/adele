@@ -91,6 +91,12 @@ final class InMemoryProductStore {
   }
 
   void publishTaskWithPrimaryEnvironment(Task task, Environment environment) {
+    _validateTaskWithPrimaryEnvironment(task, environment);
+    _tasks[task.id] = task;
+    _environments[environment.id] = environment;
+  }
+
+  void _validateTaskWithPrimaryEnvironment(Task task, Environment environment) {
     if (!_projects.containsKey(task.projectId)) {
       throw StateError('Project ${task.projectId} is not published.');
     }
@@ -110,9 +116,52 @@ final class InMemoryProductStore {
     if (primaryEnvironmentFor(task.id) != null) {
       throw StateError('Task ${task.id} already has a primary Environment.');
     }
+  }
 
-    _tasks[task.id] = task;
-    _environments[environment.id] = environment;
+  /// Publishes a restored semantic graph only after all values/relationships and
+  /// conflicts have been validated. Loading does not grant live provider access.
+  void publishRestoredProject({
+    required Project project,
+    required Iterable<Task> tasks,
+    required Iterable<Environment> environments,
+  }) {
+    if (_projects.containsKey(project.id)) {
+      throw StateError('Project ${project.id} is already published.');
+    }
+    final restoredTasks = <TaskId, Task>{};
+    final restoredEnvironments = <EnvironmentId, Environment>{};
+    final primaryTasks = <TaskId>{};
+    for (final task in tasks) {
+      if (task.projectId != project.id ||
+          _tasks.containsKey(task.id) ||
+          restoredTasks.containsKey(task.id)) {
+        throw StateError('Invalid or conflicting restored Task ${task.id}.');
+      }
+      restoredTasks[task.id] = task;
+    }
+    for (final environment in environments) {
+      if (!restoredTasks.containsKey(environment.taskId) ||
+          environment.providerState == null ||
+          _environments.containsKey(environment.id) ||
+          restoredEnvironments.containsKey(environment.id)) {
+        throw StateError(
+          'Invalid or conflicting restored Environment ${environment.id}.',
+        );
+      }
+      if (environment.role == EnvironmentRole.primary &&
+          !primaryTasks.add(environment.taskId)) {
+        throw StateError(
+          'Task ${environment.taskId} has multiple primary Environments.',
+        );
+      }
+      restoredEnvironments[environment.id] = environment;
+    }
+    if (primaryTasks.length != restoredTasks.length) {
+      throw StateError('Every restored Task requires one primary Environment.');
+    }
+    _projects[project.id] = project;
+    _tasks.addAll(restoredTasks);
+    _environments.addAll(restoredEnvironments);
   }
 
   Environment _requireSessionEnvironment({
@@ -167,6 +216,11 @@ final class InMemoryProductStore {
   }
 
   void replaceEnvironment(Environment environment) {
+    _validateEnvironmentReplacement(environment);
+    _environments[environment.id] = environment;
+  }
+
+  void _validateEnvironmentReplacement(Environment environment) {
     final Environment? current = _environments[environment.id];
     if (current == null) {
       throw StateError('Environment ${environment.id} is not published.');
@@ -179,7 +233,6 @@ final class InMemoryProductStore {
         'A restored Environment must preserve its durable authority.',
       );
     }
-    _environments[environment.id] = environment;
   }
 }
 
@@ -228,21 +281,15 @@ final class EnvironmentRuntime {
     required this.store,
     required CapabilityRegistry registry,
     required EnvironmentProviderForBinding providerForBinding,
+    required void Function(Environment) retainEnvironment,
   }) : _registry = registry,
-       _providerForBinding = providerForBinding;
-
-  factory EnvironmentRuntime.generated({
-    required InMemoryProductStore store,
-    required CapabilityRegistry registry,
-  }) => EnvironmentRuntime(
-    store: store,
-    registry: registry,
-    providerForBinding: _generatedProviderForBinding,
-  );
+       _providerForBinding = providerForBinding,
+       _retainEnvironment = retainEnvironment;
 
   final InMemoryProductStore store;
   final CapabilityRegistry _registry;
   final EnvironmentProviderForBinding _providerForBinding;
+  final void Function(Environment) _retainEnvironment;
   final Map<EnvironmentId, EnvironmentMaterialization> _materializations =
       <EnvironmentId, EnvironmentMaterialization>{};
   final Map<EnvironmentId, Future<EnvironmentMaterialization>> _restorations =
@@ -261,24 +308,6 @@ final class EnvironmentRuntime {
       throw StateError('The Environment provider adapter changed identity.');
     }
     return ResolvedEnvironmentProvider(binding: binding, provider: provider);
-  }
-
-  void publishEstablishedTask({
-    required Task task,
-    required Environment environment,
-    required ResolvedEnvironmentProvider resolvedProvider,
-  }) {
-    final EnvironmentMaterialization materialization = _materialization(
-      environment,
-      resolvedProvider,
-    );
-    if (_materializations.containsKey(environment.id)) {
-      throw StateError(
-        'Environment ${environment.id} is already materialized.',
-      );
-    }
-    store.publishTaskWithPrimaryEnvironment(task, environment);
-    _materializations[environment.id] = materialization;
   }
 
   Future<EnvironmentMaterialization> materialize(EnvironmentId id) async {
@@ -334,7 +363,9 @@ final class EnvironmentRuntime {
       restored,
       resolved,
     );
-    store.replaceEnvironment(restored);
+    // Retain semantic progress before checking executable readiness. A retiring
+    // binding must not roll a successfully committed provider snapshot back.
+    _retainEnvironment(restored);
     _materializations[id] = materialization;
     materialization.validateBinding();
     return materialization;
@@ -377,14 +408,16 @@ final class ProductLifecycleCoordinator {
     required ExtensionRegistry extensions,
     required ProductIdSource ids,
     required EnvironmentProviderForBinding providerForBinding,
-  }) : environmentRuntime = EnvironmentRuntime(
-         store: store,
-         registry: registry,
-         providerForBinding: providerForBinding,
-       ),
-       strategyResolver = OrchestrationStrategyResolver(extensions),
+  }) : strategyResolver = OrchestrationStrategyResolver(extensions),
        _registry = registry,
-       _ids = ids;
+       _ids = ids {
+    environmentRuntime = EnvironmentRuntime(
+      store: store,
+      registry: registry,
+      providerForBinding: providerForBinding,
+      retainEnvironment: _retainEnvironment,
+    );
+  }
 
   factory ProductLifecycleCoordinator.generated({
     required InMemoryProductStore store,
@@ -400,10 +433,11 @@ final class ProductLifecycleCoordinator {
   );
 
   final InMemoryProductStore store;
-  final EnvironmentRuntime environmentRuntime;
+  late final EnvironmentRuntime environmentRuntime;
   final OrchestrationStrategyResolver strategyResolver;
   final ProductIdSource _ids;
   final CapabilityRegistry _registry;
+  // Membership records durable ownership; createProject never enters this map.
   final Map<ProjectId, ProjectDatabase> _projectDatabases = {};
   final Set<Future<Project>> _projectOpens = {};
   Future<void>? _closing;
@@ -432,8 +466,8 @@ final class ProductLifecycleCoordinator {
     }
   }
 
-  /// Opens durable identity through one captured provider. Headless callers supply
-  /// a known source and binding; optional selection validation is host-owned.
+  /// Opens the durable semantic graph through one captured Project provider.
+  /// Environment providers are not consulted; selection validation is host-owned.
   Future<Project> openProject({
     required Uri sourceLocation,
     required ProviderBinding provider,
@@ -482,7 +516,12 @@ final class ProductLifecycleCoordinator {
         database.close();
         return current;
       }
-      store.publishProject(project);
+      final graph = database.loadTaskEnvironments();
+      store.publishRestoredProject(
+        project: project,
+        tasks: graph.tasks,
+        environments: graph.environments,
+      );
       _projectDatabases[project.id] = database;
       return project;
     } on Object {
@@ -493,6 +532,14 @@ final class ProductLifecycleCoordinator {
 
   void _requireOpen() {
     if (_closing != null) throw StateError('Product lifecycle is closing.');
+  }
+
+  void _retainEnvironment(Environment environment) {
+    _requireOpen();
+    store._validateEnvironmentReplacement(environment);
+    final task = store.task(environment.taskId)!;
+    _projectDatabases[task.projectId]?.updateEnvironmentState(environment);
+    store.replaceEnvironment(environment);
   }
 
   /// Stops admission immediately, drains accepted provider calls, then releases
@@ -606,6 +653,7 @@ final class ProductLifecycleCoordinator {
         .establish(
           LocalEnvironment(project: project, task: task, value: provisional),
         );
+    _requireOpen();
     final Environment finalized = Environment(
       id: provisional.id,
       taskId: provisional.taskId,
@@ -613,11 +661,19 @@ final class ProductLifecycleCoordinator {
       providerId: provisional.providerId,
       providerState: established.providerState,
     );
-    environmentRuntime.publishEstablishedTask(
-      task: task,
-      environment: finalized,
-      resolvedProvider: resolved,
+    final materialization = environmentRuntime._materialization(
+      finalized,
+      resolved,
     );
+    store._validateTaskWithPrimaryEnvironment(task, finalized);
+    // Establishment may already have external effects. There is no general
+    // provider release contract to roll them back if this transaction fails.
+    _projectDatabases[project.id]?.insertTaskWithPrimaryEnvironment(
+      task,
+      finalized,
+    );
+    store.publishTaskWithPrimaryEnvironment(task, finalized);
+    environmentRuntime._materializations[finalized.id] = materialization;
     return TaskCreationResult(task: task, environment: finalized);
   }
 }

@@ -27,7 +27,7 @@ void main() {
     final EnvironmentProviderResult firstResult = await generationA.establish(
       first,
     );
-    _expectV2State(first, firstResult.providerState);
+    _expectProviderState(first, firstResult.providerState);
     expect(firstResult.providerState['environmentId'], 'environment-\tfirst');
     expect(
       firstResult.providerState['baselineCommit'],
@@ -314,7 +314,7 @@ void main() {
       final EnvironmentProviderResult established = await generationA.establish(
         environment,
       );
-      _expectV2State(environment, established.providerState);
+      _expectProviderState(environment, established.providerState);
       expect(
         generationA.liveObjects.resolve(environment.id).root.path,
         _worktreeRoot(fixture.source, established.providerState).path,
@@ -372,7 +372,7 @@ void main() {
       final EnvironmentProviderResult established = await generationA.establish(
         environment,
       );
-      _expectV2State(environment, established.providerState);
+      _expectProviderState(environment, established.providerState);
       expect(
         generationA.liveObjects.resolve(environment.id).root.path,
         _worktreeRoot(fixture.source, established.providerState).path,
@@ -442,7 +442,7 @@ void main() {
     final WorktreeEnvironment firstLive = generationA.liveObjects.resolve(
       environment.id,
     );
-    _expectV2State(
+    _expectProviderState(
       environment,
       established.providerState,
       sourceRelativePath: 'project-source',
@@ -551,7 +551,7 @@ void main() {
     final EnvironmentProviderResult established = await generationA.establish(
       environment,
     );
-    _expectV2State(
+    _expectProviderState(
       environment,
       established.providerState,
       sourceRelativePath: 'lib',
@@ -623,7 +623,7 @@ void main() {
         final Map<String, Object?> state = Map<String, Object?>.of(
           established.providerState,
         );
-        _expectV2State(environment, state, sourceRelativePath: scope);
+        _expectProviderState(environment, state, sourceRelativePath: scope);
         final Directory oldWorktree = _worktreeRoot(selectedSource, state);
         final Directory oldLiveRoot = generationA.liveObjects
             .resolve(environment.id)
@@ -759,7 +759,7 @@ void main() {
     );
   }
 
-  test('strictly rejects malformed schema v2 provider state', () async {
+  test('strictly rejects malformed or unsupported provider state', () async {
     final fixture = await _createRepository();
     addTearDown(() => fixture.container.delete(recursive: true));
     final GitWorktreeEnvironmentProvider generationA =
@@ -775,7 +775,7 @@ void main() {
       environment,
     );
     final Map<String, Object?> state = established.providerState;
-    _expectV2State(environment, state);
+    _expectProviderState(environment, state);
     await generationA.close();
     final GitWorktreeEnvironmentProvider generationB =
         GitWorktreeEnvironmentProvider();
@@ -797,7 +797,7 @@ void main() {
                 ...state,
                 field: value,
               },
-          for (final Object version in <Object>[1, 3, 2.0, '2'])
+          for (final Object version in <Object>[0, 2, 1.0, '1'])
             'version $version (${version.runtimeType})': <String, Object?>{
               ...state,
               'schemaVersion': version,
@@ -3240,7 +3240,7 @@ final bool _runningAsRoot =
     Platform.isLinux &&
     Process.runSync('id', const <String>['-u']).stdout.toString().trim() == '0';
 
-void _expectV2State(
+void _expectProviderState(
   LocalEnvironment environment,
   Map<String, Object?> state, {
   String sourceRelativePath = '',
@@ -3256,7 +3256,7 @@ void _expectV2State(
       'baselineCommit',
     ]),
   );
-  expect(state['schemaVersion'], allOf(isA<int>(), 2));
+  expect(state['schemaVersion'], allOf(isA<int>(), 1));
   expect(state['environmentId'], environment.id.value);
   expect(state['sourceRelativePath'], sourceRelativePath);
   expect(

@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:sqlite3/sqlite3.dart';
@@ -26,11 +28,28 @@ final class ProjectDatabase {
       MigrationCoordinator(database).migrate(
         ownerId: 'dev.adele.product',
         migrations: <void Function(Database)>[
+          // The current pre-release v1 baseline, not product migration history.
           (Database database) => database.execute('''
             CREATE TABLE adele_product_projects (
               id TEXT PRIMARY KEY,
               source_location TEXT NOT NULL
-            )
+            );
+            CREATE TABLE adele_product_tasks (
+              id TEXT PRIMARY KEY,
+              project_id TEXT NOT NULL,
+              title TEXT NOT NULL,
+              FOREIGN KEY (project_id) REFERENCES adele_product_projects(id)
+            );
+            CREATE TABLE adele_product_environments (
+              id TEXT PRIMARY KEY,
+              task_id TEXT NOT NULL,
+              role TEXT NOT NULL,
+              provider_id TEXT NOT NULL,
+              provider_state_json TEXT NOT NULL,
+              FOREIGN KEY (task_id) REFERENCES adele_product_tasks(id)
+            );
+            CREATE UNIQUE INDEX adele_product_primary_environment
+              ON adele_product_environments(task_id) WHERE role = 'primary';
           '''),
         ],
       );
@@ -51,7 +70,7 @@ final class ProjectDatabase {
     required Uri sourceLocation,
     required ProjectId Function() nextProjectId,
   }) {
-    if (_closed) throw StateError('The Project database is closed.');
+    _requireOpen();
     if (_sourceDirectory(sourceLocation).resolveSymbolicLinksSync() != _root) {
       throw ArgumentError.value(
         sourceLocation,
@@ -99,11 +118,114 @@ final class ProjectDatabase {
     });
   }
 
+  /// Parses a complete semantic snapshot without consulting Environment providers.
+  /// The store validates graph relationships and conflicts before publication.
+  ({List<Task> tasks, List<Environment> environments}) loadTaskEnvironments() {
+    _requireOpen();
+    return _transaction(_database, () {
+      final tasks = <Task>[
+        for (final row in _database.select('SELECT * FROM adele_product_tasks'))
+          Task(
+            id: TaskId(_text(row, 'id')),
+            projectId: ProjectId(_text(row, 'project_id')),
+            title: _text(row, 'title'),
+          ),
+      ];
+      final environments = <Environment>[];
+      for (final row in _database.select(
+        'SELECT * FROM adele_product_environments',
+      )) {
+        final Object? state = jsonDecode(_text(row, 'provider_state_json'));
+        if (state is! Map<String, Object?>) {
+          throw const FormatException(
+            'Environment provider state must be a JSON object.',
+          );
+        }
+        environments.add(
+          Environment(
+            id: EnvironmentId(_text(row, 'id')),
+            taskId: TaskId(_text(row, 'task_id')),
+            role: EnvironmentRole.values.byName(_text(row, 'role')),
+            providerId: ProviderId(_text(row, 'provider_id')),
+            providerState: state,
+          ),
+        );
+      }
+      return (tasks: tasks, environments: environments);
+    });
+  }
+
+  /// Task and finalized primary Environment form one durable publication unit.
+  void insertTaskWithPrimaryEnvironment(Task task, Environment environment) {
+    _requireOpen();
+    if (environment.taskId != task.id ||
+        environment.role != EnvironmentRole.primary ||
+        environment.providerState == null) {
+      throw StateError(
+        'A durable Task requires its finalized primary Environment.',
+      );
+    }
+    final state = jsonEncode(environment.providerState);
+    _backingPath(_root, _relativePath);
+    _transaction(_database, () {
+      _database.execute(
+        'INSERT INTO adele_product_tasks (id, project_id, title) VALUES (?, ?, ?)',
+        [task.id.value, task.projectId.value, task.title],
+      );
+      _database.execute(
+        'INSERT INTO adele_product_environments '
+        '(id, task_id, role, provider_id, provider_state_json) VALUES (?, ?, ?, ?, ?)',
+        [
+          environment.id.value,
+          environment.taskId.value,
+          environment.role.name,
+          environment.providerId.value,
+          state,
+        ],
+      );
+    });
+  }
+
+  /// Refreshes only opaque provider state, never semantic identity/relationships.
+  void updateEnvironmentState(Environment environment) {
+    _requireOpen();
+    if (environment.providerState == null) {
+      throw StateError('A durable Environment requires provider state.');
+    }
+    _backingPath(_root, _relativePath);
+    _transaction(_database, () {
+      _database.execute(
+        'UPDATE adele_product_environments SET provider_state_json = ? '
+        'WHERE id = ? AND task_id = ? AND role = ? AND provider_id = ?',
+        [
+          jsonEncode(environment.providerState),
+          environment.id.value,
+          environment.taskId.value,
+          environment.role.name,
+          environment.providerId.value,
+        ],
+      );
+      if (_database.updatedRows != 1) {
+        throw StateError('The durable Environment identity does not match.');
+      }
+    });
+  }
+
+  void _requireOpen() {
+    if (_closed) throw StateError('The Project database is closed.');
+  }
+
   void close() {
     if (_closed) return;
     _database.close();
     _closed = true;
   }
+}
+
+String _text(Row row, String column) {
+  final value = row[column];
+  if (value is! String) throw FormatException('Invalid persisted $column.');
+  return value;
 }
 
 /// App-internal schema coordination. Callbacks and connections never reach plugins.

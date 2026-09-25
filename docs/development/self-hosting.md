@@ -174,7 +174,7 @@ generation/usage errors can occur before a run directory exists, and filesystem
 failures or forced termination can prevent report completion.
 
 The topology derives the current absolute Task worktree path from the current
-Project source and Git provider-state v2 `worktreeRelativePath`. The report's
+Project source and Git provider-state v1 `worktreeRelativePath`. The report's
 absolute `taskWorktreePath` is execution evidence, not provider-state restoration
 authority. Git evidence verifies the Task checkout root rather than accepting an
 enclosing Project repository if the nested worktree's Git marker is missing.

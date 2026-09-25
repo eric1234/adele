@@ -299,7 +299,7 @@ void main() {
         expect(find.text('Project Name'), findsOneWidget);
         expect(find.text(uri.toString()), findsOneWidget);
         expect(find.text('Project is open'), findsOneWidget);
-        expect(find.text('No Tasks yet'), findsOneWidget);
+        expect(find.text('No Task selected'), findsOneWidget);
         expect(runtime.store.tasksFor(project.id), isEmpty);
         expect(
           runtime.registry.providersFor(environmentProviderCapability),
@@ -317,7 +317,7 @@ void main() {
         await tester.binding.setSurfaceSize(const Size(360, 640));
         addTearDown(() => tester.binding.setSurfaceSize(null));
         await tester.pump();
-        expect(find.text('No Tasks yet'), findsOneWidget);
+        expect(find.text('No Task selected'), findsOneWidget);
         expect(tester.takeException(), isNull);
         await disposeApplication(tester);
       },
@@ -750,7 +750,7 @@ void main() {
       selection.complete(source.path);
       await settleOpening(tester);
       expect(ids.calls, <String>['project']);
-      expect(find.text('No Tasks yet'), findsOneWidget);
+      expect(find.text('No Task selected'), findsOneWidget);
       await disposeApplication(tester);
     },
   );

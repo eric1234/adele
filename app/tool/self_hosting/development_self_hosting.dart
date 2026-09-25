@@ -31,9 +31,9 @@ typedef DevelopmentSelfHostingLog = void Function(String message);
 String developmentGitWorktreePath(Project project, Environment environment) {
   final state = environment.providerState;
   if (state?['schemaVersion'] is! int ||
-      state?['schemaVersion'] != 2 ||
+      state?['schemaVersion'] != 1 ||
       state?['environmentId'] != environment.id.value) {
-    throw StateError('Development Git diagnostics require matching v2 state.');
+    throw StateError('Development Git diagnostics require matching v1 state.');
   }
   final String source = Directory.fromUri(
     project.sourceLocation,

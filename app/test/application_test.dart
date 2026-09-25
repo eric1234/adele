@@ -141,7 +141,7 @@ void main() {
         );
         expect(runtime.store.tasksFor(project.id), isEmpty);
         expect(find.text('Project is open'), findsOneWidget);
-        expect(find.text('No Tasks yet'), findsOneWidget);
+        expect(find.text('No Task selected'), findsOneWidget);
         expect(
           find.textContaining('Task Environment support is unavailable.'),
           findsOneWidget,

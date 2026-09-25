@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/remote_inference_context_host.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
@@ -18,6 +19,50 @@ import '../../../tool/self_hosting/development_self_hosting_runner.dart';
 import 'chat_test_topology.dart';
 
 void main() {
+  test(
+    'development Git diagnostics require the current relative state schema',
+    () async {
+      final source = await Directory.systemTemp.createTemp(
+        'adele-development-git-state-',
+      );
+      addTearDown(() => source.delete(recursive: true));
+      const relativePath = '.adele/worktrees/retained-task';
+      final worktree = await Directory(
+        '${source.path}/$relativePath',
+      ).create(recursive: true);
+      final project = Project(
+        id: ProjectId('project-diagnostics'),
+        sourceLocation: source.uri,
+      );
+      final environmentId = EnvironmentId('environment-diagnostics');
+      Environment environment(Object version) => Environment(
+        id: environmentId,
+        taskId: TaskId('task-diagnostics'),
+        role: EnvironmentRole.primary,
+        providerId: ProviderId('dev.adele.environment.git-worktree'),
+        providerState: {
+          'schemaVersion': version,
+          'environmentId': environmentId.value,
+          'sourceRelativePath': '',
+          'worktreeRelativePath': relativePath,
+          'branch': 'adele-retained-task',
+          'baselineCommit': 'a' * 40,
+        },
+      );
+      expect(
+        developmentGitWorktreePath(project, environment(1)),
+        await worktree.resolveSymbolicLinks(),
+      );
+      for (final version in <Object>[0, 2, 1.0, '1']) {
+        expect(
+          () => developmentGitWorktreePath(project, environment(version)),
+          throwsStateError,
+          reason: 'Unsupported version $version (${version.runtimeType}).',
+        );
+      }
+    },
+  );
+
   test(
     'self-hosting prepares and owns remote Chat, AGENTS and all tools on one host',
     () async {
@@ -78,7 +123,7 @@ void main() {
       final relativePath = state['worktreeRelativePath']! as String;
       expect(relativePath, matches(r'^\.adele/worktrees/[^/]+$'));
       expect(state, <String, Object?>{
-        'schemaVersion': 2,
+        'schemaVersion': 1,
         'environmentId': topology.environment.id.value,
         'sourceRelativePath': '',
         'worktreeRelativePath': relativePath,
