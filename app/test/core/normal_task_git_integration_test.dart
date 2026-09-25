@@ -19,6 +19,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import '../../tool/self_hosting/development_self_hosting.dart';
+
 const String _gitPluginId = 'dev.adele.plugin.git-environment';
 final ProviderId _gitProviderId = ProviderId(
   'dev.adele.environment.git-worktree',
@@ -292,8 +294,9 @@ void main() {
 
         // Inspect provider-owned state only to corroborate the real Git fixture.
         final Map<String, Object?> state = created.environment.providerState!;
-        final Directory worktree = Directory(state['worktreePath']! as String);
-        final String sourceRoot = await repository.resolveSymbolicLinks();
+        final Directory worktree = Directory(
+          developmentGitWorktreePath(project, created.environment),
+        );
         final String commonDirectory = (await _git(repository, [
           'rev-parse',
           '--path-format=absolute',
@@ -302,19 +305,20 @@ void main() {
         expect(await worktree.exists(), isTrue);
         expect(await File('${worktree.path}/.git').exists(), isTrue);
         expect(
-          worktree.path,
-          isNot(startsWith('$sourceRoot${Platform.pathSeparator}')),
+          worktree.parent.path,
+          '${await source.resolveSymbolicLinks()}${Platform.pathSeparator}'
+          '.adele${Platform.pathSeparator}worktrees',
         );
-        expect(
-          await worktree.parent.parent.resolveSymbolicLinks(),
-          await container.resolveSymbolicLinks(),
-        );
-        expect(state['environmentId'], created.environment.id.value);
-        expect(state['sourcePath'], await source.resolveSymbolicLinks());
-        expect(state['repositoryPath'], sourceRoot);
-        expect(state['sourceRelativePath'], 'packages/source');
-        expect(state['baselineCommit'], baseline);
-        expect(state['commonGitDirectory'], commonDirectory);
+        final String relativePath = state['worktreeRelativePath']! as String;
+        expect(relativePath, matches(r'^\.adele/worktrees/[^/]+$'));
+        expect(state, <String, Object?>{
+          'schemaVersion': 2,
+          'environmentId': created.environment.id.value,
+          'sourceRelativePath': 'packages/source',
+          'worktreeRelativePath': relativePath,
+          'branch': state['branch'],
+          'baselineCommit': baseline,
+        });
         expect(
           (await _git(worktree, ['rev-parse', '--show-toplevel'])).trim(),
           worktree.path,
@@ -360,9 +364,19 @@ void main() {
           ),
         );
         expect(await sourceFile.readAsString(), sourceText);
+        // Provider storage is deliberately unignored; only that new entry is
+        // allowed alongside the exact pre-existing source/index changes.
+        final List<String> expectedStatus = <String>[
+          ...status.split('\u0000').where((entry) => entry.isNotEmpty),
+          '?? packages/source/.adele/',
+        ];
         expect(
-          await _git(repository, ['status', '--porcelain=v1', '-z']),
-          status,
+          (await _git(repository, [
+            'status',
+            '--porcelain=v1',
+            '-z',
+          ])).split('\u0000').where((entry) => entry.isNotEmpty),
+          unorderedEquals(expectedStatus),
         );
         expect(await _git(repository, ['diff', '--binary', 'HEAD']), diff);
         expect(
@@ -416,8 +430,12 @@ void main() {
         );
         expect(await sourceFile.readAsString(), sourceText);
         expect(
-          await _git(repository, ['status', '--porcelain=v1', '-z']),
-          status,
+          (await _git(repository, [
+            'status',
+            '--porcelain=v1',
+            '-z',
+          ])).split('\u0000').where((entry) => entry.isNotEmpty),
+          unorderedEquals(expectedStatus),
         );
         expect(await _git(repository, ['diff', '--binary', 'HEAD']), diff);
         expect(

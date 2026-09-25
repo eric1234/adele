@@ -88,7 +88,10 @@ ID without allocating another. Moving the source together with its database,
 then reopening it, preserves that ID and commits the newly selected source URI.
 The historical URI must remain valid local-source data, but need not be addressable
 on the current host; only the new selected location undergoes filesystem checks.
-This does not restore moved Environment state or create a recent-project catalog.
+Project reopening does not automatically load or restore Environment records or
+create a recent-project catalog. The stock [Git Environment](../../plugins/git_environment/README.md)
+can explicitly restore retained relative provider state after a Project move;
+core still does not persist that state across application restart.
 Within one lifecycle, reopening the same backing/source returns the published
 Project; a conflicting already-open location for that ID fails rather than
 retargeting live state. Complete copy/move conflict management is not implied.

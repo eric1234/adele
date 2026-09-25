@@ -35,6 +35,7 @@ import '../../../tools/stock_frontend_descriptors.dart';
 import '../../tool/chat_frontend_compiler.dart';
 import '../../tool/local_directory_project_frontend_compiler.dart';
 import '../../tool/openai_activity_frontend_compiler.dart';
+import '../../tool/self_hosting/development_self_hosting.dart';
 import '../../tool/tool_inspection_frontend_compiler.dart';
 
 const _gitPluginId = 'dev.adele.plugin.git-environment';
@@ -133,6 +134,8 @@ void main() {
               'taskId',
               'providerId',
               'worktreePath',
+              'worktreeRelativePath',
+              'sourceRelativePath',
             ]) {
               expect(jsonEncode(tools), isNot(contains(forbidden)));
             }
@@ -331,7 +334,10 @@ void main() {
         await fixture.openTask(tester);
         final environment = fixture.shell(tester).environment!;
         final worktree = Directory(
-          environment.providerState!['worktreePath']! as String,
+          developmentGitWorktreePath(
+            fixture.shell(tester).project!,
+            environment,
+          ),
         );
         expect(worktree.path, isNot(fixture.source.path));
         await File(
@@ -340,7 +346,10 @@ void main() {
         await File(
           '${fixture.source.path}/AGENTS.md',
         ).writeAsString(_projectAgentsText);
-        final projectBefore = await _sourceSnapshot(fixture.source);
+        final projectBefore = await _sourceSnapshot(
+          fixture.source,
+          taskWorktree: worktree,
+        );
         expect(
           (await Process.run('git', [
             'diff',
@@ -492,7 +501,10 @@ void main() {
           isTrue,
         );
         expect(fixture.runIds.values, hasLength(2));
-        expect(await _sourceSnapshot(fixture.source), projectBefore);
+        expect(
+          await _sourceSnapshot(fixture.source, taskWorktree: worktree),
+          projectBefore,
+        );
         expect(
           await File('${worktree.path}/$_sourcePath').readAsString(),
           _patchedText,
@@ -1303,11 +1315,17 @@ String _idToken(String accountId) {
   })}.';
 }
 
-Future<Map<String, Object?>> _sourceSnapshot(Directory repository) async {
+Future<Map<String, Object?>> _sourceSnapshot(
+  Directory repository, {
+  required Directory taskWorktree,
+}) async {
+  repository = Directory(await repository.resolveSymbolicLinks());
+  final taskPath = await taskWorktree.resolveSymbolicLinks();
   final files = <String, Object?>{};
   Future<void> visit(Directory directory) async {
     await for (final entity in directory.list(followLinks: false)) {
       if (entity.path == '${repository.path}/.git') continue;
+      if (entity.path == taskPath) continue;
       if (entity is Directory) {
         await visit(entity);
       } else if (entity is File) {

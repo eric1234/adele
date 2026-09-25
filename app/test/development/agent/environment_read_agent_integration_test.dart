@@ -519,8 +519,10 @@ void main() {
       )!;
       const String siblingPath =
           'plugins/chat_strategy/packages/backend/lib/scope-decoy.txt';
-      final String worktreePath =
-          created.environment.providerState!['worktreePath']! as String;
+      final String worktreePath = developmentGitWorktreePath(
+        store.project(project.id)!,
+        materializationB.environment,
+      );
       await File(
         '$worktreePath/$siblingPath',
       ).writeAsString('final class ChatSessionState decoy\n');
@@ -951,8 +953,10 @@ void main() {
       );
       expect(resultingFile.text, expectedTaskSource);
       expect(resultingFile.revision, model.postWriteRevision);
-      final String worktreePath =
-          created.environment.providerState!['worktreePath']! as String;
+      final String worktreePath = developmentGitWorktreePath(
+        store.project(project.id)!,
+        materialization.environment,
+      );
       final File worktreeSource = File('$worktreePath/$_sourceRelativePath');
       expect(await worktreeSource.readAsString(), resultingFile.text);
       expect(
@@ -1062,8 +1066,10 @@ void main() {
         'create_file',
         'delete_file',
       ]);
-      final String worktreePath =
-          created.environment.providerState!['worktreePath']! as String;
+      final String worktreePath = developmentGitWorktreePath(
+        store.project(project.id)!,
+        store.environment(created.environment.id)!,
+      );
       final File taskTarget = File(
         '$worktreePath/$_transientSourceRelativePath',
       );
