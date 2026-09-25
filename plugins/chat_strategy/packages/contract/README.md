@@ -10,6 +10,14 @@ atomic instruction/invocation-budget configuration. Accepted appends return the
 canonical entry, including its stable Session-local ID. Assistant append and
 arbitrary history replacement are not public operations.
 
+These operations retain the same frontend contract for durable and explicitly
+volatile Sessions. For durable state, successful mutations acknowledge SQL commit
+before returning canonical values. Snapshots remain on the previous canonical
+state while a write or terminal assistant commit is pending. Storage/corruption
+failures are not invalid-content/session failures and do not select volatile
+fallback. Schema, hydration, and terminal-acknowledgement details belong to the
+[backend](../backend/README.md), not this transport contract.
+
 `chat_strategy_contract.dart` is the annotated source of truth and retains
 `part 'chat_strategy_contract.g.dart';`. Its native sibling is configured in
 [`contract_codegen.yaml`](../../../../contract_codegen.yaml), is Git-ignored local

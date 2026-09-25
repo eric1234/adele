@@ -52,6 +52,7 @@ void main() {
           'requestId': 1,
           'pluginId': 'eof-plugin',
           'generation': 'test-generation',
+          'hostInfrastructureContext': 'test-infrastructure',
           'defaultConfigurationContext': 'default',
           'artifactUri': pluginArtifact.uri.toString(),
           'arguments': <String>['acknowledge-hang'],

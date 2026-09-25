@@ -23,6 +23,7 @@ workspace:
   - packages/plugin_builder
   - packages/plugin_runtime
   - packages/product
+  - packages/project_storage
   - packages/ui
   - plugins/workspace_demo
   - plugins/resource_inspector

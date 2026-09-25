@@ -198,10 +198,10 @@ void main() {
       ]);
       expect(unrelated.reads, isEmpty);
       expect(execution.reads, ['directory:src/file.txt', 'file:src/file.txt']);
-      expect(
-        fixture.requests.map((request) => request['hostInvocationContext']),
-        ['execution', 'execution'],
-      );
+      expect(fixture.requests.map((request) => request['hostContext']), [
+        'execution',
+        'execution',
+      ]);
       expect(fixture.requests.map((request) => request['payload']), [
         {'relativePath': 'src/file.txt'},
         {'relativePath': 'src/file.txt'},
@@ -436,7 +436,8 @@ final class _Fixture {
   }
 
   Future<void> _respond(Map<String, Object?> request) async {
-    final dispatcher = services[request['hostInvocationContext']];
+    expect(request['hostContextKind'], 'invocation');
+    final dispatcher = services[request['hostContext']];
     final response = dispatcher == null
         ? <String, Object?>{
             'ok': false,

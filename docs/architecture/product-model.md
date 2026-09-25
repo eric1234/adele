@@ -7,10 +7,12 @@ Implementation status: Partial
 This document defines the shared product-domain semantics and ownership that
 ADELE core and unrelated plugins must agree on. It combines accepted constraints
 with the current implementation. Project identity/source, Tasks, Environment
-semantic records, and provider-state snapshots have per-Project SQLite storage;
-Sessions, Runs, Chat, and general plugin state remain in memory. Elsewhere,
-"durable" describes semantic lifetime across execution attempts and live resource
-generations, not a claim that every such record survives application restart.
+records/provider-state snapshots, Sessions, and their semantic Environment
+associations have per-Project SQLite storage. Plugin-owned relational state,
+including Chat history/configuration, uses the same backing without becoming core
+product fields. Runs and live execution resources remain non-durable. Elsewhere,
+"durable" describes semantic lifetime, not a claim that every product feature
+survives application restart.
 
 ## Core relationship
 
@@ -56,8 +58,8 @@ its placement policy, not a core directory convention; the stock Local Directory
 backend chooses `.adele/data.db`. The backing retains the selected source, not an
 unrelated location silently substituted by the provider.
 
-The application-private `ProjectDatabase` owns the connection, filesystem
-validation/confinement, migration coordination, and database lifetime. Current
+The application-private `ProjectDatabase` owns one connection per open Project,
+filesystem validation/confinement, migration coordination, and database lifetime. Current
 backing support requires an existing absolute local `file:` directory URI
 supported on the host; network authorities, query/fragment components, and
 unsupported paths fail explicitly. The host resolves the source root and validates
@@ -74,6 +76,8 @@ The current schema is deliberately small:
 | `adele_product_projects(id, source_location)` | Product owner `dev.adele.product`, schema version 1; the database holds one Project's stable ID and current source URI. |
 | `adele_product_tasks(id, project_id, title)` | Task identity, Project foreign key, and title. |
 | `adele_product_environments(id, task_id, role, provider_id, provider_state_json)` | Environment identity, Task foreign key, semantic role, provider identity, and opaque JSON provider-state snapshot. |
+| `adele_product_sessions(id, task_id, strategy_id)` | Session identity, Task foreign key, and permanent semantic strategy ID. |
+| `adele_product_session_environment_authority(session_id, environment_id)` | Exactly one same-Task Environment association per Session, with foreign keys to both records; not a live access token or facet. |
 
 All product tables belong to `dev.adele.product` schema version **1**. This is the
 current pre-release baseline, not a history of development schemas. Earlier
@@ -90,10 +94,11 @@ interpret provider-specific fields.
 
 Private `MigrationCoordinator` applies ordered owner migrations and version
 updates in a transaction. Product owns its table semantics and initialization SQL;
-generic host coordination does not become the semantic owner of future plugin
-tables. Other owners' tables and version records remain untouched, not adopted or
-deleted by product initialization. There is no public plugin migration registry or
-persistence API.
+generic host coordination does not become the semantic owner of plugin tables.
+Other owners' tables and version records remain untouched, not adopted or deleted
+by product initialization. Plugins supply their own migrations through the
+[Session-scoped storage service](contracts-and-capabilities.md#session-scoped-relational-storage),
+not a global plugin migration registry or public SQLite handle.
 Unsupported, malformed, or newer core storage must fail non-destructively,
 not be reset, downgraded, assigned replacement identity, or hidden behind volatile
 fallback. A failed transaction is rolled back; opening need not undo already
@@ -104,9 +109,11 @@ ID without allocating another. Moving the source together with its database,
 then reopening it, preserves that ID and commits the newly selected source URI.
 The historical URI must remain valid local-source data, but need not be addressable
 on the current host; only the new selected location undergoes filesystem checks.
-Project reopening loads Tasks and Environment semantic records, including their
-provider-state snapshots, without allocating replacement identities or invoking
-Environment providers. Provider availability is not required to load these records.
+Project reopening loads Tasks, Environment records/provider-state snapshots,
+Sessions, and their Environment associations without allocating replacement
+identities, resolving stored strategies, or invoking Environment providers.
+Their availability is not required to load these records; the explicitly selected
+Project provider is still required to open the backing.
 Materialization remains explicit: the stock [Git Environment](../../plugins/git_environment/README.md)
 can restore the existing checkout from its retained Project-relative state after
 restarting or moving the complete Project, including `.git`, the database, and
@@ -130,13 +137,16 @@ Every prepared selector also requires exact same-installation backend ownership,
 as defined by the [plugin system](plugin-system.md#project-selector-ownership).
 Cancellation is a no-op; missing, failed, or retired participants cannot be replaced
 inside an in-flight operation. SQLite work follows the final validation
-synchronously. The identity/source transaction commits first; all Task and
-Environment rows are then parsed into semantic values before
-`InMemoryProductStore.publishRestoredProject` validates the complete graph and
-publishes it. Validation requires same-Project Tasks, same-Task Environments,
-exactly one finalized primary Environment per Task, and no conflicting IDs;
-invalid values or relationships publish nothing into the live store. No
-asynchronous generation change can interleave this sequence. Later retirement
+synchronously. The identity/source transaction commits first;
+`ProjectDatabase.loadProductGraph` parses all Task, Environment, Session, and
+authority rows before `InMemoryProductStore.publishRestoredProject` validates the
+complete graph, before any live-store mutation. Validation requires Tasks in that
+Project, Environments and Sessions belonging to those Tasks, one finalized primary
+Environment per Task, and exactly one same-Task Environment authority per Session. Invalid values,
+orphan or duplicate records/authorities, and conflicts with already published IDs
+publish none of the restored graph and leave the existing live graph unchanged.
+This does not undo the earlier identity/source commit. No asynchronous generation
+change can interleave validation and publication. Later retirement
 does not invalidate a published Project or permanently pin it to the opening
 generations.
 
@@ -149,16 +159,21 @@ an OS picker to close or promise general cancellation or bounded completion.
 
 ### Storage scope and limits
 
-Project identity/source, Tasks, Environment semantic records, and Environment
-provider-state snapshots survive Project reopen/restart. Sessions and
-Session/Environment authority, Runs, Chat, configuration/settings, Profiles,
-presentation state, and general plugin state remain non-durable. Live bindings,
-materializations, and authority must never be serialized.
+The core graph above and initialized plugin-owned state survive Project
+reopen/restart; the [plugin state boundary](plugin-system.md#plugin-owned-state-and-persistence)
+defines Chat's participation. Persisted Session/Environment associations are
+semantic relationships, not serialized execution authority. Live bindings,
+materializations, facets, and host-issued tokens must never be serialized.
+
+This slice does not persist Runs, active claims, execution evidence/activity,
+approval restart state, model-native replay, or composer drafts. It adds no
+Task/Session browser, navigation, automatic selection/resume, Profiles, general
+settings, configured-provider/credential storage, or workbench/window persistence.
 
 Small synchronous host operations can block on filesystem/SQLite work. Confinement
 is preflight validation, not a guarantee against hostile concurrent filesystem
 symlink races. Git-ignore ergonomics remain follow-up work without automatically
-editing a user's root ignore rules. Cloud sync, remote SQL, and a public migration
+editing a user's root ignore rules. Cloud sync, remote SQL, and a global migration
 registry are deferred; none is implicit in choosing SQLite. Native integration and
 platform validation limits belong to [the app](../../app/README.md#project-opening).
 
@@ -251,8 +266,8 @@ state becoming either core Session fields or the strategy's own schema.
 The current `adele_product` value is intentionally minimal:
 `Session(id, taskId, strategyId)`. Canonical Session identity is distinct from
 strategy-owned Session state, Environment authority, presentation state, and
-execution resources. Chat currently keeps its canonical state in its backend's
-in-memory store, separately from the core product store.
+execution resources. Chat owns a generation-local backend cache backed by its own
+relational schema for durable Sessions, separately from the core product store.
 
 Three kinds of identity must not be conflated:
 
@@ -275,8 +290,13 @@ must fail when stale rather than silently migrate. Permanent semantic binding
 is not a lifetime pin to one activation generation. A caller retaining an exact
 selection, including a frontend bound to its owning backend, must validate that
 selection; merely starting another Run does not make a stale selection fresh.
-Replacement also does not imply automatic migration of plugin-owned Session
-state. See [the orchestration package](../../packages/orchestration/README.md)
+Replacement does not migrate live plugin objects: a fresh backend loads compatible
+plugin-owned state from durable storage on actual access. If Chat is absent,
+Project reopen still succeeds, its tables remain untouched, and Session identity
+and Environment association remain explicit. Resolving the missing strategy fails;
+it does not delete the Session or substitute another strategy. See
+[plugin persistence](plugin-system.md#plugin-owned-state-and-persistence) and
+[the orchestration package](../../packages/orchestration/README.md)
 for the current resolution and execution contracts.
 
 ## Session and Environment authority
@@ -285,9 +305,14 @@ Semantic IDs identify product objects; they do not themselves grant execution
 or filesystem authority. The canonical Session value deliberately does not
 contain its live authority or Environment materialization.
 
-Current `ProductLifecycleCoordinator.createSession` validates an existing Task
-and its primary or explicitly selected same-Task Environment, then publishes the
-Session and separate `SessionEnvironmentAuthority` together in memory.
+`ProductLifecycleCoordinator.createSession` validates the existing Task, exact
+strategy selection, and primary or explicitly selected same-Task Environment
+before allocating an ID. It then revalidates the strategy and checks live identity
+conflicts. For a durable Project, one SQL transaction commits Session identity and
+its Environment association before publishing the Session and separate
+`SessionEnvironmentAuthority` together in memory. SQL failure publishes neither;
+there is no volatile fallback. Explicit `createProject` fixtures retain volatile
+creation. Reopen restores the association without acquiring a live facet.
 `InMemoryProductStore.requireSessionAuthority` is the authoritative lookup for
 that association. Environment existence and ownership are not a promise of
 current provider readiness.
@@ -295,8 +320,8 @@ current provider readiness.
 The host uses this lifecycle-owned relationship to capture coherent authorized
 Environment facets through `EnvironmentRuntime`. A transported Session, Run, or
 Environment ID cannot select an arbitrary Environment or grant a remote plugin
-another authority. Live bindings, materializations, and host-issued authority are
-not canonical Session identity. See [operation-scoped host calls](contracts-and-capabilities.md#operation-scoped-host-calls)
+another authority. Live bindings, materializations, and host-issued tokens are
+not canonical Session identity or persisted associations. See [operation-scoped host calls](contracts-and-capabilities.md#operation-scoped-host-calls)
 for the deeper authority and transport boundary; it is not an OS sandbox.
 
 ## Run
@@ -347,17 +372,18 @@ durable product identity or state:
 - host authority tokens;
 - active Run execution objects.
 
-Restoration should resolve and validate fresh live bindings from durable semantic
-identities and retained state, not serialize these executable objects. Preserving
-an identity does not make a missing provider/strategy available or authorize
-fallback to a different one. Re-establishing runtime authority is distinct from
-loading semantic data.
+When an operation needs runtime resources, restoration resolves and validates fresh
+live bindings from durable semantic identities and retained state, not serialized
+executable objects. Core graph loading itself does not resolve them. Preserving an
+identity does not make a missing provider/strategy available or authorize fallback
+to a different one. Re-establishing runtime authority is distinct from loading
+semantic data.
 
 `InMemoryProductStore` remains the live product graph. [Project storage](#project-storage)
-loads the validated Project/Task/Environment graph into it, not live bindings or
-Session authority. It remains the canonical runtime graph rather than a SQL
-facade. Persistence beyond this boundary and complete runtime restoration remain
-future work, not an implied extension of the private database.
+loads the validated Project/Task/Environment/Session graph and reconstructs its
+semantic Session/Environment associations, not live bindings or access tokens.
+It remains the canonical runtime graph rather than a SQL facade. Plugin state is
+loaded by its owner separately; complete runtime restoration is not implied.
 
 ## Core-owned and plugin-owned durable state
 
@@ -367,11 +393,11 @@ their core relationships. Core must preserve those invariants independently of
 which optional plugins or presentations are active.
 
 Strategy/plugin-specific durable state remains with its semantic owner. Chat
-conversation and the Draft Request described by [product direction](../product/development-workflow/README.md#10-persistent-draft-request)
-belong to Chat, not the core Session schema; other plugins own their own associated
-state. This is ownership architecture, not a claim that persistent Draft Request
-or generic plugin storage is implemented. Core must not absorb plugin schemas
-merely because persistence is eventually required.
+conversation/configuration belongs to Chat, not the core Session schema; other
+plugins own their own associated state. The Draft Request described by
+[product direction](../product/development-workflow/README.md#10-persistent-draft-request)
+also belongs to Chat but is not persisted by this slice. The shared storage service
+does not transfer plugin schemas or validation into core.
 
 Host persistence facilities may support these owners without making plugin state
 ordinary cascading configuration or window layout part of Session state. The
@@ -386,6 +412,7 @@ those distinctions, including domains where external systems remain authoritativ
 | Canonical immutable product values and IDs | [`packages/product/`](../../packages/product/), `Project`, `Task`, `Environment`, `Session`, `RunId` |
 | Product lifecycle and Session/Environment authority | [`app/lib/core/product_lifecycle.dart`](../../app/lib/core/product_lifecycle.dart), `ProductLifecycleCoordinator`, `InMemoryProductStore.requireSessionAuthority` |
 | Private Project SQL and migration coordination | [`app/lib/core/project_database.dart`](../../app/lib/core/project_database.dart), `ProjectDatabase`, `MigrationCoordinator` |
+| Session-scoped plugin storage | [`packages/project_storage/lib/adele_project_storage.dart`](../../packages/project_storage/lib/adele_project_storage.dart), [`app/lib/core/project_storage_host.dart`](../../app/lib/core/project_storage_host.dart) |
 | Live Environment materialization | [`app/lib/core/product_lifecycle.dart`](../../app/lib/core/product_lifecycle.dart), `EnvironmentRuntime`, `EnvironmentMaterialization` |
 | Project selection and backing contracts | [`packages/core_extensions/`](../../packages/core_extensions/), `ProjectSelectorContribution`, `ProjectProviderService`, `ProjectBacking` |
 | Provider-neutral Environment contract | [`packages/environment/`](../../packages/environment/), `EnvironmentProvider`, authorized read/mutation/process facets |
@@ -399,6 +426,8 @@ those distinctions, including domains where external systems remain authoritativ
 records the product-domain decision rationale and history.
 [ADR 0033](../adr/0033-durable-project-storage-and-provider-backing.md) records
 durable Project storage and provider-selected backing.
+[ADR 0034](../adr/0034-plugin-owned-relational-session-storage.md) amends its
+storage scope for Sessions and plugin-owned relational state.
 [ADR 0030](../adr/0030-recursive-typed-plugin-extension-model.md) records the
 core/plugin extension ownership decision; [ADR 0022](../adr/0022-agent-execution-semantic-foundation.md)
 retains the earlier Run execution rationale, not the current universal Session

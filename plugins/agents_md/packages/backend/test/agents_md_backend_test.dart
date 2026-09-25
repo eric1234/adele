@@ -25,7 +25,8 @@ void main() {
       expect(fixture.requests.single, {
         'kind': 'hostRequest',
         'requestId': isA<int>(),
-        'hostInvocationContext': 'opaque-host-token',
+        'hostContextKind': 'invocation',
+        'hostContext': 'opaque-host-token',
         'serviceId': authorizedEnvironmentReadServiceId,
         'method': authorizedEnvironmentReadServiceReadFileId,
         'payload': {'relativePath': 'AGENTS.md'},
@@ -74,7 +75,7 @@ void main() {
       expect(second.last.revision, 'revision-2');
       expect(third, isEmpty);
       expect(fixture.files.paths, ['AGENTS.md', 'AGENTS.md', 'AGENTS.md']);
-      expect(fixture.requests.map((value) => value['hostInvocationContext']), [
+      expect(fixture.requests.map((value) => value['hostContext']), [
         'first-context',
         'next-context',
         'last-context',
@@ -182,7 +183,8 @@ void main() {
       backend.snapshot(requestId: 42);
       final hostRequest = await backend.next();
       expect(hostRequest['kind'], 'hostRequest');
-      expect(hostRequest['hostInvocationContext'], 'opaque-token');
+      expect(hostRequest['hostContextKind'], 'invocation');
+      expect(hostRequest['hostContext'], 'opaque-token');
       expect(hostRequest['serviceId'], authorizedEnvironmentReadServiceId);
       expect(hostRequest['payload'], {'relativePath': 'AGENTS.md'});
       expect(hostRequest.containsKey('pluginId'), isFalse);

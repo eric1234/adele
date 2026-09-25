@@ -1,0 +1,77 @@
+# ADELE Project Storage
+
+`adele_project_storage` is the pure-Dart public contract for host-mediated,
+Session-scoped relational storage. It depends only on `adele_contract`; it exposes
+neither SQLite objects nor database paths, filesystem operations, or execution
+authority. The application and the stock Chat backend are its concrete consumers.
+
+This service has a separate package because persistence is neither an immutable
+product value, an orchestration operation, a provider-selection extension point,
+nor generic transport machinery. Its schema semantics belong to the calling
+plugin; the application-private `ProjectDatabase` owns the shared connection.
+See [dependency rules](../../docs/architecture/dependency-rules.md) and
+[ADR 0034](../../docs/adr/0034-plugin-owned-relational-session-storage.md).
+
+## Service
+
+`ProjectStorageService` is supplied through an exact backend generation's
+infrastructure context, not through a Run's `hostInvocationContext` and not through
+Capability discovery. The host derives the schema owner from that connection's
+`PluginId`. Requests contain no owner, Project override, path, or generation ID.
+
+Every method takes a core Session ID. The host validates Session -> Task -> open
+Project without resolving a strategy or materializing an Environment.
+
+| Method | Semantics |
+| --- | --- |
+| `isDurableSession` | False only for a published Session in an explicitly volatile Project. Unknown Sessions, closed lifecycle, and storage errors fail. |
+| `ensureSchemaForSession` | Apply owner-defined SQL migrations and owner-version metadata atomically. The list length is the current version; each entry advances it once, starting at 1. Current pre-release owners supply only their current v1 baseline. |
+| `queryForSession` | Execute one read-only statement and return immutable `RelationalRow.values` maps. |
+| `transactionForSession` | Commit all `RelationalStatement` operations together; an SQL error or `expectedRows` mismatch rolls back the batch. |
+
+The latter three methods require a durable Project. Explicit volatility is not a
+fallback after failure. State initialization is separate from core Session
+creation; a plugin may lazily create its own rows on first actual state access.
+
+Named SQL parameters include the SQLite parameter prefix, for example SQL
+`WHERE session_id = :session` with parameters `{':session': sessionId}`. Parameters
+and row values support only strings, integers, and null. Transport maps are not an
+opaque JSON storage format. SQL tables remain ordinary inspectable relational data.
+
+A query response is bounded to 1,000 rows and 1 MiB of encoded row data. Excess or
+unsupported values fail rather than truncate; consumers must page larger histories.
+A single oversized row fails explicitly. Queries require unique column names.
+Each transaction operation is one statement; schema migration SQL may contain
+multiple statements. Owners must not issue transaction-control SQL themselves.
+
+## Ownership And Failure
+
+One Project database serves core and plugin owners. Plugins operate on their own
+tables and may reference published core identities by foreign key, but must not
+mutate or redefine core rows. Session scope selects the Project database; it is not
+row-level SQL isolation. The current native plugin model is not a malicious-SQL
+sandbox, SQL parser, or table-prefix enforcement framework. Arbitrary plugin-to-
+plugin relational contracts remain deferred.
+
+The host revalidates generation access when a queued service method actually runs.
+Generation retirement revokes access; a replacement needs a fresh context and
+loads durable state anew. Grant tokens are transient transport authority, never
+persisted state. Normal writes commit before successful responses, but loss of a
+transport acknowledgment after commit can leave an uncertain caller outcome. There
+is no automatic retry, operation deduplication, or distributed transaction with
+Runs/model/tool effects.
+
+## Validation
+
+`lib/adele_project_storage.dart` is the declaration source. Its generated sibling
+is ignored and materialized through `dart tools/adele.dart generate`. Contract
+round-trip, immutable-data, and scalar-subset tests run with:
+
+```sh
+dart tools/adele.dart test --target adele_project_storage
+```
+
+Application integration lives in `app/test/core/project_storage_host_test.dart`
+and `app/test/core/durable_chat_session_integration_test.dart`. See the canonical
+[testing map](../../docs/development/testing.md) and
+[generation-scoped host services](../../docs/architecture/contracts-and-capabilities.md).

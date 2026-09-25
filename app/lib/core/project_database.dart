@@ -4,9 +4,10 @@ import 'dart:io';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_product/adele_product.dart';
-import 'package:sqlite3/sqlite3.dart';
+import 'package:adele_project_storage/adele_project_storage.dart';
+import 'package:sqlite3/sqlite3.dart' hide Session;
 
-/// Private application persistence for one Project, not a plugin storage API.
+/// Private application persistence for one Project. The connection stays here.
 final class ProjectDatabase {
   ProjectDatabase._(this._database, this.path, this._root, this._relativePath);
 
@@ -50,6 +51,18 @@ final class ProjectDatabase {
             );
             CREATE UNIQUE INDEX adele_product_primary_environment
               ON adele_product_environments(task_id) WHERE role = 'primary';
+            CREATE TABLE adele_product_sessions (
+              id TEXT PRIMARY KEY,
+              task_id TEXT NOT NULL,
+              strategy_id TEXT NOT NULL,
+              FOREIGN KEY (task_id) REFERENCES adele_product_tasks(id)
+            );
+            CREATE TABLE adele_product_session_environment_authority (
+              session_id TEXT PRIMARY KEY,
+              environment_id TEXT NOT NULL,
+              FOREIGN KEY (session_id) REFERENCES adele_product_sessions(id),
+              FOREIGN KEY (environment_id) REFERENCES adele_product_environments(id)
+            );
           '''),
         ],
       );
@@ -118,9 +131,15 @@ final class ProjectDatabase {
     });
   }
 
-  /// Parses a complete semantic snapshot without consulting Environment providers.
+  /// Parses a complete semantic snapshot without consulting providers or strategies.
   /// The store validates graph relationships and conflicts before publication.
-  ({List<Task> tasks, List<Environment> environments}) loadTaskEnvironments() {
+  ({
+    List<Task> tasks,
+    List<Environment> environments,
+    List<Session> sessions,
+    List<(SessionId, EnvironmentId)> authorities,
+  })
+  loadProductGraph() {
     _requireOpen();
     return _transaction(_database, () {
       final tasks = <Task>[
@@ -151,7 +170,31 @@ final class ProjectDatabase {
           ),
         );
       }
-      return (tasks: tasks, environments: environments);
+      final sessions = <Session>[
+        for (final row in _database.select(
+          'SELECT * FROM adele_product_sessions',
+        ))
+          Session(
+            id: SessionId(_text(row, 'id')),
+            taskId: TaskId(_text(row, 'task_id')),
+            strategyId: OrchestrationStrategyId(_text(row, 'strategy_id')),
+          ),
+      ];
+      final authorities = <(SessionId, EnvironmentId)>[
+        for (final row in _database.select(
+          'SELECT * FROM adele_product_session_environment_authority',
+        ))
+          (
+            SessionId(_text(row, 'session_id')),
+            EnvironmentId(_text(row, 'environment_id')),
+          ),
+      ];
+      return (
+        tasks: tasks,
+        environments: environments,
+        sessions: sessions,
+        authorities: authorities,
+      );
     });
   }
 
@@ -186,6 +229,35 @@ final class ProjectDatabase {
     });
   }
 
+  /// Session identity and its same-Task Environment association commit together.
+  void insertSessionWithAuthority(
+    Session session,
+    EnvironmentId environmentId,
+  ) {
+    _requireOpen();
+    _backingPath(_root, _relativePath);
+    _transaction(_database, () {
+      final environments = _database.select(
+        'SELECT task_id FROM adele_product_environments WHERE id = ?',
+        [environmentId.value],
+      );
+      if (environments.isEmpty ||
+          environments.single['task_id'] != session.taskId.value) {
+        throw StateError('A durable Session requires a same-Task Environment.');
+      }
+      _database.execute(
+        'INSERT INTO adele_product_sessions (id, task_id, strategy_id) '
+        'VALUES (?, ?, ?)',
+        [session.id.value, session.taskId.value, session.strategyId.value],
+      );
+      _database.execute(
+        'INSERT INTO adele_product_session_environment_authority '
+        '(session_id, environment_id) VALUES (?, ?)',
+        [session.id.value, environmentId.value],
+      );
+    });
+  }
+
   /// Refreshes only opaque provider state, never semantic identity/relationships.
   void updateEnvironmentState(Environment environment) {
     _requireOpen();
@@ -207,6 +279,85 @@ final class ProjectDatabase {
       );
       if (_database.updatedRows != 1) {
         throw StateError('The durable Environment identity does not match.');
+      }
+    });
+  }
+
+  /// The calling host service supplies the connection-owned PluginId as owner.
+  void ensurePluginSchema(String ownerId, List<String> migrations) {
+    _requireOpen();
+    if (migrations.isEmpty) {
+      throw ArgumentError('A plugin schema requires its current baseline.');
+    }
+    _backingPath(_root, _relativePath);
+    MigrationCoordinator(_database).migrate(
+      ownerId: ownerId,
+      migrations: [
+        for (final sql in migrations) (database) => database.execute(sql),
+      ],
+    );
+  }
+
+  List<RelationalRow> queryPluginRows(
+    String sql,
+    Map<String, Object?> parameters,
+  ) {
+    _requireOpen();
+    validateRelationalParameters(parameters.values);
+    final statement = _database.prepare(sql, checkNoTail: true);
+    try {
+      if (!statement.isReadOnly) {
+        throw ArgumentError('Storage queries must be read-only.');
+      }
+      final cursor = statement.iterateWith(
+        StatementParameters.named(parameters),
+      );
+      final rows = <RelationalRow>[];
+      var bytes = 2;
+      while (cursor.moveNext()) {
+        if (rows.length == relationalQueryRowLimit) {
+          throw StateError('Relational query exceeds its row limit.');
+        }
+        if (cursor.columnNames.toSet().length != cursor.columnNames.length) {
+          throw const FormatException(
+            'Relational query column names must be unique.',
+          );
+        }
+        final row = RelationalRow(
+          values: Map<String, Object?>.of(cursor.current),
+        );
+        bytes += utf8.encode(jsonEncode({'values': row.values})).length + 1;
+        if (bytes > relationalQueryByteLimit) {
+          throw StateError('Relational query exceeds its byte limit.');
+        }
+        rows.add(row);
+      }
+      return List<RelationalRow>.unmodifiable(rows);
+    } finally {
+      statement.close();
+    }
+  }
+
+  void executePluginTransaction(List<RelationalStatement> statements) {
+    _requireOpen();
+    _backingPath(_root, _relativePath);
+    _transaction(_database, () {
+      for (final operation in statements) {
+        final statement = _database.prepare(operation.sql, checkNoTail: true);
+        try {
+          statement.executeWith(
+            StatementParameters.named(operation.parameters),
+          );
+          if (operation.expectedRows case final expected?) {
+            if (_database.updatedRows != expected) {
+              throw StateError(
+                'Relational mutation affected an unexpected row count.',
+              );
+            }
+          }
+        } finally {
+          statement.close();
+        }
       }
     });
   }

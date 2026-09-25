@@ -7,7 +7,7 @@ import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/project_database.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:sqlite3/sqlite3.dart';
+import 'package:sqlite3/sqlite3.dart' hide Session;
 
 void main() {
   late Directory temporary;
@@ -44,6 +44,8 @@ void main() {
         'adele_product_projects',
         'adele_product_tasks',
         'adele_product_environments',
+        'adele_product_sessions',
+        'adele_product_session_environment_authority',
       ]),
     );
     expect(inspection.select('SELECT * FROM adele_schema_versions'), <Object?>[
@@ -79,6 +81,41 @@ void main() {
           .select('PRAGMA foreign_key_list(adele_product_environments)')
           .single['table'],
       'adele_product_tasks',
+    );
+    expect(
+      inspection
+          .select('PRAGMA table_info(adele_product_sessions)')
+          .map((row) => (row['name'], row['type'], row['notnull'], row['pk'])),
+      [
+        ('id', 'TEXT', 0, 1),
+        ('task_id', 'TEXT', 1, 0),
+        ('strategy_id', 'TEXT', 1, 0),
+      ],
+    );
+    expect(
+      inspection
+          .select(
+            'PRAGMA table_info(adele_product_session_environment_authority)',
+          )
+          .map((row) => (row['name'], row['type'], row['notnull'], row['pk'])),
+      [('session_id', 'TEXT', 0, 1), ('environment_id', 'TEXT', 1, 0)],
+    );
+    expect(
+      inspection
+          .select('PRAGMA foreign_key_list(adele_product_sessions)')
+          .map((row) => (row['from'], row['table'], row['to'])),
+      [('task_id', 'adele_product_tasks', 'id')],
+    );
+    expect(
+      inspection
+          .select(
+            'PRAGMA foreign_key_list(adele_product_session_environment_authority)',
+          )
+          .map((row) => (row['from'], row['table'], row['to'])),
+      unorderedEquals([
+        ('session_id', 'adele_product_sessions', 'id'),
+        ('environment_id', 'adele_product_environments', 'id'),
+      ]),
     );
     expect(
       File(database.path).readAsBytesSync().take(16),
@@ -137,7 +174,7 @@ void main() {
         },
       ]);
       database.close();
-      final graph = _open(backing).loadTaskEnvironments();
+      final graph = _open(backing).loadProductGraph();
       expect(graph.tasks.single.id, task.id);
       expect(graph.tasks.single.projectId, project.id);
       expect(graph.tasks.single.title, task.title);
@@ -159,6 +196,151 @@ void main() {
       );
     },
   );
+
+  test(
+    'Session and authority commit together and reopen as semantic records',
+    () {
+      final database = _open(backing);
+      final project = database.openProject(
+        sourceLocation: source.uri,
+        nextProjectId: () => ProjectId('project'),
+      );
+      final task = Task(
+        id: TaskId('task'),
+        projectId: project.id,
+        title: 'Task',
+      );
+      final environment = _environment(task);
+      database.insertTaskWithPrimaryEnvironment(task, environment);
+      final session = Session(
+        id: SessionId('session'),
+        taskId: task.id,
+        strategyId: OrchestrationStrategyId('dev.adele.test.strategy'),
+      );
+      database.insertSessionWithAuthority(session, environment.id);
+      final inspection = _connect(database.path);
+      expect(inspection.select('SELECT * FROM adele_product_sessions'), [
+        {
+          'id': session.id.value,
+          'task_id': task.id.value,
+          'strategy_id': session.strategyId.value,
+        },
+      ]);
+      expect(
+        inspection.select(
+          'SELECT * FROM adele_product_session_environment_authority',
+        ),
+        [
+          {
+            'session_id': session.id.value,
+            'environment_id': environment.id.value,
+          },
+        ],
+      );
+      database.close();
+      final graph = _open(backing).loadProductGraph();
+      expect(graph.sessions.single.id, session.id);
+      expect(graph.sessions.single.taskId, task.id);
+      expect(graph.sessions.single.strategyId, session.strategyId);
+      expect(graph.authorities, [(session.id, environment.id)]);
+    },
+  );
+
+  test('failed Session COMMIT rolls back both rows and permits retry', () {
+    final database = _open(backing);
+    final project = database.openProject(
+      sourceLocation: source.uri,
+      nextProjectId: () => ProjectId('project'),
+    );
+    final task = Task(id: TaskId('task'), projectId: project.id, title: 'Task');
+    final environment = _environment(task);
+    database.insertTaskWithPrimaryEnvironment(task, environment);
+    final session = Session(
+      id: SessionId('session'),
+      taskId: task.id,
+      strategyId: OrchestrationStrategyId('dev.adele.test.strategy'),
+    );
+    final inspection = _connect(database.path);
+    inspection.execute('''
+      CREATE TABLE deferred_check (
+        session_id TEXT REFERENCES adele_product_sessions(id) DEFERRABLE INITIALLY DEFERRED
+      );
+      CREATE TRIGGER fail_session_commit AFTER INSERT ON adele_product_session_environment_authority
+      BEGIN INSERT INTO deferred_check VALUES ('missing'); END;
+    ''');
+    expect(
+      () => database.insertSessionWithAuthority(session, environment.id),
+      throwsA(
+        isA<SqliteException>().having(
+          (error) => error.causingStatement,
+          'causingStatement',
+          'COMMIT',
+        ),
+      ),
+    );
+    expect(inspection.select('SELECT * FROM adele_product_sessions'), isEmpty);
+    expect(
+      inspection.select(
+        'SELECT * FROM adele_product_session_environment_authority',
+      ),
+      isEmpty,
+    );
+    expect(inspection.select('SELECT * FROM deferred_check'), isEmpty);
+    inspection.execute('DROP TRIGGER fail_session_commit');
+    database.insertSessionWithAuthority(session, environment.id);
+    expect(database.loadProductGraph().authorities, [
+      (session.id, environment.id),
+    ]);
+  });
+
+  test('direct Session writes require same-Task Environment and enforce FKs', () {
+    final database = _open(backing);
+    final project = database.openProject(
+      sourceLocation: source.uri,
+      nextProjectId: () => ProjectId('project'),
+    );
+    final tasks = [
+      for (final id in ['a', 'b'])
+        Task(id: TaskId(id), projectId: project.id, title: id),
+    ];
+    for (final task in tasks) {
+      database.insertTaskWithPrimaryEnvironment(
+        task,
+        _environment(task, id: 'environment-${task.id}'),
+      );
+    }
+    final session = Session(
+      id: SessionId('session'),
+      taskId: tasks.first.id,
+      strategyId: OrchestrationStrategyId('dev.adele.test.strategy'),
+    );
+    for (final id in ['missing', 'environment-b']) {
+      expect(
+        () => database.insertSessionWithAuthority(session, EnvironmentId(id)),
+        throwsStateError,
+      );
+      expect(database.loadProductGraph().sessions, isEmpty);
+      expect(database.loadProductGraph().authorities, isEmpty);
+    }
+    final inspection = _connect(database.path)
+      ..execute('PRAGMA foreign_keys = ON');
+    database.insertSessionWithAuthority(
+      session,
+      EnvironmentId('environment-a'),
+    );
+    for (final sql in [
+      "INSERT INTO adele_product_sessions VALUES ('orphan', 'missing', 'strategy')",
+      "INSERT INTO adele_product_session_environment_authority VALUES ('missing', 'environment-a')",
+      "UPDATE adele_product_session_environment_authority SET environment_id = 'missing'",
+      "INSERT INTO adele_product_session_environment_authority VALUES ('session', 'environment-a')",
+    ]) {
+      expect(() => inspection.execute(sql), throwsA(isA<SqliteException>()));
+    }
+    expect(database.loadProductGraph().sessions.single.id, session.id);
+    expect(database.loadProductGraph().authorities, [
+      (session.id, EnvironmentId('environment-a')),
+    ]);
+  });
 
   test('failed Task commit rolls back both rows and accepts a later retry', () {
     final database = _open(backing);
@@ -192,7 +374,7 @@ void main() {
     expect(inspection.select('SELECT * FROM deferred_check'), isEmpty);
     inspection.execute('DROP TRIGGER fail_task_commit');
     database.insertTaskWithPrimaryEnvironment(task, environment);
-    expect(database.loadTaskEnvironments().tasks.single.id, task.id);
+    expect(database.loadProductGraph().tasks.single.id, task.id);
   });
 
   test('provisional state is rejected and SQL enforces one primary per Task', () {
@@ -211,7 +393,7 @@ void main() {
       () => database.insertTaskWithPrimaryEnvironment(task, provisional),
       throwsStateError,
     );
-    expect(database.loadTaskEnvironments().tasks, isEmpty);
+    expect(database.loadProductGraph().tasks, isEmpty);
     database.insertTaskWithPrimaryEnvironment(task, _environment(task));
     final inspection = _connect(database.path);
     expect(
@@ -226,7 +408,7 @@ void main() {
       [task.id.value, provisional.providerId.value],
     );
     expect(
-      database.loadTaskEnvironments().environments.map((value) => value.role),
+      database.loadProductGraph().environments.map((value) => value.role),
       unorderedEquals([EnvironmentRole.primary, EnvironmentRole.additional]),
     );
   });
@@ -263,9 +445,7 @@ void main() {
       );
       expect(() => database.updateEnvironmentState(invalid), throwsStateError);
       database.close();
-      final retained = _open(
-        backing,
-      ).loadTaskEnvironments().environments.single;
+      final retained = _open(backing).loadProductGraph().environments.single;
       expect(retained.id, original.id);
       expect(retained.taskId, original.taskId);
       expect(retained.role, original.role);
@@ -298,7 +478,7 @@ void main() {
       database.insertTaskWithPrimaryEnvironment(task, _environment(task));
       _connect(database.path).execute(corruption);
       expect(
-        database.loadTaskEnvironments,
+        database.loadProductGraph,
         throwsA(
           anyOf(
             isA<FormatException>(),
@@ -1045,9 +1225,10 @@ ProjectId _unexpectedAllocation() =>
 
 Environment _environment(
   Task task, {
+  String id = 'environment',
   Map<String, Object?>? state = const {'generation': 1},
 }) => Environment(
-  id: EnvironmentId('environment'),
+  id: EnvironmentId(id),
   taskId: task.id,
   role: EnvironmentRole.primary,
   providerId: ProviderId('dev.adele.test.environment'),

@@ -167,6 +167,9 @@ Installed `chat_strategy_backend` uses this boundary with a retained backend-own
 store; the service is defined in Chat's contract, not in orchestration. Prepared
 Session hosting can pin a Run to the exact resolved strategy from the same backend
 connection used by its frontend, without exposing generation identities to plugins.
+Chat's canonical persistence uses a separate generation-scoped
+[Project storage service](../project_storage/README.md), not the start/resume
+invocation context. Run execution and activity remain non-durable.
 
 ## Shared Semantic Values
 
@@ -419,7 +422,7 @@ that explicit user instructions and direct requests take precedence. This is
 plugin-owned guidance, not a generic precedence or repository-instructions API.
 
 There are no kernel, Flutter, app, or plugin-runtime imports. General background
-scheduling, general plugin management, broader Chat UI, persistence, profiles,
+scheduling, general plugin management, broader Chat UI, Run/activity persistence, profiles,
 and child Sessions remain deferred. The generic context contract remains instruction-only. Nested/scoped
 AGENTS.md, aliases/overrides, global/home files, imports, and AGENTS.md caching are
 deferred; time, Skills, roles, and repository maps remain independent, unimplemented

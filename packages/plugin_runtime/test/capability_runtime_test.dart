@@ -131,6 +131,7 @@ void main() {
         ],
       );
       final retained = registry.resolve(capability);
+      expect(connection.validateInfrastructureContext, returnsNormally);
       await expectLater(
         PluginCapabilityActivation.registerAdvertised(
           connection: connection,
@@ -142,7 +143,51 @@ void main() {
         retained.provider.id,
       ]);
       expect(() => retained.requestChannel, returnsNormally);
+      expect(connection.validateInfrastructureContext, returnsNormally);
+      await existing.retire();
+      expect(connection.validateInfrastructureContext, returnsNormally);
       await existing.close();
+    },
+  );
+
+  test(
+    'standalone close revokes before queued infrastructure service entry',
+    () async {
+      final fake = _FakeHost.create(
+        readyFields: {
+          'capabilityExposures': [firstExposure, secondExposure],
+        },
+      );
+      addTearDown(fake.dispose);
+      final host = await fake.start();
+      addTearDown(host.close);
+      final connection = await host.startPlugin(
+        pluginId: 'dev.adele.provider',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      final activation = await PluginCapabilityActivation.registerAdvertised(
+        connection: connection,
+        registry: CapabilityRegistry(),
+      );
+      var effects = 0;
+      // Already-admitted service work can enter before asynchronous retirement ends.
+      final queued = Future<void>.microtask(() {
+        connection.validateInfrastructureContext();
+        effects++;
+      });
+      final rejected = expectLater(
+        queued,
+        throwsA(isA<PluginConnectionClosed>()),
+      );
+      final closing = activation.close();
+      expect(connection.isClosed, isFalse);
+      expect(
+        connection.validateInfrastructureContext,
+        throwsA(isA<PluginConnectionClosed>()),
+      );
+      await rejected;
+      expect(effects, 0);
+      await closing;
     },
   );
 

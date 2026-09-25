@@ -5,6 +5,7 @@ import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_desktop/core/remote_inference_context_host.dart';
 import 'package:adele_desktop/core/resource_cleanup.dart';
 import 'package:adele_environment/adele_environment.dart';
@@ -399,6 +400,8 @@ final class DevelopmentSelfHostingTopology {
       final PluginBackendConnection chatConnection = await host.startPlugin(
         pluginId: chatStrategyPluginId.value,
         artifactUri: artifacts.chatStrategyArtifact.uri,
+        createInfrastructureServices: (connection) =>
+            projectStorageServices(lifecycle, connection),
       );
       chatStrategyActivation = await PluginBackendActivation.registerAdvertised(
         connection: chatConnection,

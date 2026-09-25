@@ -137,7 +137,8 @@ void main() {
       expect(open, {
         'kind': 'hostStreamOpen',
         'requestId': isA<int>(),
-        'hostInvocationContext': 'operation',
+        'hostContextKind': 'invocation',
+        'hostContext': 'operation',
         'serviceId': authorizedEnvironmentProcessServiceId,
         'method': authorizedEnvironmentProcessServiceRunForegroundProcessId,
         'payload': {
@@ -204,7 +205,7 @@ void main() {
       expect(
         fixture.messages
             .where((message) => message['kind'] == 'hostStreamOpen')
-            .map((message) => message['hostInvocationContext']),
+            .map((message) => message['hostContext']),
         ['operation', 'second-operation'],
       );
       final before = fixture.process.settled;
@@ -368,7 +369,8 @@ final class _Fixture {
     final kind = message['kind'];
     if (kind == 'hostStreamAck') return;
     if (kind == 'hostStreamOpen') {
-      if (message['hostInvocationContext'] != token ||
+      if (message['hostContextKind'] != 'invocation' ||
+          message['hostContext'] != token ||
           message['serviceId'] != authorizedEnvironmentProcessServiceId) {
         host.handleResponse({
           'kind': 'hostStreamFailure',
@@ -394,7 +396,8 @@ final class _Fixture {
             _ => throw StateError('Unexpected host call.'),
           },
         }
-        ..remove('hostInvocationContext')
+        ..remove('hostContextKind')
+        ..remove('hostContext')
         ..remove('serviceId'),
       (event) {
         host.handleResponse({

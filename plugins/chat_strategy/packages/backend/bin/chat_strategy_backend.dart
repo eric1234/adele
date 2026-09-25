@@ -6,6 +6,7 @@ import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_orchestration/remote_orchestration.dart';
 import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
+import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:chat_strategy_backend/chat_strategy_backend.dart';
 
 Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
@@ -18,14 +19,24 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   final Object? responsePort = bootstrapMessage['responsePort'];
   final Object? defaultConfigurationContext =
       bootstrapMessage['defaultConfigurationContext'];
+  final Object? hostInfrastructureContext =
+      bootstrapMessage['hostInfrastructureContext'];
   if (bootstrapPort is! SendPort ||
       responsePort is! SendPort ||
-      defaultConfigurationContext is! String) {
+      defaultConfigurationContext is! String ||
+      hostInfrastructureContext is! String) {
     throw ArgumentError.value(bootstrapMessage, 'bootstrapMessage');
   }
 
-  final sessions = ChatSessionStore();
   final hostRequests = AdeleHostRequestMultiplexer(send: responsePort.send);
+  final sessions = ChatSessionStore(
+    storage: ProjectStorageServiceClient(
+      hostRequests.bindInfrastructure(
+        hostInfrastructureContext: hostInfrastructureContext,
+        serviceId: projectStorageServiceId,
+      ),
+    ),
+  );
   final orchestration = ChatRemoteOrchestrationBackend(
     sessions: sessions,
     hostChannel: (context) => hostRequests.bind(

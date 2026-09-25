@@ -214,7 +214,8 @@ void _expectHostRequest(
 ) => expect(request, {
   'kind': 'hostRequest',
   'requestId': isA<int>(),
-  'hostInvocationContext': 'opaque-operation-token',
+  'hostContextKind': 'invocation',
+  'hostContext': 'opaque-operation-token',
   'serviceId': authorizedEnvironmentReadServiceId,
   'method': method,
   'payload': payload,

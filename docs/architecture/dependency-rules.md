@@ -53,6 +53,7 @@ manifests for exact current dependencies, including development-only dependencie
 | [`adele_capabilities`](../../packages/capabilities/pubspec.yaml) | Public: capability/provider identities and routing | No Flutter, host implementations, app, or concrete providers. |
 | [`adele_model_provider`](../../packages/model_provider/pubspec.yaml) | Public: provider-neutral model-provider contract | No Flutter, host implementations, app, or concrete providers. |
 | [`adele_product`](../../packages/product/pubspec.yaml) | Public: product identities and immutable values | No executable orchestration, extension registration, UI, host, or plugin implementation concerns. |
+| [`adele_project_storage`](../../packages/project_storage/pubspec.yaml) | Public: Session-scoped relational storage contract shared by host and plugins | Pure Dart; no SQLite, Flutter, app, host implementation, or concrete plugin dependencies. |
 | [`adele_model_tool`](../../packages/model_tool/pubspec.yaml) | Public: model-tool semantics and transport | No Flutter, host implementations, app, or concrete tools. |
 | [`adele_orchestration`](../../packages/orchestration/pubspec.yaml) | Public: strategy/execution semantics and transport | No `agent_kernel`, other host implementations, Flutter, app, or concrete strategies. |
 | [`adele_environment`](../../packages/environment/pubspec.yaml) | Public: Environment provider and authorized-facet contracts | No Flutter, host implementations, app, or concrete providers. |
@@ -81,6 +82,12 @@ implementations into the normal application runtime.
   `ProviderId` values; the transitive `adele_plugin_api` dependency does not mean
   product owns or consumes extension infrastructure. Do not couple product values
   to orchestration implementations or plugin-specific schemas.
+- **`adele_project_storage`** owns the genuinely shared host/plugin service, not
+  immutable product values, a Run operation, generic transport/channel plumbing,
+  provider-selection extensions, or concrete Chat behavior. Those existing owners
+  are therefore not appropriate homes. `adele_contract` supplies its declarations
+  and generated transport; SQL/schema semantics stay with each plugin. The separate
+  package is justified by this present cross-layer use, not hypothetical reuse.
 - **`adele_ui`** owns public semantic presentation contracts that genuinely need
   Flutter. Do not add Flutter to product, orchestration, or tool packages for
   presentation convenience. App-native bridge implementations and hosting belong
@@ -98,10 +105,19 @@ for bridges and composition. It must not become the implementation owner of
 concrete plugin behavior or define public plugin contracts in application code.
 
 The private Project database and its `sqlite3` dependency belong in `app`, not
-`adele_product`, `adele_core_extensions`, or the provider backend. The provider
-describes source-relative placement through public values; the host owns
-filesystem confinement, schema coordination, connection lifetime, and canonical
-publication. This adds no public persistence package or production plugin import.
+`adele_product`, `adele_project_storage`, `adele_core_extensions`, or a plugin
+backend. The provider describes source-relative placement through public values;
+the host owns filesystem confinement, schema coordination, one connection per
+Project, and canonical publication. `ProjectStorageHost` implements the public
+contract without making application code a public API owner.
+
+`AdeleRuntime` constructs lifecycle before backend bootstrap and supplies the
+generic `projectStorageServices(lifecycle, connection)` factory for every normal
+connection. Transport/runtime packages know only explicit infrastructure
+dispatchers and exact-generation access, not Chat or application database semantics.
+Production composition imports no stock implementation or plugin contract and
+does not special-case a plugin ID to grant storage. See
+[infrastructure access](contracts-and-capabilities.md#generation-scoped-infrastructure-access).
 
 Tests, development tooling, and self-hosting may know concrete stock plugins when
 their role requires it. Keep those dependencies development-only and outside
@@ -127,7 +143,9 @@ It must not depend on `app` / `adele_desktop`, internal host/build packages
 (`plugin_runtime`, `plugin_backend_host`, `plugin_builder`, `contract_codegen`,
 `agent_kernel`), or another plugin's frontend, backend, or private implementation.
 A strategy obtains execution semantics through `adele_orchestration`, not by
-importing `agent_kernel`.
+importing `agent_kernel`. A backend obtains Project storage through
+`adele_project_storage` over `adele_plugin_backend_support`, not by importing the
+app database, linking SQLite to reach its backing, or opening a second connection.
 
 Depending on a public interface is not requiring one implementation to be active.
 Discover compatible registrations at runtime; missing participation follows the
@@ -159,10 +177,10 @@ concrete package layouts belong to local plugin READMEs.
 
 ## Pure-Dart boundary
 
-Product, orchestration, contracts, capability routing, Environment semantics,
-model-provider/tool semantics, backend runtime, and execution mechanics must
-remain usable and testable without Flutter where Flutter is not intrinsic to
-their purpose. Generic plugin APIs, backend support, and internal build/generation
+Product, Project storage contracts, orchestration, contracts, capability routing,
+Environment semantics, model-provider/tool semantics, backend runtime, and execution
+mechanics must remain usable and testable without Flutter where Flutter is not
+intrinsic to their purpose. Generic plugin APIs, backend support, and internal build/generation
 packages also retain Flutter-free production dependency graphs.
 
 `adele_ui` and `adele_desktop` are deliberate Flutter boundaries; plugin frontend

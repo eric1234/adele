@@ -115,7 +115,8 @@ final class _Probe implements RemoteInferenceContextSourceService {
     responses.send({
       'kind': 'hostRequest',
       'requestId': id,
-      'hostInvocationContext': context,
+      'hostContextKind': 'invocation',
+      'hostContext': context,
       'serviceId': service,
       'method': method,
       'payload': payload,

@@ -5,6 +5,7 @@ sources:
   - packages/model_tool/lib/remote_model_tool.dart
   - packages/orchestration/lib/remote_inference_context.dart
   - packages/orchestration/lib/remote_orchestration.dart
+  - packages/project_storage/lib/adele_project_storage.dart
   - plugins/chat_strategy/packages/contract/lib/chat_strategy_contract.dart
   - plugins/resource_inspector/packages/contract/lib/resource_inspector_contract.dart
   - plugins/scripted_model/packages/contract/lib/scripted_model_contract.dart

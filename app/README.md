@@ -21,11 +21,12 @@ and [architecture overview](../docs/architecture/overview.md) for cross-system c
 | App-native implementations of public bridges, including the directory picker | Public presentation/bridge contracts: [UI](../packages/ui/README.md); local-path selection semantics: [Local Directory Project](../plugins/local_directory_project/README.md). |
 | Product lifecycle composition and publication | Product identity definitions: [product model](../docs/architecture/product-model.md), [product package](../packages/product/README.md); provider behavior: [Environment](../packages/environment/README.md), [Git Environment](../plugins/git_environment/README.md). |
 | Private per-Project SQLite hosting, confinement, migrations, and connection lifetime | Source semantics/backing placement: [Project provider contract](../packages/core_extensions/README.md#project-provider) and [Local Directory Project backend](../plugins/local_directory_project/packages/backend/README.md). |
+| Exact-generation mediation of Session-scoped relational storage | Public [Project storage contract](../packages/project_storage/lib/adele_project_storage.dart); plugin schema/state semantics: [plugin persistence](../docs/architecture/plugin-system.md#plugin-owned-state-and-persistence). |
 | Session execution hosting and provider/tool/context adaptation | Public [orchestration](../packages/orchestration/README.md), [model-tool](../packages/model_tool/), and [model-provider](../packages/model_provider/) contracts; generic mechanics in [agent kernel](../packages/agent_kernel/README.md). |
 | Host policy, exact-invocation approval, and Run activity projection | Concrete strategy sequencing, conversation state/history, and grouping: [Chat](../plugins/chat_strategy/README.md). |
 | Generic shell, Session/Inspection hosting, and application-local window state | Tool behavior and bespoke cards: [Filesystem](../plugins/filesystem_tools/README.md), [Command](../plugins/command_tools/README.md), and [Search](../plugins/search_tools/README.md). |
 | Temporary source-checkout provider/model selection | OpenAI protocol, credentials, and provider algorithms: [OpenAI backend](../plugins/openai/packages/backend/README.md). |
-| Live in-memory product graph and fixed startup participation | General installation/Profile management and persistence beyond Project/Task/Environment records remain unimplemented: [profiles and configuration](../docs/architecture/profiles-and-configuration.md), [storage scope](../docs/architecture/product-model.md#storage-scope-and-limits). |
+| Live in-memory product graph and fixed startup participation | General installation/Profile management and complete runtime restoration remain unimplemented: [profiles and configuration](../docs/architecture/profiles-and-configuration.md), [storage scope](../docs/architecture/product-model.md#storage-scope-and-limits). |
 
 ## Normal startup
 
@@ -54,7 +55,10 @@ The runtime owns one `CapabilityRegistry`, one `ExtensionRegistry`, and one
 three; `InferenceContextComposer` uses only the shared extension registry; and
 `ApplicationPluginBootstrap` uses the shared capability and extension registries.
 Lifecycle additionally owns private `ProjectDatabase` instances for durable opens;
-constructing the runtime does not open a database.
+constructing the runtime does not open a database. Lifecycle is constructed before
+bootstrap so the runtime can supply the generic
+`projectStorageServices(lifecycle, connection)` infrastructure factory to every
+backend connection without importing stock plugins.
 
 Normal startup consumes prepared artifacts, never plugin source. Backend and
 frontend availability are independent, but both owners consume the same catalog
@@ -77,12 +81,20 @@ Ready advertisements are adapted by `PluginBackendActivation.registerAdvertised`
 and `createRemoteExtensionAdapters` into existing registries, not an app-specific
 stock activation table.
 
+`PluginBackendHost.startPlugin` invokes `createInfrastructureServices` with the
+actual connection. The resulting storage dispatcher captures connection-owned
+plugin identity and exact-generation validation, not caller-selected ownership.
+Bootstrap supplies the distinct infrastructure context; operation tokens do not
+grant this storage service. See [infrastructure access](../docs/architecture/contracts-and-capabilities.md#generation-scoped-infrastructure-access).
+
 The bootstrap owns per-backend startup rollback, termination observation, and
 registration retirement. Local startup failures are isolated to that attempt;
 shared-host failure affects all its backends. `ready` means bootstrap settled,
 not that every component or a model is usable. Close waits for startup, retires
 owned registrations before closing connections, then closes the shared host.
-It does not retire registrations owned by external callers.
+Infrastructure access is revoked on retirement/rollback before asynchronous
+cleanup, as well as on stop/close/termination. The bootstrap does not retire
+registrations owned by external callers.
 
 | Compile-time define | Deployment location |
 | --- | --- |
@@ -233,10 +245,12 @@ exact `ProviderBinding`, and optional host `validateSelection` callback. Private
 [`ProjectDatabase`](lib/core/project_database.dart) validates source/backing paths
 and symlinks, hosts `sqlite3`, and coordinates explicit SQL migrations. After final
 binding validation, SQLite work is synchronous. After the identity/source commit,
-Tasks and Environments are reconstructed and the complete graph is validated before
-atomic publication into the live store. Environment providers are not consulted:
-retained records can load even when their provider is missing. Later
-provider/frontend retirement does not invalidate the published Project.
+`loadProductGraph` reconstructs Tasks, Environments, Sessions, and their semantic
+Environment associations. `publishRestoredProject` validates the complete graph
+before any live-store mutation. Stored strategies and Environment providers are
+not resolved; missing Chat or an Environment provider does not prevent these
+records loading or cause plugin tables to be touched. Later provider/frontend
+retirement does not invalidate the published Project.
 Schema, reopen/move behavior, and failure rules have one canonical home in
 [Project storage](../docs/architecture/product-model.md#project-storage).
 
@@ -321,7 +335,10 @@ Session creation UI is strategy-neutral: it offers usable contributed presentati
 names and strategy identities, not a compiled Chat choice. `PreparedSessionHost`
 validates presentation/strategy selection and required owning-backend affinity;
 lifecycle validates the semantic strategy and same-Task Environment relationship
-before publishing the Session and its separate authority.
+before ID allocation, revalidates the exact strategy, and checks identity conflicts.
+For a durable Project, Session and authority commit in one SQL transaction before
+live publication. Failure publishes neither; volatile `createProject` fixtures
+remain explicit rather than becoming a database-failure fallback.
 
 [`SessionPresentationHost`](lib/ui/session/session_presentation_host.dart) resolves
 the canonical Session through public [UI](../packages/ui/README.md) contracts.
@@ -330,12 +347,33 @@ identity. Model availability is not a Session-creation requirement. Where requir
 the host validates the strategy's exact owning-backend origin and retains that
 selection; a later Run does not silently refresh a stale pinned selection.
 
+Reopen restores semantic Session/Environment associations, not presentations, live
+facets, or executable bindings. Missing strategy resolution fails explicitly while
+the restored identity remains. See [durable Session lifecycle tests](test/core/durable_session_lifecycle_test.dart).
+
 The window presents one Session and then hides further Task/Session creation;
 before that, another Task can replace the presented Task without navigation back.
 This is a temporary shell constraint, not the canonical Session model. Follow
 [product semantics](../docs/architecture/product-model.md#session),
 [orchestration](../packages/orchestration/README.md), and [Chat](../plugins/chat_strategy/README.md)
 for the respective owners.
+
+### Plugin storage hosting
+
+[`project_storage_host.dart`](lib/core/project_storage_host.dart) implements the
+public `ProjectStorageService`. `ProjectStorageHost` uses
+`ProductLifecycleCoordinator.databaseForSession` to route through Session, Task,
+and the currently open Project. It revalidates the captured infrastructure context
+at service entry, including after generated-dispatcher queueing. Missing/closed
+storage throws; only an explicitly volatile published Session reports non-durable.
+
+`ProjectDatabase` executes bounded queries, owner-schema initialization, and atomic
+statement batches on its existing connection. The app knows no Chat schema or
+history algorithm. The service exposes neither arbitrary owners/paths nor raw
+SQLite handles, but does not enforce SQL table-prefix or row isolation. Follow
+[the canonical storage boundary](../docs/architecture/contracts-and-capabilities.md#session-scoped-relational-storage)
+for value limits and security qualifications, and
+[storage-host tests](test/core/project_storage_host_test.dart) for local checks.
 
 ### Normal Chat interaction
 
@@ -344,6 +382,14 @@ The Chat backend owns conversation state/history and strategy sequencing; its
 interpreted frontend owns history/composer presentation and activity grouping.
 The app owns generic scheduling, Run hosting, provider/tool/context composition,
 execution status, policy, and approvals, not a second Chat implementation.
+
+The backend lazily loads initialized durable Chat history/configuration through
+the shared storage service; Project opening does not hydrate Chat. The host Run
+can already be completed when plugin history storage fails: preserve terminal
+evidence and surface the error, without rollback or hidden retry. Generation-local
+cache, durable state, and transport-uncertainty boundaries live in
+[plugin persistence](../docs/architecture/plugin-system.md#chat-participation)
+and the [Chat README](../plugins/chat_strategy/README.md).
 
 `SessionExecutionController` resolves the currently selected provider binding and
 builds a Session-authorized tool catalog for each new Run. Continuations reuse
@@ -363,7 +409,9 @@ Close blocks new actions and drains accepted Task establishment and Run advancem
 before backend teardown. A quiescent waiting Run is abandoned without resolving
 its approval or executing the pending invocation. Cleanup attempts continue after
 failure; close is resource cleanup, not general cancellation or a bounded deadline.
-No durable history, general Session browser, or Profile system is implied.
+This does not restore live Runs/approvals or introduce a Session browser or Profile
+system. [Durable Chat integration](test/core/durable_chat_session_integration_test.dart)
+exercises the persistence boundary without a paid model.
 
 ## Orchestration hosting
 
@@ -463,7 +511,9 @@ Application changes should use the repository's
 and dependency-boundary checks. Local starting points include
 [`adele_runtime_test.dart`](test/core/adele_runtime_test.dart),
 [`product_lifecycle_test.dart`](test/core/product_lifecycle_test.dart),
-[`durable_project_lifecycle_test.dart`](test/core/durable_project_lifecycle_test.dart), and
+[`durable_project_lifecycle_test.dart`](test/core/durable_project_lifecycle_test.dart),
+[`durable_session_lifecycle_test.dart`](test/core/durable_session_lifecycle_test.dart),
+[`project_storage_host_test.dart`](test/core/project_storage_host_test.dart), and
 [`orchestration_authority_test.dart`](test/core/orchestration_authority_test.dart).
 
 ### Live tests
@@ -475,11 +525,14 @@ validation belongs to the [OpenAI backend](../plugins/openai/packages/backend/RE
 ## Current limits
 
 Project identity/source, Tasks, Environment semantic records, and provider-state
-snapshots are durable; Environment materialization remains lazy and runtime-only.
-Sessions/authority, Runs, Chat, configuration/settings, Profiles, presentation state,
-and general plugin state are not restored across restarts. Task Browser/general
-Session navigation and general Profile/plugin-management UI remain absent. Current
-model-provider selection is the source-checkout seam above, not finished settings.
+snapshots, Sessions, and semantic Environment associations are durable; initialized
+Chat history/configuration is plugin-owned durable state. Environment materialization
+remains lazy and runtime-only. Runs, claims, execution evidence/activity, approval
+restart, native replay, and composer drafts are not persisted. Task Browser/general
+Session navigation, automatic selection/resume, general settings, Profiles,
+configured-provider/credential management, and workbench persistence remain absent.
+Current model-provider selection is the source-checkout seam above, not finished
+settings.
 Intended UX belongs to
 [product direction](../docs/product/README.md); future technical work belongs to
 [technical direction](../docs/direction/README.md) and
@@ -496,6 +549,7 @@ repository-wide deferred-feature ledger here.
 | Frontend generations/activation | [`lib/frontend/application_frontend_bootstrap.dart`](lib/frontend/application_frontend_bootstrap.dart), [`lib/frontend/prepared_frontend.dart`](lib/frontend/prepared_frontend.dart) |
 | Product lifecycle/Environment authority | [`lib/core/product_lifecycle.dart`](lib/core/product_lifecycle.dart): `ProductLifecycleCoordinator`, `EnvironmentRuntime` |
 | Private Project persistence | [`lib/core/project_database.dart`](lib/core/project_database.dart): `ProjectDatabase`, `MigrationCoordinator` |
+| Plugin relational storage mediation | [`lib/core/project_storage_host.dart`](lib/core/project_storage_host.dart): `projectStorageServices`, `ProjectStorageHost` |
 | Session selection/presentation | [`lib/frontend/prepared_session_host.dart`](lib/frontend/prepared_session_host.dart), [`lib/ui/session/session_presentation_host.dart`](lib/ui/session/session_presentation_host.dart) |
 | Session execution/orchestration | [`lib/ui/execution/session_execution_controller.dart`](lib/ui/execution/session_execution_controller.dart), [`lib/core/orchestration_host.dart`](lib/core/orchestration_host.dart) |
 | Model-provider adaptation | [`lib/core/model_provider_host.dart`](lib/core/model_provider_host.dart): `ModelProviderCapabilityAdapter` |

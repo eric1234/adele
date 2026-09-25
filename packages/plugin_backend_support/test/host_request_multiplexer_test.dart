@@ -31,7 +31,8 @@ void main() {
         {
           'kind': 'hostStreamOpen',
           'requestId': 0,
-          'hostInvocationContext': 'scope',
+          'hostContextKind': 'invocation',
+          'hostContext': 'scope',
           'serviceId': 'events',
           'method': 'events.watch',
           'payload': <String, Object?>{},
@@ -295,7 +296,8 @@ void main() {
       expect(sent.single, {
         'kind': 'hostRequest',
         'requestId': isA<int>(),
-        'hostInvocationContext': 'opaque',
+        'hostContextKind': 'invocation',
+        'hostContext': 'opaque',
         'serviceId': 'read',
         'method': 'read.file',
         'payload': {'relativePath': 'AGENTS.md'},
@@ -340,6 +342,92 @@ void main() {
         'payload': 'first result',
       });
       expect(await first, 'first result');
+    },
+  );
+
+  test(
+    'invocation and infrastructure unary/streams share one ID sequence',
+    () async {
+      final sent = <Map<String, Object?>>[];
+      final host = AdeleHostRequestMultiplexer(send: sent.add);
+      addTearDown(host.close);
+      final invocation = host.bind(
+        hostInvocationContext: 'operation',
+        serviceId: 'read',
+      );
+      final infrastructure = host.bindInfrastructure(
+        hostInfrastructureContext: 'generation',
+        serviceId: 'storage',
+      );
+      final first = invocation.request('same.method', {});
+      final second = infrastructure.request('same.method', {});
+      final third = invocation.stream('same.method', {}).toList();
+      final fourth = infrastructure.stream('same.method', {}).toList();
+      final opens = sent
+          .where((message) => message.containsKey('hostContext'))
+          .toList();
+      expect(opens.map((message) => message['requestId']), [0, 1, 2, 3]);
+      expect(opens.map((message) => message['hostContextKind']), [
+        'invocation',
+        'infrastructure',
+        'invocation',
+        'infrastructure',
+      ]);
+      expect(opens.map((message) => message['hostContext']), [
+        'operation',
+        'generation',
+        'operation',
+        'generation',
+      ]);
+      expect(opens[1], {
+        'kind': 'hostRequest',
+        'requestId': 1,
+        'hostContextKind': 'infrastructure',
+        'hostContext': 'generation',
+        'serviceId': 'storage',
+        'method': 'same.method',
+        'payload': <String, Object?>{},
+      });
+      for (final id in [3, 2]) {
+        host.handleResponse({
+          'kind': 'hostStreamItem',
+          'requestId': id,
+          'payload': id,
+        });
+        host.handleResponse({'kind': 'hostStreamDone', 'requestId': id});
+      }
+      for (final id in [1, 0]) {
+        host.handleResponse({
+          'kind': 'hostResponse',
+          'requestId': id,
+          'ok': true,
+          'payload': id,
+        });
+      }
+      expect(await first, 0);
+      expect(await second, 1);
+      expect(await third, [2]);
+      expect(await fourth, [3]);
+      for (final value in ['', 'generation']) {
+        expect(
+          () => host.bindInfrastructure(
+            hostInfrastructureContext: value,
+            serviceId: value == '' ? 'storage' : '',
+          ),
+          throwsArgumentError,
+        );
+      }
+      final pending = infrastructure.request('pending', {});
+      final check = expectLater(pending, throwsStateError);
+      host.close();
+      await check;
+      expect(
+        () => host.bindInfrastructure(
+          hostInfrastructureContext: 'generation',
+          serviceId: 'storage',
+        ),
+        throwsStateError,
+      );
     },
   );
 

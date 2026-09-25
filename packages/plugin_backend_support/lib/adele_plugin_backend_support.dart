@@ -1,4 +1,4 @@
-/// Operation-scoped host calls, independent of host implementation.
+/// Explicitly scoped host calls, independent of host implementation.
 library;
 
 import 'dart:async';
@@ -28,14 +28,21 @@ final class AdeleHostRequestMultiplexer {
   AdeleStreamChannel bind({
     required String hostInvocationContext,
     required String serviceId,
-  }) {
+  }) => _bind('invocation', hostInvocationContext, serviceId);
+
+  /// Binds to the bootstrap grant for this exact backend generation.
+  /// This grants only the host's explicit infrastructure service allowlist.
+  AdeleStreamChannel bindInfrastructure({
+    required String hostInfrastructureContext,
+    required String serviceId,
+  }) => _bind('infrastructure', hostInfrastructureContext, serviceId);
+
+  AdeleStreamChannel _bind(String kind, String context, String serviceId) {
     if (_closed) throw StateError('Host request multiplexer is closed.');
-    if (hostInvocationContext.isEmpty || serviceId.isEmpty) {
-      throw ArgumentError(
-        'Host invocation context and service must be nonempty.',
-      );
+    if (context.isEmpty || serviceId.isEmpty) {
+      throw ArgumentError('Host context and service must be nonempty.');
     }
-    return _HostRequestChannel(this, hostInvocationContext, serviceId);
+    return _HostRequestChannel(this, kind, context, serviceId);
   }
 
   /// Consumes host replies, including late/unknown responses.
@@ -89,6 +96,7 @@ final class AdeleHostRequestMultiplexer {
   }
 
   Stream<Object?> _stream(
+    String contextKind,
     String context,
     String service,
     String method,
@@ -113,7 +121,8 @@ final class AdeleHostRequestMultiplexer {
           _send({
             'kind': 'hostStreamOpen',
             'requestId': requestId,
-            'hostInvocationContext': context,
+            'hostContextKind': contextKind,
+            'hostContext': context,
             'serviceId': service,
             'method': method,
             'payload': payload,
@@ -240,7 +249,8 @@ final class AdeleHostRequestMultiplexer {
   }
 
   Future<Object?> _request(
-    String hostInvocationContext,
+    String contextKind,
+    String context,
     String serviceId,
     String method,
     Map<String, Object?> payload,
@@ -257,7 +267,8 @@ final class AdeleHostRequestMultiplexer {
       _send(<String, Object?>{
         'kind': 'hostRequest',
         'requestId': requestId,
-        'hostInvocationContext': hostInvocationContext,
+        'hostContextKind': contextKind,
+        'hostContext': context,
         'serviceId': serviceId,
         'method': method,
         'payload': payload,
@@ -272,19 +283,25 @@ final class AdeleHostRequestMultiplexer {
 }
 
 final class _HostRequestChannel implements AdeleStreamChannel {
-  const _HostRequestChannel(this._owner, this._context, this._serviceId);
+  const _HostRequestChannel(
+    this._owner,
+    this._contextKind,
+    this._context,
+    this._serviceId,
+  );
 
   final AdeleHostRequestMultiplexer _owner;
+  final String _contextKind;
   final String _context;
   final String _serviceId;
 
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) =>
-      _owner._request(_context, _serviceId, method, payload);
+      _owner._request(_contextKind, _context, _serviceId, method, payload);
 
   @override
   Stream<Object?> stream(String method, Map<String, Object?> payload) =>
-      _owner._stream(_context, _serviceId, method, payload);
+      _owner._stream(_contextKind, _context, _serviceId, method, payload);
 }
 
 final class _HostStream {

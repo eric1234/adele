@@ -13,7 +13,12 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   final SendPort responsePort = bootstrap['responsePort']! as SendPort;
   final ReceivePort commands = ReceivePort();
   if (arguments.first == 'reverse-streams') {
-    _serveHostStreams(bootstrapPort, responsePort, commands);
+    _serveHostStreams(
+      bootstrapPort,
+      responsePort,
+      commands,
+      bootstrap['hostInfrastructureContext'] as String,
+    );
     return;
   }
   final ReceivePort? keepAlive = arguments.first == 'acknowledge-hang'
@@ -90,7 +95,9 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       final request = <String, Object?>{
         'kind': 'hostRequest',
         'requestId': id,
-        'hostInvocationContext': payload['context'],
+        'hostContextKind': payload['contextKind'] ?? 'invocation',
+        'hostContext':
+            payload['context'] ?? bootstrap['hostInfrastructureContext'],
         'serviceId': payload['service'] ?? 'fixtureService',
         'method': payload['method'] ?? 'fixture.invoke',
         'payload': payload['compactDag'] == true
@@ -294,6 +301,14 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
         'payload': bootstrap['startupArgumentsOnly'],
       });
     }
+    if (message['method'] == 'infrastructure-context') {
+      responsePort.send({
+        'kind': 'response',
+        'requestId': message['requestId'],
+        'ok': true,
+        'payload': bootstrap['hostInfrastructureContext'],
+      });
+    }
     if (message['method'] == 'stream-cancel-count') {
       responsePort.send(<String, Object?>{
         'kind': 'response',
@@ -320,6 +335,7 @@ void _serveHostStreams(
   SendPort bootstrap,
   SendPort responses,
   ReceivePort commands,
+  String infrastructureContext,
 ) {
   final host = AdeleHostRequestMultiplexer(send: responses.send);
   final iterators = <int, StreamIterator<Object?>>{};
@@ -335,17 +351,22 @@ void _serveHostStreams(
     final id = message['requestId'] as int;
     final payload = message['payload'] as Map?;
     if (message['kind'] == 'streamOpen') {
-      iterators[id] = StreamIterator(
-        host
-            .bind(
-              hostInvocationContext: payload!['context'] as String,
-              serviceId: payload['service'] as String? ?? 'fixtureService',
+      final service = payload!['service'] as String? ?? 'fixtureService';
+      final channel = payload['contextKind'] == 'infrastructure'
+          ? host.bindInfrastructure(
+              hostInfrastructureContext:
+                  payload['context'] as String? ?? infrastructureContext,
+              serviceId: service,
             )
-            .stream(payload['method'] as String? ?? 'watch', {
-              if (payload['oversize'] == true)
-                'value': 'x' * (8 * 1024 * 1024 + 1),
-              if (payload['compactDag'] == true) 'value': _compactDag(),
-            }),
+          : host.bind(
+              hostInvocationContext: payload['context'] as String,
+              serviceId: service,
+            );
+      iterators[id] = StreamIterator(
+        channel.stream(payload['method'] as String? ?? 'watch', {
+          if (payload['oversize'] == true) 'value': 'x' * (8 * 1024 * 1024 + 1),
+          if (payload['compactDag'] == true) 'value': _compactDag(),
+        }),
       );
     } else if (message['kind'] == 'streamCredit') {
       final iterator = iterators[id];
@@ -397,7 +418,9 @@ void _serveHostStreams(
         'kind': 'response',
         'requestId': id,
         'ok': true,
-        'payload': 'alive',
+        'payload': message['method'] == 'infrastructure-context'
+            ? infrastructureContext
+            : 'alive',
       });
     }
   });

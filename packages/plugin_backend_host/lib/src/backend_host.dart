@@ -126,6 +126,10 @@ final class AdeleBackendHost {
     }
     final String artifactUri = _requireString(message, 'artifactUri');
     final String generation = _requireString(message, 'generation');
+    final String hostInfrastructureContext = _requireString(
+      message,
+      'hostInfrastructureContext',
+    );
     final String defaultConfigurationContext = _requireString(
       message,
       'defaultConfigurationContext',
@@ -145,6 +149,7 @@ final class AdeleBackendHost {
     final _PluginIsolate plugin = await _PluginIsolate.start(
       pluginId: pluginId,
       generation: generation,
+      hostInfrastructureContext: hostInfrastructureContext,
       artifactUri: Uri.parse(artifactUri),
       arguments: rawArguments
           .map((Object? value) => value! as String)
@@ -248,7 +253,8 @@ final class AdeleBackendHost {
       'requestId': id,
       'pluginId': plugin.pluginId,
       'generation': plugin.generation,
-      'hostInvocationContext': request['hostInvocationContext'],
+      'hostContextKind': request['hostContextKind'],
+      'hostContext': request['hostContext'],
       'serviceId': request['serviceId'],
       'method': request['method'],
       'payload': request['payload'],
@@ -286,7 +292,8 @@ final class AdeleBackendHost {
         'requestId': id,
         'pluginId': plugin.pluginId,
         'generation': plugin.generation,
-        'hostInvocationContext': request['hostInvocationContext'],
+        'hostContextKind': request['hostContextKind'],
+        'hostContext': request['hostContext'],
         'serviceId': request['serviceId'],
         'method': request['method'],
         'payload': request['payload'],
@@ -548,6 +555,7 @@ final class _PluginIsolate {
   static Future<_PluginIsolate> start({
     required String pluginId,
     required String generation,
+    required String hostInfrastructureContext,
     required Uri artifactUri,
     required List<String> arguments,
     required String defaultConfigurationContext,
@@ -573,6 +581,7 @@ final class _PluginIsolate {
           'bootstrapPort': bootstrap.sendPort,
           'responsePort': responses.sendPort,
           'defaultConfigurationContext': defaultConfigurationContext,
+          'hostInfrastructureContext': hostInfrastructureContext,
           'startupArgumentsOnly': startupArgumentsOnly,
         },
         onError: errorPort.sendPort,
@@ -894,9 +903,11 @@ final class _PluginIsolate {
         _onHostRequest(this, raw);
         return;
       }
-      if (raw.length != 6 ||
+      if (raw.length != 7 ||
           raw['requestId'] is! int ||
-          raw['hostInvocationContext'] is! String ||
+          (raw['hostContextKind'] != 'invocation' &&
+              raw['hostContextKind'] != 'infrastructure') ||
+          raw['hostContext'] is! String ||
           raw['method'] is! String ||
           (raw['method'] as String).isEmpty ||
           raw['serviceId'] is! String ||
@@ -904,7 +915,7 @@ final class _PluginIsolate {
         throw const FormatException('Malformed host request.');
       }
       adeleValidateServiceId(raw['serviceId'] as String);
-      adeleValidateConfigurationContext(raw['hostInvocationContext'] as String);
+      adeleValidateConfigurationContext(raw['hostContext'] as String);
       adeleSnapshotJsonMap(
         (raw['payload'] as Map).cast<String, Object?>(),
         maxNodes: adelePluginBackendJsonMaxNodes,

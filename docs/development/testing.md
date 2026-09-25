@@ -75,6 +75,7 @@ Representative choices are:
 dart tools/adele.dart test --target adele_desktop
 dart tools/adele.dart test --target adele_tools
 dart tools/adele.dart test --target plugin_runtime
+dart tools/adele.dart test --target adele_project_storage
 dart tools/adele.dart test --target search_tools_backend
 ```
 
@@ -136,6 +137,9 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Project/native picker bridge | [`test/project_opening_test.dart`](../../app/test/project_opening_test.dart), [`test/directory_picker_bridge_test.dart`](../../app/test/directory_picker_bridge_test.dart) |
 | Task/Environment lifecycle | [`test/task_creation_test.dart`](../../app/test/task_creation_test.dart), [`test/core/product_lifecycle_test.dart`](../../app/test/core/product_lifecycle_test.dart) |
 | Durable Project/Task/Environment records | [`test/core/project_database_test.dart`](../../app/test/core/project_database_test.dart), [`test/core/durable_project_lifecycle_test.dart`](../../app/test/core/durable_project_lifecycle_test.dart), [`test/core/durable_task_environment_lifecycle_test.dart`](../../app/test/core/durable_task_environment_lifecycle_test.dart), [`test/core/durable_task_git_integration_test.dart`](../../app/test/core/durable_task_git_integration_test.dart) (fresh runtime and whole-Project move, real SQLite/Git backends) |
+| Durable Session identity/Environment association | [`test/core/durable_session_lifecycle_test.dart`](../../app/test/core/durable_session_lifecycle_test.dart), [`test/core/project_database_test.dart`](../../app/test/core/project_database_test.dart) (complete-graph validation, atomic creation, missing strategy/provider, and no volatile fallback) |
+| Session-scoped plugin storage host | [`test/core/project_storage_host_test.dart`](../../app/test/core/project_storage_host_test.dart) (owner schema, Project routing, scalar/query bounds, atomic batches, explicit volatile distinction, and queued-entry revocation) |
+| Durable Chat across real backend generations | [`test/core/durable_chat_session_integration_test.dart`](../../app/test/core/durable_chat_session_integration_test.dart) (real Local Directory/Git/Chat AOT backends and SQLite with a deterministic native model fixture, no paid provider) |
 | Session presentation/execution/approval | [`test/session_presentation_host_test.dart`](../../app/test/session_presentation_host_test.dart), [`test/session_execution_test.dart`](../../app/test/session_execution_test.dart), [`test/core/approval_gated_tool_policy_test.dart`](../../app/test/core/approval_gated_tool_policy_test.dart) |
 | Orchestration/authority adapters | [`test/core/orchestration_host_test.dart`](../../app/test/core/orchestration_host_test.dart), [`test/core/orchestration_authority_test.dart`](../../app/test/core/orchestration_authority_test.dart), [`test/core/model_tool_host_test.dart`](../../app/test/core/model_tool_host_test.dart), [`test/core/remote_inference_context_integration_test.dart`](../../app/test/core/remote_inference_context_integration_test.dart) |
 | Activity/Inspection | [`test/core/run_activity_projection_test.dart`](../../app/test/core/run_activity_projection_test.dart), [`test/inspection_host_test.dart`](../../app/test/inspection_host_test.dart), [`test/inspection_stack_test.dart`](../../app/test/inspection_stack_test.dart), [`test/openai_activity_frontend_eval_test.dart`](../../app/test/openai_activity_frontend_eval_test.dart) |
@@ -152,6 +156,52 @@ and launcher checks also live in that target:
 [`self_hosting_cli_test.dart`](../../test/tools/self_hosting_cli_test.dart).
 See [developer self-hosting](self-hosting.md#validation-and-source-map) for that
 workflow's source/evidence owners and deterministic-versus-live distinction.
+
+### Focused persistence checks
+
+After bootstrap, regenerate contracts from the repository root when declarations
+or transport consumers change:
+
+```sh
+dart tools/adele.dart generate
+```
+
+For Session/storage work, use selected tests from `app/`, rather than routinely
+running the full application target:
+
+```sh
+flutter test --no-pub test/core/project_database_test.dart test/core/durable_session_lifecycle_test.dart test/core/project_storage_host_test.dart
+flutter test --no-pub --concurrency 1 test/core/durable_chat_session_integration_test.dart
+```
+
+The real-AOT integration needs the pinned Dart AOT toolchain and Git but no live
+provider credentials. It checks durable state across runtime/backend lifetimes,
+not interactive desktop navigation or approval restart. Consult the test source
+for its exact cases; these commands are guidance, not recorded pass results.
+
+The public contract's value/transport checks belong to
+`dart tools/adele.dart test --target adele_project_storage`. Chat-owned store and
+remote settlement cases live in
+[`chat_durable_state_test.dart`](../../plugins/chat_strategy/packages/backend/test/chat_durable_state_test.dart)
+and [`chat_remote_backend_test.dart`](../../plugins/chat_strategy/packages/backend/test/chat_remote_backend_test.dart).
+From `plugins/chat_strategy/packages/backend/`, use:
+
+```sh
+dart test test/chat_durable_state_test.dart test/chat_remote_backend_test.dart
+```
+
+The maintained `chat_strategy_backend` target is the broader package check from
+the root. These tests complement app integration for corruption, failed writes,
+canonical-cache ordering, and explicit volatile behavior.
+
+Infrastructure grants also require focused transport/lifecycle validation in
+[`plugin_runtime/test/extension_runtime_test.dart`](../../packages/plugin_runtime/test/extension_runtime_test.dart),
+[`plugin_backend_host/test/plugin_termination_test.dart`](../../packages/plugin_backend_host/test/plugin_termination_test.dart),
+and [`plugin_backend_support/test/host_request_multiplexer_test.dart`](../../packages/plugin_backend_support/test/host_request_multiplexer_test.dart).
+Use the owning package's direct tests or maintained target. Check workspace,
+generation configuration, analysis/test discovery, and app production dependency
+boundaries when changing `adele_project_storage` wiring; passing only direct
+contract tests does not establish repository integration.
 
 ## Native build and runtime smoke
 

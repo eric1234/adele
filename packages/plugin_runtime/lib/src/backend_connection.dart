@@ -186,11 +186,18 @@ final class PluginBackendHost {
 
   /// [startupArgumentsOnly] conveys explicit-configuration intent to the backend.
   /// It is bootstrap metadata, not process-environment isolation.
+  /// [createInfrastructureServices] supplies only explicitly granted services for
+  /// this exact connection. Dispatchers remain caller-owned. Capture the connection's
+  /// [PluginBackendConnection.validateInfrastructureContext] for service-entry checks.
   Future<PluginBackendConnection> startPlugin({
     required String pluginId,
     required Uri artifactUri,
     List<String> arguments = const <String>[],
     bool startupArgumentsOnly = false,
+    Map<String, AdeleBackendDispatcher> Function(
+      PluginBackendConnection connection,
+    )?
+    createInfrastructureServices,
   }) async {
     if (_plugins.containsKey(pluginId)) {
       throw StateError('Plugin $pluginId is already connected.');
@@ -210,12 +217,21 @@ final class PluginBackendHost {
     _startingPlugins[pluginId] = connection;
     bool readyReceived = false;
     try {
+      final services =
+          createInfrastructureServices?.call(connection) ??
+          const <String, AdeleBackendDispatcher>{};
+      for (final serviceId in services.keys) {
+        adeleValidateServiceId(serviceId);
+      }
+      connection.validateInfrastructureContext();
+      connection._infrastructure._services.addAll(services);
       final Map<String, Object?> response = await _command(
         kind: 'startPlugin',
         pluginId: pluginId,
         fields: <String, Object?>{
           'artifactUri': artifactUri.toString(),
           'generation': connection._generation,
+          'hostInfrastructureContext': connection._infrastructure.id,
           'arguments': List<String>.of(arguments, growable: false),
           'startupArgumentsOnly': startupArgumentsOnly,
           'defaultConfigurationContext':
@@ -242,6 +258,7 @@ final class PluginBackendHost {
       _plugins[pluginId] = connection;
       return connection;
     } on Object {
+      connection.revokeInfrastructureContext();
       if (readyReceived && !connection.isClosed) {
         try {
           await _stopPlugin(connection).timeout(_shutdownTimeout);
@@ -284,6 +301,7 @@ final class PluginBackendHost {
 
   Future<void> _stopPlugin(PluginBackendConnection connection) async {
     connection._closing = true;
+    connection.revokeInfrastructureContext();
     connection._revokeHostInvocations();
     final String pluginId = connection.pluginId;
     final PluginConnectionClosed stopped = PluginConnectionClosed(
@@ -310,6 +328,7 @@ final class PluginBackendHost {
     }
     _shuttingDown = true;
     for (final connection in [..._plugins.values, ..._startingPlugins.values]) {
+      connection.revokeInfrastructureContext();
       connection._revokeHostInvocations();
     }
     if (graceful) {
@@ -601,12 +620,12 @@ final class PluginBackendHost {
   }
 
   Future<void> _handleHostRequest(Map<String, Object?> message) async {
-    if (message.length != 9 ||
+    if (message.length != 10 ||
         message['protocolVersion'] != backendHostProtocolVersion ||
         message['requestId'] is! int ||
         message['pluginId'] is! String ||
         message['generation'] is! String ||
-        message['hostInvocationContext'] is! String ||
+        !_validHostContext(message) ||
         message['serviceId'] is! String ||
         message['method'] is! String ||
         !_isStringKeyedMap(message['payload']) ||
@@ -614,41 +633,43 @@ final class PluginBackendHost {
       _hostProtocolViolation('Malformed host request from shared host.');
       return;
     }
-    final connection = _plugins[message['pluginId']];
-    final invocation =
-        connection?._hostInvocations[message['hostInvocationContext']];
+    final connection =
+        _plugins[message['pluginId']] ?? _startingPlugins[message['pluginId']];
+    final grant = connection?._hostGrant(message);
+    final revoked = _hostContextRevoked(message);
     bool isLive() =>
         !_closed &&
         !_shuttingDown &&
         connection != null &&
         !connection.isClosed &&
-        _plugins[connection.pluginId] == connection &&
+        (_plugins[connection.pluginId] == connection ||
+            _startingPlugins[connection.pluginId] == connection) &&
         connection._generation == message['generation'] &&
-        invocation != null &&
-        !invocation.isClosed;
+        grant != null &&
+        !grant.isClosed;
     if (!isLive()) {
-      _sendHostResponse(message, _hostInvocationRevoked);
+      _sendHostResponse(message, revoked);
       return;
     }
-    final dispatcher = invocation!._services[message['serviceId']];
+    final dispatcher = grant!._services[message['serviceId']];
     if (dispatcher == null) {
       _sendHostResponse(
         message,
         _hostFailure(
           'service_unavailable',
-          'The service is not approved for this invocation.',
+          'The service is not approved for this host context.',
         ),
       );
       return;
     }
     final requestId = message['requestId'] as int;
-    if (invocation._pending.containsKey(requestId)) {
+    if (grant._pending.containsKey(requestId)) {
       _hostProtocolViolation('Duplicate active host request from shared host.');
       return;
     }
     void settle(Map<String, Object?> response) =>
         _sendHostResponse(message, response);
-    invocation._pending[requestId] = settle;
+    grant._pending[requestId] = settle;
     Map<String, Object?> response;
     try {
       response = await dispatcher.dispatch(<Object?, Object?>{
@@ -675,8 +696,8 @@ final class PluginBackendHost {
       );
     }
     // Revocation already settled and removed this response, independently of host code.
-    if (invocation._pending.remove(requestId) == null) return;
-    settle(isLive() ? response : _hostInvocationRevoked);
+    if (grant._pending.remove(requestId) == null) return;
+    settle(isLive() ? response : revoked);
   }
 
   bool _acceptHostRequestId(Object? id) {
@@ -697,12 +718,12 @@ final class PluginBackendHost {
         message['generation'] is! String ||
         message.length !=
             (open
-                ? 9
+                ? 10
                 : credit
                 ? 6
                 : 5) ||
         (open &&
-            (message['hostInvocationContext'] is! String ||
+            (!_validHostContext(message) ||
                 message['serviceId'] is! String ||
                 message['method'] is! String ||
                 !_isStringKeyedMap(message['payload']))) ||
@@ -718,9 +739,7 @@ final class PluginBackendHost {
     }
     if (open) {
       try {
-        adeleValidateConfigurationContext(
-          message['hostInvocationContext'] as String,
-        );
+        adeleValidateConfigurationContext(message['hostContext'] as String);
         adeleValidateServiceId(message['serviceId'] as String);
         if ((message['method'] as String).isEmpty) {
           throw const AdeleProtocolException('Empty host stream method.');
@@ -739,23 +758,22 @@ final class PluginBackendHost {
         _hostProtocolViolation('Replayed reverse stream ID from shared host.');
         return;
       }
-      final connection = _plugins[message['pluginId']];
-      final invocation =
-          connection?._hostInvocations[message['hostInvocationContext']];
+      final connection =
+          _plugins[message['pluginId']] ??
+          _startingPlugins[message['pluginId']];
+      final grant = connection?._hostGrant(message);
       final live =
           !_closed &&
           !_shuttingDown &&
           connection != null &&
           !connection.isClosed &&
           connection._generation == message['generation'] &&
-          invocation != null &&
-          !invocation.isClosed;
-      final dispatcher = live
-          ? invocation._services[message['serviceId']]
-          : null;
+          grant != null &&
+          !grant.isClosed;
+      final dispatcher = live ? grant._services[message['serviceId']] : null;
       final stream = _HostServiceStream(
         message,
-        live ? invocation : null,
+        live ? grant : null,
         dispatcher,
       );
       _hostStreams[id] = stream;
@@ -766,13 +784,13 @@ final class PluginBackendHost {
           error: live
               ? _hostFailure(
                   'service_unavailable',
-                  'The service is not approved for this invocation.',
+                  'The service is not approved for this host context.',
                 )['error']
-              : _hostInvocationRevoked['error'],
+              : _hostContextRevoked(message)['error'],
         );
         return;
       }
-      invocation!._streams.add(stream);
+      grant!._streams.add(stream);
       _dispatchHostStream(stream, {
         'kind': 'streamOpen',
         'requestId': id,
@@ -898,7 +916,7 @@ final class PluginBackendHost {
   }) {
     if (stream.terminal) return;
     stream.terminal = true;
-    stream.invocation?._streams.remove(stream);
+    stream.grant?._streams.remove(stream);
     // Revoke output first, initiate producer cancellation, then acknowledge it.
     // Never await user cleanup or let its failure replace the operation failure.
     if (cancel && stream.dispatcher != null) {
@@ -1290,6 +1308,11 @@ final class PluginBackendConnection implements AdeleStreamChannel {
   List<AdeleExtensionExposure> _extensionExposures = const [];
   List<AdeleExtensionExposure> get extensionExposures => _extensionExposures;
   final Map<String, PluginHostInvocation> _hostInvocations = {};
+  late final _HostServiceGrant _infrastructure = _HostServiceGrant(
+    this,
+    const {},
+    _hostInfrastructureRevoked,
+  );
   late final ConfigurationContextId defaultConfigurationContext =
       ConfigurationContextId._(this, 'default');
   final Completer<Object> _termination = Completer<Object>();
@@ -1298,6 +1321,32 @@ final class PluginBackendConnection implements AdeleStreamChannel {
 
   bool get isClosed => _closed || _closing || _host.isClosed;
   Future<Object> get terminated => _termination.future;
+
+  /// Revalidates this generation's infrastructure grant at service entry, including
+  /// calls queued by a generated dispatcher before retirement. Never re-resolves.
+  void validateInfrastructureContext() {
+    if (isClosed ||
+        _host._shuttingDown ||
+        _infrastructure.isClosed ||
+        (_host._plugins[pluginId] != this &&
+            _host._startingPlugins[pluginId] != this)) {
+      throw const PluginConnectionClosed(
+        'The host infrastructure context is not active for this connection generation.',
+      );
+    }
+  }
+
+  /// Permanently revokes infrastructure before any asynchronous cleanup. Pending
+  /// calls and streams settle without waiting for caller-owned service code.
+  void revokeInfrastructureContext() => _infrastructure.close();
+
+  _HostServiceGrant? _hostGrant(Map<String, Object?> message) =>
+      switch (message['hostContextKind']) {
+        'invocation' => _hostInvocations[message['hostContext']]?._grant,
+        'infrastructure' when message['hostContext'] == _infrastructure.id =>
+          _infrastructure,
+        _ => null,
+      };
 
   /// Grants only these services to this exact connection until synchronous close.
   /// Dispatchers remain caller-owned; their cleanup need not block revocation.
@@ -1384,6 +1433,7 @@ final class PluginBackendConnection implements AdeleStreamChannel {
 
   void _finish(Object reason) {
     _closed = true;
+    revokeInfrastructureContext();
     _revokeHostInvocations();
     _host._hostStreams.removeWhere(
       (_, stream) =>
@@ -1398,43 +1448,61 @@ final class PluginHostInvocation {
   PluginHostInvocation._(
     this._owner,
     Map<String, AdeleBackendDispatcher> services,
+  ) : _grant = _HostServiceGrant(_owner, services, _hostInvocationRevoked);
+
+  final PluginBackendConnection _owner;
+  final _HostServiceGrant _grant;
+  String get id => _grant.id;
+  bool get isClosed => _grant.isClosed;
+
+  /// Immediately revokes authority and settles pending responses, without waiting
+  /// for arbitrary service code or taking ownership of dispatcher cleanup.
+  void close() {
+    _owner._hostInvocations.remove(id);
+    _grant.close();
+  }
+}
+
+final class _HostServiceGrant {
+  _HostServiceGrant(
+    this._owner,
+    Map<String, AdeleBackendDispatcher> services,
+    this._revoked,
   ) : _services = Map.of(services);
 
   final PluginBackendConnection _owner;
   final String id = _opaqueHostId();
+  final Map<String, Object?> _revoked;
   final Map<String, AdeleBackendDispatcher> _services;
   final Map<int, void Function(Map<String, Object?>)> _pending = {};
   final Set<_HostServiceStream> _streams = {};
   bool _closed = false;
   bool get isClosed => _closed;
 
-  /// Immediately revokes authority and settles pending responses, without waiting
-  /// for arbitrary service code or taking ownership of dispatcher cleanup.
   void close() {
     if (_closed) return;
     _closed = true;
-    _owner._hostInvocations.remove(id);
     _services.clear();
     for (final stream in _streams.toList()) {
       _owner._host._finishHostStream(
         stream,
         'hostStreamFailure',
-        error: _hostInvocationRevoked['error'],
+        error: _revoked['error'],
         cancel: true,
       );
     }
     final pending = _pending.values.toList();
     _pending.clear();
     for (final settle in pending) {
-      settle(_hostInvocationRevoked);
+      settle(_revoked);
     }
   }
 }
 
 final class _HostServiceStream {
-  _HostServiceStream(this.request, this.invocation, this.dispatcher);
+  _HostServiceStream(this.request, this.grant, this.dispatcher);
   final Map<String, Object?> request;
-  final PluginHostInvocation? invocation;
+  final _HostServiceGrant? grant;
   final AdeleBackendDispatcher? dispatcher;
   int credit = 0;
   bool terminal = false;
@@ -1456,6 +1524,22 @@ final Map<String, Object?> _hostInvocationRevoked = _hostFailure(
   'host_invocation_unavailable',
   'The host invocation is not active for this connection generation.',
 );
+
+final Map<String, Object?> _hostInfrastructureRevoked = _hostFailure(
+  'host_infrastructure_unavailable',
+  'The host infrastructure context is not active for this connection generation.',
+);
+
+bool _validHostContext(Map<String, Object?> message) =>
+    (message['hostContextKind'] == 'invocation' ||
+        message['hostContextKind'] == 'infrastructure') &&
+    message['hostContext'] is String &&
+    (message['hostContext'] as String).isNotEmpty;
+
+Map<String, Object?> _hostContextRevoked(Map<String, Object?> message) =>
+    message['hostContextKind'] == 'infrastructure'
+    ? _hostInfrastructureRevoked
+    : _hostInvocationRevoked;
 
 final class _ConfigurationContextChannel implements AdeleStreamChannel {
   const _ConfigurationContextChannel(

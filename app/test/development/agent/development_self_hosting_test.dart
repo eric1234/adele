@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
+import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_desktop/core/remote_inference_context_host.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_orchestration/remote_orchestration.dart';
@@ -330,6 +331,8 @@ void main() {
       final replacementConnection = await topology.host.startPlugin(
         pluginId: chatStrategyPluginId.value,
         artifactUri: artifacts.chatStrategyArtifact.uri,
+        createInfrastructureServices: (connection) =>
+            projectStorageServices(topology.lifecycle, connection),
       );
       final replacement = await PluginBackendActivation.registerAdvertised(
         connection: replacementConnection,
