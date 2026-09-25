@@ -25,7 +25,7 @@ and [architecture overview](../docs/architecture/overview.md) for cross-system c
 | Host policy, exact-invocation approval, and Run activity projection | Concrete strategy sequencing, conversation state/history, and grouping: [Chat](../plugins/chat_strategy/README.md). |
 | Generic shell, Session/Inspection hosting, and application-local window state | Tool behavior and bespoke cards: [Filesystem](../plugins/filesystem_tools/README.md), [Command](../plugins/command_tools/README.md), and [Search](../plugins/search_tools/README.md). |
 | Temporary source-checkout provider/model selection | OpenAI protocol, credentials, and provider algorithms: [OpenAI backend](../plugins/openai/packages/backend/README.md). |
-| Live in-memory product graph and fixed startup participation | General installation/Profile management and persistence beyond Project identity/source remain unimplemented: [profiles and configuration](../docs/architecture/profiles-and-configuration.md), [storage scope](../docs/architecture/product-model.md#storage-scope-and-limits). |
+| Live in-memory product graph and fixed startup participation | General installation/Profile management and persistence beyond Project/Task/Environment records remain unimplemented: [profiles and configuration](../docs/architecture/profiles-and-configuration.md), [storage scope](../docs/architecture/product-model.md#storage-scope-and-limits). |
 
 ## Normal startup
 
@@ -232,8 +232,10 @@ matching semantic IDs. See [selector ownership](../docs/architecture/plugin-syst
 exact `ProviderBinding`, and optional host `validateSelection` callback. Private
 [`ProjectDatabase`](lib/core/project_database.dart) validates source/backing paths
 and symlinks, hosts `sqlite3`, and coordinates explicit SQL migrations. After final
-binding validation, SQLite work is synchronous and the identity/source transaction
-commits before the Project enters the live store and window presentation. Later
+binding validation, SQLite work is synchronous. After the identity/source commit,
+Tasks and Environments are reconstructed and the complete graph is validated before
+atomic publication into the live store. Environment providers are not consulted:
+retained records can load even when their provider is missing. Later
 provider/frontend retirement does not invalidate the published Project.
 Schema, reopen/move behavior, and failure rules have one canonical home in
 [Project storage](../docs/architecture/product-model.md#project-storage).
@@ -282,13 +284,36 @@ without a Git-specific provider selection. Provider resolution belongs to lifecy
 and the capability registry; the selected provider owns source suitability and
 establishment.
 
-Only establishment success publishes the Task and finalized primary Environment.
+For durable Projects, establishment success is followed by one SQLite transaction
+that inserts the Task and finalized primary Environment. Only a successful commit
+publishes them in the live store and retains their materialization. Provisional
+null provider state is never persisted, and database failure never falls back to
+volatile publication. External resources created by successful establishment cannot
+yet be generically rolled back if the subsequent database commit fails.
+Development/fixture Projects created by `createProject` remain in memory only.
+
 The UI presents returned canonical values and exact live availability, without
 decoding opaque provider state or restoring a binding just to render status.
 Successful publication survives later provider retirement even when its retained
 materialization becomes unavailable. See [lifecycle source](lib/core/product_lifecycle.dart),
 [lifecycle tests](test/core/product_lifecycle_test.dart), [Task UI tests](test/task_creation_test.dart),
 and the [Environment](../packages/environment/README.md) / [Git provider](../plugins/git_environment/README.md) owners.
+
+Reopening loads Tasks, Environment semantic records, and opaque provider-state
+snapshots without materializing them. Explicit materialization resolves the recorded
+provider through a fresh binding and invokes restore. Refreshed provider state is
+committed before in-memory replacement and final binding-readiness validation; a
+subsequently stale binding does not roll the committed snapshot back. The stock Git
+provider can restore its existing checkout after moving the complete Project,
+including `.git`, `.adele/data.db`, and `.adele/worktrees`.
+If a refresh commit fails after provider restore bound live state, the old core
+snapshot remains; recovery may require a fresh provider generation rather than a
+same-generation retry. There is no generic release/rollback contract.
+The shell says `No Task selected` while its window-local Task is null, even when
+restored Tasks exist; `New Task` remains available subject to provider readiness.
+There is no automatic selection, Task Browser, or resume/navigation policy.
+See [durable Task lifecycle tests](test/core/durable_task_environment_lifecycle_test.dart)
+and [fresh-runtime Git restart/move integration](test/core/durable_task_git_integration_test.dart).
 
 ### Session lifecycle
 
@@ -449,11 +474,13 @@ validation belongs to the [OpenAI backend](../plugins/openai/packages/backend/RE
 
 ## Current limits
 
-Only Project identity/source are durable. Tasks, Environments/provider state,
-Sessions/authority, Runs, Chat, configuration, Profiles, and general plugin state
-are not restored across restarts. Task Browser/general Session navigation and
-general Profile/plugin-management UI remain absent. Current model-provider selection is
-the source-checkout seam above, not finished settings. Intended UX belongs to
+Project identity/source, Tasks, Environment semantic records, and provider-state
+snapshots are durable; Environment materialization remains lazy and runtime-only.
+Sessions/authority, Runs, Chat, configuration/settings, Profiles, presentation state,
+and general plugin state are not restored across restarts. Task Browser/general
+Session navigation and general Profile/plugin-management UI remain absent. Current
+model-provider selection is the source-checkout seam above, not finished settings.
+Intended UX belongs to
 [product direction](../docs/product/README.md); future technical work belongs to
 [technical direction](../docs/direction/README.md) and
 [profiles architecture](../docs/architecture/profiles-and-configuration.md), not a

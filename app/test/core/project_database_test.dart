@@ -1,6 +1,8 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/project_database.dart';
 import 'package:adele_product/adele_product.dart';
@@ -22,7 +24,7 @@ void main() {
     );
   });
 
-  test('initializes only metadata and Project v1 in ordinary SQLite', () {
+  test('initializes metadata and the complete product v1 baseline', () {
     final ProjectDatabase database = _open(backing);
     expect(
       database.path,
@@ -40,6 +42,8 @@ void main() {
       unorderedEquals(<String>[
         'adele_schema_versions',
         'adele_product_projects',
+        'adele_product_tasks',
+        'adele_product_environments',
       ]),
     );
     expect(inspection.select('SELECT * FROM adele_schema_versions'), <Object?>[
@@ -53,6 +57,30 @@ void main() {
     );
     expect(inspection.select('SELECT * FROM adele_product_projects'), isEmpty);
     expect(
+      inspection
+          .select('PRAGMA table_info(adele_product_tasks)')
+          .map((row) => row['name']),
+      ['id', 'project_id', 'title'],
+    );
+    expect(
+      inspection
+          .select('PRAGMA table_info(adele_product_environments)')
+          .map((row) => row['name']),
+      ['id', 'task_id', 'role', 'provider_id', 'provider_state_json'],
+    );
+    expect(
+      inspection
+          .select('PRAGMA foreign_key_list(adele_product_tasks)')
+          .single['table'],
+      'adele_product_projects',
+    );
+    expect(
+      inspection
+          .select('PRAGMA foreign_key_list(adele_product_environments)')
+          .single['table'],
+      'adele_product_tasks',
+    );
+    expect(
       File(database.path).readAsBytesSync().take(16),
       'SQLite format 3\x00'.codeUnits,
     );
@@ -61,6 +89,226 @@ void main() {
       isFalse,
     );
   });
+
+  test(
+    'Task and primary Environment commit together and nested JSON reloads',
+    () {
+      final database = _open(backing);
+      final project = database.openProject(
+        sourceLocation: source.uri,
+        nextProjectId: () => ProjectId('project'),
+      );
+      final task = Task(
+        id: TaskId('task'),
+        projectId: project.id,
+        title: 'Retained title',
+      );
+      final state = <String, Object?>{
+        'text': 'provider-owned snapshot',
+        'nested': <String, Object?>{
+          'list': <Object?>[
+            null,
+            true,
+            false,
+            42,
+            1.25,
+            <String, Object?>{'key': 'value'},
+          ],
+        },
+        'empty': <Object?>[],
+      };
+      final environment = _environment(task, state: state);
+      database.insertTaskWithPrimaryEnvironment(task, environment);
+      final inspection = _connect(database.path);
+      expect(inspection.select('SELECT * FROM adele_product_tasks'), [
+        {
+          'id': task.id.value,
+          'project_id': project.id.value,
+          'title': task.title,
+        },
+      ]);
+      expect(inspection.select('SELECT * FROM adele_product_environments'), [
+        {
+          'id': environment.id.value,
+          'task_id': task.id.value,
+          'role': 'primary',
+          'provider_id': environment.providerId.value,
+          'provider_state_json': jsonEncode(state),
+        },
+      ]);
+      database.close();
+      final graph = _open(backing).loadTaskEnvironments();
+      expect(graph.tasks.single.id, task.id);
+      expect(graph.tasks.single.projectId, project.id);
+      expect(graph.tasks.single.title, task.title);
+      final retained = graph.environments.single;
+      expect(retained.id, environment.id);
+      expect(retained.taskId, task.id);
+      expect(retained.role, EnvironmentRole.primary);
+      expect(retained.providerId, environment.providerId);
+      expect(retained.providerState, state);
+      expect(
+        () => retained.providerState!['new'] = true,
+        throwsUnsupportedError,
+      );
+      expect(
+        () =>
+            (retained.providerState!['nested'] as Map<String, Object?>)['new'] =
+                true,
+        throwsUnsupportedError,
+      );
+    },
+  );
+
+  test('failed Task commit rolls back both rows and accepts a later retry', () {
+    final database = _open(backing);
+    final project = database.openProject(
+      sourceLocation: source.uri,
+      nextProjectId: () => ProjectId('project'),
+    );
+    final task = Task(
+      id: TaskId('task'),
+      projectId: project.id,
+      title: 'Atomic Task',
+    );
+    final environment = _environment(task);
+    final inspection = _connect(database.path);
+    inspection.execute('''
+      CREATE TABLE deferred_check (
+        task_id TEXT REFERENCES adele_product_tasks(id) DEFERRABLE INITIALLY DEFERRED
+      );
+      CREATE TRIGGER fail_task_commit AFTER INSERT ON adele_product_environments
+      BEGIN INSERT INTO deferred_check VALUES ('missing'); END;
+    ''');
+    expect(
+      () => database.insertTaskWithPrimaryEnvironment(task, environment),
+      throwsA(isA<SqliteException>()),
+    );
+    expect(inspection.select('SELECT * FROM adele_product_tasks'), isEmpty);
+    expect(
+      inspection.select('SELECT * FROM adele_product_environments'),
+      isEmpty,
+    );
+    expect(inspection.select('SELECT * FROM deferred_check'), isEmpty);
+    inspection.execute('DROP TRIGGER fail_task_commit');
+    database.insertTaskWithPrimaryEnvironment(task, environment);
+    expect(database.loadTaskEnvironments().tasks.single.id, task.id);
+  });
+
+  test('provisional state is rejected and SQL enforces one primary per Task', () {
+    final database = _open(backing);
+    final project = database.openProject(
+      sourceLocation: source.uri,
+      nextProjectId: () => ProjectId('project'),
+    );
+    final task = Task(
+      id: TaskId('task'),
+      projectId: project.id,
+      title: 'One primary',
+    );
+    final provisional = _environment(task, state: null);
+    expect(
+      () => database.insertTaskWithPrimaryEnvironment(task, provisional),
+      throwsStateError,
+    );
+    expect(database.loadTaskEnvironments().tasks, isEmpty);
+    database.insertTaskWithPrimaryEnvironment(task, _environment(task));
+    final inspection = _connect(database.path);
+    expect(
+      () => inspection.execute(
+        "INSERT INTO adele_product_environments VALUES ('second', ?, 'primary', ?, '{}')",
+        [task.id.value, provisional.providerId.value],
+      ),
+      throwsA(isA<SqliteException>()),
+    );
+    inspection.execute(
+      "INSERT INTO adele_product_environments VALUES ('additional', ?, 'additional', ?, '{}')",
+      [task.id.value, provisional.providerId.value],
+    );
+    expect(
+      database.loadTaskEnvironments().environments.map((value) => value.role),
+      unorderedEquals([EnvironmentRole.primary, EnvironmentRole.additional]),
+    );
+  });
+
+  test(
+    'refresh writes only provider state and requires matching semantic identity',
+    () {
+      final database = _open(backing);
+      final project = database.openProject(
+        sourceLocation: source.uri,
+        nextProjectId: () => ProjectId('project'),
+      );
+      final task = Task(
+        id: TaskId('task'),
+        projectId: project.id,
+        title: 'Refresh',
+      );
+      final original = _environment(task);
+      database.insertTaskWithPrimaryEnvironment(task, original);
+      final refreshed = _environment(
+        task,
+        state: {
+          'generation': 2,
+          'nested': [true, null],
+        },
+      );
+      database.updateEnvironmentState(refreshed);
+      final invalid = Environment(
+        id: original.id,
+        taskId: original.taskId,
+        role: EnvironmentRole.additional,
+        providerId: original.providerId,
+        providerState: {},
+      );
+      expect(() => database.updateEnvironmentState(invalid), throwsStateError);
+      database.close();
+      final retained = _open(
+        backing,
+      ).loadTaskEnvironments().environments.single;
+      expect(retained.id, original.id);
+      expect(retained.taskId, original.taskId);
+      expect(retained.role, original.role);
+      expect(retained.providerId, original.providerId);
+      expect(retained.providerState, refreshed.providerState);
+    },
+  );
+
+  for (final corruption in [
+    "UPDATE adele_product_tasks SET id = ' invalid'",
+    "UPDATE adele_product_tasks SET title = ' '",
+    "UPDATE adele_product_environments SET id = ''",
+    "UPDATE adele_product_environments SET role = 'unknown'",
+    "UPDATE adele_product_environments SET provider_id = 'invalid provider'",
+    "UPDATE adele_product_environments SET provider_state_json = 'null'",
+    "UPDATE adele_product_environments SET provider_state_json = '[]'",
+    "UPDATE adele_product_environments SET provider_state_json = '{broken'",
+  ]) {
+    test('rejects malformed semantic values: $corruption', () {
+      final database = _open(backing);
+      final project = database.openProject(
+        sourceLocation: source.uri,
+        nextProjectId: () => ProjectId('project'),
+      );
+      final task = Task(
+        id: TaskId('task'),
+        projectId: project.id,
+        title: 'Valid title',
+      );
+      database.insertTaskWithPrimaryEnvironment(task, _environment(task));
+      _connect(database.path).execute(corruption);
+      expect(
+        database.loadTaskEnvironments,
+        throwsA(
+          anyOf(
+            isA<FormatException>(),
+            isA<ArgumentError>(),
+            isA<InvalidCapabilityIdentity>(),
+          ),
+        ),
+      );
+    });
+  }
 
   test(
     'allocates once and commits before return, then reopens the identity',
@@ -338,6 +586,19 @@ void main() {
       'committed',
     );
     expect(database.select('PRAGMA table_info(synthetic)'), hasLength(1));
+    expect(
+      () => coordinator.migrate(
+        ownerId: 'test.owner',
+        migrations: migrations.take(1).toList(),
+      ),
+      throwsStateError,
+    );
+    expect(
+      database
+          .select('SELECT version FROM adele_schema_versions')
+          .single['version'],
+      2,
+    );
   });
 
   for (final Object? invalidVersion in <Object?>[-1, 'invalid', 1.5]) {
@@ -781,3 +1042,14 @@ Database _connect(String path) {
 
 ProjectId _unexpectedAllocation() =>
     throw TestFailure('Unexpected Project ID allocation.');
+
+Environment _environment(
+  Task task, {
+  Map<String, Object?>? state = const {'generation': 1},
+}) => Environment(
+  id: EnvironmentId('environment'),
+  taskId: task.id,
+  role: EnvironmentRole.primary,
+  providerId: ProviderId('dev.adele.test.environment'),
+  providerState: state,
+);

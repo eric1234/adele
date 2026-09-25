@@ -312,7 +312,7 @@ void main() {
         final String relativePath = state['worktreeRelativePath']! as String;
         expect(relativePath, matches(r'^\.adele/worktrees/[^/]+$'));
         expect(state, <String, Object?>{
-          'schemaVersion': 2,
+          'schemaVersion': 1,
           'environmentId': created.environment.id.value,
           'sourceRelativePath': 'packages/source',
           'worktreeRelativePath': relativePath,

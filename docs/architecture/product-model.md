@@ -6,8 +6,9 @@ Implementation status: Partial
 
 This document defines the shared product-domain semantics and ownership that
 ADELE core and unrelated plugins must agree on. It combines accepted constraints
-with the current implementation. Project identity and source have per-Project
-SQLite storage; other product and Chat state remain in memory. Elsewhere,
+with the current implementation. Project identity/source, Tasks, Environment
+semantic records, and provider-state snapshots have per-Project SQLite storage;
+Sessions, Runs, Chat, and general plugin state remain in memory. Elsewhere,
 "durable" describes semantic lifetime across execution attempts and live resource
 generations, not a claim that every such record survives application restart.
 
@@ -71,12 +72,27 @@ The current schema is deliberately small:
 | --- | --- |
 | `adele_schema_versions(owner_id, version)` | Host migration metadata, keyed by semantic schema owner. |
 | `adele_product_projects(id, source_location)` | Product owner `dev.adele.product`, schema version 1; the database holds one Project's stable ID and current source URI. |
+| `adele_product_tasks(id, project_id, title)` | Task identity, Project foreign key, and title. |
+| `adele_product_environments(id, task_id, role, provider_id, provider_state_json)` | Environment identity, Task foreign key, semantic role, provider identity, and opaque JSON provider-state snapshot. |
+
+All product tables belong to `dev.adele.product` schema version **1**. This is the
+current pre-release baseline, not a history of development schemas. Earlier
+development databases may be deleted/recreated; there are no product upgrade
+steps, legacy-shape recognition, or transitional reads. Generic owner-version
+coordination remains in place for a future declared storage-compatibility baseline.
+
+Roles are strings (`primary`, `additional`), not enum ordinals. A partial unique
+index on Environment `task_id` where `role = 'primary'` prevents multiple primary
+Environments. Only finalized, non-null provider state is stored, as JSON object
+text rather than a serialized Environment. Core generically encodes/decodes the
+snapshot and uses the ordinary immutable `Environment` validation; it does not
+interpret provider-specific fields.
 
 Private `MigrationCoordinator` applies ordered owner migrations and version
-updates in a transaction. Product owns its table semantics and migration SQL;
+updates in a transaction. Product owns its table semantics and initialization SQL;
 generic host coordination does not become the semantic owner of future plugin
 tables. Other owners' tables and version records remain untouched, not adopted or
-deleted by the product migration. There is no public plugin migration registry or
+deleted by product initialization. There is no public plugin migration registry or
 persistence API.
 Unsupported, malformed, or newer core storage must fail non-destructively,
 not be reset, downgraded, assigned replacement identity, or hidden behind volatile
@@ -88,10 +104,14 @@ ID without allocating another. Moving the source together with its database,
 then reopening it, preserves that ID and commits the newly selected source URI.
 The historical URI must remain valid local-source data, but need not be addressable
 on the current host; only the new selected location undergoes filesystem checks.
-Project reopening does not automatically load or restore Environment records or
-create a recent-project catalog. The stock [Git Environment](../../plugins/git_environment/README.md)
-can explicitly restore retained relative provider state after a Project move;
-core still does not persist that state across application restart.
+Project reopening loads Tasks and Environment semantic records, including their
+provider-state snapshots, without allocating replacement identities or invoking
+Environment providers. Provider availability is not required to load these records.
+Materialization remains explicit: the stock [Git Environment](../../plugins/git_environment/README.md)
+can restore the existing checkout from its retained Project-relative state after
+restarting or moving the complete Project, including `.git`, the database, and
+`.adele/worktrees`. Opening itself does not repair or materialize that checkout.
+There is no recent-project catalog or automatic Task selection/resume.
 Within one lifecycle, reopening the same backing/source returns the published
 Project; a conflicting already-open location for that ID fails rather than
 retargeting live state. Complete copy/move conflict management is not implied.
@@ -110,10 +130,15 @@ Every prepared selector also requires exact same-installation backend ownership,
 as defined by the [plugin system](plugin-system.md#project-selector-ownership).
 Cancellation is a no-op; missing, failed, or retired participants cannot be replaced
 inside an in-flight operation. SQLite work follows the final validation
-synchronously, with the identity/source transaction committed before publication
-in `InMemoryProductStore`. No asynchronous generation change can interleave that
-commit/publication sequence. Later retirement does not invalidate a published
-Project or permanently pin it to the opening generations.
+synchronously. The identity/source transaction commits first; all Task and
+Environment rows are then parsed into semantic values before
+`InMemoryProductStore.publishRestoredProject` validates the complete graph and
+publishes it. Validation requires same-Project Tasks, same-Task Environments,
+exactly one finalized primary Environment per Task, and no conflicting IDs;
+invalid values or relationships publish nothing into the live store. No
+asynchronous generation change can interleave this sequence. Later retirement
+does not invalidate a published Project or permanently pin it to the opening
+generations.
 
 Runtime close stops new lifecycle work, joins accepted Project provider calls and
 database cleanup with backend teardown, and rejects late publication after closing
@@ -124,10 +149,11 @@ an OS picker to close or promise general cancellation or bounded completion.
 
 ### Storage scope and limits
 
-Only Project identity and source are currently stored across restarts. Tasks,
-Environments and provider state, Sessions and Session/Environment authority,
-Runs, Chat, configuration, Profiles, and general plugin state are not made durable
-by this database. Live bindings and authority must never be serialized.
+Project identity/source, Tasks, Environment semantic records, and Environment
+provider-state snapshots survive Project reopen/restart. Sessions and
+Session/Environment authority, Runs, Chat, configuration/settings, Profiles,
+presentation state, and general plugin state remain non-durable. Live bindings,
+materializations, and authority must never be serialized.
 
 Small synchronous host operations can block on filesystem/SQLite work. Confinement
 is preflight validation, not a guarantee against hostile concurrent filesystem
@@ -170,7 +196,18 @@ Core Task lifecycle coordinates establishment and association through the
 selected provider. Presentation invokes that lifecycle; it neither creates a
 Git worktree directly nor owns the Task-to-Environment relationship.
 Task and finalized primary Environment publish together only after provider
-success. Subsequent generation retirement does not undo successful publication.
+success. For a lifecycle-owned durable Project, one SQLite transaction inserts
+both records and commits before in-memory publication and retention of the live
+materialization. The provisional Environment is never stored. Provider failure or
+database failure publishes neither record; there is no volatile fallback.
+`createProject` remains volatile through lifecycle-owned database membership, not
+URI heuristics, and its Tasks retain the in-memory-only behavior.
+Subsequent generation retirement does not undo successful publication.
+
+Establishment can create provider-owned external resources before the database
+commit. If that later commit fails, core prevents semantic publication but cannot
+generically undo those external effects: no Environment release/destruction
+contract exists yet. Core does not implement provider-specific cleanup.
 
 The immutable product `Environment` records its identity, Task relationship,
 role, provider identity, and opaque provider-state snapshot. Core retains and
@@ -182,12 +219,21 @@ Retained provider state is not evidence that the binding is currently usable.
 `EnvironmentRuntime` can restore retained state through a fresh binding to the
 recorded provider identity; it does not substitute another provider merely
 because that provider is available. Existing captured materializations and facets
-never silently migrate to the replacement. This in-process rematerialization is
-implemented, but does not establish disk persistence or application-restart
-recovery. Successfully refreshed provider state is retained even if the restored
-binding retires before final readiness validation; retained state and executable
+never silently migrate to the replacement. A freshly reopened Environment has no
+live materialization until explicitly requested. A missing recorded provider
+makes that request fail without deleting, substituting, or rewriting the semantic
+record. Successful restore refreshes only provider state, preserving Environment
+ID, Task ID, role, and provider ID. For durable Projects the refresh commits to
+SQLite before replacing the in-memory snapshot; volatile Projects only replace
+in memory. Successfully committed refreshed state is retained even if the restored
+binding retires before final readiness validation; semantic progress and executable
 readiness remain distinct. The [Environment package](../../packages/environment/README.md)
 maps the provider-neutral contract and its local representations.
+
+If the database refresh fails, core retains the previous snapshot and publishes no
+new materialization. The provider may already have bound live state during restore;
+without a release or idempotent-restore contract, retry in that same generation is
+not guaranteed. Recovery can require a fresh provider generation.
 
 ## Session
 
@@ -308,9 +354,10 @@ fallback to a different one. Re-establishing runtime authority is distinct from
 loading semantic data.
 
 `InMemoryProductStore` remains the live product graph. [Project storage](#project-storage)
-loads only Project identity/source into it; the other records and authority are
-not restored across restarts. General product/plugin persistence and complete
-restoration remain future work, not an implied extension of the private database.
+loads the validated Project/Task/Environment graph into it, not live bindings or
+Session authority. It remains the canonical runtime graph rather than a SQL
+facade. Persistence beyond this boundary and complete runtime restoration remain
+future work, not an implied extension of the private database.
 
 ## Core-owned and plugin-owned durable state
 

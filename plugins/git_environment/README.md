@@ -21,20 +21,19 @@ under `repository/selected/project/.adele/worktrees/<allocated-name>`. Its live
 Environment root is the corresponding `selected/project` directory inside that
 checkout, not the checkout root or original Project source.
 
-Provider-state schema **v2** contains exactly these fields, stored opaquely by core:
+Provider-state schema **v1** contains exactly these fields, stored opaquely by core:
 
 | Field | Meaning |
 | --- | --- |
-| `schemaVersion` | Integer `2`; v1 is not accepted. |
+| `schemaVersion` | Integer `1`; other versions are rejected. |
 | `environmentId` | Exact retained Environment identity. |
 | `sourceRelativePath` | Selected source relative to its Git worktree root, using forward slashes; empty for a repository-root source. |
 | `worktreeRelativePath` | Project-source-relative `.adele/worktrees/<allocated-name>`, using forward slashes. |
 | `branch` | Exact provider-created Task branch. |
 | `baselineCommit` | Exact full commit identity at establishment. |
 
-The old absolute `sourcePath`, `repositoryPath`, `commonGitDirectory`, and
-`worktreePath` fields are absent, not retained as diagnostics or restoration
-authority. Development reports can derive current absolute paths separately.
+Absolute paths are not part of provider state or restoration authority.
+Development reports can derive current absolute paths separately.
 State validation rejects missing/extra fields, incorrect types/versions, mismatched
 Environment identity, invalid Git identities, and malformed relative paths.
 Storage paths cannot be absolute, traversing, URI-shaped, or backslash-separated.
@@ -46,7 +45,7 @@ ignore ergonomics for local operational state remain separate policy work.
 
 ## Restoration and moves
 
-Restoration uses the **current** canonical Project source and relative v2 state.
+Restoration uses the **current** canonical Project source and relative v1 state.
 The selected source must still have the exact retained source-relative scope.
 Git's `worktree list --porcelain -z` inventory identifies the registration for the
 retained exact branch. Healthy registration at the expected path needs no repair.
@@ -68,7 +67,7 @@ the retained branch at the expected path. Repair success alone is not authority:
 the provider then validates the actual linked worktree, current common Git
 directory, exact branch, exact baseline commit, and confined selected source scope
 before binding a fresh `WorktreeEnvironment`. Successful restoration returns
-canonical relative v2 state, normally unchanged by a move.
+canonical relative v1 state, normally unchanged by a move.
 
 A missing worktree fails explicitly. Restore never creates a replacement
 Environment, branch, worktree, or collision suffix. Unsupported/failed repair
@@ -86,10 +85,12 @@ clears those objects without removing Git worktrees. Failed establishment publis
 nothing and performs best-effort branch/worktree cleanup only with sufficient
 ownership evidence and revalidated confined storage paths.
 
-This supports explicitly retained state across provider generations and whole-Project
-moves. **Core does not yet persist or automatically reload Task/Environment records
-or provider state across application restart.** Project database reopening alone
-does not restore Environments.
+This supports restoration across fresh runtime generations and whole-Project moves.
+Core retains the opaque state with the Task/Environment graph; reopening a Project
+loads semantic records without invoking Git restoration. Explicit Environment
+materialization restores the live checkout. See the
+[product model](../../docs/architecture/product-model.md#environment) for the
+core-owned lifecycle boundary.
 
 ## Filesystem and processes
 

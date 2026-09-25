@@ -108,9 +108,10 @@ general cancellation, rollback of external effects, or a shutdown deadline.
 
 ## Consequences
 
-Only Project identity and source are durable in the current implementation.
-Tasks, Environments and provider state, Sessions and authority, Runs, Chat,
-configuration, Profiles, and general plugin state gain no disk persistence.
+The current implementation persists Project identity/source, Tasks, and Environment
+semantic records and provider-state snapshots. Environment materialization remains
+lazy and runtime-only. Sessions and authority, Runs, Chat, configuration, Profiles,
+and general plugin state gain no disk persistence.
 `createProject` remains explicitly volatile for development and deterministic
 fixtures, not a fallback for failed durable opening.
 

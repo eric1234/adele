@@ -126,10 +126,12 @@ state nor grant execution or approval authority.
 ## Configuration and persistence
 
 Profiles and general configuration are accepted architecture but largely
-unimplemented. Project identity/source use host-owned per-Project SQLite with
-provider-selected backing; other product and ordinary plugin state remain
-non-durable. The live product graph is still in memory. Configuration, durable
-product state, plugin-owned state, live runtime state, security policy, and
+unimplemented. Project identity/source, Tasks, and Environment semantic records
+and provider-state snapshots use host-owned per-Project SQLite with provider-selected
+backing. Environment materialization stays lazy/runtime-only; Sessions, Runs, Chat,
+and general plugin state remain non-durable. The live product graph is still in
+memory. Configuration, durable product state, plugin-owned state, live runtime
+state, security policy, and
 workbench state are separate concerns, not one generic settings object. See
 [profiles and configuration](profiles-and-configuration.md),
 [Project storage](product-model.md#project-storage) and
