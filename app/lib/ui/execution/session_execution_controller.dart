@@ -30,7 +30,7 @@ final class SessionExecutionController extends ChangeNotifier {
     this.onChanged,
     this.onActivityChanged,
   }) : _runtime = runtime,
-       _runIds = runIds ?? MonotonicRunIdSource() {
+       _runIds = runIds ?? runtime.runIds {
     if (!identical(runtime.store.session(session.id), session)) {
       throw ArgumentError('Execution requires a canonical Session.');
     }

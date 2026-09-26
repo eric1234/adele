@@ -21,6 +21,11 @@ Application [`KernelOrchestrationHost`](../../app/lib/core/orchestration_host.da
 adapts public strategy operations to these mechanics. Strategies receive semantic
 turns and opaque handles through public orchestration, not kernel objects.
 
+The app's `SessionOrchestrationRun` maps actual `AgentRun.state` to product-owned
+terminal records through product lifecycle, outside the kernel. Follow
+[terminal retention](../../docs/architecture/execution-model.md#terminal-run-retention)
+for finalization and failure semantics; this adds no kernel persistence or recovery.
+
 Minimal prepared Chat and activity presentation already exist outside this
 package; richer/final product UX remains incomplete. Their current ownership and
 behavior belong to the [application](../../app/README.md) and
@@ -67,6 +72,9 @@ The application's
 [`RunActivityProjection`](../../app/lib/core/run_activity_projection.dart) supplies
 the separate immutable public observation facade. Public consumers do not receive
 internal events, executable objects, journal objects, or raw exception causes.
+Terminal product history does not persist that public activity; the
+[activity boundary](../../docs/architecture/execution-model.md#observations-and-activity)
+also defines the semantic input required for any later evidence storage.
 
 ## Validation
 

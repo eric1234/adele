@@ -44,10 +44,10 @@ stock implementations, or presentation policy.
 
 | Layer | Execution responsibility |
 | --- | --- |
-| Product/core identity | `adele_product` owns canonical product identities and relationships, including `SessionId`, `RunId`, and the Session's `OrchestrationStrategyId`. It does not own the executable Run object. |
+| Product/core identity | `adele_product` owns canonical product identities and relationships, including `SessionId`, `RunId`, the Session's `OrchestrationStrategyId`, and terminal `RunRecord`/`RunTerminalState` values. It does not own the executable Run object. |
 | Public orchestration | `adele_orchestration` is the provider-neutral strategy/host boundary. It owns strategy resolution/execution contracts, `RunState`, invocation/interruption identities and approval-resolution values, strategy inference material, semantic model turns/output/proposals, context contracts, and public activity snapshots. It reexports the product identities rather than redefining them. |
 | Internal mechanics | `agent_kernel` implements `AgentRun`, model invocation collection, tool composition/materialization/resolution, policy gates, interruptions, outcome handling, and the deterministic journal. Public tool definitions, effects, progress, and outcome values belong to `adele_model_tool` and are reused here. |
-| Application/core adapters | Compose public strategy operations with selected model-provider bindings, model-tool contributions, context sources, Session Environment authority, approval policy, and internal mechanics/evidence. |
+| Application/core adapters | Compose public strategy operations with selected model-provider bindings, model-tool contributions, context sources, Session Environment authority, approval policy, and internal mechanics/evidence; retain terminal Run records through product lifecycle. |
 | Plugins | Own strategy-specific Session state and sequencing, concrete tool behavior, provider-specific semantics/protocols, and presentation. |
 
 Plugins and public APIs must not depend on `agent_kernel`. The kernel depends
@@ -315,6 +315,38 @@ mechanics belong in subordinate evidence/activity, not a giant mutually exclusiv
 Run-state enum. The existence of `cancelled` does not imply a complete public
 cancellation API; resource close, stream cancellation, and Run state are distinct.
 
+### Terminal Run retention
+
+Terminal product history is separate from live execution and public activity.
+The [product model](product-model.md#terminal-run-history) owns the minimal record,
+schema, lookup, commit-before-publication, and restore rules. The generic application
+`SessionOrchestrationRun` retains the `ProductLifecycleCoordinator` and maps the
+actual `AgentRun.state` to a terminal record in start/approval-resume finalization.
+It does not infer terminal state from whether the outer call returned or threw.
+Close also checks after draining detached host mechanics, since a deferred failure
+may settle only after strategy advancement ends.
+
+The wrapper sets `_terminalRecordAttempted` before calling lifecycle retention,
+and therefore before SQL. It makes at most one recording attempt, including when
+that attempt fails; subsequent cleanup/close does not retry. Created, running, and
+waiting states cause no attempt. Closing a waiting Run creates no outcome, resolves
+no approval, and adds no `abandoned` or invented cancellation state.
+
+If strategy/execution advancement throws and terminal recording also throws, the
+primary execution error is preserved and the secondary recording error is
+suppressed. There is no multi-error diagnostic or retry mechanism. If recording is
+the sole error, it surfaces without rewriting the live terminal state. Resource
+cleanup is still attempted when recording fails and cannot change terminal state
+or evidence. Automatic cleanup does not replace the advancement error; explicit
+close can report its retained cleanup failure.
+
+Chat's plugin-owned history SQL is a separate transaction after host completion,
+not atomic with the product Run insert. If that later Chat persistence fails, the
+outer call surfaces the error, but the host remains completed and the terminal
+record is `completed` when retention succeeds. Neither the outer error nor cleanup
+rewrites it to `failed`. Chat's historical handle mapping is unchanged; terminal
+records do not recreate live activity handles or snapshots.
+
 ## Observations and activity
 
 The internal `RunJournal` is deterministic in-memory evidence with Run-local
@@ -330,6 +362,12 @@ represented, not used as replay input. Current public activity is not a text-del
 stream. It excludes executable authority, internal `AgentRun`/journal objects,
 host-only diagnostics, and arbitrary exception objects.
 
+Public activity evidence is not persisted or restored with terminal Run records.
+A later evidence slice needs an explicit terminal public `RunActivitySnapshot` as
+semantic input and an explicit relational storage model. The internal journal is
+not that input or a persistence/replay format; its in-memory mechanics/test/projection
+role is unchanged. No evidence persistence or recovery is introduced here.
+
 Observing or detaching observation does not affect execution. Presentation consumes
 read-only projections and gains no execution or approval authority from them.
 Strategy/plugin-specific presentation stays outside generic mechanics. Exact
@@ -344,9 +382,11 @@ Intended UX remains [product direction](../product/README.md).
 
 The implemented foundation includes bounded strategy-driven Runs, streaming model
 invocation, dynamic tool contribution/materialization, policy/approval,
-interruptions, structured outcomes, instruction-context capture, and public
-activity projection. Product/strategy stores and execution evidence are currently
-in-memory. Persistent Run recovery, child-Session lifecycle, broader context
+interruptions, structured outcomes, instruction-context capture, public
+activity projection, and terminal Run retention. The [product graph and terminal
+records](product-model.md#project-storage) and initialized plugin-owned Chat state
+have durable storage; live execution and public activity remain in memory.
+Persistent active Run recovery, child-Session lifecycle, broader context
 material, general background scheduling, and richer multi-agent execution are not
 established by this foundation.
 
@@ -369,10 +409,10 @@ established by this foundation.
 
 | Concern | Primary anchors |
 | --- | --- |
-| Product Session/Run identities | [`packages/product/`](../../packages/product/), [product model](product-model.md) |
+| Product Session/Run identities and terminal records | [`packages/product/`](../../packages/product/), [product model](product-model.md#terminal-run-history) |
 | Public strategy/execution semantics | [`packages/orchestration/`](../../packages/orchestration/), `OrchestrationExecutionHost` |
 | Internal Run/model/tool mechanics | [`packages/agent_kernel/`](../../packages/agent_kernel/), `AgentRun` |
-| Session orchestration host | [`app/lib/core/orchestration_host.dart`](../../app/lib/core/orchestration_host.dart), `createSessionOrchestrationRun` |
+| Session orchestration host and terminal finalization | [`app/lib/core/orchestration_host.dart`](../../app/lib/core/orchestration_host.dart), `createSessionOrchestrationRun`, `SessionOrchestrationRun` |
 | Inference context capture | [`context.dart`](../../packages/orchestration/lib/src/context.dart), [`inference_context_host.dart`](../../app/lib/core/inference_context_host.dart) |
 | Model provider adaptation | [`model_provider_host.dart`](../../app/lib/core/model_provider_host.dart), `ModelProviderCapabilityAdapter` |
 | Model-tool contracts, hosting, and policy | [`packages/model_tool/`](../../packages/model_tool/), [`model_tool_host.dart`](../../app/lib/core/model_tool_host.dart), [`approval_gated_tool_policy.dart`](../../app/lib/core/approval_gated_tool_policy.dart) |

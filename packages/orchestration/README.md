@@ -169,7 +169,10 @@ Session hosting can pin a Run to the exact resolved strategy from the same backe
 connection used by its frontend, without exposing generation identities to plugins.
 Chat's canonical persistence uses a separate generation-scoped
 [Project storage service](../project_storage/README.md), not the start/resume
-invocation context. Run execution and activity remain non-durable.
+invocation context. Live Run execution and activity remain non-durable;
+terminal product records are retained by the application under the
+[terminal retention rules](../../docs/architecture/execution-model.md#terminal-run-retention),
+not through a new strategy persistence operation.
 
 ## Shared Semantic Values
 
@@ -233,7 +236,9 @@ explicit tool-batch narration only when tools are present, then safe compact tex
 then a structural occurrence count (`N operations`), with no extra inference.
 Reasoning-only activity precedes canonical final Chat text. Activity is not canonical Chat history
 and is not persisted. Completed activity retained by a current presentation cannot
-be reconstructed after reopening until persistence exists. Chat groups can open
+be reconstructed from a restored terminal Run record. Follow the
+[canonical activity boundary](../../docs/architecture/execution-model.md#observations-and-activity)
+for evidence-storage scope. Chat groups can open
 window-owned Inspection, where public Flutter `adele_ui` selects read-only
 presentations by exact `ToolId` or safe presentation kind, interleaved by
 `output.sequence`. Zero native presenters leave rich Inspection unavailable, not
@@ -422,8 +427,9 @@ that explicit user instructions and direct requests take precedence. This is
 plugin-owned guidance, not a generic precedence or repository-instructions API.
 
 There are no kernel, Flutter, app, or plugin-runtime imports. General background
-scheduling, general plugin management, broader Chat UI, Run/activity persistence, profiles,
-and child Sessions remain deferred. The generic context contract remains instruction-only. Nested/scoped
+scheduling, general plugin management, broader Chat UI, active Run recovery,
+activity persistence, profiles, and child Sessions remain deferred. The generic
+context contract remains instruction-only. Nested/scoped
 AGENTS.md, aliases/overrides, global/home files, imports, and AGENTS.md caching are
 deferred; time, Skills, roles, and repository maps remain independent, unimplemented
 source concerns. Broader Reference/Observation material is directional;

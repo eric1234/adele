@@ -57,6 +57,7 @@ final class InMemoryProductStore {
   >
   _sessions =
       <SessionId, ({Session session, SessionEnvironmentAuthority authority})>{};
+  final Map<RunId, RunRecord> _runRecords = <RunId, RunRecord>{};
 
   Project? project(ProjectId id) => _projects[id];
 
@@ -65,6 +66,28 @@ final class InMemoryProductStore {
   Environment? environment(EnvironmentId id) => _environments[id];
 
   Session? session(SessionId id) => _sessions[id]?.session;
+
+  RunRecord? runRecord(RunId id) => _runRecords[id];
+
+  /// An immutable snapshot with no chronological ordering guarantee.
+  List<RunRecord> runsForSession(SessionId sessionId) =>
+      List<RunRecord>.unmodifiable(
+        _runRecords.values.where((record) => record.sessionId == sessionId),
+      );
+
+  void publishTerminalRun(RunRecord record) {
+    _validateTerminalRun(record);
+    _runRecords[record.id] = record;
+  }
+
+  void _validateTerminalRun(RunRecord record) {
+    if (!_sessions.containsKey(record.sessionId)) {
+      throw StateError('Session ${record.sessionId} is not published.');
+    }
+    if (_runRecords.containsKey(record.id)) {
+      throw StateError('Run ${record.id} is already published.');
+    }
+  }
 
   SessionEnvironmentAuthority? sessionAuthority(SessionId id) =>
       _sessions[id]?.authority;
@@ -126,6 +149,7 @@ final class InMemoryProductStore {
     required Iterable<Environment> environments,
     required Iterable<Session> sessions,
     required Iterable<(SessionId, EnvironmentId)> authorities,
+    required Iterable<RunRecord> runRecords,
   }) {
     if (_projects.containsKey(project.id)) {
       throw StateError('Project ${project.id} is already published.');
@@ -191,6 +215,15 @@ final class InMemoryProductStore {
         'Every restored Session requires one Environment authority.',
       );
     }
+    final restoredRuns = <RunId, RunRecord>{};
+    for (final record in runRecords) {
+      if (!restoredSessions.containsKey(record.sessionId) ||
+          _runRecords.containsKey(record.id) ||
+          restoredRuns.containsKey(record.id)) {
+        throw StateError('Invalid or conflicting restored Run ${record.id}.');
+      }
+      restoredRuns[record.id] = record;
+    }
     _projects[project.id] = project;
     _tasks.addAll(restoredTasks);
     _environments.addAll(restoredEnvironments);
@@ -200,6 +233,7 @@ final class InMemoryProductStore {
         restoredEnvironments[restoredAuthorities[session.id]]!,
       );
     }
+    _runRecords.addAll(restoredRuns);
   }
 
   Environment _requireSessionEnvironment({
@@ -558,6 +592,7 @@ final class ProductLifecycleCoordinator {
         environments: graph.environments,
         sessions: graph.sessions,
         authorities: graph.authorities,
+        runRecords: graph.runRecords,
       );
       _projectDatabases[project.id] = database;
       return project;
@@ -577,6 +612,14 @@ final class ProductLifecycleCoordinator {
     final task = store.task(environment.taskId)!;
     _projectDatabases[task.projectId]?.updateEnvironmentState(environment);
     store.replaceEnvironment(environment);
+  }
+
+  /// Durable records commit before live publication; volatile Projects stay local.
+  void retainTerminalRun(RunRecord record) {
+    _requireOpen();
+    store._validateTerminalRun(record);
+    databaseForSession(record.sessionId)?.insertTerminalRun(record);
+    store.publishTerminalRun(record);
   }
 
   /// Resolves semantic Session scope without resolving a strategy or Environment.

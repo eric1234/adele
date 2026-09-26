@@ -23,6 +23,7 @@ void main() {
   late List<Environment> environments;
   late List<Session> sessions;
   late List<(SessionId, EnvironmentId)> authorities;
+  late List<RunRecord> runRecords;
   late Database inspection;
 
   setUp(() {
@@ -68,6 +69,19 @@ void main() {
       database.insertTaskWithPrimaryEnvironment(tasks[i], environments[i]);
       database.insertSessionWithAuthority(sessions[i], environments[i].id);
     }
+    runRecords = [
+      for (final state in RunTerminalState.values)
+        RunRecord(
+          id: RunId('run-${state.name}'),
+          sessionId: state == RunTerminalState.cancelled
+              ? sessions.last.id
+              : sessions.first.id,
+          state: state,
+        ),
+    ];
+    for (final record in runRecords) {
+      database.insertTerminalRun(record);
+    }
     database.close();
     inspection = sqlite3.open(database.path);
     addTearDown(inspection.close);
@@ -96,6 +110,10 @@ void main() {
     for (final session in sessions) {
       expect(lifecycle.store.session(session.id), isNull);
       expect(lifecycle.store.sessionAuthority(session.id), isNull);
+      expect(lifecycle.store.runsForSession(session.id), isEmpty);
+    }
+    for (final record in runRecords) {
+      expect(lifecycle.store.runRecord(record.id), isNull);
     }
   }
 
@@ -144,6 +162,21 @@ void main() {
         expect(
           lifecycle.environmentRuntime.currentMaterialization(environment.id),
           isNull,
+        );
+      }
+      for (final record in runRecords) {
+        final restored = lifecycle.store.runRecord(record.id)!;
+        expect(restored.sessionId, record.sessionId);
+        expect(restored.state, record.state);
+      }
+      for (final session in sessions) {
+        expect(
+          lifecycle.store.runsForSession(session.id).map((record) => record.id),
+          unorderedEquals(
+            runRecords
+                .where((record) => record.sessionId == session.id)
+                .map((record) => record.id),
+          ),
         );
       }
       expect(await open(lifecycle), same(reopened));
@@ -356,7 +389,203 @@ void main() {
     },
   );
 
-  test('explicit createProject keeps Session creation volatile', () {
+  test(
+    'terminal retention commits and reopens without live execution',
+    () async {
+      final lifecycle = _lifecycle();
+      await open(lifecycle);
+      final record = RunRecord(
+        id: RunId('retained'),
+        sessionId: sessions.first.id,
+        state: RunTerminalState.completed,
+      );
+      lifecycle.retainTerminalRun(record);
+      expect(lifecycle.store.runRecord(record.id), same(record));
+      expect(
+        lifecycle.databaseForSession(record.sessionId)!.autocommit,
+        isTrue,
+      );
+      expect(
+        inspection.select('SELECT * FROM adele_product_runs WHERE id = ?', [
+          record.id.value,
+        ]),
+        [
+          {
+            'id': record.id.value,
+            'session_id': record.sessionId.value,
+            'terminal_state': record.state.name,
+          },
+        ],
+      );
+      await lifecycle.close();
+      final fresh = _lifecycle();
+      await open(fresh);
+      final restored = fresh.store.runRecord(record.id)!;
+      expect(restored.sessionId, record.sessionId);
+      expect(restored.state, record.state);
+      expect(
+        fresh.environmentRuntime.currentMaterialization(environments.first.id),
+        isNull,
+      );
+    },
+  );
+
+  test(
+    'failed Run COMMIT publishes nothing and restores autocommit for retry',
+    () async {
+      final lifecycle = _lifecycle();
+      await open(lifecycle);
+      final record = RunRecord(
+        id: RunId('retained'),
+        sessionId: sessions.first.id,
+        state: RunTerminalState.failed,
+      );
+      final database = lifecycle.databaseForSession(record.sessionId)!;
+      final before = _snapshot(inspection);
+      final liveBefore = lifecycle.store.runsForSession(record.sessionId);
+      inspection.execute('''
+      CREATE TABLE deferred_check (
+        session_id TEXT REFERENCES adele_product_sessions(id) DEFERRABLE INITIALLY DEFERRED
+      );
+      CREATE TRIGGER fail_run_commit AFTER INSERT ON adele_product_runs
+      BEGIN INSERT INTO deferred_check VALUES ('missing'); END;
+    ''');
+      expect(
+        () => lifecycle.retainTerminalRun(record),
+        throwsA(
+          isA<SqliteException>().having(
+            (error) => error.causingStatement,
+            'causingStatement',
+            'COMMIT',
+          ),
+        ),
+      );
+      expect(database.autocommit, isTrue);
+      expect(lifecycle.store.runRecord(record.id), isNull);
+      expect(lifecycle.store.runsForSession(record.sessionId), liveBefore);
+      expect(_snapshot(inspection), before);
+      expect(inspection.select('SELECT * FROM deferred_check'), isEmpty);
+      inspection.execute('DROP TRIGGER fail_run_commit');
+      lifecycle.retainTerminalRun(record);
+      expect(database.autocommit, isTrue);
+      expect(lifecycle.store.runRecord(record.id), same(record));
+      expect(
+        database.loadProductGraph().runRecords.map((value) => value.id),
+        contains(record.id),
+      );
+    },
+  );
+
+  test(
+    'terminal retention prevalidates canonical Session and live IDs before SQL',
+    () async {
+      final lifecycle = _lifecycle();
+      await open(lifecycle);
+      final before = _snapshot(inspection);
+      final existing = lifecycle.store.runRecord(runRecords.first.id);
+      inspection.execute('''
+      CREATE TRIGGER reject_run_insert BEFORE INSERT ON adele_product_runs
+      BEGIN SELECT RAISE(ABORT, 'unexpected SQL'); END;
+    ''');
+      for (final record in [
+        RunRecord(
+          id: RunId('orphan'),
+          sessionId: SessionId('missing'),
+          state: RunTerminalState.completed,
+        ),
+        RunRecord(
+          id: runRecords.first.id,
+          sessionId: sessions.last.id,
+          state: RunTerminalState.cancelled,
+        ),
+      ]) {
+        expect(() => lifecycle.retainTerminalRun(record), throwsStateError);
+      }
+      expect(lifecycle.store.runRecord(RunId('orphan')), isNull);
+      expect(lifecycle.store.runRecord(runRecords.first.id), same(existing));
+      expect(_snapshot(inspection), before);
+    },
+  );
+
+  test(
+    'closed durable database never falls back to volatile Run retention',
+    () async {
+      final lifecycle = _lifecycle();
+      await open(lifecycle);
+      final record = RunRecord(
+        id: RunId('closed'),
+        sessionId: sessions.first.id,
+        state: RunTerminalState.cancelled,
+      );
+      final before = _snapshot(inspection);
+      lifecycle.databaseForSession(record.sessionId)!.close();
+      expect(() => lifecycle.retainTerminalRun(record), throwsStateError);
+      expect(lifecycle.store.runRecord(record.id), isNull);
+      expect(_snapshot(inspection), before);
+    },
+  );
+
+  test('terminal retention stops as soon as lifecycle close begins', () async {
+    final lifecycle = _lifecycle();
+    await open(lifecycle);
+    final record = RunRecord(
+      id: RunId('closing'),
+      sessionId: sessions.first.id,
+      state: RunTerminalState.cancelled,
+    );
+    final before = _snapshot(inspection);
+    final closing = lifecycle.close();
+    expect(() => lifecycle.retainTerminalRun(record), throwsStateError);
+    await closing;
+    expect(() => lifecycle.retainTerminalRun(record), throwsStateError);
+    expect(lifecycle.store.runRecord(record.id), isNull);
+    expect(_snapshot(inspection), before);
+  });
+
+  test(
+    'store Run snapshots are immutable and publication rejects orphans and duplicates',
+    () async {
+      final lifecycle = _lifecycle();
+      await open(lifecycle);
+      final store = lifecycle.store;
+      final before = store.runsForSession(sessions.first.id);
+      final record = RunRecord(
+        id: RunId('local'),
+        sessionId: sessions.first.id,
+        state: RunTerminalState.completed,
+      );
+      expect(() => before.add(record), throwsUnsupportedError);
+      expect(() => before.clear(), throwsUnsupportedError);
+      store.publishTerminalRun(record);
+      expect(store.runRecord(record.id), same(record));
+      expect(before.map((value) => value.id), isNot(contains(record.id)));
+      expect(
+        store.runsForSession(sessions.first.id),
+        unorderedEquals([...before, record]),
+      );
+      for (final duplicate in [
+        record,
+        RunRecord(
+          id: record.id,
+          sessionId: sessions.last.id,
+          state: RunTerminalState.failed,
+        ),
+      ]) {
+        expect(() => store.publishTerminalRun(duplicate), throwsStateError);
+      }
+      final orphan = RunRecord(
+        id: RunId('orphan'),
+        sessionId: SessionId('missing'),
+        state: RunTerminalState.failed,
+      );
+      expect(() => store.publishTerminalRun(orphan), throwsStateError);
+      expect(store.runRecord(orphan.id), isNull);
+      expect(store.runsForSession(orphan.sessionId), isEmpty);
+      expect(store.runRecord(record.id), same(record));
+    },
+  );
+
+  test('explicit createProject keeps Session and Run retention volatile', () {
     final extensions = ExtensionRegistry();
     _registerStrategy(extensions);
     final lifecycle = _lifecycle(
@@ -380,10 +609,39 @@ void main() {
       lifecycle.store.requireSessionAuthority(session.id).environmentId,
       environments.first.id,
     );
+    final record = RunRecord(
+      id: RunId('volatile'),
+      sessionId: session.id,
+      state: RunTerminalState.cancelled,
+    );
+    expect(lifecycle.databaseForSession(session.id), isNull);
+    lifecycle.retainTerminalRun(record);
+    expect(lifecycle.store.runRecord(record.id), same(record));
+    expect(lifecycle.store.runsForSession(session.id), [record]);
     expect(_snapshot(inspection), before);
   });
 
   for (final (name, sql, error) in [
+    (
+      'invalid Run ID',
+      "UPDATE adele_product_runs SET id = ' invalid' WHERE id = 'run-cancelled'",
+      isA<FormatException>(),
+    ),
+    (
+      'invalid Run Session ID',
+      "UPDATE adele_product_runs SET session_id = '' WHERE id = 'run-cancelled'",
+      isA<FormatException>(),
+    ),
+    (
+      'orphan Run',
+      "UPDATE adele_product_runs SET session_id = 'missing' WHERE id = 'run-cancelled'",
+      isA<StateError>(),
+    ),
+    (
+      'invalid Run state',
+      "PRAGMA ignore_check_constraints = ON; UPDATE adele_product_runs SET terminal_state = 'running' WHERE id = 'run-cancelled'",
+      isA<ArgumentError>(),
+    ),
     (
       'invalid Session ID',
       "UPDATE adele_product_sessions SET id = ' invalid' WHERE id = 'session-task-b'",
@@ -445,7 +703,13 @@ void main() {
     });
   }
 
-  for (final duplicate in ['Task', 'Environment', 'Session', 'authority']) {
+  for (final duplicate in [
+    'Task',
+    'Environment',
+    'Session',
+    'authority',
+    'Run',
+  ]) {
     test('duplicate restored $duplicate publishes no partial graph', () {
       final lifecycle = _lifecycle();
       expect(
@@ -461,6 +725,7 @@ void main() {
             ...authorities,
             if (duplicate == 'authority') authorities.last,
           ],
+          runRecords: [...runRecords, if (duplicate == 'Run') runRecords.last],
         ),
         throwsStateError,
       );
@@ -468,73 +733,93 @@ void main() {
     });
   }
 
-  test(
-    'live Session conflict preserves existing graph and publishes none of the restored graph',
-    () async {
-      final lifecycle = _lifecycle();
-      final existingProject = Project(
-        id: ProjectId('existing'),
-        sourceLocation: source.uri,
-      );
-      final existingTask = Task(
-        id: TaskId('existing'),
-        projectId: existingProject.id,
-        title: 'Existing',
-      );
-      final existingEnvironment = Environment(
-        id: EnvironmentId('existing'),
-        taskId: existingTask.id,
-        role: EnvironmentRole.primary,
-        providerId: _environmentProviderId,
-        providerState: {},
-      );
-      final existingSession = Session(
-        id: sessions.last.id,
-        taskId: existingTask.id,
-        strategyId: _strategyId,
-      );
-      lifecycle.store.publishRestoredProject(
-        project: existingProject,
-        tasks: [existingTask],
-        environments: [existingEnvironment],
-        sessions: [existingSession],
-        authorities: [(existingSession.id, existingEnvironment.id)],
-      );
-      final existingAuthority = lifecycle.store.requireSessionAuthority(
-        existingSession.id,
-      );
-      final before = _snapshot(inspection);
-      await expectLater(open(lifecycle), throwsStateError);
-      expect(lifecycle.store.project(project.id), isNull);
-      expect(lifecycle.store.tasksFor(project.id), isEmpty);
-      for (final task in tasks) {
-        expect(lifecycle.store.task(task.id), isNull);
-      }
-      for (final environment in environments) {
-        expect(lifecycle.store.environment(environment.id), isNull);
-      }
-      expect(lifecycle.store.session(sessions.first.id), isNull);
-      expect(lifecycle.store.sessionAuthority(sessions.first.id), isNull);
-      expect(
-        lifecycle.store.project(existingProject.id),
-        same(existingProject),
-      );
-      expect(lifecycle.store.task(existingTask.id), same(existingTask));
-      expect(
-        lifecycle.store.environment(existingEnvironment.id),
-        same(existingEnvironment),
-      );
-      expect(
-        lifecycle.store.session(existingSession.id),
-        same(existingSession),
-      );
-      expect(
-        lifecycle.store.sessionAuthority(existingSession.id),
-        same(existingAuthority),
-      );
-      expect(_snapshot(inspection), before);
-    },
-  );
+  for (final conflict in ['Session', 'Run']) {
+    test(
+      'live $conflict conflict preserves existing graph and publishes none of the restored graph',
+      () async {
+        final lifecycle = _lifecycle();
+        final existingProject = Project(
+          id: ProjectId('existing'),
+          sourceLocation: source.uri,
+        );
+        final existingTask = Task(
+          id: TaskId('existing'),
+          projectId: existingProject.id,
+          title: 'Existing',
+        );
+        final existingEnvironment = Environment(
+          id: EnvironmentId('existing'),
+          taskId: existingTask.id,
+          role: EnvironmentRole.primary,
+          providerId: _environmentProviderId,
+          providerState: {},
+        );
+        final existingSession = Session(
+          id: conflict == 'Session' ? sessions.last.id : SessionId('existing'),
+          taskId: existingTask.id,
+          strategyId: _strategyId,
+        );
+        final existingRun = RunRecord(
+          id: conflict == 'Run' ? runRecords.last.id : RunId('existing'),
+          sessionId: existingSession.id,
+          state: RunTerminalState.completed,
+        );
+        lifecycle.store.publishRestoredProject(
+          project: existingProject,
+          tasks: [existingTask],
+          environments: [existingEnvironment],
+          sessions: [existingSession],
+          authorities: [(existingSession.id, existingEnvironment.id)],
+          runRecords: [existingRun],
+        );
+        final existingAuthority = lifecycle.store.requireSessionAuthority(
+          existingSession.id,
+        );
+        final before = _snapshot(inspection);
+        await expectLater(open(lifecycle), throwsStateError);
+        expect(lifecycle.store.project(project.id), isNull);
+        expect(lifecycle.store.tasksFor(project.id), isEmpty);
+        for (final task in tasks) {
+          expect(lifecycle.store.task(task.id), isNull);
+        }
+        for (final environment in environments) {
+          expect(lifecycle.store.environment(environment.id), isNull);
+        }
+        expect(lifecycle.store.session(sessions.first.id), isNull);
+        expect(lifecycle.store.sessionAuthority(sessions.first.id), isNull);
+        expect(lifecycle.store.runRecord(runRecords.first.id), isNull);
+        if (conflict == 'Run') {
+          for (final session in sessions) {
+            expect(lifecycle.store.session(session.id), isNull);
+            expect(lifecycle.store.sessionAuthority(session.id), isNull);
+            expect(lifecycle.store.runsForSession(session.id), isEmpty);
+          }
+        }
+        expect(lifecycle.store.runRecord(existingRun.id), same(existingRun));
+        expect(lifecycle.store.runsForSession(existingSession.id), [
+          existingRun,
+        ]);
+        expect(
+          lifecycle.store.project(existingProject.id),
+          same(existingProject),
+        );
+        expect(lifecycle.store.task(existingTask.id), same(existingTask));
+        expect(
+          lifecycle.store.environment(existingEnvironment.id),
+          same(existingEnvironment),
+        );
+        expect(
+          lifecycle.store.session(existingSession.id),
+          same(existingSession),
+        );
+        expect(
+          lifecycle.store.sessionAuthority(existingSession.id),
+          same(existingAuthority),
+        );
+        expect(_snapshot(inspection), before);
+      },
+    );
+  }
 }
 
 ProductLifecycleCoordinator _lifecycle({
@@ -591,6 +876,7 @@ Map<String, List<List<Object?>>> _snapshot(Database database) => {
     'adele_product_environments',
     'adele_product_sessions',
     'adele_product_session_environment_authority',
+    'adele_product_runs',
   ])
     table: database
         .select('SELECT * FROM $table ORDER BY rowid')

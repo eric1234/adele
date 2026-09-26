@@ -5,11 +5,13 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'application_plugin_bootstrap.dart';
 import 'product_lifecycle.dart';
 import 'project_storage_host.dart';
+import 'run_id_source.dart';
 
 /// Application-lifetime host graph without implicit plugin activations.
 /// Providers and product operations are established separately by callers.
 final class AdeleRuntime {
-  AdeleRuntime({ProductIdSource? ids}) {
+  AdeleRuntime({ProductIdSource? ids, RunIdSource? runIds})
+    : runIds = runIds ?? MonotonicRunIdSource() {
     lifecycle = ProductLifecycleCoordinator.generated(
       store: store,
       registry: registry,
@@ -28,6 +30,7 @@ final class AdeleRuntime {
   final CapabilityRegistry registry = CapabilityRegistry();
   final ExtensionRegistry extensions = ExtensionRegistry();
   final InMemoryProductStore store = InMemoryProductStore();
+  final RunIdSource runIds;
   late final ProductLifecycleCoordinator lifecycle;
   late final InferenceContextComposer contextComposer;
   late final ApplicationPluginBootstrap plugins;

@@ -16,6 +16,7 @@ import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:dart_eval/dart_eval_bridge.dart' show $Value;
@@ -39,6 +40,37 @@ void main() {
     fixture = await _Fixture.create();
     addTearDown(fixture.close);
   });
+
+  test(
+    'controllers share runtime Run IDs unless explicitly overridden',
+    () async {
+      for (var index = 0; index < 2; index++) {
+        final controller = fixture.controller();
+        final id = await controller.startRun();
+        final advancing = controller.activeRunFuture!;
+        (await fixture.model.callAt(index)).settle();
+        await advancing;
+        expect(id, RunId('execution-${index + 1}'));
+        expect(
+          fixture.runtime.store.runRecord(id)!.state,
+          RunTerminalState.completed,
+        );
+        await controller.close();
+      }
+      expect(
+        fixture.runtime.store.runsForSession(fixture.session.id),
+        hasLength(2),
+      );
+      final override = MonotonicRunIdSource(seed: 'override');
+      final controller = fixture.controller(runIds: override);
+      final id = await controller.startRun();
+      final advancing = controller.activeRunFuture!;
+      (await fixture.model.callAt(2)).settle();
+      await advancing;
+      expect(id, RunId('run-override-1'));
+      expect(fixture.ids.values, hasLength(2));
+    },
+  );
 
   testWidgets(
     'public EVC bridge emits exact view-local activity and revokes queued listeners',
@@ -844,6 +876,10 @@ Widget build(String handle) => buildSessionActivity(handle);
       expect(controller.failureMessage, contains('rateLimited'));
       expect(controller.canStart, isTrue);
       final failed = controller.currentRun!.run.id;
+      expect(
+        fixture.runtime.store.runRecord(failed)!.state,
+        RunTerminalState.failed,
+      );
       await controller.startRun();
       final retry = controller.activeRunFuture!;
       final next = await fixture.model.callAt(1);
@@ -853,6 +889,12 @@ Widget build(String handle) => buildSessionActivity(handle);
       expect(controller.currentRun!.run.id, isNot(failed));
       expect(controller.currentRun!.run.state, RunState.completed);
       expect(controller.failure, isNull);
+      expect(
+        fixture.runtime.store
+            .runsForSession(fixture.session.id)
+            .map((record) => record.state),
+        unorderedEquals([RunTerminalState.failed, RunTerminalState.completed]),
+      );
     },
   );
 
@@ -907,6 +949,7 @@ Widget build(String handle) => buildSessionActivity(handle);
       expect(notifications, beforeClose);
       expect(fixture.tool.executions, 0);
       expect(fixture.executions.single.closeCalls, 1);
+      expect(fixture.runtime.store.runRecord(run.id), isNull);
     },
   );
 
@@ -1066,8 +1109,9 @@ Widget build(String handle) => buildSessionActivity(handle);
 }
 
 final class _Fixture {
-  final runtime = AdeleRuntime(
+  late final runtime = AdeleRuntime(
     ids: MonotonicProductIdSource(seed: 'execution'),
+    runIds: ids,
   );
   final ids = _RunIds();
   final model = _ModelChannel();
@@ -1167,6 +1211,7 @@ final class _Fixture {
 
   SessionExecutionController controller({
     String? model = 'fixture-model',
+    RunIdSource? runIds,
     VoidCallback? onChanged,
   }) {
     final controller = SessionExecutionController(
@@ -1175,7 +1220,7 @@ final class _Fixture {
       strategy: runtime.lifecycle.resolveSessionStrategy(session.id),
       providerId: _providerId,
       model: model,
-      runIds: ids,
+      runIds: runIds,
       onChanged: onChanged,
     );
     controllers.add(controller);

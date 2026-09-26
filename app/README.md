@@ -50,9 +50,12 @@ Flutter application
 provider-free: it starts no backend host or compiler, loads no credentials, and
 creates no Project, Task, Environment, Session, or Run.
 
-The runtime owns one `CapabilityRegistry`, one `ExtensionRegistry`, and one
-`InMemoryProductStore`. `ProductLifecycleCoordinator.generated` receives all
-three; `InferenceContextComposer` uses only the shared extension registry; and
+The runtime owns one `CapabilityRegistry`, one `ExtensionRegistry`, one
+`InMemoryProductStore`, and the shared `RunIdSource` used by default execution
+controllers. Run ID allocation and injection follow the
+[terminal history model](../docs/architecture/product-model.md#terminal-run-history).
+`ProductLifecycleCoordinator.generated` receives the registries and store;
+`InferenceContextComposer` uses only the shared extension registry; and
 `ApplicationPluginBootstrap` uses the shared capability and extension registries.
 Lifecycle additionally owns private `ProjectDatabase` instances for durable opens;
 constructing the runtime does not open a database. Lifecycle is constructed before
@@ -245,12 +248,12 @@ exact `ProviderBinding`, and optional host `validateSelection` callback. Private
 [`ProjectDatabase`](lib/core/project_database.dart) validates source/backing paths
 and symlinks, hosts `sqlite3`, and coordinates explicit SQL migrations. After final
 binding validation, SQLite work is synchronous. After the identity/source commit,
-`loadProductGraph` reconstructs Tasks, Environments, Sessions, and their semantic
-Environment associations. `publishRestoredProject` validates the complete graph
-before any live-store mutation. Stored strategies and Environment providers are
-not resolved; missing Chat or an Environment provider does not prevent these
-records loading or cause plugin tables to be touched. Later provider/frontend
-retirement does not invalidate the published Project.
+`loadProductGraph` reconstructs Tasks, Environments, Sessions, their semantic
+Environment associations, and terminal Run records. `publishRestoredProject`
+validates the complete graph before any live-store mutation. Stored strategies and
+Environment providers are not resolved; missing Chat or an Environment provider
+does not prevent these records loading or cause plugin tables to be touched. Later
+provider/frontend retirement does not invalidate the published Project.
 Schema, reopen/move behavior, and failure rules have one canonical home in
 [Project storage](../docs/architecture/product-model.md#project-storage).
 
@@ -386,8 +389,9 @@ execution status, policy, and approvals, not a second Chat implementation.
 
 The backend lazily loads initialized durable Chat history/configuration/draft
 through the shared storage service; Project opening does not hydrate Chat. The host
-Run can already be completed when plugin history storage fails: preserve terminal
-evidence and surface the error, without rollback or hidden retry. Generation-local
+Run can already be completed when plugin history storage fails; the
+[terminal retention rules](../docs/architecture/execution-model.md#terminal-run-retention)
+preserve that outcome while surfacing the error. Generation-local
 cache, durable state, and transport-uncertainty boundaries live in
 [plugin persistence](../docs/architecture/plugin-system.md#chat-participation)
 and the [Chat README](../plugins/chat_strategy/README.md).
@@ -414,9 +418,10 @@ decisions, and applies display-safety checks without changing executed arguments
 Approval neither overrides domain preconditions nor supplies an OS sandbox.
 
 Close blocks new actions and drains accepted Task establishment and Run advancement
-before backend teardown. A quiescent waiting Run is abandoned without resolving
-its approval or executing the pending invocation. Cleanup attempts continue after
-failure; close is resource cleanup, not general cancellation or a bounded deadline.
+before backend teardown. Closing a quiescent waiting Run does not resolve its
+approval, execute the pending invocation, or invent a terminal record. Cleanup
+attempts continue after failure; close is resource cleanup, not general
+cancellation or a bounded deadline.
 This does not restore live Runs/approvals or introduce a Session browser or Profile
 system. [Durable Chat integration](test/core/durable_chat_session_integration_test.dart)
 exercises the persistence boundary without a paid model.
@@ -426,7 +431,11 @@ exercises the persistence boundary without a paid model.
 `createSessionOrchestrationRun` looks up the canonical Session, resolves its stored
 strategy or validates a supplied exact selection in the lifecycle's registry,
 then materializes it against `KernelOrchestrationHost`. The returned
-`SessionOrchestrationRun` owns advancement and execution cleanup.
+`SessionOrchestrationRun` owns advancement, terminal retention through
+`ProductLifecycleCoordinator.retainTerminalRun`, and execution cleanup. The
+[product model](../docs/architecture/product-model.md#terminal-run-history) defines
+the stored record; the [execution model](../docs/architecture/execution-model.md#terminal-run-retention)
+defines finalization, failure precedence, and the one-attempt boundary.
 
 | Application adapter | Local responsibility |
 | --- | --- |
@@ -521,6 +530,7 @@ and dependency-boundary checks. Local starting points include
 [`product_lifecycle_test.dart`](test/core/product_lifecycle_test.dart),
 [`durable_project_lifecycle_test.dart`](test/core/durable_project_lifecycle_test.dart),
 [`durable_session_lifecycle_test.dart`](test/core/durable_session_lifecycle_test.dart),
+[`durable_run_lifecycle_test.dart`](test/core/durable_run_lifecycle_test.dart),
 [`project_storage_host_test.dart`](test/core/project_storage_host_test.dart), and
 [`orchestration_authority_test.dart`](test/core/orchestration_authority_test.dart).
 
@@ -533,12 +543,13 @@ validation belongs to the [OpenAI backend](../plugins/openai/packages/backend/RE
 ## Current limits
 
 Project identity/source, Tasks, Environment semantic records, and provider-state
-snapshots, Sessions, and semantic Environment associations are durable; initialized
-Chat conversation, configuration, and plain-text Draft Request are plugin-owned
-durable state. Environment materialization remains lazy and runtime-only.
-Runs, claims, execution evidence/activity, approval restart, and native replay are
-not persisted. Rich Draft Request documents,
-conversation forks, and concurrent editing are unimplemented. Task Browser/general
+snapshots, Sessions, semantic Environment associations, and terminal Run records
+are durable; initialized Chat conversation, configuration, and plain-text Draft
+Request are plugin-owned durable state. Environment materialization remains lazy
+and runtime-only.
+Active/waiting Runs, claims, execution evidence/activity, approval restart, and
+native replay are not persisted. Rich Draft Request documents, conversation forks,
+and concurrent editing are unimplemented. Task Browser/general
 Session navigation, automatic selection/resume, general settings, Profiles,
 configured-provider/credential management, and workbench persistence remain absent.
 Current model-provider selection is the source-checkout seam above, not finished
@@ -555,10 +566,12 @@ repository-wide deferred-feature ledger here.
 | --- | --- |
 | Entry/window composition | [`lib/main.dart`](lib/main.dart), [`lib/application.dart`](lib/application.dart): `AdeleApplication` |
 | Runtime construction | [`lib/core/adele_runtime.dart`](lib/core/adele_runtime.dart): `AdeleRuntime` |
+| Shared Run identity allocation | [`lib/core/run_id_source.dart`](lib/core/run_id_source.dart): `RunIdSource`, `MonotonicRunIdSource`; `AdeleRuntime.runIds` |
 | Backend bootstrap | [`lib/core/application_plugin_bootstrap.dart`](lib/core/application_plugin_bootstrap.dart): `ApplicationPluginBootstrap` |
 | Frontend generations/activation | [`lib/frontend/application_frontend_bootstrap.dart`](lib/frontend/application_frontend_bootstrap.dart), [`lib/frontend/prepared_frontend.dart`](lib/frontend/prepared_frontend.dart) |
 | Product lifecycle/Environment authority | [`lib/core/product_lifecycle.dart`](lib/core/product_lifecycle.dart): `ProductLifecycleCoordinator`, `EnvironmentRuntime` |
 | Private Project persistence | [`lib/core/project_database.dart`](lib/core/project_database.dart): `ProjectDatabase`, `MigrationCoordinator` |
+| Terminal Run retention and lookup | [`lib/core/product_lifecycle.dart`](lib/core/product_lifecycle.dart): `retainTerminalRun`, `InMemoryProductStore.runRecord`, `runsForSession`, `publishTerminalRun` |
 | Plugin relational storage mediation | [`lib/core/project_storage_host.dart`](lib/core/project_storage_host.dart): `projectStorageServices`, `ProjectStorageHost` |
 | Session selection/presentation | [`lib/frontend/prepared_session_host.dart`](lib/frontend/prepared_session_host.dart), [`lib/ui/session/session_presentation_host.dart`](lib/ui/session/session_presentation_host.dart) |
 | Session execution/orchestration | [`lib/ui/execution/session_execution_controller.dart`](lib/ui/execution/session_execution_controller.dart), [`lib/core/orchestration_host.dart`](lib/core/orchestration_host.dart) |

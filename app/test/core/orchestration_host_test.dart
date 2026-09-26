@@ -2339,13 +2339,14 @@ void main() {
       );
       final session = topology.createSession(strategyId);
       final selected = topology.lifecycle.resolveSessionStrategy(session.id);
+      var nextRun = 1;
       Future<SessionOrchestrationRun> create(
         ResolvedOrchestrationStrategy binding, {
         SessionId? id,
       }) => createSessionOrchestrationRun(
         lifecycle: topology.lifecycle,
         sessionId: id ?? session.id,
-        runId: RunId('pinned-run'),
+        runId: RunId('pinned-run-${nextRun++}'),
         contextComposer: InferenceContextComposer(extensions),
         model: _Model(),
         toolCatalog: _catalog(_Executable()),

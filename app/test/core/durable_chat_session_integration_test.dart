@@ -434,7 +434,7 @@ void main() {
   );
 
   test(
-    'real SQLite rollback preserves Chat cache, rows, and IDs without mutating core product rows',
+    'real SQLite rollback preserves Chat cache, rows, and IDs without mutating core identities or associations',
     () async {
       final source = await _source();
       final backends = await start(
@@ -555,6 +555,24 @@ void main() {
       // Host execution already completed; the remote caller still sees failure.
       expect(failed.run.state, RunState.completed);
       expect(failed.run.journal.records.last.event, isA<RunCompleted>());
+      final completedRecord = runtime.store.runRecord(failed.run.id)!;
+      expect(completedRecord.id, failed.run.id);
+      expect(completedRecord.sessionId, sessionId);
+      expect(completedRecord.state, RunTerminalState.completed);
+      expect(runtime.store.runsForSession(sessionId), [same(completedRecord)]);
+      expect(
+        _inspect(
+          source,
+          (database) => _rows(database, 'SELECT * FROM adele_product_runs'),
+        ),
+        [
+          {
+            'id': failed.run.id.value,
+            'session_id': sessionId.value,
+            'terminal_state': 'completed',
+          },
+        ],
+      );
       expect(
         _snapshot(await chat.snapshot(sessionId.value)),
         _snapshot(before),
@@ -606,6 +624,43 @@ void main() {
       );
       expect(_inspect(source, _chatRows), recoveredRows);
       expect(_inspect(source, _coreRows), coreBefore);
+      await backends.close();
+      final ids = _NoAllocationIds();
+      final fresh = await start(ids);
+      expect(
+        fresh.runtime.extensions.discover(orchestrationStrategyContributions),
+        isEmpty,
+      );
+      await fresh.runtime.lifecycle.openProject(
+        sourceLocation: source.uri,
+        provider: fresh.runtime.lifecycle.resolveProjectProvider(
+          _projectProviderId,
+        ),
+      );
+      final restoredRecord = fresh.runtime.store.runRecord(failed.run.id)!;
+      expect(restoredRecord, isNot(same(completedRecord)));
+      expect(restoredRecord.id, completedRecord.id);
+      expect(restoredRecord.sessionId, sessionId);
+      expect(restoredRecord.state, RunTerminalState.completed);
+      expect(
+        fresh.runtime.store
+            .runsForSession(sessionId)
+            .map((record) => (record.id, record.sessionId, record.state)),
+        unorderedEquals([
+          (failed.run.id, sessionId, RunTerminalState.completed),
+          (retry.run.id, sessionId, RunTerminalState.completed),
+        ]),
+      );
+      expect(ids.calls, 0);
+      expect(
+        fresh.runtime.lifecycle.environmentRuntime.currentMaterialization(
+          product.environment.id,
+        ),
+        isNull,
+      );
+      expect(_inspect(source, _chatRows), recoveredRows);
+      expect(_inspect(source, _coreRows), coreBefore);
+      await fresh.close();
     },
     timeout: const Timeout(Duration(minutes: 2)),
   );
@@ -781,6 +836,7 @@ List<Map<String, Object?>> _rows(Database database, String sql) => [
   for (final row in database.select(sql)) Map<String, Object?>.from(row),
 ];
 
+// Identity and association invariance is separate from terminal Run retention.
 Map<String, Object?> _coreRows(Database database) => {
   for (final table in [
     'adele_product_projects',
@@ -825,7 +881,7 @@ void _expectSchema(Database database) {
       {'owner_id': 'dev.adele.product', 'version': 1},
     ],
   );
-  // Runs and execution objects are deliberately not part of durable restoration.
+  // Terminal Run records are durable; execution objects and evidence are not.
   expect(
     database
         .select("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -837,6 +893,7 @@ void _expectSchema(Database database) {
       'adele_product_environments',
       'adele_product_sessions',
       'adele_product_session_environment_authority',
+      'adele_product_runs',
       'adele_chat_sessions',
       'adele_chat_entries',
     ]),

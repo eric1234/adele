@@ -66,6 +66,13 @@ final class ProjectDatabase {
               FOREIGN KEY (session_id) REFERENCES adele_product_sessions(id),
               FOREIGN KEY (environment_id) REFERENCES adele_product_environments(id)
             );
+            CREATE TABLE adele_product_runs (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              terminal_state TEXT NOT NULL
+                CHECK (terminal_state IN ('completed', 'failed', 'cancelled')),
+              FOREIGN KEY (session_id) REFERENCES adele_product_sessions(id)
+            );
           '''),
         ],
       );
@@ -141,6 +148,7 @@ final class ProjectDatabase {
     List<Environment> environments,
     List<Session> sessions,
     List<(SessionId, EnvironmentId)> authorities,
+    List<RunRecord> runRecords,
   })
   loadProductGraph() {
     _requireOpen();
@@ -192,11 +200,20 @@ final class ProjectDatabase {
             EnvironmentId(_text(row, 'environment_id')),
           ),
       ];
+      final runRecords = <RunRecord>[
+        for (final row in _database.select('SELECT * FROM adele_product_runs'))
+          RunRecord(
+            id: RunId(_text(row, 'id')),
+            sessionId: SessionId(_text(row, 'session_id')),
+            state: RunTerminalState.values.byName(_text(row, 'terminal_state')),
+          ),
+      ];
       return (
         tasks: tasks,
         environments: environments,
         sessions: sessions,
         authorities: authorities,
+        runRecords: runRecords,
       );
     });
   }
@@ -257,6 +274,19 @@ final class ProjectDatabase {
         'INSERT INTO adele_product_session_environment_authority '
         '(session_id, environment_id) VALUES (?, ?)',
         [session.id.value, environmentId.value],
+      );
+    });
+  }
+
+  /// Commits one terminal Run record without replacing an existing identity.
+  void insertTerminalRun(RunRecord record) {
+    _requireOpen();
+    _backingPath(_root, _relativePath);
+    _transaction(_database, () {
+      _database.execute(
+        'INSERT INTO adele_product_runs (id, session_id, terminal_state) '
+        'VALUES (?, ?, ?)',
+        [record.id.value, record.sessionId.value, record.state.name],
       );
     });
   }

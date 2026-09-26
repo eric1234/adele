@@ -7,12 +7,13 @@ Implementation status: Partial
 This document defines the shared product-domain semantics and ownership that
 ADELE core and unrelated plugins must agree on. It combines accepted constraints
 with the current implementation. Project identity/source, Tasks, Environment
-records/provider-state snapshots, Sessions, and their semantic Environment
-associations have per-Project SQLite storage. Plugin-owned relational state,
-including Chat conversation/configuration/plain-text Draft Request, uses the same
-backing without becoming core product fields. Runs and live execution resources
-remain non-durable. Elsewhere, "durable" describes semantic lifetime, not a claim that every product feature
-survives application restart.
+records/provider-state snapshots, Sessions, their semantic Environment
+associations, and terminal Run records have per-Project SQLite storage.
+Plugin-owned relational state, including Chat conversation/configuration/plain-text
+Draft Request, uses the same backing without becoming core product fields. Live
+Run execution and activity remain non-durable. Elsewhere, "durable" describes
+semantic lifetime, not a claim that every product feature survives application
+restart.
 
 ## Core relationship
 
@@ -78,12 +79,19 @@ The current schema is deliberately small:
 | `adele_product_environments(id, task_id, role, provider_id, provider_state_json)` | Environment identity, Task foreign key, semantic role, provider identity, and opaque JSON provider-state snapshot. |
 | `adele_product_sessions(id, task_id, strategy_id)` | Session identity, Task foreign key, and permanent semantic strategy ID. |
 | `adele_product_session_environment_authority(session_id, environment_id)` | Exactly one same-Task Environment association per Session, with foreign keys to both records; not a live access token or facet. |
+| `adele_product_runs(id, session_id, terminal_state)` | Terminal Run identity, Session foreign key, and terminal state; not a live execution or evidence record. |
 
 All product tables belong to `dev.adele.product` schema version **1**. This is the
 current pre-release baseline, not a history of development schemas. Earlier
 development databases may be deleted/recreated; there are no product upgrade
 steps, legacy-shape recognition, or transitional reads. Generic owner-version
 coordination remains in place for a future declared storage-compatibility baseline.
+
+The Run table has `id TEXT PRIMARY KEY`, `session_id TEXT NOT NULL` referencing
+`adele_product_sessions(id)`, and `terminal_state TEXT NOT NULL` constrained by
+`CHECK (terminal_state IN ('completed', 'failed', 'cancelled'))`. It has no JSON,
+timestamps, evidence, or chronological ordering fields. States are stored by name,
+not enum ordinal; [terminal Run history](#terminal-run-history) defines their scope.
 
 Roles are strings (`primary`, `additional`), not enum ordinals. A partial unique
 index on Environment `task_id` where `role = 'primary'` prevents multiple primary
@@ -110,8 +118,9 @@ then reopening it, preserves that ID and commits the newly selected source URI.
 The historical URI must remain valid local-source data, but need not be addressable
 on the current host; only the new selected location undergoes filesystem checks.
 Project reopening loads Tasks, Environment records/provider-state snapshots,
-Sessions, and their Environment associations without allocating replacement
-identities, resolving stored strategies, or invoking Environment providers.
+Sessions, their Environment associations, and terminal Run records without
+allocating replacement identities, resolving stored strategies, or invoking
+Environment providers.
 Their availability is not required to load these records; the explicitly selected
 Project provider is still required to open the backing.
 Materialization remains explicit: the stock [Git Environment](../../plugins/git_environment/README.md)
@@ -138,13 +147,15 @@ as defined by the [plugin system](plugin-system.md#project-selector-ownership).
 Cancellation is a no-op; missing, failed, or retired participants cannot be replaced
 inside an in-flight operation. SQLite work follows the final validation
 synchronously. The identity/source transaction commits first;
-`ProjectDatabase.loadProductGraph` parses all Task, Environment, Session, and
-authority rows before `InMemoryProductStore.publishRestoredProject` validates the
-complete graph, before any live-store mutation. Validation requires Tasks in that
-Project, Environments and Sessions belonging to those Tasks, one finalized primary
-Environment per Task, and exactly one same-Task Environment authority per Session. Invalid values,
-orphan or duplicate records/authorities, and conflicts with already published IDs
-publish none of the restored graph and leave the existing live graph unchanged.
+`ProjectDatabase.loadProductGraph` reads only core product tables and parses all
+Task, Environment, Session, authority, and terminal Run rows, returning the latter
+as `runRecords`. `InMemoryProductStore.publishRestoredProject` validates the complete
+graph before any live-store mutation. Validation requires Tasks in that Project,
+Environments and Sessions belonging to those Tasks, one finalized primary
+Environment per Task, exactly one same-Task Environment authority per Session, and
+each Run record belonging to a restored Session. Invalid IDs or values, orphan or
+duplicate records/authorities, and conflicts with already published IDs publish
+none of the restored graph and leave the existing live graph unchanged.
 This does not undo the earlier identity/source commit. No asynchronous generation
 change can interleave validation and publication. Later retirement
 does not invalidate a published Project or permanently pin it to the opening
@@ -165,11 +176,13 @@ defines Chat's participation. Persisted Session/Environment associations are
 semantic relationships, not serialized execution authority. Live bindings,
 materializations, facets, and host-issued tokens must never be serialized.
 
-This slice does not persist Runs, active claims, execution evidence/activity,
-approval restart state, or model-native replay. Chat's current plain-text draft is
-durable plugin-owned state, not workbench state. This adds no Task/Session browser,
-navigation, automatic selection/resume, Profiles, general
-settings, configured-provider/credential storage, or workbench/window persistence.
+Only terminal Run records are retained, not active/waiting Runs, active claims,
+execution evidence/activity, approval restart state, or model-native replay.
+Restoration creates no execution, activity source, or approval and allocates no
+Run IDs. Chat's current plain-text draft is durable plugin-owned state, not
+workbench state. This adds no Task/Session browser, navigation, automatic
+selection/resume, Profiles, general settings, configured-provider/credential
+storage, or workbench/window persistence.
 
 Small synchronous host operations can block on filesystem/SQLite work. Confinement
 is preflight validation, not a guarantee against hostile concurrent filesystem
@@ -346,6 +359,37 @@ The [agent execution architecture](execution-model.md) defines the
 deeper mechanics; `RunId` lives in product, while `AgentRun` is an internal
 execution object rather than another immutable product value.
 
+### Terminal Run history
+
+The immutable product value `RunRecord` has a `const` constructor requiring exactly
+`RunId id`, `SessionId sessionId`, and `RunTerminalState state`. The product-owned
+`RunTerminalState` enum contains only `completed`, `failed`, and `cancelled`, not
+the nonterminal states in orchestration's live `RunState`. The record retains an
+actual terminal outcome, not an execution object, strategy state, or public activity
+snapshot. It supplies no chronology or evidence.
+
+`InMemoryProductStore.runRecord` looks up a record by Run ID;
+`runsForSession` returns an immutable snapshot without a chronological ordering
+guarantee. `publishTerminalRun` requires a published Session and an unused Run ID;
+it does not replace an earlier outcome. `ProductLifecycleCoordinator.retainTerminalRun`
+validates the record and Session scope, then uses `ProjectDatabase.insertTerminalRun`
+for a durable Project. Its SQL `INSERT` transaction must commit before store
+publication. Storage failure publishes no record and never falls back to memory.
+Only an explicitly volatile Project retains the record in memory alone.
+
+`AdeleRuntime` owns the shared seeded `RunIdSource`; the default
+`SessionExecutionController` uses `runtime.runIds` rather than creating a source
+per controller. Tests may inject a source. There is no durable counter, and loading
+retained records allocates no identities. Neither ID shape nor store iteration
+order defines historical chronology.
+
+The generic application Run wrapper records actual terminal state under the
+[execution finalization rules](execution-model.md#terminal-run-retention).
+Created, running, and waiting Runs have no durable record; resource close does not
+invent an outcome or an `abandoned` state. Reopening restores records only, not
+strategies, Environment materializations, execution, activity, or approvals. This
+is terminal history, not active Run recovery or automatic resume.
+
 ## Child Sessions
 
 **Accepted architecture; child-Session lifecycle is not implemented.**
@@ -382,17 +426,17 @@ to a different one. Re-establishing runtime authority is distinct from loading
 semantic data.
 
 `InMemoryProductStore` remains the live product graph. [Project storage](#project-storage)
-loads the validated Project/Task/Environment/Session graph and reconstructs its
-semantic Session/Environment associations, not live bindings or access tokens.
+loads the validated Project/Task/Environment/Session graph, terminal Run records,
+and semantic Session/Environment associations, not live bindings or access tokens.
 It remains the canonical runtime graph rather than a SQL facade. Plugin state is
 loaded by its owner separately; complete runtime restoration is not implied.
 
 ## Core-owned and plugin-owned durable state
 
 Core shared semantics include Project and Task identities, Environment identity
-and provider relationship, Session identity and permanent strategy binding, and
-their core relationships. Core must preserve those invariants independently of
-which optional plugins or presentations are active.
+and provider relationship, Session identity and permanent strategy binding,
+terminal Run records, and their core relationships. Core must preserve those
+invariants independently of which optional plugins or presentations are active.
 
 Strategy/plugin-specific durable state remains with its semantic owner. Chat
 conversation/configuration/Draft Request belong to Chat, not the core Session
@@ -416,8 +460,9 @@ those distinctions, including domains where external systems remain authoritativ
 
 | Concern | Primary anchors |
 | --- | --- |
-| Canonical immutable product values and IDs | [`packages/product/`](../../packages/product/), `Project`, `Task`, `Environment`, `Session`, `RunId` |
+| Canonical immutable product values and IDs | [`packages/product/`](../../packages/product/), `Project`, `Task`, `Environment`, `Session`, `RunRecord`, `RunTerminalState`, `RunId` |
 | Product lifecycle and Session/Environment authority | [`app/lib/core/product_lifecycle.dart`](../../app/lib/core/product_lifecycle.dart), `ProductLifecycleCoordinator`, `InMemoryProductStore.requireSessionAuthority` |
+| Terminal Run retention and lookup | [`app/lib/core/product_lifecycle.dart`](../../app/lib/core/product_lifecycle.dart), `retainTerminalRun`, `runRecord`, `runsForSession`, `publishTerminalRun` |
 | Private Project SQL and migration coordination | [`app/lib/core/project_database.dart`](../../app/lib/core/project_database.dart), `ProjectDatabase`, `MigrationCoordinator` |
 | Session-scoped plugin storage | [`packages/project_storage/lib/adele_project_storage.dart`](../../packages/project_storage/lib/adele_project_storage.dart), [`app/lib/core/project_storage_host.dart`](../../app/lib/core/project_storage_host.dart) |
 | Live Environment materialization | [`app/lib/core/product_lifecycle.dart`](../../app/lib/core/product_lifecycle.dart), `EnvironmentRuntime`, `EnvironmentMaterialization` |

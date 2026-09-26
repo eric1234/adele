@@ -1,8 +1,10 @@
 import 'dart:async';
 
 import 'package:adele_desktop/core/orchestration_host.dart';
+import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -78,6 +80,7 @@ void main() {
         expect(fixture.run.state, state);
         expect(fixture.run.journal.records, orderedEquals(records));
         expect(fixture.run.interruptions, interruptions);
+        expect(fixture.store.runRecord(fixture.run.id), isNull);
         expect(fixture.execution.approvalCalls, 0);
         expect(fixture.tool.executions, 0);
       },
@@ -165,6 +168,12 @@ void main() {
       expect(fixture.execution.closeCalls, 1);
       expect(fixture.run.state, fails ? RunState.failed : RunState.completed);
       expect(fixture.run.failure, fails ? same(primary) : isNull);
+      final record = fixture.store.runRecord(fixture.run.id)!;
+      expect(record.sessionId, fixture.run.sessionId);
+      expect(
+        record.state,
+        fails ? RunTerminalState.failed : RunTerminalState.completed,
+      );
       final records = fixture.run.journal.records;
       final Future<void> closing = fixture.strategy.close();
       expect(fixture.strategy.close(), same(closing));
@@ -172,8 +181,27 @@ void main() {
       await expectLater(fixture.strategy.close(), throwsA(same(cleanup)));
       expect(fixture.execution.closeCalls, 1);
       expect(fixture.run.journal.records, orderedEquals(records));
+      expect(fixture.store.runsForSession(fixture.run.sessionId), [record]);
     });
   }
+
+  test(
+    'close retains an already cancelled Run without cancelling waiting work',
+    () async {
+      final fixture = await _Fixture.create();
+      await fixture.strategy.start();
+      expect(fixture.store.runRecord(fixture.run.id), isNull);
+      fixture.run.cancel();
+      await fixture.strategy.close();
+      await fixture.strategy.close();
+      expect(fixture.run.state, RunState.cancelled);
+      expect(
+        fixture.store.runsForSession(fixture.run.sessionId).single.state,
+        RunTerminalState.cancelled,
+      );
+      expect(fixture.tool.executions, 0);
+    },
+  );
 
   for (final bool foreign in <bool>[true, false]) {
     test(
@@ -711,6 +739,7 @@ void main() {
         expect(fixture.events.whereType<ToolExecutionCompleted>(), isEmpty);
         expect(fixture.events.whereType<RunFailed>(), isEmpty);
         expect(fixture.execution.closeCalls, 0);
+        expect(fixture.store.runRecord(fixture.run.id), isNull);
         await expectLater(
           fixture.strategy.start(),
           throwsA(isA<InvalidRunOperation>()),
@@ -722,6 +751,10 @@ void main() {
 
         expect(fixture.run.state, RunState.failed);
         expect(fixture.run.failure, same(misuse));
+        expect(
+          fixture.store.runsForSession(fixture.run.sessionId).single.state,
+          RunTerminalState.failed,
+        );
         expect(fixture.model.requests, hasLength(duringModel ? 2 : 1));
         expect(fixture.tool.executions, duringModel ? 0 : 1);
         expect(fixture.events.whereType<ModelInvocationFailed>(), isEmpty);
@@ -1070,6 +1103,7 @@ final ExtensionId _extensionId = ExtensionId(
 
 final class _Fixture {
   const _Fixture._(
+    this.store,
     this.extensions,
     this.registration,
     this.strategy,
@@ -1117,6 +1151,7 @@ final class _Fixture {
           policy: _Policy(decision),
         );
     return _Fixture._(
+      topology.lifecycle.store,
       extensions,
       registration,
       strategy,
@@ -1126,6 +1161,7 @@ final class _Fixture {
     );
   }
 
+  final InMemoryProductStore store;
   final ExtensionRegistry extensions;
   final ExtensionRegistration registration;
   final SessionOrchestrationRun strategy;
