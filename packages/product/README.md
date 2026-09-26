@@ -4,13 +4,17 @@ See the canonical [product model](../../docs/architecture/product-model.md) for
 cross-system semantics and ownership of Project, Task, Environment, Session, and Run.
 
 `adele_product` defines the canonical immutable `Project`, `Task`, `Environment`,
-and `Session` values. `Project` retains a typed source `Uri`; `Task` owns only
-its Project relationship; and `Environment` owns its Task relationship, role,
-generic `ProviderId`, and an opaque immutable provider-state snapshot.
+`Session`, and `RunRecord` values. `Project` retains a typed source `Uri`; `Task`
+owns only its Project relationship; and `Environment` owns its Task relationship,
+role, generic `ProviderId`, and an opaque immutable provider-state snapshot.
 
 `Session` is deliberately minimal: it contains only `id: SessionId`,
 `taskId: TaskId`, and `strategyId: OrchestrationStrategyId`. It has no
 strategy-owned state, Environment relationship, or parent Session relationship.
+
+`RunRecord` and `RunTerminalState` are terminal product data, not a live Run or an
+activity snapshot. Their minimal shape and retention/restore semantics belong to
+the [terminal Run history model](../../docs/architecture/product-model.md#terminal-run-history).
 
 ## Strategy Identity
 

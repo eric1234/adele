@@ -1,10 +1,10 @@
-import 'package:agent_kernel/agent_kernel.dart' show RunId;
+import 'package:adele_product/adele_product.dart' show RunId;
 
 abstract interface class RunIdSource {
   RunId nextRunId();
 }
 
-/// Application-local allocation, independent of product identity persistence.
+/// Runtime-owned seeded allocation; no persisted counter or restore allocation.
 final class MonotonicRunIdSource implements RunIdSource {
   MonotonicRunIdSource({String? seed})
     : _seed = seed ?? DateTime.now().microsecondsSinceEpoch.toString();

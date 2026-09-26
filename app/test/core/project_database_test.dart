@@ -47,6 +47,7 @@ void main() {
         'adele_product_environments',
         'adele_product_sessions',
         'adele_product_session_environment_authority',
+        'adele_product_runs',
       ]),
     );
     expect(inspection.select('SELECT * FROM adele_schema_versions'), <Object?>[
@@ -117,6 +118,22 @@ void main() {
         ('session_id', 'adele_product_sessions', 'id'),
         ('environment_id', 'adele_product_environments', 'id'),
       ]),
+    );
+    expect(
+      inspection
+          .select('PRAGMA table_info(adele_product_runs)')
+          .map((row) => (row['name'], row['type'], row['notnull'], row['pk'])),
+      [
+        ('id', 'TEXT', 0, 1),
+        ('session_id', 'TEXT', 1, 0),
+        ('terminal_state', 'TEXT', 1, 0),
+      ],
+    );
+    expect(
+      inspection
+          .select('PRAGMA foreign_key_list(adele_product_runs)')
+          .map((row) => (row['from'], row['table'], row['to'])),
+      [('session_id', 'adele_product_sessions', 'id')],
     );
     expect(
       File(database.path).readAsBytesSync().take(16),
@@ -475,6 +492,179 @@ void main() {
       expect(graph.authorities, [(session.id, environment.id)]);
     },
   );
+
+  group('terminal Run records', () {
+    late ProjectDatabase database;
+    late Session session;
+
+    setUp(() {
+      database = _open(backing);
+      final project = database.openProject(
+        sourceLocation: source.uri,
+        nextProjectId: () => ProjectId('project'),
+      );
+      final task = Task(
+        id: TaskId('task'),
+        projectId: project.id,
+        title: 'Task',
+      );
+      final environment = _environment(task);
+      database.insertTaskWithPrimaryEnvironment(task, environment);
+      session = Session(
+        id: SessionId('session'),
+        taskId: task.id,
+        strategyId: OrchestrationStrategyId('dev.adele.test.strategy'),
+      );
+      database.insertSessionWithAuthority(session, environment.id);
+    });
+
+    test('all terminal states commit and reload without plugin state', () {
+      final records = [
+        for (final state in RunTerminalState.values)
+          RunRecord(
+            id: RunId('run-${state.name}'),
+            sessionId: session.id,
+            state: state,
+          ),
+      ];
+      for (final record in records) {
+        database.insertTerminalRun(record);
+        expect(database.autocommit, isTrue);
+      }
+      final inspection = _connect(database.path);
+      expect(
+        inspection.select('SELECT * FROM adele_product_runs'),
+        unorderedEquals([
+          for (final record in records)
+            {
+              'id': record.id.value,
+              'session_id': session.id.value,
+              'terminal_state': record.state.name,
+            },
+        ]),
+      );
+      inspection.execute('''
+        CREATE TABLE plugin_state (broken TEXT);
+        INSERT INTO plugin_state VALUES ('not a core record');
+      ''');
+      database.close();
+      final graph = _open(backing).loadProductGraph();
+      expect(
+        graph.runRecords.map(
+          (record) => (record.id, record.sessionId, record.state),
+        ),
+        unorderedEquals([
+          for (final record in records) (record.id, session.id, record.state),
+        ]),
+      );
+      expect(graph.sessions.single.id, session.id);
+    });
+
+    test('CHECK rejects nonterminal, unknown, and null states', () {
+      final inspection = _connect(database.path);
+      for (final state in ['created', 'running', 'waiting', 'unknown', null]) {
+        expect(
+          () => inspection.execute(
+            'INSERT INTO adele_product_runs VALUES (?, ?, ?)',
+            ['invalid', session.id.value, state],
+          ),
+          throwsA(isA<SqliteException>()),
+          reason: '$state',
+        );
+      }
+      expect(database.loadProductGraph().runRecords, isEmpty);
+    });
+
+    test('writes enforce Session foreign key and duplicate Run identity', () {
+      final record = RunRecord(
+        id: RunId('run'),
+        sessionId: session.id,
+        state: RunTerminalState.completed,
+      );
+      expect(
+        () => database.insertTerminalRun(
+          RunRecord(
+            id: record.id,
+            sessionId: SessionId('missing'),
+            state: record.state,
+          ),
+        ),
+        throwsA(
+          isA<SqliteException>().having(
+            (error) => error.message,
+            'message',
+            contains('FOREIGN KEY'),
+          ),
+        ),
+      );
+      expect(database.autocommit, isTrue);
+      expect(database.loadProductGraph().runRecords, isEmpty);
+      database.insertTerminalRun(record);
+      expect(
+        () => database.insertTerminalRun(
+          RunRecord(
+            id: record.id,
+            sessionId: session.id,
+            state: RunTerminalState.failed,
+          ),
+        ),
+        throwsA(isA<SqliteException>()),
+      );
+      expect(database.autocommit, isTrue);
+      expect(database.loadProductGraph().runRecords.single.state, record.state);
+    });
+
+    for (final (column, invalid) in [('id', ' invalid'), ('session_id', '')]) {
+      test('load rejects malformed Run $column', () {
+        final inspection = _connect(database.path);
+        inspection.execute('INSERT INTO adele_product_runs VALUES (?, ?, ?)', [
+          column == 'id' ? invalid : 'run',
+          column == 'session_id' ? invalid : session.id.value,
+          'completed',
+        ]);
+        expect(database.loadProductGraph, throwsFormatException);
+        expect(database.autocommit, isTrue);
+      });
+    }
+
+    test(
+      'load rejects a null Run ID permitted by SQLite TEXT primary keys',
+      () {
+        _connect(database.path).execute(
+          'INSERT INTO adele_product_runs VALUES (NULL, ?, ?)',
+          [session.id.value, 'completed'],
+        );
+        expect(database.loadProductGraph, throwsFormatException);
+        expect(database.autocommit, isTrue);
+      },
+    );
+
+    test('load rejects an invalid enum even if CHECK was bypassed', () {
+      _connect(database.path)
+        ..execute('PRAGMA ignore_check_constraints = ON')
+        ..execute('INSERT INTO adele_product_runs VALUES (?, ?, ?)', [
+          'run',
+          session.id.value,
+          'running',
+        ]);
+      expect(database.loadProductGraph, throwsArgumentError);
+      expect(database.autocommit, isTrue);
+    });
+
+    test('closed database rejects terminal retention', () {
+      database.close();
+      expect(
+        () => database.insertTerminalRun(
+          RunRecord(
+            id: RunId('run'),
+            sessionId: session.id,
+            state: RunTerminalState.completed,
+          ),
+        ),
+        throwsStateError,
+      );
+    });
+  });
 
   test('failed Session COMMIT rolls back both rows and permits retry', () {
     final database = _open(backing);

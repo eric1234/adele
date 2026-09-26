@@ -147,6 +147,20 @@ final class Session {
   final OrchestrationStrategyId strategyId;
 }
 
+enum RunTerminalState { completed, failed, cancelled }
+
+final class RunRecord {
+  const RunRecord({
+    required this.id,
+    required this.sessionId,
+    required this.state,
+  });
+
+  final RunId id;
+  final SessionId sessionId;
+  final RunTerminalState state;
+}
+
 enum EnvironmentRole { primary, additional }
 
 final class Environment {

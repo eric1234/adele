@@ -127,16 +127,19 @@ state nor grant execution or approval authority.
 
 Profiles and general configuration are accepted architecture but largely
 unimplemented. Project identity/source, Tasks, Environment records/provider-state
-snapshots, Sessions, and their semantic Environment associations use host-owned
-per-Project SQLite with provider-selected backing. Reopen validates the complete
-graph before publishing it into the live in-memory store, without resolving stored
-strategies or materializing Environments.
+snapshots, Sessions, their semantic Environment associations, and terminal Run
+records use host-owned per-Project SQLite with provider-selected backing. Reopen
+validates the complete graph before publishing it into the live in-memory store,
+without resolving stored strategies or materializing Environments.
 
 Plugins own their relational schemas behind the shared `adele_project_storage`
 contract; SQLite and connection lifetime remain app-private. Chat lazily restores
 its canonical history, plain-text Draft Request, and Session configuration through
 an exact-generation infrastructure grant, distinct from operation-scoped execution
-authority. Runs, execution evidence, approvals, and presentation state are not restored.
+authority. [Terminal Run history](product-model.md#terminal-run-history) restores
+only identity, Session relationship, and terminal state, not live execution,
+activity/evidence, approvals, or presentation state. Recording and error boundaries
+belong to [Run finalization](execution-model.md#terminal-run-retention).
 Configuration, durable product state, plugin-owned state, live runtime state,
 security policy, and workbench state remain separate concerns. See
 [profiles and configuration](profiles-and-configuration.md),

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_product/adele_product.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 
 import 'inference_context_host.dart';
@@ -52,19 +53,21 @@ Future<SessionOrchestrationRun> createSessionOrchestrationRun({
     }
     rethrow;
   }
-  return SessionOrchestrationRun._(host, execution);
+  return SessionOrchestrationRun._(host, execution, lifecycle);
 }
 
 /// Application inspection surface; none of these kernel objects reach plugins.
 /// Owns execution release on terminal settlement or explicit close. Automatic
 /// release preserves Run results; explicit close reports any cleanup failure.
 final class SessionOrchestrationRun implements OrchestrationExecution {
-  SessionOrchestrationRun._(this._host, this._execution);
+  SessionOrchestrationRun._(this._host, this._execution, this._lifecycle);
 
   final KernelOrchestrationHost _host;
   final OrchestrationExecution _execution;
+  final ProductLifecycleCoordinator _lifecycle;
   bool _busy = false;
   bool _closed = false;
+  bool _terminalRecordAttempted = false;
   Completer<void>? _advanceSettled;
   Future<void>? _closing;
 
@@ -137,22 +140,46 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
       _host._executionEnabled = false;
       _advanceSettled = null;
       settled.complete();
-      if (failed ||
-          run.state == RunState.completed ||
-          run.state == RunState.failed ||
-          run.state == RunState.cancelled) {
-        final cleanup = close().catchError((Object _) {
-          // Cleanup cannot rewrite terminal evidence or replace advancement's
-          // failure. Explicit close still reports the retained cleanup failure.
-        });
-        if (_host._busy) {
-          // Report strategy failure now; close still drains detached mechanics.
-          unawaited(cleanup);
-        } else {
-          await cleanup;
+      try {
+        _retainTerminalRun();
+      } on Object {
+        // A secondary storage failure cannot replace the strategy's error.
+        // With no primary error, storage failure must reach the caller.
+        if (!failed) rethrow;
+      } finally {
+        if (failed ||
+            run.state == RunState.completed ||
+            run.state == RunState.failed ||
+            run.state == RunState.cancelled) {
+          final cleanup = close().catchError((Object _) {
+            // Cleanup cannot rewrite terminal evidence or replace advancement's
+            // failure. Explicit close still reports the retained cleanup failure.
+          });
+          if (_host._busy) {
+            // Report strategy failure now; close still drains detached mechanics.
+            unawaited(cleanup);
+          } else {
+            await cleanup;
+          }
         }
       }
     }
+  }
+
+  void _retainTerminalRun() {
+    if (_terminalRecordAttempted) return;
+    final state = switch (run.state) {
+      RunState.completed => RunTerminalState.completed,
+      RunState.failed => RunTerminalState.failed,
+      RunState.cancelled => RunTerminalState.cancelled,
+      RunState.created || RunState.running || RunState.waiting => null,
+    };
+    if (state == null) return;
+    // Own the attempt even on storage failure: cleanup must not retry publication.
+    _terminalRecordAttempted = true;
+    _lifecycle.retainTerminalRun(
+      RunRecord(id: run.id, sessionId: run.sessionId, state: state),
+    );
   }
 
   @override
@@ -164,7 +191,21 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
       if (_host._operationSettled case final Completer<void> operation) {
         await operation.future;
       }
-      await _execution.close();
+      // Detached mechanics can settle a deferred failure after advancement ends.
+      // Release resources even if recording that terminal state fails.
+      var recordingFailed = false;
+      try {
+        _retainTerminalRun();
+      } on Object {
+        recordingFailed = true;
+        rethrow;
+      } finally {
+        try {
+          await _execution.close();
+        } on Object {
+          if (!recordingFailed) rethrow;
+        }
+      }
     });
   }
 }

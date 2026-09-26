@@ -100,6 +100,28 @@ void main() {
     expect(session.strategyId, same(strategyId));
   });
 
+  test('RunRecord retains only identity, Session, and terminal state', () {
+    final id = RunId('run-1');
+    final sessionId = SessionId('session-1');
+    expect(RunTerminalState.values.map((state) => state.name), [
+      'completed',
+      'failed',
+      'cancelled',
+    ]);
+    for (final state in RunTerminalState.values) {
+      final record = RunRecord(id: id, sessionId: sessionId, state: state);
+      expect(record.id, same(id));
+      expect(record.sessionId, same(sessionId));
+      expect(record.state, state);
+    }
+    expect(id, RunId('run-1'));
+    expect(id.hashCode, RunId('run-1').hashCode);
+    expect(id, isNot(SessionId('run-1')));
+    for (final invalid in ['', ' ', ' run-1', 'run-1\n']) {
+      expect(() => RunId(invalid), throwsFormatException);
+    }
+  });
+
   test('provisional Environment has absent provider state', () {
     final Environment provisional = Environment(
       id: EnvironmentId('environment-1'),
