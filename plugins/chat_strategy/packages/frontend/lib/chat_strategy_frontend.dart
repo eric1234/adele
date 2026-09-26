@@ -43,22 +43,27 @@ class ChatFrontend extends StatefulWidget {
 }
 
 class _ChatFrontendState extends State<ChatFrontend> {
-  final TextEditingController controller = TextEditingController();
+  TextEditingController controller = TextEditingController();
   // The evaluator requires an explicit initializer to box nullable fields.
   // ignore: avoid_init_to_null
   ChatSessionSnapshot? snapshot = null;
   // ignore: avoid_init_to_null
   ChatEntry? acceptedEntry = null;
+  // ignore: avoid_init_to_null
+  Future<bool>? draftSave = null;
   final Map<String, String> runs = <String, String>{};
   void Function() listener = () {};
   String sessionId = '';
   String failure = '';
   String historyFailure = '';
+  String draftFailure = '';
   bool submitting = false;
   bool refreshing = false;
   bool refreshRequested = false;
   bool wasExecuting = false;
   int revision = 0;
+  int draftRevision = 0;
+  int savedDraftRevision = 0;
   bool disposed = false;
 
   @override
@@ -66,6 +71,13 @@ class _ChatFrontendState extends State<ChatFrontend> {
     super.initState();
     sessionId = widget.sessionId;
     snapshot = widget.initialSnapshot;
+    final initial = snapshot;
+    if (initial != null) {
+      // The pinned evaluator's text setter falls through to an unimplemented
+      // superclass setter. Constructor text restores without that bridge bug.
+      controller.dispose();
+      controller = TextEditingController(text: initial.draftRequest);
+    }
     historyFailure = widget.initialFailure;
     final execution = readSessionExecution();
     wasExecuting =
@@ -97,12 +109,18 @@ class _ChatFrontendState extends State<ChatFrontend> {
       if (disposed) return;
       if (result[0] == true) {
         final next = result[1] as ChatSessionSnapshot;
-        // An append accepted while this read was pending must not be erased by
+        // An entry accepted while this read was pending must not be erased by
         // an older snapshot. Read again rather than merging invented history.
         if (requestedRevision != revision) {
           refreshRequested = true;
         } else {
           setState(() {
+            // Only the first successful load restores the composer. Later
+            // history reads must not replace this view's locally edited draft.
+            if (snapshot == null && draftRevision == 0) {
+              controller.dispose();
+              controller = TextEditingController(text: next.draftRequest);
+            }
             snapshot = next;
             historyFailure = '';
           });
@@ -116,19 +134,80 @@ class _ChatFrontendState extends State<ChatFrontend> {
     refreshing = false;
   }
 
+  void draftChanged(String value) {
+    if (disposed || submitting || acceptedEntry != null) return;
+    draftRevision++;
+    retryDraftSave();
+  }
+
+  void retryDraftSave() {
+    if (disposed || submitting) return;
+    saveDraft();
+  }
+
+  Future<bool> saveDraft() async {
+    final pending = draftSave;
+    if (pending != null) return await pending;
+    if (savedDraftRevision == draftRevision) return true;
+    setState(() {
+      draftFailure = '';
+    });
+    draftSave = persistDraft();
+    return await draftSave!;
+  }
+
+  Future<bool> persistDraft() async {
+    while (!disposed && savedDraftRevision != draftRevision) {
+      final int requestedRevision = draftRevision;
+      final String content = controller.text;
+      final ChatSessionServiceClient client = widget.client;
+      final result = await settleSessionOperation(
+        client.setDraftRequest(sessionId, content),
+      );
+      if (disposed) return false;
+      if (result[0] != true) {
+        setState(() {
+          draftFailure = 'Draft was not saved. Your text is preserved.';
+        });
+        // A newer queued edit still gets its own attempt. Never retry the same
+        // failed revision automatically, including after session_busy.
+        if (requestedRevision == draftRevision) {
+          draftSave = null;
+          return false;
+        }
+      } else {
+        savedDraftRevision = requestedRevision;
+        if (draftFailure.isNotEmpty) {
+          setState(() {
+            draftFailure = '';
+          });
+        }
+      }
+    }
+    draftSave = null;
+    return !disposed;
+  }
+
   Future<void> submit() async {
     if (disposed || submitting || snapshot == null) return;
     if (readSessionExecution()['canStart'] != true) return;
-    final String prompt = controller.text;
-    if (prompt.trim().isEmpty) return;
+    if (acceptedEntry == null && controller.text.trim().isEmpty) return;
     setState(() {
       submitting = true;
       failure = '';
     });
     if (acceptedEntry == null) {
+      final saved = await saveDraft();
+      if (disposed) return;
+      if (!saved) {
+        setState(() {
+          submitting = false;
+        });
+        return;
+      }
       final ChatSessionServiceClient client = widget.client;
       final result = await settleSessionOperation(
-        client.appendUserMessage(sessionId, prompt),
+        client.submitDraftRequest(sessionId),
       );
       if (disposed) return;
       if (result[0] != true) {
@@ -141,6 +220,9 @@ class _ChatFrontendState extends State<ChatFrontend> {
       final entry = result[1] as ChatEntry;
       revision++;
       acceptedEntry = entry;
+      controller.clear();
+      draftRevision++;
+      savedDraftRevision = draftRevision;
       final current = snapshot!;
       final entries = <ChatEntry>[];
       entries.addAll(current.entries);
@@ -152,7 +234,9 @@ class _ChatFrontendState extends State<ChatFrontend> {
           entries: entries,
           instructions: current.instructions,
           maxModelInvocations: current.maxModelInvocations,
+          draftRequest: '',
         );
+        draftFailure = '';
       });
     }
     final result = await settleSessionOperation(startSessionRun());
@@ -167,7 +251,6 @@ class _ChatFrontendState extends State<ChatFrontend> {
     final String runHandle = result[1] as String;
     runs[acceptedEntry!.id] = runHandle;
     acceptedEntry = null;
-    controller.clear();
     executionChanged();
     // Scheduling may already have settled a very short Run before its handle
     // arrived. Canonical history is also refreshed at every later terminal.
@@ -299,12 +382,24 @@ class _ChatFrontendState extends State<ChatFrontend> {
         ),
       );
     }
+    if (draftFailure.isNotEmpty) {
+      children.add(Text(draftFailure));
+      if (canSubmit && acceptedEntry == null) {
+        children.add(
+          TextButton(
+            onPressed: () => retryDraftSave(),
+            child: Text('Retry save'),
+          ),
+        );
+      }
+    }
     // flutter_eval 0.8.2 does not bridge TextField.decoration.
     children.add(Text('Ask ADELE...'));
     children.add(
       TextField(
         controller: controller,
         enabled: canSubmit && acceptedEntry == null,
+        onChanged: (String value) => draftChanged(value),
         onSubmitted: (String value) => submit(),
       ),
     );

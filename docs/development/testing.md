@@ -139,7 +139,8 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Durable Project/Task/Environment records | [`test/core/project_database_test.dart`](../../app/test/core/project_database_test.dart), [`test/core/durable_project_lifecycle_test.dart`](../../app/test/core/durable_project_lifecycle_test.dart), [`test/core/durable_task_environment_lifecycle_test.dart`](../../app/test/core/durable_task_environment_lifecycle_test.dart), [`test/core/durable_task_git_integration_test.dart`](../../app/test/core/durable_task_git_integration_test.dart) (fresh runtime and whole-Project move, real SQLite/Git backends) |
 | Durable Session identity/Environment association | [`test/core/durable_session_lifecycle_test.dart`](../../app/test/core/durable_session_lifecycle_test.dart), [`test/core/project_database_test.dart`](../../app/test/core/project_database_test.dart) (complete-graph validation, atomic creation, missing strategy/provider, and no volatile fallback) |
 | Session-scoped plugin storage host | [`test/core/project_storage_host_test.dart`](../../app/test/core/project_storage_host_test.dart) (owner schema, Project routing, scalar/query bounds, atomic batches, explicit volatile distinction, and queued-entry revocation) |
-| Durable Chat across real backend generations | [`test/core/durable_chat_session_integration_test.dart`](../../app/test/core/durable_chat_session_integration_test.dart) (real Local Directory/Git/Chat AOT backends and SQLite with a deterministic native model fixture, no paid provider) |
+| Durable Chat across real backend generations | [`test/core/durable_chat_session_integration_test.dart`](../../app/test/core/durable_chat_session_integration_test.dart) (conversation/configuration/plain-text draft, atomic draft submission and fresh-runtime reopen; real Local Directory/Git/Chat AOT backends and SQLite with a deterministic native model fixture, no paid provider) |
+| Prepared Chat composer | [`test/chat_frontend_eval_test.dart`](../../app/test/chat_frontend_eval_test.dart) (draft restoration, sequential/coalesced saves, save failure, flush-before-submit, accepted-entry scheduling retry, and stale snapshot protection) |
 | Session presentation/execution/approval | [`test/session_presentation_host_test.dart`](../../app/test/session_presentation_host_test.dart), [`test/session_execution_test.dart`](../../app/test/session_execution_test.dart), [`test/core/approval_gated_tool_policy_test.dart`](../../app/test/core/approval_gated_tool_policy_test.dart) |
 | Orchestration/authority adapters | [`test/core/orchestration_host_test.dart`](../../app/test/core/orchestration_host_test.dart), [`test/core/orchestration_authority_test.dart`](../../app/test/core/orchestration_authority_test.dart), [`test/core/model_tool_host_test.dart`](../../app/test/core/model_tool_host_test.dart), [`test/core/remote_inference_context_integration_test.dart`](../../app/test/core/remote_inference_context_integration_test.dart) |
 | Activity/Inspection | [`test/core/run_activity_projection_test.dart`](../../app/test/core/run_activity_projection_test.dart), [`test/inspection_host_test.dart`](../../app/test/inspection_host_test.dart), [`test/inspection_stack_test.dart`](../../app/test/inspection_stack_test.dart), [`test/openai_activity_frontend_eval_test.dart`](../../app/test/openai_activity_frontend_eval_test.dart) |
@@ -172,11 +173,16 @@ running the full application target:
 ```sh
 flutter test --no-pub test/core/project_database_test.dart test/core/durable_session_lifecycle_test.dart test/core/project_storage_host_test.dart
 flutter test --no-pub --concurrency 1 test/core/durable_chat_session_integration_test.dart
+flutter test --no-pub test/chat_frontend_eval_test.dart
+flutter test --no-pub --concurrency 1 test/core/normal_chatgpt_run_integration_test.dart
 ```
 
 The real-AOT integration needs the pinned Dart AOT toolchain and Git but no live
 provider credentials. It checks durable state across runtime/backend lifetimes,
-not interactive desktop navigation or approval restart. Consult the test source
+including exact partial-draft restoration without Run start and submission
+retention after another reopen, not interactive desktop navigation or approval
+restart. The normal Chat test uses a local fake provider and exercises the prepared
+composer-to-Run flow. Consult the test source
 for its exact cases; these commands are guidance, not recorded pass results.
 
 The public contract's value/transport checks belong to
@@ -193,6 +199,12 @@ dart test test/chat_durable_state_test.dart test/chat_remote_backend_test.dart
 The maintained `chat_strategy_backend` target is the broader package check from
 the root. These tests complement app integration for corruption, failed writes,
 canonical-cache ordering, and explicit volatile behavior.
+Draft cases include SQLite-trigger rollback of set/submission, unchanged entry
+occurrence IDs after failure, mutation/execution fencing, and rejection before
+persisting a draft that would exceed the existing full-row read bound. Contract
+changes additionally require `dart tools/adele.dart test --target chat_strategy_contract`
+and `dart tools/adele.dart generate --check`; eval preparation derives the current
+wire shape from those same declarations, with no old-wire compatibility.
 
 Infrastructure grants also require focused transport/lifecycle validation in
 [`plugin_runtime/test/extension_runtime_test.dart`](../../packages/plugin_runtime/test/extension_runtime_test.dart),

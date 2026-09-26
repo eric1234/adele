@@ -308,19 +308,26 @@ backend owns these version-1 tables:
 
 | Table | Chat-owned meaning |
 | --- | --- |
-| `adele_chat_sessions(session_id, instructions, max_model_invocations, next_entry)` | Configuration and entry counter, linked by foreign key to core Session identity. |
+| `adele_chat_sessions(session_id, instructions, max_model_invocations, next_entry, draft_request)` | Configuration, entry counter, and current plain-text Draft Request, linked by foreign key to core Session identity. |
 | `adele_chat_entries(session_id, sequence, entry_id, role, content)` | Ordered canonical user/assistant history, linked to the Chat Session row. |
 
 `ChatSessionStore` initializes or loads state only on first actual state access,
 not at Project reopen or core Session creation. Defaults apply only to an
-uninitialized Session; existing history, configuration, and counter are validated
-and restored, never replaced on corruption. The cache is generation-local;
-durable SQL state is the source of truth across backend replacement. Missing Chat
+uninitialized Session, including an empty draft; existing history, configuration,
+counter, and draft are validated and restored, never replaced on corruption.
+The cache is generation-local; durable SQL state is the source of truth across
+backend replacement. Missing Chat
 does not prevent core graph restoration or cause its tables to be touched. A fresh
 backend can later load that retained state through fresh resolution.
 
 User append commits its entry and counter together before cache mutation or
-return. Configuration commits both fields before updating the cache. Successful
+return, without changing the draft. Configuration commits both fields before
+updating the cache and also preserves the draft. Draft replacement preserves exact
+plain text, including whitespace. Draft submission rejects blank content and
+atomically commits one user entry, the advanced counter, and an empty draft before
+cache publication. These writes share the existing Session mutation/execution
+claim. The full projected Session row, including draft, must fit the shared
+bounded storage response so accepted state remains readable. Successful
 assistant history remains staged until the existing host terminal `completed`
 acknowledgement; Chat then commits SQL before merging into canonical cache and
 returning. Execution or known storage failure does not publish staged history,
@@ -334,8 +341,8 @@ do not infer rollback or silently retry. A fresh backend generation reloads the
 durable source of truth. Direct `ChatSessionStore()` and `createProject` fixtures
 are deliberately volatile. Remote Chat uses volatile state only after an explicit
 `isDurableSession` false result, never because a lookup or storage call failed.
-Live Run state, claims, approvals, activity/native replay, and composer drafts are
-not part of these tables. See the [Chat ownership map](../../plugins/chat_strategy/README.md)
+Live Run state, claims, approvals, and activity/native replay are not part of these
+tables. See the [Chat ownership map](../../plugins/chat_strategy/README.md)
 for local entrypoints and [ADR 0034](../adr/0034-plugin-owned-relational-session-storage.md)
 for the decision rationale.
 

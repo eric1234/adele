@@ -42,6 +42,7 @@ void main() {
       expect(snapshot.entries, isEmpty);
       expect(snapshot.instructions, chatDefaultInstructions);
       expect(snapshot.maxModelInvocations, 8);
+      expect(snapshot.draftRequest, '');
       expect(backend.hostCalls, isNotEmpty);
       expect(
         backend.hostCalls.every(
@@ -62,6 +63,70 @@ void main() {
             'unknown_method',
           ),
         ),
+      );
+    },
+  );
+
+  test(
+    'remote draft operations preserve exact bytes across backend replacement',
+    () async {
+      final storage = ChatTestStorage();
+      addTearDown(storage.close);
+      final first = await _RunningBackend.start(storage: storage);
+      addTearDown(first.close);
+      for (final blank in ['', ' ', '\t\r\n']) {
+        await first.chat.setDraftRequest('session', blank);
+        await expectLater(
+          first.chat.submitDraftRequest('session'),
+          _failure('invalid_content'),
+        );
+        expect((await first.chat.snapshot('session')).draftRequest, blank);
+      }
+      for (final invalid in ['', ' session ']) {
+        await expectLater(
+          first.chat.setDraftRequest(invalid, ''),
+          _failure('invalid_session'),
+        );
+        await expectLater(
+          first.chat.submitDraftRequest(invalid),
+          _failure('invalid_session'),
+        );
+      }
+      const draft = '  Draft\r\n\t\u0000\u00e9\u{1f600}  ';
+      await first.chat.setDraftRequest('session', draft);
+      await first.chat.appendUserMessage(
+        'session',
+        'Independent direct prompt.',
+      );
+      await first.chat.configureSession(
+        'session',
+        'Retained configuration.',
+        3,
+      );
+      expect((await first.chat.snapshot('session')).draftRequest, draft);
+      await first.close();
+
+      final second = await _RunningBackend.start(storage: storage);
+      addTearDown(second.close);
+      final restored = await second.chat.snapshot('session');
+      expect(restored.draftRequest, draft);
+      expect(restored.instructions, 'Retained configuration.');
+      expect(restored.maxModelInvocations, 3);
+      expect(restored.entries.single.id, 'entry-0');
+      final entry = await second.chat.submitDraftRequest('session');
+      expect((entry.id, entry.role, entry.content), ('entry-1', 'user', draft));
+      expect((await second.chat.snapshot('session')).draftRequest, '');
+      expect(second.host.events, isEmpty);
+      await second.close();
+
+      final third = await _RunningBackend.start(storage: storage);
+      addTearDown(third.close);
+      final afterSubmit = await third.chat.snapshot('session');
+      expect(afterSubmit.draftRequest, '');
+      expect(afterSubmit.entries.last.content, draft);
+      expect(
+        (await third.chat.appendUserMessage('session', 'Next.')).id,
+        'entry-2',
       );
     },
   );
@@ -213,6 +278,8 @@ void main() {
       backend.host.modelGate = Completer<void>();
       backend.host.completeGate = Completer<void>();
       final user = await backend.chat.appendUserMessage('session', 'Prompt.');
+      const draft = '  Not submitted.\r\n';
+      await backend.chat.setDraftRequest('session', draft);
       final execution = await backend.materialize();
       await backend.expectBusy();
       await backend.chat.appendUserMessage('other', 'Independent.');
@@ -225,6 +292,7 @@ void main() {
       final duringFlush = await backend.chat.snapshot('session');
       expect(duringFlush.entries.map((entry) => entry.role), ['user']);
       expect(duringFlush.entries.single.id, user.id);
+      expect(duringFlush.draftRequest, draft);
       expect(
         backend.storage.database
             .select(
@@ -240,6 +308,7 @@ void main() {
       expect(finalSnapshot.entries.first.id, user.id);
       expect(finalSnapshot.entries.last.id, isNot(user.id));
       expect(finalSnapshot.entries.last.content, 'Final answer.');
+      expect(finalSnapshot.draftRequest, draft);
       expect(
         backend.host.materials.single.instructions,
         '$chatToolNarrationGuidance\n\n$chatDefaultInstructions',
@@ -272,6 +341,7 @@ void main() {
         ChatSessionStore(storage: backend.storage),
       );
       final restored = await restarted.snapshot('session');
+      expect(restored.draftRequest, draft);
       expect(
         restored.entries.map((entry) => (entry.id, entry.role, entry.content)),
         entries.map((entry) => (entry.id, entry.role, entry.content)),
@@ -359,6 +429,38 @@ void main() {
       },
     );
   }
+
+  test(
+    'stale draft rejects assistant commit after honest host completion',
+    () async {
+      final backend = await _RunningBackend.start();
+      addTearDown(backend.close);
+      await backend.chat.appendUserMessage('session', 'Accepted user.');
+      await backend.chat.setDraftRequest('session', 'Captured draft.');
+      final execution = await backend.materialize();
+      final replacement = ChatSessionBackend(
+        ChatSessionStore(storage: backend.storage),
+      );
+      await replacement.setDraftRequest('session', 'New generation draft.');
+      final writes = backend.storage.transactions;
+      await expectLater(
+        backend.orchestration.start(execution, 'token'),
+        throwsA(isA<AdeleRemoteFailure>()),
+      );
+      expect(backend.host.state, RemoteRunState.completed);
+      expect(backend.host.events, ['start', 'model', 'complete']);
+      expect(backend.storage.transactions, writes + 1);
+      final stale = await backend.chat.snapshot('session');
+      expect(stale.draftRequest, 'Captured draft.');
+      expect(stale.entries.single.id, 'entry-0');
+      final durable = await ChatSessionBackend(
+        ChatSessionStore(storage: backend.storage),
+      ).snapshot('session');
+      expect(durable.draftRequest, 'New generation draft.');
+      expect(durable.entries.single.id, 'entry-0');
+      expect((await replacement.submitDraftRequest('session')).id, 'entry-1');
+    },
+  );
 
   for (final phase in ['start', 'refusal', 'approval']) {
     for (final rejection in ['error', 'mismatched state']) {
@@ -692,6 +794,10 @@ void main() {
             }
           });
           await service.appendUserMessage('session', 'Accepted user.');
+          await service.setDraftRequest(
+            'session',
+            'Retained during execution.',
+          );
           final execution = await backend.materialize(
             chatStrategyRouteId,
             _session,
@@ -715,6 +821,10 @@ void main() {
           await entered.future;
           expect(host.state, RemoteRunState.completed);
           expect(
+            (await service.snapshot('session')).draftRequest,
+            'Retained during execution.',
+          );
+          expect(
             (await service.snapshot(
               'session',
             )).entries.map((entry) => entry.id),
@@ -728,6 +838,14 @@ void main() {
           );
           await expectLater(
             ChatSessionBackend(store).appendUserMessage('session', 'Blocked.'),
+            _failure('session_busy'),
+          );
+          await expectLater(
+            service.setDraftRequest('session', ''),
+            _failure('session_busy'),
+          );
+          await expectLater(
+            service.submitDraftRequest('session'),
             _failure('session_busy'),
           );
           await expectLater(
@@ -767,6 +885,8 @@ void main() {
           final durable = await ChatSessionBackend(
             ChatSessionStore(storage: storage),
           ).snapshot('session');
+          expect(canonical.draftRequest, 'Retained during execution.');
+          expect(durable.draftRequest, canonical.draftRequest);
           expect(canonical.entries.map((entry) => entry.role), [
             'user',
             if (!failCommit) 'assistant',
@@ -826,6 +946,7 @@ void main() {
                         'instructions': '',
                         'max_model_invocations': 8,
                         'next_entry': count,
+                        'draft_request': '',
                       },
                     }),
                   )
@@ -980,8 +1101,14 @@ Matcher _failure(String code) => throwsA(
 );
 
 final class _RunningBackend {
-  _RunningBackend(this.isolate, this.responses, this.ready)
-    : commands = ready['commandPort']! as SendPort {
+  _RunningBackend(
+    this.isolate,
+    this.responses,
+    this.ready, {
+    ChatTestStorage? storage,
+  }) : storage = storage ?? ChatTestStorage(),
+       _ownsStorage = storage == null,
+       commands = ready['commandPort']! as SendPort {
     subscription = responses.listen((message) {
       final map = Map<String, Object?>.from(message as Map);
       if (map['kind'] == 'hostRequest') {
@@ -1006,7 +1133,8 @@ final class _RunningBackend {
   final pending = <int, Completer<Object?>>{};
   final hostCalls = <Map<String, Object?>>[];
   final host = _Host();
-  final storage = ChatTestStorage();
+  final ChatTestStorage storage;
+  final bool _ownsStorage;
   late final storageDispatcher = ProjectStorageServiceDispatcher(storage);
   late final dispatcher = RemoteOrchestrationHostServiceDispatcher(host);
   late final chat = ChatSessionServiceClient(
@@ -1017,8 +1145,9 @@ final class _RunningBackend {
   );
   int nextRequest = 0;
   bool stopped = false;
+  bool closed = false;
 
-  static Future<_RunningBackend> start() async {
+  static Future<_RunningBackend> start({ChatTestStorage? storage}) async {
     final bootstrap = ReceivePort();
     final responses = ReceivePort();
     final isolate = await Isolate.spawn(_runBackend, [
@@ -1031,6 +1160,7 @@ final class _RunningBackend {
         isolate,
         responses,
         Map<String, Object?>.from(ready as Map),
+        storage: storage,
       );
     } on Object {
       isolate.kill(priority: Isolate.immediate);
@@ -1081,10 +1211,16 @@ final class _RunningBackend {
         chat.configureSession('session', 'Rejected.', 3),
         _failure('session_busy'),
       ),
+      expectLater(
+        chat.setDraftRequest('session', ''),
+        _failure('session_busy'),
+      ),
+      expectLater(chat.submitDraftRequest('session'), _failure('session_busy')),
     ]);
     final after = await chat.snapshot('session');
     expect(after.instructions, before.instructions);
     expect(after.maxModelInvocations, before.maxModelInvocations);
+    expect(after.draftRequest, before.draftRequest);
     expect(
       after.entries.map((entry) => (entry.id, entry.role, entry.content)),
       before.entries.map((entry) => (entry.id, entry.role, entry.content)),
@@ -1124,6 +1260,8 @@ final class _RunningBackend {
   }
 
   Future<void> close() async {
+    if (closed) return;
+    closed = true;
     try {
       await shutdown();
     } finally {
@@ -1138,7 +1276,7 @@ final class _RunningBackend {
       }
       await dispatcher.close();
       await storageDispatcher.close();
-      storage.close();
+      if (_ownsStorage) storage.close();
     }
   }
 }

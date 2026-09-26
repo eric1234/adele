@@ -28,11 +28,13 @@ final class ChatSessionSnapshot {
     required List<ChatEntry> entries,
     required this.instructions,
     required this.maxModelInvocations,
+    required this.draftRequest,
   }) : entries = List<ChatEntry>.unmodifiable(entries);
 
   final List<ChatEntry> entries;
   final String instructions;
   final int maxModelInvocations;
+  final String draftRequest;
 }
 
 @AdeleService('chat.session')
@@ -40,9 +42,18 @@ abstract interface class ChatSessionService {
   @AdeleMethod('snapshot')
   Future<ChatSessionSnapshot> snapshot(String sessionId);
 
-  /// Returns the accepted occurrence. Blank content is rejected, not normalized.
+  /// Returns the accepted occurrence without changing the Draft Request.
+  /// Blank content is rejected, not normalized.
   @AdeleMethod('appendUserMessage')
   Future<ChatEntry> appendUserMessage(String sessionId, String content);
+
+  /// Replaces the current plain-text draft exactly, including empty/blank text.
+  @AdeleMethod('setDraftRequest')
+  Future<void> setDraftRequest(String sessionId, String content);
+
+  /// Atomically accepts the exact nonblank draft as a user entry and clears it.
+  @AdeleMethod('submitDraftRequest')
+  Future<ChatEntry> submitDraftRequest(String sessionId);
 
   /// Replaces both settings atomically; the invocation limit must be positive.
   @AdeleMethod('configureSession')

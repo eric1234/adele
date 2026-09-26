@@ -37,6 +37,8 @@ void main() {
     expect(state.snapshot().instructions, state.instructions);
     expect(state.snapshot().maxModelInvocations, state.maxModelInvocations);
     expect(state.snapshot().entries, isEmpty);
+    expect(state.draftRequest, '');
+    expect(state.snapshot().draftRequest, '');
   });
 
   test('configuration is mutable and rejects nonpositive budgets', () {
@@ -77,10 +79,12 @@ void main() {
       entries: entries,
       instructions: 'Instructions.',
       maxModelInvocations: 8,
+      draftRequest: 'Draft.',
     );
     entries.clear();
 
     expect(snapshot.entries, <ChatEntry>[user]);
+    expect(snapshot.draftRequest, 'Draft.');
     expect(() => snapshot.entries.remove(user), throwsUnsupportedError);
   });
 
@@ -98,4 +102,31 @@ void main() {
     final state = ChatSessionState(SessionId('session-1'));
     expect(state.appendUserMessage(content).content, content);
   });
+
+  test(
+    'volatile service draft belongs to canonical state and snapshots copy it',
+    () async {
+      final store = ChatSessionStore();
+      final state = store.obtain(SessionId('session'));
+      final service = ChatSessionBackend(store);
+      const draft = '  Exact\r\n\t\u0000draft.  ';
+      await service.setDraftRequest('session', draft);
+      final before = state.snapshot();
+      state.appendUserMessage('Direct append.');
+      state.instructions = 'Changed.';
+      expect(state.draftRequest, draft);
+      final entry = await service.submitDraftRequest('session');
+      expect(entry.id, 'entry-1');
+      expect(entry.content, draft);
+      expect(state.draftRequest, '');
+      expect(before.draftRequest, draft);
+      expect(before.entries, isEmpty);
+      expect(
+        (await ChatSessionBackend(
+          ChatSessionStore(),
+        ).snapshot('session')).draftRequest,
+        '',
+      );
+    },
+  );
 }

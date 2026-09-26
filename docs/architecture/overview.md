@@ -134,9 +134,9 @@ strategies or materializing Environments.
 
 Plugins own their relational schemas behind the shared `adele_project_storage`
 contract; SQLite and connection lifetime remain app-private. Chat lazily restores
-its canonical history and Session configuration through an exact-generation
-infrastructure grant, distinct from operation-scoped execution authority. Runs,
-execution evidence, approvals, and presentation state are not restored.
+its canonical history, plain-text Draft Request, and Session configuration through
+an exact-generation infrastructure grant, distinct from operation-scoped execution
+authority. Runs, execution evidence, approvals, and presentation state are not restored.
 Configuration, durable product state, plugin-owned state, live runtime state,
 security policy, and workbench state remain separate concerns. See
 [profiles and configuration](profiles-and-configuration.md),

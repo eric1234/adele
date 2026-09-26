@@ -53,7 +53,7 @@ const _patchedText = 'const taskAnswer = "approved-task-value";\n';
 const _agentsText = 'Inspect source before proposing an edit and validation.\n';
 const _projectText = 'const projectAnswer = "project-source-only"; \t\n';
 const _projectAgentsText = 'Project-only guidance must not be used.\n';
-const _initialPrompt = 'Explain the approval workflow without tools.';
+const _initialPrompt = '  Explain the approval workflow\twithout tools.  ';
 const _initialAnswer =
     'Source edits and validation commands require separate approvals.';
 const _prompt =
@@ -370,7 +370,9 @@ void main() {
           runtime.store.requireSessionAuthority(session.id).environmentId,
           environment.id,
         );
-        expect((await chat.snapshot(session.id.value)).entries, isEmpty);
+        final initial = await chat.snapshot(session.id.value);
+        expect(initial.entries, isEmpty);
+        expect(initial.draftRequest, '');
         expect(
           find.descendant(
             of: host,
@@ -381,6 +383,27 @@ void main() {
           findsOneWidget,
         );
 
+        final composer = find.descendant(
+          of: host,
+          matching: find.byType(TextField),
+        );
+        const partialDraft = '  Explain the approval workflow\twithout...  ';
+        await tester.enterText(composer, partialDraft);
+        expect(
+          tester.widget<TextField>(composer).controller!.text,
+          partialDraft,
+        );
+        await _pumpUntil(
+          tester,
+          () async =>
+              (await chat.snapshot(session.id.value)).draftRequest ==
+              partialDraft,
+        );
+        expect((await chat.snapshot(session.id.value)).entries, isEmpty);
+        expect(fixture.runIds.values, isEmpty);
+        expect(outbound, isEmpty);
+
+        // Send must flush the final edit, not submit the previous saved draft.
         await _send(tester, _initialPrompt);
         await _pumpUntil(
           tester,
@@ -388,6 +411,8 @@ void main() {
         );
         _rethrowEndpointFailure(endpointFailures);
         final first = await chat.snapshot(session.id.value);
+        expect(first.draftRequest, '');
+        expect(tester.widget<TextField>(composer).controller!.text, '');
         expect(first.entries.map((entry) => (entry.role, entry.content)), [
           ('user', _initialPrompt),
           ('assistant', _initialAnswer),
@@ -416,6 +441,7 @@ void main() {
           _taskText,
         );
         final waiting = await chat.snapshot(session.id.value);
+        expect(waiting.draftRequest, '');
         expect(waiting.entries.map((entry) => (entry.role, entry.content)), [
           ('user', _initialPrompt),
           ('assistant', _initialAnswer),
@@ -475,6 +501,7 @@ void main() {
         await _pumpUntil(tester, () => find.text(answer).evaluate().isNotEmpty);
         _rethrowEndpointFailure(endpointFailures);
         final canonical = await chat.snapshot(session.id.value);
+        expect(canonical.draftRequest, '');
         expect(canonical.entries.map((entry) => (entry.role, entry.content)), [
           ('user', _initialPrompt),
           ('assistant', _initialAnswer),
@@ -1191,14 +1218,17 @@ final class _RunIds implements RunIdSource {
   }
 }
 
-Future<void> _pumpUntil(WidgetTester tester, bool Function() ready) async {
+Future<void> _pumpUntil(
+  WidgetTester tester,
+  FutureOr<bool> Function() ready,
+) async {
   final deadline = DateTime.now().add(const Duration(seconds: 15));
-  while (!ready() && DateTime.now().isBefore(deadline)) {
+  while (!await ready() && DateTime.now().isBefore(deadline)) {
     await Future<void>.delayed(const Duration(milliseconds: 10));
     await tester.pump();
   }
   expect(
-    ready(),
+    await ready(),
     isTrue,
     reason: 'Timed out waiting for installed product state.',
   );
