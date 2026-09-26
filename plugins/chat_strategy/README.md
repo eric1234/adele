@@ -46,7 +46,8 @@ contribution with
 `OrchestrationStrategyHostContext(session: ..., host: ...)`. Callers do not
 select another strategy ID after Session creation.
 The product `Session` retains its canonical identity and selected strategy;
-Chat owns conversation state separately in its backend store.
+Chat owns conversation, configuration, and Draft Request separately in its backend
+store. The current Draft Request is exact plain text.
 The returned execution exposes only the public `start` and `resolveApproval`
 operations, not a Chat-specific loop implementation.
 
@@ -56,14 +57,17 @@ the annotated contract through `dart tools/adele.dart generate`. The public API 
 ```dart
 Future<ChatSessionSnapshot> snapshot(String sessionId);
 Future<ChatEntry> appendUserMessage(String sessionId, String content);
+Future<void> setDraftRequest(String sessionId, String content);
+Future<ChatEntry> submitDraftRequest(String sessionId);
 Future<void> configureSession(
   String sessionId, String instructions, int maxModelInvocations);
 ```
 
-`ChatSessionSnapshot` contains immutable `entries`, `instructions`, and
-`maxModelInvocations`. Each `ChatEntry` contains `String id`, `String role`
-(`user` or `assistant`), and `String content`. `ChatEntryId` is a plugin-owned
-opaque occurrence identity, transported as a string to keep interpreted DTOs
+`ChatSessionSnapshot` contains immutable `entries`, `instructions`,
+`maxModelInvocations`, and `String draftRequest`. Each `ChatEntry` contains
+`String id`, `String role` (`user` or `assistant`), and `String content`.
+`ChatEntryId` is a plugin-owned opaque occurrence identity, transported as a string
+to keep interpreted DTOs
 simple. IDs are allocated at append, unique within a retained Session, and
 stable across later snapshots and durable reloads even when messages have
 identical content.
@@ -73,14 +77,25 @@ exposes no assistant/history-replacement operation. Blank messages are rejected
 without trimming valid content. Native items, tool proposals, intermediate
 assistant text, and tool results remain outside canonical history.
 
+`setDraftRequest` replaces the mutable plain-text draft without trimming, including
+empty or whitespace-only editing states. `submitDraftRequest` rejects blank
+content but otherwise retains the exact draft as one canonical user entry and
+clears the draft atomically. Durable submission commits the entry, counter, and
+empty draft in one SQLite transaction before publishing backend memory or
+returning the accepted entry. A failed write leaves all three unchanged. Direct
+`appendUserMessage` remains for already-accepted programmatic messages and never
+changes the draft; configuration also leaves it intact. Draft restoration does
+not start a Run. The [backend map](packages/backend/README.md) defines hydration,
+the unchanged v1 baseline, and the existing storage-readability bound.
+
 `configureSession` replaces both settings atomically. The default budget is eight
 model invocations and must remain positive. Stock source-tool/approval guidance
 is `chatDefaultInstructions` in the backend, not a host/frontend default.
 Each execution captures configuration at materialization. Materialization claims
 the Session until execution close finishes, including approval waits and terminal
-host settlement. Appends, configuration, and another materialization cannot
-change a claimed Session. Idle durable writes also retain the claim through SQL
-acknowledgement before publishing new canonical state. Snapshots and other
+host settlement. Appends, draft edits/submission, configuration, and another
+materialization cannot change a claimed Session. Idle durable writes also retain
+the claim through SQL acknowledgement before publishing new canonical state. Snapshots and other
 Sessions remain usable.
 The service returns declared `ChatSessionFailure` codes `session_busy`,
 `invalid_session`, `invalid_content`, or `invalid_configuration`.
@@ -193,8 +208,14 @@ source or falls back to an app-owned native Chat view. Preparation and deploymen
 inputs are documented in [`app/README.md`](../../app/README.md#prepared-chat-frontend).
 
 The evaluated frontend owns its generated `ChatSessionServiceClient` through the
-public owning-backend bridge. It reads canonical snapshots and appends a user
-message before asking the separate Session execution bridge to start a Run.
+public owning-backend bridge. It restores the composer from the canonical draft
+and coalesces edits into sequential saves, retaining unsaved local text on failure.
+Send flushes the latest local draft before atomic submission and then asks the
+separate Session execution bridge to start a Run. Acceptance clears the composer;
+if scheduling fails, Send retries the already-accepted entry even with an empty
+composer, without another submission. History refresh cannot overwrite a newer
+local draft. See the [frontend map](packages/frontend/README.md) for save/retry
+and presentation-lifetime details.
 The accepted entry ID anchors view-local activity to that exact occurrence.
 No canonical store, native Chat controller, or execution object is shared by
 identity with the frontend. The owning channel is generation-bound; it does not
@@ -252,9 +273,10 @@ projection/cache planning, token budgets, richer Chat UI, broader tool/provider
 activity presentation, reasoning deltas, arbitrary plugin drill-down, Run/activity
 persistence, profiles,
 child Sessions, state migration, and concurrent
-conversation editing are not implemented. Canonical Chat history and configuration
-persist for durable Sessions; explicitly volatile fixtures remain scoped to their
-supplied store. Execution state, approvals, replay, and activity are not restored.
+conversation editing are not implemented. Canonical Chat history, configuration,
+and the plain-text Draft Request persist for durable Sessions; explicitly volatile
+fixtures remain scoped to their supplied store. Execution state, approvals, replay,
+and activity are not restored.
 Prepared frontend discovery and activation are implemented; installation/update
 management and artifact caching remain deferred. Checkout preparation stands in
 for future installation/update compilation, separate from activation consuming

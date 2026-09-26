@@ -378,18 +378,26 @@ for value limits and security qualifications, and
 ### Normal Chat interaction
 
 With its prepared contributions available, Chat is the current stock Session.
-The Chat backend owns conversation state/history and strategy sequencing; its
-interpreted frontend owns history/composer presentation and activity grouping.
+The Chat backend owns conversation state/history, Draft Request, configuration,
+and strategy sequencing; its interpreted frontend owns history/composer
+presentation and activity grouping.
 The app owns generic scheduling, Run hosting, provider/tool/context composition,
 execution status, policy, and approvals, not a second Chat implementation.
 
-The backend lazily loads initialized durable Chat history/configuration through
-the shared storage service; Project opening does not hydrate Chat. The host Run
-can already be completed when plugin history storage fails: preserve terminal
+The backend lazily loads initialized durable Chat history/configuration/draft
+through the shared storage service; Project opening does not hydrate Chat. The host
+Run can already be completed when plugin history storage fails: preserve terminal
 evidence and surface the error, without rollback or hidden retry. Generation-local
 cache, durable state, and transport-uncertainty boundaries live in
 [plugin persistence](../docs/architecture/plugin-system.md#chat-participation)
 and the [Chat README](../plugins/chat_strategy/README.md).
+
+The current Draft Request is plain text. Chat's prepared frontend restores it and
+sequentially saves coalesced edits through its own backend service. Send flushes
+the latest local text, atomically submits/clears the draft, then schedules a Run.
+Scheduling retry reuses the accepted entry without duplicating history. Save or
+submission failure preserves visible local text; refreshing history cannot erase
+newer edits. None of these semantics requires app-owned Chat storage or codecs.
 
 `SessionExecutionController` resolves the currently selected provider binding and
 builds a Session-authorized tool catalog for each new Run. Continuations reuse
@@ -526,9 +534,11 @@ validation belongs to the [OpenAI backend](../plugins/openai/packages/backend/RE
 
 Project identity/source, Tasks, Environment semantic records, and provider-state
 snapshots, Sessions, and semantic Environment associations are durable; initialized
-Chat history/configuration is plugin-owned durable state. Environment materialization
-remains lazy and runtime-only. Runs, claims, execution evidence/activity, approval
-restart, native replay, and composer drafts are not persisted. Task Browser/general
+Chat conversation, configuration, and plain-text Draft Request are plugin-owned
+durable state. Environment materialization remains lazy and runtime-only.
+Runs, claims, execution evidence/activity, approval restart, and native replay are
+not persisted. Rich Draft Request documents,
+conversation forks, and concurrent editing are unimplemented. Task Browser/general
 Session navigation, automatic selection/resume, general settings, Profiles,
 configured-provider/credential management, and workbench persistence remain absent.
 Current model-provider selection is the source-checkout seam above, not finished

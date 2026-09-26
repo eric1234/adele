@@ -88,10 +88,227 @@ void main() {
     },
   );
 
-  testWidgets('append and scheduling both exclude duplicate submits', (
+  testWidgets(
+    'restores exact draft and saves edits across presentation reopen',
+    (tester) async {
+      const restored = '  Saved draft\nwith whitespace  ';
+      source.draftRequest = restored;
+      await tester.pumpWidget(_host(generation, source));
+      await tester.pumpAndSettle();
+      expect(_draft(tester), restored);
+      expect(
+        source.writes,
+        isEmpty,
+        reason: 'Restoration is not a local edit.',
+      );
+      const edited = '  New draft  ';
+      await tester.enterText(find.byType(TextField), edited);
+      expect(_draft(tester), edited);
+      await tester.pumpAndSettle();
+      expect(source.draftRequest, edited);
+      expect(source.writes, [edited]);
+      expect(source.submitted, isEmpty);
+      expect(source.starts, 0);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(source.hasSubscriptions, isFalse);
+      source.active = true;
+      await tester.pumpWidget(_host(generation, source));
+      await tester.pumpAndSettle();
+      expect(_draft(tester), edited);
+      await tester.enterText(find.byType(TextField), '   ');
+      await tester.pumpAndSettle();
+      expect(source.draftRequest, '   ');
+      await tester.enterText(find.byType(TextField), '');
+      await tester.pumpAndSettle();
+      expect(source.draftRequest, isEmpty);
+      expect(source.writes, [edited, '   ', '']);
+      expect(source.maxInFlightSaves, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('rapid edits coalesce to latest and all saves stay sequential', (
     tester,
   ) async {
-    source.appendGate = Completer<void>();
+    final first = Completer<void>();
+    final latest = Completer<void>();
+    source.saveGate = first;
+    await tester.pumpWidget(_host(generation, source));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'First');
+    await tester.enterText(find.byType(TextField), 'Skipped');
+    await tester.enterText(find.byType(TextField), 'Latest');
+    await tester.pumpAndSettle();
+    expect(_draft(tester), 'Latest');
+    expect(source.writes, ['First']);
+    expect(source.inFlightSaves, 1);
+    source.saveGate = latest;
+    first.complete();
+    await tester.pumpAndSettle();
+    expect(source.writes, ['First', 'Latest']);
+    expect(source.draftRequest, 'First');
+    await tester.enterText(find.byType(TextField), 'Next');
+    await tester.enterText(find.byType(TextField), 'Final');
+    latest.complete();
+    await tester.pumpAndSettle();
+    expect(source.writes, ['First', 'Latest', 'Final']);
+    expect(source.draftRequest, 'Final');
+    await tester.enterText(find.byType(TextField), 'Sequential');
+    await tester.pumpAndSettle();
+    expect(source.writes, ['First', 'Latest', 'Final', 'Sequential']);
+    expect(source.draftRequest, 'Sequential');
+    expect(source.maxInFlightSaves, 1);
+    expect(source.inFlightSaves, 0);
+    expect(source.submitted, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'failed save retains latest text, stops, and explicitly retries',
+    (tester) async {
+      final gate = Completer<void>();
+      source.saveGate = gate;
+      source.failSave = true;
+      await tester.pumpWidget(_host(generation, source));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'First');
+      await tester.enterText(find.byType(TextField), 'Keep latest');
+      gate.complete();
+      await tester.pumpAndSettle();
+      expect(_draft(tester), 'Keep latest');
+      expect(source.writes, ['First']);
+      expect(source.draftRequest, isEmpty);
+      expect(
+        find.text('Draft was not saved. Your text is preserved.'),
+        findsOneWidget,
+      );
+      expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
+      source.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(source.writes, ['First'], reason: 'No busy auto-retry loop.');
+      source.failSave = false;
+      await tester.tap(find.text('Retry save'));
+      await tester.pumpAndSettle();
+      expect(source.writes, ['First', 'Keep latest']);
+      expect(source.draftRequest, 'Keep latest');
+      expect(_draft(tester), 'Keep latest');
+      expect(find.text('Retry save'), findsNothing);
+      expect(source.submitted, isEmpty);
+      expect(source.starts, 0);
+    },
+  );
+
+  testWidgets('another local edit retries a failed save', (tester) async {
+    source.failSave = true;
+    await tester.pumpWidget(_host(generation, source));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'Failed');
+    await tester.pumpAndSettle();
+    expect(find.text('Retry save'), findsOneWidget);
+    source.failSave = false;
+    await tester.enterText(find.byType(TextField), 'Edited after failure');
+    await tester.pumpAndSettle();
+    expect(source.writes, ['Failed', 'Edited after failure']);
+    expect(source.draftRequest, 'Edited after failure');
+    expect(_draft(tester), 'Edited after failure');
+    expect(find.text('Retry save'), findsNothing);
+  });
+
+  testWidgets(
+    'Send flushes latest draft before acceptance and Run scheduling',
+    (tester) async {
+      final first = Completer<void>();
+      final latest = Completer<void>();
+      source.saveGate = first;
+      source.submitGate = Completer<void>();
+      source.startGate = Completer<void>();
+      await tester.pumpWidget(_host(generation, source));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'First');
+      await tester.enterText(find.byType(TextField), 'Skipped');
+      await tester.enterText(find.byType(TextField), '  Latest  ');
+      final send = tester
+          .widget<TextButton>(find.widgetWithText(TextButton, 'Send'))
+          .onPressed!;
+      send();
+      send();
+      await tester.pumpAndSettle();
+      expect(source.events, ['save:First']);
+      expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
+      source.saveGate = latest;
+      first.complete();
+      await tester.pumpAndSettle();
+      expect(source.events, ['save:First', 'saved:First', 'save:  Latest  ']);
+      expect(source.submitted, isEmpty);
+      expect(source.starts, 0);
+      expect(_draft(tester), '  Latest  ');
+      latest.complete();
+      await tester.pumpAndSettle();
+      expect(source.submitted, ['  Latest  ']);
+      expect(source.starts, 0);
+      expect(_draft(tester), '  Latest  ');
+      source.submitGate!.complete();
+      await tester.pumpAndSettle();
+      expect(_draft(tester), isEmpty);
+      expect(source.draftRequest, isEmpty);
+      expect(source.events, [
+        'save:First',
+        'saved:First',
+        'save:  Latest  ',
+        'saved:  Latest  ',
+        'submit:  Latest  ',
+        'accepted:  Latest  ',
+        'start',
+      ]);
+      send();
+      expect(source.starts, 1);
+      source.startGate!.complete();
+      await tester.pumpAndSettle();
+      expect(source.maxInFlightSaves, 1);
+      expect(source.submitted, ['  Latest  ']);
+      expect(source.entries.single.content, '  Latest  ');
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'failed Send flush preserves draft and retries without submitting',
+    (tester) async {
+      final gate = Completer<void>();
+      source.saveGate = gate;
+      source.failSave = true;
+      await tester.pumpWidget(_host(generation, source));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'Keep for Send');
+      await tester.tap(find.text('Send'));
+      await tester.pumpAndSettle();
+      gate.complete();
+      await tester.pumpAndSettle();
+      expect(_draft(tester), 'Keep for Send');
+      expect(source.submitted, isEmpty);
+      expect(source.starts, 0);
+      expect(source.entries, isEmpty);
+      expect(source.writes, ['Keep for Send']);
+      expect(
+        find.text('Draft was not saved. Your text is preserved.'),
+        findsOneWidget,
+      );
+      expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
+      source.failSave = false;
+      await tester.tap(find.text('Send'));
+      await tester.pumpAndSettle();
+      expect(source.writes, ['Keep for Send', 'Keep for Send']);
+      expect(source.submitted, ['Keep for Send']);
+      expect(source.starts, 1);
+      expect(_draft(tester), isEmpty);
+      expect(find.text('Retry save'), findsNothing);
+    },
+  );
+
+  testWidgets('acceptance and scheduling both exclude duplicate submits', (
+    tester,
+  ) async {
+    source.submitGate = Completer<void>();
     source.startGate = Completer<void>();
     await tester.pumpWidget(_host(generation, source));
     await tester.pumpAndSettle();
@@ -105,11 +322,11 @@ void main() {
     expect(source.submitted, ['Send once']);
     expect(source.starts, 0);
     expect(_draft(tester), 'Send once');
-    source.appendGate!.complete();
+    source.submitGate!.complete();
     await tester.pumpAndSettle();
     send();
     expect(source.starts, 1);
-    expect(_draft(tester), 'Send once');
+    expect(_draft(tester), isEmpty);
     source.startGate!.complete();
     await tester.pumpAndSettle();
     expect(_draft(tester), isEmpty);
@@ -117,11 +334,11 @@ void main() {
     expect(
       source.running,
       isTrue,
-      reason: 'Draft clears on scheduling, not completion.',
+      reason: 'Draft clears on acceptance, not scheduling or completion.',
     );
   });
 
-  testWidgets('blank drafts and unavailable execution never append', (
+  testWidgets('blank drafts and unavailable execution never submit', (
     tester,
   ) async {
     await tester.pumpWidget(_host(generation, source));
@@ -162,6 +379,39 @@ void main() {
     },
   );
 
+  for (final savePending in [false, true]) {
+    testWidgets(
+      'terminal snapshot cannot overwrite newer ${savePending ? 'pending' : 'saved'} draft',
+      (tester) async {
+        await _submit(tester, generation, source, 'First request');
+        final snapshotGate = Completer<void>();
+        final saveGate = Completer<void>();
+        source.snapshotGate = snapshotGate;
+        source.entries.add(
+          const ChatEntry(id: 'answer', role: 'assistant', content: 'Answer'),
+        );
+        source.finish();
+        await tester.pumpAndSettle();
+        if (savePending) source.saveGate = saveGate;
+        await tester.enterText(find.byType(TextField), 'New local draft');
+        await tester.pumpAndSettle();
+        snapshotGate.complete();
+        await tester.pumpAndSettle();
+        expect(_draft(tester), 'New local draft');
+        expect(find.text('Answer'), findsOneWidget);
+        if (savePending) {
+          expect(source.draftRequest, isEmpty);
+          saveGate.complete();
+          await tester.pumpAndSettle();
+        }
+        expect(source.draftRequest, 'New local draft');
+        expect(source.submitted, ['First request']);
+        expect(source.starts, 1);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   testWidgets('Run already terminal at scheduling refreshes canonical answer', (
     tester,
   ) async {
@@ -172,29 +422,30 @@ void main() {
     expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
   });
 
-  testWidgets('append failure preserves draft and does not invent history', (
-    tester,
-  ) async {
-    source.failAppend = true;
-    await tester.pumpWidget(_host(generation, source));
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField), 'Keep this draft');
-    await tester.tap(find.text('Send'));
-    await tester.pumpAndSettle();
-    expect(_draft(tester), 'Keep this draft');
-    expect(source.entries, isEmpty);
-    expect(source.starts, 0);
-    expect(
-      find.text('Message was not accepted. Your draft is preserved.'),
-      findsOneWidget,
-    );
-    expect(find.text('ADELE'), findsNothing);
-    source.failAppend = false;
-    await tester.tap(find.text('Send'));
-    await tester.pumpAndSettle();
-    expect(source.entries.single.content, 'Keep this draft');
-    expect(_draft(tester), isEmpty);
-  });
+  testWidgets(
+    'submission failure preserves draft and does not invent history',
+    (tester) async {
+      source.failSubmit = true;
+      await tester.pumpWidget(_host(generation, source));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'Keep this draft');
+      await tester.tap(find.text('Send'));
+      await tester.pumpAndSettle();
+      expect(_draft(tester), 'Keep this draft');
+      expect(source.entries, isEmpty);
+      expect(source.starts, 0);
+      expect(
+        find.text('Message was not accepted. Your draft is preserved.'),
+        findsOneWidget,
+      );
+      expect(find.text('ADELE'), findsNothing);
+      source.failSubmit = false;
+      await tester.tap(find.text('Send'));
+      await tester.pumpAndSettle();
+      expect(source.entries.single.content, 'Keep this draft');
+      expect(_draft(tester), isEmpty);
+    },
+  );
 
   testWidgets('scheduling retry reuses the accepted canonical occurrence', (
     tester,
@@ -206,7 +457,8 @@ void main() {
     await tester.tap(find.text('Send'));
     await tester.pumpAndSettle();
     expect(source.entries, hasLength(1));
-    expect(_draft(tester), 'Accepted once');
+    expect(_draft(tester), isEmpty);
+    expect(source.draftRequest, isEmpty);
     expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
     expect(
       find.text('Message accepted, but Run could not start. Retry Send.'),
@@ -216,8 +468,13 @@ void main() {
     await tester.tap(find.text('Send'));
     await tester.pumpAndSettle();
     expect(source.submitted, ['Accepted once']);
+    expect(source.writes, ['Accepted once']);
     expect(source.starts, 2);
     expect(_draft(tester), isEmpty);
+    source.models.add(_model('retry-activity', [_tool('retry-tool', 'read')]));
+    source.notifyListeners();
+    await tester.pumpAndSettle();
+    expect(find.text('COMPACT retry-tool'), findsOneWidget);
   });
 
   for (final resume in [false, true]) {
@@ -392,6 +649,7 @@ void main() {
     tester,
   ) async {
     source.failSnapshot = true;
+    source.draftRequest = '  Restored after retry\n ';
     await tester.pumpWidget(_host(generation, source));
     await tester.pumpAndSettle();
     expect(
@@ -399,24 +657,137 @@ void main() {
       findsOneWidget,
     );
     expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
+    expect(_draft(tester), isEmpty);
+    final gate = Completer<void>();
+    source.snapshotGate = gate;
     source.failSnapshot = false;
     await tester.tap(find.text('Retry history'));
     await tester.pumpAndSettle();
+    expect(_draft(tester), isEmpty);
+    expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
+    gate.complete();
+    await tester.pumpAndSettle();
     expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
+    expect(_draft(tester), '  Restored after retry\n ');
+    expect(source.writes, isEmpty);
   });
 
   testWidgets(
-    'retirement rejects late append settlement and removes subscriptions',
+    'history retry after initial recovery cannot replace local edits',
     (tester) async {
-      source.appendGate = Completer<void>();
+      source.failSnapshot = true;
+      source.draftRequest = 'Original';
       await tester.pumpWidget(_host(generation, source));
       await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField), 'Late append');
+      source.failSnapshot = false;
+      await tester.tap(find.text('Retry history'));
+      await tester.pumpAndSettle();
+      expect(_draft(tester), 'Original');
+      source.running = true;
+      source.notifyListeners();
+      await tester.pumpAndSettle();
+      source.failSnapshot = true;
+      source.finish();
+      await tester.pumpAndSettle();
+      expect(find.text('Retry history'), findsOneWidget);
+      source.failSnapshot = false;
+      final gate = Completer<void>();
+      source.snapshotGate = gate;
+      await tester.tap(find.text('Retry history'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'Newer local text');
+      await tester.pumpAndSettle();
+      gate.complete();
+      await tester.pumpAndSettle();
+      expect(_draft(tester), 'Newer local text');
+      expect(source.draftRequest, 'Newer local text');
+      expect(find.text('Retry history'), findsNothing);
+      expect(source.writes, ['Newer local text']);
+    },
+  );
+
+  testWidgets('initial snapshot retry protects a newer local input revision', (
+    tester,
+  ) async {
+    source.failSnapshot = true;
+    source.draftRequest = 'Stored draft';
+    await tester.pumpWidget(_host(generation, source));
+    await tester.pumpAndSettle();
+    source.failSnapshot = false;
+    final gate = Completer<void>();
+    source.snapshotGate = gate;
+    await tester.tap(find.text('Retry history'));
+    await tester.pumpAndSettle();
+    final field = tester.widget<TextField>(find.byType(TextField));
+    expect(field.enabled, isFalse);
+    // Editing normally stays disabled during initial recovery. Deliver a local
+    // input callback directly to exercise the in-flight snapshot revision guard.
+    field.controller!.text = 'New local input';
+    field.onChanged!('New local input');
+    await tester.pumpAndSettle();
+    gate.complete();
+    await tester.pumpAndSettle();
+    expect(_draft(tester), 'New local input');
+    expect(source.draftRequest, 'New local input');
+    expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
+    expect(source.writes, ['New local input']);
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final sending in [false, true]) {
+    testWidgets(
+      'disposal during save stops queued edits${sending ? ' and Send' : ''}',
+      (tester) async {
+        final gate = Completer<void>();
+        source.saveGate = gate;
+        await tester.pumpWidget(_host(generation, source));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byType(TextField), 'In flight');
+        await tester.enterText(find.byType(TextField), 'Queued');
+        if (sending) await tester.tap(find.text('Send'));
+        await tester.pumpAndSettle();
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(source.hasSubscriptions, isFalse);
+        gate.complete();
+        await tester.pumpAndSettle();
+        expect(source.writes, ['In flight']);
+        expect(source.submitted, isEmpty);
+        expect(source.starts, 0);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets('disposal rejects late history retry settlement', (tester) async {
+    source.failSnapshot = true;
+    await tester.pumpWidget(_host(generation, source));
+    await tester.pumpAndSettle();
+    source.failSnapshot = false;
+    source.draftRequest = 'Late restored text';
+    final gate = Completer<void>();
+    source.snapshotGate = gate;
+    await tester.tap(find.text('Retry history'));
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(const SizedBox.shrink());
+    gate.complete();
+    await tester.pumpAndSettle();
+    expect(source.hasSubscriptions, isFalse);
+    expect(source.writes, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'retirement rejects late submission settlement and removes subscriptions',
+    (tester) async {
+      source.submitGate = Completer<void>();
+      await tester.pumpWidget(_host(generation, source));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'Late submission');
       await tester.tap(find.text('Send'));
       await tester.pumpAndSettle();
       generation.invalidate();
       await tester.pumpWidget(const SizedBox.shrink());
-      source.appendGate!.complete();
+      source.submitGate!.complete();
       await tester.pumpAndSettle();
       expect(source.starts, 0);
       expect(source.hasSubscriptions, isFalse);
@@ -465,12 +836,16 @@ Future<bool> configure() async {
         ],
         'instructions': '',
         'maxModelInvocations': 3,
+        'draftRequest': '',
       };
       for (final data in <Object?>[
         valid,
         {...valid, 'unknown': true},
         {'entries': valid['entries'], 'instructions': ''},
         {...valid, 'maxModelInvocations': '3'},
+        {...valid}..remove('draftRequest'),
+        {...valid, 'draftRequest': null},
+        {...valid, 'draftRequest': 42},
         {
           ...valid,
           'entries': [
@@ -615,18 +990,22 @@ class _Source extends ChangeNotifier
   bool get hasSubscriptions => hasListeners;
   final entries = <ChatEntry>[];
   final submitted = <String>[];
+  final writes = <String>[];
+  final events = <String>[];
   final inspected = <String>[];
   final built = <String>[];
   final calls = <(String, Map<String, Object?>)>[];
   final activities = <String, List<Map<String, Object?>>>{};
   List<Map<String, Object?>> get models => activities['run-$starts']!;
-  Completer<void>? appendGate;
+  Completer<void>? submitGate;
+  Completer<void>? saveGate;
   Completer<void>? startGate;
   Completer<void>? snapshotGate;
   bool active = true;
   bool running = false;
   bool advancing = false;
-  bool failAppend = false;
+  bool failSubmit = false;
+  bool failSave = false;
   bool failSnapshot = false;
   bool failStart = false;
   bool finishDuringStart = false;
@@ -634,6 +1013,9 @@ class _Source extends ChangeNotifier
   int starts = 0;
   int snapshotReads = 0;
   int configurations = 0;
+  int inFlightSaves = 0;
+  int maxInFlightSaves = 0;
+  String draftRequest = '';
 
   @override
   Future<Object?> request(String method, Map<String, Object?> payload) async {
@@ -656,6 +1038,7 @@ class _Source extends ChangeNotifier
       entries: entries,
       instructions: 'Backend defaults',
       maxModelInvocations: 4,
+      draftRequest: draftRequest,
     );
     final gate = snapshotGate;
     snapshotGate = null;
@@ -665,15 +1048,50 @@ class _Source extends ChangeNotifier
 
   @override
   Future<ChatEntry> appendUserMessage(String sessionId, String content) async {
+    throw StateError('The composer must submit the durable Draft Request.');
+  }
+
+  @override
+  Future<void> setDraftRequest(String sessionId, String content) async {
+    writes.add(content);
+    events.add('save:$content');
+    inFlightSaves++;
+    if (inFlightSaves > maxInFlightSaves) maxInFlightSaves = inFlightSaves;
+    final gate = saveGate;
+    saveGate = null;
+    try {
+      await gate?.future;
+      if (failSave) {
+        throw const ChatSessionFailure(
+          code: 'session_busy',
+          message: 'Busy fixture',
+          details: {},
+        );
+      }
+      draftRequest = content;
+      events.add('saved:$content');
+    } finally {
+      inFlightSaves--;
+    }
+  }
+
+  @override
+  Future<ChatEntry> submitDraftRequest(String sessionId) async {
+    final content = draftRequest;
     submitted.add(content);
-    await appendGate?.future;
-    if (failAppend) throw StateError('Rejected');
+    events.add('submit:$content');
+    await submitGate?.future;
+    if (failSubmit) throw StateError('Rejected');
+    if (inFlightSaves != 0) throw StateError('Save still pending');
+    if (content.trim().isEmpty) throw StateError('Blank draft');
     final entry = ChatEntry(
       id: 'entry-${entries.length}',
       role: 'user',
       content: content,
     );
     entries.add(entry);
+    draftRequest = '';
+    events.add('accepted:$content');
     return entry;
   }
 
@@ -697,6 +1115,7 @@ class _Source extends ChangeNotifier
   };
   @override
   Future<String> startRun() async {
+    events.add('start');
     starts++;
     await startGate?.future;
     if (failStart) throw StateError('Scheduling failed');

@@ -39,6 +39,7 @@ void main() {
       expect(snapshot.entries.single, isNot(same(accepted)));
       expect(snapshot.instructions, '  exact\r\n');
       expect(snapshot.maxModelInvocations, 3);
+      expect(snapshot.draftRequest, '');
       expect(() => snapshot.entries.clear(), throwsUnsupportedError);
       expect(channel.calls.map((call) => call.$1), [
         chatSessionServiceConfigureSessionId,
@@ -49,6 +50,35 @@ void main() {
         'sessionId': 'session',
         'content': '  Prompt.\n',
       });
+    },
+  );
+
+  test(
+    'generated draft operations retain exact text and accepted entry',
+    () async {
+      final service = _Service();
+      final dispatcher = ChatSessionServiceDispatcher(service);
+      addTearDown(dispatcher.close);
+      final channel = _Channel(dispatcher);
+      final client = ChatSessionServiceClient(channel);
+      for (final draft in ['', '   ', '\n', '  Exact\r\n\t\u0000draft  ']) {
+        await client.setDraftRequest('session', draft);
+        expect((await client.snapshot('session')).draftRequest, draft);
+      }
+      final before = await client.snapshot('session');
+      final accepted = await client.submitDraftRequest('session');
+      expect(accepted.id, 'entry-0');
+      expect(accepted.role, 'user');
+      expect(accepted.content, before.draftRequest);
+      final after = await client.snapshot('session');
+      expect(after.draftRequest, '');
+      expect(after.entries.single.id, accepted.id);
+      expect(after.entries.single.content, accepted.content);
+      expect(channel.calls.first.$1, chatSessionServiceSetDraftRequestId);
+      expect(channel.calls.first.$2, {'sessionId': 'session', 'content': ''});
+      final submission = channel.calls[channel.calls.length - 2];
+      expect(submission.$1, chatSessionServiceSubmitDraftRequestId);
+      expect(submission.$2, {'sessionId': 'session'});
     },
   );
 
@@ -68,6 +98,41 @@ void main() {
       ),
     );
   });
+
+  test(
+    'current wire snapshot requires a string draft without legacy defaults',
+    () async {
+      for (final draftFields in <Map<String, Object?>>[
+        {},
+        {'draftRequest': null},
+        {'draftRequest': 3},
+      ]) {
+        final client = ChatSessionServiceClient(
+          _SnapshotChannel({
+            'entries': <Object?>[],
+            'instructions': '',
+            'maxModelInvocations': 8,
+            ...draftFields,
+          }),
+        );
+        await expectLater(
+          client.snapshot('session'),
+          throwsA(isA<AdeleProtocolException>()),
+        );
+      }
+    },
+  );
+}
+
+final class _SnapshotChannel implements AdeleRequestChannel {
+  _SnapshotChannel(this.payload);
+  final Map<String, Object?> payload;
+
+  @override
+  Future<Object?> request(
+    String method,
+    Map<String, Object?> arguments,
+  ) async => payload;
 }
 
 final class _Channel implements AdeleRequestChannel {
@@ -95,6 +160,7 @@ final class _Service implements ChatSessionService {
   final entries = <ChatEntry>[];
   String instructions = '';
   int maximum = 8;
+  String draft = '';
   bool busy = false;
 
   @override
@@ -103,6 +169,7 @@ final class _Service implements ChatSessionService {
         entries: entries,
         instructions: instructions,
         maxModelInvocations: maximum,
+        draftRequest: draft,
       );
 
   @override
@@ -120,6 +187,18 @@ final class _Service implements ChatSessionService {
       content: content,
     );
     entries.add(entry);
+    return entry;
+  }
+
+  @override
+  Future<void> setDraftRequest(String sessionId, String content) async {
+    draft = content;
+  }
+
+  @override
+  Future<ChatEntry> submitDraftRequest(String sessionId) async {
+    final entry = await appendUserMessage(sessionId, draft);
+    draft = '';
     return entry;
   }
 

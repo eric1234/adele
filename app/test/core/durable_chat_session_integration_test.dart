@@ -26,6 +26,8 @@ const _projectPluginId = 'dev.adele.plugin.local-directory-project';
 const _chatPluginId = 'dev.adele.plugin.chat-strategy';
 const _instructions = 'Retain the conversation exactly. Answer without tools.';
 const _budget = 3;
+const _draftRequest =
+    '  Question after restart:\n\tkeep this partial request...\n  ';
 final _projectProviderId = ProviderId('dev.adele.project.local-directory');
 final _gitProviderId = ProviderId('dev.adele.environment.git-worktree');
 
@@ -89,7 +91,7 @@ void main() {
   }
 
   test(
-    'durable Session and Chat survive generation replacement, absent plugin, and fresh reactivation',
+    'durable Chat history and draft survive generation replacement and restart, then submit once',
     () async {
       final source = await _source();
       final original = await start(
@@ -105,6 +107,18 @@ void main() {
       expect(authority.environmentId, product.environment.id);
       final coreBefore = _inspect(source, _coreRows);
       final chatA = _chatClient(generationA.connection);
+      final initial = await chatA.snapshot(session.id.value);
+      expect(initial.entries, isEmpty);
+      expect(initial.draftRequest, '');
+      expect(_inspect(source, _chatRows)['sessions'], [
+        {
+          'session_id': session.id.value,
+          'instructions': initial.instructions,
+          'max_model_invocations': initial.maxModelInvocations,
+          'next_entry': 0,
+          'draft_request': '',
+        },
+      ]);
       await chatA.configureSession(session.id.value, _instructions, _budget);
       final firstUser = await chatA.appendUserMessage(
         session.id.value,
@@ -126,8 +140,23 @@ void main() {
         ('assistant', 'First durable answer.'),
       ]);
       expect(first.entries.first.id, firstUser.id);
+      await chatA.setDraftRequest(session.id.value, _draftRequest);
+      final drafted = await chatA.snapshot(session.id.value);
+      expect(_snapshot(drafted), {
+        ..._snapshot(first),
+        'draftRequest': _draftRequest,
+      });
       expect(_inspect(source, _coreRows), coreBefore);
       final firstRows = _inspect(source, _chatRows);
+      expect(firstRows['sessions'], [
+        {
+          'session_id': session.id.value,
+          'instructions': _instructions,
+          'max_model_invocations': _budget,
+          'next_entry': 2,
+          'draft_request': _draftRequest,
+        },
+      ]);
       final retained = runtime.lifecycle.resolveSessionStrategy(session.id);
       expect(
         generationA.extensionOrigin(retained.binding)!.connection,
@@ -165,7 +194,7 @@ void main() {
       expect(retained.validateBinding, throwsA(isA<StaleExtensionBinding>()));
       expect(
         _snapshot(await chatB.snapshot(session.id.value)),
-        _snapshot(first),
+        _snapshot(drafted),
       );
       expect(_inspect(source, _chatRows), firstRows);
       await chatB.appendUserMessage(
@@ -184,6 +213,7 @@ void main() {
       await secondRun.start();
       expect(secondRun.run.state, RunState.completed);
       final saved = await chatB.snapshot(session.id.value);
+      expect(saved.draftRequest, _draftRequest);
       _expectHistory(saved, [
         ('user', 'First durable question.'),
         ('assistant', 'First durable answer.'),
@@ -281,29 +311,73 @@ void main() {
         _snapshot(saved),
       );
       expect(_inspect(source, _chatRows), savedRows);
-      final nextUser = await chat.appendUserMessage(
-        session.id.value,
-        'Question after restart.',
+      expect(
+        reopenedRuntime.lifecycle.environmentRuntime.currentMaterialization(
+          environment.id,
+        ),
+        isNull,
       );
+      // Restoring a draft neither submits it nor starts execution.
+      final nextUser = await chat.submitDraftRequest(session.id.value);
       expect(nextUser.id, 'entry-4');
+      expect(nextUser.role, 'user');
+      expect(nextUser.content, _draftRequest);
+      final submitted = await chat.snapshot(session.id.value);
+      expect(submitted.draftRequest, '');
+      _expectHistory(submitted, [
+        ('user', 'First durable question.'),
+        ('assistant', 'First durable answer.'),
+        ('user', 'Second durable question.'),
+        ('assistant', 'Second durable answer.'),
+        ('user', _draftRequest),
+      ]);
+      final submittedRows = _inspect(source, _chatRows);
+      expect(submittedRows['sessions'], [
+        {
+          'session_id': session.id.value,
+          'instructions': _instructions,
+          'max_model_invocations': _budget,
+          'next_entry': 5,
+          'draft_request': '',
+        },
+      ]);
+      await expectLater(
+        chat.submitDraftRequest(session.id.value),
+        throwsA(
+          isA<ChatSessionFailure>().having(
+            (failure) => failure.code,
+            'code',
+            'invalid_content',
+          ),
+        ),
+      );
+      expect(
+        _snapshot(await chat.snapshot(session.id.value)),
+        _snapshot(submitted),
+      );
+      expect(_inspect(source, _chatRows), submittedRows);
+      final continuedModel = _Model(submitted, 'Answer after restart.');
       final continued = await _createRun(
         reopenedRuntime,
         session.id,
         'fresh-run',
-        _Model(await chat.snapshot(session.id.value), 'Answer after restart.'),
+        continuedModel,
       );
+      expect(continuedModel.calls, 0);
       expect(continued.run.state, RunState.created);
       expect(continued.run.journal.records, isEmpty);
       expect(continued.run, isNot(same(secondRun.run)));
       await continued.start();
       expect(continued.run.state, RunState.completed);
+      expect(continuedModel.calls, 1);
       final finalSnapshot = await chat.snapshot(session.id.value);
+      expect(finalSnapshot.draftRequest, '');
       _expectHistory(finalSnapshot, [
         ('user', 'First durable question.'),
         ('assistant', 'First durable answer.'),
         ('user', 'Second durable question.'),
         ('assistant', 'Second durable answer.'),
-        ('user', 'Question after restart.'),
+        ('user', _draftRequest),
         ('assistant', 'Answer after restart.'),
       ]);
       expect(
@@ -318,7 +392,42 @@ void main() {
         isNull,
       );
       expect(_inspect(source, _coreRows), coreBefore);
+      final finalRows = _inspect(source, _chatRows);
       await fresh.close();
+      expect(fresh.host.isClosed, isTrue);
+      expect(reactivated.connection.isClosed, isTrue);
+      final thirdIds = _NoAllocationIds();
+      final third = await start(thirdIds);
+      await third.runtime.lifecycle.openProject(
+        sourceLocation: source.uri,
+        provider: third.runtime.lifecycle.resolveProjectProvider(
+          _projectProviderId,
+        ),
+      );
+      expect(_inspect(source, _chatRows), finalRows);
+      final thirdGeneration = await third.activate(_chatPluginId);
+      final restored = await _chatClient(
+        thirdGeneration.connection,
+      ).snapshot(session.id.value);
+      expect(_snapshot(restored), _snapshot(finalSnapshot));
+      expect(restored.draftRequest, '');
+      expect(
+        restored.entries
+            .where((entry) => entry.id == nextUser.id)
+            .single
+            .content,
+        _draftRequest,
+      );
+      expect(thirdIds.calls, 0);
+      expect(
+        third.runtime.lifecycle.environmentRuntime.currentMaterialization(
+          environment.id,
+        ),
+        isNull,
+      );
+      expect(_inspect(source, _coreRows), coreBefore);
+      expect(_inspect(source, _chatRows), finalRows);
+      await third.close();
       _inspect(source, _expectSchema);
     },
     timeout: const Timeout(Duration(minutes: 2)),
@@ -339,6 +448,7 @@ void main() {
       final chat = _chatClient(generation.connection);
       await chat.configureSession(sessionId.value, _instructions, _budget);
       await chat.appendUserMessage(sessionId.value, 'Retained before failure.');
+      await chat.setDraftRequest(sessionId.value, _draftRequest);
       final before = await chat.snapshot(sessionId.value);
       final rowsBefore = _inspect(source, _chatRows);
       expect(rowsBefore['sessions'], [
@@ -347,6 +457,7 @@ void main() {
           'instructions': _instructions,
           'max_model_invocations': _budget,
           'next_entry': 1,
+          'draft_request': _draftRequest,
         },
       ]);
       expect(rowsBefore['entries'], [
@@ -378,10 +489,38 @@ void main() {
         CREATE TRIGGER reject_chat_configuration
         BEFORE UPDATE OF instructions, max_model_invocations ON adele_chat_sessions
         BEGIN SELECT RAISE(ABORT, 'durable-chat-configuration-failure'); END;
+        CREATE TRIGGER reject_chat_draft
+        BEFORE UPDATE OF draft_request ON adele_chat_sessions
+        WHEN NEW.draft_request <> ''
+        BEGIN SELECT RAISE(ABORT, 'durable-chat-draft-failure'); END;
       '''),
       );
       await expectLater(
         chat.appendUserMessage(sessionId.value, 'Must not be published.'),
+        storageFailure,
+      );
+      expect(
+        _snapshot(await chat.snapshot(sessionId.value)),
+        _snapshot(before),
+      );
+      expect(_inspect(source, _chatRows), rowsBefore);
+      expect(_inspect(source, _coreRows), coreBefore);
+
+      await expectLater(
+        chat.setDraftRequest(sessionId.value, 'Must not replace the draft.'),
+        storageFailure,
+      );
+      expect(
+        _snapshot(await chat.snapshot(sessionId.value)),
+        _snapshot(before),
+      );
+      expect(_inspect(source, _chatRows), rowsBefore);
+      expect(_inspect(source, _coreRows), coreBefore);
+
+      // Clearing is allowed by the draft trigger; the entry failure must roll
+      // back the entire submission, including its draft clear and counter.
+      await expectLater(
+        chat.submitDraftRequest(sessionId.value),
         storageFailure,
       );
       expect(
@@ -428,6 +567,7 @@ void main() {
         (database) => database.execute('''
           DROP TRIGGER reject_chat_entry;
           DROP TRIGGER reject_chat_configuration;
+          DROP TRIGGER reject_chat_draft;
         '''),
       );
       final retry = await _createRun(
@@ -438,10 +578,20 @@ void main() {
       );
       await retry.start();
       expect(retry.run.state, RunState.completed);
+      expect(
+        (await chat.snapshot(sessionId.value)).draftRequest,
+        _draftRequest,
+      );
+      final accepted = await chat.submitDraftRequest(sessionId.value);
+      expect(accepted.id, 'entry-2');
+      expect(accepted.role, 'user');
+      expect(accepted.content, _draftRequest);
       final recovered = await chat.snapshot(sessionId.value);
+      expect(recovered.draftRequest, '');
       _expectHistory(recovered, [
         ('user', 'Retained before failure.'),
         ('assistant', 'Committed after retry.'),
+        ('user', _draftRequest),
       ]);
       expect(recovered.entries.first.id, before.entries.single.id);
       expect(_inspect(source, _coreRows), coreBefore);
@@ -599,6 +749,7 @@ final class _NoTools implements ToolPolicy {
 Map<String, Object?> _snapshot(ChatSessionSnapshot snapshot) => {
   'instructions': snapshot.instructions,
   'maxModelInvocations': snapshot.maxModelInvocations,
+  'draftRequest': snapshot.draftRequest,
   'entries': [
     for (final entry in snapshot.entries)
       {'id': entry.id, 'role': entry.role, 'content': entry.content},
@@ -655,6 +806,18 @@ Map<String, Object?> _chatRows(Database database) => {
 };
 
 void _expectSchema(Database database) {
+  expect(
+    database
+        .select('PRAGMA table_info(adele_chat_sessions)')
+        .map((row) => (row['name'], row['type'], row['notnull'])),
+    [
+      ('session_id', 'TEXT', 1),
+      ('instructions', 'TEXT', 1),
+      ('max_model_invocations', 'INTEGER', 1),
+      ('next_entry', 'INTEGER', 1),
+      ('draft_request', 'TEXT', 1),
+    ],
+  );
   expect(
     _rows(database, 'SELECT * FROM adele_schema_versions ORDER BY owner_id'),
     [

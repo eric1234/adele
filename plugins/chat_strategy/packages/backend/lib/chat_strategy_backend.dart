@@ -87,6 +87,16 @@ final class ChatSessionBackend implements ChatSessionService {
   }
 
   @override
+  Future<void> setDraftRequest(String sessionId, String content) async =>
+      (await _session(sessionId))._setDraftRequest(content);
+
+  @override
+  Future<ChatEntry> submitDraftRequest(String sessionId) async {
+    final session = await _session(sessionId);
+    return session._appendUserMessage(session.draftRequest, clearDraft: true);
+  }
+
+  @override
   Future<void> configureSession(
     String sessionId,
     String instructions,
@@ -267,6 +277,7 @@ final class _ChatHistoryTransaction {
     : staged = ChatSessionState(source.id)
         .._instructions = source.instructions
         .._maxModelInvocations = source.maxModelInvocations
+        .._draftRequest = source.draftRequest
         .._entries.addAll(source._entries)
         .._nextEntry = source._nextEntry {
     source._acquire(this);
@@ -329,7 +340,8 @@ final class ChatSessionStore {
     final parameters = <String, Object?>{':session': id.value};
     final rows = await storage.queryForSession(
       id.value,
-      'SELECT session_id, instructions, max_model_invocations, next_entry '
+      'SELECT session_id, instructions, max_model_invocations, next_entry, '
+      'draft_request '
       'FROM adele_chat_sessions WHERE session_id = :session',
       parameters,
     );
@@ -342,21 +354,25 @@ final class ChatSessionStore {
       final instructions = values['instructions'];
       final budget = values['max_model_invocations'];
       final counter = values['next_entry'];
+      final draft = values['draft_request'];
       if (values['session_id'] != id.value ||
           instructions is! String ||
           budget is! int ||
           budget < 1 ||
           counter is! int ||
-          counter < 0) {
+          counter < 0 ||
+          draft is! String) {
         throw ChatStateCorruption(
           id,
-          'Invalid configuration or entry counter.',
+          'Invalid configuration, entry counter, or draft.',
         );
       }
       state
         .._instructions = instructions
         .._maxModelInvocations = budget
-        .._nextEntry = counter;
+        .._nextEntry = counter
+        .._draftRequest = draft;
+      state._requireReadableConfiguration(instructions, budget, counter, draft);
     }
     while (true) {
       final entries = await storage.queryForSession(
@@ -412,18 +428,21 @@ final class ChatSessionStore {
         state.instructions,
         state.maxModelInvocations,
         state._nextEntry,
+        state.draftRequest,
       );
       await storage.transactionForSession(id.value, [
         RelationalStatement(
           sql:
               'INSERT INTO adele_chat_sessions '
-              '(session_id, instructions, max_model_invocations, next_entry) '
-              'VALUES (:session, :instructions, :budget, :counter)',
+              '(session_id, instructions, max_model_invocations, next_entry, '
+              'draft_request) '
+              'VALUES (:session, :instructions, :budget, :counter, :draft)',
           parameters: {
             ...parameters,
             ':instructions': state.instructions,
             ':budget': state.maxModelInvocations,
             ':counter': state._nextEntry,
+            ':draft': state.draftRequest,
           },
           expectedRows: 1,
         ),
@@ -438,7 +457,8 @@ CREATE TABLE adele_chat_sessions (
   session_id TEXT NOT NULL PRIMARY KEY REFERENCES adele_product_sessions(id),
   instructions TEXT NOT NULL,
   max_model_invocations INTEGER NOT NULL CHECK (max_model_invocations > 0),
-  next_entry INTEGER NOT NULL CHECK (next_entry >= 0)
+  next_entry INTEGER NOT NULL CHECK (next_entry >= 0),
+  draft_request TEXT NOT NULL
 );
 CREATE TABLE adele_chat_entries (
   session_id TEXT NOT NULL REFERENCES adele_chat_sessions(session_id),
@@ -472,7 +492,10 @@ final class ChatSessionState {
   int _maxModelInvocations = 8;
   final List<ChatEntry> _entries = <ChatEntry>[];
   int _nextEntry = 0;
+  String _draftRequest = '';
   Object? _execution;
+
+  String get draftRequest => _draftRequest;
 
   String get instructions => _instructions;
 
@@ -515,18 +538,29 @@ final class ChatSessionState {
     return entry;
   }
 
-  Future<ChatEntry> _appendUserMessage(String content) async {
+  Future<ChatEntry> _appendUserMessage(
+    String content, {
+    bool clearDraft = false,
+  }) async {
     final claim = Object();
     _acquire(claim);
     try {
+      if (clearDraft && content.trim().isEmpty) {
+        throw const ChatSessionFailure(
+          code: 'invalid_content',
+          message: 'Chat Draft Request must not be empty.',
+          details: <String, Object?>{},
+        );
+      }
       final entry = ChatEntry(
         id: 'entry-$_nextEntry',
         role: 'user',
         content: content,
       );
-      await _persistEntries([entry], _nextEntry + 1);
+      await _persistEntries([entry], _nextEntry + 1, clearDraft: clearDraft);
       _entries.add(entry);
       _nextEntry++;
+      if (clearDraft) _draftRequest = '';
       return entry;
     } finally {
       _release(claim);
@@ -538,19 +572,52 @@ final class ChatSessionState {
     ':previousCounter': _nextEntry,
     ':previousInstructions': _instructions,
     ':previousBudget': _maxModelInvocations,
+    ':previousDraft': _draftRequest,
   };
 
   static const _whereCurrent =
       'WHERE session_id = :session AND next_entry = :previousCounter '
       'AND instructions = :previousInstructions '
-      'AND max_model_invocations = :previousBudget';
+      'AND max_model_invocations = :previousBudget '
+      'AND draft_request = :previousDraft';
+
+  Future<void> _setDraftRequest(String content) async {
+    final claim = Object();
+    _acquire(claim);
+    try {
+      if (_storage != null) {
+        _requireReadableConfiguration(
+          _instructions,
+          _maxModelInvocations,
+          _nextEntry,
+          content,
+        );
+      }
+      await _storage?.transactionForSession(id.value, [
+        RelationalStatement(
+          sql:
+              'UPDATE adele_chat_sessions SET draft_request = :draft $_whereCurrent',
+          parameters: {..._preconditions, ':draft': content},
+          expectedRows: 1,
+        ),
+      ]);
+      _draftRequest = content;
+    } finally {
+      _release(claim);
+    }
+  }
 
   Future<void> _configure(String instructions, int budget) async {
     final claim = Object();
     _acquire(claim);
     try {
       if (_storage != null) {
-        _requireReadableConfiguration(instructions, budget, _nextEntry);
+        _requireReadableConfiguration(
+          instructions,
+          budget,
+          _nextEntry,
+          _draftRequest,
+        );
       }
       await _storage?.transactionForSession(id.value, [
         RelationalStatement(
@@ -572,9 +639,18 @@ final class ChatSessionState {
     }
   }
 
-  Future<void> _persistEntries(List<ChatEntry> entries, int counter) async {
+  Future<void> _persistEntries(
+    List<ChatEntry> entries,
+    int counter, {
+    bool clearDraft = false,
+  }) async {
     if (_storage == null) return;
-    _requireReadableConfiguration(_instructions, _maxModelInvocations, counter);
+    _requireReadableConfiguration(
+      _instructions,
+      _maxModelInvocations,
+      counter,
+      clearDraft ? '' : _draftRequest,
+    );
     for (var index = 0; index < entries.length; index++) {
       _requireReadableRow({
         'session_id': id.value,
@@ -587,7 +663,8 @@ final class ChatSessionState {
     await _storage.transactionForSession(id.value, [
       RelationalStatement(
         sql:
-            'UPDATE adele_chat_sessions SET next_entry = :counter $_whereCurrent',
+            'UPDATE adele_chat_sessions SET next_entry = :counter '
+            '${clearDraft ? ", draft_request = '' " : ''}$_whereCurrent',
         parameters: {..._preconditions, ':counter': counter},
         expectedRows: 1,
       ),
@@ -613,12 +690,14 @@ final class ChatSessionState {
     String instructions,
     int budget,
     int counter,
+    String draftRequest,
   ) {
     _requireReadableRow({
       'session_id': id.value,
       'instructions': instructions,
       'max_model_invocations': budget,
       'next_entry': counter,
+      'draft_request': draftRequest,
     });
   }
 
@@ -634,6 +713,7 @@ final class ChatSessionState {
     entries: _entries,
     instructions: instructions,
     maxModelInvocations: maxModelInvocations,
+    draftRequest: draftRequest,
   );
 
   void _requireIdle() {

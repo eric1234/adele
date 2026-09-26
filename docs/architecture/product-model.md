@@ -9,9 +9,9 @@ ADELE core and unrelated plugins must agree on. It combines accepted constraints
 with the current implementation. Project identity/source, Tasks, Environment
 records/provider-state snapshots, Sessions, and their semantic Environment
 associations have per-Project SQLite storage. Plugin-owned relational state,
-including Chat history/configuration, uses the same backing without becoming core
-product fields. Runs and live execution resources remain non-durable. Elsewhere,
-"durable" describes semantic lifetime, not a claim that every product feature
+including Chat conversation/configuration/plain-text Draft Request, uses the same
+backing without becoming core product fields. Runs and live execution resources
+remain non-durable. Elsewhere, "durable" describes semantic lifetime, not a claim that every product feature
 survives application restart.
 
 ## Core relationship
@@ -166,8 +166,9 @@ semantic relationships, not serialized execution authority. Live bindings,
 materializations, facets, and host-issued tokens must never be serialized.
 
 This slice does not persist Runs, active claims, execution evidence/activity,
-approval restart state, model-native replay, or composer drafts. It adds no
-Task/Session browser, navigation, automatic selection/resume, Profiles, general
+approval restart state, or model-native replay. Chat's current plain-text draft is
+durable plugin-owned state, not workbench state. This adds no Task/Session browser,
+navigation, automatic selection/resume, Profiles, general
 settings, configured-provider/credential storage, or workbench/window persistence.
 
 Small synchronous host operations can block on filesystem/SQLite work. Confinement
@@ -258,8 +259,9 @@ bound strategy owns the semantic structure of its strategy-specific Session
 state; changing strategy means creating a new Session, not converting an
 existing Session into another semantic type.
 
-For example, Chat owns conversation state, while a different strategy might own
-goals and evaluations. Neither structure belongs in the universal Session value.
+For example, Chat owns conversation, Draft Request, and configuration, while a
+different strategy might own goals and evaluations. Neither structure belongs in
+the universal Session value.
 Other plugins can also own state associated with the same Session without that
 state becoming either core Session fields or the strategy's own schema.
 
@@ -393,11 +395,16 @@ their core relationships. Core must preserve those invariants independently of
 which optional plugins or presentations are active.
 
 Strategy/plugin-specific durable state remains with its semantic owner. Chat
-conversation/configuration belongs to Chat, not the core Session schema; other
-plugins own their own associated state. The Draft Request described by
+conversation/configuration/Draft Request belong to Chat, not the core Session
+schema; other plugins own their own associated state. The Draft Request described by
 [product direction](../product/development-workflow/README.md#10-persistent-draft-request)
-also belongs to Chat but is not persisted by this slice. The shared storage service
-does not transfer plugin schemas or validation into core.
+currently persists as exact plain text, including empty and whitespace-only
+editing states. Submission atomically replaces a nonblank draft with one canonical
+user entry and a new empty draft; direct user-message append does not consume it.
+Backend replacement and Project reopen restore this state without starting a Run.
+Richer document semantics, conversation forks, and concurrent editing remain
+unimplemented. The shared storage service does not transfer plugin schemas or
+validation into core.
 
 Host persistence facilities may support these owners without making plugin state
 ordinary cascading configuration or window layout part of Session state. The

@@ -1,7 +1,7 @@
 # Chat Backend
 
-`chat_strategy_backend` owns canonical Chat history, configuration, and
-sequencing. Its AOT entrypoint exposes the generated Chat Session service and the
+`chat_strategy_backend` owns canonical Chat history, Draft Request, configuration,
+and sequencing. Its AOT entrypoint exposes the generated Chat Session service and the
 existing remote orchestration service over one backend router and one retained
 `ChatSessionStore`. It advertises only its orchestration strategy contribution.
 
@@ -11,8 +11,10 @@ multiplexer. Construction makes no storage calls before ready. First Session
 access deduplicates hydration, asks `isDurableSession`, and initializes or reads
 the Chat-owned v1 relational baseline. The schema owner is the connection's exact
 PluginId, `dev.adele.plugin.chat-strategy`, not a caller-supplied owner.
-`adele_chat_sessions` stores instructions, positive invocation budget, and the
-next-entry counter, keyed by and referencing `adele_product_sessions(id)`.
+`adele_chat_sessions` stores instructions, positive invocation budget, the
+next-entry counter, and `draft_request TEXT NOT NULL`, keyed by and referencing
+`adele_product_sessions(id)`. Draft Request extends the current v1 baseline in
+place; it does not add a migration or compatibility reader for development schemas.
 `adele_chat_entries` stores ordered user/final-assistant occurrences with
 Session-local unique entry IDs. Chat never writes core tables or JSON snapshots.
 
@@ -22,18 +24,21 @@ duplicate sequences if constraints are damaged; valid state returns one entry pe
 query, keeping individually readable rows within the response bound. An empty
 result ends the contiguous lookup. A final retained-row count and the entry-counter
 check reject hidden rows or gaps before publishing state. It validates the current
-contiguous sequence/`entry-N` IDs, role, nonblank content, counter, and budget.
-The counter starts at zero and is shared by both roles. Raw message/instruction
-bytes are retained. Missing state is initialized to stock instructions, budget
-eight, and counter zero. Invalid canonical row values raise `ChatStateCorruption`;
-schema/query failures also propagate rather than resetting state. Before durable
+contiguous sequence/`entry-N` IDs, role, nonblank content, counter, budget, and
+string draft. The counter starts at zero and is shared by both roles. Raw message,
+draft, and instruction bytes are retained. Missing state is initialized to stock
+instructions, budget eight, counter zero, and an empty draft. Invalid canonical row
+values raise `ChatStateCorruption`; schema/query failures also propagate rather
+than resetting state. Before durable
 writes, each projected configuration/entry row must fit the
 host's 1 MiB encoded-result bound: two initial bytes plus the UTF-8 JSON encoding
 of `{'values': row}` and one separator byte. All projected fields, JSON escaping,
-and multibyte text count. Default initialization, configuration replacement, and
+and multibyte text count, including the draft in the Session row. Default
+initialization, configuration/draft replacement, draft submission, and
 user/final-assistant appends validate before their write transaction; appends also
-recheck configuration with the proposed next-entry counter. Oversize rejection
-does not mutate the canonical cache or database or consume an entry ID. An
+recheck the Session row with the proposed next-entry counter and retained draft,
+or the cleared draft for submission. There is no smaller draft-specific limit.
+Oversize rejection does not mutate the canonical cache or database or consume an entry ID. An
 oversized final assistant still fails after host completion, not by rolling back
 the host Run. Explicitly volatile state has no persistence row bound. Injected
 oversized stored rows fail explicitly on read, never truncate.
@@ -54,14 +59,24 @@ captured at materialization; the default limit is eight and stock instructions
 are backend-owned. Intermediate tool, native, reasoning, and narration items do
 not enter canonical history.
 
+`ChatSessionState` owns the generation-local exact draft string, exposed through
+`ChatSessionSnapshot.draftRequest`. `setDraftRequest` replaces it exactly, including
+empty or whitespace-only text, committing before updating memory. `submitDraftRequest`
+rejects `trim().isEmpty` with declared `invalid_content`; nonblank text is never
+normalized. Submission atomically inserts one canonical user entry, advances the
+counter, and clears the draft in one SQL transaction, then updates memory and
+returns the accepted occurrence. It does not start a Run. Direct `appendUserMessage`
+and `configureSession` retain the draft; execution neither projects it into model
+input nor consumes it. Volatile stores use these same semantics in memory only.
+
 Service mutations hold the same Session claim while SQL is pending and are
 rejected while another write or materialized execution owns it, including
 approval waits and terminal acknowledgement. Configuration replaces both fields
 in one SQL transaction before memory publication. Appends persist the candidate
 entry and counter atomically before returning it. Expected row counts and prior
-counter/configuration predicates reject writes from stale generation caches.
-Read-only snapshots and
-other Sessions remain available. Chat-owned `ChatRemoteOrchestrationBackend`
+counter/configuration/draft predicates reject writes from stale generation caches.
+Read-only snapshots and other Sessions remain available.
+Chat-owned `ChatRemoteOrchestrationBackend`
 runs sequencing against an execution-local history copy and commits its final
 assistant entry and counter only after `RemoteOrchestrationBackend` returns
 acknowledged completion, then merges them into the canonical cache. Until SQL
@@ -96,7 +111,17 @@ dart tools/adele.dart test --target chat_strategy_contract
 ```
 
 `chat_durable_state_test.dart` exercises the public relational boundary with a
-test-owned SQLite service; `chat_remote_backend_test.dart` also covers installed
-entrypoint infrastructure routing, terminal acknowledgement, held commits, and
-close/hydration races. The actual Project database and application composition
-are covered by their host integration tests, not imported here.
+test-owned SQLite service, including real trigger rollback, exact draft row bounds,
+and stale-cache rejection; `chat_remote_backend_test.dart` also covers installed
+entrypoint draft operations and generation replacement, infrastructure routing,
+terminal acknowledgement, held commits, and close/hydration races.
+Focused backend checks after contract generation, from this package:
+
+```sh
+dart test test/chat_durable_state_test.dart test/chat_remote_backend_test.dart
+dart test test/chat_session_state_test.dart
+dart analyze --fatal-infos lib bin test
+```
+
+The actual Project database and application composition are covered by their host
+integration tests, not imported here.
