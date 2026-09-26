@@ -176,7 +176,7 @@ void main() {
       gate.complete();
       await tester.pumpAndSettle();
       expect(_draft(tester), 'Keep latest');
-      expect(source.writes, ['First']);
+      expect(source.writes, ['First', 'Keep latest']);
       expect(source.draftRequest, isEmpty);
       expect(
         find.text('Draft was not saved. Your text is preserved.'),
@@ -185,11 +185,15 @@ void main() {
       expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
       source.notifyListeners();
       await tester.pumpAndSettle();
-      expect(source.writes, ['First'], reason: 'No busy auto-retry loop.');
+      expect(
+        source.writes,
+        ['First', 'Keep latest'],
+        reason: 'No busy auto-retry loop for the failed latest value.',
+      );
       source.failSave = false;
       await tester.tap(find.text('Retry save'));
       await tester.pumpAndSettle();
-      expect(source.writes, ['First', 'Keep latest']);
+      expect(source.writes, ['First', 'Keep latest', 'Keep latest']);
       expect(source.draftRequest, 'Keep latest');
       expect(_draft(tester), 'Keep latest');
       expect(find.text('Retry save'), findsNothing);
@@ -212,6 +216,48 @@ void main() {
     expect(source.draftRequest, 'Edited after failure');
     expect(_draft(tester), 'Edited after failure');
     expect(find.text('Retry save'), findsNothing);
+  });
+
+  testWidgets('failed older save still flushes a newer queued edit for Send', (
+    tester,
+  ) async {
+    final first = Completer<void>();
+    final latest = Completer<void>();
+    source.saveGate = first;
+    source.failSave = true;
+    await tester.pumpWidget(_host(generation, source));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'Older');
+    await tester.enterText(find.byType(TextField), 'Newest');
+    await tester.tap(find.text('Send'));
+    await tester.pumpAndSettle();
+    source.saveGate = latest;
+    first.complete();
+    await tester.pumpAndSettle();
+    expect(source.writes, ['Older', 'Newest']);
+    expect(source.submitted, isEmpty);
+    expect(source.starts, 0);
+    expect(_draft(tester), 'Newest');
+    source.failSave = false;
+    latest.complete();
+    await tester.pumpAndSettle();
+    expect(source.events, [
+      'save:Older',
+      'save:Newest',
+      'saved:Newest',
+      'submit:Newest',
+      'accepted:Newest',
+      'start',
+    ]);
+    expect(source.maxInFlightSaves, 1);
+    expect(source.submitted, ['Newest']);
+    expect(source.entries.single.content, 'Newest');
+    expect(_draft(tester), isEmpty);
+    expect(
+      find.text('Draft was not saved. Your text is preserved.'),
+      findsNothing,
+    );
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets(

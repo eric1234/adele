@@ -16,9 +16,10 @@ The backend owns the durable Draft Request; the frontend restores its exact text
 on initial load and owns immediate local edits, asynchronous save/acceptance/start
 state, history rendering, and a presentation-local mapping from accepted entry IDs
 to opaque Run handles. Saves are sequential with one in flight and only the latest
-pending edit retained. Save failures remain visible without erasing text or
-automatically retrying; another edit, Retry save, or Send can retry. Failed initial
-snapshot loading remains explicitly retryable, and later history reads cannot
+pending edit retained. A newer queued edit gets its own attempt even if the older
+write fails. Failure of the latest value remains visible without erasing text or
+automatically retrying that revision; another edit, Retry save, or Send can retry.
+Failed initial snapshot loading remains explicitly retryable, and later history reads cannot
 overwrite newer local edits. Disposal detaches subscriptions and rejects late
 settlements without issuing queued saves or starting a Run. Unacknowledged or
 coalesced pending edits are not guaranteed durable when the presentation closes.

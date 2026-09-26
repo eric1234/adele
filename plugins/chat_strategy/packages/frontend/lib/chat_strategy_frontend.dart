@@ -169,12 +169,20 @@ class _ChatFrontendState extends State<ChatFrontend> {
         setState(() {
           draftFailure = 'Draft was not saved. Your text is preserved.';
         });
-        // Stop on failure, including session_busy. Only an edit or explicit
-        // retry starts another attempt; pending edits remain in the composer.
-        draftSave = null;
-        return false;
+        // A newer queued edit still gets its own attempt. Never retry the same
+        // failed revision automatically, including after session_busy.
+        if (requestedRevision == draftRevision) {
+          draftSave = null;
+          return false;
+        }
+      } else {
+        savedDraftRevision = requestedRevision;
+        if (draftFailure.isNotEmpty) {
+          setState(() {
+            draftFailure = '';
+          });
+        }
       }
-      savedDraftRevision = requestedRevision;
     }
     draftSave = null;
     return !disposed;
