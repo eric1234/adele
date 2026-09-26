@@ -250,10 +250,118 @@ void main() {
   );
 
   test(
+    'SELECT and DML classes tolerate whitespace and case, not other forms',
+    () async {
+      await storage.ensureSchemaForSession(session.id.value, [_baseline]);
+      await storage.transactionForSession(session.id.value, [
+        RelationalStatement(
+          sql: " \n\t iNsErT INTO fixture_entries VALUES ('original', 1)",
+          parameters: {},
+          expectedRows: 1,
+        ),
+        RelationalStatement(
+          sql: "\r\n UpDaTe fixture_entries SET value = 'updated'",
+          parameters: {},
+          expectedRows: 1,
+        ),
+      ]);
+      expect(
+        (await storage.queryForSession(
+          session.id.value,
+          '\t\n sElEcT value FROM fixture_entries; \r\n',
+          {},
+        )).single.values,
+        {'value': 'updated'},
+      );
+      for (final sql in [
+        '-- comment\nSELECT 1',
+        '/* comment */ SELECT 1',
+        'WITH n AS (SELECT 1) SELECT * FROM n',
+        'SELECTED 1',
+        "SELECT ';'",
+      ]) {
+        await expectLater(
+          storage.queryForSession(session.id.value, sql, {}),
+          throwsArgumentError,
+          reason: sql,
+        );
+      }
+      expect(
+        (await storage.queryForSession(
+          session.id.value,
+          'SELECT :value AS value;',
+          {':value': 'literal; PRAGMA foreign_keys = OFF'},
+        )).single.values,
+        {'value': 'literal; PRAGMA foreign_keys = OFF'},
+      );
+      for (final sql in [
+        'SELECT 1',
+        'CREATE TABLE forbidden (id TEXT)',
+        '-- comment\nDELETE FROM fixture_entries',
+      ]) {
+        await expectLater(
+          storage.transactionForSession(session.id.value, [
+            RelationalStatement(sql: sql, parameters: {}, expectedRows: null),
+          ]),
+          throwsArgumentError,
+          reason: sql,
+        );
+      }
+      await expectLater(
+        storage.transactionForSession(session.id.value, [
+          RelationalStatement(
+            sql: "INSERT INTO fixture_entries VALUES ('tail', 2); COMMIT",
+            parameters: {},
+            expectedRows: null,
+          ),
+        ]),
+        throwsA(anything),
+      );
+      await storage.transactionForSession(session.id.value, [
+        RelationalStatement(
+          sql: '\t dElEtE FROM fixture_entries;\n',
+          parameters: {},
+          expectedRows: 1,
+        ),
+      ]);
+      expect(
+        await storage.queryForSession(
+          session.id.value,
+          'SELECT * FROM fixture_entries',
+          {},
+        ),
+        isEmpty,
+      );
+    },
+  );
+
+  test(
     'query bounds and narrow value types fail without truncation or writes',
     () async {
+      await storage.ensureSchemaForSession(session.id.value, [_baseline]);
+      await storage.transactionForSession(session.id.value, [
+        for (var index = 0; index <= relationalQueryRowLimit; index++)
+          RelationalStatement(
+            sql: 'INSERT INTO fixture_entries VALUES (NULL, :number)',
+            parameters: {':number': index},
+            expectedRows: 1,
+          ),
+      ]);
+      await expectLater(
+        storage.queryForSession(
+          session.id.value,
+          'SELECT number FROM fixture_entries',
+          {},
+        ),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'message',
+            contains('row limit'),
+          ),
+        ),
+      );
       for (final sql in [
-        'WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x < 1000) SELECT x FROM n',
         "SELECT printf('%.*c', ${relationalQueryByteLimit + 1}, 'x') AS oversized",
         'SELECT 1.5 AS unsupported',
         "SELECT x'ff' AS unsupported",

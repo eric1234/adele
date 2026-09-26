@@ -22,6 +22,7 @@ final class ChatTestStorage implements ProjectStorageService {
   int schemaChecks = 0;
   int transactions = 0;
   int queries = 0;
+  final List<String> querySql = [];
   bool _schemaReady = false;
   Object? failure;
   Future<void> Function()? beforeDurability;
@@ -64,6 +65,7 @@ final class ChatTestStorage implements ProjectStorageService {
     Map<String, Object?> parameters,
   ) async {
     queries++;
+    querySql.add(sql);
     _check(sessionId);
     validateRelationalParameters(parameters.values);
     final statement = database.prepare(sql);

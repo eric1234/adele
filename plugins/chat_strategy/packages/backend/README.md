@@ -16,9 +16,12 @@ next-entry counter, keyed by and referencing `adele_product_sessions(id)`.
 `adele_chat_entries` stores ordered user/final-assistant occurrences with
 Session-local unique entry IDs. Chat never writes core tables or JSON snapshots.
 
-Hydration reads one ordered entry per query with `LIMIT 1 OFFSET` until empty,
-so individually readable rows cannot overflow a combined response and duplicate
-sequences in corrupt schemas are not skipped. It validates the current
+Hydration looks up the next expected `sequence` within the Session using the
+existing composite index, without rescanning a history prefix. `LIMIT 2` detects
+duplicate sequences if constraints are damaged; valid state returns one entry per
+query, keeping individually readable rows within the response bound. An empty
+result ends history, after which the counter check also rejects sequence gaps.
+It validates the current
 contiguous sequence/`entry-N` IDs, role, nonblank content, counter, and budget.
 The counter starts at zero and is shared by both roles. Raw message/instruction
 bytes are retained. Missing state is initialized to stock instructions, budget

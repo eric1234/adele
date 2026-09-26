@@ -290,7 +290,7 @@ BEGIN SELECT RAISE(ABORT, 'test write failure'); END;
   }
 
   test(
-    'hydration pages beyond 1000 entries and preserves exact next ID',
+    'hydration seeks beyond 1000 entries without OFFSET and preserves exact next ID',
     () async {
       await service.snapshot('session');
       storage.database.execute('BEGIN');
@@ -318,6 +318,19 @@ BEGIN SELECT RAISE(ABORT, 'test write failure'); END;
       final reloaded = ChatSessionBackend(ChatSessionStore(storage: storage));
       final snapshot = await reloaded.snapshot('session');
       expect(storage.queries - queries, 1107);
+      final historyQueries = storage.querySql
+          .skip(queries)
+          .where((sql) => sql.contains('FROM adele_chat_entries'));
+      expect(historyQueries, hasLength(1106));
+      for (final sql in historyQueries) {
+        expect(sql.toUpperCase(), isNot(contains('OFFSET')));
+        expect(
+          sql,
+          contains(
+            'WHERE session_id = :session AND sequence = :sequence LIMIT 2',
+          ),
+        );
+      }
       expect(snapshot.entries.length, 1105);
       for (var index = 0; index < 1105; index++) {
         expect(snapshot.entries[index].id, 'entry-$index');
@@ -345,15 +358,47 @@ BEGIN SELECT RAISE(ABORT, 'test write failure'); END;
         );
       }
       final queries = storage.queries;
-      final snapshot = await ChatSessionBackend(
-        ChatSessionStore(storage: storage),
-      ).snapshot('session');
+      final reloaded = ChatSessionBackend(ChatSessionStore(storage: storage));
+      final snapshot = await reloaded.snapshot('session');
       expect(storage.queries - queries, 130);
       expect(snapshot.entries, hasLength(128));
       for (var index = 0; index < snapshot.entries.length; index++) {
         expect(snapshot.entries[index].id, 'entry-$index');
+        expect(snapshot.entries[index].role, 'user');
         expect(snapshot.entries[index].content, content);
       }
+      expect(
+        (await reloaded.appendUserMessage('session', 'Next.')).id,
+        'entry-128',
+      );
+    },
+  );
+
+  test(
+    'sequence gap before later rows fails instead of publishing a prefix',
+    () async {
+      for (final content in ['First.', 'Missing.', 'Last.']) {
+        await service.appendUserMessage('session', content);
+      }
+      storage.database.execute(
+        'DELETE FROM adele_chat_entries WHERE sequence = 1',
+      );
+      final writes = storage.transactions;
+      final reloaded = ChatSessionBackend(ChatSessionStore(storage: storage));
+      await expectLater(
+        reloaded.snapshot('session'),
+        throwsA(isA<ChatStateCorruption>()),
+      );
+      expect(storage.transactions, writes);
+      expect(
+        storage.database.select(
+          'SELECT sequence FROM adele_chat_entries ORDER BY sequence',
+        ),
+        [
+          {'sequence': 0},
+          {'sequence': 2},
+        ],
+      );
     },
   );
 

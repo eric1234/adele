@@ -363,32 +363,33 @@ final class ChatSessionStore {
         id.value,
         'SELECT session_id, sequence, entry_id, role, content '
         'FROM adele_chat_entries WHERE session_id = :session '
-        'ORDER BY sequence LIMIT 1 OFFSET :offset',
-        {...parameters, ':offset': state._entries.length},
+        'AND sequence = :sequence LIMIT 2',
+        {...parameters, ':sequence': state._entries.length},
       );
       if (entries.isEmpty) break;
-      for (final row in entries) {
-        final values = row.values;
-        final sequence = values['sequence'];
-        final entryId = values['entry_id'];
-        final role = values['role'];
-        final content = values['content'];
-        if (values['session_id'] != id.value ||
-            sequence != state._entries.length ||
-            entryId != 'entry-${state._entries.length}' ||
-            (role != 'user' && role != 'assistant') ||
-            content is! String ||
-            content.trim().isEmpty) {
-          throw ChatStateCorruption(id, 'Invalid ordered canonical entry.');
-        }
-        state._entries.add(
-          ChatEntry(
-            id: entryId as String,
-            role: role as String,
-            content: content,
-          ),
-        );
+      if (entries.length > 1) {
+        throw ChatStateCorruption(id, 'Duplicate canonical sequence.');
       }
+      final values = entries.single.values;
+      final sequence = values['sequence'];
+      final entryId = values['entry_id'];
+      final role = values['role'];
+      final content = values['content'];
+      if (values['session_id'] != id.value ||
+          sequence != state._entries.length ||
+          entryId != 'entry-${state._entries.length}' ||
+          (role != 'user' && role != 'assistant') ||
+          content is! String ||
+          content.trim().isEmpty) {
+        throw ChatStateCorruption(id, 'Invalid ordered canonical entry.');
+      }
+      state._entries.add(
+        ChatEntry(
+          id: entryId as String,
+          role: role as String,
+          content: content,
+        ),
+      );
     }
     if (state._nextEntry != state._entries.length) {
       throw ChatStateCorruption(id, 'Entry counter does not match history.');

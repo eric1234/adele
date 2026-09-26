@@ -17,6 +17,9 @@ final class ProjectDatabase {
   final String _relativePath;
   bool _closed = false;
 
+  /// Whether the host-owned connection has no active transaction.
+  bool get autocommit => _database.autocommit;
+
   /// Validates the selected backing and initializes its core-owned schema.
   static ProjectDatabase open(ProjectBacking backing) {
     final String root = _sourceDirectory(
@@ -303,6 +306,9 @@ final class ProjectDatabase {
     Map<String, Object?> parameters,
   ) {
     _requireOpen();
+    if (_statementClass(sql) != 'SELECT') {
+      throw ArgumentError('Storage queries require a SELECT statement.');
+    }
     validateRelationalParameters(parameters.values);
     final statement = _database.prepare(sql, checkNoTail: true);
     try {
@@ -343,6 +349,15 @@ final class ProjectDatabase {
     _backingPath(_root, _relativePath);
     _transaction(_database, () {
       for (final operation in statements) {
+        if (!const {
+          'INSERT',
+          'UPDATE',
+          'DELETE',
+        }.contains(_statementClass(operation.sql))) {
+          throw ArgumentError(
+            'Storage transactions require INSERT, UPDATE, or DELETE statements.',
+          );
+        }
         final statement = _database.prepare(operation.sql, checkNoTail: true);
         try {
           statement.executeWith(
@@ -371,6 +386,15 @@ final class ProjectDatabase {
     _database.close();
     _closed = true;
   }
+}
+
+// checkNoTail prepares trailing SQL, and preparing some PRAGMAs changes state.
+// Reject embedded separators without parsing literals/comments; values use binds.
+String? _statementClass(String sql) {
+  var body = sql.trimRight();
+  if (body.endsWith(';')) body = body.substring(0, body.length - 1);
+  if (body.contains(';')) return null;
+  return RegExp(r'^\s*([A-Za-z]+)\b').firstMatch(body)?.group(1)?.toUpperCase();
 }
 
 String _text(Row row, String column) {

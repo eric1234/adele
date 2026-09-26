@@ -6,6 +6,7 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/project_database.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqlite3/sqlite3.dart' hide Session;
 
@@ -126,6 +127,109 @@ void main() {
       isFalse,
     );
   });
+
+  for (final (query, sql) in [
+    (true, 'PRAGMA foreign_keys = OFF'),
+    (true, 'BEGIN'),
+    (true, 'SELECT 1; PRAGMA foreign_keys = OFF'),
+    (false, 'COMMIT'),
+    (false, 'SAVEPOINT plugin'),
+    (false, 'PRAGMA defer_foreign_keys = ON'),
+    (false, "ATTACH DATABASE ':memory:' AS plugin"),
+  ]) {
+    test(
+      'rejected ${query ? 'query' : 'batch'} $sql leaves shared connection healthy',
+      () {
+        final database = _open(backing);
+        final project = database.openProject(
+          sourceLocation: source.uri,
+          nextProjectId: () => ProjectId('project'),
+        );
+        database.ensurePluginSchema('dev.adele.test.storage', [
+          'CREATE TABLE fixture_entries (value TEXT)',
+        ]);
+        if (query) {
+          expect(() => database.queryPluginRows(sql, {}), throwsArgumentError);
+        } else {
+          expect(
+            () => database.executePluginTransaction([
+              RelationalStatement(
+                sql: "INSERT INTO fixture_entries VALUES ('rollback')",
+                parameters: {},
+                expectedRows: 1,
+              ),
+              RelationalStatement(sql: sql, parameters: {}, expectedRows: null),
+            ]),
+            throwsArgumentError,
+          );
+        }
+        // These inspect the owning connection, not a second inspection connection.
+        expect(database.autocommit, isTrue);
+        expect(
+          database
+              .queryPluginRows(
+                'SELECT foreign_keys FROM pragma_foreign_keys',
+                {},
+              )
+              .single
+              .values,
+          {'foreign_keys': 1},
+        );
+        expect(
+          database.queryPluginRows('SELECT * FROM fixture_entries', {}),
+          isEmpty,
+        );
+        expect(
+          database
+              .queryPluginRows('SELECT name FROM pragma_database_list', {})
+              .map((row) => row.values['name']),
+          isNot(contains('plugin')),
+        );
+        database.executePluginTransaction([
+          RelationalStatement(
+            sql: "INSERT INTO fixture_entries VALUES ('healthy')",
+            parameters: {},
+            expectedRows: 1,
+          ),
+        ]);
+        expect(database.autocommit, isTrue);
+        expect(
+          database
+              .queryPluginRows('SELECT value FROM fixture_entries', {})
+              .single
+              .values,
+          {'value': 'healthy'},
+        );
+        final invalid = Task(
+          id: TaskId('task'),
+          projectId: ProjectId('missing'),
+          title: 'Requires a Project',
+        );
+        expect(
+          () => database.insertTaskWithPrimaryEnvironment(
+            invalid,
+            _environment(invalid),
+          ),
+          throwsA(
+            isA<SqliteException>().having(
+              (error) => error.message,
+              'message',
+              contains('FOREIGN KEY'),
+            ),
+          ),
+        );
+        expect(database.autocommit, isTrue);
+        final valid = Task(
+          id: invalid.id,
+          projectId: project.id,
+          title: 'Healthy',
+        );
+        database.insertTaskWithPrimaryEnvironment(valid, _environment(valid));
+        expect(database.autocommit, isTrue);
+        expect(database.loadProductGraph().tasks.single.id, valid.id);
+      },
+    );
+  }
 
   test(
     'Task and primary Environment commit together and nested JSON reloads',

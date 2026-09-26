@@ -26,8 +26,8 @@ Project without resolving a strategy or materializing an Environment.
 | --- | --- |
 | `isDurableSession` | False only for a published Session in an explicitly volatile Project. Unknown Sessions, closed lifecycle, and storage errors fail. |
 | `ensureSchemaForSession` | Apply owner-defined SQL migrations and owner-version metadata atomically. The list length is the current version; each entry advances it once, starting at 1. Current pre-release owners supply only their current v1 baseline. |
-| `queryForSession` | Execute one read-only statement and return immutable `RelationalRow.values` maps. |
-| `transactionForSession` | Commit all `RelationalStatement` operations together; an SQL error or `expectedRows` mismatch rolls back the batch. |
+| `queryForSession` | Execute one read-only `SELECT` statement and return immutable `RelationalRow.values` maps. |
+| `transactionForSession` | Commit a host-owned transaction of `INSERT`, `UPDATE`, or `DELETE` statements; an unsupported statement, SQL error, or `expectedRows` mismatch rolls back the batch. |
 
 The latter three methods require a durable Project. Explicit volatility is not a
 fallback after failure. State initialization is separate from core Session
@@ -41,8 +41,17 @@ opaque JSON storage format. SQL tables remain ordinary inspectable relational da
 A query response is bounded to 1,000 rows and 1 MiB of encoded row data. Excess or
 unsupported values fail rather than truncate; consumers must page larger histories.
 A single oversized row fails explicitly. Queries require unique column names.
-Each transaction operation is one statement; schema migration SQL may contain
-multiple statements. Owners must not issue transaction-control SQL themselves.
+Queries and batch operations must begin with their supported keyword after any
+leading whitespace; keyword case does not matter. Leading comments, `WITH`, and
+other statement classes are rejected before SQLite prepares them. Each operation
+must contain exactly one statement, optionally ending with a semicolon. Embedded
+semicolons, including those in literals/comments, are rejected without parsing;
+values containing semicolons must use parameters. This also prevents the SQLite
+library's trailing-statement check from preparing rejected SQL with side effects.
+These restrictions protect host-owned connection and transaction mechanics:
+SQLite's `isReadOnly` alone does not do so.
+Schema migration SQL remains a separate surface and may contain multiple
+statements. Owners must not issue transaction-control SQL themselves.
 
 ## Ownership And Failure
 

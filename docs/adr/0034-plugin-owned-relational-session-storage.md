@@ -61,8 +61,10 @@ there is no retained history or compatibility reader for development schemas.
 Introduce pure-Dart `adele_project_storage`, with
 `lib/adele_project_storage.dart` as the public contract. `ProjectStorageService`
 provides explicit durability lookup, owner-schema initialization, named-parameter
-read queries, and atomic `RelationalStatement` batches with optional expected-row
-checks. `RelationalRow.values` and parameters admit strings, integers, and null.
+`SELECT` queries, and host-owned atomic `RelationalStatement` batches of `INSERT`,
+`UPDATE`, or `DELETE` with optional expected-row checks. Statement-class checks
+protect connection/transaction mechanics, not table ownership or SQL sandboxing.
+`RelationalRow.values` and parameters admit strings, integers, and null.
 Query responses fail beyond 1000 rows or 1 MiB rather than truncate. Owner schema
 version is the migration list length; coordination is transactional.
 

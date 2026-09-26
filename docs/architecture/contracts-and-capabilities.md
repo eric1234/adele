@@ -392,8 +392,8 @@ Capability. Its narrow surface is:
 | --- | --- |
 | `isDurableSession(sessionId)` | Resolve Session -> Task -> currently open Project. False only for a published Session in an explicitly volatile Project; missing/closed/error cases throw. |
 | `ensureSchemaForSession(sessionId, List<String> migrations)` | Coordinate the connection-owned plugin's schema in that Project; version is the migration list length. |
-| `queryForSession(sessionId, sql, Map<String, Object?> parameters)` | One read-only query with named parameters and bounded `RelationalRow.values` results. |
-| `transactionForSession(sessionId, List<RelationalStatement> statements)` | Commit the complete batch atomically; statements carry `sql`, named `parameters`, and nullable `expectedRows`, whose mismatch rolls back the batch. |
+| `queryForSession(sessionId, sql, Map<String, Object?> parameters)` | One read-only `SELECT` statement with named parameters and bounded `RelationalRow.values` results. |
+| `transactionForSession(sessionId, List<RelationalStatement> statements)` | Commit a host-owned transaction of `INSERT`, `UPDATE`, or `DELETE` statements; statements carry `sql`, named `parameters`, and nullable `expectedRows`, whose mismatch rolls back the batch. |
 
 Parameters and row maps admit only strings, integers, and null, not arbitrary JSON
 or SQLite objects. Query responses are bounded to 1000 rows and 1 MiB; excess fails
