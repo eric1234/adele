@@ -61,8 +61,18 @@ void main() {
     'actual EVC reads canonical history through generated transport',
     (tester) async {
       source.entries.addAll(const [
-        ChatEntry(id: 'u1', role: 'user', content: 'First question'),
-        ChatEntry(id: 'a1', role: 'assistant', content: 'First answer'),
+        ChatEntry(
+          id: 'u1',
+          role: 'user',
+          content: 'First question',
+          runId: null,
+        ),
+        ChatEntry(
+          id: 'a1',
+          role: 'assistant',
+          content: 'First answer',
+          runId: null,
+        ),
       ]);
       await tester.pumpWidget(_host(generation, source));
       await tester.pumpAndSettle();
@@ -434,7 +444,12 @@ void main() {
         final saveGate = Completer<void>();
         source.snapshotGate = snapshotGate;
         source.entries.add(
-          const ChatEntry(id: 'answer', role: 'assistant', content: 'Answer'),
+          const ChatEntry(
+            id: 'answer',
+            role: 'assistant',
+            content: 'Answer',
+            runId: null,
+          ),
         );
         source.finish();
         await tester.pumpAndSettle();
@@ -546,6 +561,7 @@ void main() {
             id: 'answer',
             role: 'assistant',
             content: 'Canonical final answer',
+            runId: null,
           ),
         );
         source.finish();
@@ -606,6 +622,7 @@ void main() {
           id: 'a1',
           role: 'assistant',
           content: 'Inspection complete',
+          runId: null,
         ),
       );
       source.finish();
@@ -668,7 +685,116 @@ void main() {
   );
 
   testWidgets(
-    'activity is presentation-lifetime and retained across follow-up snapshots',
+    'retained activity opens on snapshot without scheduling and precedes answers',
+    (tester) async {
+      source.entries.addAll(const [
+        ChatEntry(
+          id: 'u1',
+          role: 'user',
+          content: 'Historical question',
+          runId: 'historical-run',
+        ),
+        ChatEntry(
+          id: 'a1',
+          role: 'assistant',
+          content: 'Historical answer',
+          runId: null,
+        ),
+        ChatEntry(
+          id: 'u2',
+          role: 'user',
+          content: 'Evidence unavailable',
+          runId: 'missing-run',
+        ),
+        ChatEntry(
+          id: 'u3',
+          role: 'user',
+          content: 'Not associated',
+          runId: null,
+        ),
+      ]);
+      source.historicalHandles['historical-run'] = 'retained-handle';
+      source.activities['retained-handle'] = [
+        _model('historical-single', [_tool('historical-tool', 'read_file')]),
+        _model('historical-group', [
+          _text('Retained tool and summary'),
+          _tool('group-tool', 'run_command'),
+          _native('group-native', 'Approved summary'),
+        ]),
+        _model('historical-opaque', [
+          _native('hidden', 'Never display', safe: false),
+        ]),
+      ];
+      await tester.pumpWidget(_host(generation, source));
+      await tester.pumpAndSettle();
+      expect(source.opened, ['historical-run', 'missing-run']);
+      expect(source.starts, 0);
+      expect(source.submitted, isEmpty);
+      expect(source.writes, isEmpty);
+      expect(find.text('COMPACT historical-tool'), findsOneWidget);
+      expect(find.text('Retained tool and summary'), findsOneWidget);
+      expect(find.text('Never display'), findsNothing);
+      expect(find.text('Evidence unavailable'), findsOneWidget);
+      expect(find.text('Not associated'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('Historical question')).dy,
+        lessThan(tester.getTopLeft(find.text('COMPACT historical-tool')).dy),
+      );
+      expect(
+        tester.getTopLeft(find.text('Retained tool and summary')).dy,
+        lessThan(tester.getTopLeft(find.text('Historical answer')).dy),
+      );
+      await tester.tap(find.text('COMPACT historical-tool'));
+      await tester.tap(find.text('Retained tool and summary'));
+      expect(source.inspected, ['historical-tool', 'historical-group']);
+      expect(source.starts, 0);
+      source.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(source.opened, ['historical-run', 'missing-run']);
+      expect(find.text('COMPACT historical-tool'), findsOneWidget);
+      expect(find.text('Retained tool and summary'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'snapshot association never replaces or duplicates a live handle',
+    (tester) async {
+      await _submit(tester, generation, source, 'Live question');
+      source.models.add(
+        _model('live-model', [_tool('live-tool', 'read_file')]),
+      );
+      final entry = source.entries.single;
+      source.entries[0] = ChatEntry(
+        id: entry.id,
+        role: entry.role,
+        content: entry.content,
+        runId: 'recorded-run',
+      );
+      source.historicalHandles['recorded-run'] = 'retained-handle';
+      source.activities['retained-handle'] = [
+        _model('duplicate', [_tool('duplicate-tool', 'read_file')]),
+      ];
+      source.finish();
+      await tester.pumpAndSettle();
+      expect(source.opened, isEmpty);
+      expect(find.text('COMPACT live-tool'), findsOneWidget);
+      expect(find.text('COMPACT duplicate-tool'), findsNothing);
+      expect(source.starts, 1);
+      await tester.pumpWidget(const SizedBox.shrink());
+      source.active = true;
+      await tester.pumpWidget(_host(generation, source));
+      await tester.pumpAndSettle();
+      expect(source.opened, ['recorded-run']);
+      expect(find.text('COMPACT live-tool'), findsNothing);
+      expect(find.text('COMPACT duplicate-tool'), findsOneWidget);
+      expect(source.starts, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'unassociated activity remains presentation-local across follow-up snapshots',
     (tester) async {
       await _submit(tester, generation, source, 'First prompt');
       source.models.add(
@@ -878,7 +1004,7 @@ Future<bool> configure() async {
       final program = compiler.compile(sources);
       final valid = <String, Object?>{
         'entries': [
-          {'id': 'entry', 'role': 'user', 'content': 'decoded'},
+          {'id': 'entry', 'role': 'user', 'content': 'decoded', 'runId': null},
         ],
         'instructions': '',
         'maxModelInvocations': 3,
@@ -892,6 +1018,18 @@ Future<bool> configure() async {
         {...valid}..remove('draftRequest'),
         {...valid, 'draftRequest': null},
         {...valid, 'draftRequest': 42},
+        {
+          ...valid,
+          'entries': [
+            {'id': 'entry', 'role': 'user', 'content': 'decoded'},
+          ],
+        },
+        {
+          ...valid,
+          'entries': [
+            {'id': 'entry', 'role': 'user', 'content': 'decoded', 'runId': 42},
+          ],
+        },
         {
           ...valid,
           'entries': [
@@ -1040,6 +1178,8 @@ class _Source extends ChangeNotifier
   final events = <String>[];
   final inspected = <String>[];
   final built = <String>[];
+  final opened = <String>[];
+  final historicalHandles = <String, String>{};
   final calls = <(String, Map<String, Object?>)>[];
   final activities = <String, List<Map<String, Object?>>>{};
   List<Map<String, Object?>> get models => activities['run-$starts']!;
@@ -1134,6 +1274,7 @@ class _Source extends ChangeNotifier
       id: 'entry-${entries.length}',
       role: 'user',
       content: content,
+      runId: null,
     );
     entries.add(entry);
     draftRequest = '';
@@ -1152,6 +1293,12 @@ class _Source extends ChangeNotifier
 
   @override
   String currentSessionId() => 'session-opaque';
+  @override
+  String? openRunActivity(String runId) {
+    opened.add(runId);
+    return historicalHandles[runId];
+  }
+
   @override
   Map<String, Object?> readExecution() => {
     'canStart': active && !running,
@@ -1175,6 +1322,7 @@ class _Source extends ChangeNotifier
           id: 'quick-answer',
           role: 'assistant',
           content: 'Quick canonical answer',
+          runId: null,
         ),
       );
       running = false;

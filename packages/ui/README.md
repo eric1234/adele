@@ -36,8 +36,12 @@ native implementations supply their behavior; calling a stub natively throws
   registration origin and pins execution to that same strategy binding.
 - `session_execution_bridge.dart` supplies current Session identity, immutable
   execution snapshots and subscriptions, asynchronous `startSessionRun`, retained
-  activity reads, and inspect/build operations over emitted opaque handles. Run
-  start resolves when scheduled, not when execution completes. Generic
+  activity reads, and inspect/build operations over emitted opaque handles.
+  `String? openSessionRunActivity(String runId)` accepts a semantic Run ID, validates that retained
+  activity belongs to the presented Session, and returns a read-only opaque handle
+  for those same activity/Inspection paths, or null when unavailable. It grants no
+  execution or approval authority and creates no Run. Run start resolves when
+  scheduled, not when execution completes. Generic
   `settleSessionOperation(Future)` returns `[true, value]` or `[false, null]` to
   contain native Future rejection that the evaluator cannot reliably unwind;
   it preserves interpreted success values without codecs or exception transport.
@@ -55,16 +59,18 @@ native implementations supply their behavior; calling a stub natively throws
 Stock Chat uses its own Contract-generated `ChatSessionServiceClient` for canonical
 snapshot/append/configuration operations and the separate execution bridge for
 Runs. Its frontend owns asynchronous composer acceptance, history refresh, and
-activity grouping, associating a stable accepted entry occurrence ID with an opaque
-Run handle. Neither canonical Chat history nor Chat-specific interpretation lives
-in this package or the generic execution core.
+activity grouping. Its durable user-entry-to-Run association is distinct from a
+view-local opaque handle; after hydration it can open historical activity only
+where a live handle is absent. Neither canonical Chat history nor Chat-specific
+interpretation lives in this package or the generic execution core.
 
 ## Activity Presentation
 
 Tool compact and rich Inspection contributions match exact `ToolId`; native
 compact and rich contributions match exact safe presentation kind. Tool factories
 receive a read-only `ToolActivityInspectionSource`; native factories receive
-immutable `ModelNativePresentation`, not raw provider envelopes. Compact and rich
+immutable `ModelNativePresentation`, not raw provider envelopes, including when
+rendering restored terminal evidence. Compact and rich
 roles are distinct, not size variants of one host card schema.
 
 Exact zero/one/many resolution and registration liveness apply to every role.
@@ -77,5 +83,8 @@ and group-row composition; strategy frontends own grouping and timeline placemen
 Frontend activation and backend readiness are independent. Missing/corrupt EVC or
 view failure does not trigger compilation, native presentation fallback, or backend
 replacement. Prepared hosting and runtime-local failure containment belong to the
-app, not this public API. Broader workbench, Commands, persistence, and general
-third-party interpreted Flutter compatibility remain deferred.
+app, not this public API. Terminal evidence persistence belongs to the
+[execution-history owner](../../docs/architecture/execution-model.md#terminal-execution-history),
+not UI; it does not restore open cards, handles, or workbench layout. Broader
+workbench, Commands, workbench persistence, and general third-party interpreted
+Flutter compatibility remain deferred.

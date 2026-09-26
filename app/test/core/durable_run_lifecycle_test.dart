@@ -89,6 +89,7 @@ void main() {
     expect(model.calls, 0);
     expect(tool.executions, 0);
     expect(runtime.store.runRecord(run.run.id), isNull);
+    expect(runtime.lifecycle.runActivity(run.run.id), isNull);
     expect(runtime.store.runsForSession(session.id), isEmpty);
     expect(_runRows(inspection), isEmpty);
     return run;
@@ -103,6 +104,8 @@ void main() {
     expect(record.id, run.run.id);
     expect(record.sessionId, session.id);
     expect(record.state, state);
+    final activity = owner.lifecycle.runActivity(run.run.id)!;
+    _expectActivity(activity, run.activity.snapshot);
     expect(owner.store.runsForSession(session.id), [same(record)]);
     expect(_runRows(inspection), [
       {
@@ -174,10 +177,15 @@ void main() {
     expect(controller.currentRun, isNull);
     expect(controller.activeRunFuture, isNull);
     expect(controller.isRunning, isFalse);
+    expect(controller.isAdvancing, isFalse);
     expect(controller.pendingApproval, isNull);
-    expect(controller.activitySnapshots, isEmpty);
-    expect(controller.activityForRun(run.run.id), isNull);
-    expect(controller.stateForRun(run.run.id), isNull);
+    final retained = fresh.lifecycle.runActivity(run.run.id);
+    expect(controller.activityForRun(run.run.id), same(retained));
+    expect(controller.stateForRun(run.run.id), retained?.state);
+    if (retained != null) {
+      _expectActivity(retained, run.activity.snapshot);
+      expect(retained, isNot(same(run.activity.snapshot)));
+    }
     expect(fresh.plugins.host, isNull);
     expect(fresh.plugins.backends, isEmpty);
     expect(ids.calls, 0);
@@ -198,9 +206,15 @@ void main() {
 
   for (final failed in [false, true]) {
     test('actual ${failed ? 'failed' : 'completed'} Run survives fresh runtime '
-        'without restoring execution or activity', () async {
+        'with immutable activity but no execution', () async {
       final run = await createRun();
-      final primary = StateError('strategy failed after tool settlement');
+      final primary = ModelFailure(
+        kind: ModelFailureKind.providerFailure,
+        providerCode: 'fixture_failure',
+        providerMessage: 'Strategy failed after tool settlement.',
+        providerDetails: {'retryable': false},
+        cause: StateError('private exception must not survive'),
+      );
       if (failed) execution.failure = primary;
       if (failed) {
         await expectLater(run.start(), throwsA(same(primary)));
@@ -221,6 +235,14 @@ void main() {
           : RunTerminalState.completed;
       expectRetained(runtime, run, state);
       final record = runtime.store.runRecord(run.run.id)!;
+      final activity = runtime.lifecycle.runActivity(run.run.id)!;
+      // The omitted text delta retains its gap rather than dense renumbering.
+      expect(activity.models.single.startSequence, 2);
+      expect(activity.models.single.outputs.map((output) => output.sequence), [
+        4,
+        5,
+        6,
+      ]);
       final evidence = run.run.journal.records;
       // A second INSERT during explicit close must not be attempted.
       _rejectRunInsert(inspection);
@@ -231,6 +253,15 @@ void main() {
       final fresh = await reopen(run);
       expectRetained(fresh, run, state);
       expect(fresh.store.runRecord(run.run.id), isNot(same(record)));
+      expect(
+        fresh.lifecycle
+            .runActivity(run.run.id)!
+            .models
+            .single
+            .outputs
+            .map((output) => output.sequence),
+        [4, 5, 6],
+      );
     });
   }
 
@@ -343,7 +374,10 @@ void main() {
         expect(execution.closeCalls, 1);
         expect(runtime.store.runRecord(run.run.id), isNull);
         expect(runtime.store.runsForSession(session.id), isEmpty);
+        expect(runtime.lifecycle.runActivity(run.run.id), isNull);
+        expect(runtime.lifecycle.runActivitiesForSession(session.id), isEmpty);
         expect(_runRows(inspection), isEmpty);
+        _expectNoEvidence(inspection);
 
         // Use the lifecycle's same connection, not the inspection connection,
         // to prove the failed terminal transaction left storage usable.
@@ -405,7 +439,9 @@ void main() {
         execution.beforeProposal = () async {
           mechanics = execution.host.processProposal(
             tools: execution.turn.tools,
-            proposal: (execution.turn.output.single as ModelToolProposalOutput)
+            proposal: execution.turn.output
+                .whereType<ModelToolProposalOutput>()
+                .single
                 .proposal,
           );
           await entered.future;
@@ -539,9 +575,103 @@ List<Map<String, Object?>> _runRows(Database database) => [
 ];
 
 void _rejectRunInsert(Database database) => database.execute('''
-  CREATE TRIGGER reject_run_insert BEFORE INSERT ON adele_product_runs
+  CREATE TRIGGER reject_run_insert BEFORE INSERT ON adele_execution_model_outputs
   BEGIN SELECT RAISE(ABORT, 'durable-run-insert-failure'); END;
 ''');
+
+void _expectNoEvidence(Database database) {
+  for (final row in database.select(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'adele_execution_%'",
+  )) {
+    expect(database.select('SELECT * FROM ${row['name']}'), isEmpty);
+  }
+}
+
+void _expectActivity(RunActivitySnapshot actual, RunActivitySnapshot expected) {
+  expect(actual.runId, expected.runId);
+  expect(actual.sessionId, expected.sessionId);
+  expect(actual.state, expected.state);
+  expect(actual.sequence, expected.sequence);
+  expect(
+    actual.lifecycle.map((entry) => (entry.sequence, entry.state)),
+    expected.lifecycle.map((entry) => (entry.sequence, entry.state)),
+  );
+  expect(actual.failure?.kind, expected.failure?.kind);
+  expect(actual.failure?.message, expected.failure?.message);
+  expect(actual.failure?.providerCode, expected.failure?.providerCode);
+  expect(actual.failure?.providerDetails, expected.failure?.providerDetails);
+  expect(actual.models, hasLength(expected.models.length));
+  for (var i = 0; i < actual.models.length; i++) {
+    final model = actual.models[i];
+    final original = expected.models[i];
+    expect(model.id, original.id);
+    expect(model.startSequence, original.startSequence);
+    expect(model.terminalSequence, original.terminalSequence);
+    expect(model.settlement, original.settlement);
+    expect(
+      model.outputs.map((entry) => entry.sequence),
+      original.outputs.map((entry) => entry.sequence),
+    );
+    expect(
+      model.outputs.map((entry) => entry.item.runtimeType),
+      original.outputs.map((entry) => entry.item.runtimeType),
+    );
+    final text = model.outputs.first.item as ModelTextOutput;
+    expect(
+      text.content,
+      (original.outputs.first.item as ModelTextOutput).content,
+    );
+    expect(text.providerItemId, 'text-1');
+    final native = model.outputs[1].item as ModelNativeOutput;
+    final originalNative = original.outputs[1].item as ModelNativeOutput;
+    expect(
+      native.providerNativeMetadata.kind,
+      originalNative.providerNativeMetadata.kind,
+    );
+    expect(
+      native.providerNativeMetadata.compatibility,
+      originalNative.providerNativeMetadata.compatibility,
+    );
+    expect(
+      native.providerNativeMetadata.data,
+      originalNative.providerNativeMetadata.data,
+    );
+    expect(native.presentation!.data, originalNative.presentation!.data);
+    expect(
+      native.presentation!.compactText,
+      originalNative.presentation!.compactText,
+    );
+    final proposal =
+        (model.outputs.last.item as ModelToolProposalOutput).proposal;
+    final originalProposal =
+        (original.outputs.last.item as ModelToolProposalOutput).proposal;
+    expect(proposal.providerCallId, originalProposal.providerCallId);
+    expect(proposal.alias, originalProposal.alias);
+    expect(proposal.arguments, originalProposal.arguments);
+  }
+  expect(actual.tools, hasLength(expected.tools.length));
+  for (var i = 0; i < actual.tools.length; i++) {
+    final tool = actual.tools[i];
+    final original = expected.tools[i];
+    expect(tool.id, original.id);
+    expect(tool.modelInvocationId, original.modelInvocationId);
+    expect(tool.proposalSequence, original.proposalSequence);
+    expect(tool.preparedSequence, original.preparedSequence);
+    expect(tool.toolId, original.toolId);
+    expect(tool.canonicalArguments, original.canonicalArguments);
+    expect(tool.effects!.effects, original.effects!.effects);
+    expect(tool.effects!.summary, original.effects!.summary);
+    expect(
+      tool.changes.map((entry) => (entry.sequence, entry.kind)),
+      original.changes.map((entry) => (entry.sequence, entry.kind)),
+    );
+    expect(tool.outcome!.disposition, original.outcome!.disposition);
+    expect(tool.outcome!.effectCertainty, original.outcome!.effectCertainty);
+    expect(tool.outcome!.modelContent, original.outcome!.modelContent);
+    expect(tool.outcome!.hostData, original.outcome!.hostData);
+  }
+  expect(() => actual.tools.clear(), throwsUnsupportedError);
+}
 
 final class _NoAllocationIds implements ProductIdSource, RunIdSource {
   int calls = 0;
@@ -581,7 +711,10 @@ final class _Execution implements OrchestrationExecution {
     await beforeProposal?.call();
     await host.processProposal(
       tools: turn.tools,
-      proposal: (turn.output.single as ModelToolProposalOutput).proposal,
+      proposal: turn.output
+          .whereType<ModelToolProposalOutput>()
+          .single
+          .proposal,
     );
     if (failure case final error?) throw error;
     if (host.state == RunState.running) host.complete();
@@ -608,6 +741,30 @@ final class _Model implements ModelPort {
   @override
   Stream<ModelEvent> invoke(SemanticModelRequest request) async* {
     calls++;
+    yield ModelObservationEvent(
+      invocationId: request.invocationId,
+      observation: ModelTextDeltaObservation('Retained'),
+    );
+    yield ModelOutputItemCompleted(
+      invocationId: request.invocationId,
+      item: ModelTextOutput('Retained text', providerItemId: 'text-1'),
+    );
+    yield ModelOutputItemCompleted(
+      invocationId: request.invocationId,
+      item: ModelNativeOutput(
+        providerItemId: 'native-1',
+        providerNativeMetadata: ModelNativeEnvelope(
+          kind: 'fixture.native',
+          compatibility: {'provider': 'fixture'},
+          data: {'opaque': 'historical-only'},
+        ),
+        presentation: ModelNativePresentation(
+          kind: 'fixture.presentation',
+          compactText: 'Safe summary',
+          data: {'summary': 'Safe summary'},
+        ),
+      ),
+    );
     yield ModelOutputItemCompleted(
       invocationId: request.invocationId,
       item: ModelToolProposalOutput(
@@ -650,11 +807,15 @@ final class _Tool implements ToolExecutable {
   ) async* {
     executions++;
     await beforeTerminal?.call();
+    yield ToolExecutionProgress(ToolProgress(content: 'Fixture progress'));
     yield ToolExecutionTerminal(
       ToolOutcome(
         disposition: ToolOutcomeDisposition.success,
         effectCertainty: EffectCertainty.knownOccurred,
         modelContent: 'Executed',
+        hostData: {'result': 'safe evidence'},
+        hostDiagnostic: 'private diagnostic must not survive',
+        cause: StateError('private cause must not survive'),
       ),
     );
   }

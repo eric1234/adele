@@ -9,6 +9,14 @@ immutable canonical `ChatEntry` and `ChatSessionSnapshot` values, and
 `maxModelInvocations`, and the required `String draftRequest`. The current Draft
 Request representation is exact plain text, not a rich document model.
 
+`ChatEntry` requires `id`, `role`, `content`, and nullable `String? runId`. The
+`runId` key is required even when null. Only a user entry may have a non-null Run
+association; assistant entries and newly accepted, unassociated users carry null.
+The value is a semantic Run ID, not an opaque view handle, execution authority, or
+a promise of available terminal evidence. Backend association semantics belong to
+the [backend map](../backend/README.md); frontend lookup uses the generic public
+Session execution bridge rather than a Chat history/evidence service.
+
 The service supports snapshot, direct `appendUserMessage`, atomic
 instruction/invocation-budget configuration, and two distinct draft operations:
 
@@ -58,8 +66,8 @@ EVC preparation uses `ContractGenerator.generateEvalClient` to derive a bounded
 eval-compatible client directly from the same annotated declarations. That
 projection is compiled into the EVC; it is not the native sibling or a second
 hand-maintained semantic contract. No application-owned Chat codec exists.
-This pre-release shape keeps the existing transport version and requires coherent
-artifact rebuilds, without omitted-draft or old-wire compatibility reads.
+This pre-release shape keeps transport version 1 and requires coherent artifact
+rebuilds, without omitted-`runId`, omitted-draft, or old-wire compatibility reads.
 The frontend supplies an `OwningBackendRequestChannel` for the explicitly
 allowlisted service; native headless tooling can use the captured backend's
 configuration-scoped channel. The service is plugin-internal, not a core extension

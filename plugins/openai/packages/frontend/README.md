@@ -102,8 +102,12 @@ narration when tools are present, then safe compact text, then operation count.
 Reasoning-only activity appears before canonical final assistant text. Group
 Inspection interleaves compact tool/native rows by exact `output.sequence`;
 common row interaction prepends individual cards whose expanded bodies use rich
-presentation. Existing cards retain independent collapse/dismiss state. Activity
-survives follow-up prompts for the controller lifetime, not in canonical history.
+presentation. Existing cards retain independent collapse/dismiss state. Terminal
+activity survives through host-owned
+[execution history](../../../../docs/architecture/execution-model.md#terminal-execution-history),
+not canonical Chat history or persisted cards. Restored activity uses the same safe
+presentation boundary; stored native envelopes are historical evidence, never
+future continuation input.
 
 ## Prepared Artifact
 
@@ -146,5 +150,5 @@ This deterministic scope does not establish live-provider summary support.
 Hidden chain-of-thought and encrypted reasoning are never user-presented.
 Reasoning deltas, compaction/configuration UI, arbitrary plugin
 drill-down, Source/Diff/Console navigation, terminal/PTY/full-output views, and
-activity persistence remain deferred. Summary request support is provider-local
+workbench restoration remain deferred. Summary request support is provider-local
 and narrowly guarded, as documented in the [backend README](../backend/README.md).

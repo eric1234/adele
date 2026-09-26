@@ -68,6 +68,246 @@ void main() {
   );
 
   test(
+    'durable association commits before publication, rejects writes and survives replacement',
+    () async {
+      final storage = ChatTestStorage();
+      addTearDown(storage.close);
+      final backend = await _RunningBackend.start(storage: storage);
+      addTearDown(backend.close);
+      await backend.chat.setDraftRequest('session', 'Prompt.');
+      final accepted = await backend.chat.submitDraftRequest('session');
+      expect(accepted.runId, isNull);
+      final entered = Completer<void>();
+      final gate = Completer<void>();
+      addTearDown(() {
+        if (!gate.isCompleted) gate.complete();
+      });
+      storage.beforeTransaction = () {
+        entered.complete();
+        return gate.future;
+      };
+      final materializing = backend.materialize();
+      var returned = false;
+      final result = materializing.then((id) {
+        returned = true;
+        return id;
+      });
+      await entered.future;
+      expect(returned, isFalse);
+      expect(
+        (await backend.chat.snapshot('session')).entries.single.runId,
+        isNull,
+      );
+      expect(
+        storage.database
+            .select('SELECT run_id FROM adele_chat_entries')
+            .single['run_id'],
+        isNull,
+      );
+      expect(backend.host.events, isEmpty);
+      await backend.expectBusy();
+      gate.complete();
+      final execution = await result;
+      storage.beforeTransaction = null;
+      expect(
+        (await backend.chat.snapshot('session')).entries.single.runId,
+        'run',
+      );
+      expect(accepted.runId, isNull);
+      await backend.orchestration.release(execution);
+      await backend.close();
+      final replacement = await _RunningBackend.start(storage: storage);
+      addTearDown(replacement.close);
+      final restored = (await replacement.chat.snapshot(
+        'session',
+      )).entries.single;
+      expect(
+        (restored.id, restored.content, restored.runId),
+        (accepted.id, 'Prompt.', 'run'),
+      );
+      expect(replacement.host.events, isEmpty);
+    },
+  );
+
+  for (final durable in [true, false]) {
+    test(
+      '${durable ? 'durable' : 'volatile'} latest user association never retargets and assistants stay null',
+      () async {
+        final storage = ChatTestStorage(durable: durable);
+        addTearDown(storage.close);
+        final backend = await _RunningBackend.start(storage: storage);
+        addTearDown(backend.close);
+        final older = await backend.chat.appendUserMessage(
+          'session',
+          'Earlier input.',
+        );
+        final latest = await backend.chat.appendUserMessage(
+          'session',
+          'Latest input.',
+        );
+        expect(older.runId, isNull);
+        expect(latest.runId, isNull);
+        final first = await backend.materialize();
+        expect(
+          (await backend.chat.snapshot('session')).entries.map((e) => e.runId),
+          [null, 'run'],
+        );
+        await backend.orchestration.release(first);
+        final second = await backend.materialize(run: 'not-a-retarget');
+        expect(
+          (await backend.chat.snapshot('session')).entries.map((e) => e.runId),
+          [null, 'run'],
+        );
+        expect(
+          await backend.orchestration.start(second, 'token'),
+          RemoteRunState.completed,
+        );
+        final next = await backend.chat.appendUserMessage(
+          'session',
+          'Next input.',
+        );
+        expect(next.runId, isNull);
+        await expectLater(
+          backend.materialize(),
+          throwsA(isA<AdeleRemoteFailure>()),
+        );
+        expect(
+          (await backend.chat.snapshot('session')).entries.last.runId,
+          isNull,
+        );
+        backend.host.state = RemoteRunState.created;
+        final third = await backend.materialize(run: 'run-2');
+        expect(
+          await backend.orchestration.start(third, 'token-2'),
+          RemoteRunState.completed,
+        );
+        final snapshot = await backend.chat.snapshot('session');
+        expect(snapshot.entries.map((e) => e.runId), [
+          null,
+          'run',
+          null,
+          'run-2',
+          null,
+        ]);
+        expect(snapshot.entries.map((e) => e.role), [
+          'user',
+          'user',
+          'assistant',
+          'user',
+          'assistant',
+        ]);
+        if (durable) {
+          final restored = await ChatSessionBackend(
+            ChatSessionStore(storage: storage),
+          ).snapshot('session');
+          expect(
+            restored.entries.map((e) => e.runId),
+            snapshot.entries.map((e) => e.runId),
+          );
+        } else {
+          expect(storage.transactions, 0);
+          expect(storage.schemaChecks, 0);
+          expect(storage.queries, 0);
+        }
+      },
+    );
+
+    test(
+      '${durable ? 'durable' : 'volatile'} inner materialization failures leave acceptance unassociated for retry',
+      () async {
+        final storage = ChatTestStorage(durable: durable);
+        addTearDown(storage.close);
+        final backend = await _RunningBackend.start(storage: storage);
+        addTearDown(backend.close);
+        await backend.chat.appendUserMessage('session', 'Accepted.');
+        final writes = storage.transactions;
+        for (final (route, session, run) in [
+          ('missing', _session, 'run'),
+          (
+            chatStrategyRouteId,
+            RemoteOrchestrationSession(
+              sessionId: 'session',
+              taskId: 'task',
+              strategyId: 'other',
+            ),
+            'run',
+          ),
+          (chatStrategyRouteId, _session, ''),
+          (chatStrategyRouteId, _session, ' run '),
+        ]) {
+          await expectLater(
+            backend.orchestration.materialize(route, session, run),
+            throwsA(isA<AdeleRemoteFailure>()),
+          );
+          expect(
+            (await backend.chat.snapshot('session')).entries.single.runId,
+            isNull,
+          );
+        }
+        expect(storage.transactions, writes);
+        expect(backend.host.events, isEmpty);
+        final retry = await backend.materialize();
+        expect(
+          (await backend.chat.snapshot('session')).entries.single.runId,
+          'run',
+        );
+        await backend.orchestration.release(retry);
+      },
+    );
+  }
+
+  test(
+    'association SQL failure releases unstarted execution and permits retry',
+    () async {
+      final backend = await _RunningBackend.start();
+      addTearDown(backend.close);
+      final accepted = await backend.chat.appendUserMessage(
+        'session',
+        'Accepted.',
+      );
+      backend.storage.database.execute('''
+CREATE TRIGGER reject_association AFTER UPDATE OF run_id ON adele_chat_entries
+BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
+''');
+      final writes = backend.storage.transactions;
+      await expectLater(
+        backend.materialize(),
+        throwsA(isA<AdeleRemoteFailure>()),
+      );
+      expect(backend.storage.transactions, writes + 1);
+      expect(backend.host.events, isEmpty);
+      for (final reader in [
+        backend.chat,
+        ChatSessionBackend(ChatSessionStore(storage: backend.storage)),
+      ]) {
+        final entry = (await reader.snapshot('session')).entries.single;
+        expect((entry.id, entry.runId), (accepted.id, null));
+      }
+      await expectLater(
+        backend.orchestration.start('execution-0', 'token'),
+        throwsA(isA<AdeleRemoteFailure>()),
+      );
+      expect(backend.host.events, isEmpty);
+      await backend.chat.configureSession('session', 'Claim released.', 2);
+      backend.storage.database.execute('DROP TRIGGER reject_association');
+      final retry = await backend.materialize();
+      expect(retry, 'execution-1');
+      expect(
+        (await backend.chat.snapshot('session')).entries.single.runId,
+        'run',
+      );
+      expect(
+        await backend.orchestration.start(retry, 'retry-token'),
+        RemoteRunState.completed,
+      );
+      expect(
+        (await backend.chat.snapshot('session')).entries.map((e) => e.runId),
+        ['run', null],
+      );
+    },
+  );
+
+  test(
     'remote draft operations preserve exact bytes across backend replacement',
     () async {
       final storage = ChatTestStorage();
@@ -685,6 +925,11 @@ void main() {
             ),
             'run',
           );
+          expect(user.runId, isNull);
+          expect(
+            (await service.snapshot('session')).entries.single.runId,
+            'run',
+          );
           final advancing = backend.start(execution, 'token');
           final observed = expectLater(
             advancing,
@@ -727,6 +972,10 @@ void main() {
             if (!rejectCompletion) 'assistant',
           ]);
           expect(settled.entries.first.id, user.id);
+          expect(settled.entries.map((entry) => entry.runId), [
+            'run',
+            if (!rejectCompletion) null,
+          ]);
           await service.configureSession('session', 'After close.', 2);
           await service.appendUserMessage('session', 'Next.');
         },
@@ -959,12 +1208,12 @@ void main() {
           );
         }
         final before = await service.snapshot('session');
-        final writes = storage.transactions;
         final execution = await backend.materialize(
           chatStrategyRouteId,
           _session,
           'run',
         );
+        final writes = storage.transactions;
         final advancing = backend.start(execution, 'token');
         final settled = expectLater(
           advancing,
@@ -1010,6 +1259,136 @@ void main() {
           (await service.appendUserMessage('session', 'Next.')).id,
           'entry-${count + (durable ? 0 : 1)}',
         );
+      },
+    );
+  }
+
+  test(
+    'headless materialization without a user creates only an unassociated assistant',
+    () async {
+      final backend = await _RunningBackend.start();
+      addTearDown(backend.close);
+      final execution = await backend.materialize();
+      expect((await backend.chat.snapshot('session')).entries, isEmpty);
+      expect(backend.host.events, isEmpty);
+      expect(
+        await backend.orchestration.start(execution, 'token'),
+        RemoteRunState.completed,
+      );
+      final assistant = (await backend.chat.snapshot('session')).entries.single;
+      expect((assistant.role, assistant.runId), ('assistant', null));
+    },
+  );
+
+  test(
+    'headless materialization leaves an older unassociated user behind a trailing assistant unchanged',
+    () async {
+      final storage = ChatTestStorage();
+      addTearDown(storage.close);
+      final service = ChatSessionBackend(ChatSessionStore(storage: storage));
+      final user = await service.appendUserMessage('session', 'Earlier input.');
+      expect(user.runId, isNull);
+      storage.database.execute('''
+INSERT INTO adele_chat_entries
+  (session_id, sequence, entry_id, role, content, run_id)
+VALUES ('session', 1, 'entry-1', 'assistant', 'Earlier answer.', NULL);
+UPDATE adele_chat_sessions SET next_entry = 2 WHERE session_id = 'session';
+''');
+      final backend = await _RunningBackend.start(storage: storage);
+      addTearDown(backend.close);
+      final before = await backend.chat.snapshot('session');
+      expect(before.entries.map((entry) => entry.role), ['user', 'assistant']);
+      expect(before.entries.map((entry) => entry.runId), [null, null]);
+      final writes = storage.transactions;
+      final execution = await backend.materialize();
+      expect(storage.transactions, writes);
+      expect(backend.host.events, isEmpty);
+      expect(
+        (await backend.chat.snapshot(
+          'session',
+        )).entries.map((entry) => entry.runId),
+        [null, null],
+      );
+      expect(
+        await backend.orchestration.start(execution, 'token'),
+        RemoteRunState.completed,
+      );
+      final restored = await ChatSessionBackend(
+        ChatSessionStore(storage: storage),
+      ).snapshot('session');
+      expect(restored.entries.map((entry) => entry.role), [
+        'user',
+        'assistant',
+        'assistant',
+      ]);
+      expect(restored.entries.map((entry) => entry.runId), [null, null, null]);
+    },
+  );
+
+  for (final failAssociation in [false, true]) {
+    test(
+      'close drains association ${failAssociation ? 'failure' : 'commit'} without publishing a late execution',
+      () async {
+        final storage = ChatTestStorage();
+        final store = ChatSessionStore(storage: storage);
+        final service = ChatSessionBackend(store);
+        final backend = ChatRemoteOrchestrationBackend(
+          sessions: store,
+          hostChannel: (_) =>
+              throw StateError('Materialization must not start.'),
+        );
+        final entered = Completer<void>();
+        final gate = Completer<void>();
+        addTearDown(() async {
+          if (!gate.isCompleted) gate.complete();
+          await backend.close();
+          storage.close();
+        });
+        await service.appendUserMessage('session', 'Accepted.');
+        storage.beforeTransaction = () {
+          entered.complete();
+          return gate.future;
+        };
+        final materializing = backend.materialize(
+          chatStrategyRouteId,
+          _session,
+          'run',
+        );
+        final failure = StateError('Association storage failed.');
+        final rejected = expectLater(
+          materializing,
+          failAssociation ? throwsA(same(failure)) : throwsStateError,
+        );
+        await entered.future;
+        var closed = false;
+        final closing = backend.close().then((_) => closed = true);
+        await service.snapshot('session');
+        expect(closed, isFalse);
+        expect(
+          (await service.snapshot('session')).entries.single.runId,
+          isNull,
+        );
+        await expectLater(
+          service.appendUserMessage('session', 'Blocked.'),
+          _failure('session_busy'),
+        );
+        if (failAssociation) storage.failure = failure;
+        gate.complete();
+        await rejected;
+        await closing;
+        storage
+          ..beforeTransaction = null
+          ..failure = null;
+        for (final reader in [
+          service,
+          ChatSessionBackend(ChatSessionStore(storage: storage)),
+        ]) {
+          expect(
+            (await reader.snapshot('session')).entries.single.runId,
+            failAssociation ? null : 'run',
+          );
+        }
+        await service.appendUserMessage('session', 'Claim released.');
       },
     );
   }
@@ -1080,6 +1459,7 @@ void main() {
       );
       gate.complete();
       await writing;
+      storage.beforeTransaction = null;
       final execution = await backend.materialize(
         chatStrategyRouteId,
         _session,

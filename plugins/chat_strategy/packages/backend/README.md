@@ -13,10 +13,15 @@ the Chat-owned v1 relational baseline. The schema owner is the connection's exac
 PluginId, `dev.adele.plugin.chat-strategy`, not a caller-supplied owner.
 `adele_chat_sessions` stores instructions, positive invocation budget, the
 next-entry counter, and `draft_request TEXT NOT NULL`, keyed by and referencing
-`adele_product_sessions(id)`. Draft Request extends the current v1 baseline in
-place; it does not add a migration or compatibility reader for development schemas.
+`adele_product_sessions(id)`. The current schema remains a v1 baseline, with no
+upgrade migration or compatibility reader for development schemas.
 `adele_chat_entries` stores ordered user/final-assistant occurrences with
-Session-local unique entry IDs. Chat never writes core tables or JSON snapshots.
+Session-local unique entry IDs and nullable `run_id TEXT`. Only user entries may
+carry a Run association; `(session_id, run_id)` is unique for non-null values.
+There is no foreign key from `run_id` to the core terminal Run table because
+association precedes terminal retention. Chat never writes core tables or JSON
+snapshots. Cross-system ownership belongs to
+[Chat participation](../../../../docs/architecture/plugin-system.md#chat-participation).
 
 Hydration looks up the next expected `sequence` within the Session using the
 existing composite index, without rescanning a history prefix. `LIMIT 2` detects
@@ -24,8 +29,9 @@ duplicate sequences if constraints are damaged; valid state returns one entry pe
 query, keeping individually readable rows within the response bound. An empty
 result ends the contiguous lookup. A final retained-row count and the entry-counter
 check reject hidden rows or gaps before publishing state. It validates the current
-contiguous sequence/`entry-N` IDs, role, nonblank content, counter, budget, and
-string draft. The counter starts at zero and is shared by both roles. Raw message,
+contiguous sequence/`entry-N` IDs, role, nonblank content, nullable user-only Run
+associations and their uniqueness, counter, budget, and string draft. The counter
+starts at zero and is shared by both roles. Raw message,
 draft, and instruction bytes are retained. Missing state is initialized to stock
 instructions, budget eight, counter zero, and an empty draft. Invalid canonical row
 values raise `ChatStateCorruption`; schema/query failures also propagate rather
@@ -58,6 +64,16 @@ refusals, and the positive model-invocation limit. Instructions and the limit ar
 captured at materialization; the default limit is eight and stock instructions
 are backend-owned. Intermediate tool, native, reasoning, and narration items do
 not enter canonical history.
+
+After successful `RemoteOrchestrationBackend.materialize`,
+`ChatRemoteOrchestrationBackend` associates the final history entry with the semantic
+Run ID only when it is an unassociated user entry, while retaining the Session claim. It persists the
+association before updating canonical and execution-local staged caches. Association
+failure releases the newly materialized execution and claim, without publishing
+the association or silently retrying. Starting and approval resume do not replace
+an already accepted association. An unstarted or waiting Run may never acquire
+terminal history; the association does not manufacture it. No provider-native
+historical evidence is loaded into Chat's future inference projection.
 
 `ChatSessionState` owns the generation-local exact draft string, exposed through
 `ChatSessionSnapshot.draftRequest`. `setDraftRequest` replaces it exactly, including
@@ -95,8 +111,10 @@ Chat composes the unchanged F3f backend, not direct provider/tool calls.
 Backend startup is independent of frontend activation. A missing or corrupt EVC
 does not prevent headless execution. Each generation has one canonical cache;
 a fresh generation reloads durable semantics, not live execution state or claims.
-Retirement never causes an old frontend to attach to a replacement. Runs,
-approvals, native replay, and activity remain non-durable.
+Retirement never causes an old frontend to attach to a replacement. Host-owned
+[terminal Run/activity history](../../../../docs/architecture/execution-model.md#terminal-execution-history)
+is separate from Chat storage. Live Runs, claims, actionable approvals, and native
+continuation state are not restored; native envelopes in history are evidence only.
 
 The sequencing and state tests live here rather than in a second root semantic
 package. The in-process activation helper is for explicit backend/host fixtures,

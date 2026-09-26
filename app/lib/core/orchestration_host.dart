@@ -179,6 +179,7 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
     _terminalRecordAttempted = true;
     _lifecycle.retainTerminalRun(
       RunRecord(id: run.id, sessionId: run.sessionId, state: state),
+      activity.snapshot,
     );
   }
 

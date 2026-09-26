@@ -65,12 +65,18 @@ Future<void> configureSession(
 
 `ChatSessionSnapshot` contains immutable `entries`, `instructions`,
 `maxModelInvocations`, and `String draftRequest`. Each `ChatEntry` contains
-`String id`, `String role` (`user` or `assistant`), and `String content`.
+`String id`, `String role` (`user` or `assistant`), `String content`, and required
+nullable `String? runId`. The Run association can be non-null only for a user entry;
+it is semantic identity, not a live execution or opaque presentation handle.
 `ChatEntryId` is a plugin-owned opaque occurrence identity, transported as a string
 to keep interpreted DTOs
 simple. IDs are allocated at append, unique within a retained Session, and
 stable across later snapshots and durable reloads even when messages have
 identical content.
+After successful remote materialization, Chat associates the final history entry
+with that Run only when it is an unassociated user occurrence, committing before updating its caches. This can
+precede terminal history and does not imply that evidence is already available.
+See the [backend map](packages/backend/README.md) for association and cleanup.
 
 Only the strategy can append a final assistant answer or refusal; the service
 exposes no assistant/history-replacement operation. Blank messages are rejected
@@ -216,16 +222,21 @@ if scheduling fails, Send retries the already-accepted entry even with an empty
 composer, without another submission. History refresh cannot overwrite a newer
 local draft. See the [frontend map](packages/frontend/README.md) for save/retry
 and presentation-lifetime details.
-The accepted entry ID anchors view-local activity to that exact occurrence.
+The accepted entry ID anchors view-local activity to that exact occurrence. On
+hydration, a persisted user entry's `runId` can reopen retained terminal activity
+through `openSessionRunActivity` where no live handle is already present. The host
+validates Session scope and issues a fresh read-only handle; Chat stores no handle
+or execution authority in canonical history.
 No canonical store, native Chat controller, or execution object is shared by
 identity with the frontend. The owning channel is generation-bound; it does not
 resolve a replacement backend or silently substitute local Chat state.
 
 The separate Session execution bridge supplies scheduling and read-only activity,
 not Chat canonical content. Host-built activity slots and inspect operations use
-only opaque handles issued to that presentation, without granting arbitrary
-identity construction or approval authority. Plugin frontend generations and
-individual presentation instances are distinct; view resources follow widget
+only opaque handles issued to that presentation. A semantic Run ID can request
+Session-validated historical lookup, not arbitrary activity access or approval
+authority. Plugin frontend generations and individual presentation instances are
+distinct; view resources follow widget
 lifecycle and exact registration liveness.
 
 The host projects the Run through public `adele_orchestration`'s read-only
@@ -242,16 +253,17 @@ text, never adding an activity variant to `ChatEntry`.
 The interpreted timeline places activity between the initiating user message and
 the final assistant response: one direct compact body or a clickable
 `ACTIVITY: ...` group summary, never rich tool bodies or execution controls.
-Completed activity and its structured evidence
-are retained separately from Chat history for the presentation lifetime, including
-follow-up prompts. Reconstructing a Session cannot restore historical activity
-until persistence exists. Raw native model output remains ordered and opaque in
+Terminal activity and its structured evidence are retained by the host separately
+from Chat history and can be reopened through the same compact/Inspection paths.
+The durable association supplies placement; open cards and handles remain
+view-local. Raw native model output remains ordered and opaque in
 the read model, separate from immutable backend-supplied `ModelNativePresentation`.
 `adele_ui` contributions supply rich Inspection by exact safe presentation kind,
 not raw-output projection. Missing rich presentation leaves safe activity intact.
 Chat presentation escapes compact display controls and retains the compact bound after
 escaping; the provider frontend escapes full text. Chat never parses
-OpenAI envelopes or replays safe presentation. The common Inspection host
+OpenAI envelopes or replays safe presentation. Persisted native envelopes are
+historical evidence only, never input to a future Chat Run. The common Inspection host
 interleaves compact tool/native rows by exact `output.sequence`. Common clicks
 prepend group or individual cards to a retained newest-first stack; each card
 independently collapses/expands or dismisses without changing other cards.
@@ -270,13 +282,14 @@ The current context projection deliberately preserves the development loop's
 simple conversation-plus-Run-items behavior. Rich context selection, context
 truncation and summarization, context sources beyond root AGENTS.md, provider-aware
 projection/cache planning, token budgets, richer Chat UI, broader tool/provider
-activity presentation, reasoning deltas, arbitrary plugin drill-down, Run/activity
-persistence, profiles,
+activity presentation, reasoning deltas, arbitrary plugin drill-down, active Run
+recovery, profiles,
 child Sessions, state migration, and concurrent
 conversation editing are not implemented. Canonical Chat history, configuration,
-and the plain-text Draft Request persist for durable Sessions; explicitly volatile
-fixtures remain scoped to their supplied store. Execution state, approvals, replay,
-and activity are not restored.
+the plain-text Draft Request, and user-entry Run associations persist for durable
+Sessions; explicitly volatile fixtures remain scoped to their supplied store.
+Host-owned terminal activity restores independently of Chat state. Live execution,
+claims, actionable approvals, replay continuation, and workbench state are not restored.
 Prepared frontend discovery and activation are implemented; installation/update
 management and artifact caching remain deferred. Checkout preparation stands in
 for future installation/update compilation, separate from activation consuming

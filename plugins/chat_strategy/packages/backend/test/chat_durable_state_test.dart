@@ -507,6 +507,10 @@ BEGIN SELECT RAISE(ABORT, 'test write failure'); END;
     'negative sequence': 'UPDATE adele_chat_entries SET sequence = -1',
     'blank content': "UPDATE adele_chat_entries SET content = '  '",
     'orphan history': 'DELETE FROM adele_chat_sessions',
+    'empty Run identity': "UPDATE adele_chat_entries SET run_id = ''",
+    'padded Run identity': "UPDATE adele_chat_entries SET run_id = ' run '",
+    'assistant Run association':
+        "UPDATE adele_chat_entries SET role = 'assistant', run_id = 'run'",
   }.entries) {
     test(
       'corrupt ${corruption.key} fails explicitly without rewriting data',
@@ -527,12 +531,180 @@ BEGIN SELECT RAISE(ABORT, 'test write failure'); END;
   }
 
   test(
+    'v1 schema restricts associations to unique user Runs without a core Run foreign key',
+    () async {
+      await service.appendUserMessage('session', 'First.');
+      await service.appendUserMessage('session', 'Second.');
+      await service.appendUserMessage('other', 'Other Session.');
+      expect(
+        storage.database
+            .select('SELECT run_id FROM adele_chat_entries')
+            .map((row) => row['run_id']),
+        [null, null, null],
+      );
+      storage.database.execute(
+        "UPDATE adele_chat_entries SET run_id = 'run' WHERE sequence = 0",
+      );
+      expect(
+        () => storage.database.execute(
+          "UPDATE adele_chat_entries SET run_id = 'run' WHERE sequence = 1",
+        ),
+        throwsA(isA<Exception>()),
+      );
+      expect(
+        () => storage.database.execute(
+          "UPDATE adele_chat_entries SET role = 'assistant' WHERE run_id = 'run'",
+        ),
+        throwsA(isA<Exception>()),
+      );
+      expect(
+        storage.database
+            .select('PRAGMA foreign_key_list(adele_chat_entries)')
+            .map((row) => row['table']),
+        ['adele_chat_sessions'],
+      );
+    },
+  );
+
+  for (final invalid in [42, 'duplicate']) {
+    test(
+      'hydration rejects ${invalid == 42 ? 'non-string' : 'duplicate'} Run associations even with damaged constraints',
+      () async {
+        await service.appendUserMessage('session', 'First.');
+        await service.appendUserMessage('session', 'Second.');
+        storage.database.execute('''
+CREATE TABLE corrupt_entries (session_id, sequence, entry_id, role, content, run_id);
+INSERT INTO corrupt_entries SELECT * FROM adele_chat_entries;
+DROP TABLE adele_chat_entries;
+ALTER TABLE corrupt_entries RENAME TO adele_chat_entries;
+''');
+        storage.database.execute('UPDATE adele_chat_entries SET run_id = ?', [
+          invalid,
+        ]);
+        final writes = storage.transactions;
+        final reloaded = ChatSessionBackend(ChatSessionStore(storage: storage));
+        await expectLater(
+          reloaded.snapshot('session'),
+          throwsA(isA<ChatStateCorruption>()),
+        );
+        expect(storage.transactions, writes);
+        expect(
+          storage.database
+              .select('SELECT run_id FROM adele_chat_entries')
+              .map((row) => row['run_id']),
+          [invalid, invalid],
+        );
+      },
+    );
+  }
+
+  for (final change in ['configuration', 'counter', 'draft', 'association']) {
+    test(
+      'stale $change fences association before canonical publication',
+      () async {
+        await service.appendUserMessage('session', 'Accepted.');
+        final staleStore = ChatSessionStore(storage: storage);
+        final staleService = ChatSessionBackend(staleStore);
+        await staleService.snapshot('session');
+        final staleBackend = ChatRemoteOrchestrationBackend(
+          sessions: staleStore,
+          hostChannel: (_) => throw StateError('No execution expected.'),
+        );
+        addTearDown(staleBackend.close);
+        if (change == 'configuration') {
+          await service.configureSession('session', 'Replacement.', 2);
+        } else if (change == 'counter') {
+          await service.appendUserMessage('session', 'New latest.');
+        } else if (change == 'draft') {
+          await service.setDraftRequest('session', 'Changed.');
+        } else {
+          final current = ChatRemoteOrchestrationBackend(
+            sessions: store,
+            hostChannel: (_) => throw StateError('No execution expected.'),
+          );
+          addTearDown(current.close);
+          final execution = await current.materialize(
+            chatStrategyRouteId,
+            _session,
+            'original-run',
+          );
+          await current.release(execution);
+        }
+        final before = storage.database.select(
+          'SELECT * FROM adele_chat_entries',
+        );
+        await expectLater(
+          staleBackend.materialize(chatStrategyRouteId, _session, 'stale-run'),
+          throwsStateError,
+        );
+        expect(
+          (await staleService.snapshot('session')).entries.single.runId,
+          isNull,
+        );
+        expect(
+          storage.database.select('SELECT * FROM adele_chat_entries'),
+          before,
+        );
+        final reloaded = await ChatSessionBackend(
+          ChatSessionStore(storage: storage),
+        ).snapshot('session');
+        expect(
+          reloaded.entries.first.runId,
+          change == 'association' ? 'original-run' : null,
+        );
+      },
+    );
+  }
+
+  test(
+    'association charges the full readable row before writing and permits retry',
+    () async {
+      final content =
+          'x' *
+          (relationalQueryByteLimit -
+              _rowBytes({
+                'session_id': 'session',
+                'sequence': 0,
+                'entry_id': 'entry-0',
+                'role': 'user',
+                'content': '',
+                'run_id': null,
+              }));
+      await service.appendUserMessage('session', content);
+      final backend = ChatRemoteOrchestrationBackend(
+        sessions: store,
+        hostChannel: (_) => throw StateError('No execution expected.'),
+      );
+      addTearDown(backend.close);
+      final writes = storage.transactions;
+      await expectLater(
+        backend.materialize(chatStrategyRouteId, _session, 'long-run'),
+        throwsStateError,
+      );
+      expect(storage.transactions, writes);
+      expect((await service.snapshot('session')).entries.single.runId, isNull);
+      final execution = await backend.materialize(
+        chatStrategyRouteId,
+        _session,
+        'r',
+      );
+      expect((await service.snapshot('session')).entries.single.runId, 'r');
+      final restored = await ChatSessionBackend(
+        ChatSessionStore(storage: storage),
+      ).snapshot('session');
+      expect(restored.entries.single.runId, 'r');
+      expect(restored.entries.single.content, content);
+      await backend.release(execution);
+    },
+  );
+
+  test(
     'hydration seeks beyond 1000 entries without OFFSET and preserves exact next ID',
     () async {
       await service.snapshot('session');
       storage.database.execute('BEGIN');
       final insert = storage.database.prepare(
-        'INSERT INTO adele_chat_entries VALUES (?, ?, ?, ?, ?)',
+        'INSERT INTO adele_chat_entries VALUES (?, ?, ?, ?, ?, ?)',
       );
       try {
         for (var index = 0; index < 1105; index++) {
@@ -542,6 +714,7 @@ BEGIN SELECT RAISE(ABORT, 'test write failure'); END;
             'entry-$index',
             index.isEven ? 'user' : 'assistant',
             'Raw $index\r\n',
+            null,
           ]);
         }
       } finally {
@@ -774,6 +947,7 @@ INSERT INTO adele_chat_entries SELECT * FROM adele_chat_entries;
                   'entry_id': 'entry-0',
                   'role': 'user',
                   'content': value,
+                  'run_id': null,
                 };
           final prefix = text.value * 16000;
           final content =
@@ -1078,6 +1252,12 @@ INSERT INTO adele_chat_entries SELECT * FROM adele_chat_entries;
 
 int _rowBytes(Map<String, Object?> values) =>
     2 + utf8.encode(jsonEncode({'values': values})).length + 1;
+
+final _session = RemoteOrchestrationSession(
+  sessionId: 'session',
+  taskId: 'task',
+  strategyId: chatStrategyId.value,
+);
 
 final _busy = throwsA(
   isA<ChatSessionFailure>().having((e) => e.code, 'code', 'session_busy'),

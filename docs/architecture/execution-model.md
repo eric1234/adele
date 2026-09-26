@@ -47,7 +47,7 @@ stock implementations, or presentation policy.
 | Product/core identity | `adele_product` owns canonical product identities and relationships, including `SessionId`, `RunId`, the Session's `OrchestrationStrategyId`, and terminal `RunRecord`/`RunTerminalState` values. It does not own the executable Run object. |
 | Public orchestration | `adele_orchestration` is the provider-neutral strategy/host boundary. It owns strategy resolution/execution contracts, `RunState`, invocation/interruption identities and approval-resolution values, strategy inference material, semantic model turns/output/proposals, context contracts, and public activity snapshots. It reexports the product identities rather than redefining them. |
 | Internal mechanics | `agent_kernel` implements `AgentRun`, model invocation collection, tool composition/materialization/resolution, policy gates, interruptions, outcome handling, and the deterministic journal. Public tool definitions, effects, progress, and outcome values belong to `adele_model_tool` and are reused here. |
-| Application/core adapters | Compose public strategy operations with selected model-provider bindings, model-tool contributions, context sources, Session Environment authority, approval policy, and internal mechanics/evidence; retain terminal Run records through product lifecycle. |
+| Application/core adapters | Compose public strategy operations with selected model-provider bindings, model-tool contributions, context sources, Session Environment authority, approval policy, and internal mechanics/evidence; atomically retain terminal Run records and public activity through lifecycle. |
 | Plugins | Own strategy-specific Session state and sequencing, concrete tool behavior, provider-specific semantics/protocols, and presentation. |
 
 Plugins and public APIs must not depend on `agent_kernel`. The kernel depends
@@ -144,9 +144,11 @@ cleanup after authoritative settlement does not replace that settlement.
 Provider-native envelopes can accompany semantic items or occupy independent
 ordered positions. Their meaning and compatibility remain provider-owned, not
 common reasoning semantics or the sole representation of durable Session meaning.
-Item-native data can participate in continuation without making protocol concepts
-core execution concepts. Current application adaptation retains invocation-level
-native terminal state as evidence but does not automatically reuse it as input.
+Item-native data can participate in live Run-local continuation without making
+protocol concepts core execution concepts. Application adaptation retains
+invocation-level native terminal state as evidence but does not automatically reuse
+it as input. Durably retained native envelopes are historical evidence only: they
+must never be used as future continuation input or to reconstruct a live Run.
 
 Provider request lowering, protocol, configuration, and model-specific behavior
 belong behind the ModelProvider boundary. Provider/model selection remains distinct
@@ -317,11 +319,13 @@ cancellation API; resource close, stream cancellation, and Run state are distinc
 
 ### Terminal Run retention
 
-Terminal product history is separate from live execution and public activity.
-The [product model](product-model.md#terminal-run-history) owns the minimal record,
-schema, lookup, commit-before-publication, and restore rules. The generic application
-`SessionOrchestrationRun` retains the `ProductLifecycleCoordinator` and maps the
-actual `AgentRun.state` to a terminal record in start/approval-resume finalization.
+Terminal product identity and execution evidence have separate semantic owners
+but one retention boundary. The [product model](product-model.md#terminal-run-history)
+owns the minimal record and product-store rules; [execution history](#terminal-execution-history)
+owns the public snapshot and its storage. The generic application
+`SessionOrchestrationRun` retains the `ProductLifecycleCoordinator` and supplies a
+record mapped from actual `AgentRun.state` together with its terminal
+`RunActivitySnapshot` in start/approval-resume finalization.
 It does not infer terminal state from whether the outer call returned or threw.
 Close also checks after draining detached host mechanics, since a deferred failure
 may settle only after strategy advancement ends.
@@ -341,11 +345,11 @@ or evidence. Automatic cleanup does not replace the advancement error; explicit
 close can report its retained cleanup failure.
 
 Chat's plugin-owned history SQL is a separate transaction after host completion,
-not atomic with the product Run insert. If that later Chat persistence fails, the
-outer call surfaces the error, but the host remains completed and the terminal
+not atomic with the product-record/activity transaction. If that Chat persistence
+fails, the outer call surfaces the error, but the host remains completed and the terminal
 record is `completed` when retention succeeds. Neither the outer error nor cleanup
-rewrites it to `failed`. Chat's historical handle mapping is unchanged; terminal
-records do not recreate live activity handles or snapshots.
+rewrites it to `failed`. A persisted Chat user-entry association can locate retained
+activity later; it does not serialize a presentation handle or execution object.
 
 ## Observations and activity
 
@@ -362,11 +366,9 @@ represented, not used as replay input. Current public activity is not a text-del
 stream. It excludes executable authority, internal `AgentRun`/journal objects,
 host-only diagnostics, and arbitrary exception objects.
 
-Public activity evidence is not persisted or restored with terminal Run records.
-A later evidence slice needs an explicit terminal public `RunActivitySnapshot` as
-semantic input and an explicit relational storage model. The internal journal is
-not that input or a persistence/replay format; its in-memory mechanics/test/projection
-role is unchanged. No evidence persistence or recovery is introduced here.
+Terminal public activity is retained through the explicit snapshot boundary below.
+The internal journal is neither its storage input nor a persistence/replay format;
+its in-memory mechanics/test/projection role is unchanged.
 
 Observing or detaching observation does not affect execution. Presentation consumes
 read-only projections and gains no execution or approval authority from them.
@@ -378,14 +380,76 @@ current UI behavior belongs to [UI](../../packages/ui/README.md),
 [provider](../../plugins/openai/packages/frontend/README.md)/tool plugin READMEs.
 Intended UX remains [product direction](../product/README.md).
 
+### Terminal execution history
+
+Execution owner `dev.adele.execution` has its own version-1 schema in the same
+app-private per-Project SQLite connection as product owner `dev.adele.product`.
+Product stays at version 1. Execution history uses normalized relational rows:
+
+| Table | Execution-owned meaning |
+| --- | --- |
+| `adele_execution_run_activity` | One terminal activity header per product Run, latest Run-local sequence, and optional data-only failure. |
+| `adele_execution_run_lifecycle` | Ordered Run-state observations. |
+| `adele_execution_model_invocations` | Invocation identities, start/terminal occurrences, settlement, metadata, and failure. |
+| `adele_execution_model_outputs` | Ordered text, native, and proposal output occurrences with their model provenance. |
+| `adele_execution_tool_invocations` | Tool identity, preparation occurrence, proposal provenance, and canonical arguments. |
+| `adele_execution_tool_changes` | Ordered preparation, policy, approval, execution, progress, and outcome evidence. |
+| `adele_execution_rejected_proposals` | Rejected proposal provenance and failure, not fictitious tool executions. |
+
+The private [schema](../../app/lib/core/execution_evidence_schema.dart) defines
+columns and constraints. Identities, relationships, sequence values, enum names,
+failure messages, metadata scalars, token counts, progress, and outcome scalars are
+relational columns. JSON is limited to structured arguments, provider details,
+native compatibility/data maps, safe presentation data, effect descriptions, and
+outcome host data. It does not store whole semantic objects as JSON, serialize
+`RunJournal`, or introduce a public database handle. Core never interprets
+provider-native schemas.
+
+Retention accepts an explicit terminal `RunActivitySnapshot` alongside `RunRecord`.
+Their Run ID, Session ID, and terminal state must agree. Validation preserves
+Run-local occurrence identities and order, model/output/tool provenance, and
+data-only failure/outcome semantics; malformed or inconsistent history fails
+explicitly rather than being truncated, reset, or published partially. Every
+terminal product record requires exactly one activity root, and every root requires
+its terminal record. The terminal state remains authoritative in the product row.
+One SQL transaction inserts both owners' rows, then lifecycle publishes the product record
+and immutable activity. A failed commit publishes neither. Explicitly volatile
+Projects retain both only in memory, never as a storage-error fallback.
+
+`ProjectDatabase.loadProductGraph` remains product-only.
+`loadExecutionHistory` separately reconstructs and validates public snapshots
+against terminal product records, without consulting plugin tables or resolving
+strategies, model/tool providers, or Environment materializations. Both restore
+sets must validate before either is published. `ProductLifecycleCoordinator` owns
+the retained activity map and exposes `runActivity` and `runActivitiesForSession`;
+the product store remains independent of orchestration activity types. Session
+lookup returns an immutable collection without a cross-Run chronology guarantee.
+
+Historical activity includes lifecycle, invocation/output order, proposal
+rejections, policy/approval evidence, progress, outcomes, and opaque native
+envelopes where present in the public snapshot. Recorded approvals are facts, not
+actionable approvals. Native data is retained as historical evidence only, never
+future continuation input; interpreted presentation still receives only the safe
+presentation projection through existing activity/Inspection paths.
+
+This is terminal history, not event sourcing or recovery. It retains no live
+`AgentRun`, bindings, authority tokens, active/waiting Run state, Session claims,
+approval restart state, or workbench state. There are no timestamps, cross-Run
+ordering guarantees, pruning, development-schema upgrade migrations, automatic
+resume, or Task/Session browser. The version-1 baseline requires coherent current
+development storage rather than legacy readers. Before the first declared storage
+compatibility commitment, further execution-schema changes rewrite/squash version 1
+instead of accumulating development migrations.
+
 ## Implementation scope
 
 The implemented foundation includes bounded strategy-driven Runs, streaming model
 invocation, dynamic tool contribution/materialization, policy/approval,
 interruptions, structured outcomes, instruction-context capture, public
-activity projection, and terminal Run retention. The [product graph and terminal
-records](product-model.md#project-storage) and initialized plugin-owned Chat state
-have durable storage; live execution and public activity remain in memory.
+activity projection, and terminal Run/activity retention. The [product graph and
+terminal records](product-model.md#project-storage), terminal public snapshots,
+and initialized plugin-owned Chat state have durable storage; live execution
+remains in memory.
 Persistent active Run recovery, child-Session lifecycle, broader context
 material, general background scheduling, and richer multi-agent execution are not
 established by this foundation.
@@ -418,5 +482,7 @@ established by this foundation.
 | Model-tool contracts, hosting, and policy | [`packages/model_tool/`](../../packages/model_tool/), [`model_tool_host.dart`](../../app/lib/core/model_tool_host.dart), [`approval_gated_tool_policy.dart`](../../app/lib/core/approval_gated_tool_policy.dart) |
 | Normal Run composition | [`session_execution_controller.dart`](../../app/lib/ui/execution/session_execution_controller.dart) |
 | Public activity projection | [`run_activity_projection.dart`](../../app/lib/core/run_activity_projection.dart), [`activity.dart`](../../packages/orchestration/lib/src/activity.dart) |
+| Terminal activity storage and lookup | [`project_database.dart`](../../app/lib/core/project_database.dart), `loadExecutionHistory`, `insertTerminalRun`; [`product_lifecycle.dart`](../../app/lib/core/product_lifecycle.dart), `runActivity`, `runActivitiesForSession` |
+| Private evidence validation and relational representation | [`execution_evidence.dart`](../../app/lib/core/execution_evidence.dart), [`execution_evidence_schema.dart`](../../app/lib/core/execution_evidence_schema.dart) |
 | Runtime authority | [Contracts and capabilities](contracts-and-capabilities.md#operation-scoped-host-calls) |
 | Product Environment authority | [Product model](product-model.md#session-and-environment-authority), [`product_lifecycle.dart`](../../app/lib/core/product_lifecycle.dart) |

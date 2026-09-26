@@ -10,6 +10,7 @@ import 'package:adele_desktop/core/resource_cleanup.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
+import 'package:adele_product/adele_product.dart' show RunTerminalState;
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
@@ -69,12 +70,46 @@ final class SessionExecutionController extends ChangeNotifier {
 
   Listenable get activityChanges => _activityChanges;
   SessionOrchestrationRun? get currentRun => _currentRun;
-  List<RunActivitySnapshot> get activitySnapshots =>
-      List.unmodifiable(_activity.values);
+  List<RunActivitySnapshot> get activitySnapshots => List.unmodifiable(
+    {
+      for (final activity in _runtime.lifecycle.runActivitiesForSession(
+        session.id,
+      ))
+        activity.runId: ?retainedActivityForRun(activity.runId),
+      ..._activity,
+    }.values,
+  );
   RunActivitySnapshot? activityForRun(RunId runId) =>
-      _closed ? null : _activity[runId];
-  RunState? stateForRun(RunId runId) =>
-      _closed ? null : _activity[runId]?.state ?? _preparationStates[runId];
+      _closed ? null : _activity[runId] ?? retainedActivityForRun(runId);
+
+  /// Historical evidence never creates an execution or subscribes to one.
+  RunActivitySnapshot? retainedActivityForRun(RunId runId) {
+    if (_closed) return null;
+    final state = _terminalStateForRun(runId);
+    final activity = _runtime.lifecycle.runActivity(runId);
+    return state != null &&
+            activity?.runId == runId &&
+            activity?.sessionId == session.id &&
+            activity?.state == state
+        ? activity
+        : null;
+  }
+
+  RunState? _terminalStateForRun(RunId runId) {
+    final record = _runtime.store.runRecord(runId);
+    if (record == null || record.sessionId != session.id) return null;
+    return switch (record.state) {
+      RunTerminalState.completed => RunState.completed,
+      RunTerminalState.failed => RunState.failed,
+      RunTerminalState.cancelled => RunState.cancelled,
+    };
+  }
+
+  RunState? stateForRun(RunId runId) => _closed
+      ? null
+      : _activity[runId]?.state ??
+            _preparationStates[runId] ??
+            _terminalStateForRun(runId);
   Future<void>? get activeRunFuture => _activeRunFuture;
   bool get isRunning => _running;
   bool get isAdvancing => _advancing;

@@ -15,11 +15,16 @@ final class ChatEntry {
     required this.id,
     required this.role,
     required this.content,
+    required this.runId,
   });
 
   final String id;
   final String role;
   final String content;
+
+  /// The Run associated with this user occurrence, or null before scheduling.
+  /// Assistant entries never carry a Run association.
+  final String? runId;
 }
 
 @AdeleValue('chat.sessionSnapshot')

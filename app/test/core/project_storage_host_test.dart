@@ -115,6 +115,7 @@ void main() {
           'SELECT * FROM adele_schema_versions ORDER BY owner_id',
         ),
         [
+          {'owner_id': 'dev.adele.execution', 'version': 1},
           {'owner_id': 'dev.adele.product', 'version': 1},
           {'owner_id': 'dev.adele.test.storage', 'version': 1},
         ],
@@ -157,6 +158,7 @@ void main() {
       );
       expect(database.select('SELECT * FROM adele_schema_versions'), [
         {'owner_id': 'dev.adele.product', 'version': 1},
+        {'owner_id': 'dev.adele.execution', 'version': 1},
       ]);
       await storage.ensureSchemaForSession(session.id.value, [_baseline]);
       final other = ProjectStorageHost(
@@ -169,10 +171,24 @@ void main() {
       ]);
       expect(
         database.select('SELECT * FROM adele_schema_versions'),
-        hasLength(3),
+        hasLength(4),
       );
     },
   );
+
+  test('plugins cannot initialize either core schema owner', () async {
+    for (final owner in ['dev.adele.product', 'dev.adele.execution']) {
+      final coreOwner = ProjectStorageHost(
+        lifecycle: runtime.lifecycle,
+        owner: PluginId(owner),
+        validateAccess: () {},
+      );
+      await expectLater(
+        coreOwner.ensureSchemaForSession(session.id.value, [_baseline]),
+        throwsArgumentError,
+      );
+    }
+  });
 
   test(
     'Session scope selects its own currently open Project database',
