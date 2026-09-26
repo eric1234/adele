@@ -156,7 +156,8 @@ final class _Probe implements RemoteModelToolService {
     responses.send({
       'kind': 'hostRequest',
       'requestId': id,
-      'hostInvocationContext': token,
+      'hostContextKind': 'invocation',
+      'hostContext': token,
       'serviceId': service,
       'method': method,
       'payload': payload,

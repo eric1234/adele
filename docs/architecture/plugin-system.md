@@ -277,21 +277,67 @@ Application Commands are distinct from model tools that execute external program
 ## Plugin-owned state and persistence
 
 Plugins retain semantic ownership of their domain-specific state. The implemented
-[Project database](product-model.md#project-storage) persists only core Project
-identity/source, not provider state or arbitrary plugin data. Host persistence
-facilities are intended to support ordinary plugin-owned state associated with
-stable product identities without absorbing plugin schemas into core. Explicit
-owner-defined SQL/schema semantics remain with those owners; the private Project
-database does not expose a generic key/value store, ORM, database connection, or
-public migration registry. General plugin persistence facilities are not implemented.
-Plugin state should normally survive deactivation, while domain-native external
-systems may remain authoritative where that is part of the feature.
+[Project database](product-model.md#project-storage) hosts core records and
+plugin-owned relational tables without absorbing plugin schemas into core. The
+pure-Dart `adele_project_storage` contract supplies Session-scoped schema, query,
+and transaction operations. SQLite, backing paths, and the single connection per
+Project stay app-private; no key/value envelope, ORM, or public database handle is
+introduced. Owner identity comes from the exact backend connection, not a caller
+argument. [Storage access and limits](contracts-and-capabilities.md#session-scoped-relational-storage)
+define the service boundary, including its deliberate lack of SQL row isolation.
+
+Plugins own initialization SQL, relational constraints, validation, and migrations.
+The host coordinates transactions and owner versions; the declared version is the
+migration list length. Core `dev.adele.product` and stock Chat
+`dev.adele.plugin.chat-strategy` each have only the current version-1 baseline,
+not an upgrade history of pre-release development schemas. Failed, malformed, or
+newer unsupported state must not be reset or hidden behind an in-memory fallback.
+Deactivation leaves tables and owner metadata intact. External systems may remain
+authoritative where that is part of a plugin's domain.
 
 Plugin state, ordinary configuration, activation, security/policy, temporary runtime
 resources, and workbench/window state are distinct concerns, not one generic state
 object. See the [product model](product-model.md) and
 [profiles and configuration](profiles-and-configuration.md) for their ownership
 and persistence boundaries.
+
+### Chat participation
+
+Chat is the concrete strategy consumer, not the owner of the shared service. Its
+backend owns these version-1 tables:
+
+| Table | Chat-owned meaning |
+| --- | --- |
+| `adele_chat_sessions(session_id, instructions, max_model_invocations, next_entry)` | Configuration and entry counter, linked by foreign key to core Session identity. |
+| `adele_chat_entries(session_id, sequence, entry_id, role, content)` | Ordered canonical user/assistant history, linked to the Chat Session row. |
+
+`ChatSessionStore` initializes or loads state only on first actual state access,
+not at Project reopen or core Session creation. Defaults apply only to an
+uninitialized Session; existing history, configuration, and counter are validated
+and restored, never replaced on corruption. The cache is generation-local;
+durable SQL state is the source of truth across backend replacement. Missing Chat
+does not prevent core graph restoration or cause its tables to be touched. A fresh
+backend can later load that retained state through fresh resolution.
+
+User append commits its entry and counter together before cache mutation or
+return. Configuration commits both fields before updating the cache. Successful
+assistant history remains staged until the existing host terminal `completed`
+acknowledgement; Chat then commits SQL before merging into canonical cache and
+returning. Execution or known storage failure does not publish staged history,
+and there are no hidden retries. These are separate host Run and plugin-state
+commit boundaries, not a distributed transaction: the host Run may already be
+completed when Chat storage fails. Keep that terminal evidence honest and surface
+the storage error rather than rolling back or rewriting the Run.
+
+A lost transport acknowledgement after SQL commit leaves the caller uncertain;
+do not infer rollback or silently retry. A fresh backend generation reloads the
+durable source of truth. Direct `ChatSessionStore()` and `createProject` fixtures
+are deliberately volatile. Remote Chat uses volatile state only after an explicit
+`isDurableSession` false result, never because a lookup or storage call failed.
+Live Run state, claims, approvals, activity/native replay, and composer drafts are
+not part of these tables. See the [Chat ownership map](../../plugins/chat_strategy/README.md)
+for local entrypoints and [ADR 0034](../adr/0034-plugin-owned-relational-session-storage.md)
+for the decision rationale.
 
 ## Authority remains host-owned
 
@@ -300,13 +346,17 @@ and an own-backend relationship do not themselves grant authority. Plugins may
 supply domain knowledge, effect descriptions, or policy input; final allow/deny/ask
 authorization remains host-owned.
 
-The host supplies only services and authority appropriate to the current operation
-and exact generation. Through host APIs, plugins cannot turn stable IDs into
-broader filesystem, process, or other host authority. Revocation ends that access,
-not necessarily effects already in flight. These are host-service boundaries, not
-claims that native backend code is OS-sandboxed. The deeper contract is
-[operation-scoped host calls](contracts-and-capabilities.md#operation-scoped-host-calls),
-with rationale in [ADR 0032](../adr/0032-remote-backend-extensions-use-operation-scoped-host-services.md).
+Execution services remain appropriate to the current operation and exact
+generation. Separately, an explicit
+[generation-scoped infrastructure grant](contracts-and-capabilities.md#generation-scoped-infrastructure-access)
+allows plugin storage outside execution, including snapshot and configuration
+calls. It grants no orchestration, model, tool, Environment-facet, or filesystem
+authority. A Session ID selects storage backing through the live product graph,
+not execution authority. Revocation ends access, not effects already committed or
+in flight. These are host-service boundaries, not an OS or malicious-plugin SQL
+sandbox. [Operation-scoped host calls](contracts-and-capabilities.md#operation-scoped-host-calls)
+and ADRs [0032](../adr/0032-remote-backend-extensions-use-operation-scoped-host-services.md)
+and [0034](../adr/0034-plugin-owned-relational-session-storage.md) retain that distinction.
 
 ## Source map
 
@@ -318,6 +368,7 @@ with rationale in [ADR 0032](../adr/0032-remote-backend-extensions-use-operation
 | Domain extension points | [`packages/orchestration/`](../../packages/orchestration/), [`packages/model_tool/`](../../packages/model_tool/), [`packages/ui/`](../../packages/ui/) |
 | Prepared/backend runtime | [`packages/plugin_runtime/`](../../packages/plugin_runtime/) |
 | Shared backend process host | [`packages/plugin_backend_host/`](../../packages/plugin_backend_host/) |
+| Shared plugin storage / app mediation | [`packages/project_storage/`](../../packages/project_storage/), [`app/lib/core/project_storage_host.dart`](../../app/lib/core/project_storage_host.dart) |
 | Backend activation/composition | [`app/lib/core/application_plugin_bootstrap.dart`](../../app/lib/core/application_plugin_bootstrap.dart) |
 | Frontend activation/composition | [`app/lib/frontend/application_frontend_bootstrap.dart`](../../app/lib/frontend/application_frontend_bootstrap.dart) |
 | Source/prepared component boundaries | [`plugin-layout.md`](plugin-layout.md) |

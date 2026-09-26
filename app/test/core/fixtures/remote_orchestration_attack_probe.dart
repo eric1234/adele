@@ -279,7 +279,8 @@ final class _HostChannel implements AdeleRequestChannel {
     probe.responses.send({
       'kind': 'hostRequest',
       'requestId': id,
-      'hostInvocationContext': context,
+      'hostContextKind': 'invocation',
+      'hostContext': context,
       'serviceId': remoteOrchestrationHostServiceId,
       'method': method,
       'payload': payload,

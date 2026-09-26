@@ -41,10 +41,13 @@ void main() {
   Future<PluginBackendConnection> connect(
     Map<String, Object?> ready, {
     String pluginId = 'dev.adele.test.plugin',
+    Map<String, AdeleBackendDispatcher> Function(PluginBackendConnection)?
+    createInfrastructureServices,
   }) => host.startPlugin(
     pluginId: pluginId,
     artifactUri: Uri.file('/unused.aot'),
     arguments: [jsonEncode(ready)],
+    createInfrastructureServices: createInfrastructureServices,
   );
 
   Future<PluginBackendActivation> activate(
@@ -62,6 +65,501 @@ void main() {
     expect(connection.extensionExposures, isEmpty);
     expect(extensions.discover(_point), isEmpty);
     await activation.close();
+  });
+
+  group('generation infrastructure', () {
+    Future<Map<String, Object?>> reverse(
+      PluginBackendConnection connection, {
+      String? token,
+      String kind = 'infrastructure',
+      String service = 'fixture',
+      String? generation,
+    }) async =>
+        await connection.request('reverse', {
+              'contextKind': kind,
+              'context':
+                  token ??
+                  await connection.request('infrastructureContext', {}),
+              'service': service,
+              'generation': ?generation,
+            })
+            as Map<String, Object?>;
+
+    void expectFailure(Map<String, Object?> response, String code) {
+      expect(response['ok'], isFalse);
+      expect((response['error'] as Map)['code'], code);
+    }
+
+    test(
+      'factory captures exact connection with zero exposures and strict separate allowlists',
+      () async {
+        late PluginBackendConnection captured;
+        final dispatcher = _HostDispatcher(() async => 'infrastructure');
+        final services = <String, AdeleBackendDispatcher>{
+          'fixture': dispatcher,
+        };
+        final connection = await connect(
+          {},
+          createInfrastructureServices: (owner) {
+            captured = owner;
+            return services;
+          },
+        );
+        services.clear();
+        expect(captured, same(connection));
+        final activation = await activate(connection);
+        expect(connection.capabilityExposures, isEmpty);
+        expect(connection.extensionExposures, isEmpty);
+        final token =
+            await connection.request('infrastructureContext', {}) as String;
+        expect(token, isNotEmpty);
+        expect(connection.validateInfrastructureContext, returnsNormally);
+        expect((await reverse(connection))['payload'], 'infrastructure');
+        final invocation = connection.openHostInvocation({
+          'operationOnly': _HostDispatcher(() async => 'operation'),
+        });
+        expectFailure(
+          await reverse(connection, token: invocation.id),
+          'host_infrastructure_unavailable',
+        );
+        expectFailure(
+          await reverse(connection, token: token, kind: 'invocation'),
+          'host_invocation_unavailable',
+        );
+        for (final service in [
+          'operationOnly',
+          'model',
+          'tool',
+          'environment',
+          'execution',
+        ]) {
+          expectFailure(
+            await reverse(connection, service: service),
+            'service_unavailable',
+          );
+        }
+        expectFailure(
+          await reverse(connection, generation: 'foreign'),
+          'host_infrastructure_unavailable',
+        );
+        final peer = await connect({}, pluginId: 'peer');
+        final peerToken =
+            await peer.request('infrastructureContext', {}) as String;
+        expect(peerToken, isNotEmpty);
+        expect(peerToken, isNot(token));
+        expectFailure(
+          await reverse(peer, token: token),
+          'host_infrastructure_unavailable',
+        );
+        expectFailure(
+          await reverse(connection, token: peerToken),
+          'host_infrastructure_unavailable',
+        );
+        expectFailure(await reverse(peer), 'service_unavailable');
+        invocation.close();
+        expect((await reverse(connection))['payload'], 'infrastructure');
+        await activation.retire();
+        expect(connection.isClosed, isFalse);
+        expectFailure(
+          await reverse(connection, token: token),
+          'host_infrastructure_unavailable',
+        );
+        await connection.close();
+        final replacement = await connect(
+          {},
+          createInfrastructureServices: (_) => {'fixture': dispatcher},
+        );
+        expectFailure(
+          await reverse(replacement, token: token),
+          'host_infrastructure_unavailable',
+        );
+        expect((await reverse(replacement))['payload'], 'infrastructure');
+        expect(
+          connection.validateInfrastructureContext,
+          throwsA(isA<PluginConnectionClosed>()),
+        );
+      },
+    );
+
+    test(
+      'operation completion, duplicate registration failure and extension retirement retain infrastructure',
+      () async {
+        final connection = await connect(
+          {
+            'extensionExposures': [_exposure('first', 'default')],
+          },
+          createInfrastructureServices: (_) => {
+            'fixture': _HostDispatcher(() async => 'live'),
+          },
+        );
+        final activation = await PluginExtensionActivation.registerAdvertised(
+          connection: connection,
+          registry: extensions,
+          adapters: RemoteExtensionAdapterRegistry([_Adapter()]),
+        );
+        final context = extensions.discover(_point).single.value.context;
+        await context.invoke({}, (_) async {});
+        expect((await reverse(connection))['payload'], 'live');
+        await expectLater(
+          PluginExtensionActivation.registerAdvertised(
+            connection: connection,
+            registry: extensions,
+            adapters: RemoteExtensionAdapterRegistry([_Adapter()]),
+          ),
+          throwsA(isA<ExtensionRegistrationException>()),
+        );
+        expect(context.validate, returnsNormally);
+        expect(connection.validateInfrastructureContext, returnsNormally);
+        expect((await reverse(connection))['payload'], 'live');
+        await activation.retire();
+        expect(connection.validateInfrastructureContext, returnsNormally);
+        expect((await reverse(connection))['payload'], 'live');
+      },
+    );
+
+    test(
+      'standalone extension close revokes before unresolved adapter cleanup',
+      () async {
+        final connection = await connect(
+          {
+            'extensionExposures': [_exposure('first', 'default')],
+          },
+          createInfrastructureServices: (_) => {
+            'fixture': _HostDispatcher(() async => 'live'),
+          },
+        );
+        final activation = await PluginExtensionActivation.registerAdvertised(
+          connection: connection,
+          registry: extensions,
+          adapters: RemoteExtensionAdapterRegistry([_Adapter()]),
+        );
+        final cleanup = Completer<void>();
+        addTearDown(() {
+          if (!cleanup.isCompleted) cleanup.complete();
+        });
+        var cleanupStarted = false;
+        extensions.discover(_point).single.value.context.onRetire(() {
+          cleanupStarted = true;
+          return cleanup.future;
+        });
+        expect((await reverse(connection))['payload'], 'live');
+        final closing = activation.close();
+        expect(cleanupStarted, isTrue);
+        expect(connection.isClosed, isFalse);
+        expect(
+          connection.validateInfrastructureContext,
+          throwsA(isA<PluginConnectionClosed>()),
+        );
+        expectFailure(
+          await reverse(connection),
+          'host_infrastructure_unavailable',
+        );
+        expect(cleanup.isCompleted, isFalse);
+        expect(connection.isClosed, isFalse);
+        cleanup.complete();
+        await closing;
+        expect(connection.isClosed, isTrue);
+      },
+    );
+
+    test(
+      'standalone partial extension rollback preserves the existing connection owner and infrastructure',
+      () async {
+        final connection = await connect(
+          {
+            'capabilityExposures': [_capabilityExposure],
+            'extensionExposures': [
+              _exposure('first', 'default'),
+              {..._exposure('bad', 'default'), 'metadata': <String, Object?>{}},
+            ],
+          },
+          createInfrastructureServices: (_) => {
+            'fixture': _HostDispatcher(() async => 'live'),
+          },
+        );
+        final existing = await PluginCapabilityActivation.registerAdvertised(
+          connection: connection,
+          registry: capabilities,
+        );
+        final retained = capabilities.resolve(_capability);
+        final entered = Completer<void>();
+        final cleanup = Completer<void>();
+        addTearDown(() {
+          if (!cleanup.isCompleted) cleanup.complete();
+        });
+        final failed = PluginExtensionActivation.registerAdvertised(
+          connection: connection,
+          registry: extensions,
+          adapters: RemoteExtensionAdapterRegistry([
+            _Adapter(
+              onCreate: (context) {
+                context.onRetire(() {
+                  entered.complete();
+                  return cleanup.future;
+                });
+              },
+            ),
+          ]),
+        );
+        final check = expectLater(
+          failed,
+          throwsA(isA<ExtensionContractException>()),
+        );
+        await entered.future;
+        expect(connection.validateInfrastructureContext, returnsNormally);
+        expect((await reverse(connection))['payload'], 'live');
+        expect(existing.owns(retained), isTrue);
+        expect(extensions.discover(_point), isEmpty);
+        cleanup.complete();
+        await check;
+        expect(connection.isClosed, isFalse);
+        expect(existing.owns(retained), isTrue);
+        expect(await retained.requestChannel.request('echo', {}), {
+          'configurationContext': 'default',
+          'serviceId': 'testService',
+        });
+        expect((await reverse(connection))['payload'], 'live');
+        await existing.retire();
+        expect(connection.validateInfrastructureContext, returnsNormally);
+      },
+    );
+
+    test(
+      'composite capability rollback revokes before registration cleanup yields',
+      () async {
+        final connection = await connect({
+          'capabilityExposures': [_capabilityExposure],
+        });
+        await PluginCapabilityActivation.registerAdvertised(
+          connection: connection,
+          registry: capabilities,
+        );
+        final failed = activate(connection);
+        final check = expectLater(
+          failed,
+          throwsA(isA<DuplicateProviderRegistration>()),
+        );
+        expect(connection.isClosed, isFalse);
+        expect(
+          connection.validateInfrastructureContext,
+          throwsA(isA<PluginConnectionClosed>()),
+        );
+        await check;
+        expect(connection.isClosed, isTrue);
+      },
+    );
+
+    for (final action in [
+      'revoke',
+      'retire',
+      'close',
+      'stop',
+      'failure',
+      'host-close',
+    ]) {
+      test(
+        '$action settles pending infrastructure independently of service cleanup',
+        () async {
+          final release = Completer<Object?>();
+          final dispatcher = _HostDispatcher(() => release.future);
+          final connection = await connect(
+            {},
+            createInfrastructureServices: (_) => {'fixture': dispatcher},
+          );
+          final activation = await activate(connection);
+          final pending = reverse(connection);
+          final settled = pending.then<Object>(
+            (value) => value,
+            onError: (Object error) => error,
+          );
+          await dispatcher.entered.future;
+          switch (action) {
+            case 'revoke':
+              connection.revokeInfrastructureContext();
+            case 'retire':
+              final retiring = activation.retire();
+              expect(
+                connection.validateInfrastructureContext,
+                throwsA(isA<PluginConnectionClosed>()),
+              );
+              await retiring;
+            case 'close':
+              final closing = connection.close();
+              expect(
+                connection.validateInfrastructureContext,
+                throwsA(isA<PluginConnectionClosed>()),
+              );
+              await closing;
+            case 'stop':
+              await host.stopPlugin(connection.pluginId);
+            case 'failure':
+              await expectLater(
+                connection.request('terminate', {}),
+                throwsA(isA<PluginRemoteFailure>()),
+              );
+            case 'host-close':
+              final closing = host.close();
+              expect(
+                connection.validateInfrastructureContext,
+                throwsA(isA<PluginConnectionClosed>()),
+              );
+              await closing;
+          }
+          final result = await settled.timeout(const Duration(seconds: 1));
+          if (action == 'revoke' || action == 'retire') {
+            expectFailure(
+              result as Map<String, Object?>,
+              'host_infrastructure_unavailable',
+            );
+          }
+          expect(
+            connection.validateInfrastructureContext,
+            throwsA(isA<PluginConnectionClosed>()),
+          );
+          expect(dispatcher.closed, isFalse);
+          release.complete('late');
+          await dispatcher.settled.future;
+          if (!connection.isClosed) {
+            expect(await connection.request('hostResponseCount', {}), 1);
+          }
+        },
+      );
+    }
+
+    test(
+      'retirement revokes before cleanup and rejects previously queued service entry',
+      () async {
+        final release = Completer<void>();
+        final queued = Completer<void>();
+        var admitted = 0;
+        var effects = 0;
+        Future<void> serial = Future.value();
+        final connection = await connect(
+          {
+            'extensionExposures': [_exposure('first', 'default')],
+          },
+          createInfrastructureServices: (owner) => {
+            'fixture': _HostDispatcher(() {
+              if (++admitted == 2) queued.complete();
+              // Generated dispatchers likewise serialize calls admitted before revoke.
+              return serial = serial.then((_) async {
+                owner.validateInfrastructureContext();
+                effects++;
+                await release.future;
+              });
+            }),
+          },
+        );
+        final activation = await activate(connection);
+        final cleanup = Completer<void>();
+        extensions.discover(_point).single.value.context.onRetire(() {
+          expect(
+            connection.validateInfrastructureContext,
+            throwsA(isA<PluginConnectionClosed>()),
+          );
+          return cleanup.future;
+        });
+        final first = reverse(connection);
+        final second = reverse(connection);
+        await queued.future;
+        final retiring = activation.retire();
+        expect(connection.isClosed, isFalse);
+        expect(
+          connection.validateInfrastructureContext,
+          throwsA(isA<PluginConnectionClosed>()),
+        );
+        expectFailure(await first, 'host_infrastructure_unavailable');
+        expectFailure(await second, 'host_infrastructure_unavailable');
+        release.complete();
+        await expectLater(serial, throwsA(isA<PluginConnectionClosed>()));
+        expect(effects, 1);
+        cleanup.complete();
+        await retiring;
+      },
+    );
+
+    test(
+      'activation rollback revokes before partial extension cleanup waits',
+      () async {
+        final connection = await connect({
+          'extensionExposures': [
+            _exposure('first', 'default'),
+            {..._exposure('bad', 'default'), 'metadata': <String, Object?>{}},
+          ],
+        });
+        final entered = Completer<void>();
+        final cleanup = Completer<void>();
+        final failed = PluginBackendActivation.registerAdvertised(
+          connection: connection,
+          capabilities: capabilities,
+          extensions: extensions,
+          adapters: RemoteExtensionAdapterRegistry([
+            _Adapter(
+              onCreate: (context) {
+                context.onRetire(() {
+                  expect(
+                    connection.validateInfrastructureContext,
+                    throwsA(isA<PluginConnectionClosed>()),
+                  );
+                  entered.complete();
+                  return cleanup.future;
+                });
+              },
+            ),
+          ]),
+        );
+        final check = expectLater(
+          failed,
+          throwsA(isA<ExtensionContractException>()),
+        );
+        await entered.future;
+        expect(connection.isClosed, isFalse);
+        expectFailure(
+          await reverse(connection),
+          'host_infrastructure_unavailable',
+        );
+        cleanup.complete();
+        await check;
+        expect(connection.isClosed, isTrue);
+      },
+    );
+
+    test(
+      'factory, invalid allowlist, early revocation, and readiness failure revoke captured connection',
+      () async {
+        for (final failure in [
+          'factory',
+          'allowlist',
+          'revocation',
+          'readiness',
+        ]) {
+          late PluginBackendConnection captured;
+          await expectLater(
+            connect(
+              failure == 'readiness' ? {'extensionExposures': null} : {},
+              createInfrastructureServices: (owner) {
+                captured = owner;
+                if (failure == 'factory') throw StateError('Factory failed');
+                if (failure == 'revocation') {
+                  owner.revokeInfrastructureContext();
+                }
+                return failure == 'allowlist'
+                    ? {'bad/service': _HostDispatcher(() async => null)}
+                    : {};
+              },
+            ),
+            throwsA(isA<Object>()),
+          );
+          expect(captured.isClosed, isTrue);
+          expect(
+            captured.validateInfrastructureContext,
+            throwsA(isA<PluginConnectionClosed>()),
+          );
+        }
+        final replacement = await connect({});
+        expect(replacement.validateInfrastructureContext, returnsNormally);
+      },
+    );
   });
 
   test(
@@ -1086,6 +1584,8 @@ const _capabilityExposure = {
 };
 
 final class _Adapter implements RemoteExtensionAdapter<_Contribution> {
+  _Adapter({this.onCreate});
+  final void Function(RemoteExtensionContext)? onCreate;
   @override
   ExtensionPoint<_Contribution> get point => _point;
 
@@ -1095,6 +1595,7 @@ final class _Adapter implements RemoteExtensionAdapter<_Contribution> {
         context.exposure.metadata.length != 1) {
       throw const ExtensionContractException('Invalid test metadata.');
     }
+    onCreate?.call(context);
     return _Contribution(context);
   }
 }
@@ -1164,6 +1665,7 @@ void main() {
   send({'kind': 'hostHello'});
   var buffer = <int>[];
   final generations = <String, String>{};
+  final infrastructure = <String, String>{};
   final pending = <int, Map<String, dynamic>>{};
   final streams = <int, Map<String, dynamic>>{};
   var nextHostRequest = 0;
@@ -1172,8 +1674,9 @@ void main() {
     final id = nextHostRequest++;
     pending[id] = message;
     send({'kind': 'hostRequest', 'requestId': id, 'pluginId': message['pluginId'],
-      'generation': generations[message['pluginId']],
-      'hostInvocationContext': message['payload']['context'],
+      'generation': message['payload']['generation'] ?? generations[message['pluginId']],
+      'hostContextKind': message['payload']['contextKind'] ?? 'invocation',
+      'hostContext': message['payload']['context'],
       'serviceId': message['payload']['service'] ?? 'fixture', 'method': 'fixture.read', 'payload': {}});
   }
   void cancel(Map<String, dynamic> stream) {
@@ -1192,12 +1695,15 @@ void main() {
       switch (message['kind']) {
         case 'startPlugin':
           generations[message['pluginId']] = message['generation'];
+          infrastructure[message['pluginId']] = message['hostInfrastructureContext'];
           send({'kind': 'pluginReady', ...route, ...jsonDecode(message['arguments'][0]) as Map<String,dynamic>});
         case 'stopPlugin':
           send({'kind': 'pluginStopped', ...route});
         case 'request':
           if (message['method'] == 'reverse') {
             reverse(message);
+          } else if (message['method'] == 'infrastructureContext') {
+            send({'kind': 'response', ...route, 'ok': true, 'payload': infrastructure[message['pluginId']]});
           } else if (message['method'] == 'echoPayload' || message['method'] == 'nonfiniteResponse') {
             send({'kind': 'response', ...route, 'ok': true, 'payload': message['method'] == 'echoPayload' ? message['payload'] : 'NONFINITE_TEST_VALUE'});
           } else if (message['method'] == 'terminate') {

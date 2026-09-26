@@ -216,10 +216,13 @@ final class PluginExtensionActivation {
     return null;
   }
 
+  /// Failure rolls back only this attempt's registrations. A generation owner can
+  /// supply [beforeRollback] to synchronously revoke before adapter cleanup.
   static Future<PluginExtensionActivation> registerAdvertised({
     required PluginBackendConnection connection,
     required ExtensionRegistry registry,
     required RemoteExtensionAdapterRegistry adapters,
+    void Function()? beforeRollback,
   }) async {
     if (connection.isClosed) {
       throw const ExtensionRegistrationException(
@@ -242,7 +245,11 @@ final class PluginExtensionActivation {
         activation._registrations.add(registration);
       }
     } on Object {
-      await activation.retire();
+      try {
+        beforeRollback?.call();
+      } finally {
+        await activation.retire();
+      }
       rethrow;
     }
     unawaited(
@@ -267,6 +274,7 @@ final class PluginExtensionActivation {
   }
 
   Future<void> close() async {
+    connection.revokeInfrastructureContext();
     try {
       await retire();
     } finally {
@@ -314,11 +322,13 @@ final class PluginBackendActivation {
       acquired = await PluginCapabilityActivation.registerAdvertised(
         connection: connection,
         registry: capabilities,
+        beforeRollback: connection.revokeInfrastructureContext,
       );
       acquiredExtensions = await PluginExtensionActivation.registerAdvertised(
         connection: connection,
         registry: extensions,
         adapters: adapters,
+        beforeRollback: connection.revokeInfrastructureContext,
       );
       if (connection.isClosed) {
         throw const PluginConnectionClosed(
@@ -331,6 +341,7 @@ final class PluginBackendActivation {
         acquiredExtensions,
       );
     } on Object {
+      connection.revokeInfrastructureContext();
       try {
         await Future.wait<void>([
           if (acquiredExtensions != null) acquiredExtensions.retire(),
@@ -343,10 +354,13 @@ final class PluginBackendActivation {
     }
   }
 
-  Future<void> retire() => _retiring ??= Future.wait<void>([
-    _extensions.retire(),
-    _capabilities.retire(),
-  ]);
+  Future<void> retire() {
+    connection.revokeInfrastructureContext();
+    return _retiring ??= Future.wait<void>([
+      _extensions.retire(),
+      _capabilities.retire(),
+    ]);
+  }
 
   Future<void> close() async {
     try {

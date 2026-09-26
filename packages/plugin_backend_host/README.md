@@ -38,6 +38,9 @@ protocol-version matching. Before the first release, unstable wire changes may
 retain that version; rebuild coherent runtime/host/backend snapshots rather than
 reuse prior development artifacts. See the
 [transport version policy](../../docs/architecture/contracts-and-capabilities.md#transport-version-policy).
+Every `startPlugin` frame must supply a nonempty `hostInfrastructureContext`,
+forwarded unchanged in the backend bootstrap message even for an empty allowlist.
+The host does not mint this runtime-owned grant or infer one when omitted.
 Unary `hostRequest`/`hostResponse` reuse the same response/command ports and framed
 transport. The host stamps PluginId and
 the host-issued connection generation from the owning isolate, correlates each
@@ -47,6 +50,11 @@ per plugin generation in port-send order; replay rejection retains only a
 high-watermark, not an unbounded history. Plugin termination removes its pending
 routes, never retargeting them
 to a replacement with the same PluginId.
+Reverse unary requests and stream openings require `hostContextKind` (`invocation`
+or `infrastructure`) and opaque `hostContext`. Both kinds share the same increasing
+request-ID sequence, replay watermark, and captured-generation response routing.
+There is no compatibility interpretation of missing fields; semantic operation
+payloads that use `hostInvocationContext` are unchanged.
 
 Reverse server streaming uses the same ports/framed transport and captured
 generation routing, with one-item credit and cancellation forwarded between the
@@ -55,8 +63,12 @@ retirement revokes authority immediately and cancels its owned streams with
 bounded cleanup. Late items or terminals cannot reach a replacement generation.
 The installed manifest stays version 1, independently of transport versions.
 
-Invocation-token validation and service allowlisting belong to `plugin_runtime`;
-canonical Session/Environment authority and generated read/mutation/process dispatchers belong
+Context-token validation and service allowlisting belong to `plugin_runtime`;
+infrastructure has a separate generation lifetime revoked on activation retirement
+before cleanup, not on individual operation completion. No host service is granted
+implicitly by either transport direction. See
+[`plugin_runtime` infrastructure](../plugin_runtime/README.md#generation-infrastructure).
+Canonical Session/Environment authority and generated read/mutation/process dispatchers belong
 to the app/domain boundary. The host neither derives authority from semantic IDs
 nor knows stock source/tool behavior. Client/bidirectional streaming, ambient
 callbacks, and general symmetric RPC remain unimplemented. See

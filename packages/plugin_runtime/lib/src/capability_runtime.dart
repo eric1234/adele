@@ -63,9 +63,11 @@ final class PluginCapabilityActivation {
   static Future<PluginCapabilityActivation> registerAdvertised({
     required PluginBackendConnection connection,
     required CapabilityRegistry registry,
+    void Function()? beforeRollback,
   }) => register(
     connection: connection,
     registry: registry,
+    beforeRollback: beforeRollback,
     exposures: connection.capabilityExposures.map(
       (AdeleCapabilityExposure exposure) => PluginCapabilityExposure(
         provider: ProviderDescriptor(
@@ -86,10 +88,13 @@ final class PluginCapabilityActivation {
     ),
   );
 
+  /// Failure rolls back only this attempt's registrations. A generation owner can
+  /// supply [beforeRollback] to synchronously revoke before rollback cleanup.
   static Future<PluginCapabilityActivation> register({
     required PluginBackendConnection connection,
     required CapabilityRegistry registry,
     required Iterable<PluginCapabilityExposure> exposures,
+    void Function()? beforeRollback,
   }) async {
     if (connection.isClosed) {
       throw InvalidProviderRegistration(
@@ -122,7 +127,11 @@ final class PluginCapabilityActivation {
         );
       }
     } on Object {
-      await registrations.close();
+      try {
+        beforeRollback?.call();
+      } finally {
+        await registrations.close();
+      }
       rethrow;
     }
     final PluginCapabilityActivation activation = PluginCapabilityActivation._(
@@ -140,6 +149,7 @@ final class PluginCapabilityActivation {
   Future<void> retire() => _retiring ??= registrations.close();
 
   Future<void> close() async {
+    connection.revokeInfrastructureContext();
     await retire();
     if (!connection.isClosed) await connection.close();
   }

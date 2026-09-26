@@ -39,7 +39,7 @@ void main() {
         pending[message['requestId'] as int] = message;
         send({'kind': message['method'] == 'reverseStream' ? 'hostStreamOpen' : 'hostRequest', 'requestId': message['requestId'], 'pluginId': message['pluginId'],
           'generation': payload['generation'] ?? generations[message['pluginId']],
-          'hostInvocationContext': payload['context'], 'serviceId': 'fixture', 'method': 'fixture.invoke', 'payload': {}});
+          'hostContextKind': 'invocation', 'hostContext': payload['context'], 'serviceId': 'fixture', 'method': 'fixture.invoke', 'payload': {}});
       } else if (kind == 'hostResponse' || kind == 'hostStreamFailure') {
         responses++;
         final original = pending.remove(message['requestId']);

@@ -124,6 +124,8 @@ final class InMemoryProductStore {
     required Project project,
     required Iterable<Task> tasks,
     required Iterable<Environment> environments,
+    required Iterable<Session> sessions,
+    required Iterable<(SessionId, EnvironmentId)> authorities,
   }) {
     if (_projects.containsKey(project.id)) {
       throw StateError('Project ${project.id} is already published.');
@@ -159,9 +161,45 @@ final class InMemoryProductStore {
     if (primaryTasks.length != restoredTasks.length) {
       throw StateError('Every restored Task requires one primary Environment.');
     }
+    final restoredSessions = <SessionId, Session>{};
+    for (final session in sessions) {
+      if (!restoredTasks.containsKey(session.taskId) ||
+          _sessions.containsKey(session.id) ||
+          restoredSessions.containsKey(session.id)) {
+        throw StateError(
+          'Invalid or conflicting restored Session ${session.id}.',
+        );
+      }
+      restoredSessions[session.id] = session;
+    }
+    final restoredAuthorities = <SessionId, EnvironmentId>{};
+    for (final (sessionId, environmentId) in authorities) {
+      final session = restoredSessions[sessionId];
+      final environment = restoredEnvironments[environmentId];
+      if (session == null ||
+          environment == null ||
+          session.taskId != environment.taskId ||
+          restoredAuthorities.containsKey(sessionId)) {
+        throw StateError(
+          'Invalid or conflicting restored authority $sessionId.',
+        );
+      }
+      restoredAuthorities[sessionId] = environmentId;
+    }
+    if (restoredAuthorities.length != restoredSessions.length) {
+      throw StateError(
+        'Every restored Session requires one Environment authority.',
+      );
+    }
     _projects[project.id] = project;
     _tasks.addAll(restoredTasks);
     _environments.addAll(restoredEnvironments);
+    for (final session in restoredSessions.values) {
+      _publishSession(
+        session,
+        restoredEnvironments[restoredAuthorities[session.id]]!,
+      );
+    }
   }
 
   Environment _requireSessionEnvironment({
@@ -191,9 +229,6 @@ final class InMemoryProductStore {
   }
 
   void _publishSession(Session session, Environment environment) {
-    if (_sessions.containsKey(session.id)) {
-      throw StateError('Session ${session.id} is already published.');
-    }
     // A single publication keeps canonical identity and authority inseparable.
     _sessions[session.id] = (
       session: session,
@@ -516,11 +551,13 @@ final class ProductLifecycleCoordinator {
         database.close();
         return current;
       }
-      final graph = database.loadTaskEnvironments();
+      final graph = database.loadProductGraph();
       store.publishRestoredProject(
         project: project,
         tasks: graph.tasks,
         environments: graph.environments,
+        sessions: graph.sessions,
+        authorities: graph.authorities,
       );
       _projectDatabases[project.id] = database;
       return project;
@@ -540,6 +577,23 @@ final class ProductLifecycleCoordinator {
     final task = store.task(environment.taskId)!;
     _projectDatabases[task.projectId]?.updateEnvironmentState(environment);
     store.replaceEnvironment(environment);
+  }
+
+  /// Resolves semantic Session scope without resolving a strategy or Environment.
+  /// Null means an explicitly volatile Project, never missing or closed storage.
+  ProjectDatabase? databaseForSession(SessionId sessionId) {
+    _requireOpen();
+    final session = store.session(sessionId);
+    if (session == null) {
+      throw StateError('Session $sessionId is not published.');
+    }
+    final task = store.task(session.taskId);
+    if (task == null || store.project(task.projectId) == null) {
+      throw StateError(
+        'The Session does not belong to a published Project graph.',
+      );
+    }
+    return _projectDatabases[task.projectId];
   }
 
   /// Stops admission immediately, drains accepted provider calls, then releases
@@ -576,7 +630,8 @@ final class ProductLifecycleCoordinator {
     ResolvedOrchestrationStrategy? resolvedStrategy,
   }) {
     _requireOpen();
-    if (store.task(taskId) == null) {
+    final task = store.task(taskId);
+    if (task == null) {
       throw StateError('Task $taskId is not published.');
     }
     final ResolvedOrchestrationStrategy strategy =
@@ -592,6 +647,13 @@ final class ProductLifecycleCoordinator {
       strategyId: strategyId,
     );
     validateResolvedStrategy(strategyId, strategy);
+    if (store.session(session.id) != null) {
+      throw StateError('Session ${session.id} is already published.');
+    }
+    _projectDatabases[task.projectId]?.insertSessionWithAuthority(
+      session,
+      environment.id,
+    );
     store._publishSession(session, environment);
     return session;
   }

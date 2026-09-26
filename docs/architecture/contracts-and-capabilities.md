@@ -5,7 +5,7 @@ Role: Canonical architecture
 Implementation status: Partial
 
 This document owns the cross-system semantic boundary between typed transport,
-callable provider selection, exact live bindings, and host invocation authority.
+callable provider selection, exact live bindings, and host access contexts.
 Local packages own exact APIs, schemas, generator grammar, and runtime framing;
 source/tests establish current behavior. This is not an IDL reference, protocol
 manual, remote-extension implementation guide, or stock-provider inventory.
@@ -19,6 +19,7 @@ manual, remote-extension implementation guide, or stock-provider inventory.
 | Extension Point | Where and how may components participate in typed composition? |
 | Live binding | Which exact active generation is this resolved operation bound to? |
 | Host invocation authority | Which host services may this exact remote operation call right now? |
+| Host infrastructure access | Which explicit non-execution services may this exact backend generation call? |
 
 Transport does not choose semantic provider identity, and provider identity does
 not grant host authority. Extension registration does not imply Capability
@@ -235,7 +236,8 @@ and the [Local Directory Project plugin](../../plugins/local_directory_project/R
 
 ## Operation-scoped host calls
 
-Backend-to-host access is explicitly supplied for one authorized operation:
+Execution-related backend-to-host access is explicitly supplied for one authorized
+operation, separately from [infrastructure access](#generation-scoped-infrastructure-access):
 
 ```text
 remote operation begins
@@ -258,6 +260,7 @@ that captured context; it must retain and validate the resulting exact binding.
 | --- | --- |
 | `configurationContext` | Backend-local live route for configured service state in one generation. |
 | `hostInvocationContext` | Host-issued authority for one operation's explicit host-service allowlist. |
+| `hostInfrastructureContext` | Host-issued access to an explicit infrastructure-service allowlist for one backend generation, not execution authority. |
 
 The invocation token is opaque and operation-local. It must not be persisted or
 reused as a general capability, and possessing a route or communication channel
@@ -279,6 +282,14 @@ Backend-to-host calls reuse the existing host/backend communication substrate.
 Bounded reads, mutations, and orchestration mechanics use unary host requests;
 naturally streaming operations, such as foreground process events, use server
 streaming. The plugin-side channel helper does not mint authority.
+
+Shared reverse request/open envelopes require `hostContextKind` (`invocation` or
+`infrastructure`) and `hostContext`. There is no legacy reverse-envelope shape;
+the invocation helper `bind(hostInvocationContext: ..., serviceId: ...)` remains
+distinct from `bindInfrastructure(hostInfrastructureContext: ..., serviceId: ...)`.
+Context kind and token must match the host's exact grant and service allowlist;
+one kind cannot substitute for the other. Both protocols remain version 1 under
+the [pre-release version policy](#transport-version-policy).
 
 For a streaming remote operation, authority begins on listen, not merely on
 construction of a stream or possession of a channel. It ends on enclosing-operation
@@ -341,6 +352,66 @@ through it. See [`orchestration`](../../packages/orchestration/README.md#inferen
 and the [AGENTS.md plugin](../../plugins/agents_md/README.md) for source semantics,
 transport contracts, and their tests.
 
+## Generation-scoped infrastructure access
+
+Storage must serve Session snapshots, configuration, and lazy initialization
+outside a Run operation. `PluginBackendHost.startPlugin` accepts a generic
+`createInfrastructureServices` factory called with the actual connection, not a
+plugin ID detached from its generation. Bootstrap carries one required opaque
+`hostInfrastructureContext` string for that exact generation. Only the supplied
+service allowlist is accessible; installation or readiness alone does not select
+services. The context is live access metadata, never durable data or a Profile.
+
+Infrastructure access is revoked on backend activation retirement or rollback,
+stop, close, and termination, before asynchronous cleanup. Pending responses are
+settled without waiting for arbitrary service code. A generated dispatcher may
+have queued a call before retirement, so storage rechecks
+`connection.validateInfrastructureContext` at actual service entry, immediately
+before synchronous database work. Transport admission alone is insufficient.
+Retired access never retargets a replacement; revocation cannot undo an SQL commit.
+Registration-only retirement or rollback of a subset does not retire the whole
+generation. A standalone activation's connection-ending `close` does revoke
+infrastructure before awaiting registration cleanup.
+
+The app factory `projectStorageServices(lifecycle, connection)` captures
+`PluginId(connection.pluginId)` in `ProjectStorageHost`. It is generic composition,
+not stock-plugin dispatch, and is supplied for every normal backend connection.
+Storage is not added to operation-token allowlists. Conversely, its infrastructure
+grant supplies no execution, orchestration, model/tool, Environment-facet, or
+filesystem services. [ADR 0034](../adr/0034-plugin-owned-relational-session-storage.md)
+narrowly amends ADR 0032's invocation-only host-access rule without widening
+semantic operation authority.
+
+### Session-scoped relational storage
+
+Pure-Dart [`adele_project_storage`](../../packages/project_storage/lib/adele_project_storage.dart)
+owns `ProjectStorageService`, a generated host service, not a provider-selected
+Capability. Its narrow surface is:
+
+| Operation | Boundary |
+| --- | --- |
+| `isDurableSession(sessionId)` | Resolve Session -> Task -> currently open Project. False only for a published Session in an explicitly volatile Project; missing/closed/error cases throw. |
+| `ensureSchemaForSession(sessionId, List<String> migrations)` | Validate all script statements as supported `CREATE TABLE` forms before execution, then coordinate the connection-owned plugin's schema transactionally; version is the migration list length. The [storage contract](../../packages/project_storage/README.md#service) defines the restricted script syntax. |
+| `queryForSession(sessionId, sql, Map<String, Object?> parameters)` | One read-only `SELECT` statement with named parameters and bounded `RelationalRow.values` results. |
+| `transactionForSession(sessionId, List<RelationalStatement> statements)` | Commit a host-owned transaction of `INSERT`, `UPDATE`, or `DELETE` statements; statements carry `sql`, named `parameters`, and nullable `expectedRows`, whose mismatch rolls back the batch. |
+
+Parameters and row maps admit only strings, integers, and null, not arbitrary JSON
+or SQLite objects. Query responses are bounded to 1000 rows and 1 MiB; excess fails
+rather than truncating. This bounds each response, not total Session history.
+Exact declarations and codecs remain owned by the package.
+
+The host derives backing through its canonical live graph without resolving a
+strategy or materializing an Environment. Callers supply no owner, database path,
+or raw SQLite connection. Storage requires a live infrastructure grant but the
+Session ID is a storage selector, not a per-Session permission token. SQL is
+deliberately not a parser sandbox: the host does not enforce table prefixes or
+row isolation. Stock SQL operates on its owner's tables and uses relational
+foreign keys to core identities. This semantic ownership convention must not be
+described as protection against arbitrary malicious plugin SQL; that sandbox is
+deferred. [Plugin persistence](plugin-system.md#plugin-owned-state-and-persistence)
+owns schema and state semantics, while [Project storage](product-model.md#project-storage)
+owns the private database and core graph.
+
 ## Source map
 
 | Concern | Primary anchors |
@@ -354,6 +425,7 @@ transport contracts, and their tests.
 | Remote orchestration and inference contracts | [`packages/orchestration/`](../../packages/orchestration/) |
 | Remote model-tool contract | [`packages/model_tool/`](../../packages/model_tool/) |
 | Environment authorized host services | [`packages/environment/`](../../packages/environment/) |
+| Relational infrastructure contract / service-entry validation | [`packages/project_storage/`](../../packages/project_storage/), [`app/lib/core/project_storage_host.dart`](../../app/lib/core/project_storage_host.dart) |
 | App-side remote adapters | [`remote_inference_context_host.dart`](../../app/lib/core/remote_inference_context_host.dart), [`remote_model_tool_host.dart`](../../app/lib/core/remote_model_tool_host.dart), [`remote_orchestration_host.dart`](../../app/lib/core/remote_orchestration_host.dart) |
 | Canonical local authority and Environment facets | [`product_lifecycle.dart`](../../app/lib/core/product_lifecycle.dart), [`model_tool_host.dart`](../../app/lib/core/model_tool_host.dart), [`inference_context_host.dart`](../../app/lib/core/inference_context_host.dart) |
 | Prepared frontend ownership and bridges | [`packages/ui/`](../../packages/ui/), [`app/lib/frontend/`](../../app/lib/frontend/) |

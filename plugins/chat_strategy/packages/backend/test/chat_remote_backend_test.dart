@@ -1,13 +1,16 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:isolate';
 
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_orchestration/remote_orchestration.dart';
+import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:chat_strategy_backend/chat_strategy_backend.dart';
 import 'package:test/test.dart';
 
 import '../bin/chat_strategy_backend.dart' as entrypoint;
+import 'support/chat_storage.dart';
 
 void main() {
   test(
@@ -39,7 +42,13 @@ void main() {
       expect(snapshot.entries, isEmpty);
       expect(snapshot.instructions, chatDefaultInstructions);
       expect(snapshot.maxModelInvocations, 8);
-      expect(backend.hostCalls, isEmpty);
+      expect(backend.hostCalls, isNotEmpty);
+      expect(
+        backend.hostCalls.every(
+          (call) => call['hostContextKind'] == 'infrastructure',
+        ),
+        isTrue,
+      );
       await expectLater(
         backend.request(
           chatSessionServiceId,
@@ -122,7 +131,7 @@ void main() {
 
   for (final mutationsFirst in [true, false]) {
     test(
-      'queued mutations ${mutationsFirst ? 'before' : 'after'} materialization are atomic',
+      'accepted mutations ${mutationsFirst ? 'before' : 'after'} materialization are atomic',
       () async {
         final backend = await _RunningBackend.start();
         addTearDown(backend.close);
@@ -143,14 +152,14 @@ void main() {
           'Changed instructions.',
           3,
         );
+        if (mutationsFirst) await configuring;
         final appending = backend.chat.appendUserMessage(
           'session',
           'Additional prompt.',
         );
         if (mutationsFirst) {
-          materializing = backend.materialize();
-          await configuring;
           await appending;
+          materializing = backend.materialize();
         } else {
           await Future.wait([
             expectLater(configuring, _failure('session_busy')),
@@ -216,6 +225,15 @@ void main() {
       final duringFlush = await backend.chat.snapshot('session');
       expect(duringFlush.entries.map((entry) => entry.role), ['user']);
       expect(duringFlush.entries.single.id, user.id);
+      expect(
+        backend.storage.database
+            .select(
+              'SELECT entry_id FROM adele_chat_entries WHERE session_id = ?',
+              ['session'],
+            )
+            .map((row) => row['entry_id']),
+        [user.id],
+      );
       backend.host.completeGate!.complete();
       expect(await advancing, RemoteRunState.completed);
       final finalSnapshot = await backend.chat.snapshot('session');
@@ -250,6 +268,18 @@ void main() {
       );
       final entries = (await backend.chat.snapshot('session')).entries;
       expect(entries.map((entry) => entry.id).toSet(), hasLength(4));
+      final restarted = ChatSessionBackend(
+        ChatSessionStore(storage: backend.storage),
+      );
+      final restored = await restarted.snapshot('session');
+      expect(
+        restored.entries.map((entry) => (entry.id, entry.role, entry.content)),
+        entries.map((entry) => (entry.id, entry.role, entry.content)),
+      );
+      expect(
+        (await restarted.appendUserMessage('session', 'After restart.')).id,
+        'entry-4',
+      );
     },
   );
 
@@ -320,7 +350,8 @@ void main() {
         expect(snapshot.entries.first.id, waiting.entries.single.id);
         expect(
           backend.hostCalls
-              .map((request) => request['hostInvocationContext'])
+              .where((request) => request['hostContextKind'] == 'invocation')
+              .map((request) => request['hostContext'])
               .toSet(),
           {'start-token', 'approval-token'},
         );
@@ -390,6 +421,18 @@ void main() {
           );
           expect(rejected.instructions, 'Retained instructions.');
           expect(rejected.maxModelInvocations, 3);
+          final durable = await ChatSessionBackend(
+            ChatSessionStore(storage: backend.storage),
+          ).snapshot('session');
+          expect(durable.entries.map((entry) => entry.id), [user.id]);
+          expect(durable.instructions, 'Retained instructions.');
+          expect(
+            backend.storage.database.select(
+              'SELECT next_entry FROM adele_chat_sessions WHERE session_id = ?',
+              ['session'],
+            ).single['next_entry'],
+            1,
+          );
           await backend.orchestration.release(execution);
           backend.host
             ..batch = false
@@ -464,6 +507,12 @@ void main() {
       }
       expect(
         (await backend.chat.snapshot('session')).entries.single.content,
+        'Prompt.',
+      );
+      expect(
+        (await ChatSessionBackend(
+          ChatSessionStore(storage: backend.storage),
+        ).snapshot('session')).entries.single.content,
         'Prompt.',
       );
       await backend.chat.configureSession('session', 'After release.', 2);
@@ -614,7 +663,317 @@ void main() {
       await service.appendUserMessage('session', 'Next.');
     },
   );
+
+  for (final closeBackend in [false, true]) {
+    for (final failCommit in [false, true]) {
+      test(
+        '${closeBackend ? 'close' : 'release'} drains held terminal SQL ${failCommit ? 'failure' : 'commit'} exactly once',
+        () async {
+          final storage = ChatTestStorage();
+          final store = ChatSessionStore(storage: storage);
+          final service = ChatSessionBackend(store);
+          final host = _Host();
+          final dispatcher = RemoteOrchestrationHostServiceDispatcher(host);
+          final backend = ChatRemoteOrchestrationBackend(
+            sessions: store,
+            hostChannel: (_) => _DirectHostChannel(dispatcher),
+          );
+          final entered = Completer<void>();
+          final gate = Completer<void>();
+          addTearDown(() async {
+            if (!gate.isCompleted) gate.complete();
+            try {
+              await backend.close().catchError((Object error) {
+                if (!failCommit) throw error;
+              });
+            } finally {
+              await dispatcher.close();
+              storage.close();
+            }
+          });
+          await service.appendUserMessage('session', 'Accepted user.');
+          final execution = await backend.materialize(
+            chatStrategyRouteId,
+            _session,
+            'run',
+          );
+          final writes = storage.transactions;
+          final error = StateError(
+            'Terminal storage failed after host completion.',
+          );
+          storage.beforeTransaction = () {
+            entered.complete();
+            return gate.future;
+          };
+          final advancing = backend.start(execution, 'token');
+          final observed = expectLater(
+            advancing,
+            failCommit
+                ? throwsA(same(error))
+                : completion(RemoteRunState.completed),
+          );
+          await entered.future;
+          expect(host.state, RemoteRunState.completed);
+          expect(
+            (await service.snapshot(
+              'session',
+            )).entries.map((entry) => entry.id),
+            ['entry-0'],
+          );
+          expect(
+            storage.database
+                .select('SELECT next_entry FROM adele_chat_sessions')
+                .single['next_entry'],
+            1,
+          );
+          await expectLater(
+            ChatSessionBackend(store).appendUserMessage('session', 'Blocked.'),
+            _failure('session_busy'),
+          );
+          await expectLater(
+            backend.materialize(chatStrategyRouteId, _session, 'duplicate'),
+            _failure('session_busy'),
+          );
+          await expectLater(
+            backend.start(execution, 'duplicate'),
+            throwsA(isA<InvalidRunOperation>()),
+          );
+          final closing = closeBackend
+              ? backend.close()
+              : backend.release(execution);
+          expect(
+            closeBackend ? backend.close() : backend.release(execution),
+            same(closing),
+          );
+          var closed = false;
+          final draining = closing.whenComplete(() => closed = true);
+          final drained = expectLater(
+            draining,
+            failCommit ? throwsA(same(error)) : completes,
+          );
+          await service.snapshot('session');
+          expect(closed, isFalse);
+          if (failCommit) storage.failure = error;
+          gate.complete();
+          await observed;
+          await drained;
+          expect(closed, isTrue);
+          expect(storage.transactions, writes + 1);
+          expect(host.state, RemoteRunState.completed);
+          storage
+            ..failure = null
+            ..beforeTransaction = null;
+          final canonical = await service.snapshot('session');
+          final durable = await ChatSessionBackend(
+            ChatSessionStore(storage: storage),
+          ).snapshot('session');
+          expect(canonical.entries.map((entry) => entry.role), [
+            'user',
+            if (!failCommit) 'assistant',
+          ]);
+          expect(
+            durable.entries.map((entry) => entry.id),
+            canonical.entries.map((entry) => entry.id),
+          );
+          expect(
+            (await service.appendUserMessage('session', 'Next.')).id,
+            failCommit ? 'entry-1' : 'entry-2',
+          );
+        },
+      );
+    }
+  }
+
+  for (final overflow in [
+    'assistant entry',
+    'configuration counter',
+    'volatile assistant',
+  ]) {
+    test(
+      '$overflow bounds settle only after host terminal acknowledgement',
+      () async {
+        final durable = overflow != 'volatile assistant';
+        final storage = ChatTestStorage(durable: durable);
+        final store = ChatSessionStore(storage: storage);
+        final service = ChatSessionBackend(store);
+        final host = _Host()..completeGate = Completer<void>();
+        if (overflow != 'configuration counter') {
+          host.finalAnswer = 'x' * relationalQueryByteLimit;
+        }
+        final dispatcher = RemoteOrchestrationHostServiceDispatcher(host);
+        final backend = ChatRemoteOrchestrationBackend(
+          sessions: store,
+          hostChannel: (_) => _DirectHostChannel(dispatcher),
+        );
+        addTearDown(() async {
+          if (!host.completeGate!.isCompleted) host.completeGate!.complete();
+          await backend.close();
+          await dispatcher.close();
+          storage.close();
+        });
+        final count = overflow == 'configuration counter' ? 9 : 1;
+        for (var index = 0; index < count; index++) {
+          await service.appendUserMessage('session', 'Accepted user.');
+        }
+        if (overflow == 'configuration counter') {
+          final emptyBytes =
+              2 +
+              utf8
+                  .encode(
+                    jsonEncode({
+                      'values': {
+                        'session_id': 'session',
+                        'instructions': '',
+                        'max_model_invocations': 8,
+                        'next_entry': count,
+                      },
+                    }),
+                  )
+                  .length +
+              1;
+          await service.configureSession(
+            'session',
+            'x' * (relationalQueryByteLimit - emptyBytes),
+            8,
+          );
+        }
+        final before = await service.snapshot('session');
+        final writes = storage.transactions;
+        final execution = await backend.materialize(
+          chatStrategyRouteId,
+          _session,
+          'run',
+        );
+        final advancing = backend.start(execution, 'token');
+        final settled = expectLater(
+          advancing,
+          durable ? throwsStateError : completion(RemoteRunState.completed),
+        );
+        await host.completeEntered.future;
+        expect((await service.snapshot('session')).entries, hasLength(count));
+        expect(storage.transactions, writes);
+        host.completeGate!.complete();
+        await settled;
+        expect(host.state, RemoteRunState.completed);
+        expect(host.events, ['start', 'model', 'complete']);
+        expect(storage.transactions, writes);
+        final canonical = await service.snapshot('session');
+        expect(canonical.instructions, before.instructions);
+        expect(canonical.maxModelInvocations, before.maxModelInvocations);
+        if (durable) {
+          expect(
+            canonical.entries.map((entry) => entry.id),
+            before.entries.map((entry) => entry.id),
+          );
+          final restored = await ChatSessionBackend(
+            ChatSessionStore(storage: storage),
+          ).snapshot('session');
+          expect(restored.instructions, before.instructions);
+          expect(
+            restored.entries.map((entry) => entry.id),
+            before.entries.map((entry) => entry.id),
+          );
+          expect(
+            storage.database
+                .select('SELECT next_entry FROM adele_chat_sessions')
+                .single['next_entry'],
+            count,
+          );
+        } else {
+          expect(canonical.entries.last.content, host.finalAnswer);
+          expect(canonical.entries, hasLength(count + 1));
+        }
+        await backend.release(execution);
+        await service.configureSession('session', 'Short.', 8);
+        expect(
+          (await service.appendUserMessage('session', 'Next.')).id,
+          'entry-${count + (durable ? 0 : 1)}',
+        );
+      },
+    );
+  }
+
+  test(
+    'close drains accepted hydration and prevents late materialization',
+    () async {
+      final storage = ChatTestStorage();
+      addTearDown(storage.close);
+      final store = ChatSessionStore(storage: storage);
+      final backend = ChatRemoteOrchestrationBackend(
+        sessions: store,
+        hostChannel: (_) => throw StateError('No invocation authority.'),
+      );
+      final gate = Completer<void>();
+      final entered = Completer<void>();
+      storage.beforeDurability = () {
+        entered.complete();
+        return gate.future;
+      };
+      final materializing = backend.materialize(
+        chatStrategyRouteId,
+        _session,
+        'run',
+      );
+      final rejected = expectLater(materializing, throwsStateError);
+      await entered.future;
+      var closed = false;
+      final closing = backend.close().then((_) => closed = true);
+      await Future<void>.delayed(Duration.zero);
+      expect(closed, isFalse);
+      gate.complete();
+      await rejected;
+      await closing;
+      expect(
+        (await ChatSessionBackend(
+          store,
+        ).appendUserMessage('session', 'No leaked claim.')).id,
+        'entry-0',
+      );
+    },
+  );
+
+  test(
+    'materialization is rejected while an idle durable write is held',
+    () async {
+      final storage = ChatTestStorage();
+      addTearDown(storage.close);
+      final store = ChatSessionStore(storage: storage);
+      final service = ChatSessionBackend(store);
+      final backend = ChatRemoteOrchestrationBackend(
+        sessions: store,
+        hostChannel: (_) => throw StateError('No invocation authority.'),
+      );
+      addTearDown(backend.close);
+      await service.snapshot('session');
+      final gate = Completer<void>();
+      final entered = Completer<void>();
+      storage.beforeTransaction = () {
+        entered.complete();
+        return gate.future;
+      };
+      final writing = service.appendUserMessage('session', 'Accepted.');
+      await entered.future;
+      await expectLater(
+        backend.materialize(chatStrategyRouteId, _session, 'run'),
+        _failure('session_busy'),
+      );
+      gate.complete();
+      await writing;
+      final execution = await backend.materialize(
+        chatStrategyRouteId,
+        _session,
+        'run',
+      );
+      await backend.release(execution);
+    },
+  );
 }
+
+final _session = RemoteOrchestrationSession(
+  sessionId: 'session',
+  taskId: 'task',
+  strategyId: chatStrategyId.value,
+);
 
 Matcher _failure(String code) => throwsA(
   isA<ChatSessionFailure>().having((error) => error.code, 'code', code),
@@ -647,6 +1006,8 @@ final class _RunningBackend {
   final pending = <int, Completer<Object?>>{};
   final hostCalls = <Map<String, Object?>>[];
   final host = _Host();
+  final storage = ChatTestStorage();
+  late final storageDispatcher = ProjectStorageServiceDispatcher(storage);
   late final dispatcher = RemoteOrchestrationHostServiceDispatcher(host);
   late final chat = ChatSessionServiceClient(
     _Channel(this, chatSessionServiceId),
@@ -731,13 +1092,28 @@ final class _RunningBackend {
   }
 
   Future<void> _respond(Map<String, Object?> request) async {
-    expect(request['serviceId'], remoteOrchestrationHostServiceId);
-    final response = await dispatcher.dispatch({
+    final infrastructure = request['hostContextKind'] == 'infrastructure';
+    expect(
+      request['hostContextKind'],
+      infrastructure ? 'infrastructure' : 'invocation',
+    );
+    expect(request.containsKey('hostInvocationContext'), isFalse);
+    expect(
+      request['serviceId'],
+      infrastructure
+          ? projectStorageServiceId
+          : remoteOrchestrationHostServiceId,
+    );
+    if (infrastructure) expect(request['hostContext'], 'infrastructure-token');
+    final envelope = <String, Object?>{
       'kind': 'request',
       'requestId': request['requestId'],
       'method': request['method'],
       'payload': request['payload'],
-    });
+    };
+    final response = infrastructure
+        ? await storageDispatcher.dispatch(envelope)
+        : await dispatcher.dispatch(envelope);
     commands.send({...response, 'kind': 'hostResponse'});
   }
 
@@ -761,6 +1137,8 @@ final class _RunningBackend {
         gate.complete();
       }
       await dispatcher.close();
+      await storageDispatcher.close();
+      storage.close();
     }
   }
 }
@@ -769,6 +1147,7 @@ Future<void> _runBackend(List<SendPort> ports) => entrypoint.main([], {
   'bootstrapPort': ports[0],
   'responsePort': ports[1],
   'defaultConfigurationContext': 'configured-default',
+  'hostInfrastructureContext': 'infrastructure-token',
 });
 
 final class _Channel implements AdeleRequestChannel {
@@ -829,6 +1208,7 @@ final class _Host implements RemoteOrchestrationHostService {
   bool completeError = false;
   RemoteRunState? completeState;
   bool refuse = false;
+  String finalAnswer = 'Final answer.';
   RemoteRunState state = RemoteRunState.created;
 
   @override
@@ -880,7 +1260,7 @@ final class _Host implements RemoteOrchestrationHostService {
                 ),
               ),
           ]
-        : <ModelOutputItem>[ModelTextOutput('Final answer.')];
+        : <ModelOutputItem>[ModelTextOutput(finalAnswer)];
     return RemoteStrategyModelTurn.fromLocal(
       StrategyModelTurn.settled(
         tools: _Tools(),

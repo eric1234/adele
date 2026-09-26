@@ -343,6 +343,28 @@ void main() {
       expect(target.ciTestConcurrency, isNull);
     });
 
+    test(
+      'discovers the public Project storage contract in workspace and CI',
+      () {
+        const name = 'adele_project_storage';
+        const path = 'packages/project_storage';
+        final target = lookupTestTarget(name);
+        expect(target.path, path);
+        expect(target.executable, 'dart');
+        expect(target.argumentsFor(ci: true), ['test']);
+        expect(target.linuxDesktopDeps, isFalse);
+        final analysis = analysisTargets.singleWhere(
+          (value) => value.name == name,
+        );
+        expect(analysis.path, path);
+        expect(analysis.flutter, isFalse);
+        expect(
+          File('pubspec.yaml').readAsStringSync(),
+          contains('  - $path\n'),
+        );
+      },
+    );
+
     test('discovers remote extension support and stock backend targets', () {
       final workspace = File('pubspec.yaml').readAsStringSync();
       for (final expected in [
@@ -720,6 +742,7 @@ void main() {
         'adele_plugin_backend_support|dart|packages/plugin_backend_support|test',
         'adele_product|dart|packages/product|test',
         'adele_core_extensions|dart|packages/core_extensions|test',
+        'adele_project_storage|dart|packages/project_storage|test',
         'adele_ui|flutter|packages/ui|test',
         'adele_orchestration|dart|packages/orchestration|test',
         'adele_environment|dart|packages/environment|test',

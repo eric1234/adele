@@ -1326,6 +1326,16 @@ Future<Map<String, Object?>> _sourceSnapshot(
     await for (final entity in directory.list(followLinks: false)) {
       if (entity.path == '${repository.path}/.git') continue;
       if (entity.path == taskPath) continue;
+      // Session and Chat persistence may change only the Project database here.
+      final relativePath = entity.path.substring(repository.path.length + 1);
+      if (const {
+        '.adele/data.db',
+        '.adele/data.db-wal',
+        '.adele/data.db-shm',
+        '.adele/data.db-journal',
+      }.contains(relativePath)) {
+        continue;
+      }
       if (entity is Directory) {
         await visit(entity);
       } else if (entity is File) {

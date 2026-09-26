@@ -218,11 +218,13 @@ void main() {
       }
       for (final request in fixture.requests) {
         expect(request['kind'], 'hostRequest');
-        expect(request['hostInvocationContext'], token);
+        expect(request['hostContextKind'], 'invocation');
+        expect(request['hostContext'], token);
         expect(request.keys.toSet(), {
           'kind',
           'requestId',
-          'hostInvocationContext',
+          'hostContextKind',
+          'hostContext',
           'serviceId',
           'method',
           'payload',
@@ -408,10 +410,11 @@ void main() {
       final expired = await fixture.execute('apply_patch', token: 'first');
       expect(expired.failureKind, RemoteToolFailureKind.infrastructure);
       expect(expired.effectCertainty, RemoteEffectCertainty.knownNotOccurred);
-      expect(
-        fixture.requests.map((request) => request['hostInvocationContext']),
-        ['first', 'second', 'first'],
-      );
+      expect(fixture.requests.map((request) => request['hostContext']), [
+        'first',
+        'second',
+        'first',
+      ]);
       expect(
         fixture.requests.every(
           (request) =>
@@ -617,8 +620,8 @@ final class _Fixture {
   }
 
   Future<void> _respond(Map<String, Object?> request) async {
-    final dispatcher =
-        services[request['hostInvocationContext']]?[request['serviceId']];
+    expect(request['hostContextKind'], 'invocation');
+    final dispatcher = services[request['hostContext']]?[request['serviceId']];
     final response = dispatcher == null
         ? <String, Object?>{
             'ok': false,

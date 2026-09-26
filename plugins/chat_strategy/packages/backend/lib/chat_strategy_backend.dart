@@ -2,12 +2,14 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_orchestration/remote_orchestration.dart';
 import 'package:adele_orchestration/remote_orchestration_backend.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 
 export 'package:chat_strategy_contract/chat_strategy_contract.dart';
@@ -52,9 +54,10 @@ final class ChatSessionBackend implements ChatSessionService {
 
   final ChatSessionStore sessions;
 
-  ChatSessionState _session(String id) {
+  Future<ChatSessionState> _session(String id) {
+    final SessionId sessionId;
     try {
-      return sessions.obtain(SessionId(id));
+      sessionId = SessionId(id);
     } on FormatException {
       throw const ChatSessionFailure(
         code: 'invalid_session',
@@ -62,16 +65,17 @@ final class ChatSessionBackend implements ChatSessionService {
         details: <String, Object?>{},
       );
     }
+    return sessions.load(sessionId);
   }
 
   @override
   Future<ChatSessionSnapshot> snapshot(String sessionId) async =>
-      _session(sessionId).snapshot();
+      (await _session(sessionId)).snapshot();
 
   @override
   Future<ChatEntry> appendUserMessage(String sessionId, String content) async {
     try {
-      return _session(sessionId).appendUserMessage(content);
+      _requireContent(content);
     } on FormatException {
       throw const ChatSessionFailure(
         code: 'invalid_content',
@@ -79,6 +83,7 @@ final class ChatSessionBackend implements ChatSessionService {
         details: <String, Object?>{},
       );
     }
+    return (await _session(sessionId))._appendUserMessage(content);
   }
 
   @override
@@ -87,18 +92,15 @@ final class ChatSessionBackend implements ChatSessionService {
     String instructions,
     int maxModelInvocations,
   ) async {
-    final session = _session(sessionId);
-    session._requireIdle();
-    try {
-      session.maxModelInvocations = maxModelInvocations;
-    } on ArgumentError {
+    if (maxModelInvocations < 1) {
       throw const ChatSessionFailure(
         code: 'invalid_configuration',
         message: 'maxModelInvocations must be positive.',
         details: <String, Object?>{},
       );
     }
-    session.instructions = instructions;
+    final session = await _session(sessionId);
+    await session._configure(instructions, maxModelInvocations);
   }
 }
 
@@ -130,6 +132,7 @@ final class ChatRemoteOrchestrationBackend
   late final RemoteOrchestrationBackend _backend;
   final Map<SessionId, _ChatHistoryTransaction> _materializing = {};
   final Map<String, _ChatHistoryTransaction> _executions = {};
+  final Set<Future<void>> _materializations = {};
   Future<void>? _closing;
 
   @override
@@ -139,10 +142,14 @@ final class ChatRemoteOrchestrationBackend
     String runId,
   ) async {
     _requireOpen();
-    final source = sessions.obtain(SessionId(session.sessionId));
-    final transaction = _ChatHistoryTransaction(source);
-    _materializing[source.id] = transaction;
+    final settled = Completer<void>();
+    _materializations.add(settled.future);
+    _ChatHistoryTransaction? transaction;
     try {
+      final source = await sessions.load(SessionId(session.sessionId));
+      _requireOpen();
+      transaction = _ChatHistoryTransaction(source);
+      _materializing[source.id] = transaction;
       final id = await _backend.materialize(routeId, session, runId);
       if (_closing != null) {
         await _backend.release(id);
@@ -151,10 +158,12 @@ final class ChatRemoteOrchestrationBackend
       _executions[id] = transaction;
       return id;
     } on Object {
-      transaction.finish(commit: false);
+      await transaction?.finish(commit: false);
       rethrow;
     } finally {
-      _materializing.remove(source.id);
+      if (transaction != null) _materializing.remove(transaction.source.id);
+      _materializations.remove(settled.future);
+      settled.complete();
     }
   }
 
@@ -191,7 +200,7 @@ final class ChatRemoteOrchestrationBackend
           ? await _backend.start(id, context)
           : await _backend.resolveApproval(id, resolution, context);
       if (state != RemoteRunState.waiting) {
-        transaction.finish(commit: state == RemoteRunState.completed);
+        await transaction.finish(commit: state == RemoteRunState.completed);
         _executions.remove(id);
       }
       return state;
@@ -199,8 +208,8 @@ final class ChatRemoteOrchestrationBackend
       // F3f closes after advancement errors, but retains preflight rejections
       // (such as another start while waiting) for a later valid operation.
       if (transaction.execution!._closed) {
-        transaction.finish(commit: false);
         _executions.remove(id);
+        await transaction.finish(commit: false);
       }
       rethrow;
     } finally {
@@ -221,25 +230,30 @@ final class ChatRemoteOrchestrationBackend
     try {
       await _backend.release(id);
     } finally {
-      transaction.finish(commit: false);
       _executions.remove(id);
+      await transaction.finish(commit: false);
     }
   }
 
   Future<void> close() => _closing ??= _close();
 
   Future<void> _close() async {
+    final transactions = _executions.values.toList();
     try {
       await _backend.close();
     } finally {
-      for (final transaction in {
-        ..._materializing.values,
-        ..._executions.values,
-      }) {
-        await transaction.advancing;
-        transaction.finish(commit: false);
+      await Future.wait(_materializations.toList());
+      try {
+        await Future.wait([
+          for (final transaction in transactions)
+            () async {
+              await transaction.advancing;
+              await transaction.finish(commit: false);
+            }(),
+        ]);
+      } finally {
+        _executions.clear();
       }
-      _executions.clear();
     }
   }
 
@@ -263,32 +277,197 @@ final class _ChatHistoryTransaction {
   _ChatExecution? execution;
   Future<void>? advancing;
   Future<void>? releasing;
-  bool _finished = false;
+  Future<void>? _finishing;
 
-  void finish({required bool commit}) {
-    if (_finished) return;
-    if (commit) {
-      source._entries.addAll(staged._entries.skip(source._entries.length));
-      source._nextEntry = staged._nextEntry;
+  Future<void> finish({required bool commit}) =>
+      _finishing ??= _finish(commit: commit);
+
+  Future<void> _finish({required bool commit}) async {
+    try {
+      if (commit) {
+        final entries = staged._entries.skip(source._entries.length).toList();
+        await source._persistEntries(entries, staged._nextEntry);
+        source._entries.addAll(entries);
+        source._nextEntry = staged._nextEntry;
+      }
+    } finally {
+      source._release(this);
     }
-    _finished = true;
-    source._release(this);
   }
 }
 
 /// Retains Chat-owned conversation state by canonical product Session identity.
 final class ChatSessionStore {
+  ChatSessionStore({ProjectStorageService? storage}) : _storage = storage;
+
+  final ProjectStorageService? _storage;
   final Map<SessionId, ChatSessionState> _sessions =
       <SessionId, ChatSessionState>{};
+  final Map<SessionId, Future<ChatSessionState>> _loads = {};
 
-  ChatSessionState obtain(SessionId id) =>
-      _sessions.putIfAbsent(id, () => ChatSessionState(id));
+  /// Synchronous state access is reserved for explicitly volatile native fixtures.
+  ChatSessionState obtain(SessionId id) {
+    if (_storage != null) {
+      throw StateError(
+        'Storage-backed Chat Sessions require asynchronous load.',
+      );
+    }
+    return _sessions.putIfAbsent(id, () => ChatSessionState(id));
+  }
+
+  /// One hydration per Session and generation, including a retained load failure.
+  Future<ChatSessionState> load(SessionId id) =>
+      _loads.putIfAbsent(id, () => _load(id));
+
+  Future<ChatSessionState> _load(SessionId id) async {
+    final storage = _storage;
+    if (storage == null) return obtain(id);
+    if (!await storage.isDurableSession(id.value)) {
+      return _sessions.putIfAbsent(id, () => ChatSessionState(id));
+    }
+    await storage.ensureSchemaForSession(id.value, const [_chatSchema]);
+    final parameters = <String, Object?>{':session': id.value};
+    final rows = await storage.queryForSession(
+      id.value,
+      'SELECT session_id, instructions, max_model_invocations, next_entry '
+      'FROM adele_chat_sessions WHERE session_id = :session',
+      parameters,
+    );
+    final state = ChatSessionState._durable(id, storage);
+    if (rows.length > 1) {
+      throw ChatStateCorruption(id, 'Duplicate Session row.');
+    }
+    if (rows.isNotEmpty) {
+      final values = rows.single.values;
+      final instructions = values['instructions'];
+      final budget = values['max_model_invocations'];
+      final counter = values['next_entry'];
+      if (values['session_id'] != id.value ||
+          instructions is! String ||
+          budget is! int ||
+          budget < 1 ||
+          counter is! int ||
+          counter < 0) {
+        throw ChatStateCorruption(
+          id,
+          'Invalid configuration or entry counter.',
+        );
+      }
+      state
+        .._instructions = instructions
+        .._maxModelInvocations = budget
+        .._nextEntry = counter;
+    }
+    while (true) {
+      final entries = await storage.queryForSession(
+        id.value,
+        'SELECT session_id, sequence, entry_id, role, content '
+        'FROM adele_chat_entries WHERE session_id = :session '
+        'AND sequence = :sequence LIMIT 2',
+        {...parameters, ':sequence': state._entries.length},
+      );
+      if (entries.isEmpty) break;
+      if (entries.length > 1) {
+        throw ChatStateCorruption(id, 'Duplicate canonical sequence.');
+      }
+      final values = entries.single.values;
+      final sequence = values['sequence'];
+      final entryId = values['entry_id'];
+      final role = values['role'];
+      final content = values['content'];
+      if (values['session_id'] != id.value ||
+          sequence != state._entries.length ||
+          entryId != 'entry-${state._entries.length}' ||
+          (role != 'user' && role != 'assistant') ||
+          content is! String ||
+          content.trim().isEmpty) {
+        throw ChatStateCorruption(id, 'Invalid ordered canonical entry.');
+      }
+      state._entries.add(
+        ChatEntry(
+          id: entryId as String,
+          role: role as String,
+          content: content,
+        ),
+      );
+    }
+    if (state._nextEntry != state._entries.length) {
+      throw ChatStateCorruption(id, 'Entry counter does not match history.');
+    }
+    final count = await storage.queryForSession(
+      id.value,
+      'SELECT COUNT(*) AS entry_count FROM adele_chat_entries '
+      'WHERE session_id = :session',
+      parameters,
+    );
+    if (count.length != 1 ||
+        count.single.values['entry_count'] != state._entries.length) {
+      throw ChatStateCorruption(
+        id,
+        'Retained entry count does not match history.',
+      );
+    }
+    if (rows.isEmpty) {
+      state._requireReadableConfiguration(
+        state.instructions,
+        state.maxModelInvocations,
+        state._nextEntry,
+      );
+      await storage.transactionForSession(id.value, [
+        RelationalStatement(
+          sql:
+              'INSERT INTO adele_chat_sessions '
+              '(session_id, instructions, max_model_invocations, next_entry) '
+              'VALUES (:session, :instructions, :budget, :counter)',
+          parameters: {
+            ...parameters,
+            ':instructions': state.instructions,
+            ':budget': state.maxModelInvocations,
+            ':counter': state._nextEntry,
+          },
+          expectedRows: 1,
+        ),
+      ]);
+    }
+    return _sessions[id] = state;
+  }
+}
+
+const _chatSchema = '''
+CREATE TABLE adele_chat_sessions (
+  session_id TEXT NOT NULL PRIMARY KEY REFERENCES adele_product_sessions(id),
+  instructions TEXT NOT NULL,
+  max_model_invocations INTEGER NOT NULL CHECK (max_model_invocations > 0),
+  next_entry INTEGER NOT NULL CHECK (next_entry >= 0)
+);
+CREATE TABLE adele_chat_entries (
+  session_id TEXT NOT NULL REFERENCES adele_chat_sessions(session_id),
+  sequence INTEGER NOT NULL CHECK (sequence >= 0),
+  entry_id TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+  content TEXT NOT NULL,
+  PRIMARY KEY (session_id, sequence),
+  UNIQUE (session_id, entry_id)
+);
+''';
+
+final class ChatStateCorruption implements Exception {
+  const ChatStateCorruption(this.sessionId, this.message);
+
+  final SessionId sessionId;
+  final String message;
+
+  @override
+  String toString() => 'ChatStateCorruption(${sessionId.value}): $message';
 }
 
 final class ChatSessionState {
-  ChatSessionState(this.id);
+  ChatSessionState(this.id) : _storage = null;
+
+  ChatSessionState._durable(this.id, this._storage);
 
   final SessionId id;
+  final ProjectStorageService? _storage;
   String _instructions = chatDefaultInstructions;
   int _maxModelInvocations = 8;
   final List<ChatEntry> _entries = <ChatEntry>[];
@@ -298,6 +477,7 @@ final class ChatSessionState {
   String get instructions => _instructions;
 
   set instructions(String value) {
+    _requireVolatile();
     _requireIdle();
     _instructions = value;
   }
@@ -305,6 +485,7 @@ final class ChatSessionState {
   int get maxModelInvocations => _maxModelInvocations;
 
   set maxModelInvocations(int value) {
+    _requireVolatile();
     _requireIdle();
     if (value < 1) {
       throw ArgumentError.value(
@@ -317,11 +498,13 @@ final class ChatSessionState {
   }
 
   ChatEntry appendUserMessage(String content) {
+    _requireVolatile();
     _requireIdle();
     return _append('user', content);
   }
 
   ChatEntry _append(String role, String content) {
+    _requireVolatile();
     _requireContent(content);
     final entry = ChatEntry(
       id: ChatEntryId('entry-${_nextEntry++}').value,
@@ -330,6 +513,121 @@ final class ChatSessionState {
     );
     _entries.add(entry);
     return entry;
+  }
+
+  Future<ChatEntry> _appendUserMessage(String content) async {
+    final claim = Object();
+    _acquire(claim);
+    try {
+      final entry = ChatEntry(
+        id: 'entry-$_nextEntry',
+        role: 'user',
+        content: content,
+      );
+      await _persistEntries([entry], _nextEntry + 1);
+      _entries.add(entry);
+      _nextEntry++;
+      return entry;
+    } finally {
+      _release(claim);
+    }
+  }
+
+  Map<String, Object?> get _preconditions => {
+    ':session': id.value,
+    ':previousCounter': _nextEntry,
+    ':previousInstructions': _instructions,
+    ':previousBudget': _maxModelInvocations,
+  };
+
+  static const _whereCurrent =
+      'WHERE session_id = :session AND next_entry = :previousCounter '
+      'AND instructions = :previousInstructions '
+      'AND max_model_invocations = :previousBudget';
+
+  Future<void> _configure(String instructions, int budget) async {
+    final claim = Object();
+    _acquire(claim);
+    try {
+      if (_storage != null) {
+        _requireReadableConfiguration(instructions, budget, _nextEntry);
+      }
+      await _storage?.transactionForSession(id.value, [
+        RelationalStatement(
+          sql:
+              'UPDATE adele_chat_sessions SET instructions = :instructions, '
+              'max_model_invocations = :budget $_whereCurrent',
+          parameters: {
+            ..._preconditions,
+            ':instructions': instructions,
+            ':budget': budget,
+          },
+          expectedRows: 1,
+        ),
+      ]);
+      _instructions = instructions;
+      _maxModelInvocations = budget;
+    } finally {
+      _release(claim);
+    }
+  }
+
+  Future<void> _persistEntries(List<ChatEntry> entries, int counter) async {
+    if (_storage == null) return;
+    _requireReadableConfiguration(_instructions, _maxModelInvocations, counter);
+    for (var index = 0; index < entries.length; index++) {
+      _requireReadableRow({
+        'session_id': id.value,
+        'sequence': _entries.length + index,
+        'entry_id': entries[index].id,
+        'role': entries[index].role,
+        'content': entries[index].content,
+      });
+    }
+    await _storage.transactionForSession(id.value, [
+      RelationalStatement(
+        sql:
+            'UPDATE adele_chat_sessions SET next_entry = :counter $_whereCurrent',
+        parameters: {..._preconditions, ':counter': counter},
+        expectedRows: 1,
+      ),
+      for (var index = 0; index < entries.length; index++)
+        RelationalStatement(
+          sql:
+              'INSERT INTO adele_chat_entries '
+              '(session_id, sequence, entry_id, role, content) '
+              'VALUES (:session, :sequence, :entry, :role, :content)',
+          parameters: {
+            ':session': id.value,
+            ':sequence': _entries.length + index,
+            ':entry': entries[index].id,
+            ':role': entries[index].role,
+            ':content': entries[index].content,
+          },
+          expectedRows: 1,
+        ),
+    ]);
+  }
+
+  void _requireReadableConfiguration(
+    String instructions,
+    int budget,
+    int counter,
+  ) {
+    _requireReadableRow({
+      'session_id': id.value,
+      'instructions': instructions,
+      'max_model_invocations': budget,
+      'next_entry': counter,
+    });
+  }
+
+  void _requireVolatile() {
+    if (_storage != null) {
+      throw StateError(
+        'Durable Chat state must be mutated through its service.',
+      );
+    }
   }
 
   ChatSessionSnapshot snapshot() => ChatSessionSnapshot(
@@ -342,7 +640,7 @@ final class ChatSessionState {
     if (_execution != null) {
       throw ChatSessionFailure(
         code: 'session_busy',
-        message: 'The Chat Session has an active execution.',
+        message: 'The Chat Session has an active execution or write.',
         details: <String, Object?>{'sessionId': id.value},
       );
     }
@@ -355,6 +653,16 @@ final class ChatSessionState {
 
   void _release(Object execution) {
     if (identical(_execution, execution)) _execution = null;
+  }
+}
+
+void _requireReadableRow(Map<String, Object?> values) {
+  // The host charges two result bytes plus wrapped row bytes and one separator.
+  final bytes = 2 + utf8.encode(jsonEncode({'values': values})).length + 1;
+  if (bytes > relationalQueryByteLimit) {
+    throw StateError(
+      'Canonical Chat row exceeds the durable query byte limit.',
+    );
   }
 }
 
@@ -371,6 +679,7 @@ final class _ChatExecution implements OrchestrationExecution {
           ? chatToolNarrationGuidance
           : '$chatToolNarrationGuidance\n\n${session.instructions}',
       maxModelInvocations = session.maxModelInvocations {
+    session._requireVolatile();
     if (host.sessionId != session.id) {
       throw ArgumentError('Run and Session identities must match.');
     }

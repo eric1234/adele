@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
+import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
@@ -106,10 +107,16 @@ final class InstalledBackendActivation {
 /// Discovers a prepared startup snapshot and independently attempts every backend.
 /// Installation metadata is not an active capability registry.
 final class ApplicationPluginBootstrap {
-  ApplicationPluginBootstrap(this.registry, this.extensions);
+  ApplicationPluginBootstrap(
+    this.registry,
+    this.extensions, {
+    this.createInfrastructureServices,
+  });
 
   final CapabilityRegistry registry;
   final ExtensionRegistry extensions;
+  final Map<String, AdeleBackendDispatcher> Function(PluginBackendConnection)?
+  createInfrastructureServices;
   final RemoteExtensionAdapterRegistry _adapters =
       createRemoteExtensionAdapters();
   final StreamController<ApplicationPluginState> _changes =
@@ -231,6 +238,7 @@ final class ApplicationPluginBootstrap {
                 arguments:
                     startup[backend.installation.metadata.id.value] ?? const [],
                 startupArgumentsOnly: true,
+                createInfrastructureServices: createInfrastructureServices,
               );
           final PluginBackendActivation activation = backend._activation =
               await PluginBackendActivation.registerAdvertised(

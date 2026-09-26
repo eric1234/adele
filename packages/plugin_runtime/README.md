@@ -4,7 +4,7 @@
 It owns the semantic process-host connection, deterministic framed
 IPC, request correlation, plugin routing, structured remote failures,
 exit/stderr monitoring, and shutdown cleanup. It also owns the prepared installation
-catalog, active capability/extension registration adapters, and operation-scoped
+catalog, active capability/extension registration adapters, and explicitly scoped
 unary and server-streaming host-call routing. Process and framing objects
 do not escape its API.
 
@@ -159,9 +159,18 @@ exact-generation proxy in the existing `ExtensionRegistry`.
 contribution registry or a plugin-facing API. Unsupported points, invalid
 point-specific metadata, and collisions fail activation with exact rollback.
 
+Standalone capability/extension registration failure rolls back only that attempt's
+registrations, preserving infrastructure and other owners on the same connection.
+Their `retire()` methods likewise remain registration-local. Their `close()` methods
+instead synchronously revoke generation infrastructure before invoking retirement
+or awaiting cleanup, then close the connection.
+
 `PluginBackendActivation.registerAdvertised` coherently owns both capability and
-extension phases. Failure rolls back both and closes that attempt's connection;
-retirement removes both sets before connection close. Local failure and later
+extension phases. It passes `beforeRollback: connection.revokeInfrastructureContext`
+to both helpers so fatal generation rollback revokes before helper cleanup starts.
+Failure rolls back both phases and closes that attempt's connection;
+retirement synchronously revokes generation infrastructure and removes both sets
+before awaiting adapter cleanup or connection close. Local failure and later
 termination do not remove unrelated registrations or replacements. The app supplies
 the inference-source, model-tool, and orchestration-strategy adapters; runtime
 owns none of those points' metadata or composition rules.
@@ -234,6 +243,9 @@ is immediate; bounded cleanup cannot prolong authority while producer cancellati
 is pending.
 
 `hostRequest`/`hostResponse` reuse the same isolate ports and framed shared host.
+Unary requests and stream openings require `hostContextKind: 'invocation'` and
+opaque `hostContext` in the generic reverse envelope. Semantic operation payloads
+still use `hostInvocationContext`; those domain fields are not renamed.
 The shared host stamps connection generation and plugin identity from the owning
 isolate, and the runtime validates generation, invocation liveness, and the service
 allowlist before dispatch and after settlement. Late responses cannot migrate to
@@ -283,6 +295,42 @@ Plugins use public `adele_plugin_backend_support`, not this package, for their
 request/stream-channel multiplexer. This is operation-scoped unary and server-streaming
 access, not general symmetric RPC, client/bidirectional streaming, ambient callbacks,
 cancellation of arbitrary host code, or a sandbox. Installed manifests remain version 1.
+
+## Generation Infrastructure
+
+`PluginBackendHost.startPlugin(createInfrastructureServices: ...)` optionally
+accepts a synchronous factory from the actual `PluginBackendConnection` to an
+explicit `Map<String, AdeleBackendDispatcher>` allowlist. The runtime snapshots
+that map and issues one fresh opaque `hostInfrastructureContext` in the shared-host
+start frame and backend bootstrap message, even for an empty allowlist or zero
+advertised contributions. The bootstrap field is required and nonempty on the
+current protocol-v1 wire; there is no missing-field compatibility path.
+
+Infrastructure calls use the same reverse transport, correlation, pending-call,
+and streaming machinery with `hostContextKind: 'infrastructure'` and `hostContext`.
+The infrastructure grant and operation grants have separate lifetime stores:
+cross-kind tokens, foreign generations, and undeclared services fail closed.
+There are no default services, implicit execution/model/tool/Environment grants,
+domain-specific dispatchers, or provider discovery in this package.
+
+Capture `connection.validateInfrastructureContext` in each supplied service and
+call it at service entry, not just in transport routing: generated dispatchers may
+queue an admitted call behind an earlier one until after revocation. Services own
+any additional domain and asynchronous-settlement validation. Dispatchers and their
+cleanup remain factory-caller-owned; revocation is not rollback of started effects.
+
+`connection.revokeInfrastructureContext()` is synchronous and permanent. Composite
+backend activation retirement and fatal rollback revoke before asynchronous cleanup;
+standalone activation close, startup failure, stop/close, termination, and host close
+also revoke. Standalone registration-local rollback and `retire()` do not revoke
+the generation grant. Pending unary calls and streams settle without waiting for
+arbitrary service cleanup. Completing
+an operation or retiring an individual extension does not revoke infrastructure.
+A replacement connection receives a new token; retained tokens/channels never
+retarget. Tokens are live authority, not serializable durable identity or reusable
+configuration, and must not be persisted. Plugins bind them through
+`AdeleHostRequestMultiplexer.bindInfrastructure`, not a symmetric RPC or ambient
+callback system.
 
 ## Maintenance And Limits
 

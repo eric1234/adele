@@ -27,8 +27,11 @@ record's own status and supersession/amendment notes: historical wording include
 proposed, deferred, qualified acceptance, and partial supersession, not a uniform
 status taxonomy to normalize during documentation reorganization.
 
-The latest record is [ADR 0033: Durable Project storage and provider-selected
-backing](0033-durable-project-storage-and-provider-backing.md), following
-[ADR 0032](0032-remote-backend-extensions-use-operation-scoped-host-services.md).
-It amends ADR 0031's Project opening/storage boundary while preserving product
-semantic ownership and the distinction between durable data and live bindings.
+The latest record is [ADR 0034: Plugin-owned relational Session
+storage](0034-plugin-owned-relational-session-storage.md). It narrowly amends
+[ADR 0033](0033-durable-project-storage-and-provider-backing.md) for durable Sessions
+and plugin-owned relational state, and
+[ADR 0032](0032-remote-backend-extensions-use-operation-scoped-host-services.md) for
+distinct generation-scoped infrastructure access. Product semantic ownership,
+private Project backing, and operation-scoped execution authority remain intact;
+the earlier records retain their historical scope.

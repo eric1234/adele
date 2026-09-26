@@ -15,7 +15,7 @@ concrete behavior supplied by plugins:
 | Domain | Responsibility |
 | --- | --- |
 | Desktop composition root (`app/`) | Compose host systems, desktop integration, and the workbench shell. |
-| Public/plugin-facing architecture (`packages/`) | Define product identities, plugin/extension contracts, capabilities and transport contracts, Environment, orchestration, model tools/providers, and semantic UI roles. |
+| Public/plugin-facing architecture (`packages/`) | Define product identities, plugin/extension contracts, capabilities and transport contracts, Project storage, Environment, orchestration, model tools/providers, and semantic UI roles. |
 | Internal host/runtime (`packages/`) | Implement plugin hosting, generic agent execution mechanics, and build/preparation tooling behind public boundaries. |
 | Plugins (`plugins/`) | Supply stock and reference providers, strategies, tools, integrations, and presentation using public contracts. |
 
@@ -126,16 +126,23 @@ state nor grant execution or approval authority.
 ## Configuration and persistence
 
 Profiles and general configuration are accepted architecture but largely
-unimplemented. Project identity/source, Tasks, and Environment semantic records
-and provider-state snapshots use host-owned per-Project SQLite with provider-selected
-backing. Environment materialization stays lazy/runtime-only; Sessions, Runs, Chat,
-and general plugin state remain non-durable. The live product graph is still in
-memory. Configuration, durable product state, plugin-owned state, live runtime
-state, security policy, and
-workbench state are separate concerns, not one generic settings object. See
+unimplemented. Project identity/source, Tasks, Environment records/provider-state
+snapshots, Sessions, and their semantic Environment associations use host-owned
+per-Project SQLite with provider-selected backing. Reopen validates the complete
+graph before publishing it into the live in-memory store, without resolving stored
+strategies or materializing Environments.
+
+Plugins own their relational schemas behind the shared `adele_project_storage`
+contract; SQLite and connection lifetime remain app-private. Chat lazily restores
+its canonical history and Session configuration through an exact-generation
+infrastructure grant, distinct from operation-scoped execution authority. Runs,
+execution evidence, approvals, and presentation state are not restored.
+Configuration, durable product state, plugin-owned state, live runtime state,
+security policy, and workbench state remain separate concerns. See
 [profiles and configuration](profiles-and-configuration.md),
-[Project storage](product-model.md#project-storage) and
-[product state boundary](product-model.md#durable-semantic-data-and-live-runtime-objects).
+[Project storage](product-model.md#project-storage),
+[plugin-owned persistence](plugin-system.md#plugin-owned-state-and-persistence),
+and [infrastructure access](contracts-and-capabilities.md#generation-scoped-infrastructure-access).
 
 ## Source map
 
@@ -144,6 +151,7 @@ workbench state are separate concerns, not one generic settings object. See
 | Product identities and immutable values | [`packages/product/`](../../packages/product/) |
 | Product lifecycle and Session/Environment authority | [`app/lib/core/product_lifecycle.dart`](../../app/lib/core/product_lifecycle.dart), `ProductLifecycleCoordinator` |
 | Private Project storage | [`app/lib/core/project_database.dart`](../../app/lib/core/project_database.dart), `ProjectDatabase`, `MigrationCoordinator` |
+| Shared relational storage contract / app mediation | [`packages/project_storage/`](../../packages/project_storage/), [`app/lib/core/project_storage_host.dart`](../../app/lib/core/project_storage_host.dart) |
 | Extension registry and binding liveness | [`packages/plugin_api/`](../../packages/plugin_api/) |
 | Core-owned Project selection/backing contracts | [`packages/core_extensions/`](../../packages/core_extensions/) |
 | Capability routing and transport contracts | [`packages/capabilities/`](../../packages/capabilities/), [`packages/contract/`](../../packages/contract/) |

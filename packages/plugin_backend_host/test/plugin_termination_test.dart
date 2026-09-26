@@ -185,6 +185,255 @@ void main() {
     },
   );
 
+  test(
+    'infrastructure bootstrap is required even with no service allowlist',
+    () async {
+      final sent = <Map<String, Object?>>[];
+      final host = AdeleBackendHost(
+        send: (message) {
+          sent.add(message);
+          return true;
+        },
+        diagnostic: (_) {},
+      );
+      addTearDown(() => host.shutdown(notify: false));
+      for (final token in [null, '', 42]) {
+        await host.handle({
+          'protocolVersion': backendHostProtocolVersion,
+          'kind': 'startPlugin',
+          'requestId': 1,
+          'pluginId': 'missing-token',
+          'generation': 'generation',
+          'defaultConfigurationContext': 'default',
+          'artifactUri': pluginKernel.uri.toString(),
+          'arguments': ['wait'],
+          'hostInfrastructureContext': ?token,
+        });
+        expect(sent.last['kind'], 'error');
+        expect(
+          (sent.last['error'] as Map)['message'],
+          contains('hostInfrastructureContext'),
+        );
+      }
+    },
+  );
+
+  test(
+    'real backend infrastructure uses exact bootstrap grant, not invocation authority',
+    () async {
+      final host = await _startHost(dartaotruntime, hostArtifact);
+      addTearDown(host.close);
+      late PluginBackendConnection captured;
+      final dispatcher = _HostDispatcher((request) async {
+        captured.validateInfrastructureContext();
+        return {
+          'kind': 'response',
+          'requestId': request['requestId'],
+          'ok': true,
+          'payload': 'infrastructure',
+        };
+      });
+      final plugin = await host.startPlugin(
+        pluginId: 'infrastructure',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['wait'],
+        createInfrastructureServices: (connection) {
+          captured = connection;
+          return {'fixtureService': dispatcher};
+        },
+      );
+      expect(captured, same(plugin));
+      expect(plugin.capabilityExposures, isEmpty);
+      expect(plugin.extensionExposures, isEmpty);
+      final token =
+          await plugin.request('infrastructure-context', {}) as String;
+      expect(token, isNotEmpty);
+      final invocation = plugin.openHostInvocation({
+        'fixtureService': dispatcher,
+      });
+      final peer = await host.startPlugin(
+        pluginId: 'infrastructure-peer',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['wait'],
+      );
+      for (final attempt in [
+        (
+          owner: plugin,
+          kind: 'infrastructure',
+          token: token,
+          service: 'fixtureService',
+          code: null,
+        ),
+        (
+          owner: plugin,
+          kind: 'invocation',
+          token: invocation.id,
+          service: 'fixtureService',
+          code: null,
+        ),
+        (
+          owner: plugin,
+          kind: 'infrastructure',
+          token: invocation.id,
+          service: 'fixtureService',
+          code: 'host_infrastructure_unavailable',
+        ),
+        (
+          owner: plugin,
+          kind: 'invocation',
+          token: token,
+          service: 'fixtureService',
+          code: 'host_invocation_unavailable',
+        ),
+        (
+          owner: peer,
+          kind: 'infrastructure',
+          token: token,
+          service: 'fixtureService',
+          code: 'host_infrastructure_unavailable',
+        ),
+        (
+          owner: plugin,
+          kind: 'infrastructure',
+          token: token,
+          service: 'execution',
+          code: 'service_unavailable',
+        ),
+      ]) {
+        final response =
+            await attempt.owner.request('reverse', {
+                  'contextKind': attempt.kind,
+                  'context': attempt.token,
+                  'service': attempt.service,
+                })
+                as Map;
+        if (attempt.code == null) {
+          expect(response['payload'], 'infrastructure');
+        } else {
+          expect((response['error'] as Map)['code'], attempt.code);
+        }
+      }
+      expect(dispatcher.calls, 2);
+      invocation.close();
+      expect(
+        (await plugin.request('reverse', {'contextKind': 'infrastructure'})
+            as Map)['payload'],
+        'infrastructure',
+      );
+      plugin.revokeInfrastructureContext();
+      expect(
+        (await plugin.request('reverse', {'contextKind': 'infrastructure'})
+            as Map)['error'],
+        containsPair('code', 'host_infrastructure_unavailable'),
+      );
+    },
+  );
+
+  test(
+    'infrastructure streams preserve scope isolation and revoke before hanging cleanup',
+    () async {
+      final host = await _startHost(dartaotruntime, hostArtifact);
+      addTearDown(host.close);
+      final cleanup = Completer<void>();
+      final source = StreamController<Object?>(onCancel: () => cleanup.future);
+      final dispatcher = _StreamHostDispatcher((_) => source.stream);
+      final plugin = await host.startPlugin(
+        pluginId: 'infrastructure-stream',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['reverse-streams'],
+        createInfrastructureServices: (_) => {'fixtureService': dispatcher},
+      );
+      final peer = await host.startPlugin(
+        pluginId: 'infrastructure-stream-peer',
+        artifactUri: pluginArtifact.uri,
+        arguments: ['reverse-streams'],
+      );
+      final token =
+          await plugin.request('infrastructure-context', {}) as String;
+      final invocation = plugin.openHostInvocation({});
+      for (final attempt in [
+        (
+          owner: plugin,
+          kind: 'infrastructure',
+          token: invocation.id,
+          service: 'fixtureService',
+          code: 'host_infrastructure_unavailable',
+        ),
+        (
+          owner: plugin,
+          kind: 'invocation',
+          token: token,
+          service: 'fixtureService',
+          code: 'host_invocation_unavailable',
+        ),
+        (
+          owner: peer,
+          kind: 'infrastructure',
+          token: token,
+          service: 'fixtureService',
+          code: 'host_infrastructure_unavailable',
+        ),
+        (
+          owner: plugin,
+          kind: 'infrastructure',
+          token: token,
+          service: 'execution',
+          code: 'service_unavailable',
+        ),
+      ]) {
+        await expectLater(
+          attempt.owner.stream('nested', {
+            'contextKind': attempt.kind,
+            'context': attempt.token,
+            'service': attempt.service,
+          }),
+          emitsError(
+            isA<PluginRemoteFailure>().having(
+              (e) => e.code,
+              'code',
+              attempt.code,
+            ),
+          ),
+        );
+      }
+      final first = Completer<void>();
+      final done = Completer<void>();
+      final errors = <Object>[];
+      plugin
+          .stream('nested', {'contextKind': 'infrastructure'})
+          .listen(
+            (item) {
+              expect(item, 1);
+              first.complete();
+            },
+            onError: errors.add,
+            onDone: done.complete,
+          );
+      source.add(1);
+      await first.future;
+      invocation.close();
+      expect(plugin.validateInfrastructureContext, returnsNormally);
+      plugin.revokeInfrastructureContext();
+      expect(
+        plugin.validateInfrastructureContext,
+        throwsA(isA<PluginConnectionClosed>()),
+      );
+      await done.future.timeout(const Duration(seconds: 1));
+      expect(errors, [
+        isA<PluginRemoteFailure>().having(
+          (e) => e.code,
+          'code',
+          'host_infrastructure_unavailable',
+        ),
+      ]);
+      expect(dispatcher.cancels, 1);
+      expect(dispatcher.opens, 1);
+      expect(await plugin.request('ping', {}), 'alive');
+      cleanup.complete();
+      await source.close();
+    },
+  );
+
   for (final action in ['cancel', 'revoke', 'close', 'crash', 'host-close']) {
     test(
       'reverse stream $action settles independently of hanging producer cleanup',
@@ -308,7 +557,8 @@ void main() {
         {
           'kind': 'hostStreamOpen',
           'requestId': 0,
-          'hostInvocationContext': 'scope',
+          'hostContextKind': 'invocation',
+          'hostContext': 'scope',
           'serviceId': 'fixtureService',
           'method': 'watch',
           'payload': {},
@@ -316,7 +566,8 @@ void main() {
         {
           'kind': 'hostStreamOpen',
           'requestId': 1,
-          'hostInvocationContext': 'scope',
+          'hostContextKind': 'invocation',
+          'hostContext': 'scope',
           'serviceId': 'fixtureService',
           'method': 'watch',
           'payload': {},
@@ -427,7 +678,8 @@ void main() {
             .request('raw', {
               'kind': 'hostStreamOpen',
               'requestId': 0,
-              'hostInvocationContext': 'unknown',
+              'hostContextKind': 'invocation',
+              'hostContext': 'unknown',
               'serviceId': 'fixtureService',
               'method': 'watch',
               'payload': {},
@@ -724,7 +976,8 @@ void main() {
     for (final malformed in <Map<String, Object?>>[
       for (final field in [
         'requestId',
-        'hostInvocationContext',
+        'hostContextKind',
+        'hostContext',
         'serviceId',
         'method',
         'payload',
@@ -750,6 +1003,12 @@ void main() {
       },
       {
         'extra': {'serviceId': 'bad/service'},
+      },
+      {
+        'extra': {'hostContextKind': 'unknown'},
+      },
+      {
+        'extra': {'hostContext': ''},
       },
     ]) {
       final plugin = await host.startPlugin(
@@ -872,6 +1131,7 @@ void main() {
           'requestId': 1,
           'pluginId': 'captured',
           'generation': generation,
+          'hostInfrastructureContext': 'infrastructure-$generation',
           'defaultConfigurationContext': 'default',
           'artifactUri': pluginKernel.uri.toString(),
           'arguments': ['wait'],
@@ -1180,6 +1440,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 1,
         'pluginId': 'invalid-startup-mode',
+        'hostInfrastructureContext': 'test-infrastructure',
         'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
         'artifactUri': pluginKernel.uri.toString(),
@@ -1295,6 +1556,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 1,
         'pluginId': 'send-failure',
+        'hostInfrastructureContext': 'test-infrastructure',
         'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
         'artifactUri': pluginKernel.uri.toString(),
@@ -2074,6 +2336,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 1,
         'pluginId': 'invalid-credit',
+        'hostInfrastructureContext': 'test-infrastructure',
         'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
         'artifactUri': pluginArtifact.uri.toString(),
@@ -2163,6 +2426,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 1,
         'pluginId': 'double-send-failure',
+        'hostInfrastructureContext': 'test-infrastructure',
         'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
         'artifactUri': pluginKernel.uri.toString(),
@@ -2173,6 +2437,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 2,
         'pluginId': 'healthy-peer',
+        'hostInfrastructureContext': 'test-peer-infrastructure',
         'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
         'artifactUri': pluginKernel.uri.toString(),
@@ -2289,6 +2554,7 @@ void main() {
       'kind': 'startPlugin',
       'requestId': 30,
       'pluginId': 'cancel-forwarding',
+      'hostInfrastructureContext': 'test-infrastructure',
       'generation': 'test-generation',
       'defaultConfigurationContext': 'default',
       'artifactUri': pluginKernel.uri.toString(),
@@ -2355,6 +2621,7 @@ void main() {
         'kind': 'startPlugin',
         'requestId': 40,
         'pluginId': 'ingress-cancel',
+        'hostInfrastructureContext': 'test-infrastructure',
         'generation': 'test-generation',
         'defaultConfigurationContext': 'default',
         'artifactUri': pluginKernel.uri.toString(),
@@ -2431,6 +2698,7 @@ void main() {
       'kind': 'startPlugin',
       'requestId': 50,
       'pluginId': 'pre-admission-cancel',
+      'hostInfrastructureContext': 'test-infrastructure',
       'generation': 'test-generation',
       'defaultConfigurationContext': 'default',
       'artifactUri': pluginKernel.uri.toString(),
@@ -2531,6 +2799,7 @@ void main() {
       'kind': 'startPlugin',
       'requestId': 60,
       'pluginId': 'discard-cancel',
+      'hostInfrastructureContext': 'test-infrastructure',
       'generation': 'test-generation',
       'defaultConfigurationContext': 'default',
       'artifactUri': pluginKernel.uri.toString(),

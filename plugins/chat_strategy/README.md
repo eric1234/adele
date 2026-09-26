@@ -18,18 +18,24 @@ The backend entrypoint `packages/backend/bin/chat_strategy_backend.dart` owns
 its router and advertises only the existing orchestration strategy extension.
 The plugin-internal `ChatSessionService` remains callable on that same backend
 router without a capability advertisement or semantic provider discovery.
-Both dispatchers share one `ChatSessionStore`.
+Both dispatchers share one generation-local `ChatSessionStore`. Installed Chat
+receives a generated Project storage client through its required host
+infrastructure context and lazily loads durable canonical state on first access.
+Schema and persistence details belong to the [backend map](packages/backend/README.md).
 Chat-owned `ChatRemoteOrchestrationBackend` composes the unchanged public F3f
 `RemoteOrchestrationBackend`, with fresh operation-scoped host calls on start/resume.
 Each exact remote execution runs the existing sequencing implementation against
 an execution-local copy of canonical history and configuration. Its final
-assistant entry is published only after F3f returns an acknowledged completed
-advancement. While the terminal host transition is pending, canonical snapshots
+assistant entry is persisted and published only after F3f returns an acknowledged
+completed advancement. While the terminal host transition or subsequent SQL
+commit is pending, canonical snapshots
 still contain only previously accepted history. Rejected or mismatched terminal
 acknowledgements discard the candidate rather than exposing or rolling back a
 fabricated final entry. The canonical Session claim spans commit or discard as
 well as execution close; accepted user entries and prior history remain intact.
-No new extension point, host callback, or static production activation is needed.
+Storage failure after host completion leaves Chat's canonical cache unchanged
+and propagates the failure; it does not pretend the already-completed Run was
+rolled back. No static production activation is needed.
 Backend availability is independent of the frontend and model credentials.
 
 Create a canonical Session using the strategy selected by its presentation.
@@ -59,7 +65,8 @@ Future<void> configureSession(
 (`user` or `assistant`), and `String content`. `ChatEntryId` is a plugin-owned
 opaque occurrence identity, transported as a string to keep interpreted DTOs
 simple. IDs are allocated at append, unique within a retained Session, and
-stable across later snapshots even when messages have identical content.
+stable across later snapshots and durable reloads even when messages have
+identical content.
 
 Only the strategy can append a final assistant answer or refusal; the service
 exposes no assistant/history-replacement operation. Blank messages are rejected
@@ -72,9 +79,13 @@ is `chatDefaultInstructions` in the backend, not a host/frontend default.
 Each execution captures configuration at materialization. Materialization claims
 the Session until execution close finishes, including approval waits and terminal
 host settlement. Appends, configuration, and another materialization cannot
-change a claimed Session. Snapshots and other Sessions remain usable.
+change a claimed Session. Idle durable writes also retain the claim through SQL
+acknowledgement before publishing new canonical state. Snapshots and other
+Sessions remain usable.
 The service returns declared `ChatSessionFailure` codes `session_busy`,
 `invalid_session`, `invalid_content`, or `invalid_configuration`.
+Storage and corruption failures are not translated into invalid-input failures
+or hidden by volatile fallback.
 The remote execution owner closes on terminal settlement or errors; explicit
 release and backend shutdown also release the claim without resolving approvals.
 The in-process `ChatStrategyPlugin.activate` helper is retained for backend/host
@@ -238,10 +249,12 @@ The current context projection deliberately preserves the development loop's
 simple conversation-plus-Run-items behavior. Rich context selection, context
 truncation and summarization, context sources beyond root AGENTS.md, provider-aware
 projection/cache planning, token budgets, richer Chat UI, broader tool/provider
-activity presentation, reasoning deltas, arbitrary plugin drill-down, persistence, profiles,
+activity presentation, reasoning deltas, arbitrary plugin drill-down, Run/activity
+persistence, profiles,
 child Sessions, state migration, and concurrent
-conversation editing are not implemented. State retention is in-memory and scoped
-to the supplied store, not durable product Session storage.
+conversation editing are not implemented. Canonical Chat history and configuration
+persist for durable Sessions; explicitly volatile fixtures remain scoped to their
+supplied store. Execution state, approvals, replay, and activity are not restored.
 Prepared frontend discovery and activation are implemented; installation/update
 management and artifact caching remain deferred. Checkout preparation stands in
 for future installation/update compilation, separate from activation consuming

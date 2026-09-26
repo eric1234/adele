@@ -57,6 +57,12 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
+    name: 'adele_project_storage',
+    path: 'packages/project_storage',
+    executable: 'dart',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
     name: 'adele_ui',
     path: 'packages/ui',
     executable: 'flutter',
@@ -256,6 +262,11 @@ analysisTargets = <({String name, String path, bool flutter})>[
     flutter: false,
   ),
   (name: 'adele_product', path: 'packages/product', flutter: false),
+  (
+    name: 'adele_project_storage',
+    path: 'packages/project_storage',
+    flutter: false,
+  ),
   (
     name: 'adele_core_extensions',
     path: 'packages/core_extensions',

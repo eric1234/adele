@@ -117,7 +117,8 @@ void main() {
         expect(request, {
           'kind': 'hostRequest',
           'requestId': isA<int>(),
-          'hostInvocationContext': 'opaque-invocation',
+          'hostContextKind': 'invocation',
+          'hostContext': 'opaque-invocation',
           'serviceId': authorizedEnvironmentMutationServiceId,
           'method': authorizedEnvironmentMutationServiceCreateTextFileId,
           'payload': {'relativePath': 'dir/source.dart', 'text': 'new\n'},

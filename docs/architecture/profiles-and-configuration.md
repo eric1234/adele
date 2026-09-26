@@ -15,8 +15,8 @@ Current normal startup uses a fixed participation policy, not profile-aware
 activation. The self-hosting CLI's `chatgpt` / `api-key` provider-selection
 "profiles" are unrelated implementation terminology. Prepared installation
 metadata, backend-ready advertisements, generation-bound configuration contexts,
-and host invocation contexts are not Profiles; their boundaries belong to
-[plugin layout](plugin-layout.md) and
+and host invocation/infrastructure contexts are not Profiles; their boundaries
+belong to [plugin layout](plugin-layout.md) and
 [contracts and capabilities](contracts-and-capabilities.md).
 
 ## Profiles and ordered stacks
@@ -225,10 +225,13 @@ domain needs the same representation. Portable/local overlays and exact storage
 mechanics remain deferred.
 
 The implemented [per-Project SQLite store](product-model.md#project-storage)
-persists Project identity/source only. It is not the configuration store, a
-remembered Profile stack, configured-provider state, or general plugin
-persistence. Its owner-keyed migration metadata does not establish a public
-setting/plugin migration API or change the human-readable configuration boundary.
+persists the core product graph through Sessions and their semantic Environment
+associations. Plugins can retain Session-associated relational state through
+`adele_project_storage`; Chat's history, instructions, invocation budget, and
+entry counter are domain state, not a settings cascade. This is not the general
+configuration store, a remembered Profile stack, configured-provider/credential
+store, or workbench persistence. Owner-keyed SQL migrations do not establish a
+setting migration API or change the human-readable configuration boundary.
 
 Plugin-owned domain state is not automatically ordinary cascading configuration,
 even when host persistence facilities store it. Storage does not transfer semantic
@@ -310,8 +313,10 @@ Implemented foundations and current limits:
 
 - Installation/catalog metadata remains distinct from activation/configuration.
 - Capability endpoints have generation-bound configuration contexts.
-- Durable Project identity/source provide no Profile, configuration, or general
-  plugin-state persistence.
+- Durable product records and plugin-owned relational Session state provide no
+  Profile, general settings, configured-instance, credential, or workbench storage.
+- Backend infrastructure access is generation-local, distinct from both
+  configuration routing and operation-scoped execution authority.
 - Normal startup uses a fixed participation policy, attempting discovered valid
   components rather than resolving Profiles.
 - Current provisional provider selection and temporary source-checkout configuration
@@ -337,8 +342,10 @@ profile-aware provider routing, or production workbench-state persistence.
 
 These deferrals do not reopen ordered flat Profile composition or the product
 identities accepted by ADRs 0029 and 0031. Configuration storage layouts, schemas,
-migration protocols, and APIs remain open; [ADR 0033](../adr/0033-durable-project-storage-and-provider-backing.md)
-separately settles the narrower Project backing/storage decision.
+migration protocols, and APIs remain open; ADRs
+[0033](../adr/0033-durable-project-storage-and-provider-backing.md) and
+[0034](../adr/0034-plugin-owned-relational-session-storage.md) separately settle
+Project backing and plugin-owned relational Session storage, not these domains.
 
 ## Related architecture
 

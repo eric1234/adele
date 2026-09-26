@@ -4,17 +4,23 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 
 import 'application_plugin_bootstrap.dart';
 import 'product_lifecycle.dart';
+import 'project_storage_host.dart';
 
 /// Application-lifetime host graph without implicit plugin activations.
 /// Providers and product operations are established separately by callers.
 final class AdeleRuntime {
   AdeleRuntime({ProductIdSource? ids}) {
-    plugins = ApplicationPluginBootstrap(registry, extensions);
     lifecycle = ProductLifecycleCoordinator.generated(
       store: store,
       registry: registry,
       extensions: extensions,
       ids: ids,
+    );
+    plugins = ApplicationPluginBootstrap(
+      registry,
+      extensions,
+      createInfrastructureServices: (connection) =>
+          projectStorageServices(lifecycle, connection),
     );
     contextComposer = InferenceContextComposer(extensions);
   }
