@@ -155,20 +155,28 @@ final class ChatRemoteOrchestrationBackend
     final settled = Completer<void>();
     _materializations.add(settled.future);
     _ChatHistoryTransaction? transaction;
+    String? executionId;
     try {
       final source = await sessions.load(SessionId(session.sessionId));
       _requireOpen();
       transaction = _ChatHistoryTransaction(source);
       _materializing[source.id] = transaction;
-      final id = await _backend.materialize(routeId, session, runId);
-      if (_closing != null) {
-        await _backend.release(id);
-        throw StateError('The Chat backend closed during materialization.');
-      }
-      _executions[id] = transaction;
-      return id;
+      executionId = await _backend.materialize(routeId, session, runId);
+      _requireOpen();
+      await transaction.associateRun(RunId(runId));
+      _requireOpen();
+      _executions[executionId] = transaction;
+      return executionId;
     } on Object {
-      await transaction?.finish(commit: false);
+      try {
+        try {
+          if (executionId != null) await _backend.release(executionId);
+        } finally {
+          await transaction?.finish(commit: false);
+        }
+      } on Object {
+        // Preserve the materialization/association failure over cleanup errors.
+      }
       rethrow;
     } finally {
       if (transaction != null) _materializing.remove(transaction.source.id);
@@ -290,6 +298,58 @@ final class _ChatHistoryTransaction {
   Future<void>? releasing;
   Future<void>? _finishing;
 
+  Future<void> associateRun(RunId runId) async {
+    if (source._entries.isEmpty) return;
+    final entry = source._entries.last;
+    if (entry.role != 'user' || entry.runId != null) return;
+    final index = source._entries.length - 1;
+    if (source._entries.any((entry) => entry.runId == runId.value)) {
+      throw const InvalidRunOperation('The Run already has a Chat user entry.');
+    }
+    final associated = ChatEntry(
+      id: entry.id,
+      role: entry.role,
+      content: entry.content,
+      runId: runId.value,
+    );
+    if (source._storage case final storage?) {
+      _requireReadableRow({
+        'session_id': source.id.value,
+        'sequence': index,
+        'entry_id': associated.id,
+        'role': associated.role,
+        'content': associated.content,
+        'run_id': associated.runId,
+      });
+      await storage.transactionForSession(source.id.value, [
+        RelationalStatement(
+          sql:
+              'UPDATE adele_chat_sessions SET next_entry = :previousCounter '
+              '${ChatSessionState._whereCurrent}',
+          parameters: source._preconditions,
+          expectedRows: 1,
+        ),
+        RelationalStatement(
+          sql:
+              'UPDATE adele_chat_entries SET run_id = :run '
+              'WHERE session_id = :session AND sequence = :sequence '
+              "AND entry_id = :entry AND role = 'user' AND content = :content "
+              'AND run_id IS NULL',
+          parameters: {
+            ':session': source.id.value,
+            ':sequence': index,
+            ':entry': entry.id,
+            ':content': entry.content,
+            ':run': runId.value,
+          },
+          expectedRows: 1,
+        ),
+      ]);
+    }
+    source._entries[index] = associated;
+    staged._entries[index] = associated;
+  }
+
   Future<void> finish({required bool commit}) =>
       _finishing ??= _finish(commit: commit);
 
@@ -374,10 +434,11 @@ final class ChatSessionStore {
         .._draftRequest = draft;
       state._requireReadableConfiguration(instructions, budget, counter, draft);
     }
+    final runIds = <RunId>{};
     while (true) {
       final entries = await storage.queryForSession(
         id.value,
-        'SELECT session_id, sequence, entry_id, role, content '
+        'SELECT session_id, sequence, entry_id, role, content, run_id '
         'FROM adele_chat_entries WHERE session_id = :session '
         'AND sequence = :sequence LIMIT 2',
         {...parameters, ':sequence': state._entries.length},
@@ -391,19 +452,33 @@ final class ChatSessionStore {
       final entryId = values['entry_id'];
       final role = values['role'];
       final content = values['content'];
+      final runId = values['run_id'];
       if (values['session_id'] != id.value ||
           sequence != state._entries.length ||
           entryId != 'entry-${state._entries.length}' ||
           (role != 'user' && role != 'assistant') ||
           content is! String ||
-          content.trim().isEmpty) {
+          content.trim().isEmpty ||
+          (runId != null && (runId is! String || role != 'user'))) {
         throw ChatStateCorruption(id, 'Invalid ordered canonical entry.');
+      }
+      if (runId is String) {
+        final RunId identity;
+        try {
+          identity = RunId(runId);
+        } on FormatException {
+          throw ChatStateCorruption(id, 'Invalid associated Run identity.');
+        }
+        if (!runIds.add(identity)) {
+          throw ChatStateCorruption(id, 'Duplicate associated Run identity.');
+        }
       }
       state._entries.add(
         ChatEntry(
           id: entryId as String,
           role: role as String,
           content: content,
+          runId: runId as String?,
         ),
       );
     }
@@ -466,8 +541,11 @@ CREATE TABLE adele_chat_entries (
   entry_id TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
   content TEXT NOT NULL,
+  run_id TEXT,
   PRIMARY KEY (session_id, sequence),
-  UNIQUE (session_id, entry_id)
+  UNIQUE (session_id, entry_id),
+  UNIQUE (session_id, run_id),
+  CHECK (role = 'user' OR run_id IS NULL)
 );
 ''';
 
@@ -533,6 +611,7 @@ final class ChatSessionState {
       id: ChatEntryId('entry-${_nextEntry++}').value,
       role: role,
       content: content,
+      runId: null,
     );
     _entries.add(entry);
     return entry;
@@ -556,6 +635,7 @@ final class ChatSessionState {
         id: 'entry-$_nextEntry',
         role: 'user',
         content: content,
+        runId: null,
       );
       await _persistEntries([entry], _nextEntry + 1, clearDraft: clearDraft);
       _entries.add(entry);
@@ -658,6 +738,7 @@ final class ChatSessionState {
         'entry_id': entries[index].id,
         'role': entries[index].role,
         'content': entries[index].content,
+        'run_id': entries[index].runId,
       });
     }
     await _storage.transactionForSession(id.value, [
@@ -672,14 +753,15 @@ final class ChatSessionState {
         RelationalStatement(
           sql:
               'INSERT INTO adele_chat_entries '
-              '(session_id, sequence, entry_id, role, content) '
-              'VALUES (:session, :sequence, :entry, :role, :content)',
+              '(session_id, sequence, entry_id, role, content, run_id) '
+              'VALUES (:session, :sequence, :entry, :role, :content, :run)',
           parameters: {
             ':session': id.value,
             ':sequence': _entries.length + index,
             ':entry': entries[index].id,
             ':role': entries[index].role,
             ':content': entries[index].content,
+            ':run': entries[index].runId,
           },
           expectedRows: 1,
         ),

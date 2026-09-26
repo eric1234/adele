@@ -6,6 +6,7 @@ import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import 'execution_evidence.dart';
 import 'project_database.dart';
 import 'resource_cleanup.dart';
 
@@ -508,8 +509,19 @@ final class ProductLifecycleCoordinator {
   final CapabilityRegistry _registry;
   // Membership records durable ownership; createProject never enters this map.
   final Map<ProjectId, ProjectDatabase> _projectDatabases = {};
+  final Map<RunId, RunActivitySnapshot> _runActivities = {};
   final Set<Future<Project>> _projectOpens = {};
   Future<void>? _closing;
+
+  /// Immutable terminal evidence, without executable bindings or authority.
+  RunActivitySnapshot? runActivity(RunId runId) => _runActivities[runId];
+
+  List<RunActivitySnapshot> runActivitiesForSession(SessionId sessionId) =>
+      List<RunActivitySnapshot>.unmodifiable(
+        _runActivities.values.where(
+          (activity) => activity.sessionId == sessionId,
+        ),
+      );
 
   ProviderBinding resolveProjectProvider(ProviderId providerId) {
     _requireOpen();
@@ -586,6 +598,16 @@ final class ProductLifecycleCoordinator {
         return current;
       }
       final graph = database.loadProductGraph();
+      final activities = database.loadExecutionHistory(graph.runRecords);
+      for (final activity in activities) {
+        if (_runActivities.containsKey(activity.runId)) {
+          throw StateError(
+            'Run activity ${activity.runId} is already published.',
+          );
+        }
+      }
+      // Both restore sets are validated before either is published. These final
+      // synchronous mutations cannot interleave with another lifecycle operation.
       store.publishRestoredProject(
         project: project,
         tasks: graph.tasks,
@@ -594,6 +616,9 @@ final class ProductLifecycleCoordinator {
         authorities: graph.authorities,
         runRecords: graph.runRecords,
       );
+      for (final activity in activities) {
+        _runActivities[activity.runId] = activity;
+      }
       _projectDatabases[project.id] = database;
       return project;
     } on Object {
@@ -614,12 +639,18 @@ final class ProductLifecycleCoordinator {
     store.replaceEnvironment(environment);
   }
 
-  /// Durable records commit before live publication; volatile Projects stay local.
-  void retainTerminalRun(RunRecord record) {
+  /// A terminal record and its public evidence commit as one durable unit before
+  /// live publication. Explicitly volatile Projects retain both only in memory.
+  void retainTerminalRun(RunRecord record, RunActivitySnapshot activity) {
     _requireOpen();
     store._validateTerminalRun(record);
-    databaseForSession(record.sessionId)?.insertTerminalRun(record);
+    validateTerminalRunActivity(record, activity);
+    if (_runActivities.containsKey(record.id)) {
+      throw StateError('Run activity ${record.id} is already published.');
+    }
+    databaseForSession(record.sessionId)?.insertTerminalRun(record, activity);
     store.publishTerminalRun(record);
+    _runActivities[record.id] = activity;
   }
 
   /// Resolves semantic Session scope without resolving a strategy or Environment.

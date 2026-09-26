@@ -13,6 +13,7 @@ abstract interface class SessionExecutionSource implements Listenable {
   String currentSessionId();
   Map<String, Object?> readExecution();
   Future<String> startRun();
+  String? openRunActivity(String runId);
   Map<String, Object?> readRunActivity(String handle);
   bool inspectActivity(String handle);
   Widget buildActivity(String handle);
@@ -80,6 +81,24 @@ final class SessionExecutionPresentationSource
     _validate();
     final handle = _newHandle();
     _runs[handle] = runId;
+    return handle;
+  }
+
+  @override
+  String? openRunActivity(String runId) {
+    _validate();
+    final RunId id;
+    try {
+      id = RunId(runId);
+    } on FormatException {
+      return null;
+    }
+    if (controller.retainedActivityForRun(id) == null) return null;
+    for (final entry in _runs.entries) {
+      if (entry.value == id) return entry.key;
+    }
+    final handle = _newHandle();
+    _runs[handle] = id;
     return handle;
   }
 

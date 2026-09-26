@@ -67,6 +67,14 @@ class SessionExecutionDeclarations implements EvalPlugin {
       ),
       ('readSessionRunActivity', structuredBridgeMapType, [handle]),
       (
+        'openSessionRunActivity',
+        const BridgeTypeAnnotation(
+          BridgeTypeRef(CoreTypes.string),
+          nullable: true,
+        ),
+        [const BridgeParameter('runId', string, false)],
+      ),
+      (
         'inspectSessionActivity',
         const BridgeTypeAnnotation(BridgeTypeRef(CoreTypes.bool)),
         [handle],
@@ -186,6 +194,17 @@ final class SessionExecutionBridge extends SessionExecutionDeclarations
           ),
         );
         return $Future<$Value>.wrap(result);
+      })
+      ..registerBridgeFunc(_bridgeLibrary, 'openSessionRunActivity', (
+        _,
+        _,
+        args,
+      ) {
+        _validate();
+        final handle = _source.openRunActivity(args.single!.$value as String);
+        if (handle == null) return const $null();
+        _runHandles.add(handle);
+        return $String(handle);
       })
       ..registerBridgeFunc(_bridgeLibrary, 'readSessionRunActivity', (
         _,

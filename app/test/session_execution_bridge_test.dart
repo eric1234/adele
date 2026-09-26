@@ -22,6 +22,10 @@ void main() {
       () => public_bridge.settleSessionOperation(Future<Object?>.value(null)),
       throwsUnsupportedError,
     );
+    expect(
+      () => public_bridge.openSessionRunActivity('run'),
+      throwsUnsupportedError,
+    );
   });
 
   test(
@@ -120,6 +124,8 @@ int count() => changes;
 Map<String, Object?> execution() => readSessionExecution();
 String session() => currentSessionId();
 Future<String> start() => startSessionRun();
+String? open() => openSessionRunActivity('retained-run');
+String? missing() => openSessionRunActivity('missing-run');
 Map<String, Object?> activity() => readSessionRunActivity('run-handle');
 bool inspect() => inspectSessionActivity('model-handle');
 bool guess() => inspectSessionActivity('not-emitted');
@@ -214,6 +220,37 @@ abstract class AdeleRequestChannel {
       bridge.invalidate();
       source.pending!.complete('late-handle');
       expect(await retired, [false, null]);
+    },
+  );
+
+  testWidgets(
+    'retained activity handles use the same read and inspect authorization',
+    (tester) async {
+      final source = _Source();
+      final bridge = SessionExecutionBridge(
+        source: source,
+        isActive: () => source.active,
+      );
+      addTearDown(() {
+        bridge.invalidate();
+        source.dispose();
+      });
+      final runtime = Runtime.ofProgram(program)..addPlugin(bridge);
+      Object? invoke(String entry) =>
+          copyStructuredBridgeData(runtime.executeLib(_library, entry));
+      expect(invoke('missing'), isNull);
+      expect(invoke('open'), 'run-handle');
+      expect(source.starts, 0);
+      expect(invoke('inspect'), isFalse);
+      expect((invoke('activity') as Map)['state'], 'completed');
+      expect(invoke('inspect'), isTrue);
+      expect(invoke('guess'), isFalse);
+      expect(invoke('open'), 'run-handle');
+      bridge.retainPresentation();
+      expect((invoke('activity') as Map)['state'], 'completed');
+      expect(invoke('inspect'), isFalse);
+      expect(() => invoke('open'), throwsA(anything));
+      expect(source.starts, 0);
     },
   );
 
@@ -346,6 +383,7 @@ final class _Channel implements AdeleRequestChannel {
 final class _Source extends ChangeNotifier implements SessionExecutionSource {
   bool active = true;
   int revision = 1;
+  int starts = 0;
   String runState = 'completed';
   Completer<String>? pending;
   bool get observing => hasListeners;
@@ -361,8 +399,14 @@ final class _Source extends ChangeNotifier implements SessionExecutionSource {
     'revision': revision,
   };
   @override
-  Future<String> startRun() async =>
-      pending == null ? 'run-handle' : await pending!.future;
+  Future<String> startRun() async {
+    starts++;
+    return pending == null ? 'run-handle' : await pending!.future;
+  }
+
+  @override
+  String? openRunActivity(String runId) =>
+      runId == 'retained-run' ? 'run-handle' : null;
   @override
   Map<String, Object?> readRunActivity(String handle) => {
     'runHandle': handle,

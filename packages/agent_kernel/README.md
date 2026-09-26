@@ -22,7 +22,8 @@ adapts public strategy operations to these mechanics. Strategies receive semanti
 turns and opaque handles through public orchestration, not kernel objects.
 
 The app's `SessionOrchestrationRun` maps actual `AgentRun.state` to product-owned
-terminal records through product lifecycle, outside the kernel. Follow
+terminal records and supplies an explicit public activity snapshot for atomic
+retention through lifecycle, outside the kernel. Follow
 [terminal retention](../../docs/architecture/execution-model.md#terminal-run-retention)
 for finalization and failure semantics; this adds no kernel persistence or recovery.
 
@@ -72,9 +73,11 @@ The application's
 [`RunActivityProjection`](../../app/lib/core/run_activity_projection.dart) supplies
 the separate immutable public observation facade. Public consumers do not receive
 internal events, executable objects, journal objects, or raw exception causes.
-Terminal product history does not persist that public activity; the
+The application stores terminal public snapshots separately from product records
+under its execution schema owner, committing both together. It does not serialize
+the journal or reconstruct a live `AgentRun` from history. The
 [activity boundary](../../docs/architecture/execution-model.md#observations-and-activity)
-also defines the semantic input required for any later evidence storage.
+defines the semantic input and historical-evidence limits of that storage.
 
 ## Validation
 

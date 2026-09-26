@@ -138,15 +138,17 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Task/Environment lifecycle | [`test/task_creation_test.dart`](../../app/test/task_creation_test.dart), [`test/core/product_lifecycle_test.dart`](../../app/test/core/product_lifecycle_test.dart) |
 | Durable Project/Task/Environment records | [`test/core/project_database_test.dart`](../../app/test/core/project_database_test.dart), [`test/core/durable_project_lifecycle_test.dart`](../../app/test/core/durable_project_lifecycle_test.dart), [`test/core/durable_task_environment_lifecycle_test.dart`](../../app/test/core/durable_task_environment_lifecycle_test.dart), [`test/core/durable_task_git_integration_test.dart`](../../app/test/core/durable_task_git_integration_test.dart) (fresh runtime and whole-Project move, real SQLite/Git backends) |
 | Durable Session identity/Environment association | [`test/core/durable_session_lifecycle_test.dart`](../../app/test/core/durable_session_lifecycle_test.dart), [`test/core/project_database_test.dart`](../../app/test/core/project_database_test.dart) (complete-graph validation, atomic creation, missing strategy/provider, and no volatile fallback) |
-| Terminal Run schema/publication | [`test/core/project_database_test.dart`](../../app/test/core/project_database_test.dart), [`test/core/durable_session_lifecycle_test.dart`](../../app/test/core/durable_session_lifecycle_test.dart) (v1 schema constraints, malformed/orphan/duplicate/live-conflicting records, whole-graph publication, commit failure, immutable unordered lookup, and explicit volatile retention) |
-| Terminal Run execution/restart | [`test/core/durable_run_lifecycle_test.dart`](../../app/test/core/durable_run_lifecycle_test.dart) (completed/failed fresh-runtime restore, unstarted/waiting close without invented outcomes, approval completion, SQLite failure and execution-plus-storage double failure without retry, deferred mechanics draining, and no ID allocation/execution/activity/approval recreation) |
+| Terminal Run schema/publication | [`test/core/project_database_test.dart`](../../app/test/core/project_database_test.dart), [`test/core/durable_session_lifecycle_test.dart`](../../app/test/core/durable_session_lifecycle_test.dart) (separate product/execution v1 owners, atomic record/activity retention, whole-graph publication, immutable lookup, and explicit volatile retention) |
+| Terminal execution evidence | [`test/core/execution_evidence_test.dart`](../../app/test/core/execution_evidence_test.dart) (normalized schema, field-by-field public snapshot roundtrip, Run-local ordering/provenance validation, corruption rejection, and record/evidence rollback) |
+| Terminal Run execution/restart | [`test/core/durable_run_lifecycle_test.dart`](../../app/test/core/durable_run_lifecycle_test.dart) (completed/failed fresh-runtime snapshot restore, unstarted/waiting close without invented outcomes, approval completion, SQLite and execution-plus-storage failures without retry, deferred mechanics draining, and no ID allocation or live execution/approval recreation) |
 | Session-scoped plugin storage host | [`test/core/project_storage_host_test.dart`](../../app/test/core/project_storage_host_test.dart) (owner schema, Project routing, scalar/query bounds, atomic batches, explicit volatile distinction, and queued-entry revocation) |
-| Durable Chat across real backend generations | [`test/core/durable_chat_session_integration_test.dart`](../../app/test/core/durable_chat_session_integration_test.dart) (conversation/configuration/plain-text draft, atomic draft submission, fresh-runtime reopen, and a completed Run record surviving later Chat storage failure; real Local Directory/Git/Chat AOT backends and SQLite with a deterministic native model fixture, no paid provider) |
-| Prepared Chat composer | [`test/chat_frontend_eval_test.dart`](../../app/test/chat_frontend_eval_test.dart) (draft restoration, sequential/coalesced saves, save failure, flush-before-submit, accepted-entry scheduling retry, and stale snapshot protection) |
+| Durable Chat across real backend generations | [`test/core/durable_chat_session_integration_test.dart`](../../app/test/core/durable_chat_session_integration_test.dart) (conversation/configuration/plain-text draft, user-entry Run association, atomic draft submission, fresh-runtime reopen, and completed Run/activity retention despite Chat storage failure; real Local Directory/Git/Chat AOT backends and SQLite with a deterministic native model fixture, no paid provider) |
+| Prepared Chat composer/history | [`test/chat_frontend_eval_test.dart`](../../app/test/chat_frontend_eval_test.dart) (draft saves/submission/retry, stale snapshot protection, historical activity placement, and preserving live handles during refresh) |
 | Session presentation/execution/approval | [`test/session_presentation_host_test.dart`](../../app/test/session_presentation_host_test.dart), [`test/session_execution_test.dart`](../../app/test/session_execution_test.dart), [`test/core/approval_gated_tool_policy_test.dart`](../../app/test/core/approval_gated_tool_policy_test.dart) |
 | Orchestration/authority adapters | [`test/core/orchestration_host_test.dart`](../../app/test/core/orchestration_host_test.dart), [`test/core/orchestration_authority_test.dart`](../../app/test/core/orchestration_authority_test.dart), [`test/core/model_tool_host_test.dart`](../../app/test/core/model_tool_host_test.dart), [`test/core/remote_inference_context_integration_test.dart`](../../app/test/core/remote_inference_context_integration_test.dart) |
 | Activity/Inspection | [`test/core/run_activity_projection_test.dart`](../../app/test/core/run_activity_projection_test.dart), [`test/inspection_host_test.dart`](../../app/test/inspection_host_test.dart), [`test/inspection_stack_test.dart`](../../app/test/inspection_stack_test.dart), [`test/openai_activity_frontend_eval_test.dart`](../../app/test/openai_activity_frontend_eval_test.dart) |
-| Prepared normal composition, no live model | [`test/core/normal_task_git_integration_test.dart`](../../app/test/core/normal_task_git_integration_test.dart), [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (local fake Responses/credentials and picker) |
+| Historical activity access | [`test/session_execution_activity_test.dart`](../../app/test/session_execution_activity_test.dart), [`test/session_execution_bridge_test.dart`](../../app/test/session_execution_bridge_test.dart) (Session validation, read-only opaque handles, unchanged activity/Inspection paths, and no execution authority) |
+| Prepared normal composition, no live model | [`test/core/normal_task_git_integration_test.dart`](../../app/test/core/normal_task_git_integration_test.dart), [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (local fake Responses/credentials and picker; durable Chat/activity reopen with prepared presentation, not native picker or browser/navigation proof) |
 | Deterministic self-hosting | [`test/development/agent/development_self_hosting_test.dart`](../../app/test/development/agent/development_self_hosting_test.dart), [`test/development/agent/environment_read_agent_integration_test.dart`](../../app/test/development/agent/environment_read_agent_integration_test.dart) |
 
 Application dependency-boundary checks belong to
@@ -184,7 +186,8 @@ provider credentials. It checks durable state across runtime/backend lifetimes,
 including exact partial-draft restoration without Run start and submission
 retention after another reopen, not interactive desktop navigation or approval
 restart. The normal Chat test uses a local fake provider and exercises the prepared
-composer-to-Run flow. Consult the test source
+composer-to-Run flow and reopened terminal activity through the same presentation
+paths. Consult the test source
 for its exact cases; these commands are guidance, not recorded pass results.
 
 The public contract's value/transport checks belong to
@@ -200,19 +203,22 @@ dart test test/chat_durable_state_test.dart test/chat_remote_backend_test.dart
 
 The maintained `chat_strategy_backend` target is the broader package check from
 the root. These tests complement app integration for corruption, failed writes,
-canonical-cache ordering, and explicit volatile behavior.
+canonical-cache ordering, explicit volatile behavior, and post-materialization
+Run association/cleanup without overwriting an accepted association.
 Draft cases include SQLite-trigger rollback of set/submission, unchanged entry
 occurrence IDs after failure, mutation/execution fencing, and rejection before
 persisting a draft that would exceed the existing full-row read bound. Contract
-changes additionally require `dart tools/adele.dart test --target chat_strategy_contract`
+changes, including the required nullable `ChatEntry.runId` key, additionally require
+`dart tools/adele.dart test --target chat_strategy_contract`
 and `dart tools/adele.dart generate --check`; eval preparation derives the current
 wire shape from those same declarations, with no old-wire compatibility.
 
-For terminal Run history/finalization changes, check the product values from the
-repository root:
+For terminal Run/history changes, select public-value checks from the repository
+root for the affected boundary:
 
 ```sh
 dart tools/adele.dart test --target adele_product
+dart tools/adele.dart test --target adele_orchestration
 dart analyze --fatal-infos packages/product
 ```
 
@@ -222,10 +228,13 @@ from `app/`, plus deterministic Chat integration for its separate storage bounda
 ```sh
 flutter test --no-pub \
   test/core/project_database_test.dart \
+  test/core/execution_evidence_test.dart \
   test/core/durable_session_lifecycle_test.dart \
   test/core/orchestration_host_test.dart \
   test/core/orchestration_authority_test.dart \
   test/session_execution_test.dart \
+  test/session_execution_activity_test.dart \
+  test/session_execution_bridge_test.dart \
   test/core/durable_run_lifecycle_test.dart
 flutter test --no-pub --concurrency 1 test/core/durable_chat_session_integration_test.dart
 flutter analyze --no-pub --fatal-infos \
@@ -236,9 +245,13 @@ These are focused implementation checks, not a reason to run the broad
 `adele_desktop` target or launch/build the desktop for a terminal-history change.
 The Run restart fixture uses real SQLite and deterministic strategy/model/tool
 mechanics; the Chat fixture crosses real backend generations without a live model.
-The assertions distinguish terminal records from live activity and recovery, and
-verify primary-error preservation, sole storage-error surfacing, cleanup, and no
-automatic retry. See [terminal retention semantics](../architecture/execution-model.md#terminal-run-retention).
+The assertions distinguish immutable terminal evidence from live execution and
+recovery, and check primary-error preservation, sole storage-error surfacing,
+cleanup, and no automatic retry. Historical activity checks also cover Session
+scope and the read-only bridge; the prepared frontend cases cover placement and
+safe display without feeding historical native data into future continuation.
+See [terminal retention semantics](../architecture/execution-model.md#terminal-run-retention)
+and [execution history](../architecture/execution-model.md#terminal-execution-history).
 For documentation-only updates, use the [proportionate checks](#proportionate-validation)
 instead of running these behavioral suites.
 

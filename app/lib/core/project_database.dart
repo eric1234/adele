@@ -3,9 +3,13 @@ import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:sqlite3/sqlite3.dart' hide Session;
+
+import 'execution_evidence.dart';
+import 'execution_evidence_schema.dart';
 
 /// Private application persistence for one Project. The connection stays here.
 final class ProjectDatabase {
@@ -75,6 +79,10 @@ final class ProjectDatabase {
             );
           '''),
         ],
+      );
+      MigrationCoordinator(database).migrate(
+        ownerId: 'dev.adele.execution',
+        migrations: [(database) => database.execute(executionEvidenceSchema)],
       );
       return ProjectDatabase._(
         database,
@@ -278,9 +286,19 @@ final class ProjectDatabase {
     });
   }
 
-  /// Commits one terminal Run record without replacing an existing identity.
-  void insertTerminalRun(RunRecord record) {
+  /// Loads complete terminal evidence separately from the product-only graph.
+  List<RunActivitySnapshot> loadExecutionHistory(Iterable<RunRecord> records) {
     _requireOpen();
+    return _transaction(
+      _database,
+      () => loadExecutionEvidence(_database, records),
+    );
+  }
+
+  /// Commits a terminal record and all evidence without replacing an identity.
+  void insertTerminalRun(RunRecord record, RunActivitySnapshot activity) {
+    _requireOpen();
+    validateTerminalRunActivity(record, activity);
     _backingPath(_root, _relativePath);
     _transaction(_database, () {
       _database.execute(
@@ -288,6 +306,7 @@ final class ProjectDatabase {
         'VALUES (?, ?, ?)',
         [record.id.value, record.sessionId.value, record.state.name],
       );
+      insertExecutionEvidence(_database, activity);
     });
   }
 
@@ -319,6 +338,13 @@ final class ProjectDatabase {
   /// The calling host service supplies the connection-owned PluginId as owner.
   void ensurePluginSchema(String ownerId, List<String> migrations) {
     _requireOpen();
+    if (ownerId == 'dev.adele.product' || ownerId == 'dev.adele.execution') {
+      throw ArgumentError.value(
+        ownerId,
+        'ownerId',
+        'Core schema owner is reserved.',
+      );
+    }
     if (migrations.isEmpty) {
       throw ArgumentError('A plugin schema requires its current baseline.');
     }

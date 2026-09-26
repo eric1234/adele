@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/project_database.dart';
+import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -48,10 +49,18 @@ void main() {
         'adele_product_sessions',
         'adele_product_session_environment_authority',
         'adele_product_runs',
+        'adele_execution_run_activity',
+        'adele_execution_run_lifecycle',
+        'adele_execution_model_invocations',
+        'adele_execution_model_outputs',
+        'adele_execution_tool_invocations',
+        'adele_execution_tool_changes',
+        'adele_execution_rejected_proposals',
       ]),
     );
     expect(inspection.select('SELECT * FROM adele_schema_versions'), <Object?>[
       <String, Object?>{'owner_id': 'dev.adele.product', 'version': 1},
+      <String, Object?>{'owner_id': 'dev.adele.execution', 'version': 1},
     ]);
     expect(
       inspection
@@ -144,6 +153,41 @@ void main() {
       isFalse,
     );
   });
+
+  for (final owner in ['dev.adele.product', 'dev.adele.execution']) {
+    test('plugin migrations cannot claim reserved core owner $owner', () {
+      final database = _open(backing);
+      final inspection = _connect(database.path);
+      for (final migrations in [
+        ['CREATE TABLE forbidden_baseline (id TEXT)'],
+        [
+          'CREATE TABLE forbidden_baseline (id TEXT)',
+          'CREATE TABLE forbidden_upgrade (id TEXT)',
+        ],
+      ]) {
+        expect(
+          () => database.ensurePluginSchema(owner, migrations),
+          throwsArgumentError,
+        );
+        expect(database.autocommit, isTrue);
+        expect(
+          inspection.select(
+            'SELECT * FROM adele_schema_versions ORDER BY owner_id',
+          ),
+          [
+            {'owner_id': 'dev.adele.execution', 'version': 1},
+            {'owner_id': 'dev.adele.product', 'version': 1},
+          ],
+        );
+        expect(
+          inspection.select(
+            "SELECT name FROM sqlite_master WHERE name LIKE 'forbidden_%'",
+          ),
+          isEmpty,
+        );
+      }
+    });
+  }
 
   for (final control in [
     'COMMIT',
@@ -528,7 +572,7 @@ void main() {
           ),
       ];
       for (final record in records) {
-        database.insertTerminalRun(record);
+        database.insertTerminalRun(record, _activity(record));
         expect(database.autocommit, isTrue);
       }
       final inspection = _connect(database.path);
@@ -581,13 +625,15 @@ void main() {
         sessionId: session.id,
         state: RunTerminalState.completed,
       );
+      final missingSession = RunRecord(
+        id: record.id,
+        sessionId: SessionId('missing'),
+        state: record.state,
+      );
       expect(
         () => database.insertTerminalRun(
-          RunRecord(
-            id: record.id,
-            sessionId: SessionId('missing'),
-            state: record.state,
-          ),
+          missingSession,
+          _activity(missingSession),
         ),
         throwsA(
           isA<SqliteException>().having(
@@ -599,15 +645,14 @@ void main() {
       );
       expect(database.autocommit, isTrue);
       expect(database.loadProductGraph().runRecords, isEmpty);
-      database.insertTerminalRun(record);
+      database.insertTerminalRun(record, _activity(record));
+      final duplicate = RunRecord(
+        id: record.id,
+        sessionId: session.id,
+        state: RunTerminalState.failed,
+      );
       expect(
-        () => database.insertTerminalRun(
-          RunRecord(
-            id: record.id,
-            sessionId: session.id,
-            state: RunTerminalState.failed,
-          ),
-        ),
+        () => database.insertTerminalRun(duplicate, _activity(duplicate)),
         throwsA(isA<SqliteException>()),
       );
       expect(database.autocommit, isTrue);
@@ -653,14 +698,13 @@ void main() {
 
     test('closed database rejects terminal retention', () {
       database.close();
+      final record = RunRecord(
+        id: RunId('run'),
+        sessionId: session.id,
+        state: RunTerminalState.completed,
+      );
       expect(
-        () => database.insertTerminalRun(
-          RunRecord(
-            id: RunId('run'),
-            sessionId: session.id,
-            state: RunTerminalState.completed,
-          ),
-        ),
+        () => database.insertTerminalRun(record, _activity(record)),
         throwsStateError,
       );
     });
@@ -1078,6 +1122,7 @@ void main() {
         'SELECT * FROM adele_schema_versions ORDER BY owner_id',
       ),
       <Object?>[
+        <String, Object?>{'owner_id': 'dev.adele.execution', 'version': 1},
         <String, Object?>{'owner_id': 'dev.adele.product', 'version': 1},
         <String, Object?>{'owner_id': 'unknown.owner', 'version': 900},
       ],
@@ -1206,13 +1251,15 @@ void main() {
       final ProjectDatabase database = _open(backing)..close();
       final Database inspection = _connect(database.path);
       inspection.execute(
-        'UPDATE adele_schema_versions SET version = ?',
+        "UPDATE adele_schema_versions SET version = ? WHERE owner_id = 'dev.adele.product'",
         <Object?>[invalidVersion],
       );
       expect(() => ProjectDatabase.open(backing), throwsFormatException);
       expect(
         inspection
-            .select('SELECT version FROM adele_schema_versions')
+            .select(
+              "SELECT version FROM adele_schema_versions WHERE owner_id = 'dev.adele.product'",
+            )
             .single['version'],
         invalidVersion,
       );
@@ -1642,6 +1689,23 @@ Database _connect(String path) {
 
 ProjectId _unexpectedAllocation() =>
     throw TestFailure('Unexpected Project ID allocation.');
+
+RunActivitySnapshot _activity(RunRecord record) => RunActivitySnapshot(
+  runId: record.id,
+  sessionId: record.sessionId,
+  state: RunState.values.byName(record.state.name),
+  sequence: 2,
+  failure: record.state == RunTerminalState.failed
+      ? ActivityFailure(kind: 'unknown', message: 'Run failed.')
+      : null,
+  lifecycle: [
+    const RunLifecycleActivity(sequence: 0, state: RunState.running),
+    RunLifecycleActivity(
+      sequence: 2,
+      state: RunState.values.byName(record.state.name),
+    ),
+  ],
+);
 
 Environment _environment(
   Task task, {

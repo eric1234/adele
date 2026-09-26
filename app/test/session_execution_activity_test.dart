@@ -6,17 +6,275 @@ import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/frontend/session_execution_source.dart';
 import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
+import 'package:adele_desktop/ui/inspection/inspection_host.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_product/adele_product.dart';
+import 'package:adele_ui/adele_ui.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  testWidgets(
+    'retained terminal evidence is Session-scoped read-only presentation',
+    (tester) async {
+      final runtime = AdeleRuntime();
+      addTearDown(runtime.close);
+      final project = Project(
+        id: ProjectId('project'),
+        sourceLocation: Uri.parse('file:///fixture/'),
+      );
+      final task = Task(
+        id: TaskId('task'),
+        projectId: project.id,
+        title: 'Retained',
+      );
+      final environment = Environment(
+        id: EnvironmentId('environment'),
+        taskId: task.id,
+        role: EnvironmentRole.primary,
+        providerId: ProviderId('missing.environment'),
+        providerState: const {},
+      );
+      final session = Session(
+        id: SessionId('session'),
+        taskId: task.id,
+        strategyId: OrchestrationStrategyId('missing.strategy'),
+      );
+      final foreign = Session(
+        id: SessionId('foreign'),
+        taskId: task.id,
+        strategyId: session.strategyId,
+      );
+      final missing = RunRecord(
+        id: RunId('missing-evidence'),
+        sessionId: session.id,
+        state: RunTerminalState.failed,
+      );
+      runtime.store.publishRestoredProject(
+        project: project,
+        tasks: [task],
+        environments: [environment],
+        sessions: [session, foreign],
+        authorities: [
+          (session.id, environment.id),
+          (foreign.id, environment.id),
+        ],
+        runRecords: [missing],
+      );
+      final raw = ModelNativeEnvelope(
+        kind: 'fixture.raw',
+        compatibility: const {},
+        data: const {'encrypted': 'RETAINED-PRIVATE-ENVELOPE'},
+      );
+      final safe = ModelNativePresentation(
+        kind: 'fixture.safe',
+        compactText: 'Retained safe summary',
+        data: const {'text': 'Approved detail'},
+      );
+      final runId = RunId('retained-run');
+      final activity = RunActivitySnapshot(
+        runId: runId,
+        sessionId: session.id,
+        state: RunState.completed,
+        sequence: 7,
+        lifecycle: const [
+          RunLifecycleActivity(sequence: 1, state: RunState.running),
+          RunLifecycleActivity(sequence: 7, state: RunState.completed),
+        ],
+        models: [
+          ModelInvocationActivity(
+            id: ModelInvocationId('model'),
+            startSequence: 2,
+            terminalSequence: 6,
+            settlement: ModelSettlement.completed,
+            metadata: ModelTerminalMetadata(),
+            outputs: [
+              ModelOutputActivity(
+                sequence: 3,
+                item: ModelNativeOutput(
+                  providerNativeMetadata: raw,
+                  presentation: safe,
+                ),
+              ),
+              ModelOutputActivity(
+                sequence: 4,
+                item: ModelNativeOutput(providerNativeMetadata: raw),
+              ),
+              ModelOutputActivity(
+                sequence: 5,
+                item: ModelToolProposalOutput(
+                  ProviderToolProposal(
+                    providerCallId: 'proposal',
+                    alias: 'missing_tool',
+                    arguments: const {},
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      );
+      runtime.lifecycle.retainTerminalRun(
+        RunRecord(
+          id: runId,
+          sessionId: session.id,
+          state: RunTerminalState.completed,
+        ),
+        activity,
+      );
+      final foreignRun = RunId('foreign-run');
+      runtime.lifecycle.retainTerminalRun(
+        RunRecord(
+          id: foreignRun,
+          sessionId: foreign.id,
+          state: RunTerminalState.cancelled,
+        ),
+        RunActivitySnapshot(
+          runId: foreignRun,
+          sessionId: foreign.id,
+          state: RunState.cancelled,
+          sequence: 1,
+          lifecycle: const [
+            RunLifecycleActivity(sequence: 1, state: RunState.cancelled),
+          ],
+        ),
+      );
+      final controller = SessionExecutionController(
+        runtime: runtime,
+        session: session,
+        providerId: ProviderId('missing.model'),
+        model: null,
+      );
+      final inspection = WindowInspection()..presentSession(session);
+      addTearDown(inspection.dispose);
+      SessionExecutionPresentationSource source() =>
+          SessionExecutionPresentationSource(
+            controller: controller,
+            extensions: runtime.extensions,
+            isActive: () => true,
+            inspect: (session, target) {
+              final snapshot = controller.activityForRun(target.runId)!;
+              return switch (target) {
+                ActivityGroupInspectionTarget() => inspection.inspectActivity(
+                  session: session,
+                  activity: snapshot,
+                  modelInvocationId: target.modelInvocationId,
+                ),
+                ModelOutputInspectionTarget() => inspection.inspectOutput(
+                  session: session,
+                  activity: snapshot,
+                  modelInvocationId: target.modelInvocationId,
+                  outputSequence: target.outputSequence,
+                ),
+              };
+            },
+          );
+      final first = source();
+      final other = source();
+      addTearDown(first.invalidate);
+      addTearDown(other.invalidate);
+      expect(controller.activityForRun(runId), same(activity));
+      expect(controller.stateForRun(runId), RunState.completed);
+      expect(controller.stateForRun(missing.id), RunState.failed);
+      expect(controller.stateForRun(foreignRun), isNull);
+      expect(controller.activityForRun(foreignRun), isNull);
+      expect(controller.activitySnapshots, [same(activity)]);
+      for (final invalid in [
+        '',
+        ' retained-run',
+        'absent',
+        foreignRun.value,
+        missing.id.value,
+      ]) {
+        expect(first.openRunActivity(invalid), isNull);
+      }
+      final handle = first.openRunActivity(runId.value)!;
+      expect(handle, isNot(runId.value));
+      expect(first.openRunActivity(runId.value), handle);
+      expect(other.openRunActivity(runId.value), isNot(handle));
+      expect(() => other.readRunActivity(handle), throwsStateError);
+      expect(() => first.readRunActivity(runId.value), throwsStateError);
+      final data = first.readRunActivity(handle);
+      expect(data['state'], 'completed');
+      expect(data.toString(), isNot(contains('RETAINED-PRIVATE-ENVELOPE')));
+      final model = (data['models']! as List).single as Map;
+      final outputs = model['outputs'] as List;
+      final safeHandle = (outputs[0] as Map)['handle'] as String;
+      final hiddenHandle = (outputs[1] as Map)['handle'] as String;
+      expect(first.inspectActivity(hiddenHandle), isFalse);
+      expect(first.inspectActivity(model['handle'] as String), isTrue);
+      expect(first.inspectActivity(safeHandle), isTrue);
+      expect(other.inspectActivity(safeHandle), isFalse);
+      final presenter = runtime.extensions.register(
+        point: modelNativeActivityPresentationContributions,
+        id: ExtensionId('fixture.safe.presenter'),
+        value: ModelNativeActivityPresentationContribution(
+          presentationKind: safe.kind,
+          createInspection: (presentation) {
+            expect(presentation.data, {'text': 'Approved detail'});
+            return Text(presentation.data['text']! as String);
+          },
+        ),
+      );
+      addTearDown(presenter.close);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: InspectionHost(
+              card: inspection.cards.first,
+              activity: controller.activityForRun(runId),
+              heading: 'Historical',
+              extensions: runtime.extensions,
+              onCollapse: () {},
+              onExpand: () {},
+              onDismiss: () {},
+              onInspectOutput: (_) {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Approved detail'), findsOneWidget);
+      expect(find.text('Retained safe summary'), findsOneWidget);
+      expect(find.textContaining('RETAINED-PRIVATE-ENVELOPE'), findsNothing);
+      expect(
+        (activity.models.single.outputs.first.item as ModelNativeOutput)
+            .providerNativeMetadata
+            .data['encrypted'],
+        'RETAINED-PRIVATE-ENVELOPE',
+      );
+      expect(controller.currentRun, isNull);
+      expect(controller.activeRunFuture, isNull);
+      expect(controller.pendingApproval, isNull);
+      expect(controller.isRunning, isFalse);
+      expect(controller.isAdvancing, isFalse);
+      expect(controller.canStart, isFalse);
+      expect(controller.revision, 0);
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: first.buildActivity(safeHandle))),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Retained safe summary'), findsOneWidget);
+      first.retainPresentation();
+      await controller.close();
+      await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: first.buildActivity(safeHandle))),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Retained safe summary'), findsOneWidget);
+      expect(first.inspectActivity(safeHandle), isFalse);
+      expect(() => first.openRunActivity(runId.value), throwsStateError);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   test(
     'preparation failure remains failed throughout a successful retry',

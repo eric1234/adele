@@ -43,7 +43,15 @@ Chat decides which completed model activities appear between messages and whethe
 to show a single compact output or a narrated group. The generic Session bridge
 supplies immutable activity and validated handles for compact widgets and
 Inspection. Common Run status and approval controls remain in core native UI.
-Activity placement is not persisted with canonical history.
+Canonical user entries carry a nullable semantic `runId` association, while opaque
+handles remain presentation-local. After hydration, the frontend calls
+`openSessionRunActivity` only for associated entries without an existing live
+handle. The host validates the presented Session and issues a read-only handle;
+the frontend then uses the same activity reads, compact widgets, and Inspection
+operations as for live Runs. Missing terminal evidence does not start execution or
+invent activity. Fresh rendering reconstructs placement, not open cards, expansion
+state, subscriptions, or other workbench state. Historical native data is never
+continuation input, and the bridge still exposes only safe presentation data.
 
 Preparation uses `app/tool/chat_frontend_compiler.dart` and generic contract-codegen
 eval projection from the annotated Chat contract. The pinned evaluator's rejected

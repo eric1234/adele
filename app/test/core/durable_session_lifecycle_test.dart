@@ -80,7 +80,7 @@ void main() {
         ),
     ];
     for (final record in runRecords) {
-      database.insertTerminalRun(record);
+      database.insertTerminalRun(record, _activity(record));
     }
     database.close();
     inspection = sqlite3.open(database.path);
@@ -114,6 +114,7 @@ void main() {
     }
     for (final record in runRecords) {
       expect(lifecycle.store.runRecord(record.id), isNull);
+      expect(lifecycle.runActivity(record.id), isNull);
     }
   }
 
@@ -168,6 +169,11 @@ void main() {
         final restored = lifecycle.store.runRecord(record.id)!;
         expect(restored.sessionId, record.sessionId);
         expect(restored.state, record.state);
+        final activity = lifecycle.runActivity(record.id)!;
+        expect(activity.runId, record.id);
+        expect(activity.sessionId, record.sessionId);
+        expect(activity.state.name, record.state.name);
+        expect(activity.lifecycle.last.state, activity.state);
       }
       for (final session in sessions) {
         expect(
@@ -399,8 +405,10 @@ void main() {
         sessionId: sessions.first.id,
         state: RunTerminalState.completed,
       );
-      lifecycle.retainTerminalRun(record);
+      final activity = _activity(record);
+      lifecycle.retainTerminalRun(record, activity);
       expect(lifecycle.store.runRecord(record.id), same(record));
+      expect(lifecycle.runActivity(record.id), same(activity));
       expect(
         lifecycle.databaseForSession(record.sessionId)!.autocommit,
         isTrue,
@@ -423,6 +431,7 @@ void main() {
       final restored = fresh.store.runRecord(record.id)!;
       expect(restored.sessionId, record.sessionId);
       expect(restored.state, record.state);
+      expect(fresh.runActivity(record.id)!.state, activity.state);
       expect(
         fresh.environmentRuntime.currentMaterialization(environments.first.id),
         isNull,
@@ -451,7 +460,7 @@ void main() {
       BEGIN INSERT INTO deferred_check VALUES ('missing'); END;
     ''');
       expect(
-        () => lifecycle.retainTerminalRun(record),
+        () => lifecycle.retainTerminalRun(record, _activity(record)),
         throwsA(
           isA<SqliteException>().having(
             (error) => error.causingStatement,
@@ -462,11 +471,12 @@ void main() {
       );
       expect(database.autocommit, isTrue);
       expect(lifecycle.store.runRecord(record.id), isNull);
+      expect(lifecycle.runActivity(record.id), isNull);
       expect(lifecycle.store.runsForSession(record.sessionId), liveBefore);
       expect(_snapshot(inspection), before);
       expect(inspection.select('SELECT * FROM deferred_check'), isEmpty);
       inspection.execute('DROP TRIGGER fail_run_commit');
-      lifecycle.retainTerminalRun(record);
+      lifecycle.retainTerminalRun(record, _activity(record));
       expect(database.autocommit, isTrue);
       expect(lifecycle.store.runRecord(record.id), same(record));
       expect(
@@ -499,7 +509,10 @@ void main() {
           state: RunTerminalState.cancelled,
         ),
       ]) {
-        expect(() => lifecycle.retainTerminalRun(record), throwsStateError);
+        expect(
+          () => lifecycle.retainTerminalRun(record, _activity(record)),
+          throwsStateError,
+        );
       }
       expect(lifecycle.store.runRecord(RunId('orphan')), isNull);
       expect(lifecycle.store.runRecord(runRecords.first.id), same(existing));
@@ -519,9 +532,67 @@ void main() {
       );
       final before = _snapshot(inspection);
       lifecycle.databaseForSession(record.sessionId)!.close();
-      expect(() => lifecycle.retainTerminalRun(record), throwsStateError);
+      expect(
+        () => lifecycle.retainTerminalRun(record, _activity(record)),
+        throwsStateError,
+      );
       expect(lifecycle.store.runRecord(record.id), isNull);
       expect(_snapshot(inspection), before);
+    },
+  );
+
+  test(
+    'Run/activity identity and terminal state mismatches fail before SQL',
+    () async {
+      final lifecycle = _lifecycle();
+      await open(lifecycle);
+      final record = RunRecord(
+        id: RunId('mismatch'),
+        sessionId: sessions.first.id,
+        state: RunTerminalState.completed,
+      );
+      final before = _snapshot(inspection);
+      inspection.execute('''
+      CREATE TRIGGER reject_run_insert BEFORE INSERT ON adele_product_runs
+      BEGIN SELECT RAISE(ABORT, 'unexpected SQL'); END;
+    ''');
+      for (final activity in [
+        _activity(
+          RunRecord(
+            id: RunId('other'),
+            sessionId: record.sessionId,
+            state: record.state,
+          ),
+        ),
+        _activity(
+          RunRecord(
+            id: record.id,
+            sessionId: sessions.last.id,
+            state: record.state,
+          ),
+        ),
+        _activity(
+          RunRecord(
+            id: record.id,
+            sessionId: record.sessionId,
+            state: RunTerminalState.cancelled,
+          ),
+        ),
+        RunActivitySnapshot(
+          runId: record.id,
+          sessionId: record.sessionId,
+          state: RunState.waiting,
+          sequence: 1,
+        ),
+      ]) {
+        expect(
+          () => lifecycle.retainTerminalRun(record, activity),
+          throwsFormatException,
+        );
+        expect(lifecycle.store.runRecord(record.id), isNull);
+        expect(lifecycle.runActivity(record.id), isNull);
+        expect(_snapshot(inspection), before);
+      }
     },
   );
 
@@ -535,9 +606,15 @@ void main() {
     );
     final before = _snapshot(inspection);
     final closing = lifecycle.close();
-    expect(() => lifecycle.retainTerminalRun(record), throwsStateError);
+    expect(
+      () => lifecycle.retainTerminalRun(record, _activity(record)),
+      throwsStateError,
+    );
     await closing;
-    expect(() => lifecycle.retainTerminalRun(record), throwsStateError);
+    expect(
+      () => lifecycle.retainTerminalRun(record, _activity(record)),
+      throwsStateError,
+    );
     expect(lifecycle.store.runRecord(record.id), isNull);
     expect(_snapshot(inspection), before);
   });
@@ -615,13 +692,33 @@ void main() {
       state: RunTerminalState.cancelled,
     );
     expect(lifecycle.databaseForSession(session.id), isNull);
-    lifecycle.retainTerminalRun(record);
+    final activity = _activity(record);
+    lifecycle.retainTerminalRun(record, activity);
     expect(lifecycle.store.runRecord(record.id), same(record));
+    expect(lifecycle.runActivity(record.id), same(activity));
+    final activities = lifecycle.runActivitiesForSession(session.id);
+    expect(activities, [same(activity)]);
+    expect(() => activities.clear(), throwsUnsupportedError);
     expect(lifecycle.store.runsForSession(session.id), [record]);
     expect(_snapshot(inspection), before);
   });
 
   for (final (name, sql, error) in [
+    (
+      'missing terminal activity',
+      "DELETE FROM adele_execution_run_activity WHERE run_id = 'run-cancelled'",
+      isA<FormatException>(),
+    ),
+    (
+      'orphan terminal activity',
+      "UPDATE adele_execution_run_activity SET run_id = 'unknown' WHERE run_id = 'run-cancelled'",
+      isA<FormatException>(),
+    ),
+    (
+      'disagreeing terminal activity',
+      "UPDATE adele_execution_run_lifecycle SET state = 'completed' WHERE run_id = 'run-cancelled' AND sequence = 2",
+      isA<FormatException>(),
+    ),
     (
       'invalid Run ID',
       "UPDATE adele_product_runs SET id = ' invalid' WHERE id = 'run-cancelled'",
@@ -877,12 +974,31 @@ Map<String, List<List<Object?>>> _snapshot(Database database) => {
     'adele_product_sessions',
     'adele_product_session_environment_authority',
     'adele_product_runs',
+    'adele_execution_run_activity',
+    'adele_execution_run_lifecycle',
   ])
     table: database
         .select('SELECT * FROM $table ORDER BY rowid')
         .map((row) => row.values.toList())
         .toList(),
 };
+
+RunActivitySnapshot _activity(RunRecord record) {
+  final state = RunState.values.byName(record.state.name);
+  return RunActivitySnapshot(
+    runId: record.id,
+    sessionId: record.sessionId,
+    state: state,
+    sequence: 2,
+    lifecycle: [
+      const RunLifecycleActivity(sequence: 1, state: RunState.running),
+      RunLifecycleActivity(sequence: 2, state: state),
+    ],
+    failure: state == RunState.failed
+        ? ActivityFailure(kind: 'unknown', message: 'Run failed.')
+        : null,
+  );
+}
 
 final class _ProjectChannel implements AdeleRequestChannel {
   @override

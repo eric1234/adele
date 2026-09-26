@@ -140,6 +140,11 @@ void main() {
         ('assistant', 'First durable answer.'),
       ]);
       expect(first.entries.first.id, firstUser.id);
+      expect(first.entries.map((entry) => entry.runId), ['first-run', null]);
+      expect(
+        runtime.lifecycle.runActivity(firstRun.run.id)!.state,
+        RunState.completed,
+      );
       await chatA.setDraftRequest(session.id.value, _draftRequest);
       final drafted = await chatA.snapshot(session.id.value);
       expect(_snapshot(drafted), {
@@ -220,6 +225,12 @@ void main() {
         ('user', 'Second durable question.'),
         ('assistant', 'Second durable answer.'),
       ]);
+      expect(saved.entries.map((entry) => entry.runId), [
+        'first-run',
+        null,
+        'second-run',
+        null,
+      ]);
       expect(
         saved.entries.take(2).map((e) => e.id),
         first.entries.map((e) => e.id),
@@ -289,6 +300,18 @@ void main() {
         ),
         isNull,
       );
+      expect(
+        reopenedRuntime.lifecycle
+            .runActivitiesForSession(session.id)
+            .map(
+              (activity) =>
+                  (activity.runId.value, activity.sessionId, activity.state),
+            ),
+        unorderedEquals([
+          ('first-run', session.id, RunState.completed),
+          ('second-run', session.id, RunState.completed),
+        ]),
+      );
       expect(ids.calls, 0);
       expect(
         () => reopenedRuntime.lifecycle.resolveSessionStrategy(session.id),
@@ -322,6 +345,7 @@ void main() {
       expect(nextUser.id, 'entry-4');
       expect(nextUser.role, 'user');
       expect(nextUser.content, _draftRequest);
+      expect(nextUser.runId, isNull);
       final submitted = await chat.snapshot(session.id.value);
       expect(submitted.draftRequest, '');
       _expectHistory(submitted, [
@@ -379,6 +403,14 @@ void main() {
         ('assistant', 'Second durable answer.'),
         ('user', _draftRequest),
         ('assistant', 'Answer after restart.'),
+      ]);
+      expect(finalSnapshot.entries.map((entry) => entry.runId), [
+        'first-run',
+        null,
+        'second-run',
+        null,
+        'fresh-run',
+        null,
       ]);
       expect(
         finalSnapshot.entries.take(4).map((e) => e.id),
@@ -467,6 +499,7 @@ void main() {
           'entry_id': 'entry-0',
           'role': 'user',
           'content': 'Retained before failure.',
+          'run_id': null,
         },
       ]);
       _inspect(source, _expectSchema);
@@ -551,6 +584,12 @@ void main() {
         'assistant-persistence-fails',
         _Model(before, 'Must not enter durable history.'),
       );
+      // Association is its own acknowledged write at materialization; failure of
+      // the later assistant INSERT must not erase this initiating occurrence.
+      final associated = await chat.snapshot(sessionId.value);
+      expect(associated.entries.single.id, before.entries.single.id);
+      expect(associated.entries.single.runId, failed.run.id.value);
+      final associatedRows = _inspect(source, _chatRows);
       await expectLater(failed.start(), storageFailure);
       // Host execution already completed; the remote caller still sees failure.
       expect(failed.run.state, RunState.completed);
@@ -560,6 +599,36 @@ void main() {
       expect(completedRecord.sessionId, sessionId);
       expect(completedRecord.state, RunTerminalState.completed);
       expect(runtime.store.runsForSession(sessionId), [same(completedRecord)]);
+      final completedActivity = runtime.lifecycle.runActivity(failed.run.id)!;
+      expect(completedActivity.runId, completedRecord.id);
+      expect(completedActivity.sessionId, sessionId);
+      expect(completedActivity.state, RunState.completed);
+      expect(completedActivity.failure, isNull);
+      expect(completedActivity.lifecycle.last.state, RunState.completed);
+      expect(
+        completedActivity.models.single.settlement,
+        ModelSettlement.completed,
+      );
+      expect(
+        (completedActivity.models.single.outputs.single.item as ModelTextOutput)
+            .content,
+        'Must not enter durable history.',
+      );
+      expect(
+        _inspect(
+          source,
+          (database) => _rows(
+            database,
+            'SELECT run_id, latest_sequence FROM adele_execution_run_activity',
+          ),
+        ),
+        [
+          {
+            'run_id': failed.run.id.value,
+            'latest_sequence': completedActivity.sequence,
+          },
+        ],
+      );
       expect(
         _inspect(
           source,
@@ -575,9 +644,9 @@ void main() {
       );
       expect(
         _snapshot(await chat.snapshot(sessionId.value)),
-        _snapshot(before),
+        _snapshot(associated),
       );
-      expect(_inspect(source, _chatRows), rowsBefore);
+      expect(_inspect(source, _chatRows), associatedRows);
       expect(_inspect(source, _coreRows), coreBefore);
 
       _inspect(
@@ -642,6 +711,43 @@ void main() {
       expect(restoredRecord.id, completedRecord.id);
       expect(restoredRecord.sessionId, sessionId);
       expect(restoredRecord.state, RunTerminalState.completed);
+      final restoredActivity = fresh.runtime.lifecycle.runActivity(
+        failed.run.id,
+      )!;
+      expect(restoredActivity, isNot(same(completedActivity)));
+      expect(restoredActivity.runId, completedRecord.id);
+      expect(restoredActivity.sessionId, sessionId);
+      expect(restoredActivity.state, RunState.completed);
+      expect(restoredActivity.sequence, completedActivity.sequence);
+      expect(restoredActivity.failure, isNull);
+      expect(
+        restoredActivity.lifecycle.map(
+          (change) => (change.sequence, change.state),
+        ),
+        completedActivity.lifecycle.map(
+          (change) => (change.sequence, change.state),
+        ),
+      );
+      final restoredModel = restoredActivity.models.single;
+      final completedModel = completedActivity.models.single;
+      expect(restoredModel.id, completedModel.id);
+      expect(restoredModel.startSequence, completedModel.startSequence);
+      expect(restoredModel.terminalSequence, completedModel.terminalSequence);
+      expect(restoredModel.settlement, ModelSettlement.completed);
+      expect(
+        restoredModel.outputs.single.sequence,
+        completedModel.outputs.single.sequence,
+      );
+      expect(
+        (restoredModel.outputs.single.item as ModelTextOutput).content,
+        'Must not enter durable history.',
+      );
+      expect(
+        fresh.runtime.lifecycle
+            .runActivitiesForSession(sessionId)
+            .map((activity) => activity.runId),
+        unorderedEquals([failed.run.id, retry.run.id]),
+      );
       expect(
         fresh.runtime.store
             .runsForSession(sessionId)
@@ -807,7 +913,12 @@ Map<String, Object?> _snapshot(ChatSessionSnapshot snapshot) => {
   'draftRequest': snapshot.draftRequest,
   'entries': [
     for (final entry in snapshot.entries)
-      {'id': entry.id, 'role': entry.role, 'content': entry.content},
+      {
+        'id': entry.id,
+        'role': entry.role,
+        'content': entry.content,
+        'runId': entry.runId,
+      },
   ],
 };
 
@@ -877,11 +988,12 @@ void _expectSchema(Database database) {
   expect(
     _rows(database, 'SELECT * FROM adele_schema_versions ORDER BY owner_id'),
     [
+      {'owner_id': 'dev.adele.execution', 'version': 1},
       {'owner_id': _chatPluginId, 'version': 1},
       {'owner_id': 'dev.adele.product', 'version': 1},
     ],
   );
-  // Terminal Run records are durable; execution objects and evidence are not.
+  // Data-only terminal evidence is retained separately from canonical Chat.
   expect(
     database
         .select("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -894,6 +1006,13 @@ void _expectSchema(Database database) {
       'adele_product_sessions',
       'adele_product_session_environment_authority',
       'adele_product_runs',
+      'adele_execution_run_activity',
+      'adele_execution_run_lifecycle',
+      'adele_execution_model_invocations',
+      'adele_execution_model_outputs',
+      'adele_execution_tool_invocations',
+      'adele_execution_tool_changes',
+      'adele_execution_rejected_proposals',
       'adele_chat_sessions',
       'adele_chat_entries',
     ]),

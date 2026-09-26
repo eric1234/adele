@@ -73,6 +73,7 @@ void main() {
       id: 'entry-1',
       role: 'user',
       content: 'Inspect.',
+      runId: null,
     );
     final List<ChatEntry> entries = <ChatEntry>[user];
     final ChatSessionSnapshot snapshot = ChatSessionSnapshot(

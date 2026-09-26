@@ -6,14 +6,20 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
+import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
+import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
+import 'package:adele_desktop/frontend/prepared_session_host.dart';
+import 'package:adele_desktop/frontend/session_execution_source.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
 import 'package:adele_desktop/ui/execution/run_execution_status.dart';
+import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
+import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
 import 'package:adele_desktop/ui/session/session_presentation_host.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
@@ -22,6 +28,7 @@ import 'package:adele_model_provider/adele_model_provider.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+import 'package:adele_product/adele_product.dart';
 import 'package:adele_ui/adele_ui.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
@@ -81,7 +88,7 @@ void main() {
   // stock backend/frontend and independently compiled tool/provider components.
   for (final allowCommand in [true, false]) {
     testWidgets(
-      'F3g installed Chat replays two prompts and ordered approvals (${allowCommand ? 'Allow once' : 'Deny'})',
+      'F3g installed Chat replays two prompts and reopens durable activity (${allowCommand ? 'Allow once' : 'Deny'})',
       (tester) => tester.runAsync(() async {
         await tester.binding.setSurfaceSize(const Size(1400, 1100));
         addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -419,6 +426,10 @@ void main() {
         ]);
         expect(first.entries.map((entry) => entry.id).toSet(), hasLength(2));
         expect(fixture.runIds.values, hasLength(1));
+        expect(first.entries.map((entry) => entry.runId), [
+          fixture.runIds.values.single.value,
+          null,
+        ]);
         expect(outbound, hasLength(1));
 
         await _send(tester, _prompt);
@@ -516,6 +527,45 @@ void main() {
           canonical.entries.map((entry) => entry.id).toSet(),
           hasLength(4),
         );
+        final runId = fixture.runIds.values.last;
+        expect(canonical.entries.map((entry) => entry.runId), [
+          fixture.runIds.values.first.value,
+          null,
+          runId.value,
+          null,
+        ]);
+        final retainedActivity = runtime.lifecycle.runActivity(runId)!;
+        expect(retainedActivity.state, RunState.completed);
+        expect(retainedActivity.models, hasLength(3));
+        expect(retainedActivity.tools.map((tool) => tool.alias), [
+          'read_file',
+          'apply_patch',
+          'run_command',
+        ]);
+        final native = retainedActivity.models
+            .expand((model) => model.outputs)
+            .map((output) => output.item)
+            .whereType<ModelNativeOutput>()
+            .single;
+        expect(native.presentation!.compactText, _reasoning);
+        expect(
+          jsonEncode(native.providerNativeMetadata.data),
+          contains(_encrypted),
+        );
+        expect(
+          jsonEncode(native.providerNativeMetadata.data),
+          contains(_privateReasoning),
+        );
+        final project = fixture.shell(tester).project!;
+        final task = fixture.shell(tester).task!;
+        final authority = runtime.store.requireSessionAuthority(session.id);
+        final database = runtime.lifecycle.databaseForSession(session.id)!;
+        final inventory = await _git(fixture.source, [
+          'worktree',
+          'list',
+          '--porcelain',
+        ]);
+        final marker = await File('${worktree.path}/.git').readAsBytes();
         expect(fixture.status(tester).pendingApproval, isNull);
         expect(fixture.status(tester).failureMessage, isNull);
         expect(fixture.status(tester).isAdvancing, isFalse);
@@ -555,6 +605,10 @@ void main() {
           AppExitResponse.exit,
         );
         expect(runtime.plugins.state, ApplicationPluginState.closed);
+        expect(database.loadProductGraph, throwsStateError);
+        for (final backend in runtime.plugins.backends) {
+          expect(backend.connection!.isClosed, isTrue);
+        }
         expect(strategy.validate, throwsA(isA<StaleExtensionBinding>()));
         expect(presentation.validate, throwsA(isA<StaleExtensionBinding>()));
         await expectLater(
@@ -566,9 +620,199 @@ void main() {
           isEmpty,
         );
         await tester.pumpWidget(const SizedBox.shrink());
+
+        // Only backing selection is active while the complete retained graph and
+        // evidence load. Neither Chat nor an execution provider participates.
+        final ids = _NoReopenIds();
+        final fresh = AdeleRuntime(ids: ids, runIds: ids);
+        addTearDown(fresh.close);
+        final backingHost = await PluginBackendHost.start(
+          dartaotruntimeExecutable: prepared.dartaotruntime,
+          hostArtifactPath: prepared.host.path,
+        );
+        addTearDown(backingHost.close);
+        final backingConnection = await backingHost.startPlugin(
+          pluginId: _localDirectoryProjectPluginId,
+          artifactUri: prepared.backend(_localDirectoryProjectPluginId).uri,
+        );
+        final backing = await PluginCapabilityActivation.registerAdvertised(
+          connection: backingConnection,
+          registry: fresh.registry,
+        );
+        addTearDown(backing.close);
+        expect(
+          fresh.extensions.discover(orchestrationStrategyContributions),
+          isEmpty,
+        );
+        expect(
+          fresh.registry.providersFor(environmentProviderCapability),
+          isEmpty,
+        );
+        expect(fresh.registry.providersFor(modelProviderCapability), isEmpty);
+        expect(fresh.extensions.discover(modelToolContributions), isEmpty);
+        final reopened = await fresh.lifecycle.openProject(
+          sourceLocation: fixture.source.uri,
+          provider: fresh.lifecycle.resolveProjectProvider(
+            ProviderId('dev.adele.project.local-directory'),
+          ),
+        );
+        expect(reopened.id, project.id);
+        expect(reopened, isNot(same(project)));
+        expect(fresh.store.tasksFor(reopened.id).single.id, task.id);
+        final restoredEnvironment = fresh.store.primaryEnvironmentFor(task.id)!;
+        expect(restoredEnvironment.id, environment.id);
+        expect(restoredEnvironment.providerState, environment.providerState);
+        final restoredSession = fresh.store.session(session.id)!;
+        expect(restoredSession, isNot(same(session)));
+        expect(restoredSession.taskId, task.id);
+        expect(restoredSession.strategyId, session.strategyId);
+        final restoredAuthority = fresh.store.requireSessionAuthority(
+          session.id,
+        );
+        expect(restoredAuthority, isNot(same(authority)));
+        expect(restoredAuthority.environmentId, environment.id);
+        expect(
+          () => fresh.lifecycle.resolveSessionStrategy(session.id),
+          throwsA(isA<OrchestrationStrategyUnavailable>()),
+        );
+        expect(
+          fresh.store
+              .runsForSession(session.id)
+              .map((record) => (record.id, record.state)),
+          unorderedEquals([
+            for (final id in fixture.runIds.values)
+              (id, RunTerminalState.completed),
+          ]),
+        );
+        final restoredActivity = fresh.lifecycle.runActivity(runId)!;
+        expect(restoredActivity, isNot(same(retainedActivity)));
+        expect(
+          _activityEvidence(restoredActivity),
+          _activityEvidence(retainedActivity),
+        );
+        expect(
+          fresh.lifecycle
+              .runActivitiesForSession(session.id)
+              .map((activity) => activity.runId),
+          unorderedEquals(fixture.runIds.values),
+        );
+        expect(
+          fresh.lifecycle.environmentRuntime.currentMaterialization(
+            environment.id,
+          ),
+          isNull,
+        );
+        await backing.close();
+        await backingHost.close();
+
+        // No model credentials are supplied on reopen. Presentation still uses
+        // fresh real Chat, tool, and native presenter generations, not old views.
+        await prepared.start(fresh);
+        expect(fresh.registry.providersFor(modelProviderCapability), isEmpty);
+        final freshChatConnection = fresh.plugins.backends
+            .singleWhere(
+              (backend) =>
+                  backend.installation.metadata.id.value == _chatPluginId,
+            )
+            .connection!;
+        expect(freshChatConnection, isNot(same(connection)));
+        final freshChat = _chatClient(freshChatConnection);
+        final restoredChat = await freshChat.snapshot(session.id.value);
+        expect(
+          restoredChat.entries.map(
+            (entry) => (entry.id, entry.role, entry.content, entry.runId),
+          ),
+          canonical.entries.map(
+            (entry) => (entry.id, entry.role, entry.content, entry.runId),
+          ),
+        );
+        final controller = await _presentRetainedSession(
+          tester,
+          fresh,
+          restoredSession,
+        );
+        await _pumpUntil(
+          tester,
+          () => find.text(_narration).evaluate().isNotEmpty,
+        );
+        for (final text in [_initialPrompt, _initialAnswer, _prompt, answer]) {
+          expect(find.text(text), findsOneWidget);
+        }
+        expect(
+          tester.getTopLeft(find.text(_prompt)).dy,
+          lessThan(tester.getTopLeft(find.text(_narration)).dy),
+        );
+        expect(
+          tester.getTopLeft(find.text(_narration)).dy,
+          lessThan(tester.getTopLeft(find.text(answer)).dy),
+        );
+        _expectNoSecrets(tester);
+
+        // The same generic source used by the prepared bridge emits only safe
+        // presentation, even though opaque private replay survived in core data.
+        final source = SessionExecutionPresentationSource(
+          controller: controller,
+          extensions: fresh.extensions,
+          isActive: () => true,
+          inspect: (_, _) => false,
+        );
+        addTearDown(source.invalidate);
+        final handle = source.openRunActivity(runId.value)!;
+        final bridgeData = jsonEncode(source.readRunActivity(handle));
+        expect(bridgeData, contains(_reasoning));
+        expect(bridgeData, isNot(contains(_encrypted)));
+        expect(bridgeData, isNot(contains(_privateReasoning)));
+        expect(bridgeData, isNot(contains('providerNativeMetadata')));
+
+        await _tap(tester, _narration);
+        expect(find.byType(InspectionHost), findsOneWidget);
+        await _tap(tester, 'Reasoning: $_reasoning');
+        expect(find.byType(InspectionHost), findsNWidgets(2));
+        expect(find.text('Reasoning summary'), findsWidgets);
+        _expectNoSecrets(tester);
+        await _tap(tester, 'Apply Patch: "$_sourcePath" / 1 edit');
+        expect(find.byType(InspectionHost), findsNWidgets(3));
+        expect(find.text('New revision: $patchedRevision'), findsOneWidget);
+        expect(find.text('Lifecycle: completed'), findsOneWidget);
+        _expectNoSecrets(tester);
+        expect(controller.currentRun, isNull);
+        expect(controller.activeRunFuture, isNull);
+        expect(controller.pendingApproval, isNull);
+        expect(controller.isRunning, isFalse);
+        expect(controller.isAdvancing, isFalse);
+        expect(controller.canStart, isFalse);
+        expect(ids.calls, 0);
+        expect(fixture.runIds.values, hasLength(2));
+        expect(outbound, hasLength(4));
+        expect(
+          fresh.lifecycle.environmentRuntime.currentMaterialization(
+            environment.id,
+          ),
+          isNull,
+        );
+        expect(
+          await _git(fixture.source, ['worktree', 'list', '--porcelain']),
+          inventory,
+        );
+        expect(await File('${worktree.path}/.git').readAsBytes(), marker);
+        expect(
+          await File('${worktree.path}/$_sourcePath').readAsString(),
+          _patchedText,
+        );
+        expect(
+          await _sourceSnapshot(fixture.source, taskWorktree: worktree),
+          projectBefore,
+        );
+        expect(
+          (await freshChat.snapshot(
+            session.id.value,
+          )).entries.map((entry) => (entry.id, entry.runId)),
+          canonical.entries.map((entry) => (entry.id, entry.runId)),
+        );
+        await tester.pumpWidget(const SizedBox.shrink());
         expect(tester.takeException(), isNull);
       }),
-      timeout: const Timeout(Duration(seconds: 60)),
+      timeout: const Timeout(Duration(seconds: 90)),
     );
   }
 
@@ -1196,6 +1440,216 @@ ChatSessionServiceClient _chatClient(PluginBackendConnection connection) =>
         chatSessionServiceId,
       ),
     );
+
+Future<SessionExecutionController> _presentRetainedSession(
+  WidgetTester tester,
+  AdeleRuntime runtime,
+  Session session,
+) async {
+  final inspection = WindowInspection()..presentSession(session);
+  addTearDown(inspection.dispose);
+  late SessionExecutionController controller;
+  bool inspect(Session presented, InspectionTarget target) {
+    expect(presented, same(session));
+    final activity = controller.activityForRun(target.runId)!;
+    if (target is ModelOutputInspectionTarget) {
+      return inspection.inspectOutput(
+        session: session,
+        activity: activity,
+        modelInvocationId: target.modelInvocationId,
+        outputSequence: target.outputSequence,
+      );
+    }
+    return inspection.inspectActivity(
+      session: session,
+      activity: activity,
+      modelInvocationId: target.modelInvocationId,
+    );
+  }
+
+  final sessionHost = PreparedSessionHost(
+    extensions: runtime.extensions,
+    backends: runtime.plugins,
+    controllerForSession: (presented) {
+      expect(presented, same(session));
+      return controller;
+    },
+    inspectActivity: inspect,
+  );
+  final frontends = ApplicationFrontendBootstrap(
+    extensions: runtime.extensions,
+    sessionHost: sessionHost,
+  );
+  addTearDown(frontends.close);
+  await frontends.start(runtime.plugins.catalog!);
+  for (final frontend in frontends.generations) {
+    expect(frontend.state, InstalledFrontendState.active);
+  }
+  final selection = sessionHost.resolve(
+    runtime.extensions.discover(sessionPresentationContributions).single,
+  );
+  controller = SessionExecutionController(
+    runtime: runtime,
+    session: session,
+    providerId: stockChatGptProviderId,
+    model: 'gpt-6-astra',
+    strategy: selection.strategy,
+  );
+  addTearDown(controller.close);
+  sessionHost.bind(session, selection);
+  // There is no Session browser yet. Bind the retained canonical Session without
+  // creating a replacement, materializing its Environment, or scheduling a Run.
+  await tester.pumpWidget(
+    MaterialApp(
+      home: Scaffold(
+        body: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: SingleChildScrollView(
+                child: SessionPresentationHost(
+                  session: session,
+                  extensions: runtime.extensions,
+                ),
+              ),
+            ),
+            Expanded(
+              child: AnimatedBuilder(
+                animation: inspection,
+                builder: (context, _) => SingleChildScrollView(
+                  child: InspectionStackHost(
+                    cards: inspection.cards,
+                    cardBuilder: (context, card) => InspectionHost(
+                      card: card,
+                      activity: controller.activityForRun(card.target.runId),
+                      heading: 'Retained Run activity',
+                      extensions: runtime.extensions,
+                      onCollapse: () => inspection.collapse(card.id),
+                      onExpand: () => inspection.expand(card.id),
+                      onDismiss: () => inspection.dismiss(card.id),
+                      onInspectOutput: (target) => inspection.inspectOutput(
+                        session: session,
+                        activity: controller.activityForRun(target.runId)!,
+                        modelInvocationId: target.modelInvocationId,
+                        outputSequence: target.outputSequence,
+                        originCardId: card.id,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+  addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
+  return controller;
+}
+
+Map<String, Object?> _activityEvidence(RunActivitySnapshot activity) => {
+  'runId': activity.runId.value,
+  'sessionId': activity.sessionId.value,
+  'state': activity.state.name,
+  'sequence': activity.sequence,
+  'lifecycle': [
+    for (final change in activity.lifecycle) (change.sequence, change.state),
+  ],
+  'models': [
+    for (final model in activity.models)
+      {
+        'id': model.id.value,
+        'start': model.startSequence,
+        'terminal': model.terminalSequence,
+        'settlement': model.settlement?.name,
+        'effectiveModel': model.metadata?.effectiveModel,
+        'responseId': model.metadata?.providerResponseId,
+        'outputs': [
+          for (final output in model.outputs)
+            {
+              'sequence': output.sequence,
+              ...switch (output.item) {
+                ModelTextOutput(:final content, :final providerItemId) => {
+                  'text': content,
+                  'itemId': providerItemId,
+                },
+                ModelToolProposalOutput(:final proposal) => {
+                  'callId': proposal.providerCallId,
+                  'alias': proposal.alias,
+                  'arguments': proposal.arguments,
+                },
+                ModelNativeOutput(
+                  :final providerItemId,
+                  :final providerNativeMetadata,
+                  :final presentation,
+                ) =>
+                  {
+                    'itemId': providerItemId,
+                    'nativeKind': providerNativeMetadata.kind,
+                    'nativeCompatibility': providerNativeMetadata.compatibility,
+                    'nativeData': providerNativeMetadata.data,
+                    'presentationKind': presentation?.kind,
+                    'compactText': presentation?.compactText,
+                    'presentationData': presentation?.data,
+                  },
+              },
+            },
+        ],
+      },
+  ],
+  'tools': [
+    for (final tool in activity.tools)
+      {
+        'id': tool.id.value,
+        'modelId': tool.modelInvocationId.value,
+        'proposalSequence': tool.proposalSequence,
+        'preparedSequence': tool.preparedSequence,
+        'toolId': tool.toolId.value,
+        'alias': tool.alias,
+        'callId': tool.providerCallId,
+        'arguments': tool.canonicalArguments,
+        'changes': [
+          for (final change in tool.changes)
+            {
+              'sequence': change.sequence,
+              'kind': change.kind.name,
+              'decision': change.policyDecision?.name,
+              'interruptionId': change.interruptionId?.value,
+              'approved': change.approved,
+              'progressKind': change.progress?.kind.name,
+              'progressContent': change.progress?.content,
+            },
+        ],
+        'disposition': tool.outcome?.disposition.name,
+        'certainty': tool.outcome?.effectCertainty.name,
+        'failureKind': tool.outcome?.failureKind?.name,
+        'modelContent': tool.outcome?.modelContent,
+        'hostData': tool.outcome?.hostData,
+      },
+  ],
+};
+
+final class _NoReopenIds implements ProductIdSource, RunIdSource {
+  int calls = 0;
+  Never _allocate() {
+    calls++;
+    throw StateError(
+      'Displaying retained work must not allocate product or Run IDs.',
+    );
+  }
+
+  @override
+  ProjectId nextProjectId() => _allocate();
+  @override
+  TaskId nextTaskId() => _allocate();
+  @override
+  EnvironmentId nextEnvironmentId() => _allocate();
+  @override
+  SessionId nextSessionId() => _allocate();
+  @override
+  RunId nextRunId() => _allocate();
+}
 
 final class _DirectoryPicker extends FileSelectorPlatform {
   _DirectoryPicker(this.path);

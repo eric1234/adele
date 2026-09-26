@@ -73,6 +73,7 @@ class _ChatFrontendState extends State<ChatFrontend> {
     snapshot = widget.initialSnapshot;
     final initial = snapshot;
     if (initial != null) {
+      associateActivity(initial);
       // The pinned evaluator's text setter falls through to an unimplemented
       // superclass setter. Constructor text restores without that bridge bug.
       controller.dispose();
@@ -122,6 +123,7 @@ class _ChatFrontendState extends State<ChatFrontend> {
               controller = TextEditingController(text: next.draftRequest);
             }
             snapshot = next;
+            associateActivity(next);
             historyFailure = '';
           });
         }
@@ -132,6 +134,16 @@ class _ChatFrontendState extends State<ChatFrontend> {
       }
     }
     refreshing = false;
+  }
+
+  void associateActivity(ChatSessionSnapshot current) {
+    for (final ChatEntry entry in current.entries) {
+      final runId = entry.runId;
+      if (runId != null && !runs.containsKey(entry.id)) {
+        final handle = openSessionRunActivity(runId);
+        if (handle != null) runs[entry.id] = handle;
+      }
+    }
   }
 
   void draftChanged(String value) {

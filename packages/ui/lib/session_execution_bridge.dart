@@ -11,6 +11,11 @@ Map<String, Object?> readSessionExecution() =>
 Future<String> startSessionRun() =>
     throw UnsupportedError('Interpreted host only.');
 
+/// Opens retained terminal evidence belonging to this Session, or returns null
+/// when unavailable. The opaque handle grants presentation access, not execution.
+String? openSessionRunActivity(String runId) =>
+    throw UnsupportedError('Interpreted host only.');
+
 /// Settles an already-started Future as `[true, value]` or `[false, null]`.
 /// Native rejection does not reliably unwind interpreted try/await. Success
 /// values stay in their originating runtime; exceptions and stacks do not cross.

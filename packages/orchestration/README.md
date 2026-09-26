@@ -1,8 +1,9 @@
 # ADELE Orchestration
 
 `adele_orchestration` is the experimental public provider-neutral registration,
-binding, execution, live activity observation, and inference-context boundary for orchestration. It is pure
-Dart and depends only on public `adele_contract`, `adele_product`, `adele_plugin_api`, and
+binding, execution, read-only activity, and inference-context boundary for
+orchestration. It is pure Dart and depends only on public `adele_contract`,
+`adele_product`, `adele_plugin_api`, and
 `adele_model_tool`. Its API is not stable. Neither this package nor its stock
 Chat consumer depends on `agent_kernel` or the application.
 
@@ -169,8 +170,9 @@ Session hosting can pin a Run to the exact resolved strategy from the same backe
 connection used by its frontend, without exposing generation identities to plugins.
 Chat's canonical persistence uses a separate generation-scoped
 [Project storage service](../project_storage/README.md), not the start/resume
-invocation context. Live Run execution and activity remain non-durable;
-terminal product records are retained by the application under the
+invocation context. Live Run execution remains non-durable; terminal product
+records and explicit public activity snapshots are retained atomically by the
+application under the
 [terminal retention rules](../../docs/architecture/execution-model.md#terminal-run-retention),
 not through a new strategy persistence operation.
 
@@ -192,14 +194,18 @@ interpretation. Transport `ModelProviderOutput.nativePresentation` is required
 nullable: `null` means semantic absence, while its generated key remains required.
 This package needs no dependency on the transport DTO or Flutter to own its
 semantic value. Raw native metadata remains exact and the only native replay
-source; safe presentation is never copied into semantic replay input.
+source during live Run-local continuation; safe presentation is never copied into
+semantic replay input. Native envelopes retained in terminal history are opaque
+historical evidence, never future continuation input.
 
 `SemanticModelRequest`, model ports/events/streams/collectors, tool catalogs and
 materializations, policy machinery, `AgentRun`, and the journal remain internal.
 This public boundary returns collected semantic turns; it does not make the
 kernel's streaming execution or observation implementation public.
 
-## Live Run Activity
+<a id="live-run-activity"></a>
+
+## Run Activity
 
 `RunActivitySource` supplies `RunActivitySnapshot get snapshot` and
 `Stream<void> get changes`. A snapshot contains ordered `ModelInvocationActivity`,
@@ -208,7 +214,8 @@ kernel's streaming execution or observation implementation public.
 `ToolOutcomeActivity` and `ActivityFailure` are data-only outcome/failure
 projections. `ModelInvocationId` is shared here with the kernel alongside the
 existing Run/tool identities; output and change sequences are Run-local occurrence
-identities, never list indices or globally persistent IDs.
+identities, never list indices or globally unique IDs. Retained history preserves
+them within their original Run scope.
 
 The public activity boundary is deliberately separate from execution. A read-only
 source supplies an initial immutable snapshot and change notifications; it has no
@@ -216,6 +223,11 @@ start, resume, approval, cancellation, or tool methods. The application host
 projects the internal Run journal into these values without exposing the journal
 or retaining executable objects in snapshots. Cancelling a subscription only
 detaches observation. Terminal evidence remains readable after completion/failure.
+The application retains terminal `RunActivitySnapshot` values with product Run
+records and restores them as read-only history. This package owns those immutable
+semantic values, not SQLite, codecs for internal journals, or storage lifetime.
+See [terminal execution history](../../docs/architecture/execution-model.md#terminal-execution-history)
+for the relational and commit-before-publication boundary.
 
 The read model retains exact model invocation identity, ordered output occurrence
 identity, and resolved tool invocation identity across lifecycle changes. Model
@@ -234,9 +246,9 @@ do not count. This is independent of rich frontend activation. Chat needs no
 negative projection cache or registry-change retry machinery. Headings prefer
 explicit tool-batch narration only when tools are present, then safe compact text,
 then a structural occurrence count (`N operations`), with no extra inference.
-Reasoning-only activity precedes canonical final Chat text. Activity is not canonical Chat history
-and is not persisted. Completed activity retained by a current presentation cannot
-be reconstructed from a restored terminal Run record. Follow the
+Reasoning-only activity precedes canonical final Chat text. Activity is not canonical
+Chat history. A terminal product record alone does not contain evidence; the
+separately stored public snapshot supplies historical activity. Follow the
 [canonical activity boundary](../../docs/architecture/execution-model.md#observations-and-activity)
 for evidence-storage scope. Chat groups can open
 window-owned Inspection, where public Flutter `adele_ui` selects read-only
@@ -248,8 +260,8 @@ owns raw classification and safe reasoning-summary projection, Contract owns onl
 identities/schema, and Frontend renders safe Inspection. Generic Chat and the
 OpenAI frontend escape compact and full display controls respectively. This package
 remains Flutter-free and owns neither selection nor provider/tool interpretation:
-native envelopes stay
-opaque here, with exact native/encrypted replay unchanged. See
+native envelopes stay opaque here. Live Run-local native/encrypted continuation
+remains distinct from historical evidence, which is never replayed. See
 [model-native activity presentation](../../docs/architecture/overview.md#model-native-activity-presentation).
 Reasoning deltas and nested navigation remain deferred.
 
@@ -428,7 +440,7 @@ plugin-owned guidance, not a generic precedence or repository-instructions API.
 
 There are no kernel, Flutter, app, or plugin-runtime imports. General background
 scheduling, general plugin management, broader Chat UI, active Run recovery,
-activity persistence, profiles, and child Sessions remain deferred. The generic
+profiles, and child Sessions remain deferred. The generic
 context contract remains instruction-only. Nested/scoped
 AGENTS.md, aliases/overrides, global/home files, imports, and AGENTS.md caching are
 deferred; time, Skills, roles, and repository maps remain independent, unimplemented

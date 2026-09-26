@@ -35,6 +35,7 @@ void main() {
       expect(accepted.id, 'entry-0');
       expect(accepted.role, 'user');
       expect(accepted.content, '  Prompt.\n');
+      expect(accepted.runId, isNull);
       expect(snapshot.entries.single.id, accepted.id);
       expect(snapshot.entries.single, isNot(same(accepted)));
       expect(snapshot.instructions, '  exact\r\n');
@@ -70,6 +71,7 @@ void main() {
       expect(accepted.id, 'entry-0');
       expect(accepted.role, 'user');
       expect(accepted.content, before.draftRequest);
+      expect(accepted.runId, isNull);
       final after = await client.snapshot('session');
       expect(after.draftRequest, '');
       expect(after.entries.single.id, accepted.id);
@@ -98,6 +100,67 @@ void main() {
       ),
     );
   });
+
+  test(
+    'Run association round trips as a required nullable wire field',
+    () async {
+      final service = _Service();
+      final dispatcher = ChatSessionServiceDispatcher(service);
+      addTearDown(dispatcher.close);
+      final client = ChatSessionServiceClient(_Channel(dispatcher));
+      for (final runId in <String?>[null, 'run-1']) {
+        service.entries
+          ..clear()
+          ..add(
+            ChatEntry(
+              id: 'entry-0',
+              role: 'user',
+              content: 'Prompt.',
+              runId: runId,
+            ),
+          );
+        final snapshot = await client.snapshot('session');
+        expect(snapshot.entries.single.runId, runId);
+        final response = await dispatcher.dispatch({
+          'kind': 'request',
+          'requestId': 1,
+          'method': chatSessionServiceSnapshotId,
+          'payload': {'sessionId': 'session'},
+        });
+        final payload = response['payload']! as Map;
+        expect((payload['entries']! as List).single, {
+          'id': 'entry-0',
+          'role': 'user',
+          'content': 'Prompt.',
+          'runId': runId,
+        });
+      }
+      for (final fields in <Map<String, Object?>>[
+        {},
+        {'runId': 42},
+      ]) {
+        final client = ChatSessionServiceClient(
+          _SnapshotChannel({
+            'entries': [
+              {
+                'id': 'entry-0',
+                'role': 'user',
+                'content': 'Prompt.',
+                ...fields,
+              },
+            ],
+            'instructions': '',
+            'maxModelInvocations': 8,
+            'draftRequest': '',
+          }),
+        );
+        await expectLater(
+          client.snapshot('session'),
+          throwsA(isA<AdeleProtocolException>()),
+        );
+      }
+    },
+  );
 
   test(
     'current wire snapshot requires a string draft without legacy defaults',
@@ -185,6 +248,7 @@ final class _Service implements ChatSessionService {
       id: 'entry-${entries.length}',
       role: 'user',
       content: content,
+      runId: null,
     );
     entries.add(entry);
     return entry;

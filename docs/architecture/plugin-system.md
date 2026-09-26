@@ -288,7 +288,8 @@ define the service boundary, including its deliberate lack of SQL row isolation.
 
 Plugins own initialization SQL, relational constraints, validation, and migrations.
 The host coordinates transactions and owner versions; the declared version is the
-migration list length. Core `dev.adele.product` and stock Chat
+migration list length. Core `dev.adele.product`, execution `dev.adele.execution`,
+and stock Chat
 `dev.adele.plugin.chat-strategy` each have only the current version-1 baseline,
 not an upgrade history of pre-release development schemas. Failed, malformed, or
 newer unsupported state must not be reset or hidden behind an in-memory fallback.
@@ -309,7 +310,7 @@ backend owns these version-1 tables:
 | Table | Chat-owned meaning |
 | --- | --- |
 | `adele_chat_sessions(session_id, instructions, max_model_invocations, next_entry, draft_request)` | Configuration, entry counter, and current plain-text Draft Request, linked by foreign key to core Session identity. |
-| `adele_chat_entries(session_id, sequence, entry_id, role, content)` | Ordered canonical user/assistant history, linked to the Chat Session row. |
+| `adele_chat_entries(session_id, sequence, entry_id, role, content, run_id)` | Ordered canonical user/assistant history, linked to the Chat Session row; nullable semantic Run association on user entries only. |
 
 `ChatSessionStore` initializes or loads state only on first actual state access,
 not at Project reopen or core Session creation. Defaults apply only to an
@@ -319,6 +320,16 @@ The cache is generation-local; durable SQL state is the source of truth across
 backend replacement. Missing Chat
 does not prevent core graph restoration or cause its tables to be touched. A fresh
 backend can later load that retained state through fresh resolution.
+
+`run_id` is nullable and unique with `session_id`; assistant entries cannot carry
+it. There is deliberately no foreign key to the core terminal Run table: Chat
+associates the final history entry only when it is an unassociated user entry, after successful
+execution materialization and before a terminal record exists. Association commits before
+canonical and staged caches change. An association failure releases the newly
+materialized execution and Session claim without publishing the association.
+Unstarted, waiting, or unsuccessfully retained work can therefore have an
+association without durable terminal evidence. The field identifies historical
+activity; it is neither an opaque presentation handle nor execution authority.
 
 User append commits its entry and counter together before cache mutation or
 return, without changing the draft. Configuration commits both fields before
@@ -342,7 +353,10 @@ durable source of truth. Direct `ChatSessionStore()` and `createProject` fixture
 are deliberately volatile. Remote Chat uses volatile state only after an explicit
 `isDurableSession` false result, never because a lookup or storage call failed.
 Live Run state, claims, approvals, and activity/native replay are not part of these
-tables. See the [Chat ownership map](../../plugins/chat_strategy/README.md)
+tables. Core-owned [terminal execution history](execution-model.md#terminal-execution-history)
+is stored separately; Chat's association lets a fresh presentation request a
+Session-validated read-only handle without rehydrating execution. See the
+[Chat ownership map](../../plugins/chat_strategy/README.md)
 for local entrypoints and [ADR 0034](../adr/0034-plugin-owned-relational-session-storage.md)
 for the decision rationale.
 

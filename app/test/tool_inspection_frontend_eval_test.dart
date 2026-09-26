@@ -1235,6 +1235,9 @@ class _InspectionSessionSource extends ChangeNotifier
   String currentSessionId() => 'inspection-session';
 
   @override
+  String? openRunActivity(String runId) => null;
+
+  @override
   Map<String, Object?> readExecution() => {
     'canStart': !_runStarted,
     'running': _runStarted,
