@@ -20,8 +20,8 @@ Hydration looks up the next expected `sequence` within the Session using the
 existing composite index, without rescanning a history prefix. `LIMIT 2` detects
 duplicate sequences if constraints are damaged; valid state returns one entry per
 query, keeping individually readable rows within the response bound. An empty
-result ends history, after which the counter check also rejects sequence gaps.
-It validates the current
+result ends the contiguous lookup. A final retained-row count and the entry-counter
+check reject hidden rows or gaps before publishing state. It validates the current
 contiguous sequence/`entry-N` IDs, role, nonblank content, counter, and budget.
 The counter starts at zero and is shared by both roles. Raw message/instruction
 bytes are retained. Missing state is initialized to stock instructions, budget

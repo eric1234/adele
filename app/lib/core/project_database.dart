@@ -356,16 +356,16 @@ final class ProjectDatabase {
       final cursor = statement.iterateWith(
         StatementParameters.named(parameters),
       );
+      if (cursor.columnNames.toSet().length != cursor.columnNames.length) {
+        throw const FormatException(
+          'Relational query column names must be unique.',
+        );
+      }
       final rows = <RelationalRow>[];
       var bytes = 2;
       while (cursor.moveNext()) {
         if (rows.length == relationalQueryRowLimit) {
           throw StateError('Relational query exceeds its row limit.');
-        }
-        if (cursor.columnNames.toSet().length != cursor.columnNames.length) {
-          throw const FormatException(
-            'Relational query column names must be unique.',
-          );
         }
         final row = RelationalRow(
           values: Map<String, Object?>.of(cursor.current),

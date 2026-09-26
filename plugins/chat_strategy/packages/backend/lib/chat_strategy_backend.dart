@@ -394,6 +394,19 @@ final class ChatSessionStore {
     if (state._nextEntry != state._entries.length) {
       throw ChatStateCorruption(id, 'Entry counter does not match history.');
     }
+    final count = await storage.queryForSession(
+      id.value,
+      'SELECT COUNT(*) AS entry_count FROM adele_chat_entries '
+      'WHERE session_id = :session',
+      parameters,
+    );
+    if (count.length != 1 ||
+        count.single.values['entry_count'] != state._entries.length) {
+      throw ChatStateCorruption(
+        id,
+        'Retained entry count does not match history.',
+      );
+    }
     if (rows.isEmpty) {
       state._requireReadableConfiguration(
         state.instructions,

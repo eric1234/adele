@@ -335,6 +335,42 @@ void main() {
     },
   );
 
+  test('query column names must be unique even when no rows match', () async {
+    await storage.ensureSchemaForSession(session.id.value, [_baseline]);
+    await storage.transactionForSession(session.id.value, [
+      RelationalStatement(
+        sql: "INSERT INTO fixture_entries VALUES ('retained', 1)",
+        parameters: {},
+        expectedRows: 1,
+      ),
+    ]);
+    expect(
+      await storage.queryForSession(
+        session.id.value,
+        'SELECT value, number FROM fixture_entries WHERE 0',
+        {},
+      ),
+      isEmpty,
+    );
+    for (final suffix in [' WHERE 0', '']) {
+      await expectLater(
+        storage.queryForSession(
+          session.id.value,
+          'SELECT value AS duplicate, number AS duplicate '
+          'FROM fixture_entries$suffix',
+          {},
+        ),
+        throwsA(
+          isA<FormatException>().having(
+            (error) => error.message,
+            'message',
+            'Relational query column names must be unique.',
+          ),
+        ),
+      );
+    }
+  });
+
   test(
     'query bounds and narrow value types fail without truncation or writes',
     () async {

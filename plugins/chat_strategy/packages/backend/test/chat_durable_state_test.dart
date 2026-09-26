@@ -317,10 +317,15 @@ BEGIN SELECT RAISE(ABORT, 'test write failure'); END;
       final queries = storage.queries;
       final reloaded = ChatSessionBackend(ChatSessionStore(storage: storage));
       final snapshot = await reloaded.snapshot('session');
-      expect(storage.queries - queries, 1107);
+      expect(storage.queries - queries, 1108);
+      expect(
+        storage.querySql.last,
+        'SELECT COUNT(*) AS entry_count FROM adele_chat_entries '
+        'WHERE session_id = :session',
+      );
       final historyQueries = storage.querySql
           .skip(queries)
-          .where((sql) => sql.contains('FROM adele_chat_entries'));
+          .where((sql) => sql.startsWith('SELECT session_id, sequence'));
       expect(historyQueries, hasLength(1106));
       for (final sql in historyQueries) {
         expect(sql.toUpperCase(), isNot(contains('OFFSET')));
@@ -360,7 +365,7 @@ BEGIN SELECT RAISE(ABORT, 'test write failure'); END;
       final queries = storage.queries;
       final reloaded = ChatSessionBackend(ChatSessionStore(storage: storage));
       final snapshot = await reloaded.snapshot('session');
-      expect(storage.queries - queries, 130);
+      expect(storage.queries - queries, 131);
       expect(snapshot.entries, hasLength(128));
       for (var index = 0; index < snapshot.entries.length; index++) {
         expect(snapshot.entries[index].id, 'entry-$index');
@@ -398,6 +403,52 @@ BEGIN SELECT RAISE(ABORT, 'test write failure'); END;
           {'sequence': 0},
           {'sequence': 2},
         ],
+      );
+    },
+  );
+
+  test(
+    'hidden sequence 2 with next_entry 1 fails without publishing or filling the gap',
+    () async {
+      for (final content in ['First.', 'Missing.', 'Last.']) {
+        await service.appendUserMessage('session', content);
+      }
+      storage.database.execute('''
+DELETE FROM adele_chat_entries WHERE sequence = 1;
+UPDATE adele_chat_sessions SET next_entry = 1;
+''');
+      final entriesBefore = storage.database.select(
+        'SELECT * FROM adele_chat_entries ORDER BY sequence',
+      );
+      final configurationBefore = storage.database.select(
+        'SELECT * FROM adele_chat_sessions',
+      );
+      final writes = storage.transactions;
+      final reloaded = ChatSessionBackend(ChatSessionStore(storage: storage));
+      await expectLater(
+        reloaded.snapshot('session'),
+        throwsA(isA<ChatStateCorruption>()),
+      );
+      expect(storage.transactions, writes);
+      // The failed generation exposes no cached prefix and cannot append into it.
+      await expectLater(
+        reloaded.snapshot('session'),
+        throwsA(isA<ChatStateCorruption>()),
+      );
+      await expectLater(
+        reloaded.appendUserMessage('session', 'Do not fill the gap.'),
+        throwsA(isA<ChatStateCorruption>()),
+      );
+      expect(storage.transactions, writes);
+      expect(
+        storage.database.select(
+          'SELECT * FROM adele_chat_entries ORDER BY sequence',
+        ),
+        entriesBefore,
+      );
+      expect(
+        storage.database.select('SELECT * FROM adele_chat_sessions'),
+        configurationBefore,
       );
     },
   );
