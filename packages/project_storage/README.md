@@ -25,7 +25,7 @@ Project without resolving a strategy or materializing an Environment.
 | Method | Semantics |
 | --- | --- |
 | `isDurableSession` | False only for a published Session in an explicitly volatile Project. Unknown Sessions, closed lifecycle, and storage errors fail. |
-| `ensureSchemaForSession` | Apply owner-defined SQL migrations and owner-version metadata atomically. The list length is the current version; each entry advances it once, starting at 1. Current pre-release owners supply only their current v1 baseline. |
+| `ensureSchemaForSession` | Validate all migration statements before execution, then apply supported `CREATE TABLE` statements and owner-version metadata atomically. The list length is the current version; each entry advances it once, starting at 1. Current pre-release owners supply only their current v1 baseline. |
 | `queryForSession` | Execute one read-only `SELECT` statement and return immutable `RelationalRow.values` maps. |
 | `transactionForSession` | Commit a host-owned transaction of `INSERT`, `UPDATE`, or `DELETE` statements; an unsupported statement, SQL error, or `expectedRows` mismatch rolls back the batch. |
 
@@ -50,8 +50,25 @@ values containing semicolons must use parameters. This also prevents the SQLite
 library's trailing-statement check from preparing rejected SQL with side effects.
 These restrictions protect host-owned connection and transaction mechanics:
 SQLite's `isReadOnly` alone does not do so.
-Schema migration SQL remains a separate surface and may contain multiple
-statements. Owners must not issue transaction-control SQL themselves.
+
+Schema migrations have a separate, deliberately narrow grammar: one or more
+`CREATE TABLE` statements separated by semicolons, with optional trailing
+semicolons and whitespace. Keyword case does not matter. This is sufficient for
+the current Chat v1 baseline; other CREATE forms, DDL, and DML are not supported
+in plugin migrations yet. The host validates every statement of every supplied
+script before entering the migration coordinator, then executes the validated
+statements individually inside the existing host-owned transaction.
+
+Migration SQL rejects comment markers (`--`, `/*`, `*/`), NUL, double quotes,
+backticks, and square brackets, even inside literals. Single-quoted literals
+must be balanced within each semicolon-delimited statement; doubled single-quote
+escapes work, but semicolons inside literals do not. Unsupported syntax/classes
+are rejected before any SQL is prepared or executed. In particular, plugins
+cannot issue `BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `SAVEPOINT`, `RELEASE`, `PRAGMA`,
+`ATTACH`, `DETACH`, or `VACUUM` through migration scripts. SQLite syntax errors in
+otherwise allowed statements still roll back the whole migration and its version
+metadata. This enforces host transaction/connection integrity, not table/row SQL
+isolation.
 
 ## Ownership And Failure
 

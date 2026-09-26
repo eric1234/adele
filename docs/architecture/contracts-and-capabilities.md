@@ -391,7 +391,7 @@ Capability. Its narrow surface is:
 | Operation | Boundary |
 | --- | --- |
 | `isDurableSession(sessionId)` | Resolve Session -> Task -> currently open Project. False only for a published Session in an explicitly volatile Project; missing/closed/error cases throw. |
-| `ensureSchemaForSession(sessionId, List<String> migrations)` | Coordinate the connection-owned plugin's schema in that Project; version is the migration list length. |
+| `ensureSchemaForSession(sessionId, List<String> migrations)` | Validate all script statements as supported `CREATE TABLE` forms before execution, then coordinate the connection-owned plugin's schema transactionally; version is the migration list length. The [storage contract](../../packages/project_storage/README.md#service) defines the restricted script syntax. |
 | `queryForSession(sessionId, sql, Map<String, Object?> parameters)` | One read-only `SELECT` statement with named parameters and bounded `RelationalRow.values` results. |
 | `transactionForSession(sessionId, List<RelationalStatement> statements)` | Commit a host-owned transaction of `INSERT`, `UPDATE`, or `DELETE` statements; statements carry `sql`, named `parameters`, and nullable `expectedRows`, whose mismatch rolls back the batch. |
 

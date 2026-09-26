@@ -292,11 +292,49 @@ final class ProjectDatabase {
     if (migrations.isEmpty) {
       throw ArgumentError('A plugin schema requires its current baseline.');
     }
+    final scripts = <List<String>>[];
+    for (final sql in migrations) {
+      // Deliberately not a SQL parser. Reject quoting/comment forms that could
+      // hide separators, then validate every fragment before touching SQLite.
+      if (RegExp(r'--|/\*|\*/|["`\[\]\x00]').hasMatch(sql)) {
+        throw ArgumentError('Unsupported plugin migration SQL syntax.');
+      }
+      final statements = sql
+          .split(';')
+          .map((statement) => statement.trim())
+          .where((statement) => statement.isNotEmpty)
+          .toList();
+      if (statements.isEmpty ||
+          statements.any(
+            (statement) =>
+                !RegExp(
+                  r'^CREATE\s+TABLE\b',
+                  caseSensitive: false,
+                ).hasMatch(statement) ||
+                "'".allMatches(statement).length.isOdd,
+          )) {
+        throw ArgumentError(
+          'Plugin migrations require CREATE TABLE statements without '
+          'semicolons inside quoted literals.',
+        );
+      }
+      scripts.add(statements);
+    }
     _backingPath(_root, _relativePath);
     MigrationCoordinator(_database).migrate(
       ownerId: ownerId,
       migrations: [
-        for (final sql in migrations) (database) => database.execute(sql),
+        for (final statements in scripts)
+          (database) {
+            for (final sql in statements) {
+              final statement = database.prepare(sql, checkNoTail: true);
+              try {
+                statement.execute();
+              } finally {
+                statement.close();
+              }
+            }
+          },
       ],
     );
   }

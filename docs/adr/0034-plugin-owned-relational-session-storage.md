@@ -67,6 +67,10 @@ protect connection/transaction mechanics, not table ownership or SQL sandboxing.
 `RelationalRow.values` and parameters admit strings, integers, and null.
 Query responses fail beyond 1000 rows or 1 MiB rather than truncate. Owner schema
 version is the migration list length; coordination is transactional.
+The host validates every plugin migration statement before execution. Current
+scripts allow only `CREATE TABLE`, which meets Chat's baseline needs; unsupported
+forms, including transaction and connection control, are rejected. The storage
+contract README defines the deliberately restricted script syntax.
 
 A new package is justified by actual host/plugin sharing. This service is neither
 an immutable product value, an orchestration operation, generic transport/channel

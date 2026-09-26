@@ -145,7 +145,7 @@ void main() {
       final database = inspect();
       await expectLater(
         storage.ensureSchemaForSession(session.id.value, [
-          'CREATE TABLE rollback_table (id TEXT); SELECT missing FROM absent;',
+          'CREATE TABLE rollback_table (id TEXT); CREATE TABLE incomplete (',
         ]),
         throwsA(isA<SqliteException>()),
       );

@@ -128,6 +128,132 @@ void main() {
     );
   });
 
+  for (final control in [
+    'COMMIT',
+    'BEGIN',
+    'PRAGMA foreign_keys = OFF',
+    "ATTACH DATABASE ':memory:' AS plugin",
+  ]) {
+    test('plugin migration rejects $control without partial schema or version', () {
+      final database = _open(backing);
+      const owner = 'dev.adele.test.migration';
+      expect(
+        () => database.ensurePluginSchema(owner, [
+          'CREATE TABLE should_not_survive (id TEXT); '
+              '$control; CREATE TABLE broken (',
+        ]),
+        throwsArgumentError,
+      );
+      expect(database.autocommit, isTrue);
+      expect(
+        database.queryPluginRows(
+          "SELECT name FROM sqlite_master WHERE name = 'should_not_survive'",
+          {},
+        ),
+        isEmpty,
+      );
+      expect(
+        database.queryPluginRows(
+          'SELECT version FROM adele_schema_versions WHERE owner_id = :owner',
+          {':owner': owner},
+        ),
+        isEmpty,
+      );
+      expect(
+        database
+            .queryPluginRows('SELECT foreign_keys FROM pragma_foreign_keys', {})
+            .single
+            .values,
+        {'foreign_keys': 1},
+      );
+      expect(
+        database
+            .queryPluginRows('SELECT name FROM pragma_database_list', {})
+            .map((row) => row.values['name']),
+        isNot(contains('plugin')),
+      );
+      database.ensurePluginSchema(owner, [
+        " \n cReAtE TaBlE should_not_survive (id TEXT CHECK (id IN ('user', 'assistant'))); "
+            'CREATE TABLE second_table (id TEXT); \n',
+      ]);
+      expect(database.autocommit, isTrue);
+      expect(
+        database
+            .queryPluginRows(
+              'SELECT version FROM adele_schema_versions WHERE owner_id = :owner',
+              {':owner': owner},
+            )
+            .single
+            .values,
+        {'version': 1},
+      );
+      database.executePluginTransaction([
+        RelationalStatement(
+          sql: 'INSERT INTO should_not_survive VALUES (:id)',
+          parameters: {':id': 'user'},
+          expectedRows: 1,
+        ),
+      ]);
+      expect(
+        database
+            .queryPluginRows('SELECT id FROM should_not_survive', {})
+            .single
+            .values,
+        {'id': 'user'},
+      );
+      expect(
+        database.queryPluginRows('SELECT * FROM second_table', {}),
+        isEmpty,
+      );
+      expect(database.autocommit, isTrue);
+    });
+  }
+
+  test(
+    'plugin migration validates the whole script before executing its first statement',
+    () {
+      final database = _open(backing);
+      expect(
+        () => database.ensurePluginSchema('dev.adele.test.migration', [
+          'CREATE TABLE incomplete (; COMMIT;',
+        ]),
+        // A statement-by-statement validation/execution loop would fail in SQLite
+        // on the first CREATE instead of detecting the unsupported later COMMIT.
+        throwsArgumentError,
+      );
+      expect(database.autocommit, isTrue);
+    },
+  );
+
+  test(
+    'plugin migration syntax rejects comments, double quotes and embedded literal separators',
+    () {
+      final database = _open(backing);
+      for (final sql in [
+        '-- comment\nCREATE TABLE unsupported (id TEXT)',
+        'CREATE /* comment */ TABLE unsupported (id TEXT)',
+        'CREATE TABLE "unsupported" (id TEXT)',
+        "CREATE TABLE unsupported (id TEXT DEFAULT 'one;two')",
+      ]) {
+        expect(
+          () => database.ensurePluginSchema('dev.adele.test.migration', [
+            'CREATE TABLE should_not_survive (id TEXT); $sql',
+          ]),
+          throwsArgumentError,
+          reason: sql,
+        );
+        expect(
+          database.queryPluginRows(
+            "SELECT name FROM sqlite_master WHERE name = 'should_not_survive'",
+            {},
+          ),
+          isEmpty,
+        );
+        expect(database.autocommit, isTrue);
+      }
+    },
+  );
+
   for (final (query, sql) in [
     (true, 'PRAGMA foreign_keys = OFF'),
     (true, 'BEGIN'),
