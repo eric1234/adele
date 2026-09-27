@@ -168,6 +168,68 @@ do not provision this normal stock deployment. See the
 [toolchain](../docs/development/toolchain.md) and [plugin builder](../packages/plugin_builder/README.md)
 for the broader preparation model, not portable release packaging.
 
+### Native terminal surface
+
+[`NativeTerminalSurface`](lib/terminal/native_terminal_surface.dart) is an
+app-private adapter over published `xterm2 5.2.0`, not a stock Terminal plugin or
+an execution resource. Native code constructs the owner, feeds ordered text with
+`write`, chooses immutable `readOnly` configuration and callbacks, and explicitly
+calls `dispose`. It requires no Project, Task, Session, Environment, or durable ID.
+The emulator and incremental escape parser survive complete view unmounts; output
+while hidden updates the same buffers without transcript replay.
+
+The initial grid is 80 columns by 24 rows. The default `maxLines` is 2,000 lines
+**including the viewport**, per emulator buffer; native callers may choose another
+finite value of at least 24. Rows cannot exceed that bound, and columns are capped
+at 1,000, including output-requested geometry. Older parsed lines are evicted by
+the emulator, not by truncating the input stream. Zero-sized layouts leave the
+previous dimensions intact. No additional output transcript is stored.
+
+Only one mounted view may attach to an owner, including an inert exit-retained
+view. A competing attachment fails unavailable rather than stealing resize/input
+control. Cache the widget across ordinary rebuilds; a fresh mount gets fresh
+focus, selection, scroll resources, and a permanently scoped native facade.
+Deactivation retires that mount; reparenting a live mount is not supported.
+Disposal of the owner is idempotent: further `write`/`buildView` calls throw,
+queued view actions are inert immediately, and the mounted terminal detaches on
+the next frame. Disposing a view or retiring a bridge never disposes the owner.
+
+Outbound callbacks have distinct native responsibilities:
+
+- `onInput` receives authorized view-originated keyboard, paste, mouse, and focus
+  reports. A captured old mount cannot send through a new attachment.
+- `onResponse` receives emulator-generated replies. Ordered output feeding can
+  produce replies with no view mounted, independently of presentation authority.
+- `onResize` receives distinct layout-generated character columns/rows while an
+  interactive view is authorized. Output-requested geometry stays emulator-local.
+- Read-only owners suppress **all three** execution-directed sinks, not just text
+  input. They still render controls, resize locally, scroll, select, and explicitly
+  copy. Clipboard escape requests and iTerm2 clipboard capture are disabled;
+  no URL launch, notification, file-transfer, or other ambient host action is wired.
+  Theme/color queries are deliberately declined rather than coupled to a view.
+
+[`TerminalSurfaceBridge`](lib/frontend/terminal_surface_bridge.dart) implements
+the two interpreted-only [public UI stubs](../packages/ui/lib/terminal_surface_bridge.dart).
+Compile-only declarations need no owner. The native bridge issues one opaque
+handle to one runtime/presentation for its host-selected owner; guessed, foreign,
+retired, or reused-runtime access fails closed. No mode flag or native object is
+exposed. `PreparedFrontend` disposal, failure, and exit retention revoke the
+same bridge. Cached widgets check access when actions arrive, including clipboard
+completion; retained display is not continuing interactive authority. A fresh
+presentation can receive fresh access to the surviving owner.
+
+The deterministic [`terminal_frontend.dart`](test/fixtures/terminal_frontend.dart)
+fixture imports only Flutter and public UI. The
+[prepared-EVC test](test/terminal_surface_bridge_test.dart) compiles it with
+declarations, writes actual EVC bytes, and mounts through
+`PreparedFrontend.load/createPresentation`. The
+[native tests](test/native_terminal_surface_test.dart) inspect real buffer state.
+See [focused commands](../docs/development/testing.md#focused-terminal-checks) and
+[dependency/toolchain evidence](../docs/development/toolchain.md#native-terminal-dependency).
+This surface is not automatically installed in any application screen or catalog
+role. PTYs, Environment terminal resources, command Inspection integration, byte
+decoding/backpressure, persistence, and stock Terminal UI remain unimplemented.
+
 ### ChatGPT source-checkout configuration
 
 Normal application composition currently selects

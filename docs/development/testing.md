@@ -135,6 +135,8 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Zero-plugin runtime/shell | [`test/core/adele_runtime_test.dart`](../../app/test/core/adele_runtime_test.dart), [`test/application_test.dart`](../../app/test/application_test.dart) |
 | Prepared backend/frontend bootstrap | [`test/core/application_plugin_bootstrap_test.dart`](../../app/test/core/application_plugin_bootstrap_test.dart), [`test/prepared_frontend_activation_test.dart`](../../app/test/prepared_frontend_activation_test.dart), [`test/prepared_frontend_failure_test.dart`](../../app/test/prepared_frontend_failure_test.dart) |
 | Project/native picker bridge | [`test/project_opening_test.dart`](../../app/test/project_opening_test.dart), [`test/directory_picker_bridge_test.dart`](../../app/test/directory_picker_bridge_test.dart) |
+| Native terminal emulator/view | [`test/native_terminal_surface_test.dart`](../../app/test/native_terminal_surface_test.dart) (real control parsing/styles/Unicode, hidden output, finite retention/geometry, local read-only copy/scroll, attachment, denied ambient clipboard, and explicit disposal) |
+| Prepared terminal bridge | [`test/terminal_surface_bridge_test.dart`](../../app/test/terminal_surface_bridge_test.dart) (actual EVC compilation/mount, native input/focus/paste/mouse, resize/rebuild, scoped handles, retained-widget and pending-paste revocation, prepared failure/retirement, independent lifetimes, and bundled MIT notice) |
 | Task/Environment lifecycle | [`test/task_creation_test.dart`](../../app/test/task_creation_test.dart), [`test/core/product_lifecycle_test.dart`](../../app/test/core/product_lifecycle_test.dart) |
 | Task Browser canonical projection/actions | [`test/window_task_browser_source_test.dart`](../../app/test/window_task_browser_source_test.dart) (immutable Session queries, Project/Task scope, unavailable retained Sessions, exact creation choices, retirement, and opening without Environment materialization or Run start) |
 | Task Browser bridge/view hosting | [`test/task_browser_bridge_test.dart`](../../app/test/task_browser_bridge_test.dart), [`test/task_browser_presentation_host_test.dart`](../../app/test/task_browser_presentation_host_test.dart) (safe action settlement, subscriptions/revocation, zero/one/many resolution, and retained factory state) |
@@ -165,6 +167,31 @@ and launcher checks also live in that target:
 [`self_hosting_cli_test.dart`](../../test/tools/self_hosting_cli_test.dart).
 See [developer self-hosting](self-hosting.md#validation-and-source-map) for that
 workflow's source/evidence owners and deterministic-versus-live distinction.
+
+### Focused terminal checks
+
+After bootstrap, run from `app/` using the repository pin:
+
+```sh
+flutter test --no-pub --concurrency 1 test/native_terminal_surface_test.dart test/terminal_surface_bridge_test.dart
+flutter analyze --no-pub --fatal-infos
+```
+
+The fixture under `app/test/fixtures/terminal_frontend.dart` compiles against the
+real public UI stub and compile-only declarations, writes EVC bytes, and loads and
+mounts through `PreparedFrontend`. It uses synthetic ordered output and native
+recording sinks, no shell, credentials, network, or product objects. Native event
+paths exercise text/control input, explicit paste, focus, mouse reporting, and
+layout changes. Fixed frame advancement accounts for the terminal's gesture and
+cursor behavior; do not use unbounded `pumpAndSettle` with blinking cursors.
+
+Both files are automatically included by the existing unrestricted
+`adele_desktop` target and its CI selection; no separate fixture target or stock
+artifact preparation is needed. Keep Flutter compiler/test invocations sharing
+the app build directory serialized. These tests establish debug widget/evaluator
+behavior on the pin, not native desktop/profile or cross-platform runtime proof.
+The [application map](../../app/README.md#native-terminal-surface) owns the
+adapter's lifetime, callback, and attachment policies.
 
 ### Focused browser checks
 

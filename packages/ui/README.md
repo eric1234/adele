@@ -76,6 +76,14 @@ native implementations supply their behavior; calling a stub natively throws
   A selector operation gets one asynchronous native call through a revocable
   bridge; plugin code owns path-to-URI semantics. This grants no backend RPC or
   Session/Environment authority.
+- `terminal_surface_bridge.dart` supplies `String requestTerminalSurface()` and
+  `Widget buildTerminalSurface(String handle)` for a host-selected native terminal
+  surface. Handles are presentation-scoped and revocable even after widget
+  construction. There is no caller-selected mode, resource lookup, output feed,
+  execution, or disposal API. Native owners and their emulator state outlive views;
+  fresh presentations require fresh access. Public contracts expose no terminal
+  library types. The [application adapter](../../app/README.md#native-terminal-surface)
+  owns interactive/read-only policy, bounds, attachment, and native callbacks.
 - `task_browser_bridge.dart` supplies `isTaskBrowserActive()`, `readTaskBrowser()`,
   `selectTask(String?)`, `createTask(String title)`,
   `createSession(String optionHandle)`, `openSession(String sessionId)`, and

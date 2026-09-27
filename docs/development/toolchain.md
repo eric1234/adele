@@ -25,6 +25,30 @@ frontends use this pin; they neither modernize eval
 nor establish a broad third-party
 Flutter compatibility surface.
 
+## Native terminal dependency
+
+The app pins the published `xterm2 5.2.0` archive, with checksum
+`0b62e7510b414329dfb6ce7dbcffcfe97cc5109033573cf0f4abca568dac8149`
+recorded in `pubspec.lock`; there is no upstream branch dependency. Its declared
+SDK constraints are Dart `>=3.0.0 <4.0.0` and Flutter `>=3.19.0`. Direct dependencies
+are Flutter, `characters ^1.4.0`, `convert ^3.0.0`, `meta ^1.3.0`, `quiver ^3.0.0`,
+`equatable ^2.0.3`, and `zmodem ^0.0.6`. Resolution under the integrated pin adds
+`equatable 2.1.0`, `quiver 3.2.2`, and `zmodem 0.0.6`; existing SDK/eval versions
+are unchanged. Declaring the transfer library does not enable transfer handling
+in ADELE's adapter.
+
+The package's MIT license retains `Copyright (c) 2020 xuty`. Flutter's normal
+dependency-license collection includes it in `NOTICES.Z`; the prepared bridge
+test checks that bundled notice rather than adding a separate licensing system.
+
+Native widget and actual prepared-EVC compilation/mount tests have run on Linux
+with the complete Flutter/framework/engine/Dart identity in the pin table above,
+using `dart_eval 0.8.5` and `flutter_eval 0.8.2`. The interpreted fixture imports
+only public UI and Flutter; `xterm2` stays native. This is debug widget/evaluator
+evidence, not desktop/profile, other-platform, broad third-party Flutter, or PTY
+compatibility evidence. See the [focused proof](testing.md#focused-terminal-checks)
+and [local implementation map](../../app/README.md#native-terminal-surface).
+
 ## Generated contract artifacts
 
 Authoritative annotated declarations produce native sibling parts, which then feed
