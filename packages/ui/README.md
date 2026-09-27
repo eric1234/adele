@@ -1,9 +1,30 @@
 # ADELE UI
 
-`adele_ui` is the experimental public Flutter package for semantic Session and
-read-only activity presentation. It depends only on Flutter and public ADELE
-contracts, never application code, internal host implementations, or stock plugins.
+`adele_ui` is the experimental public Flutter package for semantic Task Browser,
+Session, and read-only activity presentation. It depends only on Flutter and public
+ADELE contracts, never application code, internal host implementations, or stock plugins.
 Product, orchestration, model tools, and the extension registry remain pure Dart.
+
+## Task Browser
+
+`TaskBrowserContribution(displayName, createPresentation)` registers at
+`taskBrowserContributions`; its factory is `Widget Function(Project)`.
+`TaskBrowserResolver` resolves across that point: zero is unavailable, one supplies
+the exact binding, and multiple contributions are ambiguous. There is no default,
+priority, or native substitute. The host retains a view across unrelated rebuilds;
+retirement or replacement cannot revive its captured binding.
+
+This is a frontend-only role without strategy or owning-backend affinity. The
+prepared descriptor schema belongs to the
+[runtime catalog](../plugin_runtime/README.md#prepared-catalog). The
+[stock Task Browser](../../plugins/task_browser/README.md) supplies presentation,
+not product storage or lifecycle. Host ownership and selection validation belong
+to the [UI architecture](../../docs/architecture/plugin-system.md#task-browser-presentation).
+
+The public resolver checks live in
+[`test/task_browser_test.dart`](test/task_browser_test.dart). Native bridge,
+prepared-view, and navigation checks are mapped in
+[application validation](../../docs/development/testing.md#application-validation-map).
 
 ## Session Presentation
 
@@ -55,6 +76,53 @@ native implementations supply their behavior; calling a stub natively throws
   A selector operation gets one asynchronous native call through a revocable
   bridge; plugin code owns path-to-URI semantics. This grants no backend RPC or
   Session/Environment authority.
+- `task_browser_bridge.dart` supplies `isTaskBrowserActive()`, `readTaskBrowser()`,
+  `selectTask(String?)`, `createTask(String title)`,
+  `createSession(String optionHandle)`, `openSession(String sessionId)`, and
+  `subscribeTaskBrowser` / `unsubscribeTaskBrowser` with a retained
+  `void Function()` listener. Each action returns `Future<List<dynamic>>`, settling
+  as `[true, null]` or `[false, safeErrorString]`, never a native diagnostic
+  exception. Null selection clears the selected Task. The bridge is scoped to the
+  presented Project and exact frontend lifetime; IDs do not confer authority, and
+  a Session creation handle identifies a retained host choice, not a strategy ID.
+  The active query is false after retirement even if the view and its read-only
+  snapshot are retained for exit. Check it before local mutations and after awaits.
+- `session_presentation_lifecycle_bridge.dart` supplies
+  `registerSessionPrepareToDeactivate(Future<bool> Function() callback)` and
+  matching `unregisterSessionPrepareToDeactivate`. A presentation retains and
+  unregisters the same callback object; only one hook may be registered. For
+  host-requested navigation, the host awaits `true` before leaving, blocks input
+  while settling, and keeps the live view on rejection or failure. No hook means
+  no local state to flush. Registration grants no navigation authority; retirement
+  revokes the exact hook and rejects late success. This is not a general shutdown,
+  cancellation, or persistence service.
+
+### Task Browser snapshot
+
+`readTaskBrowser()` returns structured presentation data, projected by the app's
+`TaskBrowserSource`. The current shape is:
+
+| Field | Data |
+| --- | --- |
+| `project` | `{id, displayName}` |
+| `selectedTaskId` | Task ID or null |
+| `tasks` | List of `{id, title, sessionCount}` |
+| `selectedTask` | Null, or `{id, title, primaryEnvironment, sessions, sessionCreationOptions}` |
+| `selectedTask.primaryEnvironment` | Null, or `{id, providerId}` |
+| `selectedTask.sessions` | List of `{id, strategyId, presentationName, available}` |
+| `selectedTask.sessionCreationOptions` | List of `{opaqueHandle, displayName}` |
+
+IDs and labels are strings, counts are integers, and availability is boolean.
+Unavailable Sessions remain in the snapshot. Availability describes current
+presentation/strategy resolution and required affinity, not a promise that a view
+will render or a Run can execute. The host revalidates exact creation choices and
+Project/Task membership on action; the frontend cannot select authority through
+IDs. Snapshots expose no provider state, Environment facets, Chat history, database
+handles, or backend channels. Browsing and opening retained Sessions do not
+materialize Environments or start Runs. See the
+[application host map](../../app/README.md#task-browser) for implementation anchors.
+
+### Strategy-owned state
 
 Stock Chat uses its own Contract-generated `ChatSessionServiceClient` for canonical
 snapshot/append/configuration operations and the separate execution bridge for

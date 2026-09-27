@@ -297,9 +297,16 @@ void main() {
         expect(find.text('No Project is open'), findsNothing);
         expect(find.text('Open Test Source...'), findsNothing);
         expect(find.text('Project Name'), findsOneWidget);
-        expect(find.text(uri.toString()), findsOneWidget);
-        expect(find.text('Project is open'), findsOneWidget);
-        expect(find.text('No Task selected'), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey('project-breadcrumb')),
+          findsOneWidget,
+        );
+        expect(
+          find.textContaining('Task Browser is unavailable'),
+          findsOneWidget,
+        );
+        expect(tester.widget<AdeleShell>(find.byType(AdeleShell)).task, isNull);
+        expect(find.text('New Task'), findsNothing);
         expect(runtime.store.tasksFor(project.id), isEmpty);
         expect(
           runtime.registry.providersFor(environmentProviderCapability),
@@ -317,7 +324,10 @@ void main() {
         await tester.binding.setSurfaceSize(const Size(360, 640));
         addTearDown(() => tester.binding.setSurfaceSize(null));
         await tester.pump();
-        expect(find.text('No Task selected'), findsOneWidget);
+        expect(
+          find.textContaining('Task Browser is unavailable'),
+          findsOneWidget,
+        );
         expect(tester.takeException(), isNull);
         await disposeApplication(tester);
       },
@@ -350,7 +360,10 @@ void main() {
       expect(reopened, isNot(same(original)));
       expect(runtime.store.project(reopened.id), same(reopened));
       expect(ids.calls, isEmpty);
-      expect(find.text('Project is open'), findsOneWidget);
+      expect(
+        find.textContaining('Task Browser is unavailable'),
+        findsOneWidget,
+      );
       await disposeApplication(tester);
     },
   );
@@ -750,7 +763,11 @@ void main() {
       selection.complete(source.path);
       await settleOpening(tester);
       expect(ids.calls, <String>['project']);
-      expect(find.text('No Task selected'), findsOneWidget);
+      expect(
+        find.textContaining('Task Browser is unavailable'),
+        findsOneWidget,
+      );
+      expect(tester.widget<AdeleShell>(find.byType(AdeleShell)).task, isNull);
       await disposeApplication(tester);
     },
   );

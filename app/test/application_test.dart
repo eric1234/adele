@@ -23,6 +23,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import '../../tools/stock_frontend_descriptors.dart';
+import '../tool/task_browser_frontend_compiler.dart';
+import 'support/prepared_frontend_installations.dart';
 import 'support/project_provider.dart';
 
 void main() {
@@ -140,11 +142,19 @@ void main() {
           isTrue,
         );
         expect(runtime.store.tasksFor(project.id), isEmpty);
-        expect(find.text('Project is open'), findsOneWidget);
-        expect(find.text('No Task selected'), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey('project-breadcrumb')),
+          findsOneWidget,
+        );
+        expect(
+          find.textContaining('Task Browser is unavailable'),
+          findsOneWidget,
+        );
+        expect(tester.widget<AdeleShell>(find.byType(AdeleShell)).task, isNull);
+        expect(find.text('New Task'), findsNothing);
         expect(
           find.textContaining('Task Environment support is unavailable.'),
-          findsOneWidget,
+          findsNothing,
         );
         expect(find.textContaining('Starting Task Environment'), findsNothing);
         expect(tester.takeException(), isNull);
@@ -303,6 +313,9 @@ void main() {
     application.main();
     await tester.pumpAndSettle();
 
+    final theme = Theme.of(tester.element(find.byType(Scaffold)));
+    expect(theme.useMaterial3, isTrue);
+    expect(theme.brightness, Brightness.light);
     expect(find.text('ADELE'), findsOneWidget);
     expect(find.text('No Project is open'), findsOneWidget);
     expect(find.text('Open Local Directory...'), findsNothing);
@@ -463,40 +476,60 @@ void main() {
         return registration;
       }
 
-      await tester.pumpWidget(
-        AdeleApplication(
-          createRuntime: () => runtime,
-          bootstrapPlugins: (_) async {},
-        ),
-      );
+      await tester.runAsync(() async {
+        final artifact = await File('${source.path}/browser.evc').writeAsBytes(
+          await compileTaskBrowserFrontend(
+            repositoryRoot: Directory.current.parent,
+          ),
+        );
+        final installations = await prepareFrontendInstallations(
+          root: Directory('${source.path}/installed'),
+          artifacts: {'dev.adele.plugin.task-browser': artifact},
+        );
+        final registered = runtime.extensions.changes.firstWhere(
+          (_) =>
+              runtime.extensions.discover(taskBrowserContributions).isNotEmpty,
+        );
+        await tester.pumpWidget(
+          AdeleApplication(
+            createRuntime: () => runtime,
+            bootstrapPlugins: (plugins) =>
+                plugins.start(installationRoot: installations.path),
+          ),
+        );
+        await registered.timeout(const Duration(seconds: 10));
+      });
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Open fixture'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('New Task'));
       await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField), 'Generic task');
+      await tester.enterText(find.byType(TextField).last, 'Generic task');
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Create Task'));
       await tester.pumpAndSettle();
+      final task = tester.widget<AdeleShell>(find.byType(AdeleShell)).task!;
+      expect(runtime.store.sessionsForTask(task.id), isEmpty);
       expect(
-        find.text('No Session presentations are available.'),
+        find.text('No Session creation strategy is available.'),
         findsOneWidget,
       );
       presentation('Unavailable', strategy: false);
       final first = presentation('First');
       presentation('Second');
       await tester.pumpAndSettle();
-      expect(find.text('New Unavailable Session'), findsNothing);
-      expect(find.text('New First Session'), findsOneWidget);
-      expect(find.text('New Second Session'), findsOneWidget);
+      expect(find.text('Unavailable'), findsNothing);
+      expect(find.text('First'), findsOneWidget);
+      expect(find.text('Second'), findsOneWidget);
       final stale = tester
-          .widget<FilledButton>(
-            find.widgetWithText(FilledButton, 'New First Session'),
-          )
-          .onPressed!;
+          .widget<ListTile>(find.widgetWithText(ListTile, 'First'))
+          .onTap!;
       await first.close();
       stale();
       await tester.pumpAndSettle();
       expect(find.byType(SessionPresentationHost), findsNothing);
       expect(presented, isEmpty);
+      expect(runtime.store.sessionsForTask(task.id), isEmpty);
       await tester.tap(find.text('New Second Session'));
       await tester.pumpAndSettle();
       expect(presented.single.strategyId.value, 'dev.example.second');
@@ -504,9 +537,10 @@ void main() {
         runtime.store.session(presented.single.id),
         same(presented.single),
       );
+      expect(runtime.store.sessionsForTask(task.id), [same(presented.single)]);
       expect(find.text('Second presentation'), findsOneWidget);
       expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
-      await tester.binding.handleRequestAppExit();
+      await tester.runAsync(tester.binding.handleRequestAppExit);
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);

@@ -91,7 +91,11 @@ implementations into the normal application runtime.
 - **`adele_ui`** owns public semantic presentation contracts that genuinely need
   Flutter. Do not add Flutter to product, orchestration, or tool packages for
   presentation convenience. App-native bridge implementations and hosting belong
-  in the composition root, not public semantic packages.
+  in the composition root, not public semantic packages. Task Browser contribution
+  and interpreted bridge contracts belong here; the app projects its canonical
+  live graph and mediates lifecycle/navigation, while the stock frontend depends
+  only on public UI and Flutter. Browser rendering must not acquire app/store,
+  SQLite, or backend-implementation dependencies.
 
 ## Application composition
 

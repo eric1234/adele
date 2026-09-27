@@ -49,6 +49,8 @@ const String _openaiFrontendHarness =
     'tool/compile_openai_activity_frontend.dart';
 const String _localDirectoryProjectFrontendHarness =
     'tool/compile_local_directory_project_frontend.dart';
+const String _taskBrowserFrontendHarness =
+    'tool/compile_task_browser_frontend.dart';
 
 void main() {
   late Directory root;
@@ -90,6 +92,9 @@ void main() {
     ).writeAsStringSync('void main() {}');
     File(
       '${root.path}/app/$_localDirectoryProjectFrontendHarness',
+    ).writeAsStringSync('void main() {}');
+    File(
+      '${root.path}/app/$_taskBrowserFrontendHarness',
     ).writeAsStringSync('void main() {}');
     for (final String entrypoint in <String>[
       _codegenEntrypoint,
@@ -190,6 +195,10 @@ elif [ "\$1" = test ]; then
     kind=local-directory-project
     output="\$ADELE_LOCAL_DIRECTORY_PROJECT_FRONTEND_OUTPUT"
     label='$_localDirectoryProjectFrontendHarness'
+  elif [ "\$5" = '$_taskBrowserFrontendHarness' ]; then
+    kind=task-browser
+    output="\$ADELE_TASK_BROWSER_FRONTEND_OUTPUT"
+    label='$_taskBrowserFrontendHarness'
   else
     test "\$5" = '$_toolFrontendHarness' || exit 92
     kind="\$ADELE_TOOL_INSPECTION_FRONTEND"
@@ -322,6 +331,7 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
           'command_tools_backend',
           'local_directory_project_backend',
           'local_directory_project_frontend',
+          'task_browser_frontend',
         ]),
       );
       expect(commands.existsSync(), isFalse);
@@ -638,7 +648,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
   );
 
   test(
-    'Linux run and builds prepare one fresh eight-installation snapshot',
+    'Linux run and builds prepare one fresh nine-installation snapshot with a frontend-only browser',
     () async {
       for (final path in [
         _localDirectoryProjectEntrypoint,
@@ -646,6 +656,9 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         'plugins/local_directory_project/packages/frontend/lib/local_directory_project_frontend.dart',
         'app/$_localDirectoryProjectFrontendHarness',
         'app/tool/local_directory_project_frontend_compiler.dart',
+        'app/$_taskBrowserFrontendHarness',
+        'app/tool/task_browser_frontend_compiler.dart',
+        'plugins/task_browser/packages/frontend/lib/task_browser_frontend.dart',
       ]) {
         expect(File(path).existsSync(), isTrue, reason: path);
       }
@@ -654,6 +667,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       // Preparation must replace inherited inputs with this checkout's paths.
       environment['ADELE_REPOSITORY_ROOT'] = '/wrong-repository';
       environment['ADELE_CHAT_FRONTEND_OUTPUT'] = '/wrong-output';
+      environment['ADELE_TASK_BROWSER_FRONTEND_OUTPUT'] = '/wrong-task-browser';
       environment['ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT'] =
           '/wrong-tool-output';
       environment['ADELE_TOOL_INSPECTION_FRONTEND'] = 'wrong-tool';
@@ -698,6 +712,8 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           'compiled|$_openaiFrontendHarness',
           'compile|$_localDirectoryProjectFrontendHarness',
           'compiled|$_localDirectoryProjectFrontendHarness',
+          'compile|$_taskBrowserFrontendHarness',
+          'compiled|$_taskBrowserFrontendHarness',
           'flutter-launch',
         ]);
         expect(result.stdout, contains('frontend compiler output'));
@@ -815,6 +831,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             'filesystem-tools',
             'command-tools',
             'local-directory-project',
+            'task-browser',
           ]),
         );
         final installedIds = <String>{};
@@ -867,6 +884,12 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             name: 'Local Directory Project',
             backend: true,
           ),
+          (
+            directory: 'task-browser',
+            id: 'dev.adele.plugin.task-browser',
+            name: 'Task Browser',
+            backend: false,
+          ),
         ]) {
           final directory = Directory.fromUri(
             installations.uri.resolve('${plugin.directory}/'),
@@ -916,7 +939,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             retainedArtifacts[file.path] = file.readAsStringSync();
           }
         }
-        expect(installedIds, hasLength(8));
+        expect(installedIds, hasLength(9));
         final catalog = await PreparedPluginCatalog.discover(
           installations.path,
         );
@@ -937,7 +960,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.frontend != null,
           ),
-          hasLength(5),
+          hasLength(6),
         );
         final localDirectoryProjectInstallation = catalog.installations
             .singleWhere(
@@ -1053,7 +1076,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         ).delete();
 
         final catalog = await PreparedPluginCatalog.discover(rootPath);
-        expect(catalog.installations, hasLength(8));
+        expect(catalog.installations, hasLength(9));
         expect(catalog.issues.single.component, missing);
         final command = catalog.installations.singleWhere(
           (installation) =>
@@ -1078,7 +1101,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           catalog.installations.where(
             (installation) => installation.frontend != null,
           ),
-          hasLength(missing == PreparedPluginComponent.frontend ? 4 : 5),
+          hasLength(missing == PreparedPluginComponent.frontend ? 5 : 6),
         );
       },
     );
@@ -1095,7 +1118,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     await File('$rootPath/local-directory-project/frontend.evc').delete();
 
     final catalog = await PreparedPluginCatalog.discover(rootPath);
-    expect(catalog.installations, hasLength(8));
+    expect(catalog.installations, hasLength(9));
     expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
     final localDirectoryProject = catalog.installations.singleWhere(
       (installation) =>
@@ -1108,7 +1131,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       catalog.installations.where(
         (installation) => installation.frontend != null,
       ),
-      hasLength(4),
+      hasLength(5),
     );
   });
 
@@ -1174,7 +1197,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
             .where(
               (file) => file.path.endsWith('adele_plugin.installation.json'),
             );
-        expect(manifests, hasLength(8));
+        expect(manifests, hasLength(9));
         for (final manifest in manifests) {
           for (final forbidden in [
             'secret-',
@@ -1306,6 +1329,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       'command',
       'openai',
       'local-directory-project',
+      'task-browser',
     ]) {
       for (final String failure in <String>['exit', 'missing', 'empty']) {
         test(
@@ -1362,25 +1386,36 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               if (kind == 'command' ||
                   kind == 'openai' ||
                   kind == 'local-directory-project' ||
+                  kind == 'task-browser' ||
                   (kind == 'filesystem' && failure != 'exit'))
                 'compiled|$_toolFrontendHarness|filesystem',
               if (kind == 'command' ||
                   kind == 'openai' ||
+                  kind == 'task-browser' ||
                   kind == 'local-directory-project')
                 'compile|$_toolFrontendHarness|command',
               if (kind == 'openai' ||
                   kind == 'local-directory-project' ||
+                  kind == 'task-browser' ||
                   (kind == 'command' && failure != 'exit'))
                 'compiled|$_toolFrontendHarness|command',
-              if (kind == 'openai' || kind == 'local-directory-project')
+              if (kind == 'openai' ||
+                  kind == 'local-directory-project' ||
+                  kind == 'task-browser')
                 'compile|$_openaiFrontendHarness',
               if (kind == 'local-directory-project' ||
+                  kind == 'task-browser' ||
                   (kind == 'openai' && failure != 'exit'))
                 'compiled|$_openaiFrontendHarness',
-              if (kind == 'local-directory-project')
+              if (kind == 'local-directory-project' || kind == 'task-browser')
                 'compile|$_localDirectoryProjectFrontendHarness',
-              if (kind == 'local-directory-project' && failure != 'exit')
+              if (kind == 'task-browser' ||
+                  (kind == 'local-directory-project' && failure != 'exit'))
                 'compiled|$_localDirectoryProjectFrontendHarness',
+              if (kind == 'task-browser')
+                'compile|$_taskBrowserFrontendHarness',
+              if (kind == 'task-browser' && failure != 'exit')
+                'compiled|$_taskBrowserFrontendHarness',
             ]);
             expect(launchArguments.existsSync(), isFalse);
             expectNoPublishedInstallations();

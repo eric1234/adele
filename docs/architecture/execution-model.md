@@ -436,7 +436,8 @@ This is terminal history, not event sourcing or recovery. It retains no live
 `AgentRun`, bindings, authority tokens, active/waiting Run state, Session claims,
 approval restart state, or workbench state. There are no timestamps, cross-Run
 ordering guarantees, pruning, development-schema upgrade migrations, automatic
-resume, or Task/Session browser. The version-1 baseline requires coherent current
+resume, or live execution recovery. The Task Browser can open retained Sessions
+without starting execution. The version-1 baseline requires coherent current
 development storage rather than legacy readers. Before the first declared storage
 compatibility commitment, further execution-schema changes rewrite/squash version 1
 instead of accumulating development migrations.

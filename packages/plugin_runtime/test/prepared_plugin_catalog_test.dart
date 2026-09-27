@@ -251,6 +251,94 @@ void main() {
     },
   );
 
+  const browser = <String, Object?>{
+    'role': 'taskBrowser',
+    'extensionId': 'test.task-browser',
+    'displayName': 'Task Browser',
+    'library': 'package:example/browser.dart',
+    'entrypoint': 'createTaskBrowser',
+  };
+
+  test('Task Browser is frontend-only and has no backend metadata', () async {
+    await install(
+      'browser',
+      _manifest(
+        components: {
+          'frontend': _frontend(presentations: [browser]),
+        },
+      ),
+    );
+    final catalog = await PreparedPluginCatalog.discover(root.path);
+    expect(catalog.issues, isEmpty);
+    final installation = catalog.installations.single;
+    expect(installation.backendArtifactUri, isNull);
+    final descriptor =
+        installation.frontend!.presentations.single
+            as PreparedTaskBrowserPresentation;
+    expect(descriptor.extensionId, ExtensionId('test.task-browser'));
+    expect(descriptor.displayName, 'Task Browser');
+    expect(descriptor.library, 'package:example/browser.dart');
+    expect(descriptor.entrypoint, 'createTaskBrowser');
+  });
+
+  for (final field in [
+    'backendServices',
+    'strategyAffinity',
+    'strategyId',
+    'hostAdapter',
+  ]) {
+    test(
+      'Task Browser rejects $field without retiring healthy backend',
+      () async {
+        await install(
+          'browser',
+          _manifest(
+            components: {
+              'backend': {'artifact': 'backend.aot'},
+              'frontend': _frontend(
+                presentations: [
+                  {...browser, field: 'invalid'},
+                ],
+              ),
+            },
+          ),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(
+          catalog.issues.single.component,
+          PreparedPluginComponent.frontend,
+        );
+        expect(catalog.installations.single.frontend, isNull);
+        expect(catalog.installations.single.backendArtifactUri, isNotNull);
+      },
+    );
+  }
+
+  for (final field in ['extensionId', 'displayName', 'library', 'entrypoint']) {
+    for (final invalid in [null, '', 7]) {
+      test('Task Browser rejects $field=$invalid', () async {
+        await install(
+          'browser',
+          _manifest(
+            components: {
+              'frontend': _frontend(
+                presentations: [
+                  {...browser, field: invalid},
+                ],
+              ),
+            },
+          ),
+        );
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(
+          catalog.issues.single.component,
+          PreparedPluginComponent.frontend,
+        );
+        expect(catalog.installations.single.frontend, isNull);
+      });
+    }
+  }
+
   for (final presentations in [
     <Object?>[],
     [_toolActivity, _session, _modelNativeActivity],

@@ -263,6 +263,7 @@ void main() {
         expect(runtime.store.tasksFor(project.id).single, same(created.task));
         expect(created.task.projectId, project.id);
         expect(created.task.title, 'Normal nested Task');
+        expect(runtime.store.sessionsForTask(created.task.id), isEmpty);
         expect(
           runtime.store.environment(created.environment.id),
           same(created.environment),
@@ -404,6 +405,7 @@ void main() {
           throwsA(isA<PluginConnectionClosed>()),
         );
         expect(runtime.store.task(created.task.id), same(created.task));
+        expect(runtime.store.sessionsForTask(created.task.id), isEmpty);
         expect(
           runtime.store.environment(created.environment.id),
           same(created.environment),
@@ -886,6 +888,7 @@ void main() {
         throwsA(_staleProvider),
       );
       expect(runtime.store.session(session.id), same(session));
+      expect(runtime.store.sessionsForTask(first.task.id), [same(session)]);
       expect(
         runtime.store.requireSessionAuthority(session.id),
         same(authority),
@@ -902,6 +905,7 @@ void main() {
         same(second.environment),
       );
       expect(runtime.store.tasksFor(project.id), hasLength(2));
+      expect(runtime.store.sessionsForTask(second.task.id), isEmpty);
     },
   );
 

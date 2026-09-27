@@ -1,6 +1,15 @@
 /// Build-time stock presentation metadata, keyed by owning PluginId.
 /// Keep this SDK-only so the launcher and prepared-installation fixtures share it.
 const Map<String, List<Map<String, Object?>>> stockFrontendDescriptors = {
+  'dev.adele.plugin.task-browser': [
+    {
+      'role': 'taskBrowser',
+      'library': 'package:task_browser_frontend/task_browser_frontend.dart',
+      'extensionId': 'dev.adele.plugin.task-browser.task-browser',
+      'displayName': 'Task Browser',
+      'entrypoint': 'createTaskBrowser',
+    },
+  ],
   'dev.adele.plugin.chat-strategy': [
     {
       'role': 'session',

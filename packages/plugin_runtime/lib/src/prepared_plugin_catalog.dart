@@ -80,6 +80,20 @@ sealed class PreparedPresentationDescriptor {
 
 enum PreparedStrategyAffinity { independent, owningBackend }
 
+final class PreparedTaskBrowserPresentation
+    extends PreparedPresentationDescriptor {
+  const PreparedTaskBrowserPresentation({
+    required this.extensionId,
+    required this.displayName,
+    required super.library,
+    required this.entrypoint,
+  });
+
+  final ExtensionId extensionId;
+  final String displayName;
+  final String entrypoint;
+}
+
 final class PreparedSessionPresentation extends PreparedPresentationDescriptor {
   PreparedSessionPresentation({
     required this.extensionId,
@@ -442,6 +456,20 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
   }
   String text(String field) => _text(value[field], '$label.$field');
   switch (text('role')) {
+    case 'taskBrowser':
+      _object(value, label, {
+        'role',
+        'library',
+        'extensionId',
+        'displayName',
+        'entrypoint',
+      });
+      return PreparedTaskBrowserPresentation(
+        extensionId: ExtensionId(text('extensionId')),
+        displayName: text('displayName'),
+        library: text('library'),
+        entrypoint: text('entrypoint'),
+      );
     case 'session':
       _object(value, label, {
         'role',

@@ -77,14 +77,23 @@ EVC, or watching for changes. `PreparedPluginInstallation` retains optional
 `backendArtifactUri` and `frontend`; `PreparedFrontendComponent` contains the
 artifact URI and separate immutable presentation and behavioral extension
 descriptor lists. The sealed, data-only
-`PreparedPresentationDescriptor` variants are `PreparedSessionPresentation`,
-`PreparedToolActivityPresentation`, and `PreparedModelNativeActivityPresentation`.
+`PreparedPresentationDescriptor` variants are `PreparedTaskBrowserPresentation`,
+`PreparedSessionPresentation`, `PreparedToolActivityPresentation`, and
+`PreparedModelNativeActivityPresentation`.
 The separate sealed `PreparedFrontendExtension` currently has
 `PreparedProjectSelectorExtension`, with `kind: 'projectSelector'` and required
 `extensionId`, `projectProviderId`, `displayName`, `library`, and `entrypoint`.
 Its optional `frontend.extensions` list defaults to empty and can coexist with the
 required, possibly empty `presentations` list; existing presentation roles and
 manifest version 1 are unchanged.
+
+Task Browser descriptors use `role: 'taskBrowser'` and require only `extensionId`,
+`displayName`, `library`, and `entrypoint`. They have no strategy or backend
+affinity: `strategyId`, `strategyAffinity`, `backendServices`, and `hostAdapter`
+are rejected for this role. A frontend-only installation needs no backend or shared
+host process to register the contribution. Project-scoped browser actions are
+mediated by the app's public-UI bridge implementation, not runtime backend routing.
+
 Session descriptors require `displayName`, `strategyId`, `extensionId`, `library`,
 and `entrypoint`. Optional `backendServices` is a duplicate-free service-ID
 allowlist (default empty); optional `strategyAffinity` is `independent` (default)

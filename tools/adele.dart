@@ -208,6 +208,12 @@ const List<TestTarget> testTargets = <TestTarget>[
     arguments: <String>['test'],
   ),
   TestTarget(
+    name: 'task_browser_frontend',
+    path: 'plugins/task_browser/packages/frontend',
+    executable: 'flutter',
+    arguments: <String>['test'],
+  ),
+  TestTarget(
     name: 'scripted_model_contract',
     path: 'plugins/scripted_model/packages/contract',
     executable: 'dart',
@@ -366,6 +372,11 @@ analysisTargets = <({String name, String path, bool flutter})>[
   (
     name: 'local_directory_project_frontend',
     path: 'plugins/local_directory_project/packages/frontend',
+    flutter: true,
+  ),
+  (
+    name: 'task_browser_frontend',
+    path: 'plugins/task_browser/packages/frontend',
     flutter: true,
   ),
   (

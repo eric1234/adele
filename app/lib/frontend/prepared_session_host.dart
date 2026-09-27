@@ -11,6 +11,7 @@ import 'owning_backend_bridge.dart';
 import 'prepared_frontend.dart';
 import 'session_execution_bridge.dart';
 import 'session_execution_source.dart';
+import 'session_presentation_lifecycle_bridge.dart';
 
 /// The exact pre-publication choice, including any owning-backend affinity.
 final class SessionPresentationSelection {
@@ -47,12 +48,10 @@ final class PreparedSessionHost {
   final ApplicationPluginBootstrap backends;
   final SessionExecutionController Function(Session) controllerForSession;
   final bool Function(Session, InspectionTarget) inspectActivity;
-  final Map<
-    SessionPresentationContribution,
-    (PreparedPluginInstallation, PreparedSessionPresentation)
-  >
-  _metadata = {};
-  final Map<Session, SessionPresentationSelection> _sessions = {};
+  // Metadata must not keep retired contribution generations alive.
+  final _metadata =
+      Expando<(PreparedPluginInstallation, PreparedSessionPresentation)>();
+  final Map<Session, _SessionPresentationBinding> _sessions = {};
   bool _closed = false;
 
   void registerMetadata(
@@ -111,7 +110,20 @@ final class PreparedSessionHost {
     if (_closed || session.strategyId != selection.strategy.strategyId) {
       throw StateError('Cannot bind this Session presentation.');
     }
-    _sessions[session] = selection;
+    unbind(session);
+    _sessions[session] = _SessionPresentationBinding(selection);
+  }
+
+  /// Await local presentation state before closing execution or changing views.
+  /// No hook means no pending presentation state, including absent native views.
+  Future<void> prepareToDeactivate(Session session) async {
+    final binding = _sessions[session];
+    await binding?.lifecycle?.prepareToDeactivate();
+  }
+
+  /// Revoke every action from this binding, even if the same Session is reopened.
+  void unbind(Session session) {
+    _sessions.remove(session)?.bridges?.invalidate();
   }
 
   Widget createPresentation({
@@ -121,7 +133,8 @@ final class PreparedSessionHost {
     required Session session,
     required bool Function() isActive,
   }) {
-    final selection = _sessions[session];
+    final binding = _sessions[session];
+    final selection = binding?.selection;
     if (_closed ||
         !isActive() ||
         selection == null ||
@@ -130,46 +143,77 @@ final class PreparedSessionHost {
     }
     selection.presentation.validate();
     final controller = controllerForSession(session);
-    bool available() => !_closed && isActive() && !controller.isClosed;
+    bool available() {
+      if (_closed ||
+          !identical(_sessions[session], binding) ||
+          !isActive() ||
+          controller.isClosed) {
+        return false;
+      }
+      selection.presentation.validate();
+      return true;
+    }
+
+    void validateBinding() {
+      if (!available()) throw StateError('Session presentation is retired.');
+    }
+
     return generation.createPresentation(
       library: descriptor.library,
       entrypoint: descriptor.entrypoint,
-      key: ObjectKey(session),
-      createBridge: () => PreparedFrontendBridges([
-        SessionExecutionBridge(
-          source: SessionExecutionPresentationSource(
-            controller: controller,
-            extensions: extensions,
-            isActive: available,
-            inspect: inspectActivity,
-          ),
+      key: ObjectKey(binding),
+      createBridge: () {
+        validateBinding();
+        binding!.bridges?.invalidate();
+        late final SessionPresentationLifecycleBridge lifecycle;
+        lifecycle = SessionPresentationLifecycleBridge(
           isActive: available,
-        ),
-        if (selection.backend case final backend?)
-          OwningBackendBridge.channel(
-            backend,
-            validateBinding: () {
-              if (!available()) {
-                throw StateError('Session presentation is retired.');
-              }
-            },
-          )
-        else
-          OwningBackendBridge(
-            channels: const {},
-            validateBinding: () {
-              if (!available()) {
-                throw StateError('Session presentation is retired.');
-              }
-            },
+          onInvalidate: () {
+            if (identical(binding.lifecycle, lifecycle)) {
+              binding.lifecycle = null;
+              binding.bridges = null;
+            }
+          },
+        );
+        binding.lifecycle = lifecycle;
+        return binding.bridges = PreparedFrontendBridges([
+          lifecycle,
+          SessionExecutionBridge(
+            source: SessionExecutionPresentationSource(
+              controller: controller,
+              extensions: extensions,
+              isActive: available,
+              inspect: inspectActivity,
+            ),
+            isActive: available,
           ),
-      ]),
+          if (selection.backend case final backend?)
+            OwningBackendBridge.channel(
+              backend,
+              validateBinding: validateBinding,
+            )
+          else
+            OwningBackendBridge(
+              channels: const {},
+              validateBinding: validateBinding,
+            ),
+        ]);
+      },
     );
   }
 
   Future<void> close() async {
     _closed = true;
-    _metadata.clear();
-    _sessions.clear();
+    for (final session in _sessions.keys.toList()) {
+      unbind(session);
+    }
   }
+}
+
+final class _SessionPresentationBinding {
+  _SessionPresentationBinding(this.selection);
+
+  final SessionPresentationSelection selection;
+  SessionPresentationLifecycleBridge? lifecycle;
+  PreparedFrontendBridges? bridges;
 }

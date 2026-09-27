@@ -10,16 +10,18 @@ import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
-import 'package:adele_desktop/ui/shell/task_title_form.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart'
     show modelProviderCapability;
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_ui/adele_ui.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
+import '../tool/task_browser_frontend_compiler.dart';
+import 'support/prepared_frontend_installations.dart';
 import 'support/project_provider.dart';
 
 void main() {
@@ -28,7 +30,25 @@ void main() {
   late _EnvironmentChannel channel;
   late int runtimeCreations;
   late Uri source;
+  late Directory artifacts;
+  late Directory installations;
   final ProviderId providerId = ProviderId('dev.adele.environment.task-test');
+
+  setUpAll(() async {
+    artifacts = await Directory.systemTemp.createTemp('adele-task-browser-');
+    final artifact = await File('${artifacts.path}/frontend.evc').writeAsBytes(
+      await compileTaskBrowserFrontend(
+        repositoryRoot: Directory.current.parent,
+      ),
+    );
+    installations = await prepareFrontendInstallations(
+      root: Directory('${artifacts.path}/installed'),
+      artifacts: {'dev.adele.plugin.task-browser': artifact},
+    );
+    final catalog = await PreparedPluginCatalog.discover(installations.path);
+    expect(catalog.issues, isEmpty);
+  });
+  tearDownAll(() => artifacts.delete(recursive: true));
 
   setUp(() {
     ids = _RecordingIds();
@@ -39,11 +59,13 @@ void main() {
     source = (Directory('${directory.path}/Project Name')..createSync()).uri;
     final projectProvider = TestProjectProvider(runtime.registry);
     addTearDown(() async {
-      if (runtime.plugins.state != ApplicationPluginState.closed) {
-        await runtime.close();
-      }
-      await projectProvider.close();
-      directory.deleteSync(recursive: true);
+      await TestWidgetsFlutterBinding.instance.runAsync(() async {
+        if (runtime.plugins.state != ApplicationPluginState.closed) {
+          await runtime.close();
+        }
+        await projectProvider.close();
+        directory.deleteSync(recursive: true);
+      });
     });
     channel = _EnvironmentChannel();
     runtimeCreations = 0;
@@ -70,6 +92,28 @@ void main() {
     return runtime;
   }
 
+  Future<void> mountApplication(
+    WidgetTester tester, {
+    Future<void> Function(ApplicationPluginBootstrap)? afterBootstrap,
+  }) async {
+    await tester.runAsync(() async {
+      final registered = runtime.extensions.changes.firstWhere(
+        (_) => runtime.extensions.discover(taskBrowserContributions).isNotEmpty,
+      );
+      await tester.pumpWidget(
+        AdeleApplication(
+          createRuntime: createRuntime,
+          bootstrapPlugins: (plugins) async {
+            await plugins.start(installationRoot: installations.path);
+            await afterBootstrap?.call(plugins);
+          },
+        ),
+      );
+      await registered.timeout(const Duration(seconds: 10));
+    });
+    await tester.pumpAndSettle();
+  }
+
   CapabilityRegistration registerProvider() {
     final CapabilityRegistration registration = runtime.registry.register(
       provider: ProviderDescriptor(
@@ -92,8 +136,35 @@ void main() {
   AdeleShell shell(WidgetTester tester) =>
       tester.widget<AdeleShell>(find.byType(AdeleShell));
 
-  FilledButton button(WidgetTester tester, String label) =>
-      tester.widget<FilledButton>(find.widgetWithText(FilledButton, label));
+  VoidCallback action(WidgetTester tester, String label) => tester
+      .widget<TextButton>(find.widgetWithText(TextButton, label))
+      .onPressed!;
+
+  Finder actionButton(String label) => find.widgetWithText(
+    label == 'New Task' ? ElevatedButton : TextButton,
+    label,
+  );
+
+  Finder titleField() => find.descendant(
+    of: find
+        .ancestor(of: find.text('Task title'), matching: find.byType(Card))
+        .first,
+    matching: find.byType(TextField),
+  );
+
+  void expectBrowserSelection(
+    WidgetTester tester,
+    Task task,
+    Environment environment,
+  ) {
+    expect(shell(tester).task, same(task));
+    expect(shell(tester).environment, same(environment));
+    expect(shell(tester).sessionContent, isNull);
+    expect(find.text(task.title), findsWidgets);
+    expect(find.text('Environment: ${environment.id}'), findsOneWidget);
+    expect(find.textContaining(environment.providerId.value), findsOneWidget);
+    expect(runtime.store.sessionsForTask(task.id), isEmpty);
+  }
 
   Future<Project> openProject(WidgetTester tester) async {
     expect(find.text('No Project is open'), findsOneWidget);
@@ -112,22 +183,34 @@ void main() {
       ).existsSync(),
       isTrue,
     );
-    expect(find.text('Project is open'), findsOneWidget);
-    expect(find.text('No Task selected'), findsOneWidget);
+    expect(find.text('Task Browser'), findsOneWidget);
+    expect(shell(tester).task, isNull);
+    expect(shell(tester).environment, isNull);
+    expect(
+      find.text('No Tasks yet. Create a Task to get started.'),
+      findsOneWidget,
+    );
     expect(ids.calls, <String>['project']);
     return project;
   }
 
   Future<void> enterTitle(WidgetTester tester, String title) async {
+    if (find.text('Back to Tasks').evaluate().isNotEmpty) {
+      await tester.tap(find.text('Back to Tasks'));
+      await tester.pumpAndSettle();
+    }
     await tester.tap(find.text('New Task'));
     await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField), title);
+    await tester.enterText(titleField(), title);
+    await tester.pumpAndSettle();
   }
 
   Future<void> disposeApplication(WidgetTester tester) async {
-    await tester.pumpWidget(const SizedBox.shrink());
-    // Await the cached close future inside the widget's fake-async zone.
-    await runtime.close();
+    // Prepared bootstrap owns real async resources, including shutdown streams.
+    await tester.runAsync(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      await runtime.close();
+    });
     expect(runtime.plugins.state, ApplicationPluginState.closed);
     expect(tester.takeException(), isNull);
   }
@@ -156,11 +239,11 @@ void main() {
     tester,
   ) async {
     registerProvider();
-    await tester.pumpWidget(AdeleApplication(createRuntime: createRuntime));
+    await mountApplication(tester);
     final Project project = await openProject(tester);
     // No deployment defines: an independently registered provider is sufficient.
     expect(runtime.plugins.state, ApplicationPluginState.ready);
-    expect(button(tester, 'New Task').onPressed, isNotNull);
+    expect(actionButton('New Task'), findsOneWidget);
     expect(
       find.textContaining('Task Environment support is unavailable'),
       findsNothing,
@@ -214,12 +297,9 @@ void main() {
     expect(materialization.environment, same(environment));
     expect(materialization.provider, isA<GeneratedEnvironmentProvider>());
     expect(materialization.validateBinding, returnsNormally);
-    expect(shell(tester).environmentReady, isTrue);
-    expect(find.text('Task: Establish a Task'), findsOneWidget);
-    expect(find.text('Primary Environment ready'), findsOneWidget);
-    expect(find.text('Environment: ${environment.id}'), findsOneWidget);
+    expectBrowserSelection(tester, task, environment);
     expect(find.text('No Task selected'), findsNothing);
-    expect(find.byType(TaskTitleForm), findsNothing);
+    expect(find.text('Task title'), findsNothing);
 
     await tester.pumpWidget(AdeleApplication(createRuntime: createRuntime));
     await tester.pumpAndSettle();
@@ -233,7 +313,9 @@ void main() {
     await disposeApplication(tester);
   });
 
-  testWidgets('reopened Tasks remain unselected in the shell', (tester) async {
+  testWidgets('reopened Tasks remain unselected until explicitly browsed', (
+    tester,
+  ) async {
     registerProvider();
     final project = await runtime.lifecycle.openProject(
       sourceLocation: source,
@@ -260,7 +342,7 @@ void main() {
       ),
     );
     addTearDown(selector.close);
-    await tester.pumpWidget(AdeleApplication(createRuntime: createRuntime));
+    await mountApplication(tester);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Reopen Project'));
     await tester.pumpAndSettle();
@@ -279,29 +361,171 @@ void main() {
     );
     expect(shell(tester).task, isNull);
     expect(shell(tester).environment, isNull);
-    expect(find.text('No Task selected'), findsOneWidget);
-    expect(find.text('Task: Retained Task'), findsNothing);
+    expect(find.text('Retained Task'), findsOneWidget);
     expect(find.text('New Task'), findsOneWidget);
+    expect(ids.calls, ['project', 'task', 'environment']);
+    expect(channel.calls, hasLength(1));
+    await tester.tap(find.widgetWithText(ListTile, 'Retained Task'));
+    await tester.pumpAndSettle();
+    expectBrowserSelection(
+      tester,
+      runtime.store.task(created.task.id)!,
+      runtime.store.environment(created.environment.id)!,
+    );
+    expect(
+      runtime.lifecycle.environmentRuntime.currentMaterialization(
+        created.environment.id,
+      ),
+      isNull,
+    );
     expect(ids.calls, ['project', 'task', 'environment']);
     expect(channel.calls, hasLength(1));
     await disposeApplication(tester);
   });
 
   testWidgets(
+    'local search and Task selection do not establish new product state',
+    (tester) async {
+      registerProvider();
+      await mountApplication(tester);
+      final project = await openProject(tester);
+      for (final title in ['First Task', 'Second Task']) {
+        await enterTitle(tester, title);
+        await tester.tap(find.text('Create Task'));
+        await tester.pump();
+        channel.succeed(channel.calls.length - 1);
+        await tester.pumpAndSettle();
+      }
+      final tasks = runtime.store.tasksFor(project.id);
+      final search = find.byType(TextField);
+      await tester.enterText(search, 'FIRST');
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(ListTile, 'First Task'), findsOneWidget);
+      expect(find.widgetWithText(ListTile, 'Second Task'), findsNothing);
+      expect(shell(tester).task, same(tasks.last));
+      await tester.tap(find.widgetWithText(ListTile, 'First Task'));
+      await tester.pumpAndSettle();
+      expectBrowserSelection(
+        tester,
+        tasks.first,
+        runtime.store.primaryEnvironmentFor(tasks.first.id)!,
+      );
+      await tester.enterText(search, 'no matching title');
+      await tester.pumpAndSettle();
+      expect(find.text('No Tasks match your search.'), findsOneWidget);
+      expect(shell(tester).task, same(tasks.first));
+      expect(runtime.store.tasksFor(project.id), tasks);
+      expect(channel.calls, hasLength(2));
+      expect(ids.calls, [
+        'project',
+        'task',
+        'environment',
+        'task',
+        'environment',
+      ]);
+      expect(tester.takeException(), isNull);
+      await disposeApplication(tester);
+    },
+  );
+
+  for (final (pending, restoreBeforeSettlement) in [
+    (false, false),
+    (true, false),
+    (true, true),
+  ]) {
+    testWidgets(
+      'ambiguous browsers revoke retained controls${pending ? ' during establishment' : ''}${restoreBeforeSettlement ? ' and refresh a new view' : ''}',
+      (tester) async {
+        registerProvider();
+        await mountApplication(tester);
+        final project = await openProject(tester);
+        await enterTitle(tester, 'Retired presentation');
+        final submit = action(tester, 'Create Task');
+        if (pending) {
+          submit();
+          await tester.pump();
+          expect(channel.calls, hasLength(1));
+        }
+        var substituteCalls = 0;
+        final duplicate = runtime.extensions.register(
+          point: taskBrowserContributions,
+          id: ExtensionId('dev.adele.test.duplicate-browser'),
+          value: TaskBrowserContribution(
+            displayName: 'Duplicate browser',
+            createPresentation: (_) {
+              substituteCalls++;
+              return const Text('Must not substitute a browser');
+            },
+          ),
+        );
+        addTearDown(duplicate.close);
+        await tester.pumpAndSettle();
+        expect(
+          find.textContaining('Task Browser is ambiguous'),
+          findsOneWidget,
+        );
+        expect(find.text('New Task'), findsNothing);
+        submit();
+        await tester.pump();
+        if (pending) {
+          if (restoreBeforeSettlement) {
+            await duplicate.close();
+            await tester.pumpAndSettle();
+            expect(find.text('Task Browser'), findsOneWidget);
+            expect(
+              find.widgetWithText(ListTile, 'Retired presentation'),
+              findsNothing,
+            );
+          }
+          channel.succeed();
+          await tester.pumpAndSettle();
+          if (restoreBeforeSettlement) {
+            expect(
+              find.widgetWithText(ListTile, 'Retired presentation'),
+              findsOneWidget,
+            );
+          }
+        }
+        expect(substituteCalls, 0);
+        expect(shell(tester).project, same(project));
+        expect(shell(tester).task, isNull);
+        expect(shell(tester).environment, isNull);
+        expect(runtime.store.tasksFor(project.id), hasLength(pending ? 1 : 0));
+        expect(channel.calls, hasLength(pending ? 1 : 0));
+        expect(
+          ids.calls,
+          pending ? ['project', 'task', 'environment'] : ['project'],
+        );
+        await duplicate.close();
+        await tester.pumpAndSettle();
+        expect(find.text('Task Browser'), findsOneWidget);
+        expect(find.text('Task title'), findsNothing);
+        expect(shell(tester).task, isNull);
+        submit();
+        await tester.pump();
+        expect(channel.calls, hasLength(pending ? 1 : 0));
+        expect(tester.takeException(), isNull);
+        await disposeApplication(tester);
+      },
+    );
+  }
+
+  testWidgets(
     'pending submission disables controls and rejects retained callbacks',
     (tester) async {
       registerProvider();
-      await tester.pumpWidget(AdeleApplication(createRuntime: createRuntime));
+      await mountApplication(tester);
       final Project project = await openProject(tester);
       await enterTitle(tester, 'Only one');
-      final TaskTitleForm retained = tester.widget<TaskTitleForm>(
-        find.byType(TaskTitleForm),
-      );
+      final submit = action(tester, 'Create Task');
+      final cancel = tester
+          .widget<TextButton>(find.widgetWithText(TextButton, 'Cancel'))
+          .onPressed!;
       await tester.tap(find.text('Create Task'));
-      retained.onSubmit('Duplicate before rebuild');
+      submit();
       await tester.pump();
-      retained.onSubmit('Duplicate while pending');
-      retained.onCancel();
+      submit();
+      cancel();
       await tester.tap(find.text('Create Task'));
       await tester.pump();
 
@@ -309,20 +533,15 @@ void main() {
       expect(channel.calls, hasLength(1));
       expectUnpublished(tester, project, 1);
       expect(find.text('Creating Task...'), findsOneWidget);
-      expect(button(tester, 'Create Task').onPressed, isNull);
-      expect(
-        tester
-            .widget<TextButton>(find.widgetWithText(TextButton, 'Cancel'))
-            .onPressed,
-        isNull,
-      );
-      final TextField field = tester.widget<TextField>(find.byType(TextField));
+      expect(actionButton('Create Task'), findsNothing);
+      expect(actionButton('Cancel'), findsNothing);
+      final TextField field = tester.widget<TextField>(titleField());
       expect(field.enabled, isFalse);
-      expect(field.onSubmitted, isNull);
+      field.onSubmitted?.call('Duplicate from retained keyboard callback');
       expect(field.controller!.text, 'Only one');
       channel.succeed();
       await tester.pumpAndSettle();
-      retained.onSubmit('Duplicate after success');
+      submit();
       await tester.pump();
       expect(runtime.store.tasksFor(project.id), hasLength(1));
       expect(shell(tester).task!.title, 'Only one');
@@ -335,13 +554,13 @@ void main() {
 
   testWidgets('blank titles fail before identity allocation', (tester) async {
     registerProvider();
-    await tester.pumpWidget(AdeleApplication(createRuntime: createRuntime));
+    await mountApplication(tester);
     final Project project = await openProject(tester);
     await enterTitle(tester, '   ');
     await tester.tap(find.text('Create Task'));
     await tester.pumpAndSettle();
-    expect(find.text('Task title must not be blank.'), findsOneWidget);
-    tester.widget<TaskTitleForm>(find.byType(TaskTitleForm)).onSubmit('\t\n');
+    expect(actionButton('Create Task'), findsNothing);
+    tester.widget<TextField>(titleField()).onSubmitted!('\t\n');
     await tester.pump();
     expect(ids.calls, <String>['project']);
     expect(channel.calls, isEmpty);
@@ -349,10 +568,7 @@ void main() {
     expect(runtime.store.tasksFor(project.id), isEmpty);
     expect(shell(tester).task, isNull);
     expect(shell(tester).environment, isNull);
-    expect(
-      tester.widget<TextField>(find.byType(TextField)).controller!.text,
-      '   ',
-    );
+    expect(tester.widget<TextField>(titleField()).controller!.text, '   ');
     expect(tester.takeException(), isNull);
     await disposeApplication(tester);
   });
@@ -361,28 +577,23 @@ void main() {
     tester,
   ) async {
     registerProvider();
-    await tester.pumpWidget(AdeleApplication(createRuntime: createRuntime));
+    await mountApplication(tester);
     final Project project = await openProject(tester);
     await enterTitle(tester, 'Abandoned title');
-    final TaskTitleForm retained = tester.widget<TaskTitleForm>(
-      find.byType(TaskTitleForm),
-    );
+    final submit = action(tester, 'Create Task');
     await tester.tap(find.text('Cancel'));
     await tester.pumpAndSettle();
-    retained.onSubmit('Late cancelled submission');
+    submit();
     await tester.pump();
-    expect(find.byType(TaskTitleForm), findsNothing);
-    expect(button(tester, 'New Task').onPressed, isNotNull);
+    expect(find.text('Task title'), findsNothing);
+    expect(actionButton('New Task'), findsOneWidget);
     expectUnpublished(tester, project, 1);
     expect(runtime.store.tasksFor(project.id), isEmpty);
     expect(ids.calls, <String>['project']);
     expect(channel.calls, isEmpty);
     await tester.tap(find.text('New Task'));
     await tester.pumpAndSettle();
-    expect(
-      tester.widget<TextField>(find.byType(TextField)).controller!.text,
-      isEmpty,
-    );
+    expect(tester.widget<TextField>(titleField()).controller!.text, isEmpty);
     expect(tester.takeException(), isNull);
     await disposeApplication(tester);
   });
@@ -391,7 +602,7 @@ void main() {
     tester,
   ) async {
     registerProvider();
-    await tester.pumpWidget(AdeleApplication(createRuntime: createRuntime));
+    await mountApplication(tester);
     final Project project = await openProject(tester);
     await enterTitle(tester, '  Retry this title  ');
     await tester.tap(find.text('Create Task'));
@@ -401,24 +612,29 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('Could not create Task:'), findsOneWidget);
-    expect(find.textContaining('establishment failed'), findsOneWidget);
+    expect(
+      find.text('Task Browser action could not be completed.'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('establishment failed'), findsNothing);
     expect(find.text('Creating Task...'), findsNothing);
     expectUnpublished(tester, project, 1);
     expect(runtime.store.tasksFor(project.id), isEmpty);
     expect(shell(tester).task, isNull);
     expect(shell(tester).environment, isNull);
-    expect(find.text('No Task selected'), findsOneWidget);
     expect(
-      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      tester.widget<TextField>(titleField()).controller!.text,
       '  Retry this title  ',
     );
-    expect(button(tester, 'Create Task').onPressed, isNotNull);
+    expect(actionButton('Create Task'), findsOneWidget);
 
-    await tester.showKeyboard(find.byType(TextField));
+    await tester.showKeyboard(titleField());
     await tester.testTextInput.receiveAction(TextInputAction.done);
     await tester.pump();
-    expect(find.textContaining('Could not create Task:'), findsNothing);
+    expect(
+      find.text('Task Browser action could not be completed.'),
+      findsNothing,
+    );
     expect(channel.calls, hasLength(2));
     channel.succeed(1);
     await tester.pumpAndSettle();
@@ -437,8 +653,8 @@ void main() {
       'task',
       'environment',
     ]);
-    expect(find.text('Primary Environment ready'), findsOneWidget);
-    expect(find.byType(TaskTitleForm), findsNothing);
+    expectBrowserSelection(tester, task, environment);
+    expect(find.text('Task title'), findsNothing);
     expect(tester.takeException(), isNull);
     await disposeApplication(tester);
   });
@@ -447,7 +663,7 @@ void main() {
     'later failure preserves the previously presented Task and Environment',
     (tester) async {
       registerProvider();
-      await tester.pumpWidget(AdeleApplication(createRuntime: createRuntime));
+      await mountApplication(tester);
       final Project project = await openProject(tester);
       await enterTitle(tester, 'First Task');
       await tester.tap(find.text('Create Task'));
@@ -470,21 +686,23 @@ void main() {
       expect(runtime.store.environment(environment.id), same(environment));
       expect(shell(tester).task, same(task));
       expect(shell(tester).environment, same(environment));
-      expect(find.text('Task: First Task'), findsOneWidget);
-      expect(find.text('Primary Environment ready'), findsOneWidget);
+      expectBrowserSelection(tester, task, environment);
       expect(
-        find.textContaining('second establishment failed'),
+        find.text('Task Browser action could not be completed.'),
         findsOneWidget,
       );
       expect(
-        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        tester.widget<TextField>(titleField()).controller!.text,
         'Second Task',
       );
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
       expect(shell(tester).task, same(task));
       expect(shell(tester).environment, same(environment));
-      expect(find.textContaining('Could not create Task:'), findsNothing);
+      expect(
+        find.text('Task Browser action could not be completed.'),
+        findsNothing,
+      );
       expect(tester.takeException(), isNull);
       await disposeApplication(tester);
     },
@@ -496,131 +714,149 @@ void main() {
         'late ${succeeds ? 'success' : 'error'} after ${exit ? 'exit' : 'disposal'} does not present a Task',
         (tester) async {
           final CapabilityRegistration registration = registerProvider();
-          await tester.pumpWidget(
-            AdeleApplication(createRuntime: createRuntime),
-          );
+          await mountApplication(tester);
           final Project project = await openProject(tester);
           await enterTitle(tester, 'Too late');
-          final TaskTitleForm retained = tester.widget<TaskTitleForm>(
-            find.byType(TaskTitleForm),
-          );
-          await tester.tap(find.text('Create Task'));
-          await tester.pump();
-          expect(channel.calls, hasLength(1));
-          Future<AppExitResponse>? exiting;
-          bool exitCompleted = false;
-          if (exit) {
-            exiting = tester.binding.handleRequestAppExit().then((response) {
-              exitCompleted = true;
-              return response;
-            });
-          } else {
-            await tester.pumpWidget(const SizedBox.shrink());
-          }
-          retained.onSubmit('Duplicate while closing');
-          retained.onCancel();
-          await tester.pumpAndSettle();
-          // Closing blocks presentation immediately but must drain establishment
-          // before retiring runtime-owned resources.
-          expect(exitCompleted, isFalse);
-          expect(runtime.plugins.state, ApplicationPluginState.ready);
-          expect(registration.isClosed, isFalse);
-          expect(runtime.store.tasksFor(project.id), isEmpty);
-          expect(
-            runtime.store.environment(EnvironmentId('environment-1')),
-            isNull,
-          );
-          expect(ids.calls, <String>['project', 'task', 'environment']);
-          expect(channel.calls, hasLength(1));
-          if (exit) {
-            expect(shell(tester).project, same(project));
-            expect(shell(tester).task, isNull);
-            expect(shell(tester).environment, isNull);
-            expect(find.byType(TaskTitleForm), findsOneWidget);
-          } else {
-            expect(find.byType(AdeleShell), findsNothing);
-          }
-          expect(find.textContaining('Could not create Task:'), findsNothing);
-          // Independently retired providers still retain successful settlement.
-          await registration.close();
-          if (succeeds) {
-            channel.succeed();
-          } else {
-            channel.calls.single.result.completeError(
-              StateError('late establishment failed'),
-            );
-          }
-          await tester.pumpAndSettle();
-          if (exiting != null) {
-            expect(await exiting, AppExitResponse.exit);
-            expect(exitCompleted, isTrue);
-          }
-          expect(runtime.plugins.state, ApplicationPluginState.closed);
-          retained.onSubmit('Late duplicate');
-          await tester.pump();
-
-          expect(runtime.store.project(project.id), same(project));
-          expect(ids.calls, <String>['project', 'task', 'environment']);
-          expect(channel.calls, hasLength(1));
-          if (succeeds) {
-            // Successful provider settlement survives retirement; only presentation is ignored.
-            final Task task = runtime.store.tasksFor(project.id).single;
-            final Environment environment = runtime.store.primaryEnvironmentFor(
-              task.id,
-            )!;
-            expect(
-              environment.providerState,
-              _EnvironmentChannel.providerState,
-            );
-            expect(
-              runtime.lifecycle.environmentRuntime
-                  .currentMaterialization(environment.id)!
-                  .validateBinding,
-              throwsA(isA<ProviderUnavailable>()),
-            );
-          } else {
+          final submit = action(tester, 'Create Task');
+          final cancel = tester
+              .widget<TextButton>(find.widgetWithText(TextButton, 'Cancel'))
+              .onPressed!;
+          // Keep native exit observers, settlement, and cleanup in one scope.
+          await tester.runAsync(() async {
+            await tester.tap(find.text('Create Task'));
+            await tester.pump();
+            expect(channel.calls, hasLength(1));
+            Future<AppExitResponse>? exiting;
+            bool exitCompleted = false;
+            if (exit) {
+              exiting = tester.binding.handleRequestAppExit().then((response) {
+                exitCompleted = true;
+                return response;
+              });
+            } else {
+              await tester.pumpWidget(const SizedBox.shrink());
+            }
+            submit();
+            cancel();
+            await tester.pumpAndSettle();
+            // Closing blocks presentation immediately but must drain establishment
+            // before retiring runtime-owned resources.
+            expect(exitCompleted, isFalse);
+            expect(runtime.plugins.state, ApplicationPluginState.ready);
+            expect(registration.isClosed, isFalse);
             expect(runtime.store.tasksFor(project.id), isEmpty);
             expect(
               runtime.store.environment(EnvironmentId('environment-1')),
               isNull,
             );
-          }
-          if (exit) {
-            expect(shell(tester).project, same(project));
-            expect(shell(tester).task, isNull);
-            expect(shell(tester).environment, isNull);
-            expect(find.text('No Task selected'), findsOneWidget);
-          } else {
-            expect(find.byType(AdeleShell), findsNothing);
-          }
-          expect(find.text('Task: Too late'), findsNothing);
-          expect(find.text('Primary Environment ready'), findsNothing);
-          expect(find.textContaining('Could not create Task:'), findsNothing);
-          expect(tester.takeException(), isNull);
-          await disposeApplication(tester);
+            expect(ids.calls, <String>['project', 'task', 'environment']);
+            expect(channel.calls, hasLength(1));
+            if (exit) {
+              expect(shell(tester).project, same(project));
+              expect(shell(tester).task, isNull);
+              expect(shell(tester).environment, isNull);
+              expect(titleField(), findsOneWidget);
+            } else {
+              expect(find.byType(AdeleShell), findsNothing);
+            }
+            expect(
+              find.text('Task Browser action could not be completed.'),
+              findsNothing,
+            );
+            // Independently retired providers still retain successful settlement.
+            await registration.close();
+            if (succeeds) {
+              channel.succeed();
+            } else {
+              channel.calls.single.result.completeError(
+                StateError('late establishment failed'),
+              );
+            }
+            await tester.pumpAndSettle();
+            if (exiting != null) {
+              await exiting.timeout(const Duration(seconds: 10));
+            } else if (runtime.plugins.state != ApplicationPluginState.closed) {
+              await runtime.plugins.changes
+                  .firstWhere((state) => state == ApplicationPluginState.closed)
+                  .timeout(const Duration(seconds: 10));
+            }
+            if (exiting != null) {
+              expect(await exiting, AppExitResponse.exit);
+              expect(exitCompleted, isTrue);
+            }
+            expect(runtime.plugins.state, ApplicationPluginState.closed);
+            submit();
+            await tester.pump();
+
+            expect(runtime.store.project(project.id), same(project));
+            expect(ids.calls, <String>['project', 'task', 'environment']);
+            expect(channel.calls, hasLength(1));
+            if (succeeds) {
+              // Successful provider settlement survives retirement; only presentation is ignored.
+              final Task task = runtime.store.tasksFor(project.id).single;
+              final Environment environment = runtime.store
+                  .primaryEnvironmentFor(task.id)!;
+              expect(
+                environment.providerState,
+                _EnvironmentChannel.providerState,
+              );
+              expect(
+                runtime.lifecycle.environmentRuntime
+                    .currentMaterialization(environment.id)!
+                    .validateBinding,
+                throwsA(isA<ProviderUnavailable>()),
+              );
+            } else {
+              expect(runtime.store.tasksFor(project.id), isEmpty);
+              expect(
+                runtime.store.environment(EnvironmentId('environment-1')),
+                isNull,
+              );
+            }
+            if (exit) {
+              expect(shell(tester).project, same(project));
+              expect(shell(tester).task, isNull);
+              expect(shell(tester).environment, isNull);
+            } else {
+              expect(find.byType(AdeleShell), findsNothing);
+            }
+            expect(find.text('Environment: environment-1'), findsNothing);
+            expect(
+              find.text('Task Browser action could not be completed.'),
+              findsNothing,
+            );
+            expect(tester.takeException(), isNull);
+            await tester.pumpWidget(const SizedBox.shrink());
+            await runtime.close();
+            expect(runtime.plugins.state, ApplicationPluginState.closed);
+            expect(tester.takeException(), isNull);
+          });
         },
       );
     }
   }
 
   testWidgets(
-    'empty backend composition still opens Project with New Task disabled',
+    'empty backend composition opens Project but cannot establish a Task',
     (tester) async {
-      await tester.pumpWidget(AdeleApplication(createRuntime: createRuntime));
+      await mountApplication(tester);
       final Project project = await openProject(tester);
       expect(runtime.plugins.state, ApplicationPluginState.ready);
       expect(
         runtime.registry.providersFor(environmentProviderCapability),
         isEmpty,
       );
-      expect(button(tester, 'New Task').onPressed, isNull);
+      await enterTitle(tester, 'No provider');
+      await tester.tap(find.text('Create Task'));
+      await tester.pumpAndSettle();
       expect(
-        find.textContaining('Task Environment support is unavailable'),
+        find.text('Task Browser action could not be completed.'),
         findsOneWidget,
       );
-      await tester.tap(find.text('New Task'));
-      await tester.pump();
-      expect(find.byType(TaskTitleForm), findsNothing);
+      expect(
+        tester.widget<TextField>(titleField()).controller!.text,
+        'No provider',
+      );
       expectUnpublished(tester, project, 1);
       expect(ids.calls, <String>['project']);
       expect(channel.calls, isEmpty);
@@ -630,20 +866,23 @@ void main() {
   );
 
   testWidgets(
-    'backend startup error still opens Project with New Task disabled',
+    'backend startup error opens Project but cannot establish a Task',
     (tester) async {
-      await tester.pumpWidget(
-        AdeleApplication(
-          createRuntime: createRuntime,
-          bootstrapPlugins: (ApplicationPluginBootstrap plugins) async {
-            expect(plugins, same(runtime.plugins));
-            throw StateError('backend startup failed');
-          },
-        ),
+      await mountApplication(
+        tester,
+        afterBootstrap: (ApplicationPluginBootstrap plugins) async {
+          expect(plugins, same(runtime.plugins));
+          throw StateError('backend startup failed');
+        },
       );
       final Project project = await openProject(tester);
-      expect(find.textContaining('backend startup failed'), findsOneWidget);
-      expect(button(tester, 'New Task').onPressed, isNull);
+      await enterTitle(tester, 'Failed startup');
+      await tester.tap(find.text('Create Task'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Task Browser action could not be completed.'),
+        findsOneWidget,
+      );
       expectUnpublished(tester, project, 1);
       expect(ids.calls, <String>['project']);
       expect(channel.calls, isEmpty);
@@ -657,36 +896,36 @@ void main() {
     (tester) async {
       final Completer<void> startup = Completer<void>();
       int bootstraps = 0;
-      await tester.pumpWidget(
-        AdeleApplication(
-          createRuntime: createRuntime,
-          bootstrapPlugins: (ApplicationPluginBootstrap plugins) async {
-            bootstraps++;
-            expect(plugins.registry, same(runtime.registry));
-            await startup.future;
-            registerProvider();
-          },
-        ),
+      await mountApplication(
+        tester,
+        afterBootstrap: (ApplicationPluginBootstrap plugins) async {
+          bootstraps++;
+          expect(plugins.registry, same(runtime.registry));
+          await startup.future;
+          registerProvider();
+        },
       );
       final Project project = await openProject(tester);
-      expect(button(tester, 'New Task').onPressed, isNull);
+      await enterTitle(tester, 'Activated asynchronously');
       startup.complete();
       await tester.pumpAndSettle();
       expect(runtimeCreations, 1);
       expect(bootstraps, 1);
       expect(shell(tester).project, same(project));
-      expect(button(tester, 'New Task').onPressed, isNotNull);
+      expect(actionButton('New Task'), findsOneWidget);
       expect(
         find.textContaining('Task Environment support is unavailable'),
         findsNothing,
       );
-      await enterTitle(tester, 'Activated asynchronously');
       await tester.tap(find.text('Create Task'));
       await tester.pump();
       channel.succeed();
       await tester.pumpAndSettle();
-      expect(find.text('Task: Activated asynchronously'), findsOneWidget);
-      expect(find.text('Primary Environment ready'), findsOneWidget);
+      expectBrowserSelection(
+        tester,
+        shell(tester).task!,
+        shell(tester).environment!,
+      );
       expect(
         runtime.store.tasksFor(project.id).single,
         same(shell(tester).task),
@@ -703,7 +942,7 @@ void main() {
       await tester.binding.setSurfaceSize(const Size(360, 640));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       registerProvider();
-      await tester.pumpWidget(AdeleApplication(createRuntime: createRuntime));
+      await mountApplication(tester);
       final Project project = await openProject(tester);
       await enterTitle(
         tester,
@@ -716,7 +955,11 @@ void main() {
       expect(tester.takeException(), isNull);
       channel.succeed();
       await tester.pumpAndSettle();
-      expect(find.text('Primary Environment ready'), findsOneWidget);
+      expectBrowserSelection(
+        tester,
+        shell(tester).task!,
+        shell(tester).environment!,
+      );
       expect(shell(tester).project, same(project));
       expect(
         runtime.store.tasksFor(project.id).single,
