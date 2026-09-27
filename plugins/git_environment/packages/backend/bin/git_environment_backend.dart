@@ -7,8 +7,18 @@ import 'package:adele_environment/adele_environment.dart';
 import 'package:git_environment_backend/git_environment_backend.dart';
 
 Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
-  if (arguments.isNotEmpty || bootstrapMessage is! Map) {
-    stderr.writeln('Expected bootstrap metadata and no plugin arguments.');
+  final String? helperPath =
+      arguments.length == 1 && arguments.single.startsWith('--pty-helper=')
+      ? arguments.single.substring('--pty-helper='.length)
+      : null;
+  if (bootstrapMessage is! Map ||
+      (arguments.isNotEmpty &&
+          (helperPath == null ||
+              !helperPath.startsWith('/') ||
+              helperPath.contains('\u0000')))) {
+    stderr.writeln(
+      'Expected bootstrap metadata and optional --pty-helper=/absolute/prepared-executable.',
+    );
     exitCode = 64;
     return;
   }
@@ -23,7 +33,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   }
 
   final GitWorktreeEnvironmentProvider provider =
-      GitWorktreeEnvironmentProvider();
+      GitWorktreeEnvironmentProvider(ptyHelperPath: helperPath);
   final EnvironmentProviderServiceDispatcher dispatcher =
       EnvironmentProviderServiceDispatcher(
         EnvironmentProviderServiceAdapter(provider),
@@ -54,8 +64,9 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   await for (final Object? request in requests) {
     if (request is! Map) continue;
     if (request['method'] == 'shutdown' && request['requestId'] is int) {
-      await router.close();
-      await provider.close();
+      // Fence lazy starts before router cancellation or queued dispatch can run.
+      final Future<void> closingProvider = provider.close();
+      await Future.wait<void>([closingProvider, router.close()]);
       responsePort.send(<String, Object?>{
         'kind': 'response',
         'requestId': request['requestId'],

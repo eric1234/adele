@@ -173,12 +173,14 @@ for the broader preparation model, not portable release packaging.
 [`NativeTerminalSurface`](lib/terminal/native_terminal_surface.dart) is an
 app-private adapter over published `xterm2 5.2.0`, not a stock Terminal plugin or
 an execution resource. Native code constructs the owner, feeds ordered text with
-`write`, chooses immutable `readOnly` configuration and callbacks, and explicitly
+`write`, chooses initial `readOnly` configuration and callbacks, and explicitly
 calls `dispose`. It requires no Project, Task, Session, Environment, or durable ID.
 The emulator and incremental escape parser survive complete view unmounts; output
-while hidden updates the same buffers without transcript replay.
+while hidden updates the same buffers without transcript replay. Execution owners
+may permanently revoke its outbound routes while preserving read-only display;
+that transition never grants authority to an initially read-only surface.
 
-The initial grid is 80 columns by 24 rows. The default `maxLines` is 2,000 lines
+The default initial grid is 80 columns by 24 rows. The default `maxLines` is 2,000 lines
 **including the viewport**, per emulator buffer; native callers may choose another
 finite value of at least 24. Rows cannot exceed that bound, and columns are capped
 at 1,000, including output-requested geometry. Older parsed lines are evicted by
@@ -227,8 +229,51 @@ declarations, writes actual EVC bytes, and mounts through
 See [focused commands](../docs/development/testing.md#focused-terminal-checks) and
 [dependency/toolchain evidence](../docs/development/toolchain.md#native-terminal-dependency).
 This surface is not automatically installed in any application screen or catalog
-role. PTYs, Environment terminal resources, command Inspection integration, byte
-decoding/backpressure, persistence, and stock Terminal UI remain unimplemented.
+role. Command Inspection integration, terminal persistence, and stock Terminal UI
+remain unimplemented.
+
+### Environment terminal ownership
+
+[`environment_terminal_owner.dart`](lib/terminal/environment_terminal_owner.dart)
+connects the surface to the selected public Environment terminal facet.
+`AdeleRuntime.terminals` owns the application-private Environment-keyed collection;
+each `EnvironmentTerminalOwner` retains a distinct process resource and emulator.
+Only an explicit host-authorized open materializes canonical Environment context.
+There is no Session/Run creation, model tool, public terminal registry, or frontend
+Environment selector. Production app code imports no concrete PTY/provider package.
+
+An owner captures one `EnvironmentMaterialization` and exact registration, validates
+them across asynchronous opening and before subsequent operations, and observes
+retirement even with no output or view. It never restores or retries an existing
+resource through a replacement generation. Opened evidence precedes output; EOF
+without terminal completion becomes failure rather than fabricated success.
+Completion/disconnection revokes native input, layout resize, and protocol replies
+while keeping the screen available for inspection. Explicit release and runtime
+shutdown clean up resources independently of Flutter widget disposal.
+
+Each live owner consumes one continuous ordered stream, feeding the emulator while
+hidden. View-originated input and layout callbacks carry their original native
+presentation validator through deferred dispatch; fresh access never revives an old
+view's queue. Emulator `onResponse` instead uses only live resource authority, so
+terminal queries still receive replies with no mounted widget. Callback failures
+are recorded on the owner and trigger cleanup, not unhandled evaluator/Flutter
+errors. Input admission is bounded to 65,536 pending UTF-16 code units and 128
+chunks, with at most 8192 code units per dispatched message; pending resize is
+coalesced. Closure or retirement discards queued effects before cleanup; it does
+not roll back an already admitted effect. The provider's
+[pending-output bounds](../plugins/git_environment/README.md#interactive-terminals)
+remain separate from emulator scrollback.
+
+[`environment_terminal_owner_test.dart`](test/environment_terminal_owner_test.dart)
+isolates authority, queue, and startup/retirement races. The
+[real integration](test/environment_terminal_integration_test.dart) prepares the
+unchanged interpreted fixture, actual shared host and Git backend AOT snapshots,
+and the provider's native helper before activation. It tests native input/resize,
+hidden output/query replies, complete unmount/remount without respawn, and retained
+completed/disconnected display. This is Linux debug widget/evaluator plus actual
+Dart AOT backend/process evidence, not a finished desktop Terminal feature or a
+cross-platform runtime claim. The next stock UI consumes these owners rather than
+creating processes from its widgets.
 
 ### ChatGPT source-checkout configuration
 

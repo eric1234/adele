@@ -280,6 +280,32 @@ new materialization. The provider may already have bound live state during resto
 without a release or idempotent-restore contract, retry in that same generation is
 not guaranteed. Recovery can require a fresh provider generation.
 
+### Interactive terminal resources
+
+An interactive user terminal is a non-durable resource of an Environment, not a
+Session, Run, or widget. Explicit host-authorized creation may materialize a
+canonical Environment without creating a Session or borrowing an operation-scoped
+tool token. Concrete process creation and execution placement remain with that
+Environment's selected provider; terminal support is an optional facet of the same
+binding, never an independently selected provider or host-local fallback.
+
+The native host owns the captured materialization, continuous output subscription,
+retained emulator, and resource lifetime. Presentation has revocable access to that
+resource but does not own it. Unmounting a view neither cancels output consumption
+nor terminates execution; emulator protocol replies are resource-scoped and may
+continue while hidden. Closing or retiring the captured provider revokes both
+presentation-directed input and owner-generated replies. Captured resources never
+migrate to a replacement generation. A completed or disconnected screen may remain
+displayable without live process authority.
+
+Resource handles are provider-generation-local and Environment-associated, not
+process IDs or durable product state. Cancelling the owning open stream abandons
+the resource; there is no arbitrary reattachment protocol. Application restart
+restores neither terminals nor their transcripts. The [Environment contract](../../packages/environment/README.md#interactive-terminals)
+owns transport and settlement semantics; concrete platform and cleanup guarantees
+belong to the provider, not the product model. Stock terminal navigation and controls
+are separate presentation work.
+
 ## Session
 
 A Session is a stable core identity and lifecycle container, permanently bound

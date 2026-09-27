@@ -7,6 +7,7 @@ import 'package:adele_product/adele_product.dart';
 
 import 'foreground_process.dart';
 import 'ids.dart';
+import 'terminal_resources.dart';
 import 'worktree_environment.dart';
 
 const int gitEnvironmentProviderStateSchemaVersion = 1;
@@ -32,18 +33,27 @@ const Set<String> _gitEnvironmentVariablesToClear = <String>{
   'GIT_WORK_TREE',
 };
 
-final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
+final class GitWorktreeEnvironmentProvider
+    implements EnvironmentProvider, EnvironmentTerminalProvider {
   GitWorktreeEnvironmentProvider({
     LiveObjectRegistry<EnvironmentId, WorktreeEnvironment>? liveObjects,
+    GitTerminalDriver? terminalDriver,
+    String? ptyHelperPath,
   }) : liveObjects =
            liveObjects ??
-           LiveObjectRegistry<EnvironmentId, WorktreeEnvironment>();
+           LiveObjectRegistry<EnvironmentId, WorktreeEnvironment>(),
+       _terminals = GitTerminalSupervisor(
+         driver: terminalDriver,
+         helperPath: ptyHelperPath,
+       );
 
   @override
   final ProviderId providerId = ProviderId(gitWorktreeEnvironmentProviderId);
   final LiveObjectRegistry<EnvironmentId, WorktreeEnvironment> liveObjects;
   final GitForegroundProcessSupervisor _processes =
       GitForegroundProcessSupervisor();
+  final GitTerminalSupervisor _terminals;
+  bool _closing = false;
   Future<void>? _closeFuture;
 
   @override
@@ -116,6 +126,7 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
         failureMessage:
             'The Task worktree does not contain the Project source scope.',
       );
+      _requireOpen();
       liveObjects.bind(environment.id, live);
       return EnvironmentProviderResult(
         providerState: _providerState(
@@ -244,6 +255,7 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
       failureMessage:
           'The retained worktree does not contain the Project source scope.',
     );
+    _requireOpen();
     liveObjects.bind(environment.id, live);
     return EnvironmentProviderResult(
       providerState: _providerState(
@@ -304,14 +316,59 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
     request: request,
   );
 
-  Future<void> close() => _closeFuture ??= _close();
+  @override
+  Stream<EnvironmentTerminalEvent> openTerminal(
+    EnvironmentId environmentId,
+    EnvironmentTerminalRequest request,
+  ) => _terminals.open(
+    environmentId: environmentId,
+    resolveEnvironment: () => _resolve(environmentId),
+    request: request,
+  );
+
+  @override
+  Future<void> writeTerminal(
+    EnvironmentId environmentId,
+    String handle,
+    String text,
+  ) => _terminals.write(environmentId, handle, text);
+
+  @override
+  Future<void> resizeTerminal(
+    EnvironmentId environmentId,
+    String handle,
+    EnvironmentTerminalDimensions dimensions,
+  ) => _terminals.resize(environmentId, handle, dimensions);
+
+  @override
+  Future<void> closeTerminal(EnvironmentId environmentId, String handle) =>
+      _terminals.closeTerminal(environmentId, handle);
+
+  Future<void> close() {
+    _closing = true;
+    return _closeFuture ??= _close();
+  }
 
   Future<void> _close() async {
-    await _processes.close();
-    liveObjects.clear();
+    try {
+      await Future.wait<void>([_terminals.close(), _processes.close()]);
+    } finally {
+      liveObjects.clear();
+    }
+  }
+
+  void _requireOpen() {
+    if (_closing) {
+      throw const EnvironmentFailure(
+        code: 'environment_provider_closed',
+        message: 'The Environment provider is shutting down.',
+        details: <String, Object?>{},
+      );
+    }
   }
 
   WorktreeEnvironment _resolve(EnvironmentId id) {
+    _requireOpen();
     try {
       return liveObjects.resolve(id);
     } on StateError {
@@ -324,6 +381,7 @@ final class GitWorktreeEnvironmentProvider implements EnvironmentProvider {
   }
 
   void _requireAvailableId(EnvironmentId id) {
+    _requireOpen();
     if (liveObjects.contains(id)) {
       throw _environmentFailure(
         'environment_already_live',

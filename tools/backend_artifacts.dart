@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:ffi' show Abi;
 import 'dart:io';
 
 // Keep the launcher import graph SDK-only so test-plan works before bootstrap.
@@ -6,6 +7,7 @@ import 'dart:io';
 import '../packages/plugin_builder/lib/plugin_builder.dart';
 import 'contract_artifacts.dart';
 import 'frontend_artifacts.dart';
+import 'git_pty_artifact.dart';
 import 'stock_frontend_descriptors.dart';
 
 Future<List<String>> prepareDesktopPluginDefines({
@@ -157,6 +159,17 @@ Future<List<String>> prepareDesktopPluginDefines({
         stderr.write(diagnostic.stderrText);
       },
     );
+  }
+  if (Platform.isLinux && Abi.current() == Abi.linuxX64) {
+    final ptyHelper = File.fromUri(git.parent.uri.resolve('pty-helper'));
+    stdout.writeln('==> git-pty-helper-compilation');
+    await prepareGitPtyHelper(
+      repositoryRoot: repositoryRoot,
+      output: ptyHelper,
+    );
+    startupArguments['dev.adele.plugin.git-environment'] = [
+      '--pty-helper=${ptyHelper.absolute.path}',
+    ];
   }
   final frontends = await prepareDesktopFrontendArtifacts(
     repositoryRoot: repositoryRoot,

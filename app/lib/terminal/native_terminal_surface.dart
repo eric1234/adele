@@ -10,29 +10,54 @@ import 'package:xterm2/xterm.dart' as xterm;
 /// Only one mounted view, including an exit-retained view, may attach at a time.
 final class NativeTerminalSurface {
   NativeTerminalSurface({
-    this.readOnly = false,
+    bool readOnly = false,
     int maxLines = 2000,
     void Function(String)? onInput,
     void Function(String)? onResponse,
     void Function(int columns, int rows)? onResize,
-  }) : _onInput = onInput,
+    void Function(String text, bool Function() isActive)? onScopedInput,
+    void Function(int columns, int rows, bool Function() isActive)?
+    onScopedResize,
+  }) : _readOnly = readOnly,
+       _onInput = onInput,
        _onResponse = onResponse,
-       _onResize = onResize {
+       _onResize = onResize,
+       _onScopedInput = onScopedInput,
+       _onScopedResize = onScopedResize {
+    if (onInput != null && onScopedInput != null ||
+        onResize != null && onScopedResize != null) {
+      throw ArgumentError('Choose either scoped or synchronous callbacks.');
+    }
     if (maxLines < 24) throw ArgumentError.value(maxLines, 'maxLines', '>= 24');
     _terminal = _Emulator(maxLines: maxLines)
       ..focusInput(false)
       ..onOutput = _response;
   }
 
-  /// Host-selected, immutable authority. No interpreted caller can change it.
-  final bool readOnly;
+  /// Host-selected authority can only be narrowed, never expanded by a view.
+  final bool _readOnly;
+  bool _inputStopped = false;
+  bool get readOnly => _readOnly || _inputStopped;
   void Function(String)? _onInput;
   void Function(String)? _onResponse;
   void Function(int, int)? _onResize;
+  void Function(String, bool Function())? _onScopedInput;
+  void Function(int, int, bool Function())? _onScopedResize;
   _Emulator? _terminal;
   _NativeTerminalViewState? _attached;
 
   bool get isDisposed => _terminal == null;
+
+  /// Retains the screen and local copy/scroll while permanently fencing input.
+  void stopInput() {
+    if (_inputStopped || isDisposed) return;
+    _inputStopped = true;
+    _attached?._rebuild();
+  }
+
+  /// Sets owner geometry, including before any presentation is attached.
+  void resize(int columns, int rows) =>
+      _requireTerminal().resize(columns, rows);
 
   /// Synchronous ordered text feed, preserving parser state across calls.
   /// Late output after explicit disposal is rejected, not silently replayed.
@@ -84,6 +109,8 @@ final class NativeTerminalSurface {
     _onInput = null;
     _onResponse = null;
     _onResize = null;
+    _onScopedInput = null;
+    _onScopedResize = null;
     terminal.onOutput = null;
     terminal.dispose();
     _attached?._ownerDisposed();
@@ -200,6 +227,10 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
     _retired = true;
     _terminal?.dispose();
     _terminal = null;
+    _rebuild();
+  }
+
+  void _rebuild() {
     void rebuild() {
       if (mounted) setState(() {});
     }
@@ -308,7 +339,9 @@ final class _ViewTerminal extends xterm.Terminal {
   T _input<T>(T unavailable, T Function() action) {
     if (!_interactive) return unavailable;
     return _owner._withOutput((data) {
-      if (_interactive) _owner._onInput?.call(data);
+      if (!_interactive) return;
+      _owner._onInput?.call(data);
+      _owner._onScopedInput?.call(data, () => _interactive);
     }, action);
   }
 
@@ -383,6 +416,7 @@ final class _ViewTerminal extends xterm.Terminal {
     final size = (_engine.viewWidth, _engine.viewHeight);
     if (_interactive && size != previous) {
       _owner._onResize?.call(size.$1, size.$2);
+      _owner._onScopedResize?.call(size.$1, size.$2, () => _interactive);
     }
   }
 

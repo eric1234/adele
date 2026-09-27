@@ -81,6 +81,7 @@ requiring Git 2.48+; native relative worktrees may replace it in a later migrati
 Provider Git processes retain the ordinary host environment while repository-local
 Git routing variables are removed. Each backend generation reconstructs live
 objects in its own registry; shutdown terminates active foreground executions and
+terminal resources and
 clears those objects without removing Git worktrees. Failed establishment publishes
 nothing and performs best-effort branch/worktree cleanup only with sufficient
 ownership evidence and revalidated confined storage paths.
@@ -156,8 +157,8 @@ directory but does not delete that pathname because Dart cannot prove an
 external process has not replaced it.
 
 Directory/move/copy/binary mutation, general create-or-overwrite semantics,
-command-specific policy/classification, background or persistent processes,
-stdin/PTY support, release/destruction, and remote cloning remain absent. The
+command-specific policy/classification, background task scheduling, persistent
+processes, Environment release/destruction, and remote cloning remain absent. The
 separate stock Command Tools plugin projects this provider-neutral foreground
 surface as model-facing `run_command`; that does not move tool or policy
 semantics into this provider.
@@ -167,3 +168,83 @@ resolved-directory confinement for process cwd, and post-resolution validation
 provide application-level confinement equivalent to the historical
 DevelopmentSource proof. They are not an operating-system sandbox and cannot
 eliminate every pathname replacement race against another local process.
+
+## Interactive terminals
+
+`GitTerminalSupervisor` implements the optional terminal facet of this same
+Environment provider. It owns at most 16 admitted terminal resources per backend
+generation and 4 per Environment, including startup and pending cleanup. Multiple
+terminals remain independent. Generation-local authenticated opaque handles bind
+exactly one Environment; idempotent close does not require an unbounded retained
+tombstone table. Input/resize require a live resource. Terminal identity is neither
+a process ID nor retained provider state.
+
+Listening to `openTerminal` explicitly creates one terminal. The supervisor
+resolves the live `WorktreeEnvironment` and its existing process-working-directory
+boundary, revalidating after asynchronous preparation. Nested Project source scope
+therefore remains the matching directory inside the linked worktree. An executable
+and verbatim argv are passed directly; an interactive shell is an explicit request
+such as `/bin/bash --noprofile --norc -i`, not implicit command-string parsing.
+Child environment uses the foreground allowlist above, with canonical `PWD` and
+`TERM=xterm-256color` instead of `dumb`. No shared-host environment/cwd mutation,
+arbitrary environment override, credential forwarding, or shell-profile discovery
+is added.
+
+The provider-private `GitPtySession` uses the prepared Linux x64 C executable
+described in [toolchain preparation](../../docs/development/toolchain.md#git-pty-preparation).
+`--pty-helper=<absolute prepared path>` is optional backend startup configuration:
+missing/unsupported preparation makes only terminal creation explicitly unavailable.
+The backend remains Flutter-free. Fork, controlling-terminal setup, session/signal
+changes, native descriptor operations, and reaping occur in the helper, not the
+shared AOT host. The helper is not an independently selected Environment provider.
+
+The stream publishes opened evidence before ordered combined PTY text, then real
+exit or explicit-closure evidence. UTF-8 decoding is incremental across OS reads;
+malformed bytes become replacement characters. ANSI, carriage returns, and line
+endings are not normalized. Transport chunks are at most 8192 UTF-16 code units,
+without splitting a surrogate pair. Normal nonzero exit is process data, not a
+transport error. Infrastructure failure or missing completion evidence never
+becomes successful exit.
+
+Generated transport uses one-item credit. Pausing stops supervisor read advancement,
+with bounded already-admitted data; the private helper adapter continues draining
+its shared data/control pipe into at most 256 KiB of unread output. Crossing that
+hard bound explicitly fails and releases that terminal rather than dropping text
+or growing a queue. This is bounded failure under sustained backpressure, not an
+unlimited lossless transcript. Native messages are at most 16 KiB; input is
+acknowledged in order with partial writes handled, and operation deadlines bound
+blocked setup/control/cleanup rather than process lifetime. Close is independent
+of output credit and never waits for a paused observer to resume.
+
+Cancelling the opening stream abandons and closes the resource. A host hides a
+view by retaining its output subscription and emulator, not cancelling/reopening
+the backend stream. Startup cancellation and shutdown fence admission, clean late
+native resources, and never publish late live authority. Ordinary exit releases
+native resources while the host may retain the completed screen. Provider shutdown
+joins owned cleanup without deleting the Git worktree.
+
+Graceful cleanup targets the shell and its ordinary foreground job-control group,
+including the separate group created by an interactive shell, with TERM/CONT and
+KILL escalation and helper-local reaping. A waitable leader pins session identity;
+pidfds and revalidated session/group membership avoid signalling a reused process
+ID. After leader death, cleanup includes remaining members of that private session,
+so an ordinary foreground job is not lost when the kernel forgets the foreground
+group. This is not cgroup-strength descendant containment: deliberately detached
+or daemonized jobs, arbitrary background jobs, and simultaneous abrupt helper/host
+death are not guaranteed.
+Host pipe loss allows a surviving helper to perform best-effort cleanup; host access
+is revoked and reported disconnected regardless. These limits are separate from
+tested ordinary graceful-close behavior and do not constitute an OS sandbox.
+Helper cleanup confirmation is separate from the child's exit status, including
+child exits 125/126. Failed or unconfirmed cleanup (including forced helper kill)
+makes close fail explicitly and conservatively retains its admission slot; ordinary
+transport/overflow failure after confirmed cleanup does not. Repeated close keeps
+the same result rather than targeting a recycled native identity.
+
+The maintained Git backend target discovers `terminal_resources_test.dart` and
+`pty_host_test.dart`. The latter independently compiles the selected native helper
+and AOT backend/host, loading through normal `PluginBackendHost.startPlugin`.
+The [application integration](../../app/test/environment_terminal_integration_test.dart)
+additionally crosses the actual Git backend and generated Environment transport
+from the prepared native terminal fixture. Other operating systems and the stock
+Terminal frontend/controls remain deferred.

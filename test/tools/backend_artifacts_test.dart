@@ -71,10 +71,12 @@ void main() {
       'tools/backend_artifacts.dart',
       'tools/contract_artifacts.dart',
       'tools/frontend_artifacts.dart',
+      'tools/git_pty_artifact.dart',
       'tools/stock_frontend_descriptors.dart',
       'tools/test_runner.dart',
       'packages/plugin_builder/lib/plugin_builder.dart',
       'packages/plugin_builder/lib/src/development_plugin_builder.dart',
+      'plugins/git_environment/packages/backend/native/git_pty_helper.c',
     ]) {
       final File destination = File('${root.path}/$path');
       destination.parent.createSync(recursive: true);
@@ -252,6 +254,23 @@ else
 fi
 ''');
     _script(File('${sdkBin.path}/dartaotruntime'), 'exit 99');
+    _script(File('${bin.path}/cc'), '''
+test "\$PWD" = '${root.path}' || exit 98
+test "\$#" = 9 && test "\$7" = -o && test "\$9" = -lutil || exit 97
+test -f "\$6" || exit 96
+printf 'compile|git-pty-helper\n' >> '${commands.path}'
+if [ "\$ADELE_TEST_FAIL_PTY" = 1 ]; then
+  printf 'native compiler failed' >&2
+  exit 37
+fi
+if [ "\$ADELE_TEST_PTY_ARTIFACT" != missing ]; then
+  if [ "\$ADELE_TEST_PTY_ARTIFACT" = empty ]; then
+    : > "\$8"
+  else
+    printf 'prepared native helper\n' > "\$8"
+  fi
+fi
+''');
     _script(File('${sdkBin.path}/dart'), '''
 ${generatorScript('sdk')}
 test "\$PWD" = '${root.path}' || exit 98
@@ -292,6 +311,19 @@ printf 'compiled|%s\n' "\$3" >> '${commands.path}'
       (value) => value.startsWith(prefix),
     );
     return File(argument.substring(prefix.length)).readAsStringSync();
+  }
+
+  List<String> gitStartupArguments() {
+    const prefix = '--dart-define=ADELE_PLUGIN_INSTALLATION_ROOT=';
+    final argument = launchArguments.readAsLinesSync().singleWhere(
+      (value) => value.startsWith(prefix),
+    );
+    final helper = File.fromUri(
+      Directory(
+        argument.substring(prefix.length),
+      ).uri.resolve('git-environment/pty-helper'),
+    );
+    return ['--pty-helper=${helper.path}'];
   }
 
   void expectNoPublishedInstallations() {
@@ -702,6 +734,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           'compiled|$_chatEntrypoint',
           'compile|$_localDirectoryProjectEntrypoint',
           'compiled|$_localDirectoryProjectEntrypoint',
+          'compile|git-pty-helper',
           'compile|$_frontendHarness',
           'compiled|$_frontendHarness',
           'compile|$_toolFrontendHarness|filesystem',
@@ -816,6 +849,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(startupArguments.parent.path, host.parent.path);
         expect(jsonDecode(startupArguments.readAsStringSync()), {
           'dev.adele.openai': ['--chatgpt-only'],
+          'dev.adele.plugin.git-environment': gitStartupArguments(),
         });
         expect(
           installations.listSync().map(
@@ -927,7 +961,12 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
           });
           expect(
             directory.listSync(),
-            hasLength(1 + (plugin.backend ? 1 : 0) + (hasFrontend ? 1 : 0)),
+            hasLength(
+              1 +
+                  (plugin.backend ? 1 : 0) +
+                  (hasFrontend ? 1 : 0) +
+                  (plugin.directory == 'git-environment' ? 1 : 0),
+            ),
           );
           if (hasFrontend) {
             final artifact = File.fromUri(
@@ -1060,6 +1099,25 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
     },
   );
 
+  for (final failure in ['exit', 'missing', 'empty']) {
+    test(
+      'native helper $failure failure prevents runtime activation',
+      () async {
+        if (failure == 'exit') {
+          environment['ADELE_TEST_FAIL_PTY'] = '1';
+        } else {
+          environment['ADELE_TEST_PTY_ARTIFACT'] = failure;
+        }
+        final result = await invoke(['build', 'linux']);
+        expect(result.exitCode, failure == 'exit' ? 37 : 1);
+        expect(result.stderr, contains('git-pty-helper-compilation'));
+        expect(launchArguments.existsSync(), isFalse);
+        expect(frontendArguments.existsSync(), isFalse);
+        expectNoPublishedInstallations();
+      },
+    );
+  }
+
   for (final missing in PreparedPluginComponent.values) {
     test(
       'Command missing ${missing.name} retains its installed sibling',
@@ -1165,7 +1223,14 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
         expect(result.exitCode, 0, reason: result.stderr.toString());
         final serialized = readStartupArguments();
         final arguments = jsonDecode(serialized) as Map<String, Object?>;
-        expect(arguments.keys, ['dev.adele.openai']);
+        expect(arguments.keys, [
+          'dev.adele.openai',
+          'dev.adele.plugin.git-environment',
+        ]);
+        expect(
+          arguments['dev.adele.plugin.git-environment'],
+          gitStartupArguments(),
+        );
         final openai = (arguments['dev.adele.openai']! as List<Object?>)
             .cast<String>();
         expect(openai, hasLength(2));
@@ -1234,6 +1299,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       expect(result.exitCode, 0, reason: result.stderr.toString());
       final serialized = readStartupArguments();
       expect(jsonDecode(serialized), {
+        'dev.adele.plugin.git-environment': gitStartupArguments(),
         'dev.adele.openai': [
           '--chatgpt-only',
           jsonEncode({
@@ -1260,6 +1326,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
       final serialized = readStartupArguments();
       expect(jsonDecode(serialized), {
         'dev.adele.openai': ['--chatgpt-only'],
+        'dev.adele.plugin.git-environment': gitStartupArguments(),
       });
     },
   );
@@ -1379,6 +1446,7 @@ printf 'smoke-runtime|$mode\n' >> '${commands.path}'
               'compiled|$_chatEntrypoint',
               'compile|$_localDirectoryProjectEntrypoint',
               'compiled|$_localDirectoryProjectEntrypoint',
+              'compile|git-pty-helper',
               'compile|$_frontendHarness',
               if (kind != 'chat' || failure != 'exit')
                 'compiled|$_frontendHarness',

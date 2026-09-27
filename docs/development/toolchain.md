@@ -49,6 +49,47 @@ evidence, not desktop/profile, other-platform, broad third-party Flutter, or PTY
 compatibility evidence. See the [focused proof](testing.md#focused-terminal-checks)
 and [local implementation map](../../app/README.md#native-terminal-surface).
 
+## Git PTY preparation
+
+The Linux x64 Git backend uses the original repository-owned
+`plugins/git_environment/packages/backend/native/git_pty_helper.c`, helper protocol
+version **1**, with the pure-Dart `GitPtySession` adapter. Its exact source revision
+is the checkout revision, not a pub-cache patch or downloaded binary. No PTY package
+or native framework is added to the Dart dependency graph. This repository currently
+has no top-level license declaration; the helper introduces no copied third-party
+source or additional license grant. It dynamically uses the system libc/libutil
+(glibc is LGPL-2.1-or-later), not vendored native dependencies.
+
+Candidate manifests and published archive source were inspected before selection:
+`pty2 0.5.4` (MIT) requires Dart >=3.11 and calls parent-side `setsid` in its Unix
+implementation; `portable_pty 0.0.5` (MIT, SDK `^3.10.4`) installs a process-global
+SIGCHLD handler. Neither is used, forked, or made compatible by lowering its SDK
+constraint. The helper keeps fork/session/signal setup in a separate single-threaded
+process, never in the shared Dart backend host. No external native-library asset
+resolution is required from an independently loaded AOT isolate group.
+
+Preparation requires Linux x64, `cc` with C11 support, libc development headers and
+`libutil`; execution requires Linux 5.3+ pidfd syscalls, readable `/proc`, and working
+`devpts`. The evidence uses Linux 6.8.0-138-generic, GCC 13.3.0, and glibc 2.39 on
+x64 with the exact integrated Dart/Flutter pin above. The focused
+job-control test additionally needs Bash. `tools/git_pty_artifact.dart` reproducibly
+invokes `cc -std=c11 -O2 -Wall -Wextra -Werror ... -lutil`.
+`tools/backend_artifacts.dart` prepares `git-environment/pty-helper` before publishing
+the installation and supplies its absolute path as `--pty-helper=...` through the
+existing generic startup-argv file. Activation never compiles or downloads it.
+Direct test/development callers prepare the helper explicitly; omitting it leaves
+terminals unavailable without disabling other Git Environment operations.
+
+The retained `pty_host_test.dart` compiles separate host/backend AOT snapshots and
+loads the backend through `PluginBackendHost.startPlugin`, proving controlling-TTY
+behavior, native controls, bounded failures, ordinary foreground-job cleanup, and
+sibling responsiveness. This is real Linux shared-AOT-host evidence, not a standalone
+JIT package example. Prepared frontend/native integration is a separate
+[focused check](testing.md#focused-terminal-checks). Other platforms, portable
+release packaging, universal descendant containment, and a native-plugin framework
+are not established by this helper. The [Git README](../../plugins/git_environment/README.md)
+owns operational buffering and cleanup guarantees.
+
 ## Generated contract artifacts
 
 Authoritative annotated declarations produce native sibling parts, which then feed

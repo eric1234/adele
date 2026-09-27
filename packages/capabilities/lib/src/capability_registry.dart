@@ -100,6 +100,23 @@ final class ProviderBinding {
   bool isSameRegistration(ProviderBinding other) =>
       identical(_registration, other._registration);
 
+  /// Observes retirement of this exact registration, synchronously after it is
+  /// fenced. Returns an idempotent detach callback. Already-retired bindings
+  /// reject subscription; endpoint availability alone is not retirement.
+  void Function() onRetire(void Function() listener) {
+    if (!_registration.active) {
+      throw ProviderUnavailable(
+        capability: provider.capability,
+        providerId: provider.id,
+        availableProviderIds: const <Object>[],
+        stale: true,
+      );
+    }
+    final token = Object();
+    _registration.retirementListeners[token] = listener;
+    return () => _registration.retirementListeners.remove(token);
+  }
+
   T endpointAs<T extends CapabilityEndpoint>() {
     final CapabilityEndpoint endpoint = _registration.endpoint;
     if (!_registration.active) {
@@ -278,6 +295,19 @@ final class CapabilityRegistry {
         _providers.remove(registration.provider.capability);
       }
     }
+    final listeners = registration.retirementListeners.values.toList();
+    registration.retirementListeners.clear();
+    Object? firstError;
+    StackTrace? firstStack;
+    for (final listener in listeners) {
+      try {
+        listener();
+      } catch (error, stack) {
+        firstError ??= error;
+        firstStack ??= stack;
+      }
+    }
+    if (firstError != null) Error.throwWithStackTrace(firstError, firstStack!);
   }
 }
 
@@ -287,6 +317,7 @@ final class _ActiveRegistration {
   final ProviderDescriptor provider;
   final CapabilityEndpoint endpoint;
   bool active = true;
+  final Map<Object, void Function()> retirementListeners = {};
 }
 
 int _compareProviders(ProviderDescriptor left, ProviderDescriptor right) {
