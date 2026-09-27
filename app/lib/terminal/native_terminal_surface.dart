@@ -175,6 +175,9 @@ class _NativeTerminalViewState extends State<_NativeTerminalView> {
 
   @override
   void deactivate() {
+    // Deliver an authorized blur before retiring the mount. Disposal still
+    // clears emulator focus silently when presentation access was revoked.
+    _terminal?.focusInput(false);
     // A deactivated mount never lends its authority to a replacement mount.
     _retired = true;
     _terminal?.dispose();
@@ -296,6 +299,7 @@ final class _ViewTerminal extends xterm.Terminal {
   final _NativeTerminalViewState _view;
   final _Emulator _engine;
   bool _disposed = false;
+  bool _focused = false;
   NativeTerminalSurface get _owner => _view._surface;
   bool get _available =>
       !_disposed && _view._available && identical(_owner._attached, _view);
@@ -342,8 +346,12 @@ final class _ViewTerminal extends xterm.Terminal {
   void paste(String text) => _input<void>(null, () => _engine.paste(text));
 
   @override
-  void focusInput(bool focused) =>
-      _input<void>(null, () => _engine.focusInput(focused));
+  void focusInput(bool focused) {
+    // xterm does not deduplicate focusInput, including an already-blurred detach.
+    if (_disposed || _focused == focused) return;
+    _focused = focused;
+    _input<void>(null, () => _engine.focusInput(focused));
+  }
 
   @override
   bool mouseInput(

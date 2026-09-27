@@ -155,6 +155,109 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('live focused detach reports once before a fresh EVC mount', (
+    tester,
+  ) async {
+    final input = <String>[];
+    final responses = <String>[];
+    final surface = NativeTerminalSurface(
+      onInput: input.add,
+      onResponse: responses.add,
+    );
+    addTearDown(surface.dispose);
+    surface.write('preserved output\r\n\x1b[?1004h');
+    // Enabling reporting replies with the initial focus state.
+    responses.clear();
+    await tester.pumpWidget(_host(presentation(surface)));
+    await _focusTerminal(tester);
+    expect(input, ['\x1b[I']);
+    final oldElement = tester.element(find.byType(TerminalView));
+    final focus = Focus.of(_terminalContext(tester));
+
+    _toggleTerminalWithoutFocus(tester);
+    expect(focus.hasFocus, isTrue);
+    expect(input, ['\x1b[I']);
+    await tester.pump();
+    expect(oldElement.mounted, isFalse);
+    expect(find.byType(TerminalView), findsNothing);
+    expect(input, ['\x1b[I', '\x1b[O']);
+    expect(responses, isEmpty);
+    expect(surface.isDisposed, isFalse);
+    await tester.pump(_frame);
+    expect(input, ['\x1b[I', '\x1b[O']);
+
+    surface.write('hidden output\r\n');
+    _toggleTerminalWithoutFocus(tester);
+    await tester.pump();
+    expect(_bufferText(tester), contains('preserved output\nhidden output'));
+    expect(tester.element(find.byType(TerminalView)), isNot(same(oldElement)));
+    await _focusTerminal(tester);
+    expect(input, ['\x1b[I', '\x1b[O', '\x1b[I']);
+    expect(responses, isEmpty);
+    generation.invalidate();
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(input, ['\x1b[I', '\x1b[O', '\x1b[I']);
+    expect(responses, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final condition in [
+    'already blurred',
+    'prepared retirement',
+    'read-only',
+    'owner disposed',
+    'reporting disabled',
+  ]) {
+    testWidgets('focused teardown is silent when $condition', (tester) async {
+      final input = <String>[];
+      final responses = <String>[];
+      final surface = NativeTerminalSurface(
+        readOnly: condition == 'read-only',
+        onInput: input.add,
+        onResponse: responses.add,
+      );
+      addTearDown(surface.dispose);
+      surface.write('\x1b[?1004h');
+      responses.clear();
+      await tester.pumpWidget(_host(presentation(surface)));
+      await _focusTerminal(tester);
+      expect(input, condition == 'read-only' ? isEmpty : ['\x1b[I']);
+      final focus = Focus.of(_terminalContext(tester));
+      switch (condition) {
+        case 'already blurred':
+          focus.unfocus();
+          await tester.pump();
+          expect(input, ['\x1b[I', '\x1b[O']);
+        case 'prepared retirement':
+          generation.retainPresentations();
+        case 'owner disposed':
+          surface.dispose();
+          surface.dispose();
+        case 'reporting disabled':
+          surface.write('\x1b[?1004l');
+      }
+      if (condition != 'already blurred') expect(focus.hasFocus, isTrue);
+      final before = List<String>.of(input);
+      _toggleTerminalWithoutFocus(tester);
+      await tester.pump();
+      await tester.pump(_frame);
+      expect(find.byType(TerminalView), findsNothing);
+      expect(input, before);
+      expect(responses, isEmpty);
+      if (!surface.isDisposed && !surface.readOnly) {
+        // A new owner-originated query confirms silent cleanup also cleared
+        // the emulator focus, including after presentation revocation.
+        surface.write('\x1b[?1004h');
+        expect(responses, ['\x1b[O']);
+        responses.clear();
+      }
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(input, before);
+      expect(responses, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   testWidgets('cached native view rebuilds, resizes and remounts one buffer', (
     tester,
   ) async {
@@ -577,6 +680,14 @@ Future<void> _focusTerminal(WidgetTester tester) async {
   await tester.tap(find.byType(TerminalView));
   await tester.pump(_frame);
   expect(Focus.of(_terminalContext(tester)).hasFocus, isTrue);
+}
+
+void _toggleTerminalWithoutFocus(WidgetTester tester) {
+  // Run the real interpreted callback without tapping/focusing the button.
+  // The resulting Flutter removal, not a prior blur, must deliver focus-out.
+  tester
+      .widget<TextButton>(find.widgetWithText(TextButton, 'Toggle'))
+      .onPressed!();
 }
 
 Future<void> _controlC(WidgetTester tester) async {
