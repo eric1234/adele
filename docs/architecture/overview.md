@@ -105,10 +105,18 @@ hosted with its own lifecycle. Semantic UI roles describe meaning rather than
 physical center/right/bottom placement, allowing layout to change independently.
 The host retains common execution, authority, approval, and lifecycle duties.
 
+Task Browser is replaceable Project-scoped presentation over the canonical product
+graph and host lifecycle operations, not a second product store. Browser selection
+and breadcrumbs are transient window state; browsing and opening retained Sessions
+do not materialize Environments or start Runs. See
+[Task Browser ownership](plugin-system.md#task-browser-presentation).
+
 <a id="session-presentation"></a>
 
 Session presentation is optional and does not own Session identity or strategy
-state. Public [`adele_ui`](../../packages/ui/README.md) defines the implemented
+state. Host navigation awaits presentation-local settlement before leaving a
+quiescent Session; it does not cancel active work or resolve pending approvals.
+Public [`adele_ui`](../../packages/ui/README.md) defines the implemented
 semantic contracts; the [UI extension architecture](plugin-system.md#ui-and-presentation)
 sets the broader boundary. [Product direction](../product/README.md) and the
 [stock development UX](../product/development-workflow/README.md) describe intended experiences, not
@@ -168,6 +176,7 @@ and [infrastructure access](contracts-and-capabilities.md#generation-scoped-infr
 | Backend runtime | [`packages/plugin_runtime/`](../../packages/plugin_runtime/), [`packages/plugin_backend_host/`](../../packages/plugin_backend_host/) |
 | Desktop composition | [`app/lib/core/adele_runtime.dart`](../../app/lib/core/adele_runtime.dart), `AdeleRuntime` |
 | UI semantic contracts and frontend hosting | [`packages/ui/`](../../packages/ui/), [`app/lib/frontend/`](../../app/lib/frontend/) |
+| Task Browser projection and window navigation | [`app/lib/frontend/window_task_browser_source.dart`](../../app/lib/frontend/window_task_browser_source.dart), [`app/lib/application.dart`](../../app/lib/application.dart); [local hosting map](../../app/README.md#task-browser) |
 | Source preparation and generation | [`tools/adele.dart`](../../tools/adele.dart), [`packages/plugin_builder/`](../../packages/plugin_builder/), [`packages/contract_codegen/`](../../packages/contract_codegen/) |
 | Stock and reference implementations | [`plugins/`](../../plugins/) |
 

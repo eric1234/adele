@@ -15,6 +15,7 @@ import 'directory_picker_bridge.dart';
 import 'model_native_activity_bridge.dart';
 import 'prepared_frontend.dart';
 import 'prepared_session_host.dart';
+import 'prepared_task_browser_host.dart';
 import 'tool_activity_inspection_bridge.dart';
 
 enum ApplicationFrontendState { unconfigured, starting, ready, closing, closed }
@@ -33,11 +34,14 @@ final class ApplicationFrontendBootstrap {
   ApplicationFrontendBootstrap({
     required ExtensionRegistry extensions,
     PreparedSessionHost? sessionHost,
+    PreparedTaskBrowserHost? taskBrowserHost,
   }) : _extensions = extensions,
-       _sessionHost = sessionHost;
+       _sessionHost = sessionHost,
+       _taskBrowserHost = taskBrowserHost;
 
   final ExtensionRegistry _extensions;
   final PreparedSessionHost? _sessionHost;
+  final PreparedTaskBrowserHost? _taskBrowserHost;
   final List<InstalledFrontendActivation> _generations = [];
   final StreamController<ApplicationFrontendState> _changes =
       StreamController<ApplicationFrontendState>.broadcast();
@@ -92,6 +96,7 @@ final class ApplicationFrontendBootstrap {
             installation,
             _extensions,
             _sessionHost,
+            _taskBrowserHost,
           ),
     ]);
     _setState(ApplicationFrontendState.starting);
@@ -156,6 +161,7 @@ final class ApplicationFrontendBootstrap {
       await closeResources([
         () async => await Future.wait(retiring),
         if (_sessionHost case final host?) host.close,
+        if (_taskBrowserHost case final host?) host.close,
       ]);
     } finally {
       _setState(ApplicationFrontendState.closed);
@@ -176,11 +182,13 @@ final class InstalledFrontendActivation {
     this.installation,
     this._extensions,
     this._sessionHost,
+    this._taskBrowserHost,
   );
 
   final PreparedPluginInstallation installation;
   final ExtensionRegistry _extensions;
   final PreparedSessionHost? _sessionHost;
+  final PreparedTaskBrowserHost? _taskBrowserHost;
   final List<(String, ExtensionId, ExtensionRegistration)> _registrations = [];
   InstalledFrontendState _state = InstalledFrontendState.pending;
   Object? _failure;
@@ -220,6 +228,32 @@ final class InstalledFrontendActivation {
       for (final descriptor in component.presentations) {
         if (_closed) return;
         switch (descriptor) {
+          case PreparedTaskBrowserPresentation():
+            _register(
+              point: taskBrowserContributions,
+              id: descriptor.extensionId,
+              contribution: (isActive) {
+                late final TaskBrowserContribution contribution;
+                contribution = TaskBrowserContribution(
+                  displayName: descriptor.displayName,
+                  createPresentation: (project) {
+                    _requireActive(isActive);
+                    final host = _taskBrowserHost;
+                    if (host == null) {
+                      throw StateError('Task Browser hosting is unavailable.');
+                    }
+                    return host.createPresentation(
+                      generation: generation,
+                      contribution: contribution,
+                      descriptor: descriptor,
+                      project: project,
+                      isActive: isActive,
+                    );
+                  },
+                );
+                return contribution;
+              },
+            );
           case PreparedSessionPresentation():
             _register(
               point: sessionPresentationContributions,

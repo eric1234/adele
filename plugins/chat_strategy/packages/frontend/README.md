@@ -18,11 +18,21 @@ state, history rendering, and a presentation-local mapping from accepted entry I
 to opaque Run handles. Saves are sequential with one in flight and only the latest
 pending edit retained. A newer queued edit gets its own attempt even if the older
 write fails. Failure of the latest value remains visible without erasing text or
-automatically retrying that revision; another edit, Retry save, or Send can retry.
+automatically retrying that revision; another edit, Retry save, Send, or a new
+deactivation attempt can retry.
 Failed initial snapshot loading remains explicitly retryable, and later history reads cannot
 overwrite newer local edits. Disposal detaches subscriptions and rejects late
-settlements without issuing queued saves or starting a Run. Unacknowledged or
-coalesced pending edits are not guaranteed durable when the presentation closes.
+settlements without issuing queued saves or starting a Run.
+
+The prepared presentation registers a `Future<bool>` deactivation callback through
+the public Session presentation lifecycle bridge and unregisters it on disposal.
+Before ordinary navigation, the host suppresses input and awaits this hook while
+the view and its backend channel remain live. Chat joins the sequential save queue
+until the latest local draft is acknowledged. A failed save returns false, keeping
+the view, text, and error available for retry; an in-flight Send also refuses
+deactivation rather than allowing partial acceptance/navigation. The hook neither
+submits a message nor starts a Run. Forced disposal or generation retirement still
+cannot guarantee durability of unacknowledged edits.
 
 Send disables duplicate submission, flushes the latest local draft, then asks the
 backend to atomically accept and clear it. Save or submission failure preserves

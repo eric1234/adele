@@ -479,6 +479,34 @@ void main() {
       expect(analysis.flutter, isFalse);
     });
 
+    test('discovers the frontend-only Task Browser in workspace and CI', () {
+      const path = 'plugins/task_browser/packages/frontend';
+      final target = lookupTestTarget('task_browser_frontend');
+      expect(target.path, path);
+      expect(target.executable, 'flutter');
+      expect(target.argumentsFor(ci: true), ['test']);
+      expect(target.linuxDesktopDeps, isFalse);
+      final analysis = analysisTargets.singleWhere(
+        (entry) => entry.name == target.name,
+      );
+      expect(analysis.path, path);
+      expect(analysis.flutter, isTrue);
+      expect(File('pubspec.yaml').readAsStringSync(), contains('  - $path\n'));
+      expect(
+        Directory('plugins/task_browser/packages/backend').existsSync(),
+        isFalse,
+      );
+      expect(stockFrontendDescriptors['dev.adele.plugin.task-browser'], [
+        {
+          'role': 'taskBrowser',
+          'extensionId': 'dev.adele.plugin.task-browser.task-browser',
+          'displayName': 'Task Browser',
+          'library': 'package:task_browser_frontend/task_browser_frontend.dart',
+          'entrypoint': 'createTaskBrowser',
+        },
+      ]);
+    });
+
     test('rejects an unknown target', () {
       expect(
         () => lookupTestTarget('missing'),
@@ -539,7 +567,7 @@ void main() {
   test(
     'stock descriptors name existing frontend libraries and entrypoints',
     () {
-      expect(stockFrontendDescriptors, hasLength(4));
+      expect(stockFrontendDescriptors, hasLength(5));
       expect(stockFrontendExtensionDescriptors, hasLength(1));
       final config = File('.dart_tool/package_config.json').absolute;
       final packages =
@@ -767,6 +795,7 @@ void main() {
         'chat_strategy_backend|dart|plugins/chat_strategy/packages/backend|test',
         'local_directory_project_backend|dart|plugins/local_directory_project/packages/backend|test',
         'local_directory_project_frontend|flutter|plugins/local_directory_project/packages/frontend|test',
+        'task_browser_frontend|flutter|plugins/task_browser/packages/frontend|test',
         'scripted_model_contract|dart|plugins/scripted_model/packages/contract|test --timeout 4m',
         'scripted_model_backend|dart|plugins/scripted_model/packages/backend|test',
         'openai_model_provider_backend|dart|plugins/openai/packages/backend|test --timeout 4m',

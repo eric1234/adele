@@ -107,6 +107,13 @@ final class InMemoryProductStore {
     _tasks.values.where((Task task) => task.projectId == projectId),
   );
 
+  /// A detached immutable snapshot, without a chronological ordering guarantee.
+  List<Session> sessionsForTask(TaskId taskId) => List<Session>.unmodifiable(
+    _sessions.values
+        .map((entry) => entry.session)
+        .where((session) => session.taskId == taskId),
+  );
+
   void publishProject(Project project) {
     if (_projects.containsKey(project.id)) {
       throw StateError('Project ${project.id} is already published.');

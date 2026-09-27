@@ -24,7 +24,7 @@ and [architecture overview](../docs/architecture/overview.md) for cross-system c
 | Exact-generation mediation of Session-scoped relational storage | Public [Project storage contract](../packages/project_storage/lib/adele_project_storage.dart); plugin schema/state semantics: [plugin persistence](../docs/architecture/plugin-system.md#plugin-owned-state-and-persistence). |
 | Session execution hosting and provider/tool/context adaptation | Public [orchestration](../packages/orchestration/README.md), [model-tool](../packages/model_tool/), and [model-provider](../packages/model_provider/) contracts; generic mechanics in [agent kernel](../packages/agent_kernel/README.md). |
 | Host policy, exact-invocation approval, Run activity projection, and terminal evidence storage | Concrete strategy sequencing, conversation state/history, and grouping: [Chat](../plugins/chat_strategy/README.md). |
-| Generic shell, Session/Inspection hosting, and application-local window state | Tool behavior and bespoke cards: [Filesystem](../plugins/filesystem_tools/README.md), [Command](../plugins/command_tools/README.md), and [Search](../plugins/search_tools/README.md). |
+| Generic shell, Task Browser/Session/Inspection hosting, and application-local window state | Browser presentation: [Task Browser](../plugins/task_browser/README.md); tool behavior and bespoke cards: [Filesystem](../plugins/filesystem_tools/README.md), [Command](../plugins/command_tools/README.md), and [Search](../plugins/search_tools/README.md). |
 | Temporary source-checkout provider/model selection | OpenAI protocol, credentials, and provider algorithms: [OpenAI backend](../plugins/openai/packages/backend/README.md). |
 | Live in-memory product graph and fixed startup participation | General installation/Profile management and complete runtime restoration remain unimplemented: [profiles and configuration](../docs/architecture/profiles-and-configuration.md), [storage scope](../docs/architecture/product-model.md#storage-scope-and-limits). |
 
@@ -150,6 +150,7 @@ infrastructure, not on-start compilation or a plugin installer.
 | Harness under `app/` | Build-time inputs in addition to `ADELE_REPOSITORY_ROOT` |
 | --- | --- |
 | [`tool/compile_chat_frontend.dart`](tool/compile_chat_frontend.dart) | `ADELE_CHAT_FRONTEND_OUTPUT` |
+| [`tool/compile_task_browser_frontend.dart`](tool/compile_task_browser_frontend.dart) | `ADELE_TASK_BROWSER_FRONTEND_OUTPUT` |
 | [`tool/compile_local_directory_project_frontend.dart`](tool/compile_local_directory_project_frontend.dart) | `ADELE_LOCAL_DIRECTORY_PROJECT_FRONTEND_OUTPUT` |
 | [`tool/compile_tool_inspection_frontends.dart`](tool/compile_tool_inspection_frontends.dart) | `ADELE_TOOL_INSPECTION_FRONTEND` (`filesystem` or `command`), `ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT` |
 | [`tool/compile_openai_activity_frontend.dart`](tool/compile_openai_activity_frontend.dart) | `ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT` |
@@ -214,15 +215,17 @@ The current, limited normal path is:
 
 ```text
 open Project
-    -> create Task + primary Environment
-    -> create/present Session
+    -> browse/select Task or create Task + primary Environment
+    -> open retained Session or create/present Session
     -> submit/schedule Run
     -> observe / approve / inspect execution
+    -> return to Task Browser after presentation settlement
 ```
 
-`AdeleApplication` coordinates these actions; `AdeleShell` presents their results.
-The presented Project/Task/Environment/Session and Inspection arrangement are
-window-local state, not new product identities or a final workbench architecture.
+`AdeleApplication` coordinates these actions; the light Material 3 `AdeleShell`
+hosts plugin presentation and Project/Task/Session breadcrumbs. The presented
+Project/Task/Environment/Session and Inspection arrangement are window-local state,
+not new product identities or a final workbench architecture.
 The [product model](../docs/architecture/product-model.md) owns their semantics.
 
 <a id="b1-project-opening"></a>
@@ -295,14 +298,55 @@ Task establishment and Run draining; this is not general cancellation or a bound
 shutdown deadline. Closing rejects late Project publication without replacing a
 provider or serializing its binding.
 
+### Task Browser
+
+After opening a Project, the window presents
+[`TaskBrowserPresentationHost`](lib/ui/task_browser/task_browser_presentation_host.dart)
+with no automatic Task selection, including when restored Tasks exist. The host
+uses the public `TaskBrowserResolver`: missing or ambiguous contributions display
+unavailability, not a native Task form. It retains the exact factory result across
+unrelated rebuilds and does not repeatedly retry a failed factory. Prepared hosting
+uses [`PreparedTaskBrowserHost`](lib/frontend/prepared_task_browser_host.dart)
+without a strategy or owning-backend dependency.
+
+[`WindowTaskBrowserSource`](lib/frontend/window_task_browser_source.dart) projects
+the runtime's canonical live graph through the app-owned `TaskBrowserSource` and
+[`TaskBrowserBridge`](lib/frontend/task_browser_bridge.dart). It does not query SQL
+or maintain a second Task/Session store. `tasksFor` and immutable `sessionsForTask`
+queries supply Task rows, Session counts, and the selected Task's Sessions;
+Environment details expose identity/provider only. Unavailable Sessions remain
+visible. The public [UI README](../packages/ui/README.md#task-browser-snapshot)
+owns the snapshot/action shape and safe asynchronous result contract.
+
+The source validates current Project/Task membership and the exact browser
+registration. Opaque creation choices retain exact Session presentation/strategy
+bindings and required affinity; submission revalidates them rather than resolving
+a replacement for a stale handle. Overlapping actions are rejected. Task
+establishment still uses lifecycle; browser retirement cannot undo publication, but rejects late
+selection/navigation. Leaving the browser revokes its presentation-local source,
+subscriptions, and choices.
+
+New and retained Sessions enter the same `AdeleApplication._activateSession` path
+for canonical membership checks, controller creation, exact presentation binding,
+and Inspection setup. Opening an existing Session preserves its identity and
+Environment association; browsing/opening does not materialize an Environment or
+start a Run. Missing model configuration does not prevent browsing or opening an
+otherwise available Session.
+
+The stock [Task Browser](../plugins/task_browser/README.md) owns local title search,
+responsive list/detail presentation, and the inline new-Task Card required by the
+pinned evaluator. Its local README owns richer-UX limitations and plugin identities;
+the app owns neither a duplicate browser implementation nor those UI choices.
+Browser selection, search, and navigation do not add persisted product fields.
+
 <a id="b2-task-and-primary-environment"></a>
 ### Task and primary Environment
 
-The private `TaskTitleForm` accepts a title. The application trims/rejects blank
-input, guards pending submission, and calls `ProductLifecycleCoordinator.createTask`
-without a Git-specific provider selection. Provider resolution belongs to lifecycle
-and the capability registry; the selected provider owns source suitability and
-establishment.
+The browser submits a title through the host bridge. The application
+trims/rejects blank input, guards pending submission, and calls
+`ProductLifecycleCoordinator.createTask` without a Git-specific provider selection.
+Provider resolution belongs to lifecycle and the capability registry; the selected
+provider owns source suitability and establishment.
 
 For durable Projects, establishment success is followed by one SQLite transaction
 that inserts the Task and finalized primary Environment. Only a successful commit
@@ -312,8 +356,9 @@ volatile publication. External resources created by successful establishment can
 yet be generically rolled back if the subsequent database commit fails.
 Development/fixture Projects created by `createProject` remain in memory only.
 
-The UI presents returned canonical values and exact live availability, without
-decoding opaque provider state or restoring a binding just to render status.
+The browser presents canonical Environment/provider identities, without decoding
+opaque provider state or restoring a binding just to render details. An Environment
+record is not a promise of live provider readiness.
 Successful publication survives later provider retirement even when its retained
 materialization becomes unavailable. See [lifecycle source](lib/core/product_lifecycle.dart),
 [lifecycle tests](test/core/product_lifecycle_test.dart), [Task UI tests](test/task_creation_test.dart),
@@ -329,16 +374,17 @@ including `.git`, `.adele/data.db`, and `.adele/worktrees`.
 If a refresh commit fails after provider restore bound live state, the old core
 snapshot remains; recovery may require a fresh provider generation rather than a
 same-generation retry. There is no generic release/rollback contract.
-The shell says `No Task selected` while its window-local Task is null, even when
-restored Tasks exist; `New Task` remains available subject to provider readiness.
-There is no automatic selection, Task Browser, or resume/navigation policy.
+The browser can select restored Tasks without materializing their Environments;
+new Task creation still requires available Environment support. Reopening a
+Project does not automatically select a Task or resume work.
 See [durable Task lifecycle tests](test/core/durable_task_environment_lifecycle_test.dart)
 and [fresh-runtime Git restart/move integration](test/core/durable_task_git_integration_test.dart).
 
 ### Session lifecycle
 
-Session creation UI is strategy-neutral: it offers usable contributed presentation
-names and strategy identities, not a compiled Chat choice. `PreparedSessionHost`
+Host Session creation is strategy-neutral: it resolves usable contributed
+presentation names and exact strategy bindings, not a compiled Chat choice. The
+browser submits an opaque host-issued choice. `PreparedSessionHost`
 validates presentation/strategy selection and required owning-backend affinity;
 lifecycle validates the semantic strategy and same-Task Environment relationship
 before ID allocation, revalidates the exact strategy, and checks identity conflicts.
@@ -357,9 +403,23 @@ Reopen restores semantic Session/Environment associations, not presentations, li
 facets, or executable bindings. Missing strategy resolution fails explicitly while
 the restored identity remains. See [durable Session lifecycle tests](test/core/durable_session_lifecycle_test.dart).
 
-The window presents one Session and then hides further Task/Session creation;
-before that, another Task can replace the presented Task without navigation back.
-This is a temporary shell constraint, not the canonical Session model. Follow
+The window presents one Session at a time. Its Task breadcrumb returns to the
+browser with that Task selected; its Project breadcrumb clears the Task selection.
+Both use `AdeleApplication._showBrowser`, which refuses navigation while execution is
+running, advancing, or waiting for an approval. For quiescent Sessions it blocks
+input and awaits `PreparedSessionHost.prepareToDeactivate`, backed by the public
+asynchronous [presentation lifecycle hook](../packages/ui/README.md#interpreted-bridges).
+Hook rejection or failure keeps the live Session view available for correction or
+retry, rather than discarding pending local edits.
+
+After acceptance, the app rechecks active work, awaits controller close, calls
+`PreparedSessionHost.unbind` to revoke exact presentation actions, and clears
+Session-local Inspection before updating the window selection. Resource-release
+failure after irreversible controller close still leaves the Session and reports
+a cleanup warning; it cannot restore a usable controller. Reopening even the same
+Session creates a fresh presentation binding, never reviving the previous view's
+actions. This is navigation settlement, not Run cancellation, automatic
+resume, or a promise to flush on arbitrary widget disposal/application exit. Follow
 [product semantics](../docs/architecture/product-model.md#session),
 [orchestration](../packages/orchestration/README.md), and [Chat](../plugins/chat_strategy/README.md)
 for the respective owners.
@@ -425,8 +485,8 @@ before backend teardown. Closing a quiescent waiting Run does not resolve its
 approval, execute the pending invocation, or invent a terminal record. Cleanup
 attempts continue after failure; close is resource cleanup, not general
 cancellation or a bounded deadline.
-This does not restore live Runs/approvals or introduce a Session browser or Profile
-system. [Durable Chat integration](test/core/durable_chat_session_integration_test.dart)
+This does not restore live Runs/approvals or introduce a Profile system.
+[Durable Chat integration](test/core/durable_chat_session_integration_test.dart)
 exercises the persistence boundary without a paid model.
 
 ## Orchestration hosting
@@ -572,9 +632,10 @@ plugin-owned durable state. Environment materialization remains lazy
 and runtime-only.
 Active/waiting Runs, claims, approval restart, live bindings, and native continuation
 recovery are not persisted. Rich Draft Request documents, conversation forks,
-and concurrent editing are unimplemented. Task Browser/general
-Session navigation, automatic selection/resume, general settings, Profiles,
-configured-provider/credential management, and workbench persistence remain absent.
+and concurrent editing are unimplemented. The browser supports one presented
+Project and one Session at a time; automatic selection/resume, general settings,
+Profiles, configured-provider/credential management, and workbench persistence
+remain absent.
 Current model-provider selection is the source-checkout seam above, not finished
 settings.
 Intended UX belongs to
@@ -592,6 +653,8 @@ repository-wide deferred-feature ledger here.
 | Shared Run identity allocation | [`lib/core/run_id_source.dart`](lib/core/run_id_source.dart): `RunIdSource`, `MonotonicRunIdSource`; `AdeleRuntime.runIds` |
 | Backend bootstrap | [`lib/core/application_plugin_bootstrap.dart`](lib/core/application_plugin_bootstrap.dart): `ApplicationPluginBootstrap` |
 | Frontend generations/activation | [`lib/frontend/application_frontend_bootstrap.dart`](lib/frontend/application_frontend_bootstrap.dart), [`lib/frontend/prepared_frontend.dart`](lib/frontend/prepared_frontend.dart) |
+| Task Browser projection/actions | [`lib/frontend/window_task_browser_source.dart`](lib/frontend/window_task_browser_source.dart), [`lib/frontend/task_browser_bridge.dart`](lib/frontend/task_browser_bridge.dart): `WindowTaskBrowserSource`, `TaskBrowserSource`, `TaskBrowserBridge` |
+| Task Browser presentation hosting | [`lib/frontend/prepared_task_browser_host.dart`](lib/frontend/prepared_task_browser_host.dart), [`lib/ui/task_browser/task_browser_presentation_host.dart`](lib/ui/task_browser/task_browser_presentation_host.dart) |
 | Product lifecycle/Environment authority | [`lib/core/product_lifecycle.dart`](lib/core/product_lifecycle.dart): `ProductLifecycleCoordinator`, `EnvironmentRuntime` |
 | Private Project persistence | [`lib/core/project_database.dart`](lib/core/project_database.dart): `ProjectDatabase`, `MigrationCoordinator` |
 | Terminal Run retention and lookup | [`lib/core/product_lifecycle.dart`](lib/core/product_lifecycle.dart): `retainTerminalRun`, `InMemoryProductStore.runRecord`, `runsForSession`, `publishTerminalRun` |
@@ -599,6 +662,7 @@ repository-wide deferred-feature ledger here.
 | Execution evidence validation/schema | [`lib/core/execution_evidence.dart`](lib/core/execution_evidence.dart), [`lib/core/execution_evidence_schema.dart`](lib/core/execution_evidence_schema.dart) |
 | Plugin relational storage mediation | [`lib/core/project_storage_host.dart`](lib/core/project_storage_host.dart): `projectStorageServices`, `ProjectStorageHost` |
 | Session selection/presentation | [`lib/frontend/prepared_session_host.dart`](lib/frontend/prepared_session_host.dart), [`lib/ui/session/session_presentation_host.dart`](lib/ui/session/session_presentation_host.dart) |
+| Session navigation/settlement | [`lib/application.dart`](lib/application.dart): `_activateSession`, `_showBrowser`; [`lib/frontend/session_presentation_lifecycle_bridge.dart`](lib/frontend/session_presentation_lifecycle_bridge.dart); `PreparedSessionHost.prepareToDeactivate`, `unbind` |
 | Session execution/orchestration | [`lib/ui/execution/session_execution_controller.dart`](lib/ui/execution/session_execution_controller.dart), [`lib/core/orchestration_host.dart`](lib/core/orchestration_host.dart) |
 | Model-provider adaptation | [`lib/core/model_provider_host.dart`](lib/core/model_provider_host.dart): `ModelProviderCapabilityAdapter` |
 | Model-tool hosting | [`lib/core/model_tool_host.dart`](lib/core/model_tool_host.dart): `buildModelToolCatalogForSession`, `SessionModelToolHostContext` |

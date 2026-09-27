@@ -9,6 +9,8 @@ import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/prepared_session_host.dart';
+import 'package:adele_desktop/frontend/prepared_task_browser_host.dart';
+import 'package:adele_desktop/frontend/window_task_browser_source.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
 import 'package:adele_desktop/ui/execution/run_execution_status.dart';
 import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
@@ -16,7 +18,7 @@ import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
 import 'package:adele_desktop/ui/session/session_presentation_host.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
-import 'package:adele_desktop/ui/shell/task_title_form.dart';
+import 'package:adele_desktop/ui/task_browser/task_browser_presentation_host.dart';
 import 'package:adele_desktop/ui/theme/adele_theme.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
@@ -56,10 +58,8 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   Environment? _environment;
   bool _openingProject = false;
   String? _projectError;
-  bool _editingTask = false;
   bool _creatingTask = false;
   Future<TaskCreationResult>? _taskCreation;
-  String? _taskError;
   StockChatGptConfiguration? _chatGptConfiguration;
   bool _modelConfigurationFailed = false;
   SessionExecutionController? _execution;
@@ -67,7 +67,10 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   late final PreparedSessionHost _sessionHost;
   late final ApplicationFrontendBootstrap _frontends;
   bool _frontendsStarted = false;
-  String? _sessionError;
+  String? _sessionLabel;
+  bool _navigating = false;
+  String? _navigationError;
+  final Set<WindowTaskBrowserSource> _browsers = {};
   final WindowInspection _inspection = WindowInspection();
   final ValueNotifier<bool> _retainingPresentations = ValueNotifier(false);
 
@@ -93,6 +96,9 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     _frontends = ApplicationFrontendBootstrap(
       extensions: _runtime.extensions,
       sessionHost: _sessionHost,
+      taskBrowserHost: PreparedTaskBrowserHost(
+        sourceForProject: _browserSource,
+      ),
     );
     _inspection.addListener(_inspectionChanged);
     try {
@@ -108,10 +114,12 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         unawaited(_frontends.start(catalog));
       }
       _execution?.refresh();
+      _refreshBrowsers();
       if (mounted && _closing == null) setState(() {});
     });
     _extensionSubscription = _runtime.extensions.changes.listen((_) {
       _execution?.refresh();
+      _refreshBrowsers();
       if (mounted && _closing == null) setState(() {});
     });
     unawaited(_bootstrapPlugins());
@@ -200,33 +208,79 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     }
   }
 
-  void _createSession(
-    ExtensionBinding<SessionPresentationContribution> choice,
+  WindowTaskBrowserSource _browserSource(Project project) {
+    late final WindowTaskBrowserSource source;
+    source = WindowTaskBrowserSource(
+      project: project,
+      lifecycle: _runtime.lifecycle,
+      extensions: _runtime.extensions,
+      sessionHost: _sessionHost,
+      browser: TaskBrowserResolver(_runtime.extensions).resolve(),
+      isCurrent: () =>
+          mounted &&
+          _closing == null &&
+          identical(_project, project) &&
+          _session == null &&
+          !_navigating,
+      selectedTask: () => _task,
+      isBusy: () => _creatingTask || _navigating,
+      onSelectTask: _selectTask,
+      establishTask: _createTask,
+      activateSession: _activateSession,
+      onDispose: () => _browsers.remove(source),
+    );
+    _browsers.add(source);
+    return source;
+  }
+
+  void _refreshBrowsers() {
+    for (final browser in _browsers.toList()) {
+      browser.refresh();
+    }
+  }
+
+  void _selectTask(Task? task) {
+    if (!mounted || _closing != null || _session != null || _creatingTask) {
+      throw StateError('Task selection is currently unavailable.');
+    }
+    if (task != null &&
+        (task.projectId != _project?.id ||
+            !identical(_runtime.store.task(task.id), task))) {
+      throw StateError('Task does not belong to the current Project.');
+    }
+    setState(() {
+      _task = task;
+      _environment = task == null
+          ? null
+          : _runtime.store.primaryEnvironmentFor(task.id);
+      _navigationError = null;
+    });
+    _refreshBrowsers();
+  }
+
+  /// New and retained Sessions share controller, binding, and Inspection setup.
+  void _activateSession(
+    Session session,
+    SessionPresentationSelection selection,
   ) {
-    final Task? task = _task;
+    final task = _task;
     if (!mounted ||
         _closing != null ||
-        task == null ||
         _session != null ||
         _creatingTask ||
-        _editingTask) {
-      return;
+        task == null ||
+        task.projectId != _project?.id ||
+        !identical(_runtime.store.task(task.id), task) ||
+        !identical(_runtime.store.session(session.id), session) ||
+        session.taskId != task.id) {
+      throw StateError('Session is not in the currently selected Task.');
     }
+    selection.validate();
+    final StockChatGptConfiguration? configuration = _chatGptConfiguration;
+    _sessionHost.bind(session, selection);
+    final SessionExecutionController controller;
     try {
-      // Resolve presentation ambiguity, strategy and exact sibling affinity
-      // before canonical lifecycle publication. No strategy is a default.
-      final selection = _sessionHost.resolve(choice);
-      selection.validate();
-      final Session session = _runtime.lifecycle.createSession(
-        taskId: task.id,
-        strategyId: choice.value.strategyId,
-        resolvedStrategy: selection.strategy,
-      );
-      // Publication is independent of both presentation and controller setup.
-      _session = session;
-      _inspection.presentSession(session);
-      final StockChatGptConfiguration? configuration = _chatGptConfiguration;
-      final controller = SessionExecutionController(
+      controller = SessionExecutionController(
         runtime: _runtime,
         session: session,
         providerId: stockChatGptProviderId,
@@ -245,18 +299,17 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
           if (_inspection.cards.isNotEmpty) _inspectionChanged();
         },
       );
-      _execution = controller;
-      _sessionHost.bind(session, selection);
-      setState(() {
-        _sessionError = null;
-      });
     } on Object {
-      setState(
-        () => _sessionError = _session == null
-            ? 'Could not create the selected Session.'
-            : 'Session exists, but execution setup is unavailable.',
-      );
+      _sessionHost.unbind(session);
+      rethrow;
     }
+    setState(() {
+      _session = session;
+      _execution = controller;
+      _sessionLabel = selection.presentation.value.displayName;
+      _navigationError = null;
+    });
+    _inspection.presentSession(session);
   }
 
   String? get _taskUnavailableReason {
@@ -281,27 +334,22 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     return null;
   }
 
-  Future<void> _createTask(String title) async {
+  Future<TaskCreationResult> _createTask(String title) async {
     final Project? project = _project;
     if (!mounted ||
         project == null ||
-        !_editingTask ||
         _creatingTask ||
         _session != null ||
         _closing != null) {
-      return;
+      throw StateError('Task creation is currently unavailable.');
     }
     final String? unavailable = _taskUnavailableReason;
     final String trimmed = title.trim();
     if (unavailable != null || trimmed.isEmpty) {
-      setState(() {
-        _taskError = unavailable ?? 'Task title must not be blank.';
-      });
-      return;
+      throw StateError(unavailable ?? 'Task title must not be blank.');
     }
     setState(() {
       _creatingTask = true;
-      _taskError = null;
     });
     try {
       final Future<TaskCreationResult> creating = _runtime.lifecycle.createTask(
@@ -309,37 +357,93 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         title: trimmed,
       );
       _taskCreation = creating;
-      final TaskCreationResult created = await creating;
-      if (!mounted || _closing != null) return;
-      setState(() {
-        _task = created.task;
-        _environment = created.environment;
-        _editingTask = false;
-      });
-    } on Object catch (error) {
-      if (mounted && _closing == null) {
-        setState(() => _taskError = 'Could not create Task: $error');
-      }
+      return await creating;
     } finally {
+      _taskCreation = null;
       if (mounted && _closing == null) {
         setState(() => _creatingTask = false);
+        _refreshBrowsers();
       }
     }
   }
 
-  bool get _environmentReady {
-    final Environment? environment = _environment;
-    if (environment == null || _closing != null) return false;
-    final EnvironmentMaterialization? materialization = _runtime
-        .lifecycle
-        .environmentRuntime
-        .currentMaterialization(environment.id);
-    if (materialization == null) return false;
+  bool get _activeRun =>
+      _execution != null &&
+      (_execution!.isRunning ||
+          _execution!.isAdvancing ||
+          _execution!.pendingApproval != null);
+
+  Future<void> _showBrowser({required bool keepTask}) async {
+    if (!mounted ||
+        _closing != null ||
+        _navigating ||
+        _creatingTask ||
+        _project == null) {
+      return;
+    }
+    final session = _session;
+    final task = keepTask ? _task : null;
+    if (task != null &&
+        (task.projectId != _project!.id ||
+            !identical(_runtime.store.task(task.id), task))) {
+      return;
+    }
+    if (_activeRun) {
+      setState(
+        () => _navigationError =
+            'Finish or resolve the current Run before leaving this Session.',
+      );
+      return;
+    }
+    if (session == null) {
+      _selectTask(task);
+      return;
+    }
+    final execution = _execution!;
+    setState(() {
+      _navigating = true;
+      _navigationError = null;
+    });
     try {
-      materialization.validateBinding();
-      return true;
+      await _sessionHost.prepareToDeactivate(session);
+      if (!mounted || _closing != null || !identical(_session, session)) return;
+      if (_activeRun) {
+        throw StateError(
+          'Finish or resolve the current Run before leaving this Session.',
+        );
+      }
+      String? cleanupError;
+      try {
+        await execution.close();
+      } on Object {
+        // Close is irreversible. Do not leave a closed controller presented as
+        // an active Session when resource release reports a failure.
+        cleanupError =
+            'Session closed, but some resources could not be released.';
+      }
+      if (!mounted || _closing != null || !identical(_session, session)) return;
+      _sessionHost.unbind(session);
+      _inspection.presentSession(null);
+      setState(() {
+        _execution = null;
+        _session = null;
+        _sessionLabel = null;
+        _navigationError = cleanupError;
+        _task = task;
+        _environment = task == null
+            ? null
+            : _runtime.store.primaryEnvironmentFor(task.id);
+      });
     } on Object {
-      return false;
+      if (mounted && _closing == null) {
+        setState(
+          () => _navigationError = _activeRun
+              ? 'Finish or resolve the current Run before leaving this Session.'
+              : 'Could not leave this Session. Save pending changes and try again.',
+        );
+      }
+    } finally {
+      if (mounted && _closing == null) setState(() => _navigating = false);
     }
   }
 
@@ -415,7 +519,12 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         validateSelection: validateSelection,
       );
       if (!mounted || _closing != null) return;
-      setState(() => _project = project);
+      setState(() {
+        _project = project;
+        _task = null;
+        _environment = null;
+        _session = null;
+      });
     } on Object catch (error) {
       if (mounted && _closing == null) {
         setState(() => _projectError = 'Could not open Project: $error');
@@ -449,17 +558,6 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   @override
   Widget build(BuildContext context) {
     final session = _session;
-    final choices = <ExtensionBinding<SessionPresentationContribution>>[];
-    for (final candidate in _runtime.extensions.discover(
-      sessionPresentationContributions,
-    )) {
-      try {
-        _sessionHost.resolve(candidate);
-        choices.add(candidate);
-      } on Object {
-        // Unavailable/ambiguous strategy or affinity is not a usable choice.
-      }
-    }
     return ValueListenableBuilder<bool>(
       valueListenable: _retainingPresentations,
       builder: (context, retaining, child) => PreparedFrontendRetention(
@@ -475,7 +573,11 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
           project: _project,
           task: _task,
           environment: _environment,
-          environmentReady: _environmentReady,
+          sessionLabel: _sessionLabel,
+          onProject: () => _showBrowser(keepTask: false),
+          onTask: () => _showBrowser(keepTask: true),
+          navigating: _navigating,
+          navigationError: _navigationError,
           inspection: _inspection.cards.isEmpty
               ? null
               : InspectionStackHost(
@@ -493,88 +595,40 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
                         : (target) => _inspectOutput(session, card.id, target),
                   ),
                 ),
-          taskControls: _session != null
+          taskBrowser: _project == null || session != null
               ? null
-              : Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    if (_taskUnavailableReason case final String reason) ...[
-                      Semantics(liveRegion: true, child: Text(reason)),
-                      const SizedBox(height: 16),
-                    ],
-                    if (_editingTask)
-                      TaskTitleForm(
-                        creating: _creatingTask,
-                        enabled: _taskUnavailableReason == null,
-                        error: _taskError,
-                        onSubmit: _createTask,
-                        onCancel: () {
-                          if (_closing != null || _creatingTask) return;
-                          setState(() {
-                            _editingTask = false;
-                            _taskError = null;
-                          });
-                        },
-                      )
-                    else
-                      FilledButton(
-                        onPressed: _taskUnavailableReason == null
-                            ? () {
-                                if (!mounted ||
-                                    _closing != null ||
-                                    _session != null) {
-                                  return;
-                                }
-                                setState(() => _editingTask = true);
-                              }
-                            : null,
-                        child: const Text('New Task'),
-                      ),
-                  ],
+              : TaskBrowserPresentationHost(
+                  project: _project!,
+                  extensions: _runtime.extensions,
                 ),
-          sessionControls: _session != null
-              ? Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    if (_sessionError case final String error) Text(error),
-                    SessionPresentationHost(
-                      session: _session!,
-                      extensions: _runtime.extensions,
-                    ),
-                    if (_execution case final controller?)
-                      RunExecutionStatus(
-                        pendingApproval: controller.pendingApproval,
-                        enabled:
-                            !controller.isAdvancing && !controller.isClosed,
-                        isAdvancing: controller.isAdvancing,
-                        failureMessage: controller.failureMessage,
-                        unavailableReason: controller.unavailableReason,
-                        onDecision: (approval, approved) => controller
-                            .resolveApproval(approval, approved: approved),
-                      ),
-                  ],
-                )
-              : _task != null && !_editingTask
-              ? Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    if (_sessionError case final String error)
-                      Semantics(liveRegion: true, child: Text(error)),
-                    if (choices.isEmpty)
-                      const Text('No Session presentations are available.')
-                    else
-                      for (final choice in choices)
-                        FilledButton(
-                          onPressed: _closing == null && !_creatingTask
-                              ? () => _createSession(choice)
-                              : null,
-                          child: Text(
-                            'New ${choice.value.displayName} Session',
-                          ),
+          sessionContent: session == null
+              ? null
+              : IgnorePointer(
+                  ignoring: _navigating,
+                  child: ExcludeFocus(
+                    excluding: _navigating,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        SessionPresentationHost(
+                          session: session,
+                          extensions: _runtime.extensions,
                         ),
-                  ],
-                )
-              : null,
+                        if (_execution case final controller?)
+                          RunExecutionStatus(
+                            pendingApproval: controller.pendingApproval,
+                            enabled:
+                                !controller.isAdvancing && !controller.isClosed,
+                            isAdvancing: controller.isAdvancing,
+                            failureMessage: controller.failureMessage,
+                            unavailableReason: controller.unavailableReason,
+                            onDecision: (approval, approved) => controller
+                                .resolveApproval(approval, approved: approved),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
           selectors: _runtime.extensions.discover(projectSelectorContributions),
           onSelectProject: _openProject,
           openingProject: _openingProject,

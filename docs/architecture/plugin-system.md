@@ -151,6 +151,7 @@ Examples illustrate different contracts, not a universal rule:
 | Model tools | [Model-tool API](../../packages/model_tool/) defines contextual contributions; its composition has distinct tool-identity and model-alias collision semantics. |
 | Project selectors | [Core extension contracts](../../packages/core_extensions/README.md) expose independent actions, not interchangeable default providers. |
 | Project providers | The same public package defines backing preparation through an explicitly selected capability provider, without default substitution. |
+| Task Browser | [UI](../../packages/ui/README.md#task-browser) requires exactly one active browser contribution; zero is unavailable and multiple are ambiguous, without fallback. |
 
 Prefer structured typed contributions when an extension influences an operation,
 not opaque mutation of host objects through universal `beforeX`/`afterX` hooks.
@@ -273,6 +274,52 @@ infrastructure; plugins contribute Commands and suggested bindings. UI affordanc
 should invoke the same domain/Command behavior as other surfaces, not create
 UI-only semantics. Broader Command infrastructure is not yet implemented.
 Application Commands are distinct from model tools that execute external programs.
+
+### Task Browser presentation
+
+Task Browser is a replaceable, frontend-only semantic role over one presented
+Project. The public UI contract selects one exact live contribution, independently
+of strategy or owning-backend affinity. Missing, ambiguous, retired, or failed
+presentation remains unavailable; core does not supply a native Task form or
+browser substitute. Its prepared metadata names presentation ABI, not a backend
+dependency or authority grant.
+
+The host projects canonical Project/Task/Environment/Session facts and mediates
+selection, Task creation, Session creation, and opening an existing Session. Task
+and Session IDs are lookup data, never authority to navigate another Project or
+Task. Session creation uses an opaque handle retaining exact presentation/strategy
+bindings and any required backend affinity. The host revalidates membership,
+uniqueness, liveness, and affinity before publication rather than silently replacing
+a stale choice. Browser retirement revokes its reads, actions, and subscriptions;
+late Task establishment may still publish canonical state, but cannot navigate a
+retired view. Revocation is not rollback.
+
+Unavailable Sessions remain visible canonical identities. Browsing and opening a
+retained Session neither materialize an Environment nor start a Run. The browser
+does not receive provider state, plugin-owned Session content, database access, or
+execution authority. Selection and presentation state are transient host/window or
+view state, not additions to the product persistence schema. The
+[UI contract map](../../packages/ui/README.md#task-browser-snapshot) owns the bridge
+shape; the [application map](../../app/README.md#task-browser) owns host composition.
+
+### Session presentation settlement
+
+Host-requested navigation may need a presentation to settle pending local state
+before its view is disposed. The public interpreted lifecycle bridge permits one
+asynchronous prepare-to-deactivate callback scoped to the exact presentation.
+The host blocks input while awaiting acceptance; rejection or failure leaves the
+live presentation available for correction or retry. A missing hook means nothing
+to flush. This does not transfer navigation ownership, plugin state semantics, or
+storage codecs into the host, and is not a general plugin lifecycle hook system.
+
+The current window refuses to leave a Session with running/advancing work or a
+pending approval. Successful quiescent navigation closes execution resources,
+revokes the exact presentation binding and its actions, and clears Session-local
+Inspection before changing the window selection. It neither cancels a Run nor
+resolves an approval. Retirement cannot preserve or retarget an old hook. Exact
+public names belong to [UI](../../packages/ui/README.md#interpreted-bridges); current
+ordering and shutdown distinctions belong to the
+[application lifecycle map](../../app/README.md#session-lifecycle).
 
 ## Plugin-owned state and persistence
 

@@ -5,6 +5,7 @@ import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/frontend/owning_backend_bridge.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/session_execution_bridge.dart';
+import 'package:adele_desktop/frontend/session_presentation_lifecycle_bridge.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
@@ -42,6 +43,7 @@ void main() {
         ..addPlugin(flutterEvalPlugin)
         ..addPlugin(
           PreparedFrontendBridges([
+            SessionPresentationLifecycleBridge(isActive: () => source.active),
             SessionExecutionBridge(
               source: source,
               isActive: () => source.active,
@@ -170,6 +172,154 @@ void main() {
     expect(source.maxInFlightSaves, 1);
     expect(source.inFlightSaves, 0);
     expect(source.submitted, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'deactivation waits for the latest sequential save acknowledgement',
+    (tester) async {
+      final first = Completer<void>();
+      final latest = Completer<void>();
+      source.saveGate = first;
+      await tester.pumpWidget(_host(generation, source));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'First');
+      await tester.enterText(find.byType(TextField), 'Skipped');
+      await tester.enterText(find.byType(TextField), '  Latest draft  ');
+      var prepared = false;
+      final pending = source.lifecycle.prepareToDeactivate().then((_) {
+        prepared = true;
+      });
+      await tester.pumpAndSettle();
+      expect(prepared, isFalse);
+      expect(source.writes, ['First']);
+      expect(source.hasSubscriptions, isTrue);
+      source.saveGate = latest;
+      first.complete();
+      await tester.pumpAndSettle();
+      expect(source.writes, ['First', '  Latest draft  ']);
+      expect(source.draftRequest, 'First');
+      expect(prepared, isFalse);
+      latest.complete();
+      await tester.pumpAndSettle();
+      await pending;
+      expect(prepared, isTrue);
+      expect(source.draftRequest, '  Latest draft  ');
+      expect(source.maxInFlightSaves, 1);
+      expect(source.inFlightSaves, 0);
+      expect(source.submitted, isEmpty);
+      expect(source.starts, 0);
+      final retired = source.lifecycle;
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(source.hasSubscriptions, isFalse);
+      source.active = true;
+      await tester.pumpWidget(_host(generation, source));
+      await tester.pumpAndSettle();
+      expect(_draft(tester), '  Latest draft  ');
+      expect(source.lifecycle, isNot(same(retired)));
+      await expectLater(retired.prepareToDeactivate(), throwsStateError);
+      final reopened = source.lifecycle.prepareToDeactivate();
+      await tester.pumpAndSettle();
+      await reopened;
+      expect(source.writes, ['First', '  Latest draft  ']);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'failed deactivation preserves the mounted composer and retries',
+    (tester) async {
+      final gate = Completer<void>();
+      source.saveGate = gate;
+      await tester.pumpWidget(_host(generation, source));
+      await tester.pumpAndSettle();
+      final controller = tester
+          .widget<TextField>(find.byType(TextField))
+          .controller;
+      await tester.enterText(find.byType(TextField), 'Keep unsaved text');
+      final pending = expectLater(
+        source.lifecycle.prepareToDeactivate(),
+        throwsA(
+          isA<StateError>().having(
+            (error) => error.message,
+            'safe failure',
+            'Session presentation could not prepare to deactivate.',
+          ),
+        ),
+      );
+      gate.completeError(StateError('private native storage failure'));
+      await tester.pumpAndSettle();
+      await pending;
+      expect(_draft(tester), 'Keep unsaved text');
+      expect(source.hasSubscriptions, isTrue);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller,
+        same(controller),
+      );
+      expect(
+        find.text('Draft was not saved. Your text is preserved.'),
+        findsOneWidget,
+      );
+      expect(find.text('Frontend unavailable.'), findsNothing);
+      expect(source.draftRequest, isEmpty);
+      expect(source.writes, ['Keep unsaved text']);
+      expect(source.starts, 0);
+      expect(source.submitted, isEmpty);
+      final retry = source.lifecycle.prepareToDeactivate();
+      await tester.pumpAndSettle();
+      await retry;
+      expect(source.draftRequest, 'Keep unsaved text');
+      expect(_draft(tester), 'Keep unsaved text');
+      expect(find.text('Retry save'), findsNothing);
+      expect(source.hasSubscriptions, isTrue);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'retirement during deactivation rejects late save acknowledgement',
+    (tester) async {
+      final gate = Completer<void>();
+      source.saveGate = gate;
+      await tester.pumpWidget(_host(generation, source));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'In flight');
+      await tester.enterText(find.byType(TextField), 'Queued');
+      final pending = expectLater(
+        source.lifecycle.prepareToDeactivate(),
+        throwsStateError,
+      );
+      generation.invalidate();
+      await tester.pumpWidget(const SizedBox.shrink());
+      gate.complete();
+      await tester.pumpAndSettle();
+      await pending;
+      expect(source.writes, ['In flight']);
+      expect(source.hasSubscriptions, isFalse);
+      expect(source.submitted, isEmpty);
+      expect(source.starts, 0);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('deactivation refuses a pending Send without disposing it', (
+    tester,
+  ) async {
+    source.submitGate = Completer<void>();
+    await _submit(tester, generation, source, 'Pending acceptance');
+    final pending = expectLater(
+      source.lifecycle.prepareToDeactivate(),
+      throwsStateError,
+    );
+    await tester.pumpAndSettle();
+    await pending;
+    expect(source.hasSubscriptions, isTrue);
+    expect(_draft(tester), 'Pending acceptance');
+    expect(source.starts, 0);
+    source.submitGate!.complete();
+    await tester.pumpAndSettle();
+    expect(source.starts, 1);
+    expect(_draft(tester), isEmpty);
     expect(tester.takeException(), isNull);
   });
 
@@ -996,6 +1146,7 @@ Future<bool> configure() async {
         ..addPlugin(flutterEvalPlugin)
         ..addPlugin(const OwningBackendDeclarations())
         ..addPlugin(const SessionExecutionDeclarations())
+        ..addPlugin(const SessionPresentationLifecycleDeclarations())
         ..entrypoints.add('package:adele_contract/adele_contract.dart')
         ..entrypoints.add(
           'package:chat_strategy_contract/chat_strategy_contract.dart',
@@ -1111,6 +1262,9 @@ Widget _host(PreparedFrontend generation, _Source source) => MaterialApp(
         entrypoint: 'buildChat',
         key: ObjectKey(source),
         createBridge: () => PreparedFrontendBridges([
+          source.lifecycle = SessionPresentationLifecycleBridge(
+            isActive: () => source.active,
+          ),
           SessionExecutionBridge(source: source, isActive: () => source.active),
           OwningBackendBridge(
             channels: {chatSessionServiceId: source},
@@ -1171,6 +1325,7 @@ class _ResponseChannel implements AdeleRequestChannel {
 class _Source extends ChangeNotifier
     implements SessionExecutionSource, ChatSessionService, AdeleRequestChannel {
   late final dispatcher = ChatSessionServiceDispatcher(this);
+  late SessionPresentationLifecycleBridge lifecycle;
   bool get hasSubscriptions => hasListeners;
   final entries = <ChatEntry>[];
   final submitted = <String>[];

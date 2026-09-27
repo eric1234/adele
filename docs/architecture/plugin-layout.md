@@ -160,6 +160,13 @@ schemas belong to the [runtime catalog owner](../../packages/plugin_runtime/READ
 own-backend collaboration belongs to
 [contracts and capabilities](contracts-and-capabilities.md#own-backend-frontend-requests).
 
+Task Browser is a presentation descriptor, not a behavioral extension or Session
+strategy. Its frontend-only role requires no backend services or strategy affinity;
+the host supplies Project-scoped browser access through the public UI bridge.
+This demonstrates independently optional components without changing the
+version-1 manifest envelope. The descriptor's exact fields remain with the runtime
+catalog owner linked above, not a second schema here.
+
 ### Artifact references and confinement
 
 Artifact references are installation-relative and must remain confined to their

@@ -166,6 +166,11 @@ Future<List<String>> prepareDesktopPluginDefines({
   // Publish each installation once, only after all components are prepared.
   for (final plugin in <({File? backend, String id, String displayName})>[
     (
+      backend: null,
+      id: 'dev.adele.plugin.task-browser',
+      displayName: 'Task Browser',
+    ),
+    (
       backend: git,
       id: 'dev.adele.plugin.git-environment',
       displayName: 'Git Worktree Environment',

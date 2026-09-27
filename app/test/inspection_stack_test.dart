@@ -283,7 +283,7 @@ void main() {
               ),
               selectors: const [],
               onSelectProject: (_) {},
-              sessionControls: const TextField(),
+              sessionContent: const TextField(),
               inspection: window.cards.isEmpty
                   ? null
                   : InspectionStackHost(
@@ -317,7 +317,12 @@ void main() {
       );
       final composer = tester.widget<EditableText>(editor).controller;
       final retainedAction = tester
-          .widget<TextButton>(find.byType(TextButton))
+          .widget<TextButton>(
+            find.descendant(
+              of: find.byType(InspectionHost),
+              matching: find.byType(TextButton),
+            ),
+          )
           .onPressed!;
       retainedAction();
       await tester.pumpAndSettle();
@@ -405,7 +410,7 @@ void main() {
           ),
           selectors: const [],
           onSelectProject: (_) {},
-          sessionControls: const Column(
+          sessionContent: const Column(
             children: [Text('Main Session'), TextField()],
           ),
           inspectionScrollController: scroll,
@@ -435,14 +440,17 @@ void main() {
       );
       await tester.binding.setSurfaceSize(const Size(360, 640));
       await tester.pumpAndSettle();
-      expect(find.byType(SingleChildScrollView), findsNWidgets(2));
+      final contentScrolls = find.byWidgetPredicate(
+        (widget) =>
+            widget is SingleChildScrollView &&
+            widget.scrollDirection == Axis.vertical,
+      );
+      expect(contentScrolls, findsNWidgets(2));
       expect(tester.element(find.byType(TextField)), same(composer));
       expect(find.text('Draft across resize'), findsOneWidget);
       expect(
         tester.getTopLeft(firstCard).dy,
-        greaterThan(
-          tester.getTopLeft(find.byType(SingleChildScrollView).first).dy,
-        ),
+        greaterThan(tester.getTopLeft(contentScrolls.first).dy),
       );
       scroll.jumpTo(scroll.position.maxScrollExtent);
       await tester.pumpAndSettle();
@@ -452,7 +460,7 @@ void main() {
           .state<ScrollableState>(
             find
                 .descendant(
-                  of: find.byType(SingleChildScrollView).first,
+                  of: contentScrolls.first,
                   matching: find.byType(Scrollable),
                 )
                 .first,

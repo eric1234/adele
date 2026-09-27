@@ -6,20 +6,14 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
-import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
-import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
-import 'package:adele_desktop/frontend/prepared_session_host.dart';
-import 'package:adele_desktop/frontend/session_execution_source.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
 import 'package:adele_desktop/ui/execution/run_execution_status.dart';
-import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
-import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
 import 'package:adele_desktop/ui/session/session_presentation_host.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
@@ -43,6 +37,7 @@ import '../../tool/chat_frontend_compiler.dart';
 import '../../tool/local_directory_project_frontend_compiler.dart';
 import '../../tool/openai_activity_frontend_compiler.dart';
 import '../../tool/self_hosting/development_self_hosting.dart';
+import '../../tool/task_browser_frontend_compiler.dart';
 import '../../tool/tool_inspection_frontend_compiler.dart';
 
 const _gitPluginId = 'dev.adele.plugin.git-environment';
@@ -54,6 +49,9 @@ const _openAiPluginId = 'dev.adele.openai';
 const _chatPluginId = 'dev.adele.plugin.chat-strategy';
 const _localDirectoryProjectPluginId =
     'dev.adele.plugin.local-directory-project';
+const _taskBrowserPluginId = 'dev.adele.plugin.task-browser';
+const _navigationBlocked =
+    'Finish or resolve the current Run before leaving this Session.';
 const _sourcePath = 'lib/task_answer.dart';
 const _taskText = 'const taskAnswer = "task-worktree-only";\n';
 const _patchedText = 'const taskAnswer = "approved-task-value";\n';
@@ -63,6 +61,10 @@ const _projectAgentsText = 'Project-only guidance must not be used.\n';
 const _initialPrompt = '  Explain the approval workflow\twithout tools.  ';
 const _initialAnswer =
     'Source edits and validation commands require separate approvals.';
+const _siblingPrompt = 'A separate conversation in the same Task.';
+const _siblingAnswer = 'Only the sibling Session owns this answer.';
+const _otherPrompt = 'A conversation in another Task.';
+const _otherAnswer = 'Only the other Task Session owns this answer.';
 const _prompt =
     'Read lib/task_answer.dart, change taskAnswer to "approved-task-value", '
     'and propose git diff --check. Wait for each approval.';
@@ -88,7 +90,7 @@ void main() {
   // stock backend/frontend and independently compiled tool/provider components.
   for (final allowCommand in [true, false]) {
     testWidgets(
-      'F3g installed Chat replays two prompts and reopens durable activity (${allowCommand ? 'Allow once' : 'Deny'})',
+      'F3g installed Chat replays prompts and browses retained Tasks and Sessions (${allowCommand ? 'Allow once' : 'Deny'})',
       (tester) => tester.runAsync(() async {
         await tester.binding.setSurfaceSize(const Size(1400, 1100));
         addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -258,6 +260,18 @@ void main() {
                 continuationArrived.complete();
                 await releaseFinal.future;
                 _output(request.response, _message('final', answer));
+              case 5:
+                expect(body['input'], [_userInput(_siblingPrompt)]);
+                _output(
+                  request.response,
+                  _message('sibling-final', _siblingAnswer),
+                );
+              case 6:
+                expect(body['input'], [_userInput(_otherPrompt)]);
+                _output(
+                  request.response,
+                  _message('other-final', _otherAnswer),
+                );
               default:
                 fail('Unexpected model invocation ${outbound.length}.');
             }
@@ -278,8 +292,8 @@ void main() {
           }
         });
         addTearDown(() async {
-          await subscription.cancel();
           await server.close(force: true);
+          await subscription.cancel();
         });
 
         await fixture.launch(tester, prepared, endpoint: server);
@@ -291,7 +305,7 @@ void main() {
         final runtime = fixture.runtime;
         final catalog = runtime.plugins.catalog!;
         expect(catalog.issues, isEmpty);
-        expect(catalog.installations, hasLength(8));
+        expect(catalog.installations, hasLength(9));
         expect(
           catalog.installations.where(
             (entry) => entry.backendArtifactUri != null,
@@ -300,7 +314,7 @@ void main() {
         );
         expect(
           catalog.installations.where((entry) => entry.frontend != null),
-          hasLength(5),
+          hasLength(6),
         );
         expect(runtime.plugins.backends, hasLength(8));
         for (final backend in runtime.plugins.backends) {
@@ -365,10 +379,7 @@ void main() {
           isNot(0),
         );
         await _tap(tester, 'New Chat Session');
-        await _pumpUntil(
-          tester,
-          () => find.byType(TextField).evaluate().isNotEmpty,
-        );
+        await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
         final host = find.byType(SessionPresentationHost);
         final session = tester.widget<SessionPresentationHost>(host).session;
         expect(runtime.store.session(session.id), same(session));
@@ -473,6 +484,19 @@ void main() {
         expect(find.text(_narration), findsOneWidget);
         _expectNoSecrets(tester);
 
+        // Both routes must reject leaving without retiring the prepared view or
+        // abandoning the live approval. The original approval remains actionable.
+        for (final breadcrumb in ['task-breadcrumb', 'project-breadcrumb']) {
+          await _breadcrumb(tester, breadcrumb);
+          expect(find.text(_navigationBlocked), findsOneWidget);
+          expect(_session(tester), same(session));
+          expect(fixture.shell(tester).task!.id, session.taskId);
+          expect(fixture.status(tester).pendingApproval, same(patchApproval));
+          expect(runtime.store.runsForSession(session.id), hasLength(1));
+          expect(runtime.store.runRecord(fixture.runIds.values.last), isNull);
+          expect(outbound, hasLength(3));
+        }
+
         await _tap(tester, 'Allow once');
         await _pumpUntil(
           tester,
@@ -508,6 +532,15 @@ void main() {
         expect(outbound, hasLength(4));
         expect(fixture.status(tester).isAdvancing, isTrue);
         expect((await chat.snapshot(session.id.value)).entries, hasLength(3));
+        for (final breadcrumb in ['project-breadcrumb', 'task-breadcrumb']) {
+          await _breadcrumb(tester, breadcrumb);
+          expect(find.text(_navigationBlocked), findsOneWidget);
+          expect(_session(tester), same(session));
+          expect(fixture.status(tester).isAdvancing, isTrue);
+          expect(fixture.status(tester).pendingApproval, same(commandApproval));
+          expect(runtime.store.runRecord(fixture.runIds.values.last), isNull);
+          expect(outbound, hasLength(4));
+        }
         releaseFinal.complete();
         await _pumpUntil(tester, () => find.text(answer).evaluate().isNotEmpty);
         _rethrowEndpointFailure(endpointFailures);
@@ -560,11 +593,6 @@ void main() {
         final task = fixture.shell(tester).task!;
         final authority = runtime.store.requireSessionAuthority(session.id);
         final database = runtime.lifecycle.databaseForSession(session.id)!;
-        final inventory = await _git(fixture.source, [
-          'worktree',
-          'list',
-          '--porcelain',
-        ]);
         final marker = await File('${worktree.path}/.git').readAsBytes();
         expect(fixture.status(tester).pendingApproval, isNull);
         expect(fixture.status(tester).failureMessage, isNull);
@@ -600,6 +628,80 @@ void main() {
           canonical.entries.map((entry) => entry.id),
         );
         expect(outbound, hasLength(4));
+
+        final sessionRunIds = List<RunId>.of(fixture.runIds.values);
+        const retainedDraft = '  Continue after restart:\tkeep this draft  ';
+        await tester.enterText(composer, retainedDraft);
+        await _breadcrumb(tester, 'task-breadcrumb');
+        await _pumpUntil(
+          tester,
+          () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+        );
+        expect(fixture.shell(tester).task, same(task));
+        expect(find.byType(InspectionHost), findsNothing);
+        expect(_sessionRow(session.id), findsOneWidget);
+        expect(
+          (await chat.snapshot(session.id.value)).draftRequest,
+          retainedDraft,
+        );
+
+        // Duplicate Chat labels require selection by the secondary Session ID,
+        // not by row order or by creating a replacement Session.
+        await _tap(tester, 'New Chat Session');
+        await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+        final sibling = _session(tester);
+        await _send(tester, _siblingPrompt);
+        await _pumpUntil(
+          tester,
+          () => find.text(_siblingAnswer).evaluate().isNotEmpty,
+        );
+        final siblingHistory = await chat.snapshot(sibling.id.value);
+        final siblingActivity = runtime.lifecycle
+            .runActivitiesForSession(sibling.id)
+            .single;
+        const siblingDraft = '  Same Task, different Session\t  ';
+        await tester.enterText(_composer(), siblingDraft);
+        await _breadcrumb(tester, 'project-breadcrumb');
+        await _pumpUntil(tester, () => fixture.shell(tester).task == null);
+        expect(
+          (await chat.snapshot(sibling.id.value)).draftRequest,
+          siblingDraft,
+        );
+        await fixture.createTask(tester, 'Another retained Task');
+        final otherTask = fixture.shell(tester).task!;
+        final otherEnvironment = fixture.shell(tester).environment!;
+        await _tap(tester, 'New Chat Session');
+        await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+        final otherSession = _session(tester);
+        await _send(tester, _otherPrompt);
+        await _pumpUntil(
+          tester,
+          () => find.text(_otherAnswer).evaluate().isNotEmpty,
+        );
+        final otherHistory = await chat.snapshot(otherSession.id.value);
+        final otherActivity = runtime.lifecycle
+            .runActivitiesForSession(otherSession.id)
+            .single;
+        const otherDraft = '  Other Task draft\t  ';
+        await tester.enterText(_composer(), otherDraft);
+        await _breadcrumb(tester, 'project-breadcrumb');
+        await _pumpUntil(tester, () => fixture.shell(tester).task == null);
+        expect(
+          (await chat.snapshot(otherSession.id.value)).draftRequest,
+          otherDraft,
+        );
+        final inventory = await _git(fixture.source, [
+          'worktree',
+          'list',
+          '--porcelain',
+        ]);
+        final retainedSource = await _sourceSnapshot(
+          fixture.source,
+          taskWorktree: worktree,
+        );
+        expect(fixture.runIds.values, hasLength(4));
+        expect(outbound, hasLength(6));
+        _rethrowEndpointFailure(endpointFailures);
         expect(
           await tester.binding.handleRequestAppExit(),
           AppExitResponse.exit,
@@ -621,44 +723,45 @@ void main() {
         );
         await tester.pumpWidget(const SizedBox.shrink());
 
-        // Only backing selection is active while the complete retained graph and
-        // evidence load. Neither Chat nor an execution provider participates.
+        // Reopen through the actual application and prepared Project selector.
+        // No credentials are supplied; browsing cannot create execution authority.
         final ids = _NoReopenIds();
         final fresh = AdeleRuntime(ids: ids, runIds: ids);
         addTearDown(fresh.close);
-        final backingHost = await PluginBackendHost.start(
-          dartaotruntimeExecutable: prepared.dartaotruntime,
-          hostArtifactPath: prepared.host.path,
-        );
-        addTearDown(backingHost.close);
-        final backingConnection = await backingHost.startPlugin(
-          pluginId: _localDirectoryProjectPluginId,
-          artifactUri: prepared.backend(_localDirectoryProjectPluginId).uri,
-        );
-        final backing = await PluginCapabilityActivation.registerAdvertised(
-          connection: backingConnection,
-          registry: fresh.registry,
-        );
-        addTearDown(backing.close);
-        expect(
-          fresh.extensions.discover(orchestrationStrategyContributions),
-          isEmpty,
-        );
-        expect(
-          fresh.registry.providersFor(environmentProviderCapability),
-          isEmpty,
+        await fixture.launch(
+          tester,
+          prepared,
+          usingRuntime: fresh,
+          usingRunIds: ids,
         );
         expect(fresh.registry.providersFor(modelProviderCapability), isEmpty);
-        expect(fresh.extensions.discover(modelToolContributions), isEmpty);
-        final reopened = await fresh.lifecycle.openProject(
-          sourceLocation: fixture.source.uri,
-          provider: fresh.lifecycle.resolveProjectProvider(
-            ProviderId('dev.adele.project.local-directory'),
-          ),
-        );
+        expect(fresh.store.session(session.id), isNull);
+        await _tap(tester, 'Open Local Directory...');
+        await _pumpUntil(tester, () => fixture.shell(tester).project != null);
+        final reopened = fixture.shell(tester).project!;
         expect(reopened.id, project.id);
         expect(reopened, isNot(same(project)));
-        expect(fresh.store.tasksFor(reopened.id).single.id, task.id);
+        expect(fixture.shell(tester).task, isNull);
+        expect(fixture.shell(tester).environment, isNull);
+        expect(find.byType(SessionPresentationHost), findsNothing);
+        expect(find.byType(InspectionHost), findsNothing);
+        expect(
+          fresh.store.tasksFor(reopened.id).map((task) => task.id),
+          unorderedEquals([task.id, otherTask.id]),
+        );
+        expect(find.text(task.title), findsOneWidget);
+        expect(find.text(otherTask.title), findsOneWidget);
+        await _tap(tester, task.title);
+        await _pumpUntil(
+          tester,
+          () => fixture.shell(tester).task?.id == task.id,
+        );
+        expect(_sessionRow(session.id), findsOneWidget);
+        expect(_sessionRow(sibling.id), findsOneWidget);
+        expect(_sessionRow(otherSession.id), findsNothing);
+        expect(find.text('Chat'), findsNWidgets(2));
+        expect(find.text('New Chat Session'), findsOneWidget);
+        expect(find.byType(SessionPresentationHost), findsNothing);
         final restoredEnvironment = fresh.store.primaryEnvironmentFor(task.id)!;
         expect(restoredEnvironment.id, environment.id);
         expect(restoredEnvironment.providerState, environment.providerState);
@@ -672,16 +775,11 @@ void main() {
         expect(restoredAuthority, isNot(same(authority)));
         expect(restoredAuthority.environmentId, environment.id);
         expect(
-          () => fresh.lifecycle.resolveSessionStrategy(session.id),
-          throwsA(isA<OrchestrationStrategyUnavailable>()),
-        );
-        expect(
           fresh.store
               .runsForSession(session.id)
               .map((record) => (record.id, record.state)),
           unorderedEquals([
-            for (final id in fixture.runIds.values)
-              (id, RunTerminalState.completed),
+            for (final id in sessionRunIds) (id, RunTerminalState.completed),
           ]),
         );
         final restoredActivity = fresh.lifecycle.runActivity(runId)!;
@@ -694,7 +792,7 @@ void main() {
           fresh.lifecycle
               .runActivitiesForSession(session.id)
               .map((activity) => activity.runId),
-          unorderedEquals(fixture.runIds.values),
+          unorderedEquals(sessionRunIds),
         );
         expect(
           fresh.lifecycle.environmentRuntime.currentMaterialization(
@@ -702,13 +800,6 @@ void main() {
           ),
           isNull,
         );
-        await backing.close();
-        await backingHost.close();
-
-        // No model credentials are supplied on reopen. Presentation still uses
-        // fresh real Chat, tool, and native presenter generations, not old views.
-        await prepared.start(fresh);
-        expect(fresh.registry.providersFor(modelProviderCapability), isEmpty);
         final freshChatConnection = fresh.plugins.backends
             .singleWhere(
               (backend) =>
@@ -726,15 +817,17 @@ void main() {
             (entry) => (entry.id, entry.role, entry.content, entry.runId),
           ),
         );
-        final controller = await _presentRetainedSession(
-          tester,
-          fresh,
-          restoredSession,
-        );
+        await _openSession(tester, session.id);
         await _pumpUntil(
           tester,
           () => find.text(_narration).evaluate().isNotEmpty,
         );
+        expect(_session(tester), same(restoredSession));
+        expect(
+          tester.widget<TextField>(_composer()).controller!.text,
+          retainedDraft,
+        );
+        expect(restoredChat.draftRequest, retainedDraft);
         for (final text in [_initialPrompt, _initialAnswer, _prompt, answer]) {
           expect(find.text(text), findsOneWidget);
         }
@@ -748,22 +841,6 @@ void main() {
         );
         _expectNoSecrets(tester);
 
-        // The same generic source used by the prepared bridge emits only safe
-        // presentation, even though opaque private replay survived in core data.
-        final source = SessionExecutionPresentationSource(
-          controller: controller,
-          extensions: fresh.extensions,
-          isActive: () => true,
-          inspect: (_, _) => false,
-        );
-        addTearDown(source.invalidate);
-        final handle = source.openRunActivity(runId.value)!;
-        final bridgeData = jsonEncode(source.readRunActivity(handle));
-        expect(bridgeData, contains(_reasoning));
-        expect(bridgeData, isNot(contains(_encrypted)));
-        expect(bridgeData, isNot(contains(_privateReasoning)));
-        expect(bridgeData, isNot(contains('providerNativeMetadata')));
-
         await _tap(tester, _narration);
         expect(find.byType(InspectionHost), findsOneWidget);
         await _tap(tester, 'Reasoning: $_reasoning');
@@ -775,15 +852,13 @@ void main() {
         expect(find.text('New revision: $patchedRevision'), findsOneWidget);
         expect(find.text('Lifecycle: completed'), findsOneWidget);
         _expectNoSecrets(tester);
-        expect(controller.currentRun, isNull);
-        expect(controller.activeRunFuture, isNull);
-        expect(controller.pendingApproval, isNull);
-        expect(controller.isRunning, isFalse);
-        expect(controller.isAdvancing, isFalse);
-        expect(controller.canStart, isFalse);
+        expect(fixture.status(tester).pendingApproval, isNull);
+        expect(fixture.status(tester).isAdvancing, isFalse);
+        expect(fixture.status(tester).failureMessage, isNull);
+        expect(fixture.status(tester).unavailableReason, isNotNull);
         expect(ids.calls, 0);
-        expect(fixture.runIds.values, hasLength(2));
-        expect(outbound, hasLength(4));
+        expect(fixture.runIds.values, hasLength(4));
+        expect(outbound, hasLength(6));
         expect(
           fresh.lifecycle.environmentRuntime.currentMaterialization(
             environment.id,
@@ -801,7 +876,7 @@ void main() {
         );
         expect(
           await _sourceSnapshot(fixture.source, taskWorktree: worktree),
-          projectBefore,
+          retainedSource,
         );
         expect(
           (await freshChat.snapshot(
@@ -809,10 +884,286 @@ void main() {
           )).entries.map((entry) => (entry.id, entry.runId)),
           canonical.entries.map((entry) => (entry.id, entry.runId)),
         );
+        await _breadcrumb(tester, 'task-breadcrumb');
+        await _pumpUntil(
+          tester,
+          () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+        );
+        expect(fixture.shell(tester).task!.id, task.id);
+        expect(find.byType(InspectionHost), findsNothing);
+        await _openSession(tester, sibling.id);
+        await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+        expect(_session(tester), same(fresh.store.session(sibling.id)));
+        expect(
+          tester.widget<TextField>(_composer()).controller!.text,
+          siblingDraft,
+        );
+        expect(find.text(_initialPrompt), findsNothing);
+        expect(find.text(_narration), findsNothing);
+        expect(find.text(_siblingPrompt), findsOneWidget);
+        expect(find.text(_siblingAnswer), findsOneWidget);
+        expect(find.text(_otherAnswer), findsNothing);
+        expect(
+          (await freshChat.snapshot(sibling.id.value)).entries.map(
+            (entry) => (entry.id, entry.role, entry.content, entry.runId),
+          ),
+          siblingHistory.entries.map(
+            (entry) => (entry.id, entry.role, entry.content, entry.runId),
+          ),
+        );
+        expect(
+          _activityEvidence(
+            fresh.lifecycle.runActivitiesForSession(sibling.id).single,
+          ),
+          _activityEvidence(siblingActivity),
+        );
+        await _breadcrumb(tester, 'project-breadcrumb');
+        await _pumpUntil(tester, () => fixture.shell(tester).task == null);
+        expect(fixture.shell(tester).environment, isNull);
+        expect(find.byType(SessionPresentationHost), findsNothing);
+        expect(_sessionRow(session.id), findsNothing);
+        await _tap(tester, otherTask.title);
+        await _pumpUntil(
+          tester,
+          () => fixture.shell(tester).task?.id == otherTask.id,
+        );
+        expect(_sessionRow(otherSession.id), findsOneWidget);
+        expect(_sessionRow(session.id), findsNothing);
+        expect(_sessionRow(sibling.id), findsNothing);
+        await _openSession(tester, otherSession.id);
+        await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+        expect(_session(tester), same(fresh.store.session(otherSession.id)));
+        expect(
+          tester.widget<TextField>(_composer()).controller!.text,
+          otherDraft,
+        );
+        expect(find.byType(InspectionHost), findsNothing);
+        expect(find.text(_otherPrompt), findsOneWidget);
+        expect(find.text(_otherAnswer), findsOneWidget);
+        expect(find.text(_siblingAnswer), findsNothing);
+        expect(find.text(_initialPrompt), findsNothing);
+        expect(
+          (await freshChat.snapshot(otherSession.id.value)).entries.map(
+            (entry) => (entry.id, entry.role, entry.content, entry.runId),
+          ),
+          otherHistory.entries.map(
+            (entry) => (entry.id, entry.role, entry.content, entry.runId),
+          ),
+        );
+        expect(
+          _activityEvidence(
+            fresh.lifecycle.runActivitiesForSession(otherSession.id).single,
+          ),
+          _activityEvidence(otherActivity),
+        );
+        await _breadcrumb(tester, 'task-breadcrumb');
+        await _pumpUntil(
+          tester,
+          () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+        );
+        expect(fixture.shell(tester).task!.id, otherTask.id);
+        await _breadcrumb(tester, 'project-breadcrumb');
+        await _pumpUntil(tester, () => fixture.shell(tester).task == null);
+        expect(find.text(task.title), findsOneWidget);
+        expect(find.text(otherTask.title), findsOneWidget);
+        expect(
+          fresh.store.sessionsForTask(task.id).map((session) => session.id),
+          unorderedEquals([session.id, sibling.id]),
+        );
+        expect(
+          fresh.store.sessionsForTask(otherTask.id).single.id,
+          otherSession.id,
+        );
+        for (final id in [environment.id, otherEnvironment.id]) {
+          expect(
+            fresh.lifecycle.environmentRuntime.currentMaterialization(id),
+            isNull,
+          );
+        }
+        expect(ids.calls, 0);
+        expect(fixture.runIds.values, hasLength(4));
+        expect(outbound, hasLength(6));
         await tester.pumpWidget(const SizedBox.shrink());
         expect(tester.takeException(), isNull);
       }),
       timeout: const Timeout(Duration(seconds: 90)),
+    );
+  }
+
+  for (final rejectLatest in [false, true]) {
+    testWidgets(
+      'prepared Chat navigation ${rejectLatest ? 'retains the Session after draft failure and retries' : 'awaits the latest draft before leaving'}',
+      (tester) => tester.runAsync(() async {
+        await tester.binding.setSurfaceSize(const Size(1400, 1100));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final fixture = await _ProductFixture.create();
+        final root = await prepared.copyInstallations(fixture.directory);
+        await prepared.gatedChat.copy(
+          '${root.path}/$_chatPluginId/backend.aot',
+        );
+        final firstArrived = Completer<void>();
+        final latestArrived = Completer<void>();
+        final releaseFirst = Completer<void>();
+        final releaseLatest = Completer<void>();
+        final failures = <(Object, StackTrace)>[];
+        final writes = <String>[];
+        const firstDraft = 'Older draft';
+        const latestDraft = '  Latest unsent draft:\tpreserve exactly  ';
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final subscription = server.listen((request) async {
+          try {
+            final body =
+                jsonDecode(await utf8.decoder.bind(request).join()) as Map;
+            final content = (body['parameters'] as Map)[':draft'] as String;
+            writes.add(content);
+            switch (writes.length) {
+              case 1:
+                expect(content, firstDraft);
+                firstArrived.complete();
+                await releaseFirst.future;
+              case 2:
+                expect(content, latestDraft);
+                latestArrived.complete();
+                await releaseLatest.future;
+                if (rejectLatest) {
+                  request.response.statusCode = HttpStatus.conflict;
+                }
+              case 3:
+                expect(rejectLatest, isTrue);
+                expect(content, latestDraft);
+              default:
+                fail('Unexpected automatic draft retry ${writes.length}.');
+            }
+          } on Object catch (error, stack) {
+            failures.add((error, stack));
+            request.response.statusCode = HttpStatus.internalServerError;
+          } finally {
+            await request.response.close();
+          }
+        });
+        addTearDown(() async {
+          await subscription.cancel();
+          await server.close(force: true);
+        });
+        await fixture.launch(
+          tester,
+          prepared,
+          root: root,
+          endpoint: server,
+          startupArguments: {
+            _chatPluginId: [
+              'http://${server.address.address}:${server.port}/draft',
+            ],
+          },
+        );
+        addTearDown(() {
+          if (!releaseFirst.isCompleted) releaseFirst.complete();
+          if (!releaseLatest.isCompleted) releaseLatest.complete();
+        });
+        await fixture.openTask(tester);
+        await _tap(tester, 'New Chat Session');
+        await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+        final session = _session(tester);
+        final task = fixture.shell(tester).task!;
+        final connection = fixture.runtime.plugins.backends
+            .singleWhere(
+              (backend) =>
+                  backend.installation.metadata.id.value == _chatPluginId,
+            )
+            .connection!;
+        final chat = _chatClient(connection);
+        await tester.enterText(_composer(), firstDraft);
+        await firstArrived.future.timeout(const Duration(seconds: 15));
+        await tester.enterText(_composer(), latestDraft);
+        await _breadcrumb(
+          tester,
+          rejectLatest ? 'project-breadcrumb' : 'task-breadcrumb',
+        );
+        expect(fixture.shell(tester).navigating, isTrue);
+        expect(_session(tester), same(session));
+        expect(fixture.shell(tester).task, same(task));
+        expect(
+          tester.widget<TextField>(_composer()).controller!.text,
+          latestDraft,
+        );
+        // Chat serializes reads behind its draft write. Observe the transaction
+        // gates here, then assert durable content after releasing them.
+        expect(writes, [firstDraft]);
+        releaseFirst.complete();
+        await latestArrived.future.timeout(const Duration(seconds: 15));
+        await tester.pump();
+        expect(fixture.shell(tester).navigating, isTrue);
+        expect(_session(tester), same(session));
+        expect(writes, [firstDraft, latestDraft]);
+        expect(fixture.runIds.values, isEmpty);
+        expect(fixture.runtime.store.runsForSession(session.id), isEmpty);
+        releaseLatest.complete();
+        await _pumpUntil(tester, () => !fixture.shell(tester).navigating);
+        _rethrowEndpointFailure(failures);
+        if (rejectLatest) {
+          expect(_session(tester), same(session));
+          expect(fixture.shell(tester).task, same(task));
+          expect(fixture.status(tester).enabled, isTrue);
+          expect(
+            find.text(
+              'Could not leave this Session. Save pending changes and try again.',
+            ),
+            findsOneWidget,
+          );
+          expect(
+            find.text('Draft was not saved. Your text is preserved.'),
+            findsOneWidget,
+          );
+          expect(
+            tester.widget<TextField>(_composer()).controller!.text,
+            latestDraft,
+          );
+          expect(
+            (await chat.snapshot(session.id.value)).draftRequest,
+            firstDraft,
+          );
+          expect(writes, [firstDraft, latestDraft]);
+          // Retrying navigation must use the same still-live prepared view and
+          // owning backend route, not a replacement Session or a lost draft.
+          await _breadcrumb(tester, 'project-breadcrumb');
+          await _pumpUntil(
+            tester,
+            () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+          );
+          expect(fixture.shell(tester).task, isNull);
+          expect(writes, [firstDraft, latestDraft, latestDraft]);
+          await _tap(tester, task.title);
+          await _pumpUntil(
+            tester,
+            () => fixture.shell(tester).task?.id == task.id,
+          );
+        } else {
+          expect(find.byType(SessionPresentationHost), findsNothing);
+          expect(fixture.shell(tester).task, same(task));
+          expect(writes, [firstDraft, latestDraft]);
+        }
+        expect(fixture.shell(tester).navigationError, isNull);
+        expect(
+          (await chat.snapshot(session.id.value)).draftRequest,
+          latestDraft,
+        );
+        expect((await chat.snapshot(session.id.value)).entries, isEmpty);
+        await _openSession(tester, session.id);
+        await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+        expect(_session(tester), same(session));
+        expect(
+          tester.widget<TextField>(_composer()).controller!.text,
+          latestDraft,
+        );
+        expect(fixture.runtime.store.sessionsForTask(task.id), [session]);
+        expect(fixture.runIds.values, isEmpty);
+        expect(connection.isClosed, isFalse);
+        expect(tester.takeException(), isNull);
+        _rethrowEndpointFailure(failures);
+        await tester.binding.handleRequestAppExit();
+        await tester.pumpWidget(const SizedBox.shrink());
+      }),
+      timeout: const Timeout(Duration(seconds: 60)),
     );
   }
 
@@ -971,7 +1322,7 @@ void main() {
           await fixture.launch(tester, prepared, root: root);
           final runtime = fixture.runtime;
           final catalog = runtime.plugins.catalog!;
-          expect(catalog.installations, hasLength(8));
+          expect(catalog.installations, hasLength(9));
           expect(catalog.issues, hasLength(corruption == 'missing' ? 1 : 0));
           expect(runtime.plugins.state, ApplicationPluginState.ready);
           expect(runtime.plugins.failure, isNull);
@@ -1011,7 +1362,12 @@ void main() {
           );
           await fixture.openTask(tester);
           final task = fixture.shell(tester).task!;
-          expect(fixture.shell(tester).environmentReady, isTrue);
+          expect(
+            runtime.lifecycle.environmentRuntime.currentMaterialization(
+              fixture.shell(tester).environment!.id,
+            ),
+            isNotNull,
+          );
           if (component == 'backend') {
             expect(
               runtime.extensions.discover(orchestrationStrategyContributions),
@@ -1171,6 +1527,7 @@ final class _PreparedProduct {
   final String dart;
   final String dartaotruntime;
   File get host => File('${directory.path}/host.aot');
+  File get gatedChat => File('${directory.path}/gated-chat.aot');
   File backend(String id) => File('${root.path}/$id/backend.aot');
 
   static Future<_PreparedProduct> prepare() async {
@@ -1205,7 +1562,7 @@ final class _PreparedProduct {
       _localDirectoryProjectPluginId:
           'plugins/local_directory_project/packages/backend/bin/local_directory_project_backend.dart',
     };
-    for (final id in entrypoints.keys) {
+    for (final id in [...entrypoints.keys, _taskBrowserPluginId]) {
       final installed = await Directory('${root.path}/$id').create();
       await File(
         '${installed.path}/adele_plugin.installation.json',
@@ -1214,7 +1571,8 @@ final class _PreparedProduct {
           'manifestVersion': 1,
           'metadata': {'id': id, 'version': '1.0.0', 'displayName': id},
           'components': {
-            'backend': {'artifact': 'backend.aot'},
+            if (entrypoints.containsKey(id))
+              'backend': {'artifact': 'backend.aot'},
             if (stockFrontendDescriptors.containsKey(id) ||
                 stockFrontendExtensionDescriptors.containsKey(id))
               'frontend': {
@@ -1229,6 +1587,9 @@ final class _PreparedProduct {
     await compileChatFrontend(
       repositoryRoot: repository,
       artifact: File('${root.path}/$_chatPluginId/frontend.evc'),
+    );
+    await File('${root.path}/$_taskBrowserPluginId/frontend.evc').writeAsBytes(
+      await compileTaskBrowserFrontend(repositoryRoot: repository),
     );
     await File(
       '${root.path}/$_localDirectoryProjectPluginId/frontend.evc',
@@ -1264,6 +1625,13 @@ final class _PreparedProduct {
         stage: 'normal-chatgpt-${entry.key}',
       );
     }
+    await compileAotSnapshot(
+      dartExecutable: dart,
+      workingDirectory: repository,
+      entrypoint: 'app/test/support/gated_chat_backend.dart',
+      artifact: result.gatedChat,
+      stage: 'normal-chatgpt-gated-storage',
+    );
     return result;
   }
 
@@ -1330,7 +1698,11 @@ final class _ProductFixture {
     _PreparedProduct prepared, {
     Directory? root,
     HttpServer? endpoint,
+    AdeleRuntime? usingRuntime,
+    RunIdSource? usingRunIds,
+    Map<String, List<String>> startupArguments = const {},
   }) async {
+    final runtime = usingRuntime ?? this.runtime;
     expect(
       runtime.extensions.discover(orchestrationStrategyContributions),
       isEmpty,
@@ -1340,7 +1712,7 @@ final class _ProductFixture {
     final picker = _DirectoryPicker(source.path);
     FileSelectorPlatform.instance = picker;
     addTearDown(() => FileSelectorPlatform.instance = previousPicker);
-    final startup = <String, List<String>>{};
+    final startup = <String, List<String>>{...startupArguments};
     if (endpoint != null) {
       final credentials = File('${directory.path}/credentials.json');
       await credentials.writeAsString(
@@ -1378,7 +1750,7 @@ final class _ProductFixture {
         createRuntime: () => runtime,
         readChatGptConfiguration: () =>
             const StockChatGptConfiguration(model: 'gpt-6-astra'),
-        runIds: runIds,
+        runIds: usingRunIds ?? runIds,
         bootstrapPlugins: (_) => starting = prepared.start(
           runtime,
           installationRoot: root,
@@ -1397,6 +1769,7 @@ final class _ProductFixture {
           runtime.extensions
               .discover(projectSelectorContributions)
               .isNotEmpty &&
+          runtime.extensions.discover(taskBrowserContributions).isNotEmpty &&
           runtime.extensions
                   .discover(toolActivityInspectionContributions)
                   .length ==
@@ -1407,7 +1780,7 @@ final class _ProductFixture {
               1,
     );
     expect(picker.calls, 0);
-    expect(runIds.values, isEmpty);
+    if (usingRunIds == null) expect(runIds.values, isEmpty);
   }
 
   Future<void> openTask(WidgetTester tester) async {
@@ -1418,14 +1791,25 @@ final class _ProductFixture {
     expect(runtime.store.project(project.id), same(project));
     expect(await File('${source.path}/.adele/data.db').exists(), isTrue);
     expect(runtime.store.tasksFor(project.id), isEmpty);
+    await createTask(tester, 'Approve installed product work');
+  }
+
+  Future<void> createTask(WidgetTester tester, String title) async {
+    final previous = shell(tester).task;
     await _tap(tester, 'New Task');
-    await tester.enterText(
-      find.byType(TextField),
-      'Approve installed product work',
-    );
+    expect(find.text('Task title'), findsOneWidget);
+    await tester.enterText(find.byType(TextField).last, title);
     await _tap(tester, 'Create Task');
-    await _pumpUntil(tester, () => shell(tester).task != null);
-    expect(shell(tester).environmentReady, isTrue);
+    await _pumpUntil(
+      tester,
+      () => shell(tester).task != null && shell(tester).task != previous,
+    );
+    expect(
+      runtime.lifecycle.environmentRuntime.currentMaterialization(
+        shell(tester).environment!.id,
+      ),
+      isNotNull,
+    );
     expect(
       runtime.store.primaryEnvironmentFor(shell(tester).task!.id),
       same(shell(tester).environment),
@@ -1440,113 +1824,6 @@ ChatSessionServiceClient _chatClient(PluginBackendConnection connection) =>
         chatSessionServiceId,
       ),
     );
-
-Future<SessionExecutionController> _presentRetainedSession(
-  WidgetTester tester,
-  AdeleRuntime runtime,
-  Session session,
-) async {
-  final inspection = WindowInspection()..presentSession(session);
-  addTearDown(inspection.dispose);
-  late SessionExecutionController controller;
-  bool inspect(Session presented, InspectionTarget target) {
-    expect(presented, same(session));
-    final activity = controller.activityForRun(target.runId)!;
-    if (target is ModelOutputInspectionTarget) {
-      return inspection.inspectOutput(
-        session: session,
-        activity: activity,
-        modelInvocationId: target.modelInvocationId,
-        outputSequence: target.outputSequence,
-      );
-    }
-    return inspection.inspectActivity(
-      session: session,
-      activity: activity,
-      modelInvocationId: target.modelInvocationId,
-    );
-  }
-
-  final sessionHost = PreparedSessionHost(
-    extensions: runtime.extensions,
-    backends: runtime.plugins,
-    controllerForSession: (presented) {
-      expect(presented, same(session));
-      return controller;
-    },
-    inspectActivity: inspect,
-  );
-  final frontends = ApplicationFrontendBootstrap(
-    extensions: runtime.extensions,
-    sessionHost: sessionHost,
-  );
-  addTearDown(frontends.close);
-  await frontends.start(runtime.plugins.catalog!);
-  for (final frontend in frontends.generations) {
-    expect(frontend.state, InstalledFrontendState.active);
-  }
-  final selection = sessionHost.resolve(
-    runtime.extensions.discover(sessionPresentationContributions).single,
-  );
-  controller = SessionExecutionController(
-    runtime: runtime,
-    session: session,
-    providerId: stockChatGptProviderId,
-    model: 'gpt-6-astra',
-    strategy: selection.strategy,
-  );
-  addTearDown(controller.close);
-  sessionHost.bind(session, selection);
-  // There is no Session browser yet. Bind the retained canonical Session without
-  // creating a replacement, materializing its Environment, or scheduling a Run.
-  await tester.pumpWidget(
-    MaterialApp(
-      home: Scaffold(
-        body: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: SingleChildScrollView(
-                child: SessionPresentationHost(
-                  session: session,
-                  extensions: runtime.extensions,
-                ),
-              ),
-            ),
-            Expanded(
-              child: AnimatedBuilder(
-                animation: inspection,
-                builder: (context, _) => SingleChildScrollView(
-                  child: InspectionStackHost(
-                    cards: inspection.cards,
-                    cardBuilder: (context, card) => InspectionHost(
-                      card: card,
-                      activity: controller.activityForRun(card.target.runId),
-                      heading: 'Retained Run activity',
-                      extensions: runtime.extensions,
-                      onCollapse: () => inspection.collapse(card.id),
-                      onExpand: () => inspection.expand(card.id),
-                      onDismiss: () => inspection.dismiss(card.id),
-                      onInspectOutput: (target) => inspection.inspectOutput(
-                        session: session,
-                        activity: controller.activityForRun(target.runId)!,
-                        modelInvocationId: target.modelInvocationId,
-                        outputSequence: target.outputSequence,
-                        originCardId: card.id,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    ),
-  );
-  addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
-  return controller;
-}
 
 Map<String, Object?> _activityEvidence(RunActivitySnapshot activity) => {
   'runId': activity.runId.value,
@@ -1632,23 +1909,21 @@ Map<String, Object?> _activityEvidence(RunActivitySnapshot activity) => {
 
 final class _NoReopenIds implements ProductIdSource, RunIdSource {
   int calls = 0;
-  Never _allocate() {
+  Never _allocate(String kind) {
     calls++;
-    throw StateError(
-      'Displaying retained work must not allocate product or Run IDs.',
-    );
+    throw StateError('Displaying retained work must not allocate $kind IDs.');
   }
 
   @override
-  ProjectId nextProjectId() => _allocate();
+  ProjectId nextProjectId() => _allocate('Project');
   @override
-  TaskId nextTaskId() => _allocate();
+  TaskId nextTaskId() => _allocate('Task');
   @override
-  EnvironmentId nextEnvironmentId() => _allocate();
+  EnvironmentId nextEnvironmentId() => _allocate('Environment');
   @override
-  SessionId nextSessionId() => _allocate();
+  SessionId nextSessionId() => _allocate('Session');
   @override
-  RunId nextRunId() => _allocate();
+  RunId nextRunId() => _allocate('Run');
 }
 
 final class _DirectoryPicker extends FileSelectorPlatform {
@@ -1678,7 +1953,7 @@ Future<void> _pumpUntil(
 ) async {
   final deadline = DateTime.now().add(const Duration(seconds: 15));
   while (!await ready() && DateTime.now().isBefore(deadline)) {
-    await Future<void>.delayed(const Duration(milliseconds: 10));
+    await Future<void>.delayed(Duration.zero);
     await tester.pump();
   }
   expect(
@@ -1692,11 +1967,42 @@ Future<void> _pumpUntil(
 Future<void> _tap(WidgetTester tester, String label) async {
   final button = find.ancestor(
     of: find.text(label),
-    matching: find.byWidgetPredicate((widget) => widget is ButtonStyleButton),
+    matching: find.byWidgetPredicate(
+      (widget) => widget is ButtonStyleButton || widget is ListTile,
+    ),
   );
+  await _pumpUntil(tester, () => button.evaluate().isNotEmpty);
   await tester.ensureVisible(button);
   await tester.tap(button);
   await tester.pumpAndSettle();
+}
+
+Session _session(WidgetTester tester) => tester
+    .widget<SessionPresentationHost>(find.byType(SessionPresentationHost))
+    .session;
+
+Finder _composer() => find.descendant(
+  of: find.byType(SessionPresentationHost),
+  matching: find.byType(TextField),
+);
+
+Finder _sessionRow(SessionId id) => find.ancestor(
+  of: find.textContaining(id.value),
+  matching: find.byType(ListTile),
+);
+
+Future<void> _openSession(WidgetTester tester, SessionId id) async {
+  final row = _sessionRow(id);
+  await tester.ensureVisible(row);
+  await tester.tap(row);
+  await tester.pumpAndSettle();
+}
+
+Future<void> _breadcrumb(WidgetTester tester, String key) async {
+  final breadcrumb = find.byKey(ValueKey(key));
+  await tester.ensureVisible(breadcrumb);
+  await tester.tap(breadcrumb);
+  await tester.pump();
 }
 
 Future<void> _send(WidgetTester tester, String prompt) async {

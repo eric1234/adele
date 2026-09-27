@@ -1,6 +1,7 @@
 import 'package:adele_ui/inspection_display.dart';
 import 'package:adele_ui/owning_backend_bridge.dart';
 import 'package:adele_ui/session_execution_bridge.dart';
+import 'package:adele_ui/session_presentation_lifecycle_bridge.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:flutter/material.dart';
 
@@ -53,6 +54,7 @@ class _ChatFrontendState extends State<ChatFrontend> {
   Future<bool>? draftSave = null;
   final Map<String, String> runs = <String, String>{};
   void Function() listener = () {};
+  Future<bool> Function() deactivation = () async => false;
   String sessionId = '';
   String failure = '';
   String historyFailure = '';
@@ -85,6 +87,8 @@ class _ChatFrontendState extends State<ChatFrontend> {
         execution['running'] == true || execution['advancing'] == true;
     listener = () => executionChanged();
     subscribeSessionExecution(listener);
+    deactivation = () => prepareToDeactivate();
+    registerSessionPrepareToDeactivate(deactivation);
   }
 
   void executionChanged() {
@@ -166,6 +170,13 @@ class _ChatFrontendState extends State<ChatFrontend> {
     });
     draftSave = persistDraft();
     return await draftSave!;
+  }
+
+  Future<bool> prepareToDeactivate() async {
+    // An in-flight submission may still accept text or start a Run. Navigation
+    // must leave this view intact until the user can retry after it settles.
+    if (disposed || submitting) return false;
+    return await saveDraft();
   }
 
   Future<bool> persistDraft() async {
@@ -277,6 +288,7 @@ class _ChatFrontendState extends State<ChatFrontend> {
   @override
   void dispose() {
     disposed = true;
+    unregisterSessionPrepareToDeactivate(deactivation);
     unsubscribeSessionExecution(listener);
     controller.dispose();
     super.dispose();

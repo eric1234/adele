@@ -1,0 +1,28 @@
+name: task_browser_frontend
+description: Stock interpreted Task Browser presentation for ADELE.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.9 <4.0.0"
+  flutter: ">=3.38.10"
+
+resolution: workspace
+
+dependencies:
+  adele_ui: ^0.1.0
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  adele_desktop: ^0.1.0
+  adele_plugin_api: ^0.1.0
+  adele_product: ^0.1.0
+  dart_eval: 0.8.5
+  flutter_eval: 0.8.2
+  flutter_test:
+    sdk: flutter
+  plugin_runtime: ^0.1.0
+
+flutter:
+  uses-material-design: true

@@ -188,9 +188,10 @@ active/waiting Runs, active claims, approval restart state, or continuation/repl
 recovery. Restoration creates no execution or actionable approval and allocates no
 Run IDs. Historical native envelopes are opaque evidence, never future continuation
 input. Chat's current plain-text draft is durable plugin-owned state, not
-workbench state. This adds no Task/Session browser, navigation, automatic
-selection/resume, Profiles, general settings, configured-provider/credential
-storage, or workbench/window persistence.
+workbench state. Task Browser reads the restored live graph, but its selection and
+navigation are transient; storage does not restore the workbench or automatically
+select/resume a Task or Session. Profiles, general settings, and
+configured-provider/credential storage are separate concerns.
 
 Small synchronous host operations can block on filesystem/SQLite work. Confinement
 is preflight validation, not a guarantee against hostile concurrent filesystem
@@ -212,7 +213,14 @@ does not yet implement that broader workflow state.
 
 Task Browser is replaceable presentation/plugin behavior over core identities
 and lifecycle operations, not the owner of Task identity or its Environment
-association.
+association. `InMemoryProductStore.tasksFor` and `sessionsForTask` provide detached
+immutable snapshots from the canonical live graph; Session query order is not
+historical chronology. A missing strategy or presentation makes a Session
+unavailable to open without removing its record. Browsing and opening retained
+Sessions do not establish or restore an Environment, allocate replacement product
+identities, or start a Run. Transient selection changes no persistence schema. See
+[the presentation boundary](plugin-system.md#task-browser-presentation) for host
+validation and generation-scoped browser access.
 
 ## Environment
 
@@ -476,6 +484,7 @@ those distinctions, including domains where external systems remain authoritativ
 | --- | --- |
 | Canonical immutable product values and IDs | [`packages/product/`](../../packages/product/), `Project`, `Task`, `Environment`, `Session`, `RunRecord`, `RunTerminalState`, `RunId` |
 | Product lifecycle and Session/Environment authority | [`app/lib/core/product_lifecycle.dart`](../../app/lib/core/product_lifecycle.dart), `ProductLifecycleCoordinator`, `InMemoryProductStore.requireSessionAuthority` |
+| Task/Session browsing queries | [`app/lib/core/product_lifecycle.dart`](../../app/lib/core/product_lifecycle.dart), `InMemoryProductStore.tasksFor`, `sessionsForTask`; [Task Browser hosting](../../app/README.md#task-browser) |
 | Terminal Run retention and lookup | [`app/lib/core/product_lifecycle.dart`](../../app/lib/core/product_lifecycle.dart), `retainTerminalRun`, `runRecord`, `runsForSession`, `publishTerminalRun` |
 | Private Project SQL and migration coordination | [`app/lib/core/project_database.dart`](../../app/lib/core/project_database.dart), `ProjectDatabase`, `MigrationCoordinator` |
 | Session-scoped plugin storage | [`packages/project_storage/lib/adele_project_storage.dart`](../../packages/project_storage/lib/adele_project_storage.dart), [`app/lib/core/project_storage_host.dart`](../../app/lib/core/project_storage_host.dart) |

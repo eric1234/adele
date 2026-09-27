@@ -136,6 +136,9 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Prepared backend/frontend bootstrap | [`test/core/application_plugin_bootstrap_test.dart`](../../app/test/core/application_plugin_bootstrap_test.dart), [`test/prepared_frontend_activation_test.dart`](../../app/test/prepared_frontend_activation_test.dart), [`test/prepared_frontend_failure_test.dart`](../../app/test/prepared_frontend_failure_test.dart) |
 | Project/native picker bridge | [`test/project_opening_test.dart`](../../app/test/project_opening_test.dart), [`test/directory_picker_bridge_test.dart`](../../app/test/directory_picker_bridge_test.dart) |
 | Task/Environment lifecycle | [`test/task_creation_test.dart`](../../app/test/task_creation_test.dart), [`test/core/product_lifecycle_test.dart`](../../app/test/core/product_lifecycle_test.dart) |
+| Task Browser canonical projection/actions | [`test/window_task_browser_source_test.dart`](../../app/test/window_task_browser_source_test.dart) (immutable Session queries, Project/Task scope, unavailable retained Sessions, exact creation choices, retirement, and opening without Environment materialization or Run start) |
+| Task Browser bridge/view hosting | [`test/task_browser_bridge_test.dart`](../../app/test/task_browser_bridge_test.dart), [`test/task_browser_presentation_host_test.dart`](../../app/test/task_browser_presentation_host_test.dart) (safe action settlement, subscriptions/revocation, zero/one/many resolution, and retained factory state) |
+| Prepared Task Browser activation | [`test/prepared_task_browser_host_test.dart`](../../app/test/prepared_task_browser_host_test.dart) (frontend-only activation, lazy source creation/disposal, exact retirement, and per-view bytecode/entrypoint failure) |
 | Durable Project/Task/Environment records | [`test/core/project_database_test.dart`](../../app/test/core/project_database_test.dart), [`test/core/durable_project_lifecycle_test.dart`](../../app/test/core/durable_project_lifecycle_test.dart), [`test/core/durable_task_environment_lifecycle_test.dart`](../../app/test/core/durable_task_environment_lifecycle_test.dart), [`test/core/durable_task_git_integration_test.dart`](../../app/test/core/durable_task_git_integration_test.dart) (fresh runtime and whole-Project move, real SQLite/Git backends) |
 | Durable Session identity/Environment association | [`test/core/durable_session_lifecycle_test.dart`](../../app/test/core/durable_session_lifecycle_test.dart), [`test/core/project_database_test.dart`](../../app/test/core/project_database_test.dart) (complete-graph validation, atomic creation, missing strategy/provider, and no volatile fallback) |
 | Terminal Run schema/publication | [`test/core/project_database_test.dart`](../../app/test/core/project_database_test.dart), [`test/core/durable_session_lifecycle_test.dart`](../../app/test/core/durable_session_lifecycle_test.dart) (separate product/execution v1 owners, atomic record/activity retention, whole-graph publication, immutable lookup, and explicit volatile retention) |
@@ -143,12 +146,13 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Terminal Run execution/restart | [`test/core/durable_run_lifecycle_test.dart`](../../app/test/core/durable_run_lifecycle_test.dart) (completed/failed fresh-runtime snapshot restore, unstarted/waiting close without invented outcomes, approval completion, SQLite and execution-plus-storage failures without retry, deferred mechanics draining, and no ID allocation or live execution/approval recreation) |
 | Session-scoped plugin storage host | [`test/core/project_storage_host_test.dart`](../../app/test/core/project_storage_host_test.dart) (owner schema, Project routing, scalar/query bounds, atomic batches, explicit volatile distinction, and queued-entry revocation) |
 | Durable Chat across real backend generations | [`test/core/durable_chat_session_integration_test.dart`](../../app/test/core/durable_chat_session_integration_test.dart) (conversation/configuration/plain-text draft, user-entry Run association, atomic draft submission, fresh-runtime reopen, and completed Run/activity retention despite Chat storage failure; real Local Directory/Git/Chat AOT backends and SQLite with a deterministic native model fixture, no paid provider) |
-| Prepared Chat composer/history | [`test/chat_frontend_eval_test.dart`](../../app/test/chat_frontend_eval_test.dart) (draft saves/submission/retry, stale snapshot protection, historical activity placement, and preserving live handles during refresh) |
+| Prepared Chat composer/history | [`test/chat_frontend_eval_test.dart`](../../app/test/chat_frontend_eval_test.dart) (draft saves/submission/retry, latest-save deactivation settlement, recoverable failure/pending-Send refusal, stale snapshot protection, historical activity placement, and preserving live handles during refresh) |
+| Session presentation settlement/rebinding | [`test/session_presentation_lifecycle_bridge_test.dart`](../../app/test/session_presentation_lifecycle_bridge_test.dart), [`test/prepared_session_host_test.dart`](../../app/test/prepared_session_host_test.dart) (async hook acceptance/failure, no-hook behavior, retirement during settlement, and exact action revocation on unbind/reopen) |
 | Session presentation/execution/approval | [`test/session_presentation_host_test.dart`](../../app/test/session_presentation_host_test.dart), [`test/session_execution_test.dart`](../../app/test/session_execution_test.dart), [`test/core/approval_gated_tool_policy_test.dart`](../../app/test/core/approval_gated_tool_policy_test.dart) |
 | Orchestration/authority adapters | [`test/core/orchestration_host_test.dart`](../../app/test/core/orchestration_host_test.dart), [`test/core/orchestration_authority_test.dart`](../../app/test/core/orchestration_authority_test.dart), [`test/core/model_tool_host_test.dart`](../../app/test/core/model_tool_host_test.dart), [`test/core/remote_inference_context_integration_test.dart`](../../app/test/core/remote_inference_context_integration_test.dart) |
 | Activity/Inspection | [`test/core/run_activity_projection_test.dart`](../../app/test/core/run_activity_projection_test.dart), [`test/inspection_host_test.dart`](../../app/test/inspection_host_test.dart), [`test/inspection_stack_test.dart`](../../app/test/inspection_stack_test.dart), [`test/openai_activity_frontend_eval_test.dart`](../../app/test/openai_activity_frontend_eval_test.dart) |
 | Historical activity access | [`test/session_execution_activity_test.dart`](../../app/test/session_execution_activity_test.dart), [`test/session_execution_bridge_test.dart`](../../app/test/session_execution_bridge_test.dart) (Session validation, read-only opaque handles, unchanged activity/Inspection paths, and no execution authority) |
-| Prepared normal composition, no live model | [`test/core/normal_task_git_integration_test.dart`](../../app/test/core/normal_task_git_integration_test.dart), [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (local fake Responses/credentials and picker; durable Chat/activity reopen with prepared presentation, not native picker or browser/navigation proof) |
+| Prepared normal composition, no live model | [`test/core/normal_task_git_integration_test.dart`](../../app/test/core/normal_task_git_integration_test.dart), [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (local fake Responses/credentials and picker; prepared browser navigation across Tasks/Sessions, durable Chat/activity reopen, active/approval navigation refusal, delayed/failed draft settlement, and Inspection clearing; not interactive native-picker proof) |
 | Deterministic self-hosting | [`test/development/agent/development_self_hosting_test.dart`](../../app/test/development/agent/development_self_hosting_test.dart), [`test/development/agent/environment_read_agent_integration_test.dart`](../../app/test/development/agent/environment_read_agent_integration_test.dart) |
 
 Application dependency-boundary checks belong to
@@ -161,6 +165,41 @@ and launcher checks also live in that target:
 [`self_hosting_cli_test.dart`](../../test/tools/self_hosting_cli_test.dart).
 See [developer self-hosting](self-hosting.md#validation-and-source-map) for that
 workflow's source/evidence owners and deterministic-versus-live distinction.
+
+### Focused browser checks
+
+The Task Browser public resolver belongs to
+[`packages/ui/test/task_browser_test.dart`](../../packages/ui/test/task_browser_test.dart);
+descriptor validation belongs to
+[`packages/plugin_runtime/test/prepared_plugin_catalog_test.dart`](../../packages/plugin_runtime/test/prepared_plugin_catalog_test.dart).
+The stock frontend's actual-EVC presentation cases belong to the
+[`task_browser_frontend` tests](../../plugins/task_browser/packages/frontend/test/task_browser_frontend_test.dart),
+separate from app source/authority and real-backend composition checks. Use the
+maintained targets from the repository root after bootstrap:
+
+```sh
+dart tools/adele.dart test --target adele_ui
+dart tools/adele.dart test --target plugin_runtime
+dart tools/adele.dart test --target task_browser_frontend
+dart tools/adele.dart test --target adele_tools
+```
+
+For focused host and navigation iteration from `app/`, with generated parts current:
+
+```sh
+flutter test --no-pub test/window_task_browser_source_test.dart test/task_browser_bridge_test.dart test/task_browser_presentation_host_test.dart
+flutter test --no-pub test/prepared_task_browser_host_test.dart
+flutter test --no-pub test/session_presentation_lifecycle_bridge_test.dart test/prepared_session_host_test.dart test/chat_frontend_eval_test.dart
+flutter test --no-pub --concurrency 1 test/core/normal_chatgpt_run_integration_test.dart
+```
+
+The normal integration uses prepared AOT/EVC components and real SQLite/Git with
+local fake Responses and credentials, not a live paid model. Browser reads/opening
+are checked separately from Task establishment and Run execution. Workspace,
+analysis/test discovery, frontend compilation, frontend-only installation assembly,
+and production app dependency boundaries are tooling concerns, not established by
+a plugin widget test alone. These paths and commands are a validation map, not
+recorded pass results or cross-platform desktop proof.
 
 ### Focused persistence checks
 
@@ -185,9 +224,9 @@ The real-AOT integration needs the pinned Dart AOT toolchain and Git but no live
 provider credentials. It checks durable state across runtime/backend lifetimes,
 including exact partial-draft restoration without Run start and submission
 retention after another reopen, not interactive desktop navigation or approval
-restart. The normal Chat test uses a local fake provider and exercises the prepared
-composer-to-Run flow and reopened terminal activity through the same presentation
-paths. Consult the test source
+restart. The normal Chat test uses a local fake provider and exercises prepared
+browser/breadcrumb navigation, composer-to-Run flow, and reopened terminal activity
+through the same presentation paths. Consult the test source
 for its exact cases; these commands are guidance, not recorded pass results.
 
 The public contract's value/transport checks belong to

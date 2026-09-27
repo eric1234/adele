@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:adele_desktop/frontend/owning_backend_bridge.dart';
 import 'package:adele_desktop/frontend/session_execution_bridge.dart';
+import 'package:adele_desktop/frontend/session_presentation_lifecycle_bridge.dart';
 import 'package:contract_codegen/contract_codegen.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:flutter_eval/flutter_eval.dart';
@@ -30,6 +31,7 @@ Future<Map<String, Map<String, String>>> chatFrontendSources(
       for (final name in [
         'owning_backend_bridge.dart',
         'session_execution_bridge.dart',
+        'session_presentation_lifecycle_bridge.dart',
         'inspection_display.dart',
       ])
         name: await File('$root/packages/ui/lib/$name').readAsString(),
@@ -59,6 +61,7 @@ Future<void> compileChatFrontend({
     ..addPlugin(flutterEvalPlugin)
     ..addPlugin(const OwningBackendDeclarations())
     ..addPlugin(const SessionExecutionDeclarations())
+    ..addPlugin(const SessionPresentationLifecycleDeclarations())
     ..entrypoints.add('package:adele_contract/adele_contract.dart')
     ..entrypoints.add(
       'package:chat_strategy_contract/chat_strategy_contract.dart',
