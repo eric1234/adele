@@ -3,7 +3,8 @@
 `adele_environment` defines one coherent Environment provider capability for
 establishment, restoration, bounded text-file reads, create-new text files,
 conditional replacement and deletion of existing text files, direct-child
-directory listings, and bounded foreground process execution. It uses ADELE's
+directory listings, bounded foreground process execution, and optional interactive
+terminal resources. It uses ADELE's
 generated contract transport and existing capability registry.
 
 The wire carries a narrow closed snapshot of the relevant Environment, Task,
@@ -98,8 +99,51 @@ Nonzero exit codes are ordinary process results. Providers bound retained and
 emitted output independently for each stream and report truncation in the
 completed event.
 
+## Interactive terminals
+
+`EnvironmentTerminalProvider` is an optional facet of the **same selected
+Environment provider**, not another capability or provider selection. The generated
+`EnvironmentProviderService` carries its operations alongside the existing
+filesystem and foreground operations. The backend adapter reports declared
+`EnvironmentFailure` with `terminal_unavailable` for a provider without that facet.
+No host-local process fallback is permitted. Existing Session-bound authorized
+process services and `runForegroundProcess` retain their original semantics.
+
+`openTerminal(environmentId, request)` is lazy and single-subscription: listening
+creates one resource. `EnvironmentTerminalRequest` supplies an explicit program,
+immutable verbatim argv, Environment-relative working directory, and initial
+character dimensions. It has no implicit shell, arbitrary environment overrides,
+or process-lifetime timeout. Dimensions are bounded to 1..1000 columns and 1..2000
+rows. A provider publishes `opened(handle, dimensions)` only after establishment,
+then ordered combined PTY text, then an explicit completion. Normal exit requires
+the real exit status; nonzero exit is process data. Explicit closure is distinct
+from normal exit, and infrastructure failures are stream errors. EOF without
+completion is not successful execution.
+
+Handles are opaque, non-durable, local to one provider generation, and associated
+with exactly one Environment. Every input, resize, and close must check that
+association. `writeTerminal`, `resizeTerminal`, and `closeTerminal` are unary
+operations, not bidirectional streaming or a remote-object protocol. Closing an
+already-owned resource is idempotent; input/resize after completion or release must
+fail. A replacement provider does not acquire an old terminal's authority.
+
+Input and output messages carry at most 8192 UTF-16 code units of well-formed text.
+Control sequences, NUL, carriage returns, and line endings are preserved. Native
+byte decoding belongs to the provider; malformed UTF-8 handling must be explicit,
+and decoding must span OS read boundaries. Transport credit and message size do
+not bound a producer's own queues: implementations must propagate pause to actual
+production or fail and release on overflow, never discard arbitrary terminal
+chunks. Emulator scrollback is a separate presentation bound.
+
+The host resource owner retains one continuous subscription even while no view is
+mounted. Stream cancellation means **resource abandonment**, not hide/show. The
+resource owner captures and validates the exact Environment materialization,
+independently of Session/Run authority and presentation lifetime. Native emulator
+replies remain authorized while hidden, but not after closure or provider
+retirement. A completed screen may remain available for inspection without any
+process-directed authority. There is no backend reattachment or restart recovery.
+
 General create-or-overwrite semantics, directory/move/copy/binary mutation,
-recursive search, model-facing command policy/classification, background
-processes, process identity, stdin/PTY support, arbitrary environment overrides,
-release/destruction, complete Session lifecycle, and persistence remain outside
-this package in this round.
+recursive search, model-facing command policy/classification, background task
+scheduling, arbitrary environment overrides, complete Session lifecycle, and
+terminal persistence remain outside this package.

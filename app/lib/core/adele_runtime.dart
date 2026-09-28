@@ -7,9 +7,9 @@ import 'product_lifecycle.dart';
 import 'project_storage_host.dart';
 import 'run_id_source.dart';
 
-/// Application-lifetime host graph without implicit plugin activations.
+/// Pure-Dart application-lifetime host graph without implicit plugin activations.
 /// Providers and product operations are established separately by callers.
-final class AdeleRuntime {
+base class AdeleRuntime {
   AdeleRuntime({ProductIdSource? ids, RunIdSource? runIds})
     : runIds = runIds ?? MonotonicRunIdSource() {
     lifecycle = ProductLifecycleCoordinator.generated(
@@ -36,11 +36,16 @@ final class AdeleRuntime {
   late final ApplicationPluginBootstrap plugins;
   Future<void>? _closing;
 
-  /// Stops product admission and joins database cleanup with backend shutdown.
-  /// Starting backend teardown lets its normal request revocation settle opens.
+  /// Stops admission and joins database cleanup with backend shutdown so normal
+  /// request revocation can settle outstanding product opens.
   /// Concurrent and subsequent callers observe the same completion or failure.
-  Future<void> close() => _closing ??= Future.wait<void>([
-    lifecycle.close(),
-    plugins.close(),
-  ]).then((_) {});
+  Future<void> close() => _closing ??= _close();
+
+  Future<void> _close() {
+    final productClosing = Future<void>.sync(lifecycle.close);
+    return Future.wait<void>([
+      productClosing,
+      Future<void>.sync(plugins.close),
+    ]).then((_) {});
+  }
 }

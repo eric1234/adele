@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:ui' show AppExitResponse;
 
 import 'package:adele_core_extensions/adele_core_extensions.dart';
-import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
@@ -12,6 +11,7 @@ import 'package:adele_desktop/frontend/prepared_session_host.dart';
 import 'package:adele_desktop/frontend/prepared_task_browser_host.dart';
 import 'package:adele_desktop/frontend/window_task_browser_source.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
+import 'package:adele_desktop/terminal/native_adele_runtime.dart';
 import 'package:adele_desktop/ui/execution/run_execution_status.dart';
 import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
@@ -29,14 +29,14 @@ import 'package:flutter/material.dart';
 final class AdeleApplication extends StatefulWidget {
   const AdeleApplication({
     super.key,
-    this.createRuntime = AdeleRuntime.new,
+    this.createRuntime = NativeAdeleRuntime.new,
     this.bootstrapPlugins,
     this.readChatGptConfiguration = StockChatGptConfiguration.fromEnvironment,
     this.runIds,
   });
 
   /// Called once when mounted; this application owns and closes the result.
-  final AdeleRuntime Function() createRuntime;
+  final NativeAdeleRuntime Function() createRuntime;
 
   final Future<void> Function(ApplicationPluginBootstrap)? bootstrapPlugins;
   final StockChatGptConfiguration? Function() readChatGptConfiguration;
@@ -47,7 +47,7 @@ final class AdeleApplication extends StatefulWidget {
 }
 
 final class _AdeleApplicationState extends State<AdeleApplication> {
-  late final AdeleRuntime _runtime;
+  late final NativeAdeleRuntime _runtime;
   late final AppLifecycleListener _lifecycleListener;
   late final StreamSubscription<ApplicationPluginState> _pluginSubscription;
   late final StreamSubscription<void> _extensionSubscription;

@@ -174,6 +174,7 @@ After bootstrap, run from `app/` using the repository pin:
 
 ```sh
 flutter test --no-pub --concurrency 1 test/native_terminal_surface_test.dart test/terminal_surface_bridge_test.dart
+flutter test --no-pub --concurrency 1 test/environment_terminal_owner_test.dart test/environment_terminal_integration_test.dart
 flutter analyze --no-pub --fatal-infos
 ```
 
@@ -185,9 +186,27 @@ paths exercise text/control input, explicit paste, focus, mouse reporting, and
 layout changes. Fixed frame advancement accounts for the terminal's gesture and
 cursor behavior; do not use unbounded `pumpAndSettle` with blinking cursors.
 
-Both files are automatically included by the existing unrestricted
+The Environment owner tests cover lifetime and captured authority separately from
+the presentation-only regressions. The real integration prepares the same frontend
+fixture and crosses the native owner, generated Environment transport, shared AOT
+host, and actual Git backend. Its local process fixture uses bounded handshakes,
+not credentials, network, or model calls. A widget-only or standalone native PTY
+test is not a substitute for that combined path.
+
+From the repository root, the owning public/backend and preparation checks are:
+
+```sh
+dart tools/adele.dart test --target adele_environment
+dart tools/adele.dart test --target git_environment_backend
+dart test test/tools/backend_artifacts_test.dart test/tools/app_plugin_boundary_test.dart test/tools/adele_test.dart
+dart tools/adele.dart generate --check
+```
+
+The terminal app files are automatically included by the existing unrestricted
 `adele_desktop` target and its CI selection; no separate fixture target or stock
-artifact preparation is needed. Keep Flutter compiler/test invocations sharing
+frontend artifact preparation is needed. The Git backend target includes its native
+PTY/shared-host proof and provider resource tests. CI explicitly installs `gcc` and
+`libc6-dev` for those native Git/app proofs. Keep Flutter compiler/test invocations sharing
 the app build directory serialized. These tests establish debug widget/evaluator
 behavior on the pin, not native desktop/profile or cross-platform runtime proof.
 The [application map](../../app/README.md#native-terminal-surface) owns the

@@ -128,9 +128,13 @@ final class PluginCapabilityActivation {
       }
     } on Object {
       try {
-        beforeRollback?.call();
-      } finally {
-        await registrations.close();
+        try {
+          beforeRollback?.call();
+        } finally {
+          await registrations.close();
+        }
+      } on Object {
+        // Rollback must finish, but cannot replace the original activation error.
       }
       rethrow;
     }
@@ -150,7 +154,21 @@ final class PluginCapabilityActivation {
 
   Future<void> close() async {
     connection.revokeInfrastructureContext();
-    await retire();
-    if (!connection.isClosed) await connection.close();
+    Object? firstError;
+    StackTrace? firstStack;
+    try {
+      await retire();
+    } catch (error, stack) {
+      firstError = error;
+      firstStack = stack;
+    }
+    try {
+      if (!connection.isClosed) await connection.close();
+    } catch (error, stack) {
+      firstError ??= error;
+      firstStack ??= stack;
+    }
+    // Complete both obligations; a later shutdown error must not mask retirement.
+    if (firstError != null) Error.throwWithStackTrace(firstError, firstStack!);
   }
 }

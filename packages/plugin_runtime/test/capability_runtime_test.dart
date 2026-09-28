@@ -192,6 +192,224 @@ void main() {
   );
 
   test(
+    'rollback retires all owned bindings and retains the activation error',
+    () async {
+      final fake = _FakeHost.create();
+      addTearDown(fake.dispose);
+      final host = await fake.start();
+      addTearDown(host.close);
+      final connection = await host.startPlugin(
+        pluginId: 'dev.adele.provider',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      final registry = CapabilityRegistry();
+      final retained = await PluginCapabilityActivation.register(
+        connection: connection,
+        registry: registry,
+        exposures: [
+          PluginCapabilityExposure(
+            provider: _provider(capability, 'dev.adele.provider.retained'),
+            configurationContext: connection.defaultConfigurationContext,
+          ),
+        ],
+      );
+      final unrelated = registry.resolve(capability);
+      final bindings = <ProviderBinding>[];
+      final visited = <int>[];
+      final error = StateError('Exposure iteration failed.');
+      final stack = StackTrace.fromString('original exposure iterator stack');
+      Iterable<PluginCapabilityExposure> exposures() sync* {
+        for (var index = 0; index < 3; index++) {
+          final provider = _provider(
+            capability,
+            'dev.adele.provider.attempt-$index',
+          );
+          yield PluginCapabilityExposure(
+            provider: provider,
+            configurationContext: connection.defaultConfigurationContext,
+          );
+          final binding = registry.resolve(capability, providerId: provider.id);
+          bindings.add(binding);
+          binding.onRetire(() {
+            visited.add(index);
+            if (index == 2) {
+              throw StateError('Secondary rollback observer error.');
+            }
+          });
+        }
+        Error.throwWithStackTrace(error, stack);
+      }
+
+      try {
+        await PluginCapabilityActivation.register(
+          connection: connection,
+          registry: registry,
+          exposures: exposures(),
+          beforeRollback: () {
+            expect(visited, isEmpty);
+            throw StateError('Secondary rollback hook failure.');
+          },
+        );
+        fail('Activation must fail.');
+      } catch (caught, caughtStack) {
+        expect(caught, same(error));
+        expect(caughtStack.toString(), stack.toString());
+      }
+      expect(visited, [2, 1, 0]);
+      for (final binding in bindings) {
+        expect(
+          () => binding.requestChannel,
+          throwsA(isA<ProviderUnavailable>()),
+        );
+      }
+      expect(registry.providersFor(capability).map((provider) => provider.id), [
+        unrelated.provider.id,
+      ]);
+      expect(() => unrelated.requestChannel, returnsNormally);
+      expect(connection.isClosed, isFalse);
+      expect(connection.validateInfrastructureContext, returnsNormally);
+      await retained.close();
+    },
+  );
+
+  for (final observerFails in [false, true]) {
+    test(
+      'explicit close preserves first failure when stop fails, observer=$observerFails',
+      () async {
+        final fake = _FakeHost.create(
+          failOnStop: true,
+          readyFields: {
+            'capabilityExposures': [firstExposure],
+          },
+        );
+        addTearDown(fake.dispose);
+        final host = await fake.start();
+        addTearDown(host.close);
+        final connection = await host.startPlugin(
+          pluginId: 'dev.adele.provider',
+          artifactUri: Uri.file('/unused.aot'),
+        );
+        final registry = CapabilityRegistry();
+        final activation = await PluginCapabilityActivation.registerAdvertised(
+          connection: connection,
+          registry: registry,
+        );
+        final error = StateError('Observer failure before stop failure.');
+        final stack = StackTrace.fromString(
+          'observer before failed stop stack',
+        );
+        var visits = 0;
+        registry.resolve(capability).onRetire(() {
+          visits++;
+          if (observerFails) Error.throwWithStackTrace(error, stack);
+        });
+        try {
+          await activation.close();
+          fail('Stop failure must be reported if retirement succeeds.');
+        } catch (caught, caughtStack) {
+          if (observerFails) {
+            expect(caught, same(error));
+            expect(caughtStack.toString(), stack.toString());
+          } else {
+            expect(
+              caught,
+              isA<PluginRemoteFailure>().having(
+                (failure) => failure.code,
+                'code',
+                'stop_failed',
+              ),
+            );
+          }
+        }
+        expect(visits, 1);
+        expect(connection.isClosed, isTrue);
+        expect(registry.providersFor(capability), isEmpty);
+        if (observerFails) {
+          await expectLater(activation.close(), throwsA(same(error)));
+        } else {
+          await activation.close();
+        }
+        expect(visits, 1);
+      },
+    );
+  }
+
+  test(
+    'explicit close shuts down connection despite retirement observer errors',
+    () async {
+      final fake = _FakeHost.create(
+        readyFields: {
+          'capabilityExposures': [firstExposure, secondExposure],
+        },
+      );
+      addTearDown(fake.dispose);
+      final host = await fake.start();
+      addTearDown(host.close);
+      final connection = await host.startPlugin(
+        pluginId: 'dev.adele.provider',
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      final registry = CapabilityRegistry();
+      final activation = await PluginCapabilityActivation.registerAdvertised(
+        connection: connection,
+        registry: registry,
+      );
+      final first = registry.resolve(
+        capability,
+        providerId: ProviderId(firstExposure['providerId']! as String),
+      );
+      final second = registry.resolve(
+        capability,
+        providerId: ProviderId(secondExposure['providerId']! as String),
+      );
+      final visited = <String>[];
+      final error = StateError('Retirement observer failed.');
+      final stack = StackTrace.fromString('original activation observer stack');
+      first.onRetire(() => visited.add('first'));
+      second.onRetire(() {
+        visited.add('second');
+        Error.throwWithStackTrace(error, stack);
+      });
+      try {
+        await activation.close();
+        fail('Expected retirement failure after backend cleanup.');
+      } catch (caught, caughtStack) {
+        expect(caught, same(error));
+        expect(caughtStack.toString(), stack.toString());
+        expect(visited, ['second', 'first']);
+        expect(registry.providersFor(capability), isEmpty);
+        expect(connection.isClosed, isTrue);
+      }
+      // The stop acknowledgement releases the exact PluginId for a replacement.
+      final replacement = await host.startPlugin(
+        pluginId: connection.pluginId,
+        artifactUri: Uri.file('/unused.aot'),
+      );
+      final next = await PluginCapabilityActivation.registerAdvertised(
+        connection: replacement,
+        registry: registry,
+      );
+      await expectLater(activation.close(), throwsA(same(error)));
+      expect(visited, ['second', 'first']);
+      for (final binding in [first, second]) {
+        expect(
+          () => binding.requestChannel,
+          throwsA(
+            isA<ProviderUnavailable>().having(
+              (error) => error.stale,
+              'stale',
+              isTrue,
+            ),
+          ),
+        );
+      }
+      expect(replacement.isClosed, isFalse);
+      expect(next.owns(registry.resolve(capability)), isTrue);
+      await next.close();
+    },
+  );
+
+  test(
     'advertised bindings retire on termination and cannot migrate to replacement',
     () async {
       final fake = _FakeHost.create(
@@ -602,6 +820,7 @@ final class _FakeHost {
 
   factory _FakeHost.create({
     bool failOnRequest = false,
+    bool failOnStop = false,
     bool contextEcho = false,
     Map<String, Object?> readyFields = const {},
   }) {
@@ -622,7 +841,7 @@ void main() {
       if (message['kind'] == 'startPlugin') {
         stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginReady', 'requestId': message['requestId'], 'pluginId': message['pluginId'], ...${jsonEncode(readyFields)}}));
       } else if (message['kind'] == 'stopPlugin') {
-        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginStopped', 'requestId': message['requestId'], 'pluginId': message['pluginId']}));
+        stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': '${failOnStop ? 'response' : 'pluginStopped'}', 'requestId': message['requestId'], 'pluginId': message['pluginId'], ${failOnStop ? "'ok': false, 'error': {'code': 'stop_failed', 'message': 'Stop failed.'}" : ''}}));
       } else if (message['kind'] == 'request') {
         ${failOnRequest
           ? "stdout.add(encodeBackendHostFrame({'protocolVersion': backendHostProtocolVersion, 'kind': 'pluginFailed', 'pluginId': message['pluginId'], 'requestIds': [message['requestId']], 'error': {'code': 'plugin_exited', 'message': 'failed'}}));"

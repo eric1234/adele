@@ -13,6 +13,7 @@ import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
+import 'package:adele_desktop/terminal/native_adele_runtime.dart';
 import 'package:adele_desktop/ui/execution/run_execution_status.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
 import 'package:adele_desktop/ui/session/session_presentation_host.dart';
@@ -726,7 +727,7 @@ void main() {
         // Reopen through the actual application and prepared Project selector.
         // No credentials are supplied; browsing cannot create execution authority.
         final ids = _NoReopenIds();
-        final fresh = AdeleRuntime(ids: ids, runIds: ids);
+        final fresh = NativeAdeleRuntime(ids: ids, runIds: ids);
         addTearDown(fresh.close);
         await fixture.launch(
           tester,
@@ -1666,7 +1667,7 @@ final class _ProductFixture {
   _ProductFixture(this.directory, this.source);
   final Directory directory;
   final Directory source;
-  final runtime = AdeleRuntime(
+  final runtime = NativeAdeleRuntime(
     ids: MonotonicProductIdSource(seed: 'f3g-product'),
   );
   final runIds = _RunIds();
@@ -1698,7 +1699,7 @@ final class _ProductFixture {
     _PreparedProduct prepared, {
     Directory? root,
     HttpServer? endpoint,
-    AdeleRuntime? usingRuntime,
+    NativeAdeleRuntime? usingRuntime,
     RunIdSource? usingRunIds,
     Map<String, List<String>> startupArguments = const {},
   }) async {

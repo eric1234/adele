@@ -182,6 +182,10 @@ void main() {
         'authorizedEnvironmentProcess.authority',
         'authorizedEnvironmentProcess.readFile',
         'authorizedEnvironmentProcess.createTextFile',
+        'authorizedEnvironmentProcess.openTerminal',
+        'authorizedEnvironmentProcess.writeTerminal',
+        'authorizedEnvironmentProcess.resizeTerminal',
+        'authorizedEnvironmentProcess.closeTerminal',
         environmentProviderServiceRunForegroundProcessId,
       ]) {
         await expectLater(

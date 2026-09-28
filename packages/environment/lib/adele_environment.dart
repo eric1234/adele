@@ -13,6 +13,11 @@ const String environmentFileAlreadyExistsCode = 'file_already_exists';
 /// Failure code for a rejected stale conditional text-file mutation.
 const String environmentRevisionConflictCode = 'revision_conflict';
 
+const String environmentTerminalUnavailableCode = 'terminal_unavailable';
+
+/// Per-message bounds, independent of provider buffering and emulator scrollback.
+const int environmentTerminalTextLimit = 8192;
+
 final capabilities.CapabilityKey environmentProviderCapability =
     capabilities.CapabilityKey(
       id: capabilities.CapabilityId('dev.adele.environment.provider'),
@@ -26,6 +31,117 @@ enum EnvironmentProcessEventKind { output, completed }
 enum EnvironmentProcessOutputStream { stdout, stderr }
 
 enum EnvironmentProcessTermination { exited, timedOut }
+
+enum EnvironmentTerminalEventKind { opened, output, completed }
+
+enum EnvironmentTerminalTermination { exited, closed }
+
+@AdeleValue('environment.terminalDimensions')
+final class EnvironmentTerminalDimensions {
+  EnvironmentTerminalDimensions({required this.columns, required this.rows}) {
+    if (columns < 1 || columns > 1000 || rows < 1 || rows > 2000) {
+      throw const FormatException(
+        'Terminal dimensions must be 1..1000 columns and 1..2000 rows.',
+      );
+    }
+  }
+
+  final int columns;
+  final int rows;
+}
+
+@AdeleValue('environment.terminalRequest')
+final class EnvironmentTerminalRequest {
+  EnvironmentTerminalRequest({
+    required this.program,
+    required List<String> arguments,
+    required this.relativeWorkingDirectory,
+    required this.dimensions,
+  }) : arguments = List<String>.unmodifiable(arguments) {
+    if (program.isEmpty) {
+      throw const FormatException('Terminal program must not be empty.');
+    }
+    _requireProcessText('Terminal program', program);
+    for (final argument in this.arguments) {
+      _requireProcessText('Terminal argument', argument);
+    }
+    _requireProcessText('Terminal working directory', relativeWorkingDirectory);
+  }
+
+  final String program;
+  final List<String> arguments;
+  final String relativeWorkingDirectory;
+  final EnvironmentTerminalDimensions dimensions;
+}
+
+@AdeleValue('environment.terminalOpened')
+final class EnvironmentTerminalOpened {
+  EnvironmentTerminalOpened({required this.handle, required this.dimensions}) {
+    if (handle.isEmpty || handle.length > 256) {
+      throw const FormatException(
+        'Terminal handle must contain 1..256 characters.',
+      );
+    }
+    _requireProcessText('Terminal handle', handle);
+  }
+
+  /// Opaque provider-generation-local identity, never an OS process ID.
+  final String handle;
+  final EnvironmentTerminalDimensions dimensions;
+}
+
+@AdeleValue('environment.terminalCompleted')
+final class EnvironmentTerminalCompleted {
+  EnvironmentTerminalCompleted({
+    required this.termination,
+    required this.exitCode,
+  }) {
+    if (termination == EnvironmentTerminalTermination.exited &&
+        exitCode == null) {
+      throw const FormatException(
+        'Normal terminal exit requires an exit status.',
+      );
+    }
+  }
+
+  final EnvironmentTerminalTermination termination;
+  final int? exitCode;
+}
+
+@AdeleValue('environment.terminalEvent')
+final class EnvironmentTerminalEvent {
+  EnvironmentTerminalEvent({
+    required this.kind,
+    required this.opened,
+    required this.output,
+    required this.completed,
+  }) {
+    if ((kind == EnvironmentTerminalEventKind.opened) != (opened != null) ||
+        (kind == EnvironmentTerminalEventKind.output) != (output != null) ||
+        (kind == EnvironmentTerminalEventKind.completed) !=
+            (completed != null)) {
+      throw const FormatException(
+        'Terminal event requires exactly its kind payload.',
+      );
+    }
+    if (output case final text?) validateEnvironmentTerminalText(text);
+  }
+
+  final EnvironmentTerminalEventKind kind;
+  final EnvironmentTerminalOpened? opened;
+  final String? output;
+  final EnvironmentTerminalCompleted? completed;
+}
+
+/// Input and output preserve control characters, including NUL and carriage return.
+void validateEnvironmentTerminalText(String text) {
+  if (text.isEmpty || text.length > environmentTerminalTextLimit) {
+    throw const FormatException(
+      'Terminal text must contain 1..8192 code units.',
+    );
+  }
+  _requireWellFormedUnicode('Terminal text', text);
+}
 
 /// Closed transport snapshot used to reify one local product relationship graph.
 @AdeleValue('environment.context')
@@ -347,6 +463,25 @@ abstract interface class EnvironmentProviderService {
     String environmentId,
     EnvironmentForegroundProcessRequest request,
   );
+
+  @AdeleMethod('openTerminal')
+  Stream<EnvironmentTerminalEvent> openTerminal(
+    String environmentId,
+    EnvironmentTerminalRequest request,
+  );
+
+  @AdeleMethod('writeTerminal')
+  Future<void> writeTerminal(String environmentId, String handle, String text);
+
+  @AdeleMethod('resizeTerminal')
+  Future<void> resizeTerminal(
+    String environmentId,
+    String handle,
+    EnvironmentTerminalDimensions dimensions,
+  );
+
+  @AdeleMethod('closeTerminal')
+  Future<void> closeTerminal(String environmentId, String handle);
 }
 
 @AdeleValue('environment.authorizedIdentity')
@@ -513,7 +648,8 @@ abstract interface class EnvironmentProvider {
 }
 
 /// Host-side adapter from a generated binding to ordinary Environment values.
-final class GeneratedEnvironmentProvider implements EnvironmentProvider {
+final class GeneratedEnvironmentProvider
+    implements EnvironmentProvider, EnvironmentTerminalProvider {
   const GeneratedEnvironmentProvider({
     required this.providerId,
     required EnvironmentProviderService service,
@@ -590,6 +726,35 @@ final class GeneratedEnvironmentProvider implements EnvironmentProvider {
     product.EnvironmentId environmentId,
     EnvironmentForegroundProcessRequest request,
   ) => _service.runForegroundProcess(environmentId.value, request);
+
+  @override
+  Stream<EnvironmentTerminalEvent> openTerminal(
+    product.EnvironmentId environmentId,
+    EnvironmentTerminalRequest request,
+  ) => _service.openTerminal(environmentId.value, request);
+
+  @override
+  Future<void> writeTerminal(
+    product.EnvironmentId environmentId,
+    String handle,
+    String text,
+  ) {
+    validateEnvironmentTerminalText(text);
+    return _service.writeTerminal(environmentId.value, handle, text);
+  }
+
+  @override
+  Future<void> resizeTerminal(
+    product.EnvironmentId environmentId,
+    String handle,
+    EnvironmentTerminalDimensions dimensions,
+  ) => _service.resizeTerminal(environmentId.value, handle, dimensions);
+
+  @override
+  Future<void> closeTerminal(
+    product.EnvironmentId environmentId,
+    String handle,
+  ) => _service.closeTerminal(environmentId.value, handle);
 
   void _requireSelectedProvider(LocalEnvironment environment) {
     if (environment.providerId != providerId) {
@@ -671,6 +836,51 @@ final class EnvironmentProviderServiceAdapter
     EnvironmentForegroundProcessRequest request,
   ) => _provider.runForegroundProcess(_environmentId(environmentId), request);
 
+  EnvironmentTerminalProvider get _terminals {
+    final provider = _provider;
+    if (provider is EnvironmentTerminalProvider) {
+      return provider as EnvironmentTerminalProvider;
+    }
+    throw const EnvironmentFailure(
+      code: environmentTerminalUnavailableCode,
+      message: 'This Environment provider does not support terminals.',
+      details: <String, Object?>{},
+    );
+  }
+
+  @override
+  Stream<EnvironmentTerminalEvent> openTerminal(
+    String environmentId,
+    EnvironmentTerminalRequest request,
+  ) async* {
+    yield* _terminals.openTerminal(_environmentId(environmentId), request);
+  }
+
+  @override
+  Future<void> writeTerminal(String environmentId, String handle, String text) {
+    validateEnvironmentTerminalText(text);
+    return _terminals.writeTerminal(
+      _environmentId(environmentId),
+      handle,
+      text,
+    );
+  }
+
+  @override
+  Future<void> resizeTerminal(
+    String environmentId,
+    String handle,
+    EnvironmentTerminalDimensions dimensions,
+  ) => _terminals.resizeTerminal(
+    _environmentId(environmentId),
+    handle,
+    dimensions,
+  );
+
+  @override
+  Future<void> closeTerminal(String environmentId, String handle) =>
+      _terminals.closeTerminal(_environmentId(environmentId), handle);
+
   LocalEnvironment _localEnvironment(EnvironmentTransportContext context) {
     final LocalEnvironment environment = _reify(context);
     if (environment.providerId != _provider.providerId) {
@@ -685,6 +895,38 @@ final class EnvironmentProviderServiceAdapter
     }
     return environment;
   }
+}
+
+/// Optional facet of the selected Environment provider, not another capability.
+///
+/// Opening is lazy and single-subscription. Cancellation abandons the resource;
+/// hiding a view must not cancel its owner's subscription. Opened precedes ordered
+/// output and one explicit completion. Infrastructure failures are stream errors;
+/// EOF without completion is not successful execution. Handles stay associated
+/// with exactly one Environment and one provider generation. Close is idempotent
+/// for an owned handle; write/resize require a still-live resource.
+abstract interface class EnvironmentTerminalProvider {
+  Stream<EnvironmentTerminalEvent> openTerminal(
+    product.EnvironmentId environmentId,
+    EnvironmentTerminalRequest request,
+  );
+
+  Future<void> writeTerminal(
+    product.EnvironmentId environmentId,
+    String handle,
+    String text,
+  );
+
+  Future<void> resizeTerminal(
+    product.EnvironmentId environmentId,
+    String handle,
+    EnvironmentTerminalDimensions dimensions,
+  );
+
+  Future<void> closeTerminal(
+    product.EnvironmentId environmentId,
+    String handle,
+  );
 }
 
 EnvironmentTransportContext _snapshot(LocalEnvironment environment) {

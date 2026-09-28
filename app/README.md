@@ -32,12 +32,12 @@ and [architecture overview](../docs/architecture/overview.md) for cross-system c
 
 [`main.dart`](lib/main.dart) launches `AdeleApplication` in
 [`application.dart`](lib/application.dart). Application State constructs one
-`AdeleRuntime` synchronously, retains it across rebuilds, and explicitly starts
+`NativeAdeleRuntime` synchronously, retains it across rebuilds, and explicitly starts
 asynchronous plugin bootstrap.
 
 ```text
 Flutter application
-    -> construct AdeleRuntime
+    -> construct NativeAdeleRuntime
     -> discover shared prepared installation catalog
          +-> notify window -> activate prepared frontends -> ExtensionRegistry
          +-> start valid prepared backends
@@ -46,7 +46,10 @@ Flutter application
     -> window / product / Session interaction
 ```
 
-`AdeleRuntime()` statically activates zero stock plugins. Construction is
+`AdeleRuntime` is the pure-Dart host graph shared with SDK-only self-hosting.
+[`NativeAdeleRuntime`](lib/terminal/native_adele_runtime.dart) adds desktop-owned
+terminal resources without putting Flutter in that shared import graph.
+Both runtimes statically activate zero stock plugins. Construction is
 provider-free: it starts no backend host or compiler, loads no credentials, and
 creates no Project, Task, Environment, Session, or Run.
 
@@ -173,12 +176,14 @@ for the broader preparation model, not portable release packaging.
 [`NativeTerminalSurface`](lib/terminal/native_terminal_surface.dart) is an
 app-private adapter over published `xterm2 5.2.0`, not a stock Terminal plugin or
 an execution resource. Native code constructs the owner, feeds ordered text with
-`write`, chooses immutable `readOnly` configuration and callbacks, and explicitly
+`write`, chooses initial `readOnly` configuration and callbacks, and explicitly
 calls `dispose`. It requires no Project, Task, Session, Environment, or durable ID.
 The emulator and incremental escape parser survive complete view unmounts; output
-while hidden updates the same buffers without transcript replay.
+while hidden updates the same buffers without transcript replay. Execution owners
+may permanently revoke its outbound routes while preserving read-only display;
+that transition never grants authority to an initially read-only surface.
 
-The initial grid is 80 columns by 24 rows. The default `maxLines` is 2,000 lines
+The default initial grid is 80 columns by 24 rows. The default `maxLines` is 2,000 lines
 **including the viewport**, per emulator buffer; native callers may choose another
 finite value of at least 24. Rows cannot exceed that bound, and columns are capped
 at 1,000, including output-requested geometry. Older parsed lines are evicted by
@@ -227,8 +232,55 @@ declarations, writes actual EVC bytes, and mounts through
 See [focused commands](../docs/development/testing.md#focused-terminal-checks) and
 [dependency/toolchain evidence](../docs/development/toolchain.md#native-terminal-dependency).
 This surface is not automatically installed in any application screen or catalog
-role. PTYs, Environment terminal resources, command Inspection integration, byte
-decoding/backpressure, persistence, and stock Terminal UI remain unimplemented.
+role. Command Inspection integration, terminal persistence, and stock Terminal UI
+remain unimplemented.
+
+### Environment terminal ownership
+
+[`environment_terminal_owner.dart`](lib/terminal/environment_terminal_owner.dart)
+connects the surface to the selected public Environment terminal facet.
+`NativeAdeleRuntime.terminals` owns the application-private Environment-keyed collection;
+each `EnvironmentTerminalOwner` retains a distinct process resource and emulator.
+Only an explicit host-authorized open materializes canonical Environment context.
+There is no Session/Run creation, model tool, public terminal registry, or frontend
+Environment selector. Production app code imports no concrete PTY/provider package.
+
+An owner captures one `EnvironmentMaterialization` and exact registration, validates
+them across asynchronous opening and before subsequent operations, and observes
+retirement even with no output or view. It never restores or retries an existing
+resource through a replacement generation. Opened evidence precedes output; EOF
+without terminal completion becomes failure rather than fabricated success.
+Completion/disconnection revokes native input, layout resize, and protocol replies
+while keeping the screen available for inspection. Explicit release and runtime
+shutdown clean up resources independently of Flutter widget disposal.
+Native runtime close fences terminals and product admission synchronously, then
+grants terminal owners their bounded cleanup window before base runtime/backend
+teardown. Product cleanup joins backend teardown rather than blocking it, so
+connection revocation can still settle pending Project opens.
+
+Each live owner consumes one continuous ordered stream, feeding the emulator while
+hidden. View-originated input and layout callbacks carry their original native
+presentation validator through deferred dispatch; fresh access never revives an old
+view's queue. Emulator `onResponse` instead uses only live resource authority, so
+terminal queries still receive replies with no mounted widget. Callback failures
+are recorded on the owner and trigger cleanup, not unhandled evaluator/Flutter
+errors. Input admission is bounded to 65,536 pending UTF-16 code units and 128
+chunks, with at most 8192 code units per dispatched message; pending resize is
+coalesced. Closure or retirement discards queued effects before cleanup; it does
+not roll back an already admitted effect. The provider's
+[pending-output bounds](../plugins/git_environment/README.md#interactive-terminals)
+remain separate from emulator scrollback.
+
+[`environment_terminal_owner_test.dart`](test/environment_terminal_owner_test.dart)
+isolates authority, queue, and startup/retirement races. The
+[real integration](test/environment_terminal_integration_test.dart) prepares the
+unchanged interpreted fixture, actual shared host and Git backend AOT snapshots,
+and the provider's native helper before activation. It tests native input/resize,
+hidden output/query replies, complete unmount/remount without respawn, and retained
+completed/disconnected display. This is Linux debug widget/evaluator plus actual
+Dart AOT backend/process evidence, not a finished desktop Terminal feature or a
+cross-platform runtime claim. The next stock UI consumes these owners rather than
+creating processes from its widgets.
 
 ### ChatGPT source-checkout configuration
 
@@ -712,6 +764,7 @@ repository-wide deferred-feature ledger here.
 | --- | --- |
 | Entry/window composition | [`lib/main.dart`](lib/main.dart), [`lib/application.dart`](lib/application.dart): `AdeleApplication` |
 | Runtime construction | [`lib/core/adele_runtime.dart`](lib/core/adele_runtime.dart): `AdeleRuntime` |
+| Native runtime and terminal lifetime | [`lib/terminal/native_adele_runtime.dart`](lib/terminal/native_adele_runtime.dart): `NativeAdeleRuntime` |
 | Shared Run identity allocation | [`lib/core/run_id_source.dart`](lib/core/run_id_source.dart): `RunIdSource`, `MonotonicRunIdSource`; `AdeleRuntime.runIds` |
 | Backend bootstrap | [`lib/core/application_plugin_bootstrap.dart`](lib/core/application_plugin_bootstrap.dart): `ApplicationPluginBootstrap` |
 | Frontend generations/activation | [`lib/frontend/application_frontend_bootstrap.dart`](lib/frontend/application_frontend_bootstrap.dart), [`lib/frontend/prepared_frontend.dart`](lib/frontend/prepared_frontend.dart) |

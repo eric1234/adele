@@ -173,6 +173,12 @@ registrations, preserving infrastructure and other owners on the same connection
 Their `retire()` methods likewise remain registration-local. Their `close()` methods
 instead synchronously revoke generation infrastructure before invoking retirement
 or awaiting cleanup, then close the connection.
+Capability and composite activation close also attempt connection shutdown after
+[grouped retirement](../capabilities/README.md#semantics) failure. Cleanup reports
+the first failure with its original stack; a later cleanup failure does not replace
+it. Their rollback handlers retain the triggering activation failure rather than
+replacing it with secondary cleanup failures. Repeated retirement does not rerun observers or affect
+replacement registrations.
 
 `PluginBackendActivation.registerAdvertised` coherently owns both capability and
 extension phases. It passes `beforeRollback: connection.revokeInfrastructureContext`

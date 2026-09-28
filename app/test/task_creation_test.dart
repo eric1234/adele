@@ -6,9 +6,9 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/application.dart';
-import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_desktop/terminal/native_adele_runtime.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart'
@@ -25,7 +25,7 @@ import 'support/prepared_frontend_installations.dart';
 import 'support/project_provider.dart';
 
 void main() {
-  late AdeleRuntime runtime;
+  late NativeAdeleRuntime runtime;
   late _RecordingIds ids;
   late _EnvironmentChannel channel;
   late int runtimeCreations;
@@ -52,7 +52,7 @@ void main() {
 
   setUp(() {
     ids = _RecordingIds();
-    runtime = AdeleRuntime(ids: ids);
+    runtime = NativeAdeleRuntime(ids: ids);
     final directory = Directory.systemTemp.createTempSync(
       'adele-task-project-',
     );
@@ -87,7 +87,7 @@ void main() {
     });
   });
 
-  AdeleRuntime createRuntime() {
+  NativeAdeleRuntime createRuntime() {
     runtimeCreations++;
     return runtime;
   }
@@ -329,7 +329,7 @@ void main() {
     final created = await creating;
     await runtime.close();
 
-    runtime = AdeleRuntime(ids: ids);
+    runtime = NativeAdeleRuntime(ids: ids);
     final projectProvider = TestProjectProvider(runtime.registry);
     addTearDown(projectProvider.close);
     final selector = runtime.extensions.register(
