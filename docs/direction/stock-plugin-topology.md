@@ -69,7 +69,7 @@ Stock context-source plugins
 Stock review/presentation plugins
 ├── Diff / Review Viewer
 ├── Internal Source Editor
-└── Console / Terminal
+└── Terminal (content in the shared console)
 
 Stock model providers
 └── OpenAI
@@ -116,9 +116,9 @@ InspectionPresentation
     structured detail for an inspected operation/resource
     stock placement: lower right area
 
-StreamView / ConsolePresentation
-    wide stream/terminal-like content
-    stock placement: bottom area
+Shared console
+    host-owned tabs/actions/selection with independent contributed content
+    stock placement: bottom area of a presented Session
 
 ContextStatusContribution
     compact Project/Task/Environment/profile status
@@ -154,7 +154,7 @@ EnvironmentProvider
 Environment filesystem access
 Environment process execution
 DisplaySourceFile
-ConsoleService / console-resource operations
+Console contributions / content operations
 ModelProvider
 core Task creation
 core Session creation
@@ -170,7 +170,11 @@ making one implementation intrinsic to Project identity.
 
 `DisplaySourceFile` means make a source file visible/focused through a provider. It may focus an existing in-app editor, create a view, or launch an external editor.
 
-`ConsoleService` is broader than an `OpenTerminal` action. Depending on the resource it may create, display/focus, attach output, send input, or expose other console operations.
+The [shared console](../architecture/plugin-system.md#shared-console) is broader
+than Terminal. Core hosts independent contributions and common tab/action/selection
+behavior; each content owner supplies its own resource operations and eligibility.
+Broader command-output integrations should extend that boundary, not depend on a
+single stock Terminal service or nest under Terminal.
 
 The minimal `OrchestrationStrategy` registry/binding contract belongs to core/public APIs because core Session creation/restoration must authoritatively validate and retain the bound strategy identity. Strategy implementations remain plugins. Optional strategy-selection or presentation UI consumes this registry; it does not own it.
 
@@ -607,7 +611,7 @@ Likely provides:
 - streaming progress/output;
 - bounded model-facing results;
 - Chat summary and Inspection presentation;
-- optional `ConsoleService` integration for full output;
+- optional independent console content for full output, retaining invocation provenance;
 - command-specific effect/policy interpretation.
 
 It consumes current Environment process execution, core tool/policy infrastructure, and optional Console integration.
@@ -691,22 +695,29 @@ An External Editor plugin can implement the same narrow source-display capabilit
 
 ---
 
-# 10. Console / Terminal
+# 10. Shared console and Terminal
 
-**Role:** console/terminal presentation and user-created interactive shells without reducing the abstraction to `OpenTerminal`.
+**Role:** a host-owned common console composing independent content; Terminal is
+one stock frontend contribution, not the owner of the shared surface.
 
-Likely provides:
+The host owns tabs, creation-action discovery, selection, visibility, confirmation,
+and bounded cleanup. Contributions provide content, eligibility, metadata, and
+resource policy. Close advice has no veto; host-forced cleanup does not depend on
+a mounted plugin view. The console belongs to the Session workbench: Task Browser
+offers no panel, toggle, or console creation actions.
 
-- `StreamView` / console presentation;
-- interactive Environment-owned shell resources;
-- `ConsoleService` operations for create/display/focus/close where appropriate;
-- input/command sending for interactive resources;
-- read-only presentation of retained command output;
-- Commands/keybindings and user shell creation UI.
+Terminal requests interactive resources through the presented Session's canonical
+Environment association, never a Task-primary fallback. Environment providers own
+execution placement and shell startup. Hidden resources survive view disposal and
+Session navigation; fresh views receive fresh access. Terminal's exact close,
+title, and exit-removal behavior belongs to its [local map](../../plugins/terminal/README.md),
+not a generic console lifecycle imposed on every contribution.
 
-It consumes Environment process/PTY facilities, runtime-resource lifecycle, and command-output/resource references.
-
-Interactive shells and agent command invocations may share rendering while remaining distinct semantic resources. A retained output console need not accept input; capabilities should reflect the concrete resource.
+Future retained read-only command output should be another console contribution
+with explicit invocation provenance. It may share native rendering, but is neither
+an interactive shell nor a Terminal child and must not inherit shell close/exit
+policy. Broader Commands/keybindings and output-opening integrations remain
+separate work on the same public boundary.
 
 ---
 
@@ -895,7 +906,7 @@ model calls run_command
     -> core policy
     -> Environment process execution
     -> live output updates Chat/Inspection
-    -> optional Show Full Output uses ConsoleService
+    -> optional Show Full Output opens independent read-only console content
     -> bounded result returns to model
 ```
 
@@ -948,7 +959,7 @@ The child remains a Session, not a Task, and is not normally a peer in Task Brow
 | EnvironmentProvider | Core/public | Task lifecycle needs interchangeable Environment implementations |
 | Environment filesystem/process APIs | Core/public | Tools/editors must be Environment-independent |
 | DisplaySourceFile | Probably core/public | Diff, Search, diagnostics, navigation may all consume it |
-| ConsoleService | Probably core/public | Commands, user shells, inspectors, future integrations may consume it |
+| Console contributions/content | `adele_ui` | Host owns shared tabs/actions/selection; independent content owners retain their resource and invocation semantics |
 | Task creation | Core | Task identity/lifecycle is core-owned |
 | Session creation | Core | Session identity/lifecycle is core-owned |
 | OrchestrationStrategy registration/binding | Core/public | Session creation/restoration must validate permanent strategy binding independent of optional UI |

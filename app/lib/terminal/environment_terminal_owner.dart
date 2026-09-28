@@ -30,8 +30,14 @@ final class EnvironmentTerminalCoordinator {
   final EnvironmentRuntime environmentRuntime;
   final Duration cleanupTimeout;
   final Set<EnvironmentTerminalOwner> _owners = Set.identity();
-  final Set<Future<void>> _removals = {};
+  final Map<EnvironmentTerminalOwner, Future<void>> _removals = Map.identity();
+  final _changes = _TerminalChanges();
   Future<void>? _closing;
+
+  /// Coalesced collection invalidations only, never owner output or lifecycle.
+  /// Read [forEnvironment] after subscribing; the returned detach is idempotent.
+  void Function() observe(void Function() observer) =>
+      _changes.observe(observer);
 
   EnvironmentTerminalOwner create(
     EnvironmentId environmentId, {
@@ -49,6 +55,7 @@ final class EnvironmentTerminalCoordinator {
       cleanupTimeout,
     );
     _owners.add(owner);
+    _changes.notify();
     return owner;
   }
 
@@ -57,18 +64,35 @@ final class EnvironmentTerminalCoordinator {
       List.unmodifiable(_owners.where((owner) => owner.environmentId == id));
 
   /// Synchronously removes and fences only this exact owner, not its siblings.
+  /// Repeated removal joins the same pending cleanup, including during shutdown.
   Future<void> remove(EnvironmentTerminalOwner owner) {
+    final pending = _removals[owner];
+    if (pending != null) return pending;
     if (!_owners.remove(owner)) return Future<void>.value();
-    final removing = owner.dispose();
-    _removals.add(removing);
-    return removing.whenComplete(() => _removals.remove(removing));
+    final removing = owner.dispose().whenComplete(() {
+      _removals.remove(owner);
+    });
+    _removals[owner] = removing;
+    _changes.notify();
+    return removing;
   }
 
   /// Fences all owners synchronously and joins their bounded cleanup.
-  Future<void> close() => _closing ??= Future.wait<void>([
-    for (final owner in _owners) owner.dispose(),
-    ..._removals,
-  ]).then((_) => _owners.clear());
+  Future<void> close() {
+    if (_closing != null) return _closing!;
+    final closing = Completer<void>();
+    _closing = closing.future;
+    final owners = _owners.toList();
+    _owners.clear();
+    for (final owner in owners) {
+      _removals[owner] = owner.dispose().whenComplete(() {
+        _removals.remove(owner);
+      });
+    }
+    _changes.close();
+    closing.complete(Future.wait<void>(_removals.values).then((_) {}));
+    return closing.future;
+  }
 }
 
 /// One lazy terminal and emulator bound to one exact Environment materialization.
@@ -91,6 +115,7 @@ final class EnvironmentTerminalOwner {
       ),
     );
     surface.resize(request.dimensions.columns, request.dimensions.rows);
+    _detachTitle = surface.observeTitle(_changes.notify);
   }
 
   static const int maxPendingInputCodeUnits = 65536;
@@ -106,12 +131,36 @@ final class EnvironmentTerminalOwner {
   EnvironmentTerminalState _state = EnvironmentTerminalState.idle;
   EnvironmentTerminalCompleted? get completion => _completion;
   EnvironmentTerminalCompleted? _completion;
+
+  /// Actual shell exit evidence, distinct from provider close or disconnect.
+  bool get shellCompleted =>
+      _completion?.termination == EnvironmentTerminalTermination.exited;
+  String? get title => surface.title;
   Object? get error => _error;
   Object? _error;
   StackTrace? get errorStack => _errorStack;
   StackTrace? _errorStack;
   Object? get cleanupError => _cleanupError;
   Object? _cleanupError;
+  bool get cleanupPending => _cleanup != null && !_cleanupSettled;
+
+  /// The bounded cleanup attempt settled, possibly with failure or timeout.
+  /// This alone is not evidence that provider resources were released.
+  bool get cleanupSettled => _cleanupSettled;
+  bool _cleanupSettled = false;
+
+  /// No observed cleanup failure. This is not proof a failed remote launch left
+  /// no resource: the transport may contain subscription-cancellation errors.
+  bool get cleanupSucceeded => cleanupSettled && cleanupError == null;
+
+  /// Failed before issuing any terminal request, with cleanup settled normally.
+  /// A pre-open stream failure/cancellation cannot prove remote resource release.
+  bool get launchFailedWithoutResources =>
+      _error != null && !_terminalRequested && cleanupSucceeded;
+
+  final _changes = _TerminalChanges();
+  late final void Function() _detachTitle;
+  bool _terminalRequested = false;
   EnvironmentMaterialization? _materialization;
   EnvironmentTerminalProvider? _provider;
   StreamSubscription<EnvironmentTerminalEvent>? _subscription;
@@ -133,11 +182,18 @@ final class EnvironmentTerminalOwner {
       _state == EnvironmentTerminalState.opening ||
       _state == EnvironmentTerminalState.running;
 
+  /// Coalesced lifecycle, cleanup and title invalidations; never output chunks.
+  /// Read current getters after subscribing. Disposal sends a final cleanup
+  /// settlement before detaching observers. The returned detach is idempotent.
+  void Function() observe(void Function() observer) =>
+      _changes.observe(observer);
+
   /// Starts at most once. Completion means opened or fenced/failed; inspect
   /// [state] and [error]. Calling this does not require a mounted presentation.
   Future<void> open() {
     if (_state == EnvironmentTerminalState.idle) {
       _state = EnvironmentTerminalState.opening;
+      _changes.notify();
       _starting = _start();
     }
     return _ready.future;
@@ -179,6 +235,7 @@ final class EnvironmentTerminalOwner {
         () =>
             _disconnect(StateError('Terminal provider registration retired.')),
       );
+      _terminalRequested = true;
       _subscription = _provider!
           .openTerminal(environmentId, request)
           .listen(
@@ -215,8 +272,17 @@ final class EnvironmentTerminalOwner {
           if (_handle != null) throw StateError('Duplicate terminal opened.');
           _handle = event.opened!.handle;
           _lastDimensions = event.opened!.dimensions;
-          surface.resize(_lastDimensions!.columns, _lastDimensions!.rows);
+          // A console may mount while launch is pending. Do not overwrite its
+          // already-admitted geometry with the provider's initial request size.
+          final pendingResize = _pendingResize;
+          final dimensions =
+              pendingResize != null && _active(pendingResize.active)
+              ? pendingResize.dimensions
+              : _lastDimensions!;
+          if (!_accepting) return;
+          surface.resize(dimensions.columns, dimensions.rows);
           _state = EnvironmentTerminalState.running;
+          _changes.notify();
           if (!_ready.isCompleted) _ready.complete();
           _pump();
         case EnvironmentTerminalEventKind.output:
@@ -355,6 +421,7 @@ final class EnvironmentTerminalOwner {
   }
 
   void _fence(EnvironmentTerminalState state) {
+    if (_state == state) return;
     _state = state;
     for (final input in _input) {
       _inputCodeUnits -= input.text.length;
@@ -366,9 +433,11 @@ final class EnvironmentTerminalOwner {
     _detachRetirement = null;
     surface.stopInput();
     if (!_ready.isCompleted) _ready.complete();
+    _changes.notify();
   }
 
   /// Fences synchronously, preserves the emulator, and joins bounded cleanup.
+  /// The future settles even on failure; inspect [cleanupSucceeded]/[cleanupError].
   Future<void> close() {
     if (_state != EnvironmentTerminalState.disposed &&
         _state != EnvironmentTerminalState.completed &&
@@ -380,17 +449,37 @@ final class EnvironmentTerminalOwner {
 
   /// Explicit owner disposal, not presentation detachment.
   Future<void> dispose() {
+    if (_state == EnvironmentTerminalState.disposed) return _cleanup!;
     final closing = close();
     _state = EnvironmentTerminalState.disposed;
+    _detachTitle();
     surface.dispose();
+    if (cleanupSettled) {
+      _changes.close();
+    } else {
+      _changes.notify();
+    }
     return closing;
   }
 
-  Future<void> _beginCleanup() => _cleanup ??= _cleanUp()
-      .timeout(_cleanupTimeout)
-      .catchError((Object error, StackTrace stack) {
-        _cleanupError ??= error;
-      });
+  Future<void> _beginCleanup() {
+    if (_cleanup != null) return _cleanup!;
+    _cleanup = _cleanUp()
+        .timeout(_cleanupTimeout)
+        .catchError((Object error, StackTrace stack) {
+          _cleanupError ??= error;
+        })
+        .whenComplete(() {
+          _cleanupSettled = true;
+          if (_state == EnvironmentTerminalState.disposed) {
+            _changes.close();
+          } else {
+            _changes.notify();
+          }
+        });
+    _changes.notify();
+    return _cleanup!;
+  }
 
   Future<void> _cleanUp() async {
     await _starting;
@@ -404,5 +493,44 @@ final class EnvironmentTerminalOwner {
       if (_subscription != null) Future<void>.sync(_subscription!.cancel),
       ?_dispatch,
     ]);
+  }
+}
+
+/// Native invalidations are deferred so observers cannot reenter stream startup
+/// or teardown. Each registration has its own immediate, idempotent detach.
+final class _TerminalChanges {
+  final _observers = <void Function()>{};
+  bool _pending = false;
+  bool _closed = false;
+
+  void Function() observe(void Function() observer) {
+    if (_closed) throw StateError('Terminal observation is closed.');
+    void listener() => observer();
+    _observers.add(listener);
+    return () => _observers.remove(listener);
+  }
+
+  void notify() {
+    if (_pending) return;
+    _pending = true;
+    scheduleMicrotask(() {
+      _pending = false;
+      final finalDelivery = _closed;
+      for (final observer in _observers.toList()) {
+        if (!_observers.contains(observer)) continue;
+        try {
+          observer();
+        } on Object {
+          // A presentation observer cannot break cleanup or other observers.
+        }
+      }
+      if (finalDelivery) _observers.clear();
+    });
+  }
+
+  void close() {
+    if (_closed) return;
+    _closed = true;
+    notify();
   }
 }

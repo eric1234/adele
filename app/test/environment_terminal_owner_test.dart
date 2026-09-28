@@ -24,6 +24,7 @@ EnvironmentTerminalDimensions _size(int columns, [int rows = 24]) =>
 EnvironmentTerminalRequest _request({
   EnvironmentTerminalDimensions? dimensions,
 }) => EnvironmentTerminalRequest(
+  launchKind: EnvironmentTerminalLaunchKind.explicitProgram,
   program: '/fixture/shell',
   arguments: ['--interactive'],
   relativeWorkingDirectory: '',
@@ -50,12 +51,15 @@ EnvironmentTerminalEvent _output(String text) => EnvironmentTerminalEvent(
   completed: null,
 );
 
-EnvironmentTerminalEvent _completed() => EnvironmentTerminalEvent(
+EnvironmentTerminalEvent _completed({
+  EnvironmentTerminalTermination termination =
+      EnvironmentTerminalTermination.exited,
+}) => EnvironmentTerminalEvent(
   kind: EnvironmentTerminalEventKind.completed,
   opened: null,
   output: null,
   completed: EnvironmentTerminalCompleted(
-    termination: EnvironmentTerminalTermination.exited,
+    termination: termination,
     exitCode: 7,
   ),
 );
@@ -63,6 +67,290 @@ EnvironmentTerminalEvent _completed() => EnvironmentTerminalEvent(
 Future<void> _turn() => Future<void>.delayed(Duration.zero);
 
 void main() {
+  test(
+    'owner observation excludes output and exposes hidden title and cleanup failure',
+    () async {
+      final fixture = _Fixture();
+      addTearDown(fixture.close);
+      final owner = fixture.owner;
+      final states = <EnvironmentTerminalState>[];
+      var suppressed = 0;
+      late void Function() detachLater;
+      owner.observe(() => throw StateError('Observer failed.'));
+      owner.observe(() => detachLater());
+      detachLater = owner.observe(() => suppressed++);
+      void record() => states.add(owner.state);
+      final detachFirst = owner.observe(record);
+      owner.observe(record);
+      detachFirst();
+      detachFirst();
+      await _turn();
+      expect(states, isEmpty);
+      expect(owner.cleanupPending, isFalse);
+      expect(owner.cleanupSettled, isFalse);
+      expect(owner.cleanupSucceeded, isFalse);
+      await fixture.open();
+      await _turn();
+      expect(states, [
+        EnvironmentTerminalState.opening,
+        EnvironmentTerminalState.running,
+      ]);
+      expect(suppressed, 0);
+      states.clear();
+      for (var i = 0; i < 100; i++) {
+        fixture.provider.events.add(_output('ordinary output\r\n'));
+      }
+      fixture.provider.events.add(_output('\x1b]2;hidden '));
+      await _turn();
+      expect(states, isEmpty);
+      fixture.provider.events.add(_output('title\x07'));
+      expect(owner.title, 'hidden title');
+      await _turn();
+      expect(states, [EnvironmentTerminalState.running]);
+      expect(owner.error, isNull);
+      states.clear();
+
+      final failure = StateError('Close failed.');
+      fixture.provider.closeGate = Completer<void>();
+      final closing = owner.close();
+      expect(owner.close(), same(closing));
+      expect(owner.cleanupPending, isTrue);
+      expect(owner.cleanupSettled, isFalse);
+      expect(owner.cleanupSucceeded, isFalse);
+      await _turn();
+      expect(states, [EnvironmentTerminalState.closed]);
+      fixture.provider.closeGate!.completeError(failure);
+      await closing;
+      await _turn();
+      expect(owner.cleanupPending, isFalse);
+      expect(owner.cleanupSettled, isTrue);
+      expect(owner.cleanupSucceeded, isFalse);
+      expect(owner.cleanupError, same(failure));
+      expect(owner.shellCompleted, isFalse);
+      expect(owner.launchFailedWithoutResources, isFalse);
+      expect(states, [
+        EnvironmentTerminalState.closed,
+        EnvironmentTerminalState.closed,
+      ]);
+      expect(fixture.provider.closes, ['opaque-handle']);
+      expect(fixture.provider.cancellations, 1);
+      expect(owner.surface.isDisposed, isFalse);
+      states.clear();
+      await owner.close();
+      await _turn();
+      expect(states, isEmpty);
+      expect(owner.dispose(), same(closing));
+      expect(owner.dispose(), same(closing));
+      await _turn();
+      expect(states, [EnvironmentTerminalState.disposed]);
+      expect(() => owner.observe(record), throwsStateError);
+    },
+  );
+
+  test(
+    'collection changes coalesce and removal and shutdown join exactly once',
+    () async {
+      final fixture = _Fixture();
+      addTearDown(fixture.close);
+      await fixture.open();
+      await _turn();
+      final coordinator = fixture.coordinator;
+      final snapshots = <List<EnvironmentTerminalOwner>>[];
+      var suppressed = 0;
+      late void Function() detachLater;
+      coordinator.observe(() => throw StateError('Observer failed.'));
+      coordinator.observe(() => detachLater());
+      detachLater = coordinator.observe(() => suppressed++);
+      final detach = coordinator.observe(
+        () => snapshots.add(coordinator.forEnvironment(_environmentId)),
+      );
+      final second = coordinator.create(_environmentId, request: _request());
+      final third = coordinator.create(_environmentId, request: _request());
+      await _turn();
+      expect(snapshots, [
+        [fixture.owner, second, third],
+      ]);
+      expect(suppressed, 0);
+      snapshots.clear();
+      fixture.provider.events.add(
+        _output('\x1b]2;not a collection change\x07'),
+      );
+      await _turn();
+      expect(snapshots, isEmpty);
+      fixture.provider.closeGate = Completer<void>();
+      final cleanup = <(bool, bool)>[];
+      fixture.owner.observe(
+        () => cleanup.add((
+          fixture.owner.cleanupPending,
+          fixture.owner.cleanupSucceeded,
+        )),
+      );
+      final removing = coordinator.remove(fixture.owner);
+      expect(coordinator.remove(fixture.owner), same(removing));
+      expect(fixture.owner.state, EnvironmentTerminalState.disposed);
+      await _turn();
+      expect(snapshots, [
+        [second, third],
+      ]);
+      expect(cleanup, [(true, false)]);
+      snapshots.clear();
+      final closing = coordinator.close();
+      expect(coordinator.close(), same(closing));
+      expect(coordinator.remove(fixture.owner), same(removing));
+      expect(coordinator.forEnvironment(_environmentId), isEmpty);
+      expect(second.state, EnvironmentTerminalState.disposed);
+      expect(third.state, EnvironmentTerminalState.disposed);
+      final secondRemoval = coordinator.remove(second);
+      expect(coordinator.remove(second), same(secondRemoval));
+      await _turn();
+      expect(snapshots, [isEmpty]);
+      expect(() => coordinator.observe(() {}), throwsStateError);
+      fixture.provider.closeGate!.complete();
+      await closing;
+      await removing;
+      await _turn();
+      expect(snapshots, [isEmpty]);
+      expect(cleanup, [(true, false), (false, true)]);
+      expect(fixture.provider.closes, ['opaque-handle']);
+      expect(fixture.provider.cancellations, 1);
+      await coordinator.remove(fixture.owner);
+      detach();
+      detach();
+      await _turn();
+      expect(snapshots, [isEmpty]);
+    },
+  );
+
+  for (final termination in EnvironmentTerminalTermination.values) {
+    test(
+      '$termination retains completion independently of cleanup settlement',
+      () async {
+        final fixture = _Fixture();
+        addTearDown(fixture.close);
+        await fixture.open();
+        fixture.provider.closeGate = Completer<void>();
+        fixture.provider.events.add(_completed(termination: termination));
+        expect(fixture.owner.state, EnvironmentTerminalState.completed);
+        expect(
+          fixture.owner.shellCompleted,
+          termination == EnvironmentTerminalTermination.exited,
+        );
+        expect(fixture.owner.cleanupPending, isTrue);
+        expect(fixture.owner.cleanupSucceeded, isFalse);
+        expect(fixture.owner.surface.isDisposed, isFalse);
+        expect(fixture.coordinator.forEnvironment(_environmentId), [
+          fixture.owner,
+        ]);
+        fixture.provider.closeGate!.complete();
+        await fixture.owner.close();
+        expect(fixture.owner.cleanupSucceeded, isTrue);
+        expect(fixture.owner.completion!.termination, termination);
+        expect(fixture.coordinator.forEnvironment(_environmentId), [
+          fixture.owner,
+        ]);
+      },
+    );
+  }
+
+  test(
+    'disposal from an observer still delivers the final invalidation',
+    () async {
+      final fixture = _Fixture();
+      addTearDown(fixture.close);
+      await fixture.owner.close();
+      await _turn();
+      final states = <EnvironmentTerminalState>[];
+      fixture.owner.observe(() {
+        states.add(fixture.owner.state);
+        fixture.owner.dispose();
+      });
+      fixture.owner.surface.write('\x1b]2;retained title\x07');
+      await _turn();
+      expect(states, [
+        EnvironmentTerminalState.closed,
+        EnvironmentTerminalState.disposed,
+      ]);
+      expect(fixture.owner.title, 'retained title');
+      expect(() => fixture.owner.observe(() {}), throwsStateError);
+    },
+  );
+
+  test(
+    'throwing open settles failed without inventing resource-release evidence',
+    () async {
+      final fixture = _Fixture(provider: _Provider()..failOpen = true);
+      addTearDown(fixture.close);
+      await fixture.owner.open();
+      expect(fixture.owner.state, EnvironmentTerminalState.disconnected);
+      expect(fixture.owner.error, isA<StateError>());
+      expect(fixture.owner.shellCompleted, isFalse);
+      await fixture.owner.close();
+      expect(fixture.owner.cleanupSucceeded, isTrue);
+      expect(fixture.owner.launchFailedWithoutResources, isFalse);
+      expect(fixture.provider.cancellations, 0);
+      expect(fixture.provider.closes, isEmpty);
+    },
+  );
+
+  for (final cancellationFails in [false, true]) {
+    test(
+      'pre-open failure exposes cancellation settlement, not resource evidence ($cancellationFails)',
+      () async {
+        final provider = _Provider()..cancelGate = Completer<void>();
+        final fixture = _Fixture(provider: provider);
+        addTearDown(fixture.close);
+        final opening = fixture.owner.open();
+        await provider.listening.future;
+        provider.events.addError(StateError('Launch failed.'));
+        await opening;
+        expect(fixture.owner.state, EnvironmentTerminalState.disconnected);
+        expect(fixture.owner.completion, isNull);
+        expect(fixture.owner.shellCompleted, isFalse);
+        expect(fixture.owner.cleanupPending, isTrue);
+        expect(fixture.owner.launchFailedWithoutResources, isFalse);
+        await _turn();
+        if (cancellationFails) {
+          provider.cancelGate!.completeError(StateError('Cancel failed.'));
+        } else {
+          provider.cancelGate!.complete();
+        }
+        await fixture.owner.close();
+        expect(fixture.owner.cleanupSettled, isTrue);
+        expect(fixture.owner.cleanupSucceeded, !cancellationFails);
+        expect(fixture.owner.launchFailedWithoutResources, isFalse);
+        expect(provider.closes, isEmpty);
+        expect(provider.cancellations, 1);
+        expect(fixture.owner.surface.isDisposed, isFalse);
+        expect(fixture.coordinator.forEnvironment(_environmentId), [
+          fixture.owner,
+        ]);
+      },
+    );
+  }
+
+  test(
+    'contained transport cancellation failure is not no-resource evidence',
+    () async {
+      final provider = _Provider()
+        ..decodeEvents = true
+        ..cancelGate = Completer<void>();
+      final fixture = _Fixture(provider: provider);
+      addTearDown(fixture.close);
+      final opening = fixture.owner.open();
+      await provider.listening.future;
+      provider.events.addError(StateError('Transport lost during launch.'));
+      await _turn();
+      provider.cancelGate!.completeError(StateError('Remote cleanup unknown.'));
+      await opening;
+      await fixture.owner.close();
+      expect(fixture.owner.error, isA<StateError>());
+      expect(fixture.owner.cleanupSucceeded, isTrue);
+      expect(fixture.owner.launchFailedWithoutResources, isFalse);
+      expect(fixture.owner.shellCompleted, isFalse);
+      expect(provider.cancellations, 1);
+    },
+  );
+
   test(
     'creation is lazy and canonical, and each owner opens only once',
     () async {
@@ -118,6 +406,9 @@ void main() {
       ),
     );
     expect(owner.surface.isDisposed, isFalse);
+    await owner.close();
+    expect(owner.cleanupSucceeded, isTrue);
+    expect(owner.launchFailedWithoutResources, isTrue);
   });
 
   test(
@@ -245,6 +536,30 @@ void main() {
       expect(provider.opens, 0);
     },
   );
+
+  for (final active in [true, false]) {
+    test(
+      'opening preserves only live pending view geometry ($active)',
+      () async {
+        final fixture = _Fixture();
+        addTearDown(fixture.close);
+        final owner = fixture.owner;
+        final opening = owner.open();
+        await fixture.provider.listening.future;
+        var viewActive = true;
+        owner.resize(_size(101, 33), isActive: () => viewActive);
+        viewActive = active;
+        fixture.provider.events.add(_opened(dimensions: _size(80, 24)));
+        fixture.provider.events.add(_output('\x1b[999;999H\x1b[6n'));
+        await opening;
+        await _turn();
+        expect(fixture.provider.writes, [
+          active ? '\x1b[33;101R' : '\x1b[24;80R',
+        ]);
+        expect(fixture.provider.sizes, active ? [(101, 33)] : isEmpty);
+      },
+    );
+  }
 
   test(
     'close before opened cancels and joins late allocation cleanup',
@@ -516,6 +831,8 @@ void main() {
         await _turn();
         expect(fixture.owner.state, EnvironmentTerminalState.disconnected);
         expect(fixture.owner.completion, isNull);
+        expect(fixture.owner.shellCompleted, isFalse);
+        expect(fixture.owner.launchFailedWithoutResources, isFalse);
         expect(fixture.owner.error, isNotNull);
         expect(fixture.owner.surface.isDisposed, isFalse);
         expect(fixture.owner.surface.readOnly, isTrue);
@@ -531,9 +848,19 @@ void main() {
     );
     addTearDown(fixture.close);
     await fixture.open();
+    await _turn();
+    final cleanup = <(bool, bool)>[];
+    fixture.owner.observe(
+      () => cleanup.add((
+        fixture.owner.cleanupPending,
+        fixture.owner.cleanupSettled,
+      )),
+    );
     final closing = fixture.coordinator.close();
     expect(fixture.owner.state, EnvironmentTerminalState.disposed);
     expect(fixture.owner.surface.isDisposed, isTrue);
+    expect(fixture.owner.cleanupPending, isTrue);
+    expect(fixture.owner.cleanupSettled, isFalse);
     expect(
       () => fixture.coordinator.create(_environmentId, request: _request()),
       throwsStateError,
@@ -541,8 +868,16 @@ void main() {
     await closing;
     expect(provider.cancellations, 1);
     expect(fixture.owner.cleanupError, isA<TimeoutException>());
+    expect(fixture.owner.cleanupPending, isFalse);
+    expect(fixture.owner.cleanupSettled, isTrue);
+    expect(fixture.owner.cleanupSucceeded, isFalse);
+    await _turn();
+    expect(cleanup, [(true, false), (false, true)]);
+    final timeout = fixture.owner.cleanupError;
     provider.closeGate!.completeError(StateError('Late close error.'));
     await _turn();
+    expect(fixture.owner.cleanupError, same(timeout));
+    expect(cleanup, [(true, false), (false, true)]);
   });
 
   test(
@@ -665,6 +1000,45 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
+
+  testWidgets('remount resubmits geometry with fresh queued resize authority', (
+    tester,
+  ) async {
+    final fixture = _Fixture();
+    addTearDown(fixture.close);
+    final opening = fixture.owner.open();
+    await tester.pump();
+    fixture.provider.events.add(_opened());
+    await opening;
+    Widget host(Widget view, double width) => MaterialApp(
+      home: Scaffold(
+        body: SizedBox(width: width, height: 240, child: view),
+      ),
+    );
+    final view = fixture.owner.surface.buildView(isActive: () => true);
+    await tester.pumpWidget(host(view, 320));
+    await tester.pump();
+    final terminal = tester
+        .widget<TerminalView>(find.byType(TerminalView))
+        .terminal;
+    final narrow = terminal.viewWidth;
+    fixture.provider.sizes.clear();
+    fixture.provider.writeGate = Completer<void>();
+    terminal.textInput('blocked');
+    await tester.pumpWidget(host(view, 640));
+    final resized = (terminal.viewWidth, terminal.viewHeight);
+    expect(resized.$1, greaterThan(narrow));
+    expect(fixture.provider.sizes, isEmpty);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(
+      host(fixture.owner.surface.buildView(isActive: () => true), 640),
+    );
+    fixture.provider.writeGate!.complete();
+    await tester.pump();
+    expect(fixture.provider.sizes, [resized]);
+    expect(fixture.provider.writes, ['blocked']);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 
   for (final complete in [true, false]) {
     testWidgets(
@@ -851,6 +1225,8 @@ class _Provider extends _EnvironmentProvider
   Completer<void>? cancelGate;
   bool failWrite = false;
   bool failResize = false;
+  bool failOpen = false;
+  bool decodeEvents = false;
 
   @override
   Stream<EnvironmentTerminalEvent> openTerminal(
@@ -860,6 +1236,14 @@ class _Provider extends _EnvironmentProvider
     opens++;
     openedEnvironment = id;
     this.request = request;
+    if (failOpen) throw StateError('Open failed.');
+    if (decodeEvents) {
+      return adeleDecodedStream<EnvironmentTerminalEvent>(
+        events.stream,
+        (event) => event as EnvironmentTerminalEvent,
+        (error) => error,
+      );
+    }
     return events.stream;
   }
 

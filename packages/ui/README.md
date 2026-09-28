@@ -1,8 +1,9 @@
 # ADELE UI
 
 `adele_ui` is the experimental public Flutter package for semantic Task Browser,
-Session, and read-only activity presentation. It depends only on Flutter and public
-ADELE contracts, never application code, internal host implementations, or stock plugins.
+Session, shared console, and read-only activity presentation. It depends only on
+Flutter and public ADELE contracts, never application code, internal host
+implementations, or stock plugins.
 Product, orchestration, model tools, and the extension registry remain pure Dart.
 
 ## Task Browser
@@ -42,6 +43,44 @@ supply `displayName`, `strategyId`, `extensionId`, `library`, and `entrypoint`, 
 optional `backendServices` and `strategyAffinity`. Manifest version remains 1;
 `hostAdapter` is no longer supported. See the exact
 [installed schema](../plugin_runtime/README.md#prepared-catalog).
+
+## Shared Console
+
+[`console.dart`](lib/console.dart) defines an additive extension point:
+`ConsoleContribution(actions)` registers at `consoleContributions`. Independent
+contributions coexist; there is no single winning console provider or zero/one/many
+resolver. The host owns common tabs, creation-action discovery, selection,
+visibility, confirmation, and bounded cleanup. Contributions own independent content,
+not another tab strip. See [console architecture](../../docs/architecture/plugin-system.md#shared-console).
+
+`ConsoleCreationAction(id, label, create)` has an ID local to its exact registration.
+The host admits it with `ConsoleCreationAccess`, which captures one Session and
+can transfer a `ConsoleContent` through `open`. Navigation does not retarget or
+revoke already admitted creation. Access ends when that action's Future settles,
+or earlier on owner retirement or host close; it is not reusable background
+creation authority. Late content received after access ends is released rather
+than published, and each content object may be transferred only once.
+
+`ConsoleContent` supplies `metadata`, `isEligible(Session)`, `createPresentation`,
+optional synchronous `closeAdvice`, and `release`. Eligibility is content-owned;
+the generic contract does not assume every console is a terminal or Environment
+resource. `ConsoleTabRegistration` can update only its content's metadata and
+request its removal, including while hidden. `ConsoleMetadata` keeps title,
+description, and `ConsoleStatus` separate and bounds display text.
+
+`ConsoleCloseAdvice` is advisory, not a veto or asynchronous settlement hook.
+Missing, failed, or unknown advice requires host confirmation. Confirmed close,
+content-requested removal, contribution retirement, and host shutdown invoke
+release without needing a mounted view. `ConsoleCleanupResult.warning` is safe
+user-facing text, not an exception dump; cleanup failure or timeout cannot restore
+a removed tab or indefinitely prevent host cleanup.
+
+`ConsolePresentationAccess` is distinct from content registration. Hiding,
+selection/context changes, unmount, or retirement permanently revoke that access;
+a fresh view receives fresh access. View-originated effects must check it,
+including after asynchronous work. This does not stop a hidden content owner's
+independent resource observation. The current [application host](../../app/README.md#session-console)
+is Session-only; Task Browser exposes no console panel, toggle, or creation actions.
 
 ## Interpreted Bridges
 
@@ -84,6 +123,17 @@ native implementations supply their behavior; calling a stub natively throws
   fresh presentations require fresh access. Public contracts expose no terminal
   library types. The [application adapter](../../app/README.md#native-terminal-surface)
   owns interactive/read-only policy, bounds, attachment, and native callbacks.
+- `environment_terminal_bridge.dart` supplies
+  `openEnvironmentTerminal(label, liveCloseMessage, followTitle, removeAfterExit)`
+  only to an admitted interpreted console creation action. It returns
+  `[true, null]` or `[false, safeErrorString]`. The native adapter validates and
+  copies these policy values out of the short-lived operation runtime; no
+  evaluator callback becomes retained resource policy. The host captures the
+  canonical Session Environment association, with no caller-selected Environment,
+  resource lookup, or returned execution handle. Default-shell selection belongs
+  to the [Environment provider](../environment/README.md#interactive-terminals).
+  Later content views use the separate terminal-surface bridge above, with fresh
+  presentation-scoped access to the retained owner.
 - `task_browser_bridge.dart` supplies `isTaskBrowserActive()`, `readTaskBrowser()`,
   `selectTask(String?)`, `createTask(String title)`,
   `createSession(String optionHandle)`, `openSession(String sessionId)`, and

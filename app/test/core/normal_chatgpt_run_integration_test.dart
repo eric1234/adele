@@ -3,6 +3,7 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ffi' show Abi;
 import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
@@ -13,7 +14,9 @@ import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
+import 'package:adele_desktop/terminal/environment_terminal_owner.dart';
 import 'package:adele_desktop/terminal/native_adele_runtime.dart';
+import 'package:adele_desktop/ui/console/workbench_console.dart';
 import 'package:adele_desktop/ui/execution/run_execution_status.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
 import 'package:adele_desktop/ui/session/session_presentation_host.dart';
@@ -28,17 +31,21 @@ import 'package:adele_ui/adele_ui.dart';
 import 'package:chat_strategy_contract/chat_strategy_contract.dart';
 import 'package:file_selector_platform_interface/file_selector_platform_interface.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_eval/widgets.dart' show $StatefulWidget$bridge;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
+import 'package:xterm2/xterm.dart';
 
+import '../../../tools/git_pty_artifact.dart';
 import '../../../tools/stock_frontend_descriptors.dart';
 import '../../tool/chat_frontend_compiler.dart';
 import '../../tool/local_directory_project_frontend_compiler.dart';
 import '../../tool/openai_activity_frontend_compiler.dart';
 import '../../tool/self_hosting/development_self_hosting.dart';
 import '../../tool/task_browser_frontend_compiler.dart';
+import '../../tool/terminal_frontend_compiler.dart';
 import '../../tool/tool_inspection_frontend_compiler.dart';
 
 const _gitPluginId = 'dev.adele.plugin.git-environment';
@@ -51,6 +58,7 @@ const _chatPluginId = 'dev.adele.plugin.chat-strategy';
 const _localDirectoryProjectPluginId =
     'dev.adele.plugin.local-directory-project';
 const _taskBrowserPluginId = 'dev.adele.plugin.task-browser';
+const _terminalPluginId = 'dev.adele.plugin.terminal';
 const _navigationBlocked =
     'Finish or resolve the current Run before leaving this Session.';
 const _sourcePath = 'lib/task_answer.dart';
@@ -85,6 +93,426 @@ void main() {
   setUpAll(() async {
     prepared = await _PreparedProduct.prepare();
   });
+
+  testWidgets(
+    'T2 installed Terminal keeps real shells across tabs and Session navigation',
+    (tester) => tester.runAsync(() async {
+      await tester.binding.setSurfaceSize(const Size(1400, 1100));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final fixture = await _ProductFixture.create();
+      final root = await prepared.copyInstallations(fixture.directory);
+      final terminalInstallation = await Directory(
+        '${root.path}/$_terminalPluginId',
+      ).create();
+      await File(
+        '${terminalInstallation.path}/adele_plugin.installation.json',
+      ).writeAsString(
+        jsonEncode({
+          'manifestVersion': 1,
+          'metadata': {
+            'id': _terminalPluginId,
+            'version': '1.0.0',
+            'displayName': 'Terminal',
+          },
+          'components': {
+            'frontend': {
+              'artifact': 'frontend.evc',
+              'presentations': stockFrontendDescriptors[_terminalPluginId]!,
+            },
+          },
+        }),
+      );
+      await File('${terminalInstallation.path}/frontend.evc').writeAsBytes(
+        await compileTerminalFrontend(repositoryRoot: Directory.current.parent),
+      );
+      final helper = File('${root.path}/$_gitPluginId/git-pty-helper');
+      await prepareGitPtyHelper(
+        repositoryRoot: Directory.current.parent,
+        output: helper,
+      );
+      final home = await Directory('${fixture.directory.path}/home').create();
+      // Only the child host's ambient environment changes. The stock host and
+      // Git AOT entrypoints, default-shell resolution and PTY remain unmodified.
+      final launcher = File('${fixture.directory.path}/dartaotruntime');
+      await launcher.writeAsString(
+        '#!/bin/sh\n'
+        'exec /usr/bin/env -i HOME=${_shellQuote(home.path)} '
+        'SHELL=/bin/sh PATH=/usr/bin:/bin LANG=C.UTF-8 '
+        '${_shellQuote(prepared.dartaotruntime)} "\$@"\n',
+      );
+      final chmod = await Process.run('chmod', ['700', launcher.path]);
+      expect(chmod.exitCode, 0, reason: chmod.stderr.toString());
+      await fixture.launch(
+        tester,
+        prepared,
+        root: root,
+        dartaotruntimeExecutable: launcher.path,
+        startupArguments: {
+          _gitPluginId: ['--pty-helper=${helper.path}'],
+        },
+      );
+      final runtime = fixture.runtime;
+      expect(runtime.plugins.catalog!.issues, isEmpty);
+      final installed = runtime.plugins.catalog!.installations.singleWhere(
+        (entry) => entry.metadata.id.value == _terminalPluginId,
+      );
+      expect(installed.backendArtifactUri, isNull);
+      expect(installed.frontend, isNotNull);
+      await _terminalUntil(
+        tester,
+        () => runtime.extensions.discover(consoleContributions).isNotEmpty,
+        'prepared stock console registration',
+      );
+      expect(
+        runtime.extensions.discover(consoleContributions).single.id.value,
+        '$_terminalPluginId.console',
+      );
+      expect(runtime.plugins.host, isA<PluginBackendHost>());
+      expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+      expect(find.byType(WorkbenchConsole), findsNothing);
+      await fixture.openTask(tester);
+      final task = fixture.shell(tester).task!;
+      final environment = fixture.shell(tester).environment!;
+      final worktree = await Directory(
+        developmentGitWorktreePath(fixture.shell(tester).project!, environment),
+      ).resolveSymbolicLinks();
+      expect(runtime.terminals.forEnvironment(environment.id), isEmpty);
+      expect(find.byType(WorkbenchConsole), findsNothing);
+      await _tap(tester, 'New Chat Session');
+      await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+      final session = _session(tester);
+      expect(runtime.terminals.forEnvironment(environment.id), isEmpty);
+      final console = tester
+          .widget<WorkbenchConsole>(find.byType(WorkbenchConsole))
+          .controller;
+      expect(console.eligibleTabs, isEmpty);
+      expect(console.actions.single.label, 'New Terminal');
+
+      await _newTerminal(tester);
+      await _terminalUntil(
+        tester,
+        () =>
+            runtime.terminals.forEnvironment(environment.id).length == 1 &&
+            find.byType(TerminalView).evaluate().isNotEmpty,
+        'first stock Terminal action',
+      );
+      final first = runtime.terminals.forEnvironment(environment.id).single;
+      final firstEngine = _terminalEngine(tester);
+      expect(
+        first.request.launchKind,
+        EnvironmentTerminalLaunchKind.defaultShell,
+      );
+      expect(first.request.program, isNull);
+      expect(first.request.arguments, isEmpty);
+      expect(first.request.relativeWorkingDirectory, '');
+      expect(_terminalTab('Terminal 1'), findsOneWidget);
+      final materialization = runtime.lifecycle.environmentRuntime
+          .currentMaterialization(environment.id)!;
+      expect(materialization.provider, isA<GeneratedEnvironmentProvider>());
+      expect(materialization.validateBinding, returnsNormally);
+
+      // Separate one-shot FIFOs prevent a previous writer's EOF from consuming
+      // the next handshake before the next hidden output request is sent.
+      await _terminalCommand(
+        tester,
+        'stty -echo; PS1=; T2_VALUE=first; mkfifo t2-title-1 t2-title-2 t2-exit; '
+        r'''(for gate in 1 2; do IFS= read -r n < "t2-title-$gate"; printf '\033]0;First title %s\007\nHIDDEN_FIRST=%s\n' "$n" "$n"; done) & '''
+        r'''printf '\nFIRST_PID=%s\nFIRST_CWD=%s\nFIRST_HOME=%s\nFIRST_SHELL=%s\nFIRST_READY\n' "$$" "$PWD" "$HOME" "$SHELL"''',
+      );
+      await _terminalText(tester, firstEngine, 'FIRST_READY');
+      expect(_terminalBuffer(firstEngine), contains('FIRST_CWD=$worktree\n'));
+      expect(
+        _terminalBuffer(firstEngine),
+        contains('FIRST_HOME=${home.path}\n'),
+      );
+      expect(_terminalBuffer(firstEngine), contains('FIRST_SHELL=/bin/sh\n'));
+      final firstPid = _terminalPid(firstEngine, 'FIRST');
+      final firstHelperPid = await _terminalParentPid(firstPid);
+      expect(
+        await _terminalParentPid(firstHelperPid),
+        runtime.plugins.host!.processId,
+      );
+      expect(
+        (await File('/proc/$firstPid/cmdline').readAsString()).split('\u0000'),
+        ['/bin/sh', '-i', ''],
+      );
+      // Native keyboard input, not direct owner.write or emulator injection.
+      for (final (key, character) in [
+        (LogicalKeyboardKey.keyP, 'p'),
+        (LogicalKeyboardKey.keyW, 'w'),
+        (LogicalKeyboardKey.keyD, 'd'),
+      ]) {
+        await tester.sendKeyEvent(key, character: character);
+      }
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await _terminalText(tester, firstEngine, worktree);
+
+      final oldColumns = firstEngine.viewWidth;
+      await tester.binding.setSurfaceSize(const Size(1100, 1000));
+      await tester.pump();
+      expect(firstEngine.viewWidth, lessThan(oldColumns));
+      final size = '${firstEngine.viewHeight} ${firstEngine.viewWidth}';
+      // Ask the actual PTY for geometry; shell-specific SIGWINCH trap timing
+      // while waiting for interactive input is not part of the contract.
+      await _terminalCommand(
+        tester,
+        r'''printf '\nSTTY=%s\n' "$(stty size)"''',
+      );
+      await _terminalText(tester, firstEngine, 'STTY=$size');
+
+      await _newTerminal(tester);
+      await _terminalUntil(
+        tester,
+        () =>
+            runtime.terminals.forEnvironment(environment.id).length == 2 &&
+            find.byType(TerminalView).evaluate().isNotEmpty &&
+            !identical(_terminalEngine(tester), firstEngine),
+        'independent second shell',
+      );
+      final second = runtime.terminals.forEnvironment(environment.id).last;
+      final secondEngine = _terminalEngine(tester);
+      expect(second, isNot(same(first)));
+      expect(second.surface, isNot(same(first.surface)));
+      expect(_terminalTab('Terminal 1'), findsOneWidget);
+      expect(_terminalTab('Terminal 2'), findsOneWidget);
+      await _terminalCommand(
+        tester,
+        r'''stty -echo; PS1=; printf '\nSECOND_INHERITED=%s\n' "${T2_VALUE-unset}"; T2_VALUE=second; printf 'SECOND_PID=%s\nSECOND_READY\n' "$$"''',
+      );
+      await _terminalText(tester, secondEngine, 'SECOND_READY');
+      expect(
+        _terminalBuffer(secondEngine),
+        contains('SECOND_INHERITED=unset\n'),
+      );
+      expect(_terminalBuffer(secondEngine), isNot(contains('FIRST_READY')));
+      expect(_terminalBuffer(firstEngine), isNot(contains('SECOND_READY')));
+      final secondPid = _terminalPid(secondEngine, 'SECOND');
+      final secondHelperPid = await _terminalParentPid(secondPid);
+      expect(secondPid, isNot(firstPid));
+      expect(
+        await _terminalParentPid(secondHelperPid),
+        runtime.plugins.host!.processId,
+      );
+      expect(firstEngine.listeners, isEmpty);
+      await File(
+        '$worktree/t2-title-1',
+      ).writeAsString('1\n').timeout(const Duration(seconds: 15));
+      await _terminalText(tester, firstEngine, 'HIDDEN_FIRST=1');
+      await _terminalUntil(
+        tester,
+        () => _terminalTab('First title 1').evaluate().isNotEmpty,
+        'hidden tab title follows OSC',
+      );
+      expect(_terminalEngine(tester), same(secondEngine));
+
+      await _terminalTap(tester, find.byTooltip('Hide console'));
+      expect(find.byType(TerminalView), findsNothing);
+      await File(
+        '$worktree/t2-title-2',
+      ).writeAsString('2\n').timeout(const Duration(seconds: 15));
+      await _terminalText(tester, firstEngine, 'HIDDEN_FIRST=2');
+      expect(first.title, 'First title 2');
+      await _terminalTap(tester, find.byTooltip('Show console'));
+      await _terminalUntil(
+        tester,
+        () => find.byType(TerminalView).evaluate().isNotEmpty,
+        'show retained console',
+      );
+      expect(_terminalEngine(tester), same(secondEngine));
+      expect(_terminalTab('First title 2'), findsOneWidget);
+
+      await _breadcrumb(tester, 'task-breadcrumb');
+      await _terminalUntil(
+        tester,
+        () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+        'Task Browser navigation',
+      );
+      expect(find.byType(TerminalView), findsNothing);
+      expect(find.byType(WorkbenchConsole), findsNothing);
+      expect(runtime.terminals.forEnvironment(environment.id), [
+        same(first),
+        same(second),
+      ]);
+      await _terminalTap(tester, _sessionRow(session.id));
+      await _terminalUntil(
+        tester,
+        () => find.byType(TerminalView).evaluate().isNotEmpty,
+        'same Session console',
+      );
+      expect(_session(tester), same(session));
+      expect(_terminalEngine(tester), same(secondEngine));
+      await _breadcrumb(tester, 'task-breadcrumb');
+      await _terminalUntil(
+        tester,
+        () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+        'browse sibling Session',
+      );
+      await _terminalTap(tester, find.text('New Chat Session'));
+      await _terminalUntil(
+        tester,
+        () => find.byType(TerminalView).evaluate().isNotEmpty,
+        'same Environment sibling Session console',
+      );
+      final sibling = _session(tester);
+      expect(sibling.id, isNot(session.id));
+      expect(_terminalTab('First title 2'), findsOneWidget);
+      expect(_terminalTab('Terminal 2'), findsOneWidget);
+      await _terminalTap(tester, _terminalTab('First title 2'));
+      expect(_terminalEngine(tester), same(firstEngine));
+
+      await _breadcrumb(tester, 'project-breadcrumb');
+      await _terminalUntil(
+        tester,
+        () => fixture.shell(tester).task == null,
+        'Project browser',
+      );
+      await fixture.createTask(tester, 'Other Terminal Environment');
+      final otherEnvironment = fixture.shell(tester).environment!;
+      await _tap(tester, 'New Chat Session');
+      await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+      final otherSession = _session(tester);
+      expect(find.byType(TerminalView), findsNothing);
+      expect(console.eligibleTabs, isEmpty);
+      expect(_terminalTab('First title 2'), findsNothing);
+      expect(_terminalTab('Terminal 2'), findsNothing);
+      expect(runtime.terminals.forEnvironment(otherEnvironment.id), isEmpty);
+      expect(runtime.terminals.forEnvironment(environment.id), [
+        same(first),
+        same(second),
+      ]);
+      await _breadcrumb(tester, 'project-breadcrumb');
+      await _terminalUntil(
+        tester,
+        () => fixture.shell(tester).task == null,
+        'return to original Task',
+      );
+      await _terminalTap(tester, find.text(task.title));
+      await _terminalUntil(
+        tester,
+        () => _sessionRow(session.id).evaluate().isNotEmpty,
+        'original Session row',
+      );
+      await _terminalTap(tester, _sessionRow(session.id));
+      await _terminalUntil(
+        tester,
+        () => find.byType(TerminalView).evaluate().isNotEmpty,
+        'original Environment console',
+      );
+      expect(_terminalEngine(tester), same(secondEngine));
+      expect(
+        runtime.lifecycle.environmentRuntime.currentMaterialization(
+          environment.id,
+        ),
+        same(materialization),
+      );
+      await _terminalTap(tester, _terminalTab('First title 2'));
+      expect(_terminalEngine(tester), same(firstEngine));
+      await _terminalCommand(
+        tester,
+        r'''printf '\nFIRST_STILL=%s:%s\n' "$$" "$T2_VALUE"''',
+      );
+      await _terminalText(tester, firstEngine, 'FIRST_STILL=$firstPid:first');
+      expect(_terminalBuffer(firstEngine), contains('HIDDEN_FIRST=2\n'));
+      await _terminalTap(tester, _terminalTab('Terminal 2'));
+      expect(_terminalEngine(tester), same(secondEngine));
+
+      await _terminalTap(tester, find.byTooltip('Close Terminal 2'));
+      await _terminalUntil(
+        tester,
+        () => find.byType(AlertDialog).evaluate().isNotEmpty,
+        'live shell close confirmation',
+      );
+      await _terminalTap(tester, find.text('Cancel'));
+      expect(second.state, EnvironmentTerminalState.running);
+      expect(await Directory('/proc/$secondPid').exists(), isTrue);
+      expect(runtime.terminals.forEnvironment(environment.id), [
+        same(first),
+        same(second),
+      ]);
+      await _terminalCommand(
+        tester,
+        r'''printf '\nSECOND_STILL=%s:%s\n' "$$" "$T2_VALUE"''',
+      );
+      await _terminalText(
+        tester,
+        secondEngine,
+        'SECOND_STILL=$secondPid:second',
+      );
+      await _terminalTap(tester, find.byTooltip('Close Terminal 2'));
+      await _terminalUntil(
+        tester,
+        () => find.byType(AlertDialog).evaluate().isNotEmpty,
+        'confirmed shell close',
+      );
+      await _terminalTap(tester, find.text('Close'));
+      await _terminalUntil(
+        tester,
+        () =>
+            runtime.terminals.forEnvironment(environment.id).length == 1 &&
+            second.cleanupSettled,
+        'only confirmed shell removed',
+      );
+      expect(second.surface.isDisposed, isTrue);
+      expect(second.cleanupError, isNull);
+      expect(first.state, EnvironmentTerminalState.running);
+      await _terminalReaped(tester, [secondPid, secondHelperPid]);
+
+      await _terminalCommand(
+        tester,
+        r'''printf '\nEXIT_ARMED\n'; IFS= read -r finish < t2-exit; exit 23''',
+      );
+      await _terminalText(tester, firstEngine, 'EXIT_ARMED');
+
+      // No mounted Console observes this exit. The retained stock policy must
+      // remove the tab and owner from actual shell completion, not view disposal.
+      await _breadcrumb(tester, 'task-breadcrumb');
+      await _terminalUntil(
+        tester,
+        () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+        'hide console before actual shell exit',
+      );
+      expect(find.byType(TerminalView), findsNothing);
+      await File(
+        '$worktree/t2-exit',
+      ).writeAsString('exit\n').timeout(const Duration(seconds: 15));
+      await _terminalUntil(
+        tester,
+        () =>
+            runtime.terminals.forEnvironment(environment.id).isEmpty &&
+            first.cleanupSettled,
+        'hidden shell exit automatically removes tab',
+      );
+      expect(
+        first.completion!.termination,
+        EnvironmentTerminalTermination.exited,
+      );
+      expect(first.completion!.exitCode, 23);
+      expect(first.surface.isDisposed, isTrue);
+      expect(first.cleanupError, isNull);
+      await _terminalReaped(tester, [firstPid, firstHelperPid]);
+      await _terminalTap(tester, _sessionRow(session.id));
+      await _terminalUntil(
+        tester,
+        () => _composer().evaluate().isNotEmpty,
+        'reopen without automatic shell replacement',
+      );
+      expect(find.byType(TerminalView), findsNothing);
+      expect(_terminalTab('First title 2'), findsNothing);
+      expect(_terminalTab('Terminal 2'), findsNothing);
+      expect(runtime.terminals.forEnvironment(environment.id), isEmpty);
+      expect(console.eligibleTabs, isEmpty);
+      expect(runtime.registry.providersFor(modelProviderCapability), isEmpty);
+      expect(fixture.runIds.values, isEmpty);
+      for (final retained in [session, sibling, otherSession]) {
+        expect(runtime.store.runsForSession(retained.id), isEmpty);
+      }
+      expect(tester.takeException(), isNull);
+      expect(await tester.binding.handleRequestAppExit(), AppExitResponse.exit);
+      await tester.pumpWidget(const SizedBox.shrink());
+    }),
+    skip: !Platform.isLinux || Abi.current() != Abi.linuxX64,
+    timeout: const Timeout(Duration(seconds: 90)),
+  );
 
   // One existing real-installation fixture, not another remote-strategy matrix.
   // The two decisions exercise the common approval continuation with the actual
@@ -1639,10 +2067,11 @@ final class _PreparedProduct {
   Future<void> start(
     AdeleRuntime runtime, {
     Directory? installationRoot,
+    String? dartaotruntimeExecutable,
     Map<String, List<String>>? startupArguments,
   }) => runtime.plugins.start(
     installationRoot: (installationRoot ?? root).path,
-    dartaotruntimeExecutable: dartaotruntime,
+    dartaotruntimeExecutable: dartaotruntimeExecutable ?? dartaotruntime,
     hostArtifactPath: host.path,
     startupArguments: startupArguments,
   );
@@ -1698,6 +2127,7 @@ final class _ProductFixture {
     WidgetTester tester,
     _PreparedProduct prepared, {
     Directory? root,
+    String? dartaotruntimeExecutable,
     HttpServer? endpoint,
     NativeAdeleRuntime? usingRuntime,
     RunIdSource? usingRunIds,
@@ -1755,6 +2185,7 @@ final class _ProductFixture {
         bootstrapPlugins: (_) => starting = prepared.start(
           runtime,
           installationRoot: root,
+          dartaotruntimeExecutable: dartaotruntimeExecutable,
           startupArguments: startup,
         ),
       ),
@@ -1947,6 +2378,138 @@ final class _RunIds implements RunIdSource {
     return id;
   }
 }
+
+// Terminal cursors do not settle. Advance gesture/route animation frames only;
+// real process progress is always established by a bounded predicate or marker.
+Future<void> _terminalUntil(
+  WidgetTester tester,
+  FutureOr<bool> Function() ready,
+  String description,
+) async {
+  final clock = Stopwatch()..start();
+  while (!await ready()) {
+    if (clock.elapsed >= const Duration(seconds: 15)) {
+      fail('Timed out: $description');
+    }
+    await Future<void>.delayed(Duration.zero);
+    await tester.pump();
+  }
+  await tester.pump();
+}
+
+Future<void> _terminalTap(WidgetTester tester, Finder target) async {
+  await _terminalUntil(tester, () => target.evaluate().isNotEmpty, '$target');
+  await tester.ensureVisible(target);
+  await tester.tap(target);
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 350));
+}
+
+Future<void> _newTerminal(WidgetTester tester) async {
+  await _terminalTap(tester, find.byTooltip('New console'));
+  await _terminalTap(tester, find.text('New Terminal'));
+}
+
+Finder _terminalTab(String title) => find.widgetWithText(TextButton, title);
+
+Terminal _terminalEngine(WidgetTester tester) =>
+    tester
+            .widget<TerminalView>(find.byType(TerminalView))
+            .terminal
+            .buffer
+            .terminal
+        as Terminal;
+
+Future<void> _terminalCommand(WidgetTester tester, String command) async {
+  await _terminalTap(tester, find.byType(TerminalView));
+  final context = tester.element(
+    find
+        .descendant(
+          of: find.byType(TerminalView),
+          matching: find.byType(Scrollable),
+        )
+        .last,
+  );
+  expect(Focus.of(context).hasFocus, isTrue);
+  final messenger = tester.binding.defaultBinaryMessenger;
+  final previous = messenger.allMessagesHandler;
+  final channel = SystemChannels.platform;
+  var reads = 0;
+  messenger.allMessagesHandler = (name, handler, message) {
+    if (name == channel.name && message != null) {
+      final call = channel.codec.decodeMethodCall(message);
+      if (call.method == 'Clipboard.getData') {
+        expect(call.arguments, Clipboard.kTextPlain);
+        reads++;
+        return Future.value(
+          channel.codec.encodeSuccessEnvelope({'text': '$command\n'}),
+        );
+      }
+    }
+    if (previous != null) return previous(name, handler, message);
+    return handler != null
+        ? handler(message)
+        : messenger.delegate.send(name, message);
+  };
+  try {
+    await (Actions.invoke(
+          context,
+          const PasteTextIntent(SelectionChangedCause.keyboard),
+        )
+        as Future<Object?>);
+    expect(reads, 1);
+  } finally {
+    messenger.allMessagesHandler = previous;
+  }
+}
+
+String _terminalBuffer(Terminal engine) {
+  final text = StringBuffer();
+  for (var i = 0; i < engine.buffer.height; i++) {
+    final line = engine.buffer.lines[i];
+    if (i > 0 && !line.isWrapped) text.writeln();
+    text.write(line.getText().trimRight());
+  }
+  return text.toString();
+}
+
+Future<void> _terminalText(
+  WidgetTester tester,
+  Terminal engine,
+  String marker,
+) async {
+  try {
+    await _terminalUntil(
+      tester,
+      () => _terminalBuffer(engine).split('\n').contains(marker),
+      'shell output $marker',
+    );
+  } on TestFailure {
+    fail('Missing $marker in emulator screen:\n${_terminalBuffer(engine)}');
+  }
+}
+
+int _terminalPid(Terminal engine, String prefix) => int.parse(
+  RegExp(
+    '^${prefix}_PID=(\\d+)\$',
+    multiLine: true,
+  ).firstMatch(_terminalBuffer(engine))![1]!,
+);
+
+Future<int> _terminalParentPid(int pid) async {
+  final stat = await File('/proc/$pid/stat').readAsString();
+  return int.parse(stat.substring(stat.lastIndexOf(')') + 2).split(' ')[1]);
+}
+
+Future<void> _terminalReaped(WidgetTester tester, List<int> pids) =>
+    _terminalUntil(tester, () async {
+      for (final pid in pids) {
+        if (await Directory('/proc/$pid').exists()) return false;
+      }
+      return true;
+    }, 'shell/helper reaped: $pids');
+
+String _shellQuote(String value) => "'${value.replaceAll("'", "'\"'\"'")}'";
 
 Future<void> _pumpUntil(
   WidgetTester tester,

@@ -22,6 +22,109 @@ String _text(Terminal terminal) => [
 ].join('\n');
 
 void main() {
+  test('native title parser handles every split of OSC 0 and OSC 2', () async {
+    for (final sequence in ['\x1b]0;first\x07', '\x1b]2;second\x1b\\']) {
+      for (var split = 1; split < sequence.length; split++) {
+        final surface = NativeTerminalSurface();
+        final titles = <String?>[];
+        surface.observeTitle(() => titles.add(surface.title));
+        surface.write(sequence.substring(0, split));
+        expect(surface.title, isNull);
+        surface.write(sequence.substring(split));
+        final expected = sequence.contains('first') ? 'first' : 'second';
+        expect(surface.title, expected);
+        await Future<void>.delayed(Duration.zero);
+        expect(titles, [expected]);
+        surface.dispose();
+      }
+    }
+
+    final surface = NativeTerminalSurface();
+    addTearDown(surface.dispose);
+    surface.write('\x1b]0;original\x07\x1b[22;2t');
+    surface.write('\x1b]2;temporary\x07');
+    expect(surface.title, 'temporary');
+    surface.write('\x1b[23;2t');
+    expect(surface.title, 'original');
+    surface.write('\x1b]1;icon only\x07');
+    expect(surface.title, 'original');
+  });
+
+  test('untrusted titles become bounded single-line labels or null', () {
+    final surface = NativeTerminalSurface();
+    addTearDown(surface.dispose);
+    surface.write(
+      '\x1b]2;  work\u2028\u202e  \u2066tree\u2069\u007f label\ufeff  \x07',
+    );
+    expect(surface.title, 'work tree label');
+    surface.write('\x1b]2;${'a' * 159}\u{1f642}tail\x07');
+    expect(surface.title, 'a' * 159);
+    surface.write('\x1b]2;${'a' * 158}\u{1f642}tail\x07');
+    expect(surface.title, '${'a' * 158}\u{1f642}');
+    expect(surface.title!.length, NativeTerminalSurface.maxTitleCodeUnits);
+    surface.write('\x1b]2;  \u2028\u202e\u2066\ufeff \x07');
+    expect(surface.title, isNull);
+  });
+
+  test(
+    'title observers coalesce, isolate failure and detach deterministically',
+    () async {
+      final surface = NativeTerminalSurface();
+      addTearDown(surface.dispose);
+      final titles = <String?>[];
+      var suppressed = 0;
+      late VoidCallback detachLater;
+      surface.observeTitle(() => throw StateError('Observer failed.'));
+      surface.observeTitle(() => detachLater());
+      detachLater = surface.observeTitle(() => suppressed++);
+      void record() => titles.add(surface.title);
+      final detachFirst = surface.observeTitle(record);
+      final detachSecond = surface.observeTitle(record);
+      detachFirst();
+      detachFirst();
+      surface.write('ordinary output\x1b]2;one\x07\x1b]2;two\x07');
+      await Future<void>.delayed(Duration.zero);
+      expect(titles, ['two']);
+      expect(suppressed, 0);
+      surface.write('more output\x1b]2;  two  \x07');
+      await Future<void>.delayed(Duration.zero);
+      expect(titles, ['two']);
+      surface.write('\x1b]2;three\x07');
+      detachSecond();
+      await Future<void>.delayed(Duration.zero);
+      expect(titles, ['two']);
+      surface.observeTitle(record);
+      surface.write('\x1b]2;retained\x07');
+      surface.dispose();
+      await Future<void>.delayed(Duration.zero);
+      expect(titles, ['two']);
+      expect(surface.title, 'retained');
+      expect(() => surface.observeTitle(record), throwsStateError);
+    },
+  );
+
+  testWidgets('title observation survives complete unmount and remount', (
+    tester,
+  ) async {
+    final surface = NativeTerminalSurface();
+    addTearDown(surface.dispose);
+    final titles = <String?>[];
+    surface.observeTitle(() => titles.add(surface.title));
+    surface.write('\x1b]2;before mount\x07');
+    await tester.pumpWidget(_host(surface.buildView(isActive: () => true)));
+    await tester.pumpWidget(const SizedBox.shrink());
+    surface.write('\x1b]2;while ');
+    await tester.pump();
+    expect(titles, ['before mount']);
+    surface.write('hidden\x07');
+    await tester.pump();
+    expect(titles, ['before mount', 'while hidden']);
+    await tester.pumpWidget(_host(surface.buildView(isActive: () => true)));
+    expect(surface.title, 'while hidden');
+    expect(titles, ['before mount', 'while hidden']);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets(
     'ordered parsing retains controls, split escapes, style and Unicode',
     (tester) async {

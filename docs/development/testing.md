@@ -137,6 +137,9 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Project/native picker bridge | [`test/project_opening_test.dart`](../../app/test/project_opening_test.dart), [`test/directory_picker_bridge_test.dart`](../../app/test/directory_picker_bridge_test.dart) |
 | Native terminal emulator/view | [`test/native_terminal_surface_test.dart`](../../app/test/native_terminal_surface_test.dart) (real control parsing/styles/Unicode, hidden output, finite retention/geometry, local read-only copy/scroll, attachment, denied ambient clipboard, and explicit disposal) |
 | Prepared terminal bridge | [`test/terminal_surface_bridge_test.dart`](../../app/test/terminal_surface_bridge_test.dart) (actual EVC compilation/mount, native input/focus/paste/mouse, resize/rebuild, scoped handles, retained-widget and pending-paste revocation, prepared failure/retirement, independent lifetimes, and bundled MIT notice) |
+| Shared console contracts/state/chrome | [`test/console_controller_test.dart`](../../app/test/console_controller_test.dart), [`test/workbench_console_test.dart`](../../app/test/workbench_console_test.dart), plus [`adele_ui` console tests](../../packages/ui/test/console_test.dart) (independent contributions, retained content, selection/visibility, revoked actions/views, advisory confirmation, retirement, and bounded cleanup) |
+| Prepared console/Session Environment authority | [`test/prepared_console_host_test.dart`](../../app/test/prepared_console_host_test.dart) (actual EVC action/content paths, canonical Session association rather than Task primary, captured creation scope, fresh view access, title/exit policy, and failure cleanup) |
+| Native terminal lifecycle/title observation | [`test/native_terminal_surface_test.dart`](../../app/test/native_terminal_surface_test.dart), [`test/environment_terminal_owner_test.dart`](../../app/test/environment_terminal_owner_test.dart) (normalized title changes, hidden observation, lifecycle/cleanup evidence separate from output, and conservative pre-resource failure) |
 | Task/Environment lifecycle | [`test/task_creation_test.dart`](../../app/test/task_creation_test.dart), [`test/core/product_lifecycle_test.dart`](../../app/test/core/product_lifecycle_test.dart) |
 | Task Browser canonical projection/actions | [`test/window_task_browser_source_test.dart`](../../app/test/window_task_browser_source_test.dart) (immutable Session queries, Project/Task scope, unavailable retained Sessions, exact creation choices, retirement, and opening without Environment materialization or Run start) |
 | Task Browser bridge/view hosting | [`test/task_browser_bridge_test.dart`](../../app/test/task_browser_bridge_test.dart), [`test/task_browser_presentation_host_test.dart`](../../app/test/task_browser_presentation_host_test.dart) (safe action settlement, subscriptions/revocation, zero/one/many resolution, and retained factory state) |
@@ -202,15 +205,57 @@ dart test test/tools/backend_artifacts_test.dart test/tools/app_plugin_boundary_
 dart tools/adele.dart generate --check
 ```
 
-The terminal app files are automatically included by the existing unrestricted
-`adele_desktop` target and its CI selection; no separate fixture target or stock
-frontend artifact preparation is needed. The Git backend target includes its native
-PTY/shared-host proof and provider resource tests. CI explicitly installs `gcc` and
-`libc6-dev` for those native Git/app proofs. Keep Flutter compiler/test invocations sharing
-the app build directory serialized. These tests establish debug widget/evaluator
-behavior on the pin, not native desktop/profile or cross-platform runtime proof.
+The low-level terminal app files are automatically included by the unrestricted
+`adele_desktop` target and its CI selection; their probe EVC needs no stock frontend
+preparation. Stock console composition is a separate check below. The Git backend
+target includes native PTY/shared-host and provider resource tests. CI explicitly
+installs `gcc` and `libc6-dev` for the native Git/app checks. Keep Flutter compiler/test
+invocations sharing the app build directory serialized. These checks target debug
+widget/evaluator behavior on the pin, not native desktop/profile or cross-platform
+runtime support.
 The [application map](../../app/README.md#native-terminal-surface) owns the
 adapter's lifetime, callback, and attachment policies.
+
+### Focused console checks
+
+This is a validation command map, not recorded pass results. After bootstrap and
+current contract generation, run the focused host checks from `app/`:
+
+```sh
+flutter test --no-pub --concurrency 1 test/console_controller_test.dart test/workbench_console_test.dart test/prepared_console_host_test.dart
+flutter test --no-pub --concurrency 1 test/core/normal_chatgpt_run_integration_test.dart
+```
+
+From the repository root, select the public contract, descriptor, stock EVC, and
+tooling targets as appropriate:
+
+```sh
+dart tools/adele.dart test --target adele_ui
+dart tools/adele.dart test --target plugin_runtime
+dart tools/adele.dart test --target terminal_frontend
+dart tools/adele.dart test --target adele_tools
+```
+
+The stock Terminal case reuses the normal application integration fixture: prepared
+Local Directory/Task Browser/Chat/Terminal EVC, real shared-host and Git AOT,
+SQLite, and the prepared Git PTY helper. It targets Session-only chrome (no Task
+Browser panel/toggle/actions), explicit creation without a Run, independent shells,
+input/resize, hidden output/title changes, Session/Environment navigation, actual
+exit/removal, conservative close, and shutdown. It needs Linux x64/devpts and the
+native prerequisites above, not credentials or a paid model.
+
+The real-shell fixture launches the unchanged shared host through a controlled
+environment wrapper with temporary `HOME`, `SHELL=/bin/sh`, and fixed `PATH`;
+personal startup files do not determine test behavior. Provider-only default-shell
+cases and their narrower environment seam belong to the
+[Git provider](../../plugins/git_environment/README.md#interactive-terminals).
+Production shell resolution/startup is not replaced by that fixture configuration.
+
+Keep Flutter compiler/test invocations sharing app build output serialized. Use
+bounded predicate/frame advancement for mounted terminals, not unbounded
+`pumpAndSettle` with a blinking cursor. These checks target debug widget/evaluator
+and actual Linux AOT/process boundaries, not native desktop/profile or cross-platform
+support. They complement rather than replace the low-level terminal checks above.
 
 ### Focused browser checks
 

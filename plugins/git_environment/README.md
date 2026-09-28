@@ -182,13 +182,28 @@ a process ID nor retained provider state.
 Listening to `openTerminal` explicitly creates one terminal. The supervisor
 resolves the live `WorktreeEnvironment` and its existing process-working-directory
 boundary, revalidating after asynchronous preparation. Nested Project source scope
-therefore remains the matching directory inside the linked worktree. An executable
-and verbatim argv are passed directly; an interactive shell is an explicit request
-such as `/bin/bash --noprofile --norc -i`, not implicit command-string parsing.
+therefore remains the matching directory inside the linked worktree.
+`EnvironmentTerminalLaunchKind.explicitProgram` passes the requested executable
+and verbatim argv directly, including explicit shell invocations such as
+`/bin/bash --noprofile --norc -i`. `defaultShell` instead resolves the provider's
+inherited `SHELL` as one executable path or PATH-searched name and passes exactly
+`['-i']`, with cwd at the Environment root. `SHELL` is never split, trimmed,
+unquoted, or expanded: spaces are valid only as part of an actual executable name.
+Only an absent `SHELL` selects `/bin/sh`; a present empty, malformed, missing, or
+non-executable preference fails explicitly without shell substitution. Normal
+shell startup files may run according to the selected shell's own interactive,
+non-login behavior; the provider does not discover profiles or add shell-specific
+startup flags.
 Child environment uses the foreground allowlist above, with canonical `PWD` and
 `TERM=xterm-256color` instead of `dumb`. No shared-host environment/cwd mutation,
 arbitrary environment override, credential forwarding, or shell-profile discovery
 is added.
+
+The provider-local `terminalEnvironment` constructor seam replaces the inherited
+source for terminals only, snapshots it, and still applies the same allowlist. It
+is not part of the Environment request or backend startup configuration. Focused
+tests use controlled `SHELL`/`PATH` and a temporary `HOME`, not personal startup
+files; Git placement and foreground-process environments are unchanged.
 
 The provider-private `GitPtySession` uses the prepared Linux x64 C executable
 described in [toolchain preparation](../../docs/development/toolchain.md#git-pty-preparation).

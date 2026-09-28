@@ -35,16 +35,21 @@ const Set<String> _gitEnvironmentVariablesToClear = <String>{
 
 final class GitWorktreeEnvironmentProvider
     implements EnvironmentProvider, EnvironmentTerminalProvider {
+  /// [terminalEnvironment] replaces the terminal's inherited environment source
+  /// for controlled tests. It is snapshotted and allowlisted, not passed verbatim;
+  /// null uses the host environment. Git and foreground processes are unaffected.
   GitWorktreeEnvironmentProvider({
     LiveObjectRegistry<EnvironmentId, WorktreeEnvironment>? liveObjects,
     GitTerminalDriver? terminalDriver,
     String? ptyHelperPath,
+    Map<String, String>? terminalEnvironment,
   }) : liveObjects =
            liveObjects ??
            LiveObjectRegistry<EnvironmentId, WorktreeEnvironment>(),
        _terminals = GitTerminalSupervisor(
          driver: terminalDriver,
          helperPath: ptyHelperPath,
+         parentEnvironment: terminalEnvironment,
        );
 
   @override

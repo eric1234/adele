@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
@@ -31,8 +33,11 @@ final class NativeTerminalSurface {
     if (maxLines < 24) throw ArgumentError.value(maxLines, 'maxLines', '>= 24');
     _terminal = _Emulator(maxLines: maxLines)
       ..focusInput(false)
-      ..onOutput = _response;
+      ..onOutput = _response
+      ..onTitleChange = _setTitle;
   }
+
+  static const int maxTitleCodeUnits = 160;
 
   /// Host-selected authority can only be narrowed, never expanded by a view.
   final bool _readOnly;
@@ -45,8 +50,67 @@ final class NativeTerminalSurface {
   void Function(int, int, bool Function())? _onScopedResize;
   _Emulator? _terminal;
   _NativeTerminalViewState? _attached;
+  String? _title;
+  final _titleObservers = <VoidCallback>{};
+  bool _titleNotificationPending = false;
 
   bool get isDisposed => _terminal == null;
+
+  /// Latest untrusted window title, normalized to a bounded single-line label.
+  /// Null means no usable title. Retained independently of view attachment.
+  String? get title => _title;
+
+  /// Coalesced title invalidations, not output notifications or an initial replay.
+  /// Read [title] after subscribing. Detachment is immediate and idempotent;
+  /// observer failures cannot interrupt parsing or other observers.
+  VoidCallback observeTitle(VoidCallback observer) {
+    _requireTerminal();
+    void listener() => observer();
+    _titleObservers.add(listener);
+    return () => _titleObservers.remove(listener);
+  }
+
+  void _setTitle(String raw) {
+    if (isDisposed) return;
+    final normalized = raw
+        .replaceAll(
+          RegExp(
+            r'[\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]',
+          ),
+          '',
+        )
+        .replaceAll(
+          RegExp(
+            r'[\x00-\x20\x7f-\x9f\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+',
+          ),
+          ' ',
+        )
+        .trim();
+    final label = StringBuffer();
+    for (final rune in normalized.runes) {
+      // Never retain invalid UTF-16 or split a supplementary character.
+      if (rune >= 0xd800 && rune <= 0xdfff) continue;
+      if (label.length + (rune > 0xffff ? 2 : 1) > maxTitleCodeUnits) break;
+      label.writeCharCode(rune);
+    }
+    final text = label.toString().trimRight();
+    final title = text.isEmpty ? null : text;
+    if (_title == title) return;
+    _title = title;
+    if (_titleNotificationPending) return;
+    _titleNotificationPending = true;
+    scheduleMicrotask(() {
+      _titleNotificationPending = false;
+      for (final observer in _titleObservers.toList()) {
+        if (!_titleObservers.contains(observer)) continue;
+        try {
+          observer();
+        } on Object {
+          // Observation must never become terminal execution authority.
+        }
+      }
+    });
+  }
 
   /// Retains the screen and local copy/scroll while permanently fencing input.
   void stopInput() {
@@ -111,7 +175,9 @@ final class NativeTerminalSurface {
     _onResize = null;
     _onScopedInput = null;
     _onScopedResize = null;
+    _titleObservers.clear();
     terminal.onOutput = null;
+    terminal.onTitleChange = null;
     terminal.dispose();
     _attached?._ownerDisposed();
   }
@@ -331,6 +397,7 @@ final class _ViewTerminal extends xterm.Terminal {
   final _Emulator _engine;
   bool _disposed = false;
   bool _focused = false;
+  (int, int)? _reportedSize;
   NativeTerminalSurface get _owner => _view._surface;
   bool get _available =>
       !_disposed && _view._available && identical(_owner._attached, _view);
@@ -416,6 +483,11 @@ final class _ViewTerminal extends xterm.Terminal {
     final size = (_engine.viewWidth, _engine.viewHeight);
     if (_interactive && size != previous) {
       _owner._onResize?.call(size.$1, size.$2);
+    }
+    // A fresh mount must submit its own authority even when its geometry matches
+    // the emulator: a queued resize from the previous mount may be revoked.
+    if (_interactive && size != _reportedSize) {
+      _reportedSize = size;
       _owner._onScopedResize?.call(size.$1, size.$2, () => _interactive);
     }
   }

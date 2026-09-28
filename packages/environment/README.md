@@ -110,12 +110,20 @@ No host-local process fallback is permitted. Existing Session-bound authorized
 process services and `runForegroundProcess` retain their original semantics.
 
 `openTerminal(environmentId, request)` is lazy and single-subscription: listening
-creates one resource. `EnvironmentTerminalRequest` supplies an explicit program,
-immutable verbatim argv, Environment-relative working directory, and initial
-character dimensions. It has no implicit shell, arbitrary environment overrides,
-or process-lifetime timeout. Dimensions are bounded to 1..1000 columns and 1..2000
-rows. A provider publishes `opened(handle, dimensions)` only after establishment,
-then ordered combined PTY text, then an explicit completion. Normal exit requires
+creates one resource. `EnvironmentTerminalRequest` requires an explicit
+`EnvironmentTerminalLaunchKind`: `explicitProgram` retains a non-empty `program`,
+immutable verbatim `arguments`, and Environment-relative `relativeWorkingDirectory`;
+`defaultShell` asks the provider to open its default interactive shell at the
+Environment root. That kind requires `program: null`, empty `arguments`, and
+`relativeWorkingDirectory: ''`. Mixed shapes and empty program sentinels are
+rejected by constructor and transport validation. All fields remain required on
+the wire, including the nullable program; missing/unknown launch kinds are rejected.
+Shell selection belongs to the provider, not the caller or host. Neither kind
+parses command strings or accepts arbitrary environment overrides or a
+process-lifetime timeout. Both supply initial character dimensions, bounded to
+1..1000 columns and 1..2000 rows. A provider publishes `opened(handle, dimensions)`
+only after establishment, then ordered combined PTY text, then an explicit
+completion. Normal exit requires
 the real exit status; nonzero exit is process data. Explicit closure is distinct
 from normal exit, and infrastructure failures are stream errors. EOF without
 completion is not successful execution.

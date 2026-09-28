@@ -6,12 +6,15 @@ import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
+import 'package:adele_desktop/frontend/prepared_console_host.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/prepared_session_host.dart';
 import 'package:adele_desktop/frontend/prepared_task_browser_host.dart';
 import 'package:adele_desktop/frontend/window_task_browser_source.dart';
 import 'package:adele_desktop/plugins/temporary_chatgpt_selection.dart';
 import 'package:adele_desktop/terminal/native_adele_runtime.dart';
+import 'package:adele_desktop/ui/console/console_controller.dart';
+import 'package:adele_desktop/ui/console/workbench_console.dart';
 import 'package:adele_desktop/ui/execution/run_execution_status.dart';
 import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
@@ -65,6 +68,8 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   SessionExecutionController? _execution;
   Session? _session;
   late final PreparedSessionHost _sessionHost;
+  late final ConsoleController _console;
+  late final PreparedConsoleHost _consoleHost;
   late final ApplicationFrontendBootstrap _frontends;
   bool _frontendsStarted = false;
   String? _sessionLabel;
@@ -78,6 +83,14 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   void initState() {
     super.initState();
     _runtime = widget.createRuntime();
+    _console = ConsoleController(
+      _runtime.extensions,
+      cleanupTimeout: const Duration(seconds: 3),
+    );
+    _consoleHost = PreparedConsoleHost(
+      store: _runtime.store,
+      terminals: _runtime.terminals,
+    );
     _sessionHost = PreparedSessionHost(
       extensions: _runtime.extensions,
       backends: _runtime.plugins,
@@ -96,6 +109,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     _frontends = ApplicationFrontendBootstrap(
       extensions: _runtime.extensions,
       sessionHost: _sessionHost,
+      consoleHost: _consoleHost,
       taskBrowserHost: PreparedTaskBrowserHost(
         sourceForProject: _browserSource,
       ),
@@ -305,10 +319,12 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     }
     setState(() {
       _session = session;
+      _environment = _consoleHost.environmentForSession(session);
       _execution = controller;
       _sessionLabel = selection.presentation.value.displayName;
       _navigationError = null;
     });
+    _console.setSession(session);
     _inspection.presentSession(session);
   }
 
@@ -423,6 +439,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       }
       if (!mounted || _closing != null || !identical(_session, session)) return;
       _sessionHost.unbind(session);
+      _console.setSession(null);
       _inspection.presentSession(null);
       setState(() {
         _execution = null;
@@ -449,6 +466,8 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
 
   Future<void> _closeRuntime() => _closing ??= () async {
     _frontends.stopStarting();
+    final closingConsole = _console.close();
+    unawaited(_consoleHost.close());
     _inspection.removeListener(_inspectionChanged);
     if (!_retainingPresentations.value) _inspection.clear();
     final Future<void>? settlingRun = _execution?.close();
@@ -466,7 +485,11 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         // Run failure must not bypass backend/runtime cleanup.
       }
       try {
-        await _runtime.close();
+        try {
+          await closingConsole;
+        } finally {
+          await _runtime.close();
+        }
       } finally {
         // Registrations and actions retire now; exit-retained display subtrees
         // are released only on detach/dispose, not in Flutter's async exit loop.
@@ -550,6 +573,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     _frontends.releasePresentations();
     // Flutter disposal cannot await; graceful desktop exit awaits above.
     unawaited(_closeRuntime());
+    _console.dispose();
     _inspection.dispose();
     _retainingPresentations.dispose();
     super.dispose();
@@ -627,6 +651,15 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
                           ),
                       ],
                     ),
+                  ),
+                ),
+          console: session == null
+              ? null
+              : IgnorePointer(
+                  ignoring: _navigating,
+                  child: ExcludeFocus(
+                    excluding: _navigating,
+                    child: WorkbenchConsole(controller: _console),
                   ),
                 ),
           selectors: _runtime.extensions.discover(projectSelectorContributions),

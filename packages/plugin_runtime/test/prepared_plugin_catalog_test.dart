@@ -251,6 +251,266 @@ void main() {
     },
   );
 
+  test('Console is frontend-only with ordered immutable actions', () async {
+    await install(
+      'console',
+      _manifest(
+        components: {
+          'frontend': _frontend(
+            presentations: [
+              {
+                ..._console,
+                'actions': [
+                  _consoleAction,
+                  {
+                    'id': 'another-action',
+                    'label': 'L' * 128,
+                    'entrypoint': r'_anotherAction$2',
+                  },
+                ],
+              },
+              {
+                ..._console,
+                'extensionId': 'org.example.another-console',
+                'library': 'package:example_frontend/src/console.g.dart',
+                'actions': <Object?>[],
+              },
+            ],
+          ),
+        },
+      ),
+    );
+    final catalog = await PreparedPluginCatalog.discover(root.path);
+    expect(catalog.issues, isEmpty);
+    final installation = catalog.installations.single;
+    expect(installation.backendArtifactUri, isNull);
+    final descriptors = installation.frontend!.presentations
+        .cast<PreparedConsolePresentation>();
+    final console = descriptors.first;
+    expect(console.extensionId, ExtensionId('org.example.console'));
+    expect(console.library, 'package:example_frontend/console.dart');
+    expect(console.entrypoint, 'buildConsole');
+    expect(console.actions.map((action) => action.id), [
+      'new-console',
+      'another-action',
+    ]);
+    expect(console.actions.first.label, 'New Console');
+    expect(console.actions.first.entrypoint, 'newConsole');
+    expect(console.actions.last.label, 'L' * 128);
+    expect(console.actions.last.entrypoint, r'_anotherAction$2');
+    expect(() => console.actions.clear(), throwsUnsupportedError);
+    expect(descriptors.last.actions, isEmpty);
+    expect(() => descriptors.last.actions.clear(), throwsUnsupportedError);
+  });
+
+  test('Console constructors snapshot actions and validate their ABI', () {
+    PreparedConsolePresentation descriptor({
+      required List<PreparedConsoleAction> actions,
+      String library = 'package:example/console.dart',
+      String entrypoint = 'buildConsole',
+    }) => PreparedConsolePresentation(
+      extensionId: ExtensionId('org.example.console'),
+      library: library,
+      entrypoint: entrypoint,
+      actions: actions,
+    );
+    final action = PreparedConsoleAction(
+      id: 'new-console',
+      label: 'New Console',
+      entrypoint: 'newConsole',
+    );
+    final actions = [action];
+    final console = descriptor(actions: actions);
+    actions.clear();
+    expect(console.actions, [action]);
+    expect(() => console.actions.add(action), throwsUnsupportedError);
+    expect(() => descriptor(actions: [action, action]), throwsFormatException);
+    expect(
+      () => descriptor(actions: [], library: 'package:example/../console.dart'),
+      throwsFormatException,
+    );
+    expect(
+      () => descriptor(actions: [], entrypoint: 'Console.build'),
+      throwsFormatException,
+    );
+    for (final (id, label, entrypoint) in [
+      ('', 'New Console', 'newConsole'),
+      ('  ', 'New Console', 'newConsole'),
+      ('new', '', 'newConsole'),
+      ('new', '  ', 'newConsole'),
+      ('new', 'L' * 129, 'newConsole'),
+      ('new', 'New Console', 'Console.new'),
+    ]) {
+      expect(
+        () =>
+            PreparedConsoleAction(id: id, label: label, entrypoint: entrypoint),
+        throwsFormatException,
+      );
+    }
+  });
+
+  final invalidConsoles = <String, Object?>{
+    for (final field in ['extensionId', 'library', 'entrypoint', 'actions'])
+      'missing $field': {..._console}..remove(field),
+    for (final field in ['extensionId', 'library', 'entrypoint', 'actions'])
+      for (final value in <Object?>[null, 1, false, {}, '', '  '])
+        'invalid $field ${jsonEncode(value)}': {..._console, field: value},
+    'invalid extension ID': {..._console, 'extensionId': 'not namespaced'},
+    for (final field in [
+      'displayName',
+      'strategyId',
+      'strategyAffinity',
+      'backendServices',
+      'hostAdapter',
+      'unknown',
+    ])
+      'unsupported $field': {..._console, field: 'unsupported'},
+    for (final library in [
+      'console.dart',
+      'file:///console.dart',
+      'package://example/console.dart',
+      'package:BadPackage/console.dart',
+      'package:bad-package/console.dart',
+      'package:example/console',
+      'package:example/console.txt',
+      'package:example/./console.dart',
+      'package:example/../console.dart',
+      'package:example//console.dart',
+      'package:example/%63onsole.dart',
+      'package:example/console.dart?query',
+      'package:example/console.dart#fragment',
+      r'package:example/src\console.dart',
+      'package:example/console.dart\n',
+    ])
+      'invalid library ${jsonEncode(library)}': {
+        ..._console,
+        'library': library,
+      },
+    for (final entrypoint in [
+      'Console.build',
+      'buildConsole()',
+      'build-console',
+      '1buildConsole',
+      'build Console',
+      ' buildConsole',
+      'buildConsole\n',
+    ]) ...{
+      'invalid entrypoint ${jsonEncode(entrypoint)}': {
+        ..._console,
+        'entrypoint': entrypoint,
+      },
+      'invalid action entrypoint ${jsonEncode(entrypoint)}': {
+        ..._console,
+        'actions': [
+          {..._consoleAction, 'entrypoint': entrypoint},
+        ],
+      },
+    },
+    'duplicate action IDs': {
+      ..._console,
+      'actions': [
+        _consoleAction,
+        {..._consoleAction, 'label': 'Other', 'entrypoint': 'other'},
+      ],
+    },
+    for (final entry in <String, Object?>{
+      for (final field in ['id', 'label', 'entrypoint'])
+        'missing $field': {..._consoleAction}..remove(field),
+      for (final field in ['id', 'label', 'entrypoint'])
+        for (final value in <Object?>[null, 1, false, [], {}, '', ' \t\n'])
+          'invalid $field ${jsonEncode(value)}': {
+            ..._consoleAction,
+            field: value,
+          },
+      'long label': {..._consoleAction, 'label': 'L' * 129},
+      'own library': {
+        ..._consoleAction,
+        'library': 'package:other/action.dart',
+      },
+      'unknown field': {..._consoleAction, 'unknown': true},
+      'null': null,
+      'array': [],
+      'string': 'newConsole',
+    }.entries)
+      'action ${entry.key}': {
+        ..._console,
+        'actions': [entry.value],
+      },
+  };
+  for (final entry in invalidConsoles.entries) {
+    test('Console ${entry.key} invalidates only the frontend', () async {
+      await install(
+        'console',
+        _manifest(
+          components: {
+            'backend': {'artifact': 'backend.aot'},
+            'frontend': _frontend(presentations: [_session, entry.value]),
+          },
+        ),
+      );
+      final catalog = await PreparedPluginCatalog.discover(root.path);
+      expect(catalog.installations.single.frontend, isNull);
+      expect(catalog.installations.single.backendArtifactUri, isNotNull);
+      expect(catalog.issues.single.component, PreparedPluginComponent.frontend);
+      expect(catalog.issues.single.message, isNotEmpty);
+    });
+  }
+
+  for (final sameInstallation in [false, true]) {
+    test(
+      'Console duplicate registration is registry-owned, same installation=$sameInstallation',
+      () async {
+        await install(
+          'first',
+          _manifest(
+            components: {
+              'frontend': _frontend(
+                presentations: [_console, if (sameInstallation) _console],
+              ),
+            },
+          ),
+        );
+        if (!sameInstallation) {
+          await install(
+            'second',
+            _manifest(
+              id: 'org.example.second',
+              components: {
+                'frontend': _frontend(presentations: [_console]),
+              },
+            ),
+          );
+        }
+        final catalog = await PreparedPluginCatalog.discover(root.path);
+        expect(catalog.issues, isEmpty);
+        final descriptors = catalog.installations
+            .expand((installation) => installation.frontend!.presentations)
+            .cast<PreparedConsolePresentation>()
+            .toList();
+        expect(descriptors, hasLength(2));
+        final registry = ExtensionRegistry();
+        final point = ExtensionPoint<PreparedConsolePresentation>(
+          'org.example.console-presentations',
+        );
+        final registration = registry.register(
+          point: point,
+          id: descriptors.first.extensionId,
+          value: descriptors.first,
+        );
+        addTearDown(registration.close);
+        expect(
+          () => registry.register(
+            point: point,
+            id: descriptors.last.extensionId,
+            value: descriptors.last,
+          ),
+          throwsA(isA<ExtensionRegistrationException>()),
+        );
+        expect(registry.discover(point).single.value, same(descriptors.first));
+      },
+    );
+  }
+
   const browser = <String, Object?>{
     'role': 'taskBrowser',
     'extensionId': 'test.task-browser',
@@ -1438,6 +1698,20 @@ const _session = {
   'strategyId': 'org.example.strategy',
   'entrypoint': 'buildSession',
   'displayName': 'Example Session',
+};
+
+const _consoleAction = {
+  'id': 'new-console',
+  'label': 'New Console',
+  'entrypoint': 'newConsole',
+};
+
+const _console = {
+  'role': 'console',
+  'extensionId': 'org.example.console',
+  'library': 'package:example_frontend/console.dart',
+  'entrypoint': 'buildConsole',
+  'actions': [_consoleAction],
 };
 
 const _projectSelector = {
