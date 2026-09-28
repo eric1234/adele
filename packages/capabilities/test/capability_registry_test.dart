@@ -343,6 +343,69 @@ void main() {
     expect(registry.providersFor(capability), isEmpty);
   });
 
+  test(
+    'group retires every registration before reporting observer failure',
+    () async {
+      final registry = CapabilityRegistry();
+      final group = CapabilityRegistrationGroup();
+      final bindings = <ProviderBinding>[];
+      final visited = <int>[];
+      final error = StateError('Last registered observer failed.');
+      final stack = StackTrace.fromString('original retirement observer stack');
+      for (var index = 0; index < 3; index++) {
+        final provider = _provider(
+          capability,
+          'dev.adele.inspector.instance-$index',
+        );
+        group.add(registry.register(provider: provider, endpoint: _Endpoint()));
+        final binding = registry.resolve(capability, providerId: provider.id);
+        bindings.add(binding);
+        binding.onRetire(() {
+          visited.add(index);
+          if (index == 2) Error.throwWithStackTrace(error, stack);
+          if (index == 1) {
+            throw StateError('A later failure must not mask the first.');
+          }
+        });
+      }
+      try {
+        await group.close();
+        fail('The first observer error must remain observable.');
+      } catch (caught, caughtStack) {
+        expect(caught, same(error));
+        expect(caughtStack.toString(), stack.toString());
+        expect(visited, [2, 1, 0]);
+        expect(registry.providersFor(capability), isEmpty);
+        for (final binding in bindings) {
+          expect(
+            () => binding.endpointAs<CapabilityEndpoint>(),
+            throwsA(
+              isA<ProviderUnavailable>().having(
+                (error) => error.stale,
+                'stale',
+                isTrue,
+              ),
+            ),
+          );
+        }
+      }
+      final replacement = registry.register(
+        provider: bindings.last.provider,
+        endpoint: _Endpoint(),
+      );
+      registry
+          .resolve(capability)
+          .onRetire(() => fail('Replacement was retired.'));
+      await group.close();
+      expect(visited, [2, 1, 0]);
+      expect(replacement.isClosed, isFalse);
+      expect(
+        () => registry.resolve(capability).endpointAs<CapabilityEndpoint>(),
+        returnsNormally,
+      );
+    },
+  );
+
   test('stale binding cannot target a restarted provider', () async {
     final CapabilityRegistry registry = CapabilityRegistry();
     final ProviderDescriptor provider = _provider(

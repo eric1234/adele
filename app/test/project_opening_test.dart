@@ -9,10 +9,10 @@ import 'dart:ui' show AppExitResponse;
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/application.dart';
-import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
+import 'package:adele_desktop/terminal/native_adele_runtime.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_provider/adele_model_provider.dart';
@@ -32,7 +32,7 @@ const _localDirectoryProjectPluginId =
     'dev.adele.plugin.local-directory-project';
 
 void main() {
-  late AdeleRuntime runtime;
+  late NativeAdeleRuntime runtime;
   late _RecordingIds ids;
   late Directory temporary;
   late Directory installations;
@@ -93,7 +93,7 @@ void main() {
   setUp(() {
     preparedMounted = false;
     ids = _RecordingIds();
-    runtime = AdeleRuntime(ids: ids);
+    runtime = NativeAdeleRuntime(ids: ids);
     final directory = Directory.systemTemp.createTempSync(
       'adele-project-source-',
     );
@@ -111,7 +111,7 @@ void main() {
 
   Future<void> mountPreparedSelector(
     WidgetTester tester, {
-    AdeleRuntime Function()? createRuntime,
+    NativeAdeleRuntime Function()? createRuntime,
     Directory? installationRoot,
     bool hasBackend = true,
   }) async {
@@ -255,7 +255,7 @@ void main() {
             return uri;
           });
         }
-        AdeleRuntime createRuntime() {
+        NativeAdeleRuntime createRuntime() {
           runtimeCreations++;
           return runtime;
         }
@@ -347,7 +347,7 @@ void main() {
       await disposeApplication(tester);
 
       ids = _RecordingIds()..failProject = true;
-      runtime = AdeleRuntime(ids: ids);
+      runtime = NativeAdeleRuntime(ids: ids);
       picker.calls = 0;
       await mountPreparedSelector(tester);
       await tester.tap(find.text('Open Local Directory...'));

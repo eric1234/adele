@@ -671,6 +671,161 @@ void main() {
     },
   );
 
+  for (final failStop in [false, true]) {
+    test(
+      'activation failure survives capability rollback failure (stop failure=$failStop)',
+      () async {
+        final connection = await connect({
+          'failStop': failStop,
+          'capabilityExposures': [_capabilityExposure],
+          'extensionExposures': [
+            _exposure('first', 'default'),
+            _exposure('bad', 'default'),
+          ],
+        });
+        final primary = const ExtensionContractException('Adapter failed.');
+        final primaryStack = StackTrace.current;
+        final rollbackFailure = StateError('Capability observer failed.');
+        final cleaned = <String>[];
+        var observed = false;
+        late ProviderBinding provider;
+        late ExtensionBinding<_Contribution> extension;
+        await PluginBackendActivation.registerAdvertised(
+          connection: connection,
+          capabilities: capabilities,
+          extensions: extensions,
+          adapters: RemoteExtensionAdapterRegistry([
+            _Adapter(
+              onCreate: (context) {
+                final id = context.exposure.extensionId;
+                context.onRetire(() async => cleaned.add(id));
+                if (id == 'dev.adele.test.bad') {
+                  extension = extensions.discover(_point).single;
+                  Error.throwWithStackTrace(primary, primaryStack);
+                }
+                provider = capabilities.resolve(_capability);
+                provider.onRetire(() {
+                  observed = true;
+                  throw rollbackFailure;
+                });
+              },
+            ),
+          ]),
+        ).then<void>(
+          (_) => fail('Activation unexpectedly succeeded.'),
+          onError: (Object error, StackTrace stack) {
+            expect(error, same(primary));
+            expect(stack, same(primaryStack));
+          },
+        );
+        expect(observed, isTrue);
+        expect(cleaned, ['dev.adele.test.first', 'dev.adele.test.bad']);
+        expect(extensions.discover(_point), isEmpty);
+        expect(extension.validate, throwsA(isA<StaleExtensionBinding>()));
+        expect(capabilities.providersFor(_capability), isEmpty);
+        expect(
+          () => provider.requestChannel,
+          throwsA(isA<ProviderUnavailable>()),
+        );
+        expect(connection.isClosed, isTrue);
+        expect(host.isClosed, isFalse);
+      },
+    );
+
+    test(
+      'composite close preserves first observer failure after all cleanup (stop failure=$failStop)',
+      () async {
+        final connection = await connect({
+          'failStop': failStop,
+          'capabilityExposures': [
+            for (final name in ['first', 'second', 'third'])
+              {..._capabilityExposure, 'providerId': 'dev.adele.test.$name'},
+          ],
+          'extensionExposures': [
+            _exposure('first', 'default'),
+            _exposure('second', 'default'),
+          ],
+        });
+        final activation = await activate(connection);
+        final primary = StateError('First retirement observer failed.');
+        final primaryStack = StackTrace.current;
+        final retired = <ProviderId>[];
+        final providers = [
+          for (final descriptor in capabilities.providersFor(_capability))
+            capabilities.resolve(_capability, providerId: descriptor.id),
+        ];
+        for (final provider in providers) {
+          provider.onRetire(() {
+            retired.add(provider.provider.id);
+            if (provider == providers.last) {
+              Error.throwWithStackTrace(primary, primaryStack);
+            }
+            throw StateError('Later retirement observer failed.');
+          });
+        }
+        final bindings = extensions.discover(_point);
+        final cleanup = Completer<void>();
+        addTearDown(() {
+          if (!cleanup.isCompleted) cleanup.complete();
+        });
+        final cleaned = <ExtensionId>[];
+        for (final binding in bindings) {
+          binding.value.context.onRetire(() async {
+            await cleanup.future;
+            cleaned.add(binding.id);
+          });
+        }
+        final closing = activation.close().then<void>(
+          (_) => fail('Close unexpectedly succeeded.'),
+          onError: (Object error, StackTrace stack) {
+            expect(error, same(primary));
+            expect(stack, same(primaryStack));
+          },
+        );
+        expect(connection.isClosed, isFalse);
+        expect(
+          connection.validateInfrastructureContext,
+          throwsA(isA<PluginConnectionClosed>()),
+        );
+        cleanup.complete();
+        await closing;
+        expect(retired, providers.reversed.map((p) => p.provider.id));
+        expect(cleaned, bindings.map((binding) => binding.id));
+        expect(extensions.discover(_point), isEmpty);
+        expect(capabilities.providersFor(_capability), isEmpty);
+        for (final binding in bindings) {
+          expect(binding.validate, throwsA(isA<StaleExtensionBinding>()));
+        }
+        for (final provider in providers) {
+          expect(
+            () => provider.requestChannel,
+            throwsA(isA<ProviderUnavailable>()),
+          );
+        }
+        expect(connection.isClosed, isTrue);
+        expect(host.isClosed, isFalse);
+        await expectLater(activation.retire(), throwsA(same(primary)));
+      },
+    );
+  }
+
+  test('composite close reports a sole connection failure', () async {
+    final connection = await connect({'failStop': true});
+    final activation = await activate(connection);
+    await expectLater(
+      activation.close(),
+      throwsA(
+        isA<PluginRemoteFailure>().having(
+          (error) => error.code,
+          'code',
+          'fixture_stop_failed',
+        ),
+      ),
+    );
+    expect(connection.isClosed, isTrue);
+    expect(host.isClosed, isFalse);
+  });
+
   test('duplicate registration never retires an existing generation', () async {
     final first = await connect({
       'extensionExposures': [_exposure('first', 'default')],
@@ -1666,6 +1821,7 @@ void main() {
   var buffer = <int>[];
   final generations = <String, String>{};
   final infrastructure = <String, String>{};
+  final stopFailures = <String>{};
   final pending = <int, Map<String, dynamic>>{};
   final streams = <int, Map<String, dynamic>>{};
   var nextHostRequest = 0;
@@ -1696,9 +1852,15 @@ void main() {
         case 'startPlugin':
           generations[message['pluginId']] = message['generation'];
           infrastructure[message['pluginId']] = message['hostInfrastructureContext'];
-          send({'kind': 'pluginReady', ...route, ...jsonDecode(message['arguments'][0]) as Map<String,dynamic>});
+          final ready = jsonDecode(message['arguments'][0]) as Map<String,dynamic>;
+          if (ready['failStop'] == true) stopFailures.add(message['pluginId'] as String);
+          send({'kind': 'pluginReady', ...route, ...ready});
         case 'stopPlugin':
-          send({'kind': 'pluginStopped', ...route});
+          if (stopFailures.remove(message['pluginId'])) {
+            send({'kind': 'stopFailed', ...route, 'error': {'code': 'fixture_stop_failed', 'message': 'Fixture stop failed'}});
+          } else {
+            send({'kind': 'pluginStopped', ...route});
+          }
         case 'request':
           if (message['method'] == 'reverse') {
             reverse(message);

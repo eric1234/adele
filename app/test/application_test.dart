@@ -6,9 +6,9 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/application.dart';
-import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/main.dart' as application;
+import 'package:adele_desktop/terminal/native_adele_runtime.dart';
 import 'package:adele_desktop/ui/session/session_presentation_host.dart';
 import 'package:adele_desktop/ui/shell/adele_shell.dart';
 import 'package:adele_environment/adele_environment.dart';
@@ -36,7 +36,7 @@ void main() {
           'adele-empty-application-',
         );
         addTearDown(() => directory.deleteSync(recursive: true));
-        final AdeleRuntime runtime = AdeleRuntime();
+        final NativeAdeleRuntime runtime = NativeAdeleRuntime();
         addTearDown(runtime.close);
         final Uri source = directory.uri;
         late Future<void> starting;
@@ -214,7 +214,7 @@ void main() {
             },
           }),
         );
-        final AdeleRuntime runtime = AdeleRuntime();
+        final NativeAdeleRuntime runtime = NativeAdeleRuntime();
         addTearDown(runtime.close);
         try {
           late Future<void> backendSettled;
@@ -334,9 +334,9 @@ void main() {
   testWidgets('owns one provider-free runtime across rebuilds and disposal', (
     WidgetTester tester,
   ) async {
-    final AdeleRuntime runtime = AdeleRuntime();
+    final NativeAdeleRuntime runtime = NativeAdeleRuntime();
     int creations = 0;
-    AdeleRuntime createRuntime() {
+    NativeAdeleRuntime createRuntime() {
       creations++;
       return runtime;
     }
@@ -379,9 +379,9 @@ void main() {
   testWidgets('graceful application exit awaits runtime retirement', (
     WidgetTester tester,
   ) async {
-    late AdeleRuntime runtime;
+    late NativeAdeleRuntime runtime;
     await tester.pumpWidget(
-      AdeleApplication(createRuntime: () => runtime = AdeleRuntime()),
+      AdeleApplication(createRuntime: () => runtime = NativeAdeleRuntime()),
     );
 
     expect(await tester.binding.handleRequestAppExit(), AppExitResponse.exit);
@@ -400,7 +400,7 @@ void main() {
   testWidgets(
     'Session choices are explicit, usable and revalidated before publication',
     (tester) async {
-      final runtime = AdeleRuntime();
+      final runtime = NativeAdeleRuntime();
       final source = Directory.systemTemp.createTempSync(
         'adele-session-project-',
       );

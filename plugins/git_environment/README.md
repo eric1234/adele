@@ -197,6 +197,11 @@ missing/unsupported preparation makes only terminal creation explicitly unavaila
 The backend remains Flutter-free. Fork, controlling-terminal setup, session/signal
 changes, native descriptor operations, and reaping occur in the helper, not the
 shared AOT host. The helper is not an independently selected Environment provider.
+Its Linux-specific supervision is replaceable behind this isolation boundary;
+the public terminal contract is provider/platform-neutral. See the
+[toolchain guidance](../../docs/development/toolchain.md#git-pty-preparation) for
+the required custom-versus-upstream-library comparison before another platform
+backend is added. Other platforms remain unvalidated.
 
 The stream publishes opened evidence before ordered combined PTY text, then real
 exit or explicit-closure evidence. UTF-8 decoding is incremental across OS reads;

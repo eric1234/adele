@@ -50,6 +50,9 @@ idle resources synchronously when that exact registration retires. It returns an
 idempotent detach callback and rejects an already-stale binding; replacement
 registrations do not notify or revive it. This is a retirement signal, not endpoint
 health monitoring or a substitute for per-operation `endpointAs<T>()` validation.
+Grouped retirement attempts every registration in reverse order despite observer
+errors, then reports the first error with its original stack. A repeated close
+does not invoke those observers again or touch replacement registrations.
 See the [registry source](lib/src/capability_registry.dart) and
 [tests](test/capability_registry_test.dart) for exact failure distinctions.
 

@@ -334,7 +334,11 @@ final class ApplicationPluginBootstrap {
     }
     backend._state = InstalledBackendState.terminated;
     backend._failure = error;
-    await activation.retire();
+    try {
+      await activation.retire();
+    } on Object {
+      // Preserve termination; explicit close observes the cached retirement failure.
+    }
     _notify();
   }
 

@@ -176,9 +176,17 @@ final class CapabilityRegistrationGroup {
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
+    Object? firstError;
+    StackTrace? firstStack;
     for (final CapabilityRegistration registration in _registrations.reversed) {
-      await registration.close();
+      try {
+        await registration.close();
+      } catch (error, stack) {
+        firstError ??= error;
+        firstStack ??= stack;
+      }
     }
+    if (firstError != null) Error.throwWithStackTrace(firstError, firstStack!);
   }
 }
 

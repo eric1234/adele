@@ -347,8 +347,13 @@ final class PluginBackendActivation {
           if (acquiredExtensions != null) acquiredExtensions.retire(),
           if (acquired != null) acquired.retire(),
         ]);
-      } finally {
+      } on Object {
+        // The activation failure remains primary after rollback.
+      }
+      try {
         await connection.close();
+      } on Object {
+        // Connection cleanup must not replace the activation failure either.
       }
       rethrow;
     }
@@ -363,10 +368,22 @@ final class PluginBackendActivation {
   }
 
   Future<void> close() async {
+    Object? firstError;
+    StackTrace? firstStack;
     try {
       await retire();
-    } finally {
+    } on Object catch (error, stack) {
+      firstError = error;
+      firstStack = stack;
+    }
+    try {
       await connection.close();
+    } on Object catch (error, stack) {
+      firstError ??= error;
+      firstStack ??= stack;
+    }
+    if (firstError != null) {
+      Error.throwWithStackTrace(firstError, firstStack!);
     }
   }
 }

@@ -32,12 +32,12 @@ and [architecture overview](../docs/architecture/overview.md) for cross-system c
 
 [`main.dart`](lib/main.dart) launches `AdeleApplication` in
 [`application.dart`](lib/application.dart). Application State constructs one
-`AdeleRuntime` synchronously, retains it across rebuilds, and explicitly starts
+`NativeAdeleRuntime` synchronously, retains it across rebuilds, and explicitly starts
 asynchronous plugin bootstrap.
 
 ```text
 Flutter application
-    -> construct AdeleRuntime
+    -> construct NativeAdeleRuntime
     -> discover shared prepared installation catalog
          +-> notify window -> activate prepared frontends -> ExtensionRegistry
          +-> start valid prepared backends
@@ -46,7 +46,10 @@ Flutter application
     -> window / product / Session interaction
 ```
 
-`AdeleRuntime()` statically activates zero stock plugins. Construction is
+`AdeleRuntime` is the pure-Dart host graph shared with SDK-only self-hosting.
+[`NativeAdeleRuntime`](lib/terminal/native_adele_runtime.dart) adds desktop-owned
+terminal resources without putting Flutter in that shared import graph.
+Both runtimes statically activate zero stock plugins. Construction is
 provider-free: it starts no backend host or compiler, loads no credentials, and
 creates no Project, Task, Environment, Session, or Run.
 
@@ -236,7 +239,7 @@ remain unimplemented.
 
 [`environment_terminal_owner.dart`](lib/terminal/environment_terminal_owner.dart)
 connects the surface to the selected public Environment terminal facet.
-`AdeleRuntime.terminals` owns the application-private Environment-keyed collection;
+`NativeAdeleRuntime.terminals` owns the application-private Environment-keyed collection;
 each `EnvironmentTerminalOwner` retains a distinct process resource and emulator.
 Only an explicit host-authorized open materializes canonical Environment context.
 There is no Session/Run creation, model tool, public terminal registry, or frontend
@@ -250,6 +253,10 @@ without terminal completion becomes failure rather than fabricated success.
 Completion/disconnection revokes native input, layout resize, and protocol replies
 while keeping the screen available for inspection. Explicit release and runtime
 shutdown clean up resources independently of Flutter widget disposal.
+Native runtime close fences terminals and product admission synchronously, then
+grants terminal owners their bounded cleanup window before base runtime/backend
+teardown. Product cleanup joins backend teardown rather than blocking it, so
+connection revocation can still settle pending Project opens.
 
 Each live owner consumes one continuous ordered stream, feeding the emulator while
 hidden. View-originated input and layout callbacks carry their original native
@@ -757,6 +764,7 @@ repository-wide deferred-feature ledger here.
 | --- | --- |
 | Entry/window composition | [`lib/main.dart`](lib/main.dart), [`lib/application.dart`](lib/application.dart): `AdeleApplication` |
 | Runtime construction | [`lib/core/adele_runtime.dart`](lib/core/adele_runtime.dart): `AdeleRuntime` |
+| Native runtime and terminal lifetime | [`lib/terminal/native_adele_runtime.dart`](lib/terminal/native_adele_runtime.dart): `NativeAdeleRuntime` |
 | Shared Run identity allocation | [`lib/core/run_id_source.dart`](lib/core/run_id_source.dart): `RunIdSource`, `MonotonicRunIdSource`; `AdeleRuntime.runIds` |
 | Backend bootstrap | [`lib/core/application_plugin_bootstrap.dart`](lib/core/application_plugin_bootstrap.dart): `ApplicationPluginBootstrap` |
 | Frontend generations/activation | [`lib/frontend/application_frontend_bootstrap.dart`](lib/frontend/application_frontend_bootstrap.dart), [`lib/frontend/prepared_frontend.dart`](lib/frontend/prepared_frontend.dart) |

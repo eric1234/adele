@@ -235,6 +235,138 @@ void main() {
     },
   );
 
+  test(
+    'termination notifies despite observer failure and close reports retained failure',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'adele-termination-bootstrap-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final root = await Directory('${directory.path}/installations').create();
+      final installation = await Directory('${root.path}/plugin').create();
+      await File('${installation.path}/backend.aot').writeAsString('fixture');
+      const pluginId = 'dev.adele.test.termination-backend';
+      await File(
+        '${installation.path}/adele_plugin.installation.json',
+      ).writeAsString(
+        jsonEncode({
+          'manifestVersion': 1,
+          'metadata': {
+            'id': pluginId,
+            'version': 'test',
+            'displayName': 'Termination Backend',
+          },
+          'components': {
+            'backend': {'artifact': 'backend.aot'},
+          },
+        }),
+      );
+      final script = await File(
+        '${directory.path}/host.dart',
+      ).writeAsString(_exactHostScript);
+      final capabilities = CapabilityRegistry();
+      final extensions = ExtensionRegistry();
+      final bootstrap = ApplicationPluginBootstrap(capabilities, extensions);
+      addTearDown(() async {
+        if (bootstrap.state != ApplicationPluginState.closed) {
+          await bootstrap.close();
+        }
+      });
+      final capability = CapabilityKey(
+        id: CapabilityId('dev.adele.test.capability'),
+        majorVersion: 1,
+      );
+      await bootstrap.start(
+        installationRoot: root.path,
+        dartaotruntimeExecutable:
+            '${Platform.environment['FLUTTER_ROOT']}/bin/cache/dart-sdk/bin/${Platform.isWindows ? 'dart.exe' : 'dart'}',
+        hostArtifactPath: script.path,
+        startupArguments: {
+          pluginId: [
+            jsonEncode({
+              'capabilityExposures': [
+                {
+                  'providerId': 'dev.adele.test.provider',
+                  'capabilityId': capability.id.value,
+                  'capabilityMajorVersion': capability.majorVersion,
+                  'serviceId': 'testService',
+                  'displayName': 'Test',
+                  'configurationContext': 'default',
+                },
+              ],
+              'extensionExposures': [
+                {
+                  'extensionPointId': orchestrationStrategyContributions.value,
+                  'extensionId': 'dev.adele.test.strategy',
+                  'serviceId': remoteOrchestrationServiceId,
+                  'configurationContext': 'default',
+                  'metadata': {
+                    'strategyId': 'dev.adele.strategy.test',
+                    'routeId': 'test',
+                  },
+                },
+              ],
+            }),
+          ],
+        },
+      );
+      final backend = bootstrap.backends.single;
+      final connection = backend.connection!;
+      final binding = extensions
+          .discover(orchestrationStrategyContributions)
+          .single;
+      final provider = capabilities.resolve(capability);
+      final observerFailure = StateError('Retirement observer failed.');
+      final observerStack = StackTrace.current;
+      var observations = 0;
+      provider.onRetire(() {
+        observations++;
+        Error.throwWithStackTrace(observerFailure, observerStack);
+      });
+      final notified = bootstrap.changes.firstWhere(
+        (_) => backend.state == InstalledBackendState.terminated,
+      );
+      await expectLater(
+        connection.request('terminate', {}),
+        throwsA(
+          isA<PluginRemoteFailure>().having(
+            (error) => error.code,
+            'code',
+            'fixture_terminated',
+          ),
+        ),
+      );
+      final reason = await connection.terminated;
+      expect(await notified, ApplicationPluginState.ready);
+      expect(backend.state, InstalledBackendState.terminated);
+      expect(backend.failure, same(reason));
+      expect(bootstrap.failure, isNull);
+      expect(observations, 1);
+      expect(capabilities.providersFor(capability), isEmpty);
+      expect(extensions.discover(orchestrationStrategyContributions), isEmpty);
+      expect(binding.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(
+        () => provider.requestChannel,
+        throwsA(isA<ProviderUnavailable>()),
+      );
+      expect(bootstrap.host!.isClosed, isFalse);
+      final closing = bootstrap.close();
+      await closing.then<void>(
+        (_) => fail('Close unexpectedly succeeded.'),
+        onError: (Object error, StackTrace stack) {
+          expect(error, same(observerFailure));
+          expect(stack, same(observerStack));
+        },
+      );
+      expect(bootstrap.close(), same(closing));
+      expect(bootstrap.state, ApplicationPluginState.closed);
+      expect(backend.failure, same(reason));
+      expect(observations, 1);
+      expect(connection.isClosed, isTrue);
+      expect(bootstrap.host!.isClosed, isTrue);
+    },
+  );
+
   for (final String rootKind in ['unconfigured', 'missing', 'empty']) {
     test('$rootKind root is ready without starting a host', () async {
       final Directory container = await Directory.systemTemp.createTemp(
@@ -529,7 +661,11 @@ void main() {
         case 'stopPlugin':
           send({'kind': 'pluginStopped', ...route});
         case 'request':
-          send({'kind': 'response', ...route, 'ok': true, 'payload': {'configurationContext': message['configurationContext'], 'serviceId': message['serviceId']}});
+          if (message['method'] == 'terminate') {
+            send({'kind': 'pluginFailed', 'pluginId': message['pluginId'], 'error': {'code': 'fixture_terminated', 'message': 'Fixture terminated'}});
+          } else {
+            send({'kind': 'response', ...route, 'ok': true, 'payload': {'configurationContext': message['configurationContext'], 'serviceId': message['serviceId']}});
+          }
         case 'shutdownHost':
           send({'kind': 'hostStopped', 'requestId': message['requestId']});
           exit(0);

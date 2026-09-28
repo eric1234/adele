@@ -6,13 +6,13 @@ import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 
-import 'package:adele_desktop/core/adele_runtime.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/terminal_surface_bridge.dart';
 import 'package:adele_desktop/terminal/environment_terminal_owner.dart';
+import 'package:adele_desktop/terminal/native_adele_runtime.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:dart_eval/dart_eval.dart';
@@ -114,7 +114,7 @@ void main() {
   late Directory container;
   late Directory source;
   late Directory workingDirectory;
-  late AdeleRuntime runtime;
+  late NativeAdeleRuntime runtime;
   late PreparedFrontend frontend;
   late TaskCreationResult created;
   late EnvironmentTerminalOwner owner;
@@ -152,7 +152,7 @@ void main() {
         },
       }),
     );
-    runtime = AdeleRuntime(
+    runtime = NativeAdeleRuntime(
       ids: MonotonicProductIdSource(seed: 'terminal'),
       runIds: _NoRuns(),
     );

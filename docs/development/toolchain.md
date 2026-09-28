@@ -68,6 +68,15 @@ constraint. The helper keeps fork/session/signal setup in a separate single-thre
 process, never in the shared Dart backend host. No external native-library asset
 resolution is required from an independently loaded AOT isolate group.
 
+Public Environment terminal semantics remain provider/platform-neutral. The
+separate helper process is the isolation boundary; its custom Linux supervision
+is replaceable implementation, not a requirement to hand-write each future
+platform backend. Before adding another native platform, compare retaining custom
+code with an upstream cross-platform PTY library inside that isolated helper.
+Rejecting a package unchanged inside the shared Dart host does not establish that
+it is unsuitable behind the helper boundary. No such additional runtime experiment
+is claimed here, and other platforms remain unvalidated.
+
 Preparation requires Linux x64, `cc` with C11 support, libc development headers and
 `libutil`; execution requires Linux 5.3+ pidfd syscalls, readable `/proc`, and working
 `devpts`. The evidence uses Linux 6.8.0-138-generic, GCC 13.3.0, and glibc 2.39 on

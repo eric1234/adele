@@ -1,11 +1,13 @@
 import 'dart:async';
+import 'dart:ui' show AppExitResponse;
 
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
-import 'package:adele_desktop/core/adele_runtime.dart';
+import 'package:adele_desktop/application.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
 import 'package:adele_desktop/terminal/environment_terminal_owner.dart';
+import 'package:adele_desktop/terminal/native_adele_runtime.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:flutter/material.dart';
@@ -546,7 +548,7 @@ void main() {
   test(
     'runtime closes terminals before backend teardown and always joins others',
     () async {
-      final runtime = AdeleRuntime();
+      final runtime = NativeAdeleRuntime();
       addTearDown(runtime.close);
       _publish(runtime.store);
       final channel = _TerminalChannel();
@@ -566,6 +568,11 @@ void main() {
       final closing = runtime.close();
       expect(runtime.close(), same(closing));
       expect(owner.state, EnvironmentTerminalState.disposed);
+      expect(owner.surface.isDisposed, isTrue);
+      expect(
+        () => runtime.terminals.create(_environmentId, request: _request()),
+        throwsStateError,
+      );
       expect(
         () => runtime.lifecycle.createProject(Uri.parse('file:///late')),
         throwsStateError,
@@ -577,8 +584,46 @@ void main() {
       expect(owner.cleanupError, isA<StateError>());
       expect(channel.cancelled, isTrue);
       expect(runtime.plugins.state, ApplicationPluginState.closed);
+      expect(runtime.terminals.forEnvironment(_environmentId), isEmpty);
+      expect(runtime.close(), same(closing));
     },
   );
+
+  for (final gracefulExit in [false, true]) {
+    testWidgets(
+      'application closes native owners on ${gracefulExit ? 'exit' : 'disposal'}',
+      (tester) async {
+        final runtime = NativeAdeleRuntime();
+        _publish(runtime.store);
+        final owner = runtime.terminals.create(
+          _environmentId,
+          request: _request(),
+        );
+        await tester.pumpWidget(
+          AdeleApplication(
+            createRuntime: () => runtime,
+            bootstrapPlugins: (_) async {},
+            readChatGptConfiguration: () => null,
+          ),
+        );
+        if (gracefulExit) {
+          expect(
+            await tester.binding.handleRequestAppExit(),
+            AppExitResponse.exit,
+          );
+        } else {
+          await tester.pumpWidget(const SizedBox.shrink());
+        }
+        await tester.pump();
+        expect(owner.state, EnvironmentTerminalState.disposed);
+        expect(owner.surface.isDisposed, isTrue);
+        expect(runtime.plugins.state, ApplicationPluginState.closed);
+        expect(runtime.terminals.forEnvironment(_environmentId), isEmpty);
+        await tester.pumpWidget(const SizedBox.shrink());
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
 
   testWidgets(
     'native mount validators survive queuing, hidden owner replies remain live',
