@@ -37,10 +37,31 @@ final class ConsoleTab {
   ConsoleMetadata _metadata;
   bool _active = true;
   Future<void>? _removal;
-  Completer<void>? _confirmation;
+  ConsoleCloseRequest? _confirmation;
 
   ConsoleMetadata get metadata => _metadata;
   bool get isActive => _active && !_controller._closed && _isLive(_owner);
+}
+
+/// App-private identity for one confirmation, not permission to close content.
+/// Withdrawal ends the question independently of either its answer or cleanup.
+final class ConsoleCloseRequest {
+  ConsoleCloseRequest._(this._tab, this._context, this._view);
+
+  final ConsoleTab _tab;
+  final Object _context;
+  final Object _view;
+  final _withdrawn = Completer<void>();
+  final _completion = Completer<void>();
+  late final String _message;
+
+  String get message => _message;
+  bool get isPending => !_withdrawn.isCompleted;
+  Future<void> get withdrawn => _withdrawn.future;
+
+  void _withdraw() {
+    if (isPending) _withdrawn.complete();
+  }
 }
 
 /// Window-local console state. Closing synchronously fences authority, then
@@ -193,7 +214,10 @@ final class ConsoleController extends ChangeNotifier {
     return registration;
   }
 
-  Future<void> closeTab(ConsoleTab tab, Future<bool> Function(String) confirm) {
+  Future<void> closeTab(
+    ConsoleTab tab,
+    Future<bool> Function(ConsoleCloseRequest) confirm,
+  ) {
     if (!identical(tab._controller, this)) return Future.value();
     if (tab._removal case final removal?) return removal;
     if (_closed ||
@@ -202,46 +226,63 @@ final class ConsoleController extends ChangeNotifier {
         !_eligible(tab, _session)) {
       return Future.value();
     }
-    if (tab._confirmation case final pending?) return pending.future;
-    final completion = Completer<void>();
-    tab._confirmation = completion;
+    if (tab._confirmation case final pending?) {
+      return pending._completion.future;
+    }
+    final request = ConsoleCloseRequest._(tab, _context, _view);
+    tab._confirmation = request;
     unawaited(
-      _confirmClose(tab, confirm).whenComplete(() {
-        if (identical(tab._confirmation, completion)) tab._confirmation = null;
-        if (!completion.isCompleted) completion.complete();
-      }),
+      _confirmClose(request, confirm).whenComplete(() => _settle(request)),
     );
-    return completion.future;
+    return request._completion.future;
+  }
+
+  void _settle(ConsoleCloseRequest request) {
+    if (identical(request._tab._confirmation, request)) {
+      request._tab._confirmation = null;
+    }
+    request._withdraw();
+    if (!request._completion.isCompleted) request._completion.complete();
   }
 
   Future<void> _confirmClose(
-    ConsoleTab tab,
-    Future<bool> Function(String) confirm,
+    ConsoleCloseRequest request,
+    Future<bool> Function(ConsoleCloseRequest) confirm,
   ) async {
-    final context = _context;
-    final view = _view;
+    final tab = request._tab;
     ConsoleCloseAdvice? advice;
     try {
       advice = tab._content.closeAdvice?.call();
     } on Object {
       // Unknown advice asks the host's generic question; it never vetoes close.
     }
+    if (!request.isPending) return;
     if (advice == null || advice.message != null) {
+      request._message = advice?.message ?? 'Close this console?';
       bool accepted;
       try {
-        accepted = await confirm(advice?.message ?? 'Close this console?');
+        accepted = await Future.any([
+          Future<bool>.sync(() => confirm(request)),
+          request.withdrawn.then((_) => false),
+        ]);
       } on Object {
         return;
       }
       if (!accepted) return;
     }
-    if (!identical(context, _context) ||
-        !identical(view, _view) ||
+    if (!request.isPending ||
+        !identical(tab._confirmation, request) ||
+        !identical(request._context, _context) ||
+        !identical(request._view, _view) ||
         !_visible ||
         !_tabs.contains(tab) ||
         !_eligible(tab, _session)) {
       return;
     }
+    // Acceptance ends the question. Subsequent context changes must not cancel
+    // the admitted cleanup or complete its Future before cleanup settles.
+    tab._confirmation = null;
+    request._withdraw();
     await _remove(tab);
   }
 
@@ -250,6 +291,7 @@ final class ConsoleController extends ChangeNotifier {
     final completion = Completer<void>();
     tab._removal = completion.future;
     _cleaning.add(completion.future);
+    if (tab._confirmation case final request?) _settle(request);
     final index = _tabs.indexOf(tab);
     final neighbors = <ConsoleTab>[
       if (index >= 0) ...[
@@ -276,11 +318,6 @@ final class ConsoleController extends ChangeNotifier {
       _release(tab).whenComplete(() {
         _cleaning.remove(completion.future);
         completion.complete();
-        final confirmation = tab._confirmation;
-        tab._confirmation = null;
-        if (confirmation != null && !confirmation.isCompleted) {
-          confirmation.complete();
-        }
       }),
     );
     return completion.future;
@@ -334,6 +371,9 @@ final class ConsoleController extends ChangeNotifier {
     _presentationAccess = null;
     _presentation = null;
     _view = Object();
+    for (final tab in _tabs) {
+      if (tab._confirmation case final request?) _settle(request);
+    }
   }
 
   bool _eligible(ConsoleTab tab, Session? session) {

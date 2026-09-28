@@ -29,25 +29,68 @@ class _WorkbenchConsoleState extends State<WorkbenchConsole> {
     super.deactivate();
   }
 
-  Future<bool> _confirm(String message) async =>
-      await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Close console'),
-          content: Text(message),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Close'),
-            ),
-          ],
-        ),
-      ) ??
-      false;
+  Future<bool> _confirm(ConsoleCloseRequest request) async {
+    if (!mounted || !request.isPending) return false;
+    final navigator = Navigator.of(context, rootNavigator: true);
+    late final DialogRoute<bool> route;
+    var answered = false;
+    void answer(bool accepted) {
+      if (!answered &&
+          request.isPending &&
+          navigator.mounted &&
+          identical(route.navigator, navigator) &&
+          route.isCurrent) {
+        answered = true;
+        navigator.pop(accepted);
+      }
+    }
+
+    route = DialogRoute<bool>(
+      context: context,
+      themes: InheritedTheme.capture(from: context, to: navigator.context),
+      barrierColor:
+          DialogTheme.of(context).barrierColor ??
+          Theme.of(context).dialogTheme.barrierColor ??
+          Colors.black54,
+      traversalEdgeBehavior: TraversalEdgeBehavior.closedLoop,
+      builder: (_) => AlertDialog(
+        title: const Text('Close console'),
+        content: Text(request.message),
+        actions: [
+          TextButton(
+            onPressed: () => answer(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => answer(true),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+    var settled = false;
+    unawaited(
+      request.withdrawn.then((_) {
+        if (settled) return;
+        // Unmount/replacement can invalidate during tree teardown. Retain only
+        // the exact route/Navigator and mutate its history after that frame.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!settled &&
+              navigator.mounted &&
+              identical(route.navigator, navigator) &&
+              route.isActive) {
+            navigator.removeRoute(route);
+          }
+        });
+        WidgetsBinding.instance.ensureVisualUpdate();
+      }),
+    );
+    try {
+      return await navigator.push(route) ?? false;
+    } finally {
+      settled = true;
+    }
+  }
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(

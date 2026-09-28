@@ -232,7 +232,7 @@ void main() {
       var prompts = 0;
       await fixture.controller.closeTab(tab, (message) async {
         prompts++;
-        expect(message, contains('may have running work'));
+        expect(message.message, contains('may have running work'));
         return false;
       });
       expect(fixture.provider.closes, isEmpty);
@@ -307,7 +307,7 @@ void main() {
       expect(tab.metadata.status, ConsoleStatus.failed);
       expect(tab.metadata.description, isNot(contains('PRIVATE_CLEANUP')));
       await fixture.controller.closeTab(tab, (message) async {
-        expect(message, contains('unconfirmed'));
+        expect(message.message, contains('unconfirmed'));
         return true;
       });
       expect(fixture.controller.eligibleTabs, isEmpty);

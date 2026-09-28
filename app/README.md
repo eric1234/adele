@@ -311,6 +311,11 @@ resolver or native stock fallback. The public [UI contract](../packages/ui/READM
 and [architecture](../docs/architecture/plugin-system.md#shared-console) define the
 content/access and close boundaries.
 
+Each native close confirmation has an exact request lifetime. Tab removal or
+context/view revocation withdraws its owned dialog route and settles the abandoned
+request without awaiting an answer or cleanup. Metadata updates do not withdraw
+it, and route withdrawal cannot pop unrelated navigation or authorize cleanup.
+
 `AdeleApplication` sets the controller's Session in `_activateSession`, clears it
 only after accepted navigation in `_showBrowser`, and supplies the shell's bounded
 console area only while a Session is presented. Task Browser has no panel, toggle,

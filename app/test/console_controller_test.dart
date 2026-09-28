@@ -372,7 +372,7 @@ void main() {
       final tab = controller.selectedTab!;
       var message = '';
       await controller.closeTab(tab, (value) async {
-        message = value;
+        message = value.message;
         return false;
       });
       expect(message, 'Close this console?');
@@ -390,7 +390,7 @@ void main() {
         advice: () => throw StateError('private detail'),
       );
       await controller.closeTab(controller.selectedTab!, (message) async {
-        expect(message, 'Close this console?');
+        expect(message.message, 'Close this console?');
         return true;
       });
       expect(content.releases, 1);
@@ -420,36 +420,168 @@ void main() {
     },
   );
 
-  for (final departure in ['session', 'hide', 'selection', 'unmount']) {
-    test('delayed confirmation is inert after $departure', () async {
-      final one = _Content('One');
-      final two = _Content('Two');
-      var count = 0;
-      await register((a) async => (count++ == 0 ? one : two).open(a));
-      await controller.invoke(controller.actions.single);
-      await controller.invoke(controller.actions.single);
-      controller.selectedPresentation;
+  for (final departure in [
+    'session',
+    'clear',
+    'hide',
+    'selection',
+    'unmount',
+  ]) {
+    test(
+      'abandoned confirmation settles and can be replaced after $departure',
+      () async {
+        final one = _Content('One');
+        final two = _Content('Two');
+        var count = 0;
+        await register((a) async => (count++ == 0 ? one : two).open(a));
+        await controller.invoke(controller.actions.single);
+        await controller.invoke(controller.actions.single);
+        controller.selectedPresentation;
+        final gate = Completer<bool>();
+        late ConsoleCloseRequest oldRequest;
+        final tab = controller.selectedTab!;
+        final closing = controller.closeTab(tab, (request) {
+          oldRequest = request;
+          return gate.future;
+        });
+        switch (departure) {
+          case 'session':
+            controller.setSession(second);
+          case 'clear':
+            controller.setSession(null);
+          case 'hide':
+            controller.setVisible(false);
+          case 'selection':
+            controller.select(controller.eligibleTabs.first);
+          case 'unmount':
+            controller.unmountPresentation();
+        }
+        await closing;
+        expect(gate.isCompleted, isFalse);
+        expect(oldRequest.isPending, isFalse);
+        expect(two.registration.isActive, isTrue);
+        expect(two.releases, 0);
+        controller.setSession(first);
+        controller.setVisible(true);
+        controller.select(tab);
+        final freshGate = Completer<bool>();
+        late ConsoleCloseRequest freshRequest;
+        final freshClose = controller.closeTab(tab, (request) {
+          freshRequest = request;
+          return freshGate.future;
+        });
+        expect(freshClose, isNot(same(closing)));
+        expect(freshRequest, isNot(same(oldRequest)));
+        // An old callback can fail or accept, but cannot clear/answer its successor.
+        if (departure == 'unmount') {
+          gate.completeError(StateError('late confirmation failure'));
+        } else {
+          gate.complete(true);
+        }
+        await Future<void>.delayed(Duration.zero);
+        expect(freshRequest.isPending, isTrue);
+        expect(controller.closeTab(tab, (_) async => false), same(freshClose));
+        expect(two.releases, 0);
+        freshGate.complete(false);
+        await freshClose;
+        expect(two.registration.isActive, isTrue);
+      },
+    );
+  }
+
+  for (final cause in ['removal', 'retirement', 'close', 'dispose']) {
+    test(
+      '$cause withdraws confirmation before pending cleanup settles',
+      () async {
+        final cleanup = Completer<ConsoleCleanupResult>();
+        final content = _Content('One', release: () => cleanup.future);
+        final contribution = await register(
+          (access) async => content.open(access),
+        );
+        await controller.invoke(controller.actions.single);
+        final answer = Completer<bool>();
+        late ConsoleCloseRequest request;
+        final closing = controller.closeTab(controller.selectedTab!, (value) {
+          request = value;
+          return answer.future;
+        });
+        Future<void>? removal;
+        switch (cause) {
+          case 'removal':
+            removal = content.registration.requestRemoval();
+          case 'retirement':
+            await contribution.close();
+          case 'close':
+            removal = controller.close();
+          case 'dispose':
+            controller.dispose();
+        }
+        await closing;
+        expect(request.isPending, isFalse);
+        expect(answer.isCompleted, isFalse);
+        expect(cleanup.isCompleted, isFalse);
+        expect(content.releases, 1);
+        cleanup.complete(ConsoleCleanupResult());
+        await removal;
+        answer.completeError(StateError('obsolete dialog failure'));
+        await Future<void>.delayed(Duration.zero);
+        expect(content.releases, 1);
+      },
+    );
+  }
+
+  test(
+    'valid acceptance joins exact cleanup despite later navigation/removal',
+    () async {
+      final cleanup = Completer<ConsoleCleanupResult>();
+      final started = Completer<void>();
+      final content = await open(
+        release: () {
+          started.complete();
+          return cleanup.future;
+        },
+      );
       final gate = Completer<bool>();
+      var settled = false;
       final closing = controller.closeTab(
         controller.selectedTab!,
         (_) => gate.future,
       );
-      switch (departure) {
-        case 'session':
-          controller.setSession(second);
-        case 'hide':
-          controller.setVisible(false);
-        case 'selection':
-          controller.select(controller.eligibleTabs.first);
-        case 'unmount':
-          controller.unmountPresentation();
-      }
+      unawaited(closing.then((_) => settled = true));
       gate.complete(true);
-      await closing;
-      expect(two.registration.isActive, isTrue);
-      expect(two.releases, 0);
-    });
-  }
+      await started.future;
+      controller.setSession(second);
+      final automatic = content.registration.requestRemoval();
+      expect(content.releases, 1);
+      expect(settled, isFalse);
+      cleanup.complete(ConsoleCleanupResult());
+      await Future.wait([closing, automatic]);
+      expect(settled, isTrue);
+      expect(content.releases, 1);
+    },
+  );
+
+  test('a late answer cannot close a same-title replacement tab', () async {
+    final one = _Content('Same title');
+    final two = _Content('Same title');
+    var next = 0;
+    await register((access) async => (next++ == 0 ? one : two).open(access));
+    await controller.invoke(controller.actions.single);
+    final answer = Completer<bool>();
+    final closing = controller.closeTab(
+      controller.selectedTab!,
+      (_) => answer.future,
+    );
+    await one.registration.requestRemoval();
+    await closing;
+    await controller.invoke(controller.actions.single);
+    answer.complete(true);
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.eligibleTabs, hasLength(1));
+    expect(one.releases, 1);
+    expect(two.registration.isActive, isTrue);
+    expect(two.releases, 0);
+  });
 
   test(
     'closing an unselected tab never invokes its presentation factory',

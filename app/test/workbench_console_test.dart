@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:adele_desktop/ui/console/console_controller.dart';
 import 'package:adele_desktop/ui/console/workbench_console.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
@@ -23,26 +25,34 @@ void main() {
   });
 
   tearDown(() async {
-    await controller.close();
+    // Shutdown exercised inside a widget test is joined in its fake-async zone.
+    if (!controller.isClosed) await controller.close();
     controller.dispose();
   });
 
-  Widget host({double width = 600, double height = 360}) => MaterialApp(
+  Widget host({
+    double width = 600,
+    double height = 360,
+    bool showConsole = true,
+    ConsoleController? console,
+  }) => MaterialApp(
     home: Scaffold(
       body: Align(
         alignment: Alignment.topLeft,
         child: SizedBox(
           width: width,
           height: height,
-          child: WorkbenchConsole(controller: controller),
+          child: showConsole
+              ? WorkbenchConsole(controller: console ?? controller)
+              : const Text('Other work area'),
         ),
       ),
     ),
   );
 
-  void contribute(List<_Evidence> contents) {
+  ExtensionRegistration contribute(List<_Evidence> contents) {
     var next = 0;
-    registry.register(
+    return registry.register(
       point: consoleContributions,
       id: ExtensionId('test.evidence'),
       value: ConsoleContribution(
@@ -175,6 +185,214 @@ void main() {
   );
 
   testWidgets(
+    'automatic removal withdraws its dialog under a surviving Navigator',
+    (tester) async {
+      final one = _Evidence('One');
+      final two = _Evidence('Two', noConfirmation: true);
+      contribute([one, two]);
+      await tester.pumpWidget(host());
+      await tester.pump();
+      await controller.invoke(controller.actions.single);
+      await controller.invoke(controller.actions.single);
+      await tester.pump();
+      final navigator = tester.state<NavigatorState>(find.byType(Navigator));
+      await tester.tap(find.byTooltip('Close One'));
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsOneWidget);
+      expect(_dialogBarriers(), findsOneWidget);
+
+      await one.registration.requestRemoval();
+      await tester.pumpAndSettle();
+      expect(
+        tester.state<NavigatorState>(find.byType(Navigator)),
+        same(navigator),
+      );
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(_dialogBarriers(), findsNothing);
+      expect(find.byTooltip('Close One'), findsNothing);
+      expect(one.releases, 1);
+      expect(two.releases, 0);
+      await tester.tap(find.byTooltip('Close Two'));
+      await tester.pumpAndSettle();
+      expect(two.releases, 1);
+      expect(one.releases, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final departure in [
+    'session',
+    'clear',
+    'hide',
+    'unmount',
+    'replacement',
+    'retirement',
+    'close',
+    'dispose',
+  ]) {
+    testWidgets(
+      'withdraws confirmation on $departure without disposing Navigator',
+      (tester) async {
+        final evidence = _Evidence('One');
+        final contribution = contribute([evidence]);
+        final originalSession = controller.session;
+        await tester.pumpWidget(host());
+        await tester.pump();
+        await controller.invoke(controller.actions.single);
+        await tester.pump();
+        final navigator = tester.state<NavigatorState>(find.byType(Navigator));
+        await tester.tap(find.byTooltip('Close One'));
+        await tester.pumpAndSettle();
+        final lateAccept = tester
+            .widget<FilledButton>(find.widgetWithText(FilledButton, 'Close'))
+            .onPressed!;
+        var settled = false;
+        var shutdownSettled = false;
+        unawaited(
+          controller
+              .closeTab(controller.selectedTab!, (_) async {
+                fail('The exact close request must coalesce.');
+              })
+              .then((_) => settled = true),
+        );
+        switch (departure) {
+          case 'session':
+            controller.setSession(
+              Session(
+                id: SessionId('second'),
+                taskId: TaskId('task'),
+                strategyId: OrchestrationStrategyId('test.strategy'),
+              ),
+            );
+          case 'clear':
+            controller.setSession(null);
+          case 'hide':
+            controller.setVisible(false);
+          case 'unmount':
+            await tester.pumpWidget(host(showConsole: false));
+          case 'replacement':
+            final replacement = ConsoleController(registry)
+              ..setSession(originalSession);
+            addTearDown(replacement.dispose);
+            await tester.pumpWidget(host(console: replacement));
+          case 'retirement':
+            await contribution.close();
+          case 'close':
+            unawaited(controller.close().then((_) => shutdownSettled = true));
+          case 'dispose':
+            controller.dispose();
+            unawaited(controller.close().then((_) => shutdownSettled = true));
+        }
+        await tester.pumpAndSettle();
+        expect(
+          tester.state<NavigatorState>(find.byType(Navigator)),
+          same(navigator),
+        );
+        expect(find.byType(AlertDialog), findsNothing);
+        expect(_dialogBarriers(), findsNothing);
+        expect(settled, isTrue);
+        if (departure == 'close' || departure == 'dispose') {
+          expect(shutdownSettled, isTrue);
+        }
+        final removes = ['retirement', 'close', 'dispose'].contains(departure);
+        expect(evidence.releases, removes ? 1 : 0);
+        expect(evidence.registration.isActive, !removes);
+        if (!removes) {
+          controller.setSession(originalSession);
+          controller.setVisible(true);
+          await tester.pumpWidget(host());
+          await tester.tap(find.byTooltip('Close One'));
+          await tester.pumpAndSettle();
+          expect(find.byType(AlertDialog), findsOneWidget);
+          // Cached callbacks from the withdrawn route cannot answer the new one.
+          lateAccept();
+          await tester.pumpAndSettle();
+          expect(find.byType(AlertDialog), findsOneWidget);
+          expect(evidence.releases, 0);
+          await tester.tap(find.text('Cancel'));
+          await tester.pumpAndSettle();
+          expect(_dialogBarriers(), findsNothing);
+          expect(evidence.mounts.last.isActive, isTrue);
+        }
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets('withdrawal removes only its own route below another route', (
+    tester,
+  ) async {
+    final evidence = _Evidence('One');
+    contribute([evidence]);
+    await tester.pumpWidget(host());
+    await tester.pump();
+    await controller.invoke(controller.actions.single);
+    await tester.pump();
+    final navigator = tester.state<NavigatorState>(find.byType(Navigator));
+    await tester.tap(find.byTooltip('Close One'));
+    await tester.pumpAndSettle();
+    final dialog = ModalRoute.of(tester.element(find.byType(AlertDialog)))!;
+    final unrelated = MaterialPageRoute<void>(
+      builder: (_) => const Scaffold(body: Text('Unrelated route')),
+    );
+    var unrelatedPopped = false;
+    unawaited(navigator.push(unrelated).then((_) => unrelatedPopped = true));
+    await tester.pumpAndSettle();
+    await evidence.registration.requestRemoval();
+    await tester.pumpAndSettle();
+    expect(unrelatedPopped, isFalse);
+    expect(unrelated.isCurrent, isTrue);
+    expect(dialog.isActive, isFalse);
+    expect(find.text('Unrelated route'), findsOneWidget);
+    expect(find.byType(AlertDialog, skipOffstage: false), findsNothing);
+    expect(_dialogBarriers(), findsNothing);
+    navigator.pop();
+    await tester.pumpAndSettle();
+    expect(unrelatedPopped, isTrue);
+    expect(find.byType(WorkbenchConsole), findsOneWidget);
+    expect(evidence.releases, 1);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'metadata and ordinary rebuilds preserve the exact confirmation',
+    (tester) async {
+      final evidence = _Evidence('One');
+      contribute([evidence]);
+      await tester.pumpWidget(host());
+      await tester.pump();
+      await controller.invoke(controller.actions.single);
+      await tester.pump();
+      final access = evidence.mounts.single;
+      await tester.tap(find.byTooltip('Close One'));
+      await tester.pumpAndSettle();
+      final route = ModalRoute.of(tester.element(find.byType(AlertDialog)));
+      evidence.registration.updateMetadata(
+        ConsoleMetadata(
+          title: 'Renamed',
+          description: 'Changed detail',
+          status: ConsoleStatus.completed,
+        ),
+      );
+      await tester.pumpWidget(host(width: 480));
+      await tester.pumpAndSettle();
+      expect(
+        ModalRoute.of(tester.element(find.byType(AlertDialog))),
+        same(route),
+      );
+      expect(_dialogBarriers(), findsOneWidget);
+      expect(access.isActive, isTrue);
+      expect(evidence.releases, 0);
+      await tester.tap(find.widgetWithText(FilledButton, 'Close'));
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(_dialogBarriers(), findsNothing);
+      expect(evidence.releases, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'unselected close is native chrome only and never mounts content',
     (tester) async {
       final one = _Evidence('One', noConfirmation: true);
@@ -280,6 +498,12 @@ void main() {
     },
   );
 }
+
+// The Navigator's base PageRoute also owns a non-dismissible barrier. Assert
+// there is no outstanding dialog barrier without conflating those lifetimes.
+Finder _dialogBarriers() => find.byWidgetPredicate(
+  (widget) => widget is ModalBarrier && widget.dismissible,
+);
 
 class _Evidence {
   _Evidence(this.title, {this.warning, this.noConfirmation = false});
