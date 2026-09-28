@@ -45,10 +45,16 @@ final class GitTerminalSupervisor {
   GitTerminalSupervisor({
     GitTerminalDriver? driver,
     String? helperPath,
+    Map<String, String>? parentEnvironment,
     this.operationDeadline = const Duration(seconds: 8),
-  }) : _driver = driver ?? _NativeTerminalDriver(helperPath);
+  }) : _driver = driver ?? _NativeTerminalDriver(helperPath),
+       _parentEnvironment = Map<String, String>.unmodifiable(
+         parentEnvironment ?? Platform.environment,
+       );
 
   final GitTerminalDriver _driver;
+  // Provider-local test seam, still allowlisted; never a terminal request override.
+  final Map<String, String> _parentEnvironment;
   final Duration operationDeadline;
   final Set<_TerminalResource> _active = <_TerminalResource>{};
   final Map<String, _TerminalResource> _handles = <String, _TerminalResource>{};
@@ -306,11 +312,24 @@ final class _TerminalResource {
         request.relativeWorkingDirectory,
       );
       if (_closing) return;
-      final childEnvironment = _childEnvironment(workingDirectory);
+      final childEnvironment = _childEnvironment(
+        workingDirectory,
+        owner._parentEnvironment,
+      );
       await owner._driver.prepare();
       if (_closing) return;
+      final (program, arguments) = switch (request.launchKind) {
+        EnvironmentTerminalLaunchKind.explicitProgram => (
+          request.program!,
+          request.arguments,
+        ),
+        EnvironmentTerminalLaunchKind.defaultShell => (
+          childEnvironment['SHELL'] ?? '/bin/sh',
+          const <String>['-i'],
+        ),
+      };
       final executable = await _resolveExecutable(
-        request.program,
+        program,
         workingDirectory,
         childEnvironment['PATH']!,
       );
@@ -326,7 +345,7 @@ final class _TerminalResource {
       if (_closing) return;
       session = await owner._driver.start(
         executable: executable,
-        arguments: request.arguments,
+        arguments: arguments,
         workingDirectory: revalidated.path,
         environment: childEnvironment,
         dimensions: request.dimensions,
@@ -501,8 +520,11 @@ final class _DecodedText implements Sink<String> {
 }
 
 // Keep the same allowlist as foreground_process.dart, with terminal-specific TERM.
-Map<String, String> _childEnvironment(Directory directory) => <String, String>{
-  for (final entry in Platform.environment.entries)
+Map<String, String> _childEnvironment(
+  Directory directory,
+  Map<String, String> parent,
+) => <String, String>{
+  for (final entry in parent.entries)
     if (const <String>{
           'HOME',
           'LANG',
@@ -523,8 +545,8 @@ Map<String, String> _childEnvironment(Directory directory) => <String, String>{
         }.contains(entry.key) ||
         entry.key.startsWith('LC_'))
       entry.key: entry.value,
-  'PATH': Platform.environment['PATH']?.isNotEmpty == true
-      ? Platform.environment['PATH']!
+  'PATH': parent['PATH']?.isNotEmpty == true
+      ? parent['PATH']!
       : '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
   'PWD': directory.path,
   'TERM': 'xterm-256color',
@@ -535,6 +557,14 @@ Future<String> _resolveExecutable(
   Directory directory,
   String path,
 ) async {
+  if (program.isEmpty ||
+      program.contains('\u0000') ||
+      program.runes.any((rune) => rune >= 0xd800 && rune <= 0xdfff)) {
+    throw _failure(
+      'terminal_executable_not_found',
+      'The terminal executable is unavailable.',
+    );
+  }
   final candidates = program.contains('/')
       ? [program.startsWith('/') ? program : '${directory.path}/$program']
       : [

@@ -10,6 +10,7 @@ void main() {
   final dimensions = EnvironmentTerminalDimensions(columns: 80, rows: 24);
   EnvironmentTerminalRequest request({String program = '/bin/sh'}) =>
       EnvironmentTerminalRequest(
+        launchKind: EnvironmentTerminalLaunchKind.explicitProgram,
         program: program,
         arguments: ['-c', 'literal | argument'],
         relativeWorkingDirectory: 'nested',
@@ -28,6 +29,7 @@ void main() {
     }
     final arguments = ['-i'];
     final immutable = EnvironmentTerminalRequest(
+      launchKind: EnvironmentTerminalLaunchKind.explicitProgram,
       program: '/bin/sh',
       arguments: arguments,
       relativeWorkingDirectory: '',
@@ -65,6 +67,40 @@ void main() {
     );
   });
 
+  test('launch kind requires exactly its program, argv, and cwd shape', () {
+    for (final shape in [
+      (EnvironmentTerminalLaunchKind.explicitProgram, null, <String>[], ''),
+      (EnvironmentTerminalLaunchKind.explicitProgram, '', <String>[], ''),
+      (EnvironmentTerminalLaunchKind.defaultShell, '/bin/sh', <String>[], ''),
+      (EnvironmentTerminalLaunchKind.defaultShell, '', <String>[], ''),
+      (EnvironmentTerminalLaunchKind.defaultShell, null, ['-i'], ''),
+      (EnvironmentTerminalLaunchKind.defaultShell, null, <String>[], '.'),
+      (EnvironmentTerminalLaunchKind.defaultShell, null, <String>[], 'nested'),
+    ]) {
+      expect(
+        () => EnvironmentTerminalRequest(
+          launchKind: shape.$1,
+          program: shape.$2,
+          arguments: shape.$3,
+          relativeWorkingDirectory: shape.$4,
+          dimensions: dimensions,
+        ),
+        throwsFormatException,
+      );
+    }
+    final arguments = <String>[];
+    final shell = EnvironmentTerminalRequest(
+      launchKind: EnvironmentTerminalLaunchKind.defaultShell,
+      program: null,
+      arguments: arguments,
+      relativeWorkingDirectory: '',
+      dimensions: dimensions,
+    );
+    arguments.add('-c');
+    expect(shell.arguments, isEmpty);
+    expect(() => shell.arguments.add('-i'), throwsUnsupportedError);
+  });
+
   test(
     'generated terminal transport is lazy, ordered, and single use',
     () async {
@@ -83,6 +119,11 @@ void main() {
       expect(provider.opens, 0);
       final events = await stream.toList();
       expect(provider.opens, 1);
+      expect(
+        provider.request!.launchKind,
+        EnvironmentTerminalLaunchKind.explicitProgram,
+      );
+      expect(provider.request!.program, '/bin/sh');
       expect(provider.request!.arguments, ['-c', 'literal | argument']);
       expect(provider.request!.relativeWorkingDirectory, 'nested');
       expect(events.map((event) => event.kind), [
@@ -106,6 +147,44 @@ void main() {
     },
   );
 
+  test(
+    'generated default shell transport retains explicit launch intent',
+    () async {
+      final provider = _Terminals();
+      final dispatcher = EnvironmentProviderServiceDispatcher(
+        EnvironmentProviderServiceAdapter(provider),
+      );
+      addTearDown(dispatcher.close);
+      final host = GeneratedEnvironmentProvider(
+        providerId: provider.providerId,
+        service: EnvironmentProviderServiceClient(_Channel(dispatcher)),
+      );
+      final events = await host
+          .openTerminal(
+            EnvironmentId('environment-one'),
+            EnvironmentTerminalRequest(
+              launchKind: EnvironmentTerminalLaunchKind.defaultShell,
+              program: null,
+              arguments: const [],
+              relativeWorkingDirectory: '',
+              dimensions: dimensions,
+            ),
+          )
+          .toList();
+      expect(
+        provider.request!.launchKind,
+        EnvironmentTerminalLaunchKind.defaultShell,
+      );
+      expect(provider.request!.program, isNull);
+      expect(provider.request!.arguments, isEmpty);
+      expect(provider.request!.relativeWorkingDirectory, '');
+      expect(provider.request!.dimensions.columns, 80);
+      expect(provider.request!.dimensions.rows, 24);
+      expect(events.first.opened!.dimensions.columns, 80);
+      expect(events.last.completed!.exitCode, 7);
+    },
+  );
+
   test('cancelling the opening cancels the resource producer', () async {
     final provider = _Terminals();
     final dispatcher = EnvironmentProviderServiceDispatcher(
@@ -118,7 +197,7 @@ void main() {
   });
 
   test(
-    'generated opening rejects invalid dimensions and extra authority',
+    'generated opening rejects invalid launch shapes, dimensions and extra authority',
     () async {
       final provider = _Terminals();
       final dispatcher = EnvironmentProviderServiceDispatcher(
@@ -127,12 +206,40 @@ void main() {
       addTearDown(dispatcher.close);
       final channel = _Channel(dispatcher);
       final encoded = <String, Object?>{
+        'launchKind': 'explicitProgram',
         'program': '/bin/sh',
         'arguments': <String>[],
         'relativeWorkingDirectory': '',
         'dimensions': {'columns': 80, 'rows': 24},
       };
       for (final payload in <Map<String, Object?>>[
+        for (final invalid in <Map<String, Object?>>[
+          {...encoded}..remove('launchKind'),
+          {...encoded, 'launchKind': 'unknown'},
+          {...encoded, 'launchKind': null},
+          {...encoded, 'program': null},
+          {...encoded, 'launchKind': 'defaultShell'},
+          {...encoded, 'launchKind': 'defaultShell', 'program': ''},
+          {
+            ...encoded,
+            'launchKind': 'defaultShell',
+            'program': null,
+            'arguments': ['-i'],
+          },
+          {
+            ...encoded,
+            'launchKind': 'defaultShell',
+            'program': null,
+            'relativeWorkingDirectory': 'nested',
+          },
+          {...encoded, 'launchKind': 'defaultShell'}..remove('program'),
+          {...encoded, 'program': 'bad\u0000name'},
+          {
+            ...encoded,
+            'arguments': ['\ud800'],
+          },
+        ])
+          {'environmentId': 'environment-one', 'request': invalid},
         {
           'environmentId': 'environment-one',
           'request': {

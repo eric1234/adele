@@ -80,6 +80,47 @@ sealed class PreparedPresentationDescriptor {
 
 enum PreparedStrategyAffinity { independent, owningBackend }
 
+final class PreparedConsoleAction {
+  PreparedConsoleAction({
+    required this.id,
+    required this.label,
+    required this.entrypoint,
+  }) {
+    _text(id, 'id');
+    _text(label, 'label');
+    if (label.length > 128) {
+      throw const FormatException('label must not exceed 128 characters.');
+    }
+    _entrypoint(entrypoint, 'entrypoint');
+  }
+
+  final String id;
+  final String label;
+  final String entrypoint;
+}
+
+final class PreparedConsolePresentation extends PreparedPresentationDescriptor {
+  PreparedConsolePresentation({
+    required this.extensionId,
+    required super.library,
+    required this.entrypoint,
+    required Iterable<PreparedConsoleAction> actions,
+  }) : actions = List.unmodifiable(actions) {
+    _library(library, 'library');
+    _entrypoint(entrypoint, 'entrypoint');
+    final seen = <String>{};
+    for (final action in this.actions) {
+      if (!seen.add(action.id)) {
+        throw const FormatException('actions must have unique ids.');
+      }
+    }
+  }
+
+  final ExtensionId extensionId;
+  final String entrypoint;
+  final List<PreparedConsoleAction> actions;
+}
+
 final class PreparedTaskBrowserPresentation
     extends PreparedPresentationDescriptor {
   const PreparedTaskBrowserPresentation({
@@ -416,22 +457,8 @@ PreparedFrontendExtension _extension(Object? value, String label) {
         'library',
         'entrypoint',
       });
-      final library = text('library');
-      if (!RegExp(
-            r'^package:[a-z_][a-z0-9_]*/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.dart$',
-          ).hasMatch(library) ||
-          library.split('/').any((part) => part == '.' || part == '..')) {
-        throw FormatException(
-          '$label.library must be a canonical package: URI to a Dart library '
-          'without traversal.',
-        );
-      }
-      final entrypoint = text('entrypoint');
-      if (!RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(entrypoint)) {
-        throw FormatException(
-          '$label.entrypoint must be a single top-level Dart identifier.',
-        );
-      }
+      final library = _library(value['library'], '$label.library');
+      final entrypoint = _entrypoint(value['entrypoint'], '$label.entrypoint');
       final ProviderId projectProviderId;
       try {
         projectProviderId = ProviderId(text('projectProviderId'));
@@ -456,6 +483,43 @@ PreparedPresentationDescriptor _presentation(Object? value, String label) {
   }
   String text(String field) => _text(value[field], '$label.$field');
   switch (text('role')) {
+    case 'console':
+      _object(value, label, {
+        'role',
+        'extensionId',
+        'library',
+        'entrypoint',
+        'actions',
+      });
+      final actions = value['actions'];
+      if (actions is! List<Object?>) {
+        throw FormatException('$label.actions must be an array.');
+      }
+      final descriptors = <PreparedConsoleAction>[];
+      for (var index = 0; index < actions.length; index++) {
+        final actionLabel = '$label.actions[$index]';
+        final action = _object(actions[index], actionLabel, {
+          'id',
+          'label',
+          'entrypoint',
+        });
+        descriptors.add(
+          PreparedConsoleAction(
+            id: _text(action['id'], '$actionLabel.id'),
+            label: _text(action['label'], '$actionLabel.label'),
+            entrypoint: _entrypoint(
+              action['entrypoint'],
+              '$actionLabel.entrypoint',
+            ),
+          ),
+        );
+      }
+      return PreparedConsolePresentation(
+        extensionId: ExtensionId(text('extensionId')),
+        library: _library(value['library'], '$label.library'),
+        entrypoint: _entrypoint(value['entrypoint'], '$label.entrypoint'),
+        actions: descriptors,
+      );
     case 'taskBrowser':
       _object(value, label, {
         'role',
@@ -582,6 +646,28 @@ String _text(Object? value, String label, {bool blank = false}) {
     );
   }
   return value;
+}
+
+String _library(Object? value, String label) {
+  final library = _text(value, label);
+  if (!RegExp(
+        r'^package:[a-z_][a-z0-9_]*/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.dart$',
+      ).hasMatch(library) ||
+      library.split('/').any((part) => part == '.' || part == '..')) {
+    throw FormatException(
+      '$label must be a canonical package: URI to a Dart library '
+      'without traversal.',
+    );
+  }
+  return library;
+}
+
+String _entrypoint(Object? value, String label) {
+  final entrypoint = _text(value, label);
+  if (!RegExp(r'^[A-Za-z_$][A-Za-z0-9_$]*$').hasMatch(entrypoint)) {
+    throw FormatException('$label must be a single top-level Dart identifier.');
+  }
+  return entrypoint;
 }
 
 Future<Uri> _confinedFile(File file, Directory directory) async {

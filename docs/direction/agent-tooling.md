@@ -455,7 +455,11 @@ ADELE should therefore avoid designing the inspection view around naive text-tai
 
 # 10. Interactive shells are separate from agent tool calls
 
-The stock Console/Terminal plugin may show both agent command output and user-created interactive shells because the same wide stream-oriented surface suits both.
+The Session workbench's host-owned console may contain independent contributions
+for agent command output and user-created interactive shells. The stock Terminal
+contribution supplies shells, not the shared panel or a parent for command output.
+Shared tabs and optional rendering mechanisms do not make command output an
+Environment-terminal resource; it retains invocation and Run provenance.
 
 Their ownership and semantics are different.
 

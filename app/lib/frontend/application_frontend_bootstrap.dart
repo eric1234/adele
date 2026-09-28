@@ -13,6 +13,7 @@ import '../core/application_plugin_bootstrap.dart';
 import '../core/resource_cleanup.dart';
 import 'directory_picker_bridge.dart';
 import 'model_native_activity_bridge.dart';
+import 'prepared_console_host.dart';
 import 'prepared_frontend.dart';
 import 'prepared_session_host.dart';
 import 'prepared_task_browser_host.dart';
@@ -35,13 +36,16 @@ final class ApplicationFrontendBootstrap {
     required ExtensionRegistry extensions,
     PreparedSessionHost? sessionHost,
     PreparedTaskBrowserHost? taskBrowserHost,
+    PreparedConsoleHost? consoleHost,
   }) : _extensions = extensions,
        _sessionHost = sessionHost,
-       _taskBrowserHost = taskBrowserHost;
+       _taskBrowserHost = taskBrowserHost,
+       _consoleHost = consoleHost;
 
   final ExtensionRegistry _extensions;
   final PreparedSessionHost? _sessionHost;
   final PreparedTaskBrowserHost? _taskBrowserHost;
+  final PreparedConsoleHost? _consoleHost;
   final List<InstalledFrontendActivation> _generations = [];
   final StreamController<ApplicationFrontendState> _changes =
       StreamController<ApplicationFrontendState>.broadcast();
@@ -97,6 +101,7 @@ final class ApplicationFrontendBootstrap {
             _extensions,
             _sessionHost,
             _taskBrowserHost,
+            _consoleHost,
           ),
     ]);
     _setState(ApplicationFrontendState.starting);
@@ -162,6 +167,7 @@ final class ApplicationFrontendBootstrap {
         () async => await Future.wait(retiring),
         if (_sessionHost case final host?) host.close,
         if (_taskBrowserHost case final host?) host.close,
+        if (_consoleHost case final host?) host.close,
       ]);
     } finally {
       _setState(ApplicationFrontendState.closed);
@@ -183,12 +189,14 @@ final class InstalledFrontendActivation {
     this._extensions,
     this._sessionHost,
     this._taskBrowserHost,
+    this._consoleHost,
   );
 
   final PreparedPluginInstallation installation;
   final ExtensionRegistry _extensions;
   final PreparedSessionHost? _sessionHost;
   final PreparedTaskBrowserHost? _taskBrowserHost;
+  final PreparedConsoleHost? _consoleHost;
   final List<(String, ExtensionId, ExtensionRegistration)> _registrations = [];
   InstalledFrontendState _state = InstalledFrontendState.pending;
   Object? _failure;
@@ -228,6 +236,30 @@ final class InstalledFrontendActivation {
       for (final descriptor in component.presentations) {
         if (_closed) return;
         switch (descriptor) {
+          case PreparedConsolePresentation():
+            generation.validateOperation(
+              library: descriptor.library,
+              entrypoint: descriptor.entrypoint,
+            );
+            for (final action in descriptor.actions) {
+              generation.validateOperation(
+                library: descriptor.library,
+                entrypoint: action.entrypoint,
+              );
+            }
+            final host = _consoleHost;
+            if (host == null) {
+              throw StateError('Console hosting is unavailable.');
+            }
+            _register(
+              point: consoleContributions,
+              id: descriptor.extensionId,
+              contribution: (isActive) => host.createContribution(
+                generation: generation,
+                descriptor: descriptor,
+                isActive: isActive,
+              ),
+            );
           case PreparedTaskBrowserPresentation():
             _register(
               point: taskBrowserContributions,

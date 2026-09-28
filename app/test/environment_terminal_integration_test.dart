@@ -213,6 +213,7 @@ void main() {
     owner = runtime.terminals.create(
       created.environment.id,
       request: EnvironmentTerminalRequest(
+        launchKind: EnvironmentTerminalLaunchKind.explicitProgram,
         program: './terminal-process',
         arguments: const [],
         relativeWorkingDirectory: 'probe',

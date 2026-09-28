@@ -24,6 +24,7 @@ final class AdeleShell extends StatelessWidget {
     this.navigationError,
     this.inspection,
     this.inspectionScrollController,
+    this.console,
   });
 
   final Project? project;
@@ -43,6 +44,7 @@ final class AdeleShell extends StatelessWidget {
   final String? navigationError;
   final Widget? inspection;
   final ScrollController? inspectionScrollController;
+  final Widget? console;
 
   @override
   Widget build(BuildContext context) {
@@ -163,6 +165,20 @@ final class AdeleShell extends StatelessWidget {
   );
 
   Widget _sessionLayout() => LayoutBuilder(
+    builder: (context, constraints) => Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Expanded(child: _sessionAndInspection()),
+        if (console case final content?)
+          ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: constraints.maxHeight * .45),
+            child: content,
+          ),
+      ],
+    ),
+  );
+
+  Widget _sessionAndInspection() => LayoutBuilder(
     builder: (context, constraints) {
       final horizontal = constraints.maxWidth >= 840;
       return Flex(

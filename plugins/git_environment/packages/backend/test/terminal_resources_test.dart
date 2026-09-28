@@ -652,6 +652,178 @@ Future<void> main([List<String> arguments = const []]) async {
     },
   );
 
+  test(
+    'explicit launch ignores SHELL and preserves verbatim argv and cwd',
+    () async {
+      final nested = await Directory('${root.path}/nested').create();
+      final owner = GitTerminalSupervisor(
+        driver: driver,
+        parentEnvironment: {'SHELL': '/missing/shell', 'PATH': '/usr/bin:/bin'},
+      );
+      addTearDown(owner.close);
+      final arguments = ['', 'literal | argument', r'$HOME', 'two words'];
+      final events = _Events(
+        owner.open(
+          environmentId: environmentId,
+          resolveEnvironment: () => environment,
+          request: EnvironmentTerminalRequest(
+            launchKind: EnvironmentTerminalLaunchKind.explicitProgram,
+            program: '/bin/sh',
+            arguments: arguments,
+            relativeWorkingDirectory: 'nested',
+            dimensions: _dimensions(),
+          ),
+        ),
+      );
+      final handle = await events.handle;
+      expect(driver.executable, '/bin/sh');
+      expect(driver.arguments, arguments);
+      expect(driver.workingDirectory, nested.path);
+      await owner.closeTerminal(environmentId, handle);
+      await events.done;
+      expect(events.errors, isEmpty);
+    },
+  );
+
+  for (final preference in <String?>[
+    null,
+    '/bin/sh',
+    'chosen-shell',
+    './bin/chosen-shell',
+    'shell with spaces',
+  ]) {
+    test('default shell resolves one executable: $preference', () async {
+      final bin = await Directory('${root.path}/bin').create();
+      final home = await Directory('${root.path}/home').create();
+      for (final name in ['chosen-shell', 'shell with spaces']) {
+        await Link('${bin.path}/$name').create('/bin/sh');
+      }
+      final parent = <String, String>{
+        ..._environmentSentinels,
+        'PATH': bin.path,
+        'HOME': home.path,
+        'SHELL': ?preference,
+        'PWD': '/wrong/cwd',
+        'TERM': 'wrong-term',
+        'ENV': '/personal/startup',
+        'BASH_ENV': '/personal/startup',
+      };
+      final owner = GitTerminalSupervisor(
+        driver: driver,
+        parentEnvironment: parent,
+      );
+      addTearDown(owner.close);
+      parent['SHELL'] = '/mutated/shell';
+      final events = _Events(
+        owner.open(
+          environmentId: environmentId,
+          resolveEnvironment: () => environment,
+          request: _defaultShellRequest(),
+        ),
+      );
+      final handle = await events.handle;
+      expect(driver.executable, switch (preference) {
+        null || '/bin/sh' => '/bin/sh',
+        './bin/chosen-shell' => '${root.path}/./bin/chosen-shell',
+        _ => '${bin.path}/$preference',
+      });
+      expect(driver.arguments, ['-i']);
+      expect(driver.workingDirectory, environment.root.path);
+      expect(driver.dimensions!.columns, 80);
+      expect(driver.dimensions!.rows, 24);
+      expect(driver.childEnvironment, {
+        'PATH': bin.path,
+        'HOME': home.path,
+        'SHELL': ?preference,
+        'PWD': environment.root.path,
+        'TERM': 'xterm-256color',
+      });
+      await owner.closeTerminal(environmentId, handle);
+      await events.done;
+      expect(events.errors, isEmpty);
+    });
+  }
+
+  test(
+    'explicit invalid SHELL never falls back or starts a terminal',
+    () async {
+      final nonExecutable = await File(
+        '${root.path}/not-executable',
+      ).writeAsString('no');
+      final broken = await Link(
+        '${root.path}/broken-shell',
+      ).create('/missing/shell');
+      await Link('${root.path}/\ufffd').create('/bin/sh');
+      for (final preference in [
+        '',
+        ' ',
+        '/missing/shell',
+        'missing-shell',
+        '/bin/sh -i',
+        'sh -i',
+        '"/bin/sh"',
+        r'$SHELL',
+        '/bin/sh\u0000ignored',
+        '\ud800',
+        '${root.path}/\ud800',
+        '${root.path}/\udc00',
+        root.path,
+        nonExecutable.path,
+        broken.path,
+      ]) {
+        final owner = GitTerminalSupervisor(
+          driver: driver,
+          parentEnvironment: {'SHELL': preference, 'PATH': '/usr/bin:/bin'},
+        );
+        final events = _Events(
+          owner.open(
+            environmentId: environmentId,
+            resolveEnvironment: () => environment,
+            request: _defaultShellRequest(),
+          ),
+        );
+        await events.done;
+        expect(events.events, isEmpty, reason: preference);
+        expect(
+          events.errors.single,
+          _code('terminal_executable_not_found'),
+          reason: preference,
+        );
+        await owner.close();
+      }
+      expect(driver.starts, 0);
+    },
+  );
+
+  test(
+    'default shell revalidates the Environment root after preparation',
+    () async {
+      final scope = await Directory('${root.path}/scope').create();
+      environment = WorktreeEnvironment(scope);
+      final owner = GitTerminalSupervisor(
+        driver: driver,
+        parentEnvironment: const {},
+      );
+      addTearDown(owner.close);
+      driver.prepareGate = Completer<void>();
+      final events = _Events(
+        owner.open(
+          environmentId: environmentId,
+          resolveEnvironment: () => environment,
+          request: _defaultShellRequest(),
+        ),
+      );
+      await driver.preparing.future;
+      await scope.rename('${root.path}/moved');
+      await Link(scope.path).create(root.path);
+      driver.prepareGate!.complete();
+      await events.done;
+      expect(events.events, isEmpty);
+      expect(events.errors.single, _code('outside_root'));
+      expect(driver.starts, 0);
+    },
+  );
+
   test('startup and transport errors are not successful completion', () async {
     driver.startError = StateError('native setup failed');
     final failedStart = _Events(open());
@@ -710,9 +882,16 @@ Future<void> main([List<String> arguments = const []]) async {
       });
       tearDownAll(() async => artifacts.delete(recursive: true));
 
-      GitWorktreeEnvironmentProvider provider() {
+      GitWorktreeEnvironmentProvider provider({String? shellPreference}) {
+        final home = Directory('${root.path}/home')..createSync();
         final provider = GitWorktreeEnvironmentProvider(
           ptyHelperPath: helper.path,
+          terminalEnvironment: {
+            ..._environmentSentinels,
+            'PATH': '/usr/bin:/bin',
+            'HOME': home.path,
+            'SHELL': ?shellPreference,
+          },
         );
         provider.liveObjects.bind(environmentId, environment);
         addTearDown(provider.close);
@@ -725,12 +904,62 @@ Future<void> main([List<String> arguments = const []]) async {
       ) => provider.openTerminal(
         environmentId,
         EnvironmentTerminalRequest(
+          launchKind: EnvironmentTerminalLaunchKind.explicitProgram,
           program: '/bin/sh',
           arguments: ['-c', script],
           relativeWorkingDirectory: '',
           dimensions: _dimensions(),
         ),
       );
+
+      for (final preference in <String?>[null, '/bin/bash']) {
+        test(
+          'real default shell is interactive at root: $preference',
+          () async {
+            final live = provider(shellPreference: preference);
+            final home = '${root.path}/home';
+            // Use a fixture HOME rather than personal shell startup files.
+            await File(
+              '$home/.bashrc',
+            ).writeAsString("printf 'FIXTURE-RC\\n'\n");
+            final events = _Events(
+              live.openTerminal(environmentId, _defaultShellRequest()),
+            );
+            final handle = await events.handle.timeout(
+              const Duration(seconds: 10),
+            );
+            await live.writeTerminal(environmentId, handle, r'''
+stty -echo
+case $- in *i*) printf 'INTERACTIVE=yes\n';; *) printf 'INTERACTIVE=no\n';; esac
+printf 'ARGV0=%s\nCWD=%s\nHOME=%s\nTERM=%s\nSECRET=%s\n' "$0" "$PWD" "$HOME" "$TERM" "${ADELE_TERMINAL_TEST_SECRET-unset}"
+stty size
+printf 'PROBE-DONE\n'
+''');
+            await events.untilText('PROBE-DONE\r\n');
+            expect(events.text, contains('INTERACTIVE=yes\r\n'));
+            expect(
+              events.text,
+              contains('ARGV0=${preference ?? '/bin/sh'}\r\n'),
+            );
+            expect(events.text, contains('CWD=${environment.root.path}\r\n'));
+            expect(events.text, contains('HOME=$home\r\n'));
+            expect(events.text, contains('TERM=xterm-256color\r\n'));
+            expect(events.text, contains('SECRET=unset\r\n'));
+            expect(events.text, contains('24 80\r\n'));
+            if (preference != null) {
+              expect(events.text, contains('FIXTURE-RC\r\n'));
+            }
+            await live.writeTerminal(environmentId, handle, 'exit 17\n');
+            await events.done.timeout(const Duration(seconds: 10));
+            expect(events.errors, isEmpty);
+            expect(
+              events.events.last.completed!.termination,
+              EnvironmentTerminalTermination.exited,
+            );
+            expect(events.events.last.completed!.exitCode, 17);
+          },
+        );
+      }
 
       test(
         'real controlling PTY, scoped cwd, terminal env, UTF8 and exit status',
@@ -768,6 +997,7 @@ exit 37
           live.openTerminal(
             environmentId,
             EnvironmentTerminalRequest(
+              launchKind: EnvironmentTerminalLaunchKind.explicitProgram,
               program: './terminal-shell',
               arguments: ['-c', r'printf "ARGV0=%s\n" "$0"'],
               relativeWorkingDirectory: '',
@@ -867,6 +1097,7 @@ read -r stop
             }
             EnvironmentTerminalRequest tagged(String tag) =>
                 EnvironmentTerminalRequest(
+                  launchKind: EnvironmentTerminalLaunchKind.explicitProgram,
                   program: '/bin/sh',
                   arguments: [
                     '-c',
@@ -1029,6 +1260,7 @@ read -r stop
             live.openTerminal(
               environmentId,
               EnvironmentTerminalRequest(
+                launchKind: EnvironmentTerminalLaunchKind.explicitProgram,
                 program: '/bin/bash',
                 arguments: const ['--noprofile', '--norc', '-i'],
                 relativeWorkingDirectory: '',
@@ -1115,7 +1347,10 @@ read -r stop
         projectId: project.id,
         title: 'Terminal test',
       );
-      final provider = GitWorktreeEnvironmentProvider(terminalDriver: driver);
+      final provider = GitWorktreeEnvironmentProvider(
+        terminalDriver: driver,
+        terminalEnvironment: const {'SHELL': '/bin/sh'},
+      );
       addTearDown(provider.close);
       final retained = Environment(
         id: environmentId,
@@ -1128,7 +1363,9 @@ read -r stop
         LocalEnvironment(project: project, task: task, value: retained),
       );
       final scoped = provider.liveObjects.resolve(environmentId).root;
-      final events = _Events(provider.openTerminal(environmentId, _request()));
+      final events = _Events(
+        provider.openTerminal(environmentId, _defaultShellRequest()),
+      );
       final handle = await events.handle;
       expect(driver.workingDirectory, scoped.path);
       expect(scoped.path, endsWith('/selected/project'));
@@ -1170,6 +1407,7 @@ Future<void> _environmentProbe(String helper, String root) async {
         .openTerminal(
           id,
           EnvironmentTerminalRequest(
+            launchKind: EnvironmentTerminalLaunchKind.explicitProgram,
             program: '/usr/bin/env',
             arguments: const [],
             relativeWorkingDirectory: '',
@@ -1204,10 +1442,18 @@ Future<void> _environmentProbe(String helper, String root) async {
 
 EnvironmentTerminalDimensions _dimensions() =>
     EnvironmentTerminalDimensions(columns: 80, rows: 24);
+EnvironmentTerminalRequest _defaultShellRequest() => EnvironmentTerminalRequest(
+  launchKind: EnvironmentTerminalLaunchKind.defaultShell,
+  program: null,
+  arguments: const [],
+  relativeWorkingDirectory: '',
+  dimensions: _dimensions(),
+);
 EnvironmentTerminalRequest _request({
   String cwd = '',
   String program = '/bin/sh',
 }) => EnvironmentTerminalRequest(
+  launchKind: EnvironmentTerminalLaunchKind.explicitProgram,
   program: program,
   arguments: const ['-i'],
   relativeWorkingDirectory: cwd,
@@ -1276,6 +1522,8 @@ final class _Driver implements GitTerminalDriver {
   Object? startError;
   final sessions = <_Session>[];
   String? executable;
+  List<String>? arguments;
+  EnvironmentTerminalDimensions? dimensions;
   String? workingDirectory;
   Map<String, String>? childEnvironment;
   @override
@@ -1295,6 +1543,8 @@ final class _Driver implements GitTerminalDriver {
   }) async {
     starts++;
     this.executable = executable;
+    this.arguments = arguments;
+    this.dimensions = dimensions;
     this.workingDirectory = workingDirectory;
     childEnvironment = environment;
     if (!starting.isCompleted) starting.complete();

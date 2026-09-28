@@ -45,6 +45,7 @@ workspace:
   - plugins/local_directory_project/packages/backend
   - plugins/local_directory_project/packages/frontend
   - plugins/task_browser/packages/frontend
+  - plugins/terminal/packages/frontend
   - plugins/git_environment
 
 dev_dependencies:

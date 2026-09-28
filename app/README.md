@@ -24,7 +24,7 @@ and [architecture overview](../docs/architecture/overview.md) for cross-system c
 | Exact-generation mediation of Session-scoped relational storage | Public [Project storage contract](../packages/project_storage/lib/adele_project_storage.dart); plugin schema/state semantics: [plugin persistence](../docs/architecture/plugin-system.md#plugin-owned-state-and-persistence). |
 | Session execution hosting and provider/tool/context adaptation | Public [orchestration](../packages/orchestration/README.md), [model-tool](../packages/model_tool/), and [model-provider](../packages/model_provider/) contracts; generic mechanics in [agent kernel](../packages/agent_kernel/README.md). |
 | Host policy, exact-invocation approval, Run activity projection, and terminal evidence storage | Concrete strategy sequencing, conversation state/history, and grouping: [Chat](../plugins/chat_strategy/README.md). |
-| Generic shell, Task Browser/Session/Inspection hosting, and application-local window state | Browser presentation: [Task Browser](../plugins/task_browser/README.md); tool behavior and bespoke cards: [Filesystem](../plugins/filesystem_tools/README.md), [Command](../plugins/command_tools/README.md), and [Search](../plugins/search_tools/README.md). |
+| Generic shell, Task Browser/Session/Inspection hosting, shared console chrome, and application-local window state | Browser presentation: [Task Browser](../plugins/task_browser/README.md); console content: [Terminal](../plugins/terminal/README.md); tool behavior and bespoke cards: [Filesystem](../plugins/filesystem_tools/README.md), [Command](../plugins/command_tools/README.md), and [Search](../plugins/search_tools/README.md). |
 | Temporary source-checkout provider/model selection | OpenAI protocol, credentials, and provider algorithms: [OpenAI backend](../plugins/openai/packages/backend/README.md). |
 | Live in-memory product graph and fixed startup participation | General installation/Profile management and complete runtime restoration remain unimplemented: [profiles and configuration](../docs/architecture/profiles-and-configuration.md), [storage scope](../docs/architecture/product-model.md#storage-scope-and-limits). |
 
@@ -154,6 +154,7 @@ infrastructure, not on-start compilation or a plugin installer.
 | --- | --- |
 | [`tool/compile_chat_frontend.dart`](tool/compile_chat_frontend.dart) | `ADELE_CHAT_FRONTEND_OUTPUT` |
 | [`tool/compile_task_browser_frontend.dart`](tool/compile_task_browser_frontend.dart) | `ADELE_TASK_BROWSER_FRONTEND_OUTPUT` |
+| [`tool/compile_terminal_frontend.dart`](tool/compile_terminal_frontend.dart) | `ADELE_TERMINAL_FRONTEND_OUTPUT` |
 | [`tool/compile_local_directory_project_frontend.dart`](tool/compile_local_directory_project_frontend.dart) | `ADELE_LOCAL_DIRECTORY_PROJECT_FRONTEND_OUTPUT` |
 | [`tool/compile_tool_inspection_frontends.dart`](tool/compile_tool_inspection_frontends.dart) | `ADELE_TOOL_INSPECTION_FRONTEND` (`filesystem` or `command`), `ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT` |
 | [`tool/compile_openai_activity_frontend.dart`](tool/compile_openai_activity_frontend.dart) | `ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT` |
@@ -182,6 +183,15 @@ The emulator and incremental escape parser survive complete view unmounts; outpu
 while hidden updates the same buffers without transcript replay. Execution owners
 may permanently revoke its outbound routes while preserving read-only display;
 that transition never grants authority to an initially read-only surface.
+
+`title` and `observeTitle` expose the parsed window title independently of view
+attachment. The adapter removes unsafe formatting/bidi controls, collapses
+control/whitespace runs to one space, and bounds the retained label to 160 UTF-16
+code units without splitting supplementary characters. Empty titles become null.
+Title changes are coalesced invalidations, not output notifications or process
+lifecycle evidence; observer failures cannot interrupt parsing. Common console
+metadata applies its own display bounds before showing the title. The shared tab
+chrome renders lifecycle status separately from the ellipsized process title.
 
 The default initial grid is 80 columns by 24 rows. The default `maxLines` is 2,000 lines
 **including the viewport**, per emulator buffer; native callers may choose another
@@ -231,9 +241,9 @@ declarations, writes actual EVC bytes, and mounts through
 [native tests](test/native_terminal_surface_test.dart) inspect real buffer state.
 See [focused commands](../docs/development/testing.md#focused-terminal-checks) and
 [dependency/toolchain evidence](../docs/development/toolchain.md#native-terminal-dependency).
-This surface is not automatically installed in any application screen or catalog
-role. Command Inspection integration, terminal persistence, and stock Terminal UI
-remain unimplemented.
+The surface alone registers no catalog role. The separately prepared stock
+[Terminal](../plugins/terminal/README.md) uses it through the shared Session console
+below. Command-output console integration and terminal persistence remain absent.
 
 ### Environment terminal ownership
 
@@ -271,6 +281,15 @@ not roll back an already admitted effect. The provider's
 [pending-output bounds](../plugins/git_environment/README.md#interactive-terminals)
 remain separate from emulator scrollback.
 
+`EnvironmentTerminalOwner.observe` reports lifecycle, cleanup, and normalized title
+changes, including while hidden; ordinary output does not rebuild console chrome.
+The coordinator's `observe` reports collection changes. `shellCompleted` requires
+actual shell-exit evidence, while `cleanupPending`, `cleanupSettled`, and
+`cleanupSucceeded` describe resource cleanup separately. Neither the surface nor
+the owner chooses tab-removal policy. `launchFailedWithoutResources` is deliberately
+limited to failures before a terminal request was issued: successful local stream
+cancellation alone is not proof that no remote resource was created.
+
 [`environment_terminal_owner_test.dart`](test/environment_terminal_owner_test.dart)
 isolates authority, queue, and startup/retirement races. The
 [real integration](test/environment_terminal_integration_test.dart) prepares the
@@ -278,9 +297,66 @@ unchanged interpreted fixture, actual shared host and Git backend AOT snapshots,
 and the provider's native helper before activation. It tests native input/resize,
 hidden output/query replies, complete unmount/remount without respawn, and retained
 completed/disconnected display. This is Linux debug widget/evaluator plus actual
-Dart AOT backend/process evidence, not a finished desktop Terminal feature or a
-cross-platform runtime claim. The next stock UI consumes these owners rather than
-creating processes from its widgets.
+Dart AOT backend/process coverage, not a cross-platform runtime claim. Stock console
+composition is covered separately by the normal integration mapped below; its
+widgets consume these owners rather than creating processes themselves.
+
+### Session console
+
+[`ConsoleController`](lib/ui/console/console_controller.dart) is window-owned;
+[`WorkbenchConsole`](lib/ui/console/workbench_console.dart) renders its common tab
+strip, creation menu, selection, visibility toggle, confirmation, and warnings.
+Independent `consoleContributions` compose into this host without a single-provider
+resolver or native stock fallback. The public [UI contract](../packages/ui/README.md#shared-console)
+and [architecture](../docs/architecture/plugin-system.md#shared-console) define the
+content/access and close boundaries.
+
+Each native close confirmation has an exact request lifetime. Tab removal or
+context/view revocation withdraws its owned dialog route and settles the abandoned
+request without awaiting an answer or cleanup. Metadata updates do not withdraw
+it, and route withdrawal cannot pop unrelated navigation or authorize cleanup.
+
+`AdeleApplication` sets the controller's Session in `_activateSession`, clears it
+only after accepted navigation in `_showBrowser`, and supplies the shell's bounded
+console area only while a Session is presented. Task Browser has no panel, toggle,
+or console creation actions, even with a selected Task. The console is outside the
+Session/Inspection scroll views; navigation settlement blocks its input/focus too.
+Changing selection, hiding the panel, or returning to Task Browser unmounts/revokes
+the view, not the retained content. Selection is remembered per Session among its
+eligible tabs; removing the selected tab prefers an eligible neighbor.
+
+[`PreparedConsoleHost.environmentForSession`](lib/frontend/prepared_console_host.dart)
+checks canonical Session identity and its published Project/Task graph, then uses
+`store.sessionAuthority(session.id)` to select the same-Task Environment. It never
+falls back to Task primary. Eligibility is passive and creates no Environment,
+terminal, or Run. A creation action captures that association before awaiting;
+navigation cannot retarget its admitted work or let a late result steal the new
+context's selection. Sessions sharing that Environment can show the same terminals;
+another Environment cannot.
+
+[`EnvironmentTerminalBridge`](lib/frontend/environment_terminal_bridge.dart)
+copies validated `TerminalContentPolicy` from one short-lived EVC action into
+[`TerminalConsoleContent`](lib/terminal/terminal_console_content.dart). Retained
+native policy handles hidden title/lifecycle changes, close advice, and cleanup;
+it never calls back into a disposed operation evaluator. Every selected view uses
+fresh `ConsolePresentationAccess` and `TerminalSurfaceBridge` access to the same
+owner. The stock frontend's [policy map](../plugins/terminal/README.md#terminal-policy)
+describes conservative confirmation, actual-exit-only automatic removal, and
+failure retention. Shell selection/startup remains with the
+[Environment contract](../packages/environment/README.md#interactive-terminals)
+and [Git provider](../plugins/git_environment/README.md#interactive-terminals).
+
+Close fences console actions immediately and starts forced content cleanup without
+waiting for plugin advice or a confirmation dialog. After accepted Task/Run work
+drains, the app joins bounded console cleanup before `NativeAdeleRuntime.close`;
+runtime teardown still runs on cleanup failure and owns remaining terminal cleanup.
+Frontend retirement also removes its exact content. Cleanup warnings do not claim
+that a process stopped. Session navigation itself performs none of this resource
+release. No tabs, titles, selection, or terminal transcripts are persisted.
+
+Focused host/bridge/widget tests and the real stock EVC/Git AOT case in
+[`normal_chatgpt_run_integration_test.dart`](test/core/normal_chatgpt_run_integration_test.dart)
+are mapped in [console validation](../docs/development/testing.md#focused-console-checks).
 
 ### ChatGPT source-checkout configuration
 
@@ -765,6 +841,8 @@ repository-wide deferred-feature ledger here.
 | Entry/window composition | [`lib/main.dart`](lib/main.dart), [`lib/application.dart`](lib/application.dart): `AdeleApplication` |
 | Runtime construction | [`lib/core/adele_runtime.dart`](lib/core/adele_runtime.dart): `AdeleRuntime` |
 | Native runtime and terminal lifetime | [`lib/terminal/native_adele_runtime.dart`](lib/terminal/native_adele_runtime.dart): `NativeAdeleRuntime` |
+| Shared console state/chrome | [`lib/ui/console/console_controller.dart`](lib/ui/console/console_controller.dart), [`lib/ui/console/workbench_console.dart`](lib/ui/console/workbench_console.dart) |
+| Prepared console and retained terminal content | [`lib/frontend/prepared_console_host.dart`](lib/frontend/prepared_console_host.dart), [`lib/frontend/environment_terminal_bridge.dart`](lib/frontend/environment_terminal_bridge.dart), [`lib/terminal/terminal_console_content.dart`](lib/terminal/terminal_console_content.dart) |
 | Shared Run identity allocation | [`lib/core/run_id_source.dart`](lib/core/run_id_source.dart): `RunIdSource`, `MonotonicRunIdSource`; `AdeleRuntime.runIds` |
 | Backend bootstrap | [`lib/core/application_plugin_bootstrap.dart`](lib/core/application_plugin_bootstrap.dart): `ApplicationPluginBootstrap` |
 | Frontend generations/activation | [`lib/frontend/application_frontend_bootstrap.dart`](lib/frontend/application_frontend_bootstrap.dart), [`lib/frontend/prepared_frontend.dart`](lib/frontend/prepared_frontend.dart) |

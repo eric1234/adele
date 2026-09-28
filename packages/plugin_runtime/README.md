@@ -77,8 +77,9 @@ EVC, or watching for changes. `PreparedPluginInstallation` retains optional
 `backendArtifactUri` and `frontend`; `PreparedFrontendComponent` contains the
 artifact URI and separate immutable presentation and behavioral extension
 descriptor lists. The sealed, data-only
-`PreparedPresentationDescriptor` variants are `PreparedTaskBrowserPresentation`,
-`PreparedSessionPresentation`, `PreparedToolActivityPresentation`, and
+`PreparedPresentationDescriptor` variants are `PreparedConsolePresentation`,
+`PreparedTaskBrowserPresentation`, `PreparedSessionPresentation`,
+`PreparedToolActivityPresentation`, and
 `PreparedModelNativeActivityPresentation`.
 The separate sealed `PreparedFrontendExtension` currently has
 `PreparedProjectSelectorExtension`, with `kind: 'projectSelector'` and required
@@ -86,6 +87,19 @@ The separate sealed `PreparedFrontendExtension` currently has
 Its optional `frontend.extensions` list defaults to empty and can coexist with the
 required, possibly empty `presentations` list; existing presentation roles and
 manifest version 1 are unchanged.
+
+Console descriptors use `role: 'console'` with required `extensionId`, `library`,
+`entrypoint` (content presentation), and `actions`. Each action has `id`, `label`,
+and its own operation `entrypoint`; action IDs must be unique within the descriptor.
+Libraries are canonical `package:` Dart URIs and entrypoints are top-level
+identifiers. Strategy/backend-affinity fields and role-level `displayName` are
+not part of this role. A frontend-only installation can contribute independently
+to the shared host console, without an owning backend. App activation validates
+both operation and content entrypoint presence before registering the contribution;
+actual invocation/rendering may still fail. Content/resources are not created by
+discovery or activation. The public [console contract](../ui/README.md#shared-console)
+owns composition and lifetime; this package supplies data-only metadata, not UI or
+terminal policy. Manifest version remains 1.
 
 Task Browser descriptors use `role: 'taskBrowser'` and require only `extensionId`,
 `displayName`, `library`, and `entrypoint`. They have no strategy or backend
@@ -100,7 +114,7 @@ allowlist (default empty); optional `strategyAffinity` is `independent` (default
 or `owningBackend`. The retired `hostAdapter` field is rejected. Stock Chat
 allowlists generated `chatSessionServiceId` and declares `owningBackend`; runtime does not know those stock
 identities or service semantics.
-Both descriptor families use existing public identity types without importing
+These descriptor families use existing public identity types without importing
 Flutter, `adele_ui`, eval, or concrete plugins. Strict role/kind-specific fields describe executable
 ABI/preparation data, not profile or activation state.
 
@@ -119,9 +133,10 @@ Flutter-side `PreparedFrontend.load` reads immutable bytes once per generation.
 The Flutter bootstrap then validates behavioral bytecode and descriptor entrypoint
 presence before registration, intercepting runtime execution before initializers
 or plugin code run and installing no native picker authority. Invalid behavioral
-code fails only that frontend attempt. Presentation-only decoding/entrypoint
-failures, including readable corrupt bytecode, stay per-view. The pure-Dart catalog
-neither decodes nor links frontend code.
+code fails only that frontend attempt. Console descriptors also receive the
+entrypoint validation described above. For other presentation-only roles,
+decoding/entrypoint failures, including readable corrupt bytecode, stay per-view.
+The pure-Dart catalog neither decodes nor links frontend code.
 
 The app separately owns the policy of attempting all discovered valid components.
 Its backend bootstrap publishes this same catalog before backend startup, and

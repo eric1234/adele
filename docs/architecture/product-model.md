@@ -303,8 +303,25 @@ process IDs or durable product state. Cancelling the owning open stream abandons
 the resource; there is no arbitrary reattachment protocol. Application restart
 restores neither terminals nor their transcripts. The [Environment contract](../../packages/environment/README.md#interactive-terminals)
 owns transport and settlement semantics; concrete platform and cleanup guarantees
-belong to the provider, not the product model. Stock terminal navigation and controls
-are separate presentation work.
+belong to the provider, not the product model. Terminal presentation participates in
+the [shared console](plugin-system.md#shared-console); it does not own that host.
+
+The current console is visible only in a presented Session, not Task Browser.
+Its terminal action captures the canonical `SessionEnvironmentAuthority`
+association after checking the published Session/Task/Project graph. It must not
+fall back to the Task's primary Environment. Merely opening a Session, browsing,
+or testing content eligibility does not materialize an Environment or create a
+terminal. An explicit terminal action creates no Session or Run.
+
+Sessions sharing an Environment can show its same retained terminals. Changing
+tabs, hiding the panel, or navigating to another Session revokes presentation
+access without terminating those resources; another Environment changes eligibility,
+not resource ownership. Titles and console selection are transient presentation
+metadata, never product identities, authority, or lifecycle evidence. Terminal
+content may apply an actual-exit-plus-successful-cleanup removal policy, but a
+disconnect or uncertain cleanup must not be presented as successful termination.
+Console close/retirement/shutdown and bounded release follow the shared host
+contract; provider resource guarantees remain with the provider.
 
 ## Session
 

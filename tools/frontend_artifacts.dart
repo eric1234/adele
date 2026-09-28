@@ -39,6 +39,11 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
       directory: 'task-browser',
       pluginId: 'dev.adele.plugin.task-browser',
     ),
+    (
+      name: 'terminal',
+      directory: 'terminal',
+      pluginId: 'dev.adele.plugin.terminal',
+    ),
   ]) {
     final File artifact = File.fromUri(
       installationRoot.absolute.uri.resolve(
@@ -50,6 +55,7 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
     final bool chat = frontend.name == 'chat';
     final bool openai = frontend.name == 'openai';
     final bool taskBrowser = frontend.name == 'task-browser';
+    final bool terminal = frontend.name == 'terminal';
     final bool localDirectoryProject =
         frontend.name == 'local-directory-project';
     final List<String> arguments = <String>[
@@ -65,6 +71,8 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
           ? 'tool/compile_local_directory_project_frontend.dart'
           : taskBrowser
           ? 'tool/compile_task_browser_frontend.dart'
+          : terminal
+          ? 'tool/compile_terminal_frontend.dart'
           : 'tool/compile_tool_inspection_frontends.dart',
     ];
     stdout.writeln('==> $stage');
@@ -79,9 +87,14 @@ Future<Map<String, File>> prepareDesktopFrontendArtifacts({
           if (chat) 'ADELE_CHAT_FRONTEND_OUTPUT': artifact.path,
           if (openai) 'ADELE_OPENAI_ACTIVITY_FRONTEND_OUTPUT': artifact.path,
           if (taskBrowser) 'ADELE_TASK_BROWSER_FRONTEND_OUTPUT': artifact.path,
+          if (terminal) 'ADELE_TERMINAL_FRONTEND_OUTPUT': artifact.path,
           if (localDirectoryProject)
             'ADELE_LOCAL_DIRECTORY_PROJECT_FRONTEND_OUTPUT': artifact.path,
-          if (!chat && !openai && !localDirectoryProject && !taskBrowser) ...{
+          if (!chat &&
+              !openai &&
+              !localDirectoryProject &&
+              !taskBrowser &&
+              !terminal) ...{
             'ADELE_TOOL_INSPECTION_FRONTEND': frontend.name,
             'ADELE_TOOL_INSPECTION_FRONTEND_OUTPUT': artifact.path,
           },

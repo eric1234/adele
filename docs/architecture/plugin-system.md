@@ -302,6 +302,42 @@ view state, not additions to the product persistence schema. The
 [UI contract map](../../packages/ui/README.md#task-browser-snapshot) owns the bridge
 shape; the [application map](../../app/README.md#task-browser) owns host composition.
 
+### Shared console
+
+The console is a host-owned shared surface composing independent plugin content,
+not a single selected Console/Terminal provider. Multiple `consoleContributions`
+may supply creation actions and content. The host owns shared tabs, action
+discovery, selection, visibility, confirmation, and bounded cleanup; plugins own
+their content, eligibility, metadata, presentation, and resource-release behavior.
+No contribution owns another contribution's tab or embeds the whole shared shell.
+
+Creation captures an exact live contribution and host-selected Session context.
+Already admitted asynchronous creation stays in that captured scope across
+navigation; it cannot retarget or steal the new context's selection. Creation
+access ends on action settlement, owner retirement, or host close; late content is
+released rather than published. Retirement also removes exact owned content.
+Replacement requires fresh access, never migration of old bindings.
+Content registration is independent of mounted presentation: metadata and lifecycle
+observation may continue while hidden, but hiding, selection/context change,
+unmount, or retirement permanently revokes view-originated access.
+
+Close advice is synchronous and advisory only, with no veto or asynchronous
+settlement hook. Missing/failed advice triggers host confirmation. Confirmed close,
+content-requested removal, retirement, and host shutdown release resources without
+requiring a mounted view. Forced cleanup does not wait for a dialog or plugin
+approval; timeout/failure reports a bounded safe warning rather than indefinitely
+retaining a tab or asserting that execution stopped.
+
+The current workbench exposes the console only while presenting a Session. Task
+Browser has no console panel, toggle, or creation actions. Terminal content uses
+the Session's canonical Environment association, not a primary-Environment guess;
+that resource ownership is defined by the [product model](product-model.md#interactive-terminal-resources).
+Future read-only command output is independent contributed content with invocation
+provenance, not a Terminal child. Concrete public types belong to
+[UI](../../packages/ui/README.md#shared-console), prepared ABI to the
+[catalog](../../packages/plugin_runtime/README.md#prepared-catalog), and stock
+behavior to [Terminal](../../plugins/terminal/README.md).
+
 ### Session presentation settlement
 
 Host-requested navigation may need a presentation to settle pending local state

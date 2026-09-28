@@ -1,6 +1,21 @@
 /// Build-time stock presentation metadata, keyed by owning PluginId.
 /// Keep this SDK-only so the launcher and prepared-installation fixtures share it.
 const Map<String, List<Map<String, Object?>>> stockFrontendDescriptors = {
+  'dev.adele.plugin.terminal': [
+    {
+      'role': 'console',
+      'extensionId': 'dev.adele.plugin.terminal.console',
+      'library': 'package:terminal_frontend/terminal_frontend.dart',
+      'entrypoint': 'buildTerminal',
+      'actions': [
+        {
+          'id': 'new-terminal',
+          'label': 'New Terminal',
+          'entrypoint': 'newTerminal',
+        },
+      ],
+    },
+  ],
   'dev.adele.plugin.task-browser': [
     {
       'role': 'taskBrowser',

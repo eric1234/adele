@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:test/test.dart';
+import 'package:yaml/yaml.dart';
 
 import '../../tools/adele.dart';
 import '../../tools/stock_frontend_descriptors.dart';
@@ -507,6 +508,58 @@ void main() {
       ]);
     });
 
+    test('discovers the frontend-only Terminal in workspace and CI', () {
+      const path = 'plugins/terminal/packages/frontend';
+      final target = lookupTestTarget('terminal_frontend');
+      expect(target.path, path);
+      expect(target.executable, 'flutter');
+      expect(target.argumentsFor(ci: true), ['test']);
+      expect(target.linuxDesktopDeps, isFalse);
+      expect(target.ciTestConcurrency, isNull);
+      final analysis = analysisTargets.singleWhere(
+        (entry) => entry.name == target.name,
+      );
+      expect(analysis.path, path);
+      expect(analysis.flutter, isTrue);
+      expect(File('pubspec.yaml').readAsStringSync(), contains('  - $path\n'));
+      expect(
+        Directory('plugins/terminal/packages/backend').existsSync(),
+        isFalse,
+      );
+      expect(File('plugins/terminal/pubspec.yaml').existsSync(), isFalse);
+      final manifest =
+          loadYaml(File('$path/pubspec.yaml').readAsStringSync()) as YamlMap;
+      expect(manifest['name'], 'terminal_frontend');
+      expect(manifest['resolution'], 'workspace');
+      expect(manifest['dependencies'], {
+        'adele_ui': '^0.1.0',
+        'flutter': {'sdk': 'flutter'},
+      });
+      expect(
+        (manifest['dev_dependencies'] as YamlMap).keys,
+        containsAll(['flutter_test', 'dart_eval', 'flutter_eval']),
+      );
+      expect(stockFrontendDescriptors['dev.adele.plugin.terminal'], [
+        {
+          'role': 'console',
+          'extensionId': 'dev.adele.plugin.terminal.console',
+          'library': 'package:terminal_frontend/terminal_frontend.dart',
+          'entrypoint': 'buildTerminal',
+          'actions': [
+            {
+              'id': 'new-terminal',
+              'label': 'New Terminal',
+              'entrypoint': 'newTerminal',
+            },
+          ],
+        },
+      ]);
+      expect(
+        stockFrontendExtensionDescriptors['dev.adele.plugin.terminal'],
+        isNull,
+      );
+    });
+
     test('rejects an unknown target', () {
       expect(
         () => lookupTestTarget('missing'),
@@ -542,6 +595,10 @@ void main() {
             name: 'local_directory_project_frontend',
             path: 'plugins/local_directory_project/packages/frontend',
           ),
+          (
+            name: 'terminal_frontend',
+            path: 'plugins/terminal/packages/frontend',
+          ),
         ]) {
       final target = analysisTargets.singleWhere(
         (package) => package.name == expected.name,
@@ -567,7 +624,7 @@ void main() {
   test(
     'stock descriptors name existing frontend libraries and entrypoints',
     () {
-      expect(stockFrontendDescriptors, hasLength(5));
+      expect(stockFrontendDescriptors, hasLength(6));
       expect(stockFrontendExtensionDescriptors, hasLength(1));
       final config = File('.dart_tool/package_config.json').absolute;
       final packages =
@@ -606,6 +663,22 @@ void main() {
                     (descriptor['kind'] == 'projectSelector'
                             ? r'\bFuture<String\?>\s+'
                             : r'\b(?:Widget|Future<Widget>)\s+') +
+                        RegExp.escape(entrypoint) +
+                        r'\s*\(',
+                  ),
+                ),
+                reason: '${descriptor['library']}::$entrypoint',
+              );
+            }
+          }
+          if (descriptor['actions'] case final List<Object?> actions) {
+            for (final action in actions.cast<Map<String, Object?>>()) {
+              final entrypoint = action['entrypoint']! as String;
+              expect(
+                source,
+                matches(
+                  RegExp(
+                    r'\bFuture<List<dynamic>>\s+' +
                         RegExp.escape(entrypoint) +
                         r'\s*\(',
                   ),
@@ -796,6 +869,7 @@ void main() {
         'local_directory_project_backend|dart|plugins/local_directory_project/packages/backend|test',
         'local_directory_project_frontend|flutter|plugins/local_directory_project/packages/frontend|test',
         'task_browser_frontend|flutter|plugins/task_browser/packages/frontend|test',
+        'terminal_frontend|flutter|plugins/terminal/packages/frontend|test',
         'scripted_model_contract|dart|plugins/scripted_model/packages/contract|test --timeout 4m',
         'scripted_model_backend|dart|plugins/scripted_model/packages/backend|test',
         'openai_model_provider_backend|dart|plugins/openai/packages/backend|test --timeout 4m',

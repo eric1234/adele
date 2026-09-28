@@ -36,6 +36,8 @@ enum EnvironmentTerminalEventKind { opened, output, completed }
 
 enum EnvironmentTerminalTermination { exited, closed }
 
+enum EnvironmentTerminalLaunchKind { explicitProgram, defaultShell }
+
 @AdeleValue('environment.terminalDimensions')
 final class EnvironmentTerminalDimensions {
   EnvironmentTerminalDimensions({required this.columns, required this.rows}) {
@@ -53,23 +55,40 @@ final class EnvironmentTerminalDimensions {
 @AdeleValue('environment.terminalRequest')
 final class EnvironmentTerminalRequest {
   EnvironmentTerminalRequest({
+    required this.launchKind,
     required this.program,
     required List<String> arguments,
     required this.relativeWorkingDirectory,
     required this.dimensions,
   }) : arguments = List<String>.unmodifiable(arguments) {
-    if (program.isEmpty) {
-      throw const FormatException('Terminal program must not be empty.');
+    switch (launchKind) {
+      case EnvironmentTerminalLaunchKind.explicitProgram:
+        if (program == null || program!.isEmpty) {
+          throw const FormatException('Terminal program must not be empty.');
+        }
+        _requireProcessText('Terminal program', program!);
+      case EnvironmentTerminalLaunchKind.defaultShell:
+        if (program != null ||
+            this.arguments.isNotEmpty ||
+            relativeWorkingDirectory.isNotEmpty) {
+          throw const FormatException(
+            'Default shell requires null program, empty arguments, and root cwd.',
+          );
+        }
     }
-    _requireProcessText('Terminal program', program);
     for (final argument in this.arguments) {
       _requireProcessText('Terminal argument', argument);
     }
     _requireProcessText('Terminal working directory', relativeWorkingDirectory);
   }
 
-  final String program;
+  final EnvironmentTerminalLaunchKind launchKind;
+
+  /// Non-empty for explicitProgram; null for provider-resolved defaultShell.
+  final String? program;
   final List<String> arguments;
+
+  /// Empty means the Environment root; defaultShell requires that root.
   final String relativeWorkingDirectory;
   final EnvironmentTerminalDimensions dimensions;
 }

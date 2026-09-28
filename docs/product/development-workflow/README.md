@@ -21,7 +21,7 @@ The mockups should be read as one concrete composition approximately involving s
 - Filesystem/Search/Command/TODO/Plan tooling;
 - Diff/Review;
 - Internal Source Editor;
-- Console/Terminal;
+- Terminal content in the shared Console;
 - OpenAI provider.
 
 Other plugin/configuration sets may provide different Project selection, orchestration strategies, Environment implementations, source editors, review systems, status summaries, or presentation details while preserving ADELE's broader architecture.
@@ -576,7 +576,8 @@ first lines...
 [Show full output]
 ```
 
-Then the active Console/Stream provider may show the full output.
+Then an independent read-only Console contribution may show the full output with
+its invocation provenance. This is not an interactive Terminal child.
 
 Other examples:
 
@@ -959,7 +960,12 @@ Agent activity should not automatically flood Inspection with cards. Most appear
 
 # 25. Console / Stream presentation
 
-The stock bottom area is not a traditional IDE category panel. It is provided by the Console/Terminal plugin as an Environment-oriented stream/console experience.
+The stock bottom area is a shared host-owned Console, not a traditional IDE
+category panel or a surface owned by one Console/Terminal plugin. The host owns
+tabs, the creation menu, selection, visibility, confirmation, and bounded cleanup;
+independent contributions supply their content. Terminal is one such contribution.
+The Console is available only while a Session is presented. Task Browser shows no
+Console panel, toggle, or creation actions, including when a Task is selected.
 
 Tabs represent concrete resources/presentations such as:
 
@@ -974,9 +980,26 @@ $ grep CircularDependency
 
 Interactive shells are explicitly created and writable runtime resources of the current Environment.
 
+`New Terminal` uses the presented Session's canonical Environment association,
+not a fallback to its Task's primary Environment. Opening a Session does not open
+a shell. Shell selection and normal interactive startup belong to the Environment
+provider, not to Terminal or the shared host.
+
+Tabs use a fallback title until the shell supplies a usable normalized title.
+Titles can update while hidden, but never establish activity or completion. Live
+and opening terminals use conservative close confirmation. Automatic removal
+requires actual shell exit and successful settled cleanup; launch failures,
+disconnects, and cleanup uncertainty remain visible. Confirmed close attempts
+cleanup, and a bounded failure warning must not claim the process stopped.
+Host-forced cleanup is not subject to a plugin veto. See the
+[Terminal policy](../../../plugins/terminal/README.md#terminal-policy).
+
 ## 25.2 Tool output
 
-Wide/console-oriented tool output opens here only when explicitly inspected; Agent execution alone does not create tabs.
+Future wide/console-oriented tool output opens here only when explicitly
+inspected; Agent execution alone does not create tabs. It is separate contributed
+read-only content with invocation provenance, not a Terminal child, and does not
+inherit interactive-shell exit/removal policy.
 
 Closing a retained command-output tab removes presentation, not historical invocation data.
 
@@ -984,9 +1007,15 @@ Closing a retained command-output tab removes presentation, not historical invoc
 
 Interactive shell resources are Environment-owned. If two Sessions share the same Environment, switching Sessions leaves those shell resources available. Switching to another Task/Environment changes the visible Environment resources.
 
-A tool invocation may belong to Session history while its open Console presentation is Environment/window presentation state.
+A tool invocation belongs to its execution/Session history; its open Console view
+is transient window presentation carrying that provenance. Eligibility is chosen
+by that content's owner, not inferred from Terminal's Environment scoping.
 
-The semantic Console API should be broader than a single `OpenTerminal`: interactive resources may accept input, while retained read-only output does not.
+Hiding the Console, changing tabs, or visiting Task Browser disposes presentation
+access, not live shell resources. Output and title/lifecycle observation continue
+while hidden; revisiting uses fresh view access. The semantic Console API is
+broader than a single `OpenTerminal`: interactive resources may accept input,
+while retained read-only output does not.
 
 ---
 
@@ -1417,7 +1446,8 @@ The current stock conceptual ownership model is:
 | Plan state/content | Plan plugin, associated with Session as appropriate |
 | Main Content/inspection live layout | core window/workbench state, possibly seeded from remembered state |
 | Shell/process resources | Environment/runtime-resource provider |
-| Console presentation | Console plugin + window/Environment context |
+| Shared Console tabs/actions/selection | Core window/workbench host |
+| Console content and resource policy | Independent contributing plugin; Terminal uses Session-authorized Environment context |
 | Filesystem/process implementation | Environment provider APIs |
 | SCM state | SCM plugin/external SCM |
 | Diff projection | Diff plugin derived from change/SCM provider |
@@ -1500,7 +1530,7 @@ MainContentView
 NavigationView
 SessionStatusContribution
 InspectionPresentation
-StreamView / ConsolePresentation
+Console contributions / independent content
 ContextStatusContribution
 Commands / keybindings
 ```
@@ -1540,7 +1570,10 @@ Agent activity should not gratuitously open, close, or rearrange panels. Tools n
 
 ## 58.2 Views are disposable; underlying objects are not
 
-Closing Diff, Plan, an inspection card, console output, or Source view removes presentation, not the underlying change, plugin-owned content, invocation, or file.
+Closing Diff, Plan, an inspection card, retained console output, or Source view
+removes presentation, not the underlying change, plugin-owned content, invocation,
+or file. Closing an interactive Terminal tab is different: confirmed close requests
+cleanup of its live shell resource. Merely hiding its view does not.
 
 ## 58.3 Direct navigation beats permanent chrome
 

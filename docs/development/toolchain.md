@@ -19,7 +19,7 @@ The repository tracks `flutter 3.38.10-stable` in `.tool-versions`. This pin is
 temporary. Flutter 3.44.8 with `flutter_eval 0.8.2` is not compatible, and no
 Flutter 3.44 or Dart 3.12 support is claimed. Eval modernization or replacement
 is required before broad third-party interpreted UI support.
-The narrow stock Task Browser, Chat Session, Local Directory Project,
+The narrow stock Terminal, Task Browser, Chat Session, Local Directory Project,
 Filesystem/Command Tools Inspection, and OpenAI reasoning-summary Inspection
 frontends use this pin; they neither modernize eval
 nor establish a broad third-party
@@ -41,12 +41,12 @@ The package's MIT license retains `Copyright (c) 2020 xuty`. Flutter's normal
 dependency-license collection includes it in `NOTICES.Z`; the prepared bridge
 test checks that bundled notice rather than adding a separate licensing system.
 
-Native widget and actual prepared-EVC compilation/mount tests have run on Linux
-with the complete Flutter/framework/engine/Dart identity in the pin table above,
-using `dart_eval 0.8.5` and `flutter_eval 0.8.2`. The interpreted fixture imports
-only public UI and Flutter; `xterm2` stays native. This is debug widget/evaluator
-evidence, not desktop/profile, other-platform, broad third-party Flutter, or PTY
-compatibility evidence. See the [focused proof](testing.md#focused-terminal-checks)
+Native widget and actual prepared-EVC compilation/mount checks use the complete
+Flutter/framework/engine/Dart identity in the pin table above, with `dart_eval 0.8.5`
+and `flutter_eval 0.8.2`. The interpreted fixture and stock Terminal import only
+public UI and Flutter; `xterm2` stays native. These are debug widget/evaluator
+checks, not desktop/profile, other-platform, broad third-party Flutter, or PTY
+compatibility claims. See the [focused checks](testing.md#focused-terminal-checks)
 and [local implementation map](../../app/README.md#native-terminal-surface).
 
 ## Git PTY preparation
@@ -88,6 +88,15 @@ the installation and supplies its absolute path as `--pty-helper=...` through th
 existing generic startup-argv file. Activation never compiles or downloads it.
 Direct test/development callers prepare the helper explicitly; omitting it leaves
 terminals unavailable without disabling other Git Environment operations.
+
+Stock Terminal requests the provider's `defaultShell` launch kind, not an
+app-selected executable. The provider-owned
+[`SHELL` path/name resolution, absent-only `/bin/sh`, interactive `-i`, and Environment-root startup rules](../../plugins/git_environment/README.md#interactive-terminals)
+remain separate from artifact preparation. Normal startup does not suppress a
+user's shell startup files. Integration fixtures instead control the child host's
+environment and use a temporary `HOME`; see the
+[validation map](testing.md#focused-console-checks). No toolchain identity,
+eval/emulator dependency, or native dependency upgrade is required by this frontend.
 
 The retained `pty_host_test.dart` compiles separate host/backend AOT snapshots and
 loads the backend through `PluginBackendHost.startPlugin`, proving controlling-TTY
@@ -162,9 +171,10 @@ and build-side descriptor metadata in
 [`tools/stock_frontend_descriptors.dart`](../../tools/stock_frontend_descriptors.dart).
 Prepared installations share one fresh root; the host snapshot is beside it.
 Backend-only, frontend-only, and combined installations use the same catalog.
-The stock Task Browser is frontend-only and needs no backend startup configuration
-or additional runtime deployment define. Both host and plugin protocols are
-currently version 1, supporting unary authorized reads/mutations and reverse
+The stock Task Browser and Terminal are frontend-only and need no owning backend
+startup configuration or additional runtime deployment define. Terminal execution
+still requires its selected Environment provider's prepared support. Both host and
+plugin protocols are currently version 1, supporting unary authorized reads/mutations and reverse
 server-streaming processes: prepared hosts and backends must be rebuilt together,
 and protocol versions must match exactly. Before the first release, unstable wire
 changes may retain that version; prior development artifacts are unsupported even
@@ -177,6 +187,17 @@ Frontend compilation runs in Flutter build-time tooling, not generic runtime hos
 pure-Dart `plugin_builder` dependency graph. Normal activation loads the prepared
 artifacts; missing or invalid artifacts fail the affected support rather than
 triggering compilation or a substitute implementation.
+
+Terminal preparation uses `app/tool/compile_terminal_frontend.dart` and
+`terminal_frontend_compiler.dart`, with `ADELE_REPOSITORY_ROOT` and
+`ADELE_TERMINAL_FRONTEND_OUTPUT` as build-time inputs. It compiles stock content
+and action entrypoints plus public stubs with `EnvironmentTerminalDeclarations`
+and `TerminalSurfaceDeclarations`, without granting process/surface access during
+compilation. The EVC is installed at `terminal/frontend.evc` under the same catalog
+as other stock components. The version-1 `console` descriptor carries content and
+creation-action entrypoints, with no strategy/backend-affinity fields. The
+`terminal_frontend` workspace package has maintained analysis/test discovery;
+its [local map](../../plugins/terminal/packages/frontend/README.md) owns the ABI.
 
 Task Browser preparation uses `app/tool/compile_task_browser_frontend.dart` and
 `task_browser_frontend_compiler.dart`, with `ADELE_REPOSITORY_ROOT` and
@@ -205,8 +226,9 @@ analysis/test discovery.
 Behavioral `frontend.extensions` metadata is separate from the
 `presentations` list under manifest version 1. Activation validates behavioral
 bytecode and entrypoint presence without executing plugin code; actual selection
-uses a fresh operation runtime and native bridge. Presentation-only corruption
-remains per-view. Runtime still compiles no source.
+uses a fresh operation runtime and native bridge. Console descriptors similarly
+validate their content/action entrypoint presence before registration; other
+presentation-only corruption remains per-view. Runtime still compiles no source.
 
 Chat follows `plugins/chat_strategy/packages/{contract,backend,frontend}` rather
 than a root semantic package linked into the app. Its generated frontend client
