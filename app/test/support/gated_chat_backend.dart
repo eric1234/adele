@@ -106,19 +106,22 @@ final class _GatedStorage implements ProjectStorageService {
   Future<void> ensureSchemaForSession(
     String sessionId,
     List<String> migrations,
-  ) => delegate.ensureSchemaForSession(sessionId, migrations);
+    ProjectStorageAccessMode accessMode,
+  ) => delegate.ensureSchemaForSession(sessionId, migrations, accessMode);
 
   @override
   Future<List<RelationalRow>> queryForSession(
     String sessionId,
     String sql,
     Map<String, Object?> parameters,
-  ) => delegate.queryForSession(sessionId, sql, parameters);
+    ProjectStorageAccessMode accessMode,
+  ) => delegate.queryForSession(sessionId, sql, parameters, accessMode);
 
   @override
   Future<void> transactionForSession(
     String sessionId,
     List<RelationalStatement> statements,
+    ProjectStorageAccessMode accessMode,
   ) async {
     for (final statement in statements) {
       if (!statement.sql.contains('SET draft_request')) continue;
@@ -136,6 +139,6 @@ final class _GatedStorage implements ProjectStorageService {
         throw StateError('Draft storage rejected by the navigation fixture.');
       }
     }
-    await delegate.transactionForSession(sessionId, statements);
+    await delegate.transactionForSession(sessionId, statements, accessMode);
   }
 }

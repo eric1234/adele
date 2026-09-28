@@ -255,10 +255,8 @@ Future<SourceCodingToolAttempt> _readAttempt({
                 executable: _ReadExecutable(),
               ),
             ]),
-            context: ToolExecutionContext(
-              runId: RunId('read-evidence'),
-              sessionId: SessionId('read-evidence'),
-            ),
+            runId: RunId('read-evidence'),
+            sessionId: SessionId('read-evidence'),
           )
           as ResolvedToolProposal;
   return SourceCodingToolAttempt(

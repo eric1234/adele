@@ -1808,8 +1808,11 @@ FutureOr<CanonicalToolArguments> _patchArguments(
   'edits': edits,
 });
 
-ToolExecutionContext _execution(SessionId sessionId) =>
-    ToolExecutionContext(runId: RunId('run-execute'), sessionId: sessionId);
+ToolExecutionContext _execution(SessionId sessionId) => ToolExecutionContext(
+  runId: RunId('run-execute'),
+  sessionId: sessionId,
+  toolInvocationId: 'filesystem-invocation',
+);
 
 Future<ToolOutcome> _execute(
   ToolExecutable executable,

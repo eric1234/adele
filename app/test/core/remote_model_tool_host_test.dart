@@ -8,6 +8,7 @@ import 'dart:io';
 import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_desktop/core/approval_gated_tool_policy.dart';
+import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_desktop/core/remote_inference_context_host.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
@@ -31,9 +32,12 @@ import 'package:agent_kernel/agent_kernel.dart'
         ToolPolicyGate,
         ToolProposalFailureKind,
         ToolProposalResolution;
+import 'package:chat_strategy_backend/chat_strategy_backend.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_builder/plugin_builder.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
+
+import '../support/orchestration_test_lifecycle.dart';
 
 const _probeId = 'dev.adele.test.remote-model-tool';
 const _extensionId = 'dev.adele.test.remote-model-tool.tools';
@@ -106,6 +110,7 @@ void main() {
     execution = ToolExecutionContext(
       sessionId: context.sessionId,
       runId: RunId('tool-run'),
+      toolInvocationId: 'tool-invocation',
     );
   });
 
@@ -140,6 +145,31 @@ void main() {
 
   Future<MaterializedToolSet> compose() async =>
       (await ModelToolComposer(extensions).materialize(context)).materialize();
+
+  Future<PluginBackendActivation> startCommand() async {
+    addTearDown(ChatStrategyPlugin().activate(extensions).close);
+    final topology = await OrchestrationTestLifecycle.create(
+      extensions,
+      context.sessionId,
+    );
+    topology.createSession(chatStrategyId);
+    addTearDown(topology.lifecycle.close);
+    final connection = await host.startPlugin(
+      pluginId: 'dev.adele.plugin.command-tools',
+      artifactUri: commandArtifact.uri,
+      createInfrastructureServices: (connection) =>
+          projectStorageServices(topology.lifecycle, connection),
+    );
+    addTearDown(connection.close);
+    final activation = await PluginBackendActivation.registerAdvertised(
+      connection: connection,
+      capabilities: capabilities,
+      extensions: extensions,
+      adapters: createRemoteExtensionAdapters(),
+    );
+    addTearDown(activation.close);
+    return activation;
+  }
 
   for (final count in [0, 1, 3]) {
     test('generated remote contribution materializes $count tools without '
@@ -194,6 +224,93 @@ void main() {
       }
     });
   }
+
+  test(
+    'identical remote calls carry their exact host invocation IDs without granting preflight authority',
+    () async {
+      final probe = await start();
+      final tools = await compose();
+      final replacementFiles = _Files()..text = 'not the captured facet';
+      context.files = replacementFiles;
+      final proposal = ProviderToolProposal(
+        providerCallId: 'identical-call',
+        alias: 'probe_0',
+        arguments: {'value': 'identical'},
+      );
+      for (final id in ['host-tool-1', 'host-tool-2']) {
+        final resolved =
+            await const ToolInvocationResolver().resolve(
+                  invocationId: ToolInvocationId(id),
+                  proposal: proposal,
+                  tools: tools,
+                  runId: execution.runId,
+                  sessionId: execution.sessionId,
+                )
+                as ResolvedToolProposal;
+        final invocation = resolved.invocation;
+        expect(invocation.context.toolInvocationId, invocation.id.value);
+        final before = files.reads.toList();
+        await invocation.tool.executable.describe(
+          invocation.arguments,
+          invocation.context,
+        );
+        expect(files.reads, before);
+        await collectToolExecution(
+          invocation.tool.executable.execute(
+            invocation.arguments,
+            invocation.context,
+          ),
+        );
+      }
+      final records = await _records(probe.connection);
+      final descriptions = records.where(
+        (record) => record['operation'] == 'describe',
+      );
+      final executions = records.where(
+        (record) => record['operation'] == 'execute',
+      );
+      for (final operations in [descriptions, executions]) {
+        expect(operations.map((record) => record['toolInvocationId']), [
+          'host-tool-1',
+          'host-tool-2',
+        ]);
+        expect(
+          operations.map((record) => record['sessionId']),
+          everyElement(execution.sessionId.value),
+        );
+        expect(
+          operations.map((record) => record['runId']),
+          everyElement(execution.runId.value),
+        );
+        expect(
+          operations.map((record) => record['arguments']),
+          everyElement({'value': 'identical'}),
+        );
+      }
+      for (final record in records.where(
+        (record) => record['operation'] != 'execute',
+      )) {
+        _expectPrePolicyDenied(record);
+      }
+      expect(executions.map((record) => record['token']).toSet(), hasLength(2));
+      for (final record in executions) {
+        expect(record['token'], isNot(record['toolInvocationId']));
+        _expectDenied(
+          await _control(probe.connection, 'replay', {
+            'token': record['toolInvocationId'],
+          }),
+        );
+      }
+      expect(replacementFiles.reads, isEmpty);
+      expect(context.requested, [AuthorizedEnvironmentFileReadFacet]);
+      expect(files.reads, [
+        'directory:',
+        'file:probe.txt',
+        'directory:',
+        'file:probe.txt',
+      ]);
+    },
+  );
 
   for (final collision in ['id', 'alias']) {
     test(
@@ -352,6 +469,7 @@ void main() {
     for (final record in records.skip(2)) {
       expect(record['sessionId'], 'tool-session');
       expect(record['runId'], 'tool-run');
+      expect(record['toolInvocationId'], execution.toolInvocationId);
       expect(record['environmentId'], 'tool-environment');
       expect(record['arguments'], arguments.snapshot);
       expect(record['routeId'], route);
@@ -391,7 +509,8 @@ void main() {
             arguments: {'value': value},
           ),
           tools: tools,
-          context: execution,
+          runId: execution.runId,
+          sessionId: execution.sessionId,
         );
     final rejected = await resolve('invalid') as RejectedToolProposal;
     expect(rejected.failure.kind, ToolProposalFailureKind.invalidArguments);
@@ -568,7 +687,8 @@ void main() {
                 arguments: {'value': 'data'},
               ),
               tools: tools,
-              context: execution,
+              runId: execution.runId,
+              sessionId: execution.sessionId,
             )
             as ResolvedToolProposal;
     final required =
@@ -702,6 +822,7 @@ void main() {
       final foreign = ToolExecutionContext(
         sessionId: SessionId('foreign-session'),
         runId: RunId('foreign-run'),
+        toolInvocationId: execution.toolInvocationId,
       );
       await expectLater(
         Future.sync(() => tool.describe(arguments, foreign)),
@@ -1180,20 +1301,9 @@ void main() {
   );
 
   test(
-    'Command AOT uses only captured process authority after approval and forwards progress',
+    'Command AOT uses only captured process authority after approval without raw progress',
     () async {
-      final connection = await host.startPlugin(
-        pluginId: 'dev.adele.plugin.command-tools',
-        artifactUri: commandArtifact.uri,
-      );
-      addTearDown(connection.close);
-      final activation = await PluginBackendActivation.registerAdvertised(
-        connection: connection,
-        capabilities: capabilities,
-        extensions: extensions,
-        adapters: createRemoteExtensionAdapters(),
-      );
-      addTearDown(activation.close);
+      await startCommand();
       final tools = await compose();
       final captured = context.process;
       context.process = _Files();
@@ -1210,7 +1320,8 @@ void main() {
                   },
                 ),
                 tools: tools,
-                context: execution,
+                runId: execution.runId,
+                sessionId: execution.sessionId,
               )
               as ResolvedToolProposal;
       final required =
@@ -1239,10 +1350,8 @@ void main() {
       final events = run.startToolExecution(allowed).events();
       expect(captured.processRequests, isEmpty);
       final observed = await collectToolExecution(events);
-      expect(observed.progress.map((event) => event.kind), [
-        ToolProgressKind.stdout,
-        ToolProgressKind.stderr,
-      ]);
+      expect(observed.progress, isEmpty);
+      expect(observed.outcome.hostData['captureState'], 'complete');
       expect(observed.outcome.disposition, ToolOutcomeDisposition.success);
       expect(observed.outcome.hostData['exitCode'], 7);
       expect(observed.outcome.hostData['environmentId'], 'tool-environment');
@@ -1263,18 +1372,7 @@ void main() {
     test(
       'Command generated process failure settles when producer cleanup $cleanupMode',
       () async {
-        final connection = await host.startPlugin(
-          pluginId: 'dev.adele.plugin.command-tools',
-          artifactUri: commandArtifact.uri,
-        );
-        addTearDown(connection.close);
-        final activation = await PluginBackendActivation.registerAdvertised(
-          connection: connection,
-          capabilities: capabilities,
-          extensions: extensions,
-          adapters: createRemoteExtensionAdapters(),
-        );
-        addTearDown(activation.close);
+        final connection = (await startCommand()).connection;
         final started = Completer<void>();
         final cleanup = Completer<void>();
         var cancellations = 0;
@@ -1328,7 +1426,14 @@ void main() {
         // A fresh operation settles on the same connection while old cleanup hangs.
         context.process.processStream = null;
         final next = await collectToolExecution(
-          tool.execute(arguments, execution),
+          tool.execute(
+            arguments,
+            ToolExecutionContext(
+              runId: execution.runId,
+              sessionId: execution.sessionId,
+              toolInvocationId: 'next-tool-invocation',
+            ),
+          ),
         ).timeout(_bound);
         expect(next.outcome.disposition, ToolOutcomeDisposition.success);
         expect(context.process.processRequests, hasLength(2));
@@ -1341,18 +1446,7 @@ void main() {
     test(
       'Command ${retire ? 'retirement' : 'consumer cancellation'} cancels an idle process facet',
       () async {
-        final connection = await host.startPlugin(
-          pluginId: 'dev.adele.plugin.command-tools',
-          artifactUri: commandArtifact.uri,
-        );
-        addTearDown(connection.close);
-        final activation = await PluginBackendActivation.registerAdvertised(
-          connection: connection,
-          capabilities: capabilities,
-          extensions: extensions,
-          adapters: createRemoteExtensionAdapters(),
-        );
-        addTearDown(activation.close);
+        final activation = await startCommand();
         final started = Completer<void>();
         final cancelled = Completer<void>();
         final source = StreamController<EnvironmentProcessEvent>(

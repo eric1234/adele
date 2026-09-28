@@ -62,13 +62,33 @@ unrelated location silently substituted by the provider.
 
 The application-private `ProjectDatabase` owns one connection per open Project,
 filesystem validation/confinement, migration coordination, and database lifetime. Current
-backing support requires an existing absolute local `file:` directory URI
+durable backing support requires an existing absolute local `file:` directory URI
 supported on the host; network authorities, query/fragment components, and
 unsupported paths fail explicitly. The host resolves the source root and validates
 a relative forward-slash file path, rejecting traversal, URI/absolute syntax,
 unsafe components, symlinked backing parents/files, and symlinked SQLite sidecars.
 Missing backing parents may be created only along that confined path. A provider's
 description grants no ambient filesystem authority and exposes no database handle.
+
+An explicitly volatile Project has no relational backing by default. Plugins may
+opt into `ProjectStorageAccessMode.durableOrTemporary` per storage operation. For
+these Projects only, the lifecycle lazily creates one host-private temporary
+on-disk SQLite database, using the existing core schema and published
+Project/Task/Environment/Session identities so plugin foreign keys work unchanged.
+Once created, it receives subsequent core identity/provider-state changes before
+live publication. Temporary backing is independent of the Project source path and
+persists across command, frontend, and backend replacements for that same Project
+in the same live lifecycle. Generation retirement still revokes access immediately;
+a replacement must use its own fresh grant. Orderly lifecycle disposal closes the
+connection and removes its temporary directory, including SQLite sidecars.
+
+This is not durable Project opening, restart recovery, or a plugin-selected path.
+`isDurableSession` remains false, and volatile terminal Run/public activity retention
+remains in memory. Durable storage is always used for a durable Project in either
+access mode; no error changes backing or chooses an in-memory transcript. Temporary
+creation, SQL, and cleanup errors remain errors. Crash cleanup/recovery is not
+promised. The [shared contract](contracts-and-capabilities.md#session-scoped-relational-storage)
+owns request and authority semantics; plugins retain their own schema/domain logic.
 
 The current schema is deliberately small:
 
@@ -245,8 +265,10 @@ success. For a lifecycle-owned durable Project, one SQLite transaction inserts
 both records and commits before in-memory publication and retention of the live
 materialization. The provisional Environment is never stored. Provider failure or
 database failure publishes neither record; there is no volatile fallback.
-`createProject` remains volatile through lifecycle-owned database membership, not
-URI heuristics, and its Tasks retain the in-memory-only behavior.
+`createProject` remains volatile through lifecycle-owned durable database membership,
+not URI heuristics. Its Tasks remain in memory by default; explicitly opted-in
+temporary backing retains their identity rows for plugin foreign keys without
+making the Project durable.
 Subsequent generation retirement does not undo successful publication.
 
 Establishment can create provider-owned external resources before the database
@@ -270,7 +292,8 @@ makes that request fail without deleting, substituting, or rewriting the semanti
 record. Successful restore refreshes only provider state, preserving Environment
 ID, Task ID, role, and provider ID. For durable Projects the refresh commits to
 SQLite before replacing the in-memory snapshot; volatile Projects only replace
-in memory. Successfully committed refreshed state is retained even if the restored
+in memory unless temporary backing has been explicitly initialized, in which case
+its identity/provider-state mirror is updated first. Successfully committed refreshed state is retained even if the restored
 binding retires before final readiness validation; semantic progress and executable
 readiness remain distinct. The [Environment package](../../packages/environment/README.md)
 maps the provider-neutral contract and its local representations.

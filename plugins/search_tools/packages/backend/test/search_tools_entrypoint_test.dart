@@ -203,6 +203,7 @@ Map<String, Object?> _operationPayload({bool execute = false}) => {
   },
   'sessionId': 'session',
   'runId': 'semantic-run-only',
+  'toolInvocationId': 'semantic-tool-invocation-only',
   'environmentId': 'captured-environment',
   if (execute) 'hostInvocationContext': 'opaque-operation-token',
 };

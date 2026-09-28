@@ -1782,6 +1782,7 @@ Future<ToolOutcome> _executeSearch(
                 ToolExecutionContext(
                   runId: RunId('run-generation-search'),
                   sessionId: sessionId,
+                  toolInvocationId: 'search-invocation',
                 ),
               )
               .single

@@ -6,6 +6,7 @@ import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
 import 'package:git_environment_backend/git_environment_backend.dart';
+import 'package:git_environment_backend/src/foreground_process.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -2975,7 +2976,7 @@ void main() {
   );
 
   test(
-    'bounds each decoded output stream and replaces malformed UTF-8',
+    'continuously delivers all output beyond old limits and replaces malformed UTF-8',
     () async {
       final _ProcessFixture fixture = await _createProcessFixture();
       final List<EnvironmentProcessEvent> bounded = await fixture.provider
@@ -2993,14 +2994,16 @@ void main() {
         stream: EnvironmentProcessOutputStream.stderr,
       );
 
-      expect(stdoutText.length, 1024 * 1024);
-      expect(stderrText.length, 1024 * 1024);
-      expect(stdoutText, startsWith('H'));
-      expect(stdoutText, endsWith('T'));
-      expect(stderrText, startsWith('E'));
-      expect(stderrText, endsWith('R'));
-      expect(_completion(bounded).stdoutTruncated, isTrue);
-      expect(_completion(bounded).stderrTruncated, isTrue);
+      expect(stdoutText, '${'H' * 600000}${'M' * 600000}${'T' * 600000}');
+      expect(stderrText, '${'E' * 600000}${'D' * 600000}${'R' * 600000}');
+      expect(
+        _outputs(
+          bounded,
+        ).every((output) => output.text.length <= environmentProcessTextLimit),
+        isTrue,
+      );
+      expect(_completion(bounded).stdoutTruncated, isFalse);
+      expect(_completion(bounded).stderrTruncated, isFalse);
       expect(_completion(bounded).exitCode, 0);
 
       final List<EnvironmentProcessEvent> malformed = await fixture.provider
@@ -3020,6 +3023,376 @@ void main() {
           .toList();
       expect(_outputText(nulOutput), '\u0000a');
       expect(_completion(nulOutput).exitCode, 0);
+    },
+    skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+  );
+
+  test(
+    'streams partial unicode and control text before exit without duplicate tail',
+    () async {
+      final fixture = await _createProcessFixture();
+      final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(server.close);
+      final connection = server.first;
+      final first = Completer<void>();
+      final middle = Completer<void>();
+      final done = Completer<void>();
+      final events = <EnvironmentProcessEvent>[];
+      final text = StringBuffer();
+      final expectedMiddle =
+          'A\u{1f600}\x1b[31m\r\x00\ufffd${'U' * 16383}\u{1f600}${'L' * 1200000}';
+      fixture.provider
+          .runForegroundProcess(
+            fixture.environment.id,
+            fixture.request([
+              'unicode-probe',
+              '${server.port}',
+            ], timeoutSeconds: 20),
+          )
+          .listen(
+            (event) {
+              events.add(event);
+              if (event.output case final output?) {
+                text.write(output.text);
+                expect(
+                  output.text.length,
+                  lessThanOrEqualTo(environmentProcessTextLimit),
+                );
+                if (!first.isCompleted) first.complete();
+                if (text.length == expectedMiddle.length &&
+                    !middle.isCompleted) {
+                  middle.complete();
+                }
+              }
+            },
+            onError: done.completeError,
+            onDone: done.complete,
+          );
+      final socket = await connection.timeout(const Duration(seconds: 5));
+      addTearDown(socket.destroy);
+      await first.future.timeout(const Duration(seconds: 5));
+      expect(text.toString(), 'A');
+      socket.add([1]);
+      await middle.future.timeout(const Duration(seconds: 5));
+      expect(text.toString(), expectedMiddle);
+      expect(events.every((event) => event.completed == null), isTrue);
+      socket.add([2]);
+      await done.future.timeout(const Duration(seconds: 5));
+      expect(text.toString(), '$expectedMiddle\ufffd');
+      expect(_completion(events).exitCode, 23);
+      expect(_completion(events).stdoutTruncated, isFalse);
+    },
+    skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+  );
+
+  test(
+    'paused reads bound both pipes and resume fairly without output loss',
+    () async {
+      final fixture = await _createProcessFixture();
+      final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(server.close);
+      final connection = server.first;
+      final first = Completer<void>();
+      final done = Completer<void>();
+      const total = 12 * 1024 * 1024;
+      int stdoutCount = 0;
+      int stderrCount = 0;
+      int? firstStderrAtStdout;
+      int? firstFloodStdoutAtStderr;
+      EnvironmentProcessCompleted? completion;
+      late StreamSubscription<EnvironmentProcessEvent> subscription;
+      subscription = fixture.provider
+          .runForegroundProcess(
+            fixture.environment.id,
+            fixture.request([
+              'flood-probe',
+              '${server.port}',
+            ], timeoutSeconds: 30),
+          )
+          .listen(
+            (event) {
+              if (event.output case final output?) {
+                if (!first.isCompleted) {
+                  expect(output.text, 'ready');
+                  subscription.pause();
+                  first.complete();
+                  return;
+                }
+                if (output.stream == EnvironmentProcessOutputStream.stdout) {
+                  firstFloodStdoutAtStderr ??= stderrCount;
+                  stdoutCount += output.text.length;
+                  expect(output.text, 'O' * output.text.length);
+                } else {
+                  firstStderrAtStdout ??= stdoutCount;
+                  stderrCount += output.text.length;
+                  expect(output.text, 'E' * output.text.length);
+                }
+              }
+              completion = event.completed ?? completion;
+            },
+            onError: done.completeError,
+            onDone: done.complete,
+          );
+      addTearDown(subscription.cancel);
+      final socket = await connection.timeout(const Duration(seconds: 5));
+      addTearDown(socket.destroy);
+      final flushed = Completer<void>();
+      socket.listen((_) {
+        if (!flushed.isCompleted) flushed.complete();
+      });
+      await first.future.timeout(const Duration(seconds: 5));
+      socket.add([1]);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(
+        flushed.isCompleted,
+        isFalse,
+        reason:
+            'The paused pipe must block a producer beyond the admitted-read bound.',
+      );
+      expect(stdoutCount + stderrCount, 0);
+      subscription.resume();
+      await flushed.future.timeout(const Duration(seconds: 15));
+      await done.future.timeout(const Duration(seconds: 5));
+      expect(stdoutCount, total);
+      expect(stderrCount, total);
+      expect(firstStderrAtStdout, lessThan(total));
+      expect(firstFloodStdoutAtStderr, lessThan(total));
+      expect(completion!.exitCode, 0);
+      expect(completion!.stdoutTruncated, isFalse);
+      expect(completion!.stderrTruncated, isFalse);
+    },
+    skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+  );
+
+  test(
+    'active slow drain continues beyond the idle grace after leader exit',
+    () async {
+      final fixture = await _createProcessFixture();
+      final exited = File('${fixture.container.path}/slow-drain-exited');
+      final supervisor = GitForegroundProcessSupervisor(
+        maximumEventCharacters: 256,
+      );
+      addTearDown(supervisor.close);
+      final afterExit = Stopwatch();
+      final done = Completer<void>();
+      int characters = 0;
+      EnvironmentProcessCompleted? completion;
+      late StreamSubscription<EnvironmentProcessEvent> subscription;
+      subscription = supervisor
+          .run(
+            environmentId: fixture.environment.id,
+            environment: fixture.provider.liveObjects.resolve(
+              fixture.environment.id,
+            ),
+            request: EnvironmentForegroundProcessRequest(
+              program: '/bin/sh',
+              arguments: [
+                '-c',
+                r'head -c 4096 /dev/zero; printf exited >"$1"; exit 23',
+                'probe',
+                exited.path,
+              ],
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 10,
+            ),
+          )
+          .listen(
+            (event) {
+              if (!afterExit.isRunning && exited.existsSync()) {
+                afterExit.start();
+              }
+              if (event.output case final output?) {
+                characters += output.text.length;
+                subscription.pause(
+                  Future<void>.delayed(const Duration(milliseconds: 100)),
+                );
+              }
+              completion = event.completed ?? completion;
+            },
+            onError: done.completeError,
+            onDone: done.complete,
+          );
+      addTearDown(subscription.cancel);
+      await done.future.timeout(const Duration(seconds: 10));
+      expect(afterExit.elapsed, greaterThan(const Duration(seconds: 1)));
+      expect(characters, 4096);
+      expect(completion!.exitCode, 23);
+      expect(completion!.stdoutTruncated, isFalse);
+    },
+    skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+  );
+
+  test(
+    'failed final drain preserves exit facts and never claims completion',
+    () async {
+      final fixture = await _createProcessFixture();
+      final first = Completer<void>();
+      final done = Completer<void>();
+      final events = <EnvironmentProcessEvent>[];
+      Object? failure;
+      late StreamSubscription<EnvironmentProcessEvent> subscription;
+      subscription = fixture.provider
+          .runForegroundProcess(
+            fixture.environment.id,
+            EnvironmentForegroundProcessRequest(
+              program: '/bin/sh',
+              arguments: ['-c', 'printf partial; exit 23'],
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 5,
+            ),
+          )
+          .listen(
+            (event) {
+              events.add(event);
+              if (!first.isCompleted) {
+                subscription.pause();
+                first.complete();
+              }
+            },
+            onError: (Object error) {
+              failure = error;
+            },
+            onDone: done.complete,
+          );
+      addTearDown(subscription.cancel);
+      await first.future;
+      await Future<void>.delayed(const Duration(milliseconds: 1600));
+      subscription.resume();
+      await done.future.timeout(const Duration(seconds: 2));
+      expect(events.every((event) => event.completed == null), isTrue);
+      expect(failure, _failureWithCode('process_output_incomplete'));
+      final details = (failure! as EnvironmentFailure).details;
+      expect(details['outputIncomplete'], isTrue);
+      expect(details['termination'], 'exited');
+      expect(details['exitCode'], 23);
+      expect(details['stdoutTruncated'], isTrue);
+    },
+    skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+  );
+
+  test(
+    'hard admitted-read overflow fails explicitly and preserves exit evidence',
+    () async {
+      final fixture = await _createProcessFixture();
+      final supervisor = GitForegroundProcessSupervisor(
+        maximumPendingOutputCharacters: 1,
+      );
+      addTearDown(supervisor.close);
+      await expectLater(
+        supervisor
+            .run(
+              environmentId: fixture.environment.id,
+              environment: fixture.provider.liveObjects.resolve(
+                fixture.environment.id,
+              ),
+              request: EnvironmentForegroundProcessRequest(
+                program: '/bin/sh',
+                arguments: ['-c', 'printf overflow; exit 23'],
+                relativeWorkingDirectory: '',
+                timeoutSeconds: 5,
+              ),
+            )
+            .toList(),
+        throwsA(
+          _failureWithCode('process_output_overflow')
+              .having(
+                (error) => error.details['outputIncomplete'],
+                'incomplete',
+                true,
+              )
+              .having(
+                (error) => error.details['exitCode'],
+                'exit evidence',
+                isA<int>(),
+              ),
+        ),
+      );
+    },
+    skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+  );
+
+  test(
+    'timeout interrupts blocked output without waiting for consumer credit',
+    () async {
+      final fixture = await _createProcessFixture();
+      final first = Completer<void>();
+      final done = Completer<void>();
+      int? pid;
+      Object? failure;
+      late StreamSubscription<EnvironmentProcessEvent> subscription;
+      subscription = fixture.provider
+          .runForegroundProcess(
+            fixture.environment.id,
+            EnvironmentForegroundProcessRequest(
+              program: '/bin/sh',
+              arguments: ['-c', r'printf "%s\n" "$$"; exec /usr/bin/yes x'],
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 1,
+            ),
+          )
+          .listen(
+            (event) {
+              if (!first.isCompleted) {
+                pid = int.parse(event.output!.text.split('\n').first);
+                subscription.pause();
+                first.complete();
+              } else {
+                fail(
+                  'No output or completion is allowed after failed paused drain.',
+                );
+              }
+            },
+            onError: (Object error) {
+              failure = error;
+            },
+            onDone: done.complete,
+          );
+      addTearDown(subscription.cancel);
+      await first.future;
+      await Future<void>.delayed(const Duration(milliseconds: 2600));
+      expect(await Directory('/proc/$pid').exists(), isFalse);
+      subscription.resume();
+      await done.future.timeout(const Duration(seconds: 2));
+      expect(failure, _failureWithCode('process_output_incomplete'));
+      expect(
+        (failure! as EnvironmentFailure).details['termination'],
+        'timedOut',
+      );
+      expect(
+        (failure! as EnvironmentFailure).details['outputIncomplete'],
+        isTrue,
+      );
+    },
+    skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
+  );
+
+  test(
+    'cancellation interrupts a blocked pipe without consumer resume',
+    () async {
+      final fixture = await _createProcessFixture();
+      final first = Completer<void>();
+      int? pid;
+      late StreamSubscription<EnvironmentProcessEvent> subscription;
+      subscription = fixture.provider
+          .runForegroundProcess(
+            fixture.environment.id,
+            EnvironmentForegroundProcessRequest(
+              program: '/bin/sh',
+              arguments: ['-c', r'printf "%s\n" "$$"; exec /usr/bin/yes x'],
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 20,
+            ),
+          )
+          .listen((event) {
+            if (!first.isCompleted) {
+              pid = int.parse(event.output!.text.split('\n').first);
+              subscription.pause();
+              first.complete();
+            }
+          });
+      await first.future;
+      await subscription.cancel().timeout(const Duration(seconds: 2));
+      expect(await Directory('/proc/$pid').exists(), isFalse);
     },
     skip: !Platform.isLinux ? 'Foreground execution is Linux-only.' : false,
   );
@@ -3213,6 +3586,40 @@ Future<void> main(List<String> arguments) async {
       stdout.add(<int>[0xff, 0x61]);
       await stdout.flush();
       return;
+    case 'unicode-probe':
+      final socket = await Socket.connect(InternetAddress.loopbackIPv4, int.parse(arguments[1]));
+      final commands = StreamIterator(socket);
+      stdout.add([0x41, 0xf0, 0x9f]);
+      await stdout.flush();
+      await commands.moveNext();
+      stdout.add([0x98, 0x80, 0x1b, 0x5b, 0x33, 0x31, 0x6d, 0x0d, 0, 0xff]);
+      stdout.write('${'U' * 16383}\u{1f600}${'L' * 1200000}');
+      await stdout.flush();
+      await commands.moveNext();
+      stdout.add([0xe2]);
+      await stdout.flush();
+      await commands.cancel();
+      socket.destroy();
+      exitCode = 23;
+      return;
+    case 'flood-probe':
+      final socket = await Socket.connect(InternetAddress.loopbackIPv4, int.parse(arguments[1]));
+      final commands = StreamIterator(socket);
+      stdout.write('ready');
+      await stdout.flush();
+      await commands.moveNext();
+      Future<void> flood(IOSink sink, String character) async {
+        for (var i = 0; i < 192; i++) {
+          sink.write(character * 65536);
+          await sink.flush();
+        }
+      }
+      await Future.wait([flood(stdout, 'O'), flood(stderr, 'E')]);
+      socket.add([1]);
+      await socket.flush();
+      await commands.cancel();
+      socket.destroy();
+      return;
     case 'nul-output':
       stdout.add(<int>[0x00, 0x61]);
       await stdout.flush();
@@ -3230,11 +3637,12 @@ Future<void> main(List<String> arguments) async {
   );
 }
 
-Matcher _failureWithCode(String code) => isA<EnvironmentFailure>().having(
-  (EnvironmentFailure failure) => failure.code,
-  'code',
-  code,
-);
+TypeMatcher<EnvironmentFailure> _failureWithCode(String code) =>
+    isA<EnvironmentFailure>().having(
+      (EnvironmentFailure failure) => failure.code,
+      'code',
+      code,
+    );
 
 final bool _runningAsRoot =
     Platform.isLinux &&

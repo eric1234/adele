@@ -1,7 +1,34 @@
 import 'package:adele_model_tool/adele_model_tool.dart';
+import 'package:adele_product/adele_product.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test(
+    'execution context retains opaque invocation identity and rejects blanks',
+    () {
+      final runId = RunId('run');
+      final sessionId = SessionId('session');
+      final context = ToolExecutionContext(
+        runId: runId,
+        sessionId: sessionId,
+        toolInvocationId: 'opaque/host:invocation-2',
+      );
+      expect(context.runId, same(runId));
+      expect(context.sessionId, same(sessionId));
+      expect(context.toolInvocationId, 'opaque/host:invocation-2');
+      for (final invalid in ['', ' \n']) {
+        expect(
+          () => ToolExecutionContext(
+            runId: runId,
+            sessionId: sessionId,
+            toolInvocationId: invalid,
+          ),
+          throwsFormatException,
+        );
+      }
+    },
+  );
+
   test('model definitions retain immutable structured schemas', () {
     final ModelToolDefinition definition = ModelToolDefinition(
       alias: 'inspect',

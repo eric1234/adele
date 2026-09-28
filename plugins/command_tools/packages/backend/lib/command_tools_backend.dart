@@ -9,9 +9,10 @@ import 'package:adele_product/adele_product.dart';
 import 'package:command_tools_plugin/command_tools_plugin.dart';
 
 final class CommandToolsBackend implements RemoteModelToolService {
-  const CommandToolsBackend(this._hostRequests);
+  const CommandToolsBackend(this._hostRequests, this.transcripts);
 
   final AdeleHostRequestMultiplexer _hostRequests;
+  final CommandTranscriptStore transcripts;
 
   @override
   Future<List<RemoteToolDescriptor>> materialize(String sessionId) async => [
@@ -49,6 +50,7 @@ final class CommandToolsBackend implements RemoteModelToolService {
     RemoteCanonicalToolArguments arguments,
     String sessionId,
     String runId,
+    String toolInvocationId,
     String? environmentId,
   ) async {
     _requireRoute(routeId);
@@ -59,7 +61,11 @@ final class CommandToolsBackend implements RemoteModelToolService {
     return RemoteEffectDescription.fromLocal(
       await commandToolRegistration(facet).executable.describe(
         arguments.toLocal(),
-        ToolExecutionContext(sessionId: facet.sessionId, runId: RunId(runId)),
+        ToolExecutionContext(
+          sessionId: facet.sessionId,
+          runId: RunId(runId),
+          toolInvocationId: toolInvocationId,
+        ),
       ),
     );
   }
@@ -70,6 +76,7 @@ final class CommandToolsBackend implements RemoteModelToolService {
     RemoteCanonicalToolArguments arguments,
     String sessionId,
     String runId,
+    String toolInvocationId,
     String? environmentId,
     String? hostInvocationContext,
   ) async* {
@@ -89,10 +96,14 @@ final class CommandToolsBackend implements RemoteModelToolService {
         ),
       ),
     );
-    yield* commandToolRegistration(facet).executable
+    yield* commandToolRegistration(facet, transcripts: transcripts).executable
         .execute(
           arguments.toLocal(),
-          ToolExecutionContext(sessionId: facet.sessionId, runId: RunId(runId)),
+          ToolExecutionContext(
+            sessionId: facet.sessionId,
+            runId: RunId(runId),
+            toolInvocationId: toolInvocationId,
+          ),
         )
         .map(RemoteToolExecutionEvent.fromLocal);
   }

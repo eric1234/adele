@@ -51,6 +51,7 @@ final class FilesystemToolsBackend implements RemoteModelToolService {
     RemoteCanonicalToolArguments arguments,
     String sessionId,
     String runId,
+    String toolInvocationId,
     String? environmentId,
   ) async {
     final facets = _IdentityFacets(
@@ -60,7 +61,11 @@ final class FilesystemToolsBackend implements RemoteModelToolService {
     return RemoteEffectDescription.fromLocal(
       await _registration(routeId, facets).executable.describe(
         arguments.toLocal(),
-        ToolExecutionContext(sessionId: facets.sessionId, runId: RunId(runId)),
+        ToolExecutionContext(
+          sessionId: facets.sessionId,
+          runId: RunId(runId),
+          toolInvocationId: toolInvocationId,
+        ),
       ),
     );
   }
@@ -71,6 +76,7 @@ final class FilesystemToolsBackend implements RemoteModelToolService {
     RemoteCanonicalToolArguments arguments,
     String sessionId,
     String runId,
+    String toolInvocationId,
     String? environmentId,
     String? hostInvocationContext,
   ) async* {
@@ -108,6 +114,7 @@ final class FilesystemToolsBackend implements RemoteModelToolService {
           ToolExecutionContext(
             sessionId: facets.sessionId,
             runId: RunId(runId),
+            toolInvocationId: toolInvocationId,
           ),
         )
         .map(RemoteToolExecutionEvent.fromLocal);

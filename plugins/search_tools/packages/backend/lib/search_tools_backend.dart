@@ -52,6 +52,7 @@ final class SearchToolsBackend implements RemoteModelToolService {
     RemoteCanonicalToolArguments arguments,
     String sessionId,
     String runId,
+    String toolInvocationId,
     String? environmentId,
   ) async {
     _requireRoute(routeId);
@@ -64,6 +65,7 @@ final class SearchToolsBackend implements RemoteModelToolService {
         ToolExecutionContext(
           sessionId: SessionId(sessionId),
           runId: RunId(runId),
+          toolInvocationId: toolInvocationId,
         ),
       ),
     );
@@ -75,6 +77,7 @@ final class SearchToolsBackend implements RemoteModelToolService {
     RemoteCanonicalToolArguments arguments,
     String sessionId,
     String runId,
+    String toolInvocationId,
     String? environmentId,
     String? hostInvocationContext,
   ) async* {
@@ -90,6 +93,7 @@ final class SearchToolsBackend implements RemoteModelToolService {
           ToolExecutionContext(
             sessionId: SessionId(sessionId),
             runId: RunId(runId),
+            toolInvocationId: toolInvocationId,
           ),
         )
         .map(RemoteToolExecutionEvent.fromLocal);

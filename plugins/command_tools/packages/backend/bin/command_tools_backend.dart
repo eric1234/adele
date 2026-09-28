@@ -7,7 +7,9 @@ import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_model_tool/remote_model_tool.dart';
 import 'package:adele_plugin_backend_support/adele_plugin_backend_support.dart';
+import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:command_tools_backend/command_tools_backend.dart';
+import 'package:command_tools_contract/command_tools_contract.dart';
 import 'package:command_tools_plugin/command_tools_plugin.dart';
 
 Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
@@ -20,19 +22,33 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   final Object? responsePort = bootstrapMessage['responsePort'];
   final Object? defaultConfigurationContext =
       bootstrapMessage['defaultConfigurationContext'];
+  final Object? hostInfrastructureContext =
+      bootstrapMessage['hostInfrastructureContext'];
   if (bootstrapPort is! SendPort ||
       responsePort is! SendPort ||
-      defaultConfigurationContext is! String) {
+      defaultConfigurationContext is! String ||
+      hostInfrastructureContext is! String) {
     throw ArgumentError.value(bootstrapMessage, 'bootstrapMessage');
   }
 
   final hostRequests = AdeleHostRequestMultiplexer(send: responsePort.send);
-  final router = AdeleConfigurationContextRouter.single(
-    configurationContext: defaultConfigurationContext,
-    serviceId: remoteModelToolServiceId,
-    dispatcher: RemoteModelToolServiceDispatcher(
-      CommandToolsBackend(hostRequests),
+  final transcripts = CommandTranscriptStore(
+    ProjectStorageServiceClient(
+      hostRequests.bindInfrastructure(
+        hostInfrastructureContext: hostInfrastructureContext,
+        serviceId: projectStorageServiceId,
+      ),
     ),
+  );
+  final router = AdeleConfigurationContextRouter(
+    contexts: {
+      defaultConfigurationContext: {
+        remoteModelToolServiceId: RemoteModelToolServiceDispatcher(
+          CommandToolsBackend(hostRequests, transcripts),
+        ),
+        commandOutputServiceId: CommandOutputServiceDispatcher(transcripts),
+      },
+    },
   );
   final requests = ReceivePort();
   try {
@@ -59,6 +75,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
           request['method'] == 'shutdown' &&
           request['requestId'] is int) {
         hostRequests.close();
+        await transcripts.close();
         await router.close();
         responsePort.send(<String, Object?>{
           'kind': 'response',
@@ -73,6 +90,7 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
   } finally {
     hostRequests.close();
     requests.close();
+    await transcripts.close();
     await router.close();
   }
 }

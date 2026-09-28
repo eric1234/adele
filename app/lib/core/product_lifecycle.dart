@@ -4,6 +4,7 @@ import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:plugin_runtime/plugin_runtime.dart';
 
 import 'execution_evidence.dart';
@@ -516,6 +517,7 @@ final class ProductLifecycleCoordinator {
   final CapabilityRegistry _registry;
   // Membership records durable ownership; createProject never enters this map.
   final Map<ProjectId, ProjectDatabase> _projectDatabases = {};
+  final Map<ProjectId, ProjectDatabase> _temporaryProjectDatabases = {};
   final Map<RunId, RunActivitySnapshot> _runActivities = {};
   final Set<Future<Project>> _projectOpens = {};
   Future<void>? _closing;
@@ -642,7 +644,9 @@ final class ProductLifecycleCoordinator {
     _requireOpen();
     store._validateEnvironmentReplacement(environment);
     final task = store.task(environment.taskId)!;
-    _projectDatabases[task.projectId]?.updateEnvironmentState(environment);
+    (_projectDatabases[task.projectId] ??
+            _temporaryProjectDatabases[task.projectId])
+        ?.updateEnvironmentState(environment);
     store.replaceEnvironment(environment);
   }
 
@@ -661,8 +665,13 @@ final class ProductLifecycleCoordinator {
   }
 
   /// Resolves semantic Session scope without resolving a strategy or Environment.
-  /// Null means an explicitly volatile Project, never missing or closed storage.
-  ProjectDatabase? databaseForSession(SessionId sessionId) {
+  /// Durable-only access returns null for an explicitly volatile Project, never
+  /// missing or closed storage. Opt-in temporary storage shares the same schema
+  /// and lifetime but does not change the Project's durability.
+  ProjectDatabase? databaseForSession(
+    SessionId sessionId, {
+    ProjectStorageAccessMode accessMode = ProjectStorageAccessMode.durable,
+  }) {
     _requireOpen();
     final session = store.session(sessionId);
     if (session == null) {
@@ -674,7 +683,32 @@ final class ProductLifecycleCoordinator {
         'The Session does not belong to a published Project graph.',
       );
     }
-    return _projectDatabases[task.projectId];
+    final durable = _projectDatabases[task.projectId];
+    if (durable != null || accessMode == ProjectStorageAccessMode.durable) {
+      return durable;
+    }
+    return _temporaryProjectDatabases.putIfAbsent(task.projectId, () {
+      final tasks = store.tasksFor(task.projectId);
+      final taskIds = tasks.map((task) => task.id).toSet();
+      final sessions = [
+        for (final task in tasks) ...store.sessionsForTask(task.id),
+      ];
+      return ProjectDatabase.openTemporary(
+        project: store.project(task.projectId)!,
+        tasks: tasks,
+        environments: store._environments.values.where(
+          (environment) => taskIds.contains(environment.taskId),
+        ),
+        sessions: sessions,
+        authorities: [
+          for (final session in sessions)
+            (
+              session.id,
+              store.requireSessionAuthority(session.id).environmentId,
+            ),
+        ],
+      );
+    });
   }
 
   /// Stops admission immediately, drains accepted provider calls, then releases
@@ -689,8 +723,11 @@ final class ProductLifecycleCoordinator {
     await closeResources([
       for (final database in _projectDatabases.values)
         () async => database.close(),
+      for (final database in _temporaryProjectDatabases.values)
+        () async => database.close(),
     ]);
     _projectDatabases.clear();
+    _temporaryProjectDatabases.clear();
   }
 
   /// Explicitly volatile construction for development and deterministic fixtures.
@@ -731,10 +768,9 @@ final class ProductLifecycleCoordinator {
     if (store.session(session.id) != null) {
       throw StateError('Session ${session.id} is already published.');
     }
-    _projectDatabases[task.projectId]?.insertSessionWithAuthority(
-      session,
-      environment.id,
-    );
+    (_projectDatabases[task.projectId] ??
+            _temporaryProjectDatabases[task.projectId])
+        ?.insertSessionWithAuthority(session, environment.id);
     store._publishSession(session, environment);
     return session;
   }
@@ -811,10 +847,8 @@ final class ProductLifecycleCoordinator {
     store._validateTaskWithPrimaryEnvironment(task, finalized);
     // Establishment may already have external effects. There is no general
     // provider release contract to roll them back if this transaction fails.
-    _projectDatabases[project.id]?.insertTaskWithPrimaryEnvironment(
-      task,
-      finalized,
-    );
+    (_projectDatabases[project.id] ?? _temporaryProjectDatabases[project.id])
+        ?.insertTaskWithPrimaryEnvironment(task, finalized);
     store.publishTaskWithPrimaryEnvironment(task, finalized);
     environmentRuntime._materializations[finalized.id] = materialization;
     return TaskCreationResult(task: task, environment: finalized);

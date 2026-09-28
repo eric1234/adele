@@ -9,6 +9,7 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/approval_gated_tool_policy.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_desktop/core/remote_inference_context_host.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_tool/remote_model_tool.dart';
@@ -27,6 +28,7 @@ const _filesystemId = 'dev.adele.plugin.filesystem-tools';
 const _commandId = 'dev.adele.plugin.command-tools';
 const _gitId = 'dev.adele.plugin.git-environment';
 const _bound = Duration(seconds: 10);
+int _nextCommandInvocation = 0;
 
 void main() {
   late Directory artifacts;
@@ -106,10 +108,17 @@ void main() {
     context = _Context(files);
   });
 
-  Future<PluginBackendActivation> start(File artifact, String pluginId) async {
+  Future<PluginBackendActivation> start(
+    File artifact,
+    String pluginId, {
+    ProductLifecycleCoordinator? lifecycle,
+  }) async {
     final connection = await host.startPlugin(
       pluginId: pluginId,
       artifactUri: artifact.uri,
+      createInfrastructureServices: lifecycle == null
+          ? null
+          : (connection) => projectStorageServices(lifecycle, connection),
     );
     addTearDown(connection.close);
     final activation = await PluginBackendActivation.registerAdvertised(
@@ -133,6 +142,7 @@ void main() {
       PluginBackendActivation git,
       Directory worktree,
       SessionModelToolHostContext context,
+      ProductLifecycleCoordinator lifecycle,
     })
   >
   commandFixture() async {
@@ -157,13 +167,18 @@ void main() {
       'Command fixture',
     ]);
     final git = await start(gitArtifact, _gitId);
-    final command = await start(commandArtifact, _commandId);
     addTearDown(ChatStrategyPlugin().activate(extensions).close);
     final lifecycle = ProductLifecycleCoordinator.generated(
       store: InMemoryProductStore(),
       registry: capabilities,
       extensions: extensions,
       ids: MonotonicProductIdSource(seed: 'remote-command'),
+    );
+    addTearDown(lifecycle.close);
+    final command = await start(
+      commandArtifact,
+      _commandId,
+      lifecycle: lifecycle,
     );
     final project = lifecycle.createProject(source.uri);
     final created = await lifecycle.createTask(
@@ -190,6 +205,7 @@ void main() {
       tools: tools,
       command: command,
       git: git,
+      lifecycle: lifecycle,
       worktree: Directory(
         developmentGitWorktreePath(project, created.environment),
       ),
@@ -286,7 +302,7 @@ void main() {
   );
 
   test(
-    'nested Command/Git streams preserve argv, cwd, progress, completion, timeout and domain failure',
+    'nested Command/Git streams preserve argv, cwd, bounded summaries, completion, timeout and domain failure',
     () async {
       final fixture = await commandFixture();
       Future<ToolExecutionObservation> execute(
@@ -336,34 +352,22 @@ void main() {
         'first\n${fixture.worktree.path}/nested\n',
       );
       expect(result.outcome.hostData['stderr'], 'error\n');
-      expect(
-        result.progress
-            .where((p) => p.kind == ToolProgressKind.stdout)
-            .map((p) => p.content)
-            .join(),
-        result.outcome.hostData['stdout'],
-      );
-      expect(
-        result.progress
-            .where((p) => p.kind == ToolProgressKind.stderr)
-            .map((p) => p.content)
-            .join(),
-        'error\n',
-      );
+      expect(result.progress, isEmpty);
+      expect(result.outcome.hostData['captureState'], 'complete');
       expect(
         fixture.process.events.last.kind,
         EnvironmentProcessEventKind.completed,
       );
-      expect(
-        result.progress.map(
-          (progress) => (progress.kind.name, progress.content),
-        ),
-        fixture.process.events
-            .skip(eventsBefore)
-            .where((event) => event.output != null)
-            .map((event) => (event.output!.stream.name, event.output!.text)),
-        reason: 'Every provider output reaches Run progress in the same order.',
-      );
+      for (final stream in ['stdout', 'stderr']) {
+        expect(
+          fixture.process.events
+              .skip(eventsBefore)
+              .where((event) => event.output?.stream.name == stream)
+              .map((event) => event.output!.text)
+              .join(),
+          result.outcome.hostData[stream],
+        );
+      }
       final bounded = await execute({
         'program': '/bin/sh',
         'arguments': [
@@ -415,23 +419,20 @@ void main() {
         final received = <ToolExecutionEvent>[];
         final errors = <Object>[];
         var output = '';
+        fixture.process.onEvent = (event) {
+          if (event.output == null) return;
+          output += event.output!.text;
+          final match = RegExp(r'owned:(\d+):(\d+)\n').firstMatch(output);
+          if (match != null && !started.isCompleted) {
+            started.complete([int.parse(match[1]!), int.parse(match[2]!)]);
+          }
+        };
         final subscription = invocation.tool.executable
             .execute(invocation.arguments, invocation.context)
             .listen(
               (event) {
                 received.add(event);
-                if (event is ToolExecutionProgress) {
-                  output += event.progress.content;
-                  final match = RegExp(
-                    r'owned:(\d+):(\d+)\n',
-                  ).firstMatch(output);
-                  if (match != null && !started.isCompleted) {
-                    started.complete([
-                      int.parse(match[1]!),
-                      int.parse(match[2]!),
-                    ]);
-                  }
-                }
+                expect(event, isNot(isA<ToolExecutionProgress>()));
               },
               onError: errors.add,
               onDone: finished.complete,
@@ -465,7 +466,11 @@ void main() {
         expect(host.isClosed, isFalse);
         if (retirement == 'invocation') {
           await fixture.command.close();
-          await start(commandArtifact, _commandId);
+          await start(
+            commandArtifact,
+            _commandId,
+            lifecycle: fixture.lifecycle,
+          );
         } else if (retirement == 'provider') {
           await start(gitArtifact, _gitId);
         }
@@ -526,10 +531,7 @@ void main() {
       'delete_file',
     ]);
     expect(authority.calls, isEmpty);
-    final execution = ToolExecutionContext(
-      sessionId: authority.sessionId,
-      runId: RunId('filesystem-run'),
-    );
+    final runId = RunId('filesystem-run');
     Future<ToolOutcome> invoke(
       String alias,
       Map<String, Object?> arguments,
@@ -542,10 +544,12 @@ void main() {
           arguments: arguments,
         ),
         tools: tools,
-        context: execution,
+        runId: runId,
+        sessionId: authority.sessionId,
       );
       expect(resolved, isA<ResolvedToolProposal>());
       final invocation = (resolved as ResolvedToolProposal).invocation;
+      final execution = invocation.context;
       final before = authority.calls.toList();
       final effects = await invocation.tool.executable.describe(
         invocation.arguments,
@@ -581,7 +585,8 @@ void main() {
         arguments: {'relativePath': '../outside', 'content': 'no'},
       ),
       tools: tools,
-      context: execution,
+      runId: runId,
+      sessionId: authority.sessionId,
     );
     expect(
       (invalid as RejectedToolProposal).failure.kind,
@@ -983,6 +988,7 @@ void main() {
     final wrongSession = ToolExecutionContext(
       sessionId: SessionId('forged-session'),
       runId: invocation.context.runId,
+      toolInvocationId: invocation.context.toolInvocationId,
     );
     final callsBefore = files.calls.toList();
     await expectLater(
@@ -1306,17 +1312,17 @@ Future<ToolInvocation> _commandInvocation(
   Map<String, Object?> arguments,
 ) async =>
     (await const ToolInvocationResolver().resolve(
-              invocationId: ToolInvocationId('command-invocation'),
+              invocationId: ToolInvocationId(
+                'command-invocation-${_nextCommandInvocation++}',
+              ),
               proposal: ProviderToolProposal(
                 providerCallId: 'command-call',
                 alias: 'run_command',
                 arguments: arguments,
               ),
               tools: tools,
-              context: ToolExecutionContext(
-                sessionId: sessionId,
-                runId: RunId('command-run'),
-              ),
+              sessionId: sessionId,
+              runId: RunId('command-run'),
             )
             as ResolvedToolProposal)
         .invocation;
@@ -1349,6 +1355,7 @@ final class _ObservedProcess
   final AuthorizedEnvironmentProcessFacet delegate;
   final requested = <Type>[];
   final events = <EnvironmentProcessEvent>[];
+  void Function(EnvironmentProcessEvent)? onEvent;
   int opens = 0;
   @override
   SessionId get sessionId => delegate.sessionId;
@@ -1370,6 +1377,7 @@ final class _ObservedProcess
     opens++;
     return delegate.runForegroundProcess(request).map((event) {
       events.add(event);
+      onEvent?.call(event);
       return event;
     });
   }
@@ -1389,10 +1397,8 @@ Future<ToolProposalResolution> _resolution(
         arguments: arguments,
       ),
       tools: tools,
-      context: ToolExecutionContext(
-        sessionId: sessionId,
-        runId: runId ?? RunId('search-run'),
-      ),
+      sessionId: sessionId,
+      runId: runId ?? RunId('search-run'),
     )
     .timeout(_bound);
 

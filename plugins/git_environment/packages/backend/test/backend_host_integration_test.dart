@@ -272,6 +272,29 @@ void main() {
         '${Platform.pathSeparator}project-source',
       );
       expect(relativePathProcess.last.completed!.exitCode, 0);
+      final continuousOutput = await providerA
+          .runForegroundProcess(
+            durable.id,
+            EnvironmentForegroundProcessRequest(
+              program: '/usr/bin/head',
+              arguments: ['-c', '2097152', '/dev/zero'],
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 10,
+            ),
+          )
+          .toList();
+      expect(_stdoutText(continuousOutput), '\x00' * 2097152);
+      expect(continuousOutput.last.completed!.exitCode, 0);
+      expect(continuousOutput.last.completed!.stdoutTruncated, isFalse);
+      expect(
+        continuousOutput
+            .where((event) => event.output != null)
+            .every(
+              (event) =>
+                  event.output!.text.length <= environmentProcessTextLimit,
+            ),
+        isTrue,
+      );
       final Stream<EnvironmentProcessEvent> deferredGenerationA = providerA
           .runForegroundProcess(
             durable.id,

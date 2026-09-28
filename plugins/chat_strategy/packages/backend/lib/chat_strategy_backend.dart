@@ -344,7 +344,7 @@ final class _ChatHistoryTransaction {
           },
           expectedRows: 1,
         ),
-      ]);
+      ], ProjectStorageAccessMode.durable);
     }
     source._entries[index] = associated;
     staged._entries[index] = associated;
@@ -396,7 +396,9 @@ final class ChatSessionStore {
     if (!await storage.isDurableSession(id.value)) {
       return _sessions.putIfAbsent(id, () => ChatSessionState(id));
     }
-    await storage.ensureSchemaForSession(id.value, const [_chatSchema]);
+    await storage.ensureSchemaForSession(id.value, const [
+      _chatSchema,
+    ], ProjectStorageAccessMode.durable);
     final parameters = <String, Object?>{':session': id.value};
     final rows = await storage.queryForSession(
       id.value,
@@ -404,6 +406,7 @@ final class ChatSessionStore {
       'draft_request '
       'FROM adele_chat_sessions WHERE session_id = :session',
       parameters,
+      ProjectStorageAccessMode.durable,
     );
     final state = ChatSessionState._durable(id, storage);
     if (rows.length > 1) {
@@ -442,6 +445,7 @@ final class ChatSessionStore {
         'FROM adele_chat_entries WHERE session_id = :session '
         'AND sequence = :sequence LIMIT 2',
         {...parameters, ':sequence': state._entries.length},
+        ProjectStorageAccessMode.durable,
       );
       if (entries.isEmpty) break;
       if (entries.length > 1) {
@@ -490,6 +494,7 @@ final class ChatSessionStore {
       'SELECT COUNT(*) AS entry_count FROM adele_chat_entries '
       'WHERE session_id = :session',
       parameters,
+      ProjectStorageAccessMode.durable,
     );
     if (count.length != 1 ||
         count.single.values['entry_count'] != state._entries.length) {
@@ -521,7 +526,7 @@ final class ChatSessionStore {
           },
           expectedRows: 1,
         ),
-      ]);
+      ], ProjectStorageAccessMode.durable);
     }
     return _sessions[id] = state;
   }
@@ -680,7 +685,7 @@ final class ChatSessionState {
           parameters: {..._preconditions, ':draft': content},
           expectedRows: 1,
         ),
-      ]);
+      ], ProjectStorageAccessMode.durable);
       _draftRequest = content;
     } finally {
       _release(claim);
@@ -711,7 +716,7 @@ final class ChatSessionState {
           },
           expectedRows: 1,
         ),
-      ]);
+      ], ProjectStorageAccessMode.durable);
       _instructions = instructions;
       _maxModelInvocations = budget;
     } finally {
@@ -765,7 +770,7 @@ final class ChatSessionState {
           },
           expectedRows: 1,
         ),
-    ]);
+    ], ProjectStorageAccessMode.durable);
   }
 
   void _requireReadableConfiguration(

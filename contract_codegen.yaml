@@ -7,6 +7,7 @@ sources:
   - packages/orchestration/lib/remote_orchestration.dart
   - packages/project_storage/lib/adele_project_storage.dart
   - plugins/chat_strategy/packages/contract/lib/chat_strategy_contract.dart
+  - plugins/command_tools/packages/contract/lib/command_tools_contract.dart
   - plugins/resource_inspector/packages/contract/lib/resource_inspector_contract.dart
   - plugins/scripted_model/packages/contract/lib/scripted_model_contract.dart
   - plugins/workspace_demo/packages/contract/lib/workspace_demo_contract.dart

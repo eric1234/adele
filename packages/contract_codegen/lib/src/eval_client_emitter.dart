@@ -3,8 +3,12 @@ part of 'contract_generator.dart';
 /// Compile-only contract support. Native bridges still validate routing,
 /// liveness and JSON bounds before/after crossing the interpreter boundary.
 const String evalContractSupportSource = '''
+import 'dart:async';
 abstract class AdeleRequestChannel {
   Future<Object?> request(String method, Map<String, Object?> payload);
+}
+abstract class AdeleStreamChannel implements AdeleRequestChannel {
+  Stream<Object?> stream(String method, Map<String, Object?> payload);
 }
 class AdeleProtocolException implements Exception {
   AdeleProtocolException(this.message);
@@ -13,7 +17,7 @@ class AdeleProtocolException implements Exception {
 }
 ''';
 
-/// Intentionally bounded to unary scalar, nullable, JSON, list and value transport.
+/// Bounded to scalar, nullable, JSON, list and value transport.
 /// This is a generated wire view, not an alternate semantic implementation.
 final class _EvalClientEmitter {
   final DartContractEmitter _names = DartContractEmitter();
@@ -47,6 +51,7 @@ final class _EvalClientEmitter {
     final out = StringBuffer('''
 // GENERATED CODE - DO NOT MODIFY BY HAND.
 // Client-only wire view; generated from the annotated native contract.
+import 'dart:async';
 import 'package:adele_contract/adele_contract.dart';
 ''');
     for (final value in model.values) {
@@ -69,12 +74,13 @@ import 'package:adele_contract/adele_contract.dart';
         'class ${service.name}Client { ${service.name}Client(this._channel); final AdeleRequestChannel _channel;',
       );
       for (final method in service.methods) {
-        if (method.kind != MethodKind.unary) {
-          throw UnsupportedError(
-            'Eval client does not support server streams.',
-          );
-        }
         final resultCodec = _codec(method.returnType);
+        if (method.kind != MethodKind.unary) {
+          out.writeln(
+            'Stream<${method.returnType.dart}> ${method.name}(${method.parameters.map((f) => '${f.type.dart} ${f.name}').join(',')}) { return (this._channel as AdeleStreamChannel).stream(${_names._literal('${service.id}.${method.id}')}, <String, Object?>{${method.parameters.map((f) => '${_names._literal(f.id)}: ${_encode(f.type, f.name)}').join(',')}}).map((Object? _adeleResponse) { return ${resultCodec}Decode(_adeleResponse); }); }',
+          );
+          continue;
+        }
         // The eval pin cannot unwind a rejected native Future through an
         // interpreted await/catch. Preserve channel errors as Future errors;
         // decoding happens in a synchronous continuation, never a native codec.

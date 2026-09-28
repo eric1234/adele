@@ -95,9 +95,23 @@ argument vector, an Environment-relative working directory, and a required
 timeout from 1 through 600 seconds. It has no implicit shell semantics. Its
 generated server stream carries non-empty UTF-8 text observations tagged as
 stdout or stderr, followed by one completed event for normal exit or timeout.
-Nonzero exit codes are ordinary process results. Providers bound retained and
-emitted output independently for each stream and report truncation in the
-completed event.
+Nonzero exit codes are ordinary process results. Each output message contains at
+most `environmentProcessTextLimit` (16384) well-formed UTF-16 code units. Native
+UTF-8 decoding spans read boundaries with explicit malformed-byte handling;
+partial lines, ANSI, carriage returns, NUL, and line endings are not normalized.
+Providers preserve per-stream order and their observed combined delivery order,
+not an unknowable total ordering of independent native pipes.
+
+Message bounds and transport credit do not bound upstream producer queues.
+Providers must propagate pause to actual production and account for an already
+admitted read and message splitting, or explicitly fail on overflow. Continuous
+delivery is not a promise of unlimited retained output. Completed events retain
+independent truncation flags; EOF alone or a failed final drain must not masquerade
+as successful, complete output. Provider failures may carry known process outcome
+facts in declared `EnvironmentFailure.details`; consumers must preserve those
+facts while treating output as incomplete. The stock
+[Git provider](../../plugins/git_environment/README.md#filesystem-and-processes)
+documents its concrete bounds, drain deadline, and failure evidence.
 
 ## Interactive terminals
 

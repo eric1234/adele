@@ -13,23 +13,90 @@ import 'execution_evidence_schema.dart';
 
 /// Private application persistence for one Project. The connection stays here.
 final class ProjectDatabase {
-  ProjectDatabase._(this._database, this.path, this._root, this._relativePath);
+  ProjectDatabase._(
+    this._database,
+    this.path,
+    this._root,
+    this._relativePath,
+    this._temporaryDirectory,
+  );
 
   final Database _database;
   final String path;
   final String _root;
   final String _relativePath;
+  final Directory? _temporaryDirectory;
   bool _closed = false;
 
   /// Whether the host-owned connection has no active transaction.
-  bool get autocommit => _database.autocommit;
+  bool get autocommit {
+    _requireOpen();
+    return _database.autocommit;
+  }
 
   /// Validates the selected backing and initializes its core-owned schema.
   static ProjectDatabase open(ProjectBacking backing) {
     final String root = _sourceDirectory(
       backing.sourceLocation,
     ).resolveSymbolicLinksSync();
-    final String path = _backingPath(root, backing.databaseRelativePath);
+    return _open(root, backing.databaseRelativePath);
+  }
+
+  /// A lifecycle-owned on-disk store, unrelated to the Project's source path.
+  /// It uses the current schema and published identities, not a new Project.
+  static ProjectDatabase openTemporary({
+    required Project project,
+    required Iterable<Task> tasks,
+    required Iterable<Environment> environments,
+    required Iterable<Session> sessions,
+    required Iterable<(SessionId, EnvironmentId)> authorities,
+  }) {
+    final directory = Directory.systemTemp.createTempSync(
+      'adele-project-storage-',
+    );
+    ProjectDatabase? database;
+    try {
+      final opened = database = _open(
+        directory.resolveSymbolicLinksSync(),
+        'project.sqlite',
+        temporaryDirectory: directory,
+      );
+      final connection = opened._database;
+      _transaction(connection, () {
+        connection.execute(
+          'INSERT INTO adele_product_projects (id, source_location) VALUES (?, ?)',
+          [project.id.value, project.sourceLocation.toString()],
+        );
+        for (final task in tasks) {
+          opened._insertTask(task);
+        }
+        for (final environment in environments) {
+          opened._insertEnvironment(environment);
+        }
+        for (final session in sessions) {
+          opened._insertSession(session);
+        }
+        for (final (sessionId, environmentId) in authorities) {
+          opened._insertSessionAuthority(sessionId, environmentId);
+        }
+      });
+      return opened;
+    } catch (_) {
+      if (database != null) {
+        database.close();
+      } else {
+        directory.deleteSync(recursive: true);
+      }
+      rethrow;
+    }
+  }
+
+  static ProjectDatabase _open(
+    String root,
+    String relativePath, {
+    Directory? temporaryDirectory,
+  }) {
+    final String path = _backingPath(root, relativePath);
     final Database database = sqlite3.open(path);
     try {
       database.execute('PRAGMA foreign_keys = ON');
@@ -88,7 +155,8 @@ final class ProjectDatabase {
         database,
         path,
         root,
-        backing.databaseRelativePath,
+        relativePath,
+        temporaryDirectory,
       );
     } catch (_) {
       database.close();
@@ -236,25 +304,33 @@ final class ProjectDatabase {
         'A durable Task requires its finalized primary Environment.',
       );
     }
-    final state = jsonEncode(environment.providerState);
     _backingPath(_root, _relativePath);
     _transaction(_database, () {
-      _database.execute(
-        'INSERT INTO adele_product_tasks (id, project_id, title) VALUES (?, ?, ?)',
-        [task.id.value, task.projectId.value, task.title],
-      );
-      _database.execute(
-        'INSERT INTO adele_product_environments '
-        '(id, task_id, role, provider_id, provider_state_json) VALUES (?, ?, ?, ?, ?)',
-        [
-          environment.id.value,
-          environment.taskId.value,
-          environment.role.name,
-          environment.providerId.value,
-          state,
-        ],
-      );
+      _insertTask(task);
+      _insertEnvironment(environment);
     });
+  }
+
+  void _insertTask(Task task) => _database.execute(
+    'INSERT INTO adele_product_tasks (id, project_id, title) VALUES (?, ?, ?)',
+    [task.id.value, task.projectId.value, task.title],
+  );
+
+  void _insertEnvironment(Environment environment) {
+    if (environment.providerState == null) {
+      throw StateError('A stored Environment requires provider state.');
+    }
+    _database.execute(
+      'INSERT INTO adele_product_environments '
+      '(id, task_id, role, provider_id, provider_state_json) VALUES (?, ?, ?, ?, ?)',
+      [
+        environment.id.value,
+        environment.taskId.value,
+        environment.role.name,
+        environment.providerId.value,
+        jsonEncode(environment.providerState),
+      ],
+    );
   }
 
   /// Session identity and its same-Task Environment association commit together.
@@ -273,18 +349,25 @@ final class ProjectDatabase {
           environments.single['task_id'] != session.taskId.value) {
         throw StateError('A durable Session requires a same-Task Environment.');
       }
-      _database.execute(
-        'INSERT INTO adele_product_sessions (id, task_id, strategy_id) '
-        'VALUES (?, ?, ?)',
-        [session.id.value, session.taskId.value, session.strategyId.value],
-      );
-      _database.execute(
-        'INSERT INTO adele_product_session_environment_authority '
-        '(session_id, environment_id) VALUES (?, ?)',
-        [session.id.value, environmentId.value],
-      );
+      _insertSession(session);
+      _insertSessionAuthority(session.id, environmentId);
     });
   }
+
+  void _insertSession(Session session) => _database.execute(
+    'INSERT INTO adele_product_sessions (id, task_id, strategy_id) '
+    'VALUES (?, ?, ?)',
+    [session.id.value, session.taskId.value, session.strategyId.value],
+  );
+
+  void _insertSessionAuthority(
+    SessionId sessionId,
+    EnvironmentId environmentId,
+  ) => _database.execute(
+    'INSERT INTO adele_product_session_environment_authority '
+    '(session_id, environment_id) VALUES (?, ?)',
+    [sessionId.value, environmentId.value],
+  );
 
   /// Loads complete terminal evidence separately from the product-only graph.
   List<RunActivitySnapshot> loadExecutionHistory(Iterable<RunRecord> records) {
@@ -479,6 +562,7 @@ final class ProjectDatabase {
     if (_closed) return;
     _database.close();
     _closed = true;
+    _temporaryDirectory?.deleteSync(recursive: true);
   }
 }
 

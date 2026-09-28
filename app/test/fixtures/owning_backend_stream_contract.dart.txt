@@ -1,0 +1,19 @@
+import 'package:adele_contract/adele_contract.dart';
+
+part 'owning_backend_stream_contract.g.dart';
+
+@AdeleValue('fixture.stream.entry')
+final class StreamEntry {
+  const StreamEntry({required this.sequence, required this.text});
+  final int sequence;
+  final String text;
+}
+
+@AdeleService('fixture.stream')
+abstract interface class StreamService {
+  @AdeleMethod('watch')
+  Stream<StreamEntry> watch(String scope);
+
+  @AdeleMethod('read')
+  Future<StreamEntry> read(String scope);
+}

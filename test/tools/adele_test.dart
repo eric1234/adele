@@ -611,6 +611,7 @@ void main() {
       'chat_strategy_backend',
       'filesystem_tools_plugin',
       'command_tools_plugin',
+      'command_tools_contract',
       'openai_contract',
     ]) {
       expect(
@@ -862,6 +863,7 @@ void main() {
         'search_tools_backend|dart|plugins/search_tools/packages/backend|test',
         'command_tools_plugin|dart|plugins/command_tools|test',
         'command_tools_backend|dart|plugins/command_tools/packages/backend|test',
+        'command_tools_contract|dart|plugins/command_tools/packages/contract|test',
         'agents_md_plugin|dart|plugins/agents_md|test',
         'agents_md_backend|dart|plugins/agents_md/packages/backend|test',
         'chat_strategy_contract|dart|plugins/chat_strategy/packages/contract|test',

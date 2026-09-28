@@ -195,6 +195,7 @@ Map<String, Object?> _descriptionPayload() => {
   },
   'sessionId': 'session-data',
   'runId': 'run-data',
+  'toolInvocationId': 'tool-invocation-data',
   'environmentId': 'environment-data',
 };
 

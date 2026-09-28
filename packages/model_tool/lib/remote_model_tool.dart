@@ -276,8 +276,10 @@ final class RemoteToolExecutionEvent {
   };
 }
 
-/// Semantic IDs describe the invocation; only the execution context grants
-/// authority. Materialization, validation, and description receive no authority.
+/// Semantic IDs describe the invocation; only hostInvocationContext grants
+/// host-service authority. Materialization, validation, and description receive
+/// no authority. toolInvocationId is the existing host-allocated invocation ID,
+/// not a provider call ID or a separate tool-specific identity.
 @AdeleService('modelTool')
 abstract interface class RemoteModelToolService {
   @AdeleMethod('materialize')
@@ -295,6 +297,7 @@ abstract interface class RemoteModelToolService {
     RemoteCanonicalToolArguments arguments,
     String sessionId,
     String runId,
+    String toolInvocationId,
     String? environmentId,
   );
 
@@ -304,6 +307,7 @@ abstract interface class RemoteModelToolService {
     RemoteCanonicalToolArguments arguments,
     String sessionId,
     String runId,
+    String toolInvocationId,
     String? environmentId,
     String? hostInvocationContext,
   );

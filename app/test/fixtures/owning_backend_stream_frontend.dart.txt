@@ -1,0 +1,126 @@
+import 'dart:async';
+
+import 'package:adele_ui/owning_backend_bridge.dart';
+import 'package:flutter/material.dart';
+import 'package:stream_fixture/contract.dart';
+
+Widget buildView() => StreamProbe();
+bool readOnData = false;
+Widget buildReadingView() {
+  readOnData = true;
+  return StreamProbe();
+}
+
+class StreamProbe extends StatefulWidget {
+  @override
+  State<StreamProbe> createState() => StreamProbeState();
+}
+
+class StreamProbeState extends State<StreamProbe> {
+  final client = StreamServiceClient(
+    OwningBackendRequestChannel(streamServiceId),
+  );
+  String text = 'idle';
+  dynamic subscription;
+
+  void start() {
+    subscription = client
+        .watch('captured')
+        .listen(
+          (StreamEntry entry) {
+            setState(() {
+              text = '${entry.sequence}:${entry.text}';
+            });
+            if (readOnData) read();
+          },
+          onError: (Object error) {
+            setState(() {
+              text = 'error:$error';
+            });
+          },
+          onDone: () {
+            setState(() {
+              text = '$text:done';
+            });
+          },
+        );
+  }
+
+  void read() {
+    client.read('captured').then((StreamEntry entry) {
+      setState(() {
+        text = '${entry.sequence}:${entry.text}';
+      });
+    });
+  }
+
+  void startNullData() {
+    // The pin's SDK declaration rejects literal Null for nullable callbacks.
+    // Dynamic values exercise actual eval nulls without replacing that library.
+    dynamic callback = null;
+    subscription = client
+        .watch('captured')
+        .listen(
+          callback,
+          onError: callback,
+          onDone: () {
+            setState(() {
+              text = 'null-data:done';
+            });
+          },
+        );
+  }
+
+  void startNullErrorAndDone() {
+    dynamic callback = null;
+    subscription = client
+        .watch('captured')
+        .listen(
+          (StreamEntry entry) {
+            setState(() {
+              text = '${entry.sequence}:${entry.text}';
+            });
+          },
+          onError: callback,
+          onDone: callback,
+        );
+  }
+
+  @override
+  void dispose() {
+    if (subscription != null) subscription.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      Text(text),
+      TextButton(onPressed: start, child: Text('Listen')),
+      TextButton(onPressed: read, child: Text('Read')),
+      TextButton(onPressed: startNullData, child: Text('Null Data')),
+      TextButton(
+        onPressed: startNullErrorAndDone,
+        child: Text('Null Error And Done'),
+      ),
+      TextButton(
+        onPressed: () {
+          subscription.pause();
+        },
+        child: Text('Pause'),
+      ),
+      TextButton(
+        onPressed: () {
+          subscription.resume();
+        },
+        child: Text('Resume'),
+      ),
+      TextButton(
+        onPressed: () {
+          subscription.cancel();
+        },
+        child: Text('Cancel'),
+      ),
+    ],
+  );
+}

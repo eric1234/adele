@@ -348,6 +348,7 @@ final class _Probe implements RemoteModelToolService {
     RemoteCanonicalToolArguments arguments,
     String sessionId,
     String runId,
+    String toolInvocationId,
     String? environmentId,
   ) async {
     if (!routes.containsKey(routeId)) {
@@ -359,6 +360,7 @@ final class _Probe implements RemoteModelToolService {
       'arguments': arguments.snapshot,
       'sessionId': sessionId,
       'runId': runId,
+      'toolInvocationId': toolInvocationId,
       'environmentId': environmentId,
     });
     return RemoteEffectDescription.fromLocal(
@@ -387,6 +389,7 @@ final class _Probe implements RemoteModelToolService {
     RemoteCanonicalToolArguments arguments,
     String sessionId,
     String runId,
+    String toolInvocationId,
     String? environmentId,
     String? hostInvocationContext,
   ) async* {
@@ -399,6 +402,7 @@ final class _Probe implements RemoteModelToolService {
       'arguments': arguments.snapshot,
       'sessionId': sessionId,
       'runId': runId,
+      'toolInvocationId': toolInvocationId,
       'environmentId': environmentId,
       'token': hostInvocationContext,
     });

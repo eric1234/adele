@@ -171,6 +171,67 @@ and launcher checks also live in that target:
 See [developer self-hosting](self-hosting.md#validation-and-source-map) for that
 workflow's source/evidence owners and deterministic-versus-live distinction.
 
+### Focused command output checks
+
+After bootstrap/current generation, use the pinned SDK and serialize Flutter
+invocations sharing the app build directory. The plugin-owned capture/read/watch
+and generated contract checks run from the repository root:
+
+```sh
+dart tools/adele.dart test --target command_tools_plugin
+dart tools/adele.dart test --target command_tools_backend
+dart tools/adele.dart test --target command_tools_contract
+dart tools/adele.dart test --target adele_model_tool
+dart tools/adele.dart test --target adele_project_storage
+dart tools/adele.dart test --target contract_codegen
+dart test test/tools/adele_test.dart test/tools/app_plugin_boundary_test.dart test/tools/self_hosting_cli_test.dart
+dart tools/adele.dart generate --check
+```
+
+For focused provider iteration, run `dart test
+test/git_worktree_environment_provider_test.dart test/backend_host_integration_test.dart`
+from `plugins/git_environment/packages/backend/`. Select the foreground process
+cases when unrelated provider coverage is unnecessary; this work does not require
+the PTY target. From `app/`:
+
+```sh
+flutter test --no-pub --concurrency 1 test/owning_backend_stream_bridge_test.dart
+flutter test --no-pub --concurrency 1 test/core/command_output_capture_integration_test.dart
+flutter test --no-pub --concurrency 1 test/core/remote_model_tool_host_test.dart test/core/remote_model_tool_integration_test.dart
+flutter test --no-pub --concurrency 1 test/core/project_storage_host_test.dart test/core/project_database_test.dart test/core/product_lifecycle_test.dart
+flutter test --no-pub --concurrency 1 test/chat_frontend_eval_test.dart test/prepared_session_host_test.dart test/session_execution_bridge_test.dart
+```
+
+The early stream fixture compiles a generated `Stream<DTO>` client and mounts its
+EVC through `PreparedFrontend.load/createPresentation`, proving the evaluator
+projection and generic host bridge separately from Command behavior. The decisive
+command fixture crosses real shared-host/Git/Command AOT, generated authorized
+process transport in both hops, and the Project storage grant into SQLite. Its
+socket-gated process emits more than 12 Mi UTF-16 code units per pipe, including
+known beginning/middle/late markers and terminal controls, then waits for release.
+Bounded pages establish live marker availability and exact full reconstruction
+before exit. Two identical invocations share one Run but not one capture. A fresh
+Project/backend read requires neither Git nor an Environment materialization.
+
+The test-only interpreted Command consumer uses the plugin-generated client over
+actual backend transport, reads pages and live state, unmounts without stopping
+capture, and remounts with fresh access. No production Inspection, Show more,
+console content, follow/scroll control, or terminal rendering is added; those are
+the subsequent presentation slice. Fixture source and compilation live in
+`app/test/fixtures/command_output_frontend.dart` and
+`app/tool/command_output_frontend_compiler.dart`, not runtime preparation of a
+stock view.
+
+Memory checks are accounting assertions, not absolute RSS claims: provider pending
+decoded units/admitted reads and pause/resume, plugin pending batch row/text limits,
+page limits, active writer/observer counts, coalesced paused notifications, and
+absence of raw transcript events in generic progress/journal/activity. Test-owned
+buffers used to compare expected whole transcripts do not represent production
+retention. The native process fixture is local and deterministic; these checks use
+no paid/live model, self-hosting workflow, PTY execution, or desktop/profile run.
+New app tests participate in the unrestricted maintained `adele_desktop` target;
+the new contract package has explicit workspace/analysis/test discovery.
+
 ### Focused terminal checks
 
 After bootstrap, run from `app/` using the repository pin:

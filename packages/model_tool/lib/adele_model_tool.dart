@@ -55,10 +55,21 @@ final class CanonicalToolArguments {
 }
 
 final class ToolExecutionContext {
-  const ToolExecutionContext({required this.runId, required this.sessionId});
+  ToolExecutionContext({
+    required this.runId,
+    required this.sessionId,
+    required String toolInvocationId,
+  }) : toolInvocationId = _requireNonEmpty(
+         toolInvocationId,
+         'Tool invocation ID',
+       );
 
   final RunId runId;
   final SessionId sessionId;
+
+  /// Opaque value of the host-allocated orchestration ToolInvocationId.
+  /// Correlates this invocation within its Run; it grants no execution authority.
+  final String toolInvocationId;
 }
 
 abstract interface class ToolExecutable {

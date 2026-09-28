@@ -351,6 +351,27 @@ void main() {
       throwsFormatException,
     );
     expect(
+      EnvironmentProcessOutput(
+        stream: EnvironmentProcessOutputStream.stdout,
+        text:
+            '\x1b[31m\r\x00${'x' * (environmentProcessTextLimit - 9)}\u{1f600}',
+      ).text.length,
+      environmentProcessTextLimit,
+    );
+    for (final text in [
+      'x' * (environmentProcessTextLimit + 1),
+      String.fromCharCode(0xd800),
+      String.fromCharCode(0xdc00),
+    ]) {
+      expect(
+        () => EnvironmentProcessOutput(
+          stream: EnvironmentProcessOutputStream.stdout,
+          text: text,
+        ),
+        throwsFormatException,
+      );
+    }
+    expect(
       () => EnvironmentProcessCompleted(
         termination: EnvironmentProcessTermination.exited,
         exitCode: null,

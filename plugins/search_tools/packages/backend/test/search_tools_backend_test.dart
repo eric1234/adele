@@ -99,6 +99,7 @@ void main() {
             _arguments(),
             'session',
             'run',
+            'tool-invocation',
             'environment',
           ),
           throwsA(isA<AdeleRemoteFailure>()),
@@ -109,6 +110,7 @@ void main() {
             _arguments(),
             'session',
             'run',
+            'tool-invocation',
             'environment',
             'token',
           ),
@@ -153,6 +155,7 @@ void main() {
           arguments,
           'session',
           'unrelated-run',
+          'tool-invocation',
           environmentId,
         );
         expect(effect.effects, [RemoteToolEffect.sourceRead]);
@@ -182,6 +185,7 @@ void main() {
             _arguments(path: 'src/file.txt'),
             'semantic-session',
             'semantic-run',
+            'semantic-tool-invocation',
             'semantic-environment',
             'execution',
           )
@@ -231,6 +235,7 @@ void main() {
             _arguments(),
             'session',
             'run',
+            'tool-invocation',
             environmentId,
           ),
           throwsA(isA<AdeleRemoteFailure>()),
@@ -241,6 +246,7 @@ void main() {
             _arguments(),
             'session',
             'run',
+            'tool-invocation',
             environmentId,
             'bound',
           ),
@@ -268,6 +274,7 @@ void main() {
             _arguments(),
             'session',
             'run',
+            'tool-invocation',
             'environment',
             token,
           ),
@@ -426,6 +433,7 @@ final class _Fixture {
           arguments,
           'session',
           'run',
+          'tool-invocation',
           'environment',
           token,
         )

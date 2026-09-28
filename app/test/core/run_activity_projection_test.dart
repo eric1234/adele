@@ -572,10 +572,8 @@ Future<ToolInvocationId> _recordTool(AgentRun run, String suffix) async {
                     executable: _JournalExecutable(),
                   ),
                 ]),
-                context: ToolExecutionContext(
-                  runId: run.id,
-                  sessionId: run.sessionId,
-                ),
+                runId: run.id,
+                sessionId: run.sessionId,
               )
               as ResolvedToolProposal)
           .invocation;

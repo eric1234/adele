@@ -1057,8 +1057,11 @@ FutureOr<CanonicalToolArguments> _arguments(
   String query,
 ) => tool.validateAndNormalize(<String, Object?>{'query': query});
 
-ToolExecutionContext _execution(SessionId sessionId) =>
-    ToolExecutionContext(runId: RunId('run-1'), sessionId: sessionId);
+ToolExecutionContext _execution(SessionId sessionId) => ToolExecutionContext(
+  runId: RunId('run-1'),
+  sessionId: sessionId,
+  toolInvocationId: 'search-invocation',
+);
 
 Future<ToolOutcome> _run(
   _FileSystem fileSystem,

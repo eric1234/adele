@@ -95,6 +95,7 @@ final class InstalledBackendActivation {
           affinityOrigin?.configurationContext ??
           _connection!.defaultConfigurationContext,
       backendServices: presentation.backendServices,
+      observeOwnerRetirement: _activation!.onRetire,
       validateOwner: () {
         validate();
         affinityOrigin?.validate();

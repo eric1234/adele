@@ -3,6 +3,7 @@ import 'dart:isolate';
 
 import 'package:adele_contract/adele_contract.dart';
 import 'package:adele_model_tool/remote_model_tool.dart';
+import 'package:command_tools_contract/command_tools_contract.dart';
 import 'package:test/test.dart';
 
 import '../bin/command_tools_backend.dart' as entrypoint;
@@ -65,6 +66,29 @@ void main() {
       ]);
       commands.send({
         'kind': 'request',
+        'requestId': 2,
+        'configurationContext': 'configured-default',
+        'serviceId': commandOutputServiceId,
+        'method': commandOutputServiceGetStateId,
+        'payload': {
+          'sessionId': '',
+          'runId': 'run',
+          'toolInvocationId': 'invocation',
+        },
+      });
+      expect(
+        await messages.moveNext().timeout(const Duration(seconds: 5)),
+        isTrue,
+      );
+      final outputResponse = messages.current! as Map;
+      expect(outputResponse['ok'], isFalse);
+      expect((outputResponse['error']! as Map)['code'], 'invalid_identity');
+      expect(
+        (outputResponse['error']! as Map)['declaredFailureType'],
+        commandOutputFailureTypeId,
+      );
+      commands.send({
+        'kind': 'request',
         'requestId': 99,
         'method': 'shutdown',
         'payload': <String, Object?>{},
@@ -87,4 +111,5 @@ Future<void> _run(List<SendPort> ports) => entrypoint.main([], {
   'bootstrapPort': ports[0],
   'responsePort': ports[1],
   'defaultConfigurationContext': 'configured-default',
+  'hostInfrastructureContext': 'infrastructure',
 });

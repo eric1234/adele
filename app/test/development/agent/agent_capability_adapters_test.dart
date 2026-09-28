@@ -1058,6 +1058,7 @@ void main() {
                       ToolExecutionContext(
                         runId: RunId('run-1'),
                         sessionId: SessionId('session-1'),
+                        toolInvocationId: 'tool-1',
                       ),
                     )
                     .single

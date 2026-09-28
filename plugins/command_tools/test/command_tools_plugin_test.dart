@@ -3,9 +3,12 @@ import 'dart:async';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:command_tools_plugin/command_tools_plugin.dart';
 import 'package:test/test.dart';
+
+import 'support/command_storage.dart';
 
 void main() {
   group('activation and schema', () {
@@ -332,6 +335,7 @@ void main() {
           ToolExecutionContext(
             runId: RunId('run-command'),
             sessionId: SessionId('another-session'),
+            toolInvocationId: 'tool-command',
           ),
         ),
         throwsA(isA<Exception>()),
@@ -362,19 +366,8 @@ void main() {
           const <String, Object?>{'program': 'fixture'},
         );
 
-        expect(
-          observation.progress.map((ToolProgress value) => value.kind),
-          <ToolProgressKind>[
-            ToolProgressKind.stdout,
-            ToolProgressKind.stderr,
-            ToolProgressKind.stdout,
-            ToolProgressKind.stderr,
-          ],
-        );
-        expect(
-          observation.progress.map((ToolProgress value) => value.content),
-          <String>['\n', ' ', '\u0000', 'last'],
-        );
+        expect(observation.progress, isEmpty);
+        expect(observation.outcome.hostData['captureState'], 'complete');
         expect(observation.outcome.disposition, ToolOutcomeDisposition.success);
         expect(
           observation.outcome.effectCertainty,
@@ -423,10 +416,7 @@ void main() {
           <EnvironmentProcessEvent>[
             _output(EnvironmentProcessOutputStream.stdout, 'partial out'),
             _output(EnvironmentProcessOutputStream.stderr, 'partial err'),
-            _completed(
-              termination: EnvironmentProcessTermination.timedOut,
-              stderrTruncated: true,
-            ),
+            _completed(termination: EnvironmentProcessTermination.timedOut),
           ],
         ),
       );
@@ -442,7 +432,8 @@ void main() {
       expect(outcome.hostData['exitCode'], isNull);
       expect(outcome.hostData['stdout'], 'partial out');
       expect(outcome.hostData['stderr'], 'partial err');
-      expect(outcome.hostData['stderrTruncated'], isTrue);
+      expect(outcome.hostData['stderrTruncated'], isFalse);
+      expect(outcome.hostData['captureState'], 'complete');
       expect(outcome.modelContent, contains('Termination: timedOut'));
       expect(outcome.modelContent, contains('Exit code: <not applicable>'));
       expect(outcome.modelContent, contains('partial out'));
@@ -456,21 +447,25 @@ void main() {
         final String tail = List<String>.filled(16 * 1024, 'T').join();
         final String stderrText = List<String>.filled(1024, 'E').join();
         final _ProcessFacet process = _ProcessFacet(
-          events: () => Stream<EnvironmentProcessEvent>.fromIterable(<
-            EnvironmentProcessEvent
-          >[
-            _output(EnvironmentProcessOutputStream.stdout, '$head$middle$tail'),
-            _output(EnvironmentProcessOutputStream.stderr, stderrText),
-            _completed(exitCode: 0),
-          ]),
+          events: () => Stream<EnvironmentProcessEvent>.fromIterable(
+            <EnvironmentProcessEvent>[
+              _output(EnvironmentProcessOutputStream.stdout, head),
+              _output(EnvironmentProcessOutputStream.stdout, middle),
+              _output(EnvironmentProcessOutputStream.stdout, tail),
+              _output(EnvironmentProcessOutputStream.stderr, stderrText),
+              _completed(exitCode: 0),
+            ],
+          ),
         );
         final MaterializedTool tool = await _tool(process);
 
-        final ToolOutcome outcome = (await _execute(
-          tool,
-          const <String, Object?>{'program': 'verbose'},
-        )).outcome;
+        final observation = await _execute(tool, const <String, Object?>{
+          'program': 'verbose',
+        });
+        final outcome = observation.outcome;
 
+        expect(observation.progress, isEmpty);
+        expect(outcome.hostData['captureState'], 'complete');
         expect(maximumRetainedCommandOutputCharacters, 32 * 1024);
         expect(outcome.hostData['stdout'], '$head$tail');
         expect((outcome.hostData['stdout']! as String).length, 32 * 1024);
@@ -490,7 +485,9 @@ void main() {
       final _ProcessFacet process = _ProcessFacet(
         events: () => Stream<EnvironmentProcessEvent>.fromIterable(
           <EnvironmentProcessEvent>[
-            _output(EnvironmentProcessOutputStream.stdout, exactLimit),
+            _output(EnvironmentProcessOutputStream.stdout, prefix),
+            _output(EnvironmentProcessOutputStream.stdout, '\u{1f600}'),
+            _output(EnvironmentProcessOutputStream.stdout, suffix),
             _completed(exitCode: 0),
           ],
         ),
@@ -530,6 +527,7 @@ void main() {
       expect(outcome.hostData, containsPair('timeoutSeconds', 9));
       expect(outcome.hostData, containsPair('termination', 'exited'));
       expect(outcome.hostData, containsPair('exitCode', 0));
+      expect(outcome.hostData, containsPair('captureState', 'complete'));
       expect(outcome.hostData, containsPair('stdout', ''));
       expect(outcome.hostData, containsPair('stderr', ''));
       expect(process.requests.single.program, 'git');
@@ -539,6 +537,30 @@ void main() {
   });
 
   group('stream failures', () {
+    test(
+      'provider truncation is incomplete capture, not a successful preview',
+      () async {
+        final process = _ProcessFacet(
+          events: () => Stream.fromIterable([
+            _output(EnvironmentProcessOutputStream.stdout, 'delivered'),
+            _completed(exitCode: 17, stdoutTruncated: true),
+          ]),
+        );
+        final observation = await _execute(await _tool(process), {
+          'program': 'fixture',
+        });
+        expect(observation.progress, isEmpty);
+        expect(observation.outcome.disposition, ToolOutcomeDisposition.failure);
+        expect(observation.outcome.effectCertainty, EffectCertainty.uncertain);
+        expect(observation.outcome.failureKind, ToolFailureKind.infrastructure);
+        expect(observation.outcome.hostData['captureState'], 'failed');
+        expect(observation.outcome.hostData['termination'], 'exited');
+        expect(observation.outcome.hostData['exitCode'], 17);
+        expect(observation.outcome.hostData['stdoutTruncated'], isTrue);
+        expect(observation.outcome.hostData['stderrTruncated'], isFalse);
+      },
+    );
+
     test(
       'maps Environment failures with uncertain effects and diagnostics',
       () async {
@@ -628,8 +650,9 @@ void main() {
           const <String, Object?>{'program': 'fixture'},
         );
 
-        expect(observation.progress, hasLength(1));
-        expect(observation.progress.single.content, 'before');
+        expect(observation.progress, isEmpty);
+        expect(observation.outcome.hostData['stdout'], 'before');
+        expect(observation.outcome.hostData['stderr'], '');
         expect(observation.outcome.disposition, ToolOutcomeDisposition.failure);
         expect(observation.outcome.failureKind, ToolFailureKind.infrastructure);
         expect(observation.outcome.effectCertainty, EffectCertainty.uncertain);
@@ -734,13 +757,422 @@ void main() {
       expect(process.executions, 0);
     });
   });
+
+  group('capture lifecycle', () {
+    late CommandTestStorage storage;
+    late CommandTranscriptStore transcripts;
+    setUp(() {
+      storage = CommandTestStorage();
+      transcripts = CommandTranscriptStore(storage);
+    });
+    tearDown(() async {
+      await transcripts.close();
+      storage.close();
+    });
+
+    test('missing storage rejects execution before any process call', () async {
+      final process = _ProcessFacet();
+      final executable = commandToolRegistration(process).executable;
+      final arguments = await executable.validateAndNormalize({
+        'program': 'fixture',
+      });
+      await executable.describe(arguments, _executionContext());
+      final observation = await collectToolExecution(
+        executable.execute(arguments, _executionContext()),
+      );
+      expect(observation.progress, isEmpty);
+      expect(observation.outcome.disposition, ToolOutcomeDisposition.failure);
+      expect(observation.outcome.failureKind, ToolFailureKind.infrastructure);
+      expect(
+        observation.outcome.effectCertainty,
+        EffectCertainty.knownNotOccurred,
+      );
+      expect(process.executions, 0);
+    });
+
+    test(
+      'reused invocation cannot launch twice or change the original completion',
+      () async {
+        final process = _ProcessFacet();
+        final tool = await _tool(process, transcripts: transcripts);
+        final first = await _execute(tool, {'program': 'fixture'});
+        final duplicate = await _execute(tool, {
+          'program': 'different-program',
+        });
+        expect(first.outcome.disposition, ToolOutcomeDisposition.success);
+        expect(duplicate.outcome.disposition, ToolOutcomeDisposition.failure);
+        expect(
+          duplicate.outcome.effectCertainty,
+          EffectCertainty.knownNotOccurred,
+        );
+        expect(process.executions, 1);
+        final state = await transcripts.getState(
+          'session-command',
+          'run-command',
+          'tool-command',
+        );
+        expect(state.state, 'complete');
+        expect(state.program, 'fixture');
+      },
+    );
+
+    test(
+      'unreadable oversized metadata is rejected before command execution',
+      () async {
+        final process = _ProcessFacet();
+        final tool = await _tool(process, transcripts: transcripts);
+        final observation = await _execute(tool, {
+          'program': 'fixture',
+          'arguments': ['x' * (128 * 1024)],
+        });
+        expect(observation.outcome.disposition, ToolOutcomeDisposition.failure);
+        expect(
+          observation.outcome.effectCertainty,
+          EffectCertainty.knownNotOccurred,
+        );
+        expect(process.executions, 0);
+        expect(storage.transactions, 0);
+        expect(transcripts.activeCaptureCount, 0);
+      },
+    );
+
+    test(
+      'tiny text is readable while process waits and no raw progress escapes',
+      () async {
+        final committed = Completer<void>();
+        storage.afterCommit = (statements) {
+          if (CommandTestStorage.kindOf(statements) == 'append') {
+            committed.complete();
+          }
+        };
+        final producer = StreamController<EnvironmentProcessEvent>();
+        addTearDown(producer.close);
+        final process = _ProcessFacet(events: () => producer.stream);
+        final tool = await _tool(process, transcripts: transcripts);
+        final events = <ToolExecutionEvent>[];
+        final done = Completer<void>();
+        final subscription = tool.executable
+            .execute(
+              await _canonical(tool, {'program': 'fixture'}),
+              _executionContext(),
+            )
+            .listen(events.add, onDone: done.complete);
+        addTearDown(subscription.cancel);
+        producer.add(
+          _output(EnvironmentProcessOutputStream.stdout, 'waiting\n'),
+        );
+        await committed.future.timeout(const Duration(seconds: 2));
+        final page = await transcripts.readAfter(
+          'session-command',
+          'run-command',
+          'tool-command',
+          0,
+          16,
+          65536,
+        );
+        expect(page.chunks.single.text, 'waiting\n');
+        expect(page.state.state, 'capturing');
+        expect(events, isEmpty);
+        producer.add(_completed());
+        await producer.close();
+        await done.future;
+        expect(events, hasLength(1));
+        expect(
+          (events.single as ToolExecutionTerminal)
+              .outcome
+              .hostData['captureState'],
+          'complete',
+        );
+      },
+    );
+
+    test(
+      'silent producer is cancelled without waiting for another output',
+      () async {
+        final listening = Completer<void>();
+        final cancelled = Completer<void>();
+        final producer = StreamController<EnvironmentProcessEvent>(
+          onListen: listening.complete,
+          onCancel: cancelled.complete,
+        );
+        addTearDown(producer.close);
+        final process = _ProcessFacet(events: () => producer.stream);
+        final tool = await _tool(process, transcripts: transcripts);
+        final events = <ToolExecutionEvent>[];
+        final subscription = tool.executable
+            .execute(
+              await _canonical(tool, {'program': 'fixture'}),
+              _executionContext(),
+            )
+            .listen(events.add);
+        await listening.future;
+        await subscription.cancel().timeout(const Duration(seconds: 2));
+        await cancelled.future.timeout(const Duration(seconds: 2));
+        expect(events, isEmpty);
+        expect(process.executions, 1);
+        expect(transcripts.activeCaptureCount, 0);
+        expect(
+          (await transcripts.getState(
+            'session-command',
+            'run-command',
+            'tool-command',
+          )).state,
+          'failed',
+        );
+      },
+    );
+
+    test('cancelling during capture setup never launches a producer', () async {
+      final entered = Completer<void>();
+      final release = Completer<void>();
+      storage.beforeTransaction = (statements) async {
+        if (CommandTestStorage.kindOf(statements) == 'setup') {
+          entered.complete();
+          await release.future;
+        }
+      };
+      final process = _ProcessFacet();
+      final tool = await _tool(process, transcripts: transcripts);
+      final events = <ToolExecutionEvent>[];
+      final subscription = tool.executable
+          .execute(
+            await _canonical(tool, {'program': 'fixture'}),
+            _executionContext(),
+          )
+          .listen(events.add);
+      await entered.future;
+      final cancellation = subscription.cancel();
+      release.complete();
+      await cancellation.timeout(const Duration(seconds: 2));
+      expect(process.executions, 0);
+      expect(events, isEmpty);
+      expect(transcripts.activeCaptureCount, 0);
+    });
+
+    test(
+      'store close cancels a real silent producer despite paused observation',
+      () async {
+        final listening = Completer<void>();
+        final cancelled = Completer<void>();
+        final producer = StreamController<EnvironmentProcessEvent>(
+          onListen: listening.complete,
+          onCancel: cancelled.complete,
+        );
+        addTearDown(producer.close);
+        final tool = await _tool(
+          _ProcessFacet(events: () => producer.stream),
+          transcripts: transcripts,
+        );
+        final execution = _execute(tool, {'program': 'fixture'});
+        await listening.future;
+        final observer = StreamIterator(
+          transcripts.watch('session-command', 'run-command', 'tool-command'),
+        );
+        expect(await observer.moveNext(), isTrue);
+        await transcripts.close().timeout(const Duration(seconds: 2));
+        await cancelled.future.timeout(const Duration(seconds: 2));
+        final observation = await execution.timeout(const Duration(seconds: 2));
+        expect(observation.progress, isEmpty);
+        expect(observation.outcome.disposition, ToolOutcomeDisposition.failure);
+        expect(observation.outcome.effectCertainty, EffectCertainty.uncertain);
+        expect(transcripts.activeCaptureCount, 0);
+        expect(transcripts.observerCount, 0);
+        expect(await observer.moveNext(), isFalse);
+        await observer.cancel();
+      },
+    );
+
+    for (final appendFailure in [true, false]) {
+      test(
+        '${appendFailure ? 'append failure' : 'post-completion protocol failure'} survives throwing producer cleanup',
+        () async {
+          final primary = StateError('primary append failure');
+          if (appendFailure) {
+            storage.beforeTransaction = (statements) {
+              if (CommandTestStorage.kindOf(statements) == 'append') {
+                throw primary;
+              }
+            };
+          }
+          var cancellations = 0;
+          final producer = StreamController<EnvironmentProcessEvent>(
+            onCancel: () async {
+              cancellations++;
+              throw StateError('secondary cancellation failure');
+            },
+          );
+          addTearDown(producer.close);
+          producer.add(
+            _output(
+              EnvironmentProcessOutputStream.stdout,
+              'known partial text',
+            ),
+          );
+          if (!appendFailure) {
+            producer.add(_completed(exitCode: 23));
+            producer.add(
+              _output(
+                EnvironmentProcessOutputStream.stderr,
+                'forbidden after completion',
+              ),
+            );
+          }
+          final tool = await _tool(
+            _ProcessFacet(events: () => producer.stream),
+            transcripts: transcripts,
+          );
+          final observation = await _execute(tool, {
+            'program': 'fixture',
+          }).timeout(const Duration(seconds: 2));
+          final outcome = observation.outcome;
+          expect(observation.progress, isEmpty);
+          expect(outcome.disposition, ToolOutcomeDisposition.failure);
+          expect(outcome.failureKind, ToolFailureKind.infrastructure);
+          expect(outcome.effectCertainty, EffectCertainty.uncertain);
+          expect(outcome.hostData['stdout'], 'known partial text');
+          expect(outcome.hostData['stderr'], '');
+          expect(outcome.hostData['cleanupFailed'], isTrue);
+          expect(
+            outcome.hostDiagnostic,
+            isNot(contains('secondary cancellation failure')),
+          );
+          expect(cancellations, 1);
+          expect(transcripts.activeCaptureCount, 0);
+          expect(transcripts.pendingBatchChunks, 0);
+          final state = await transcripts.getState(
+            'session-command',
+            'run-command',
+            'tool-command',
+          );
+          expect(state.state, 'failed');
+          if (appendFailure) {
+            expect(outcome.cause, same(primary));
+            expect(state.highWater, 0);
+          } else {
+            expect(outcome.hostDiagnostic, contains('after completion'));
+            expect(outcome.hostData['termination'], 'exited');
+            expect(outcome.hostData['exitCode'], 23);
+            expect(
+              (state.highWater, state.termination, state.exitCode),
+              (1, 'exited', 23),
+            );
+          }
+        },
+      );
+    }
+
+    for (final phase in ['setup', 'append', 'complete']) {
+      for (final lostAck in [false, true]) {
+        test(
+          '$phase ${lostAck ? 'lost ack' : 'failure'} yields one conservative outcome without execution retry',
+          () async {
+            var injected = 0;
+            void inject(List<RelationalStatement> statements) {
+              if (CommandTestStorage.kindOf(statements) == phase) {
+                injected++;
+                throw StateError('injected $phase');
+              }
+            }
+
+            if (lostAck) {
+              storage.afterCommit = inject;
+            } else {
+              storage.beforeTransaction = inject;
+            }
+            var settled = 0;
+            Stream<EnvironmentProcessEvent> events() async* {
+              try {
+                yield _output(EnvironmentProcessOutputStream.stdout, 'partial');
+                yield _completed(exitCode: 23);
+              } finally {
+                settled++;
+              }
+            }
+
+            final process = _ProcessFacet(events: events);
+            final tool = await _tool(process, transcripts: transcripts);
+            final observation = await _execute(tool, {'program': 'fixture'});
+            expect(observation.progress, isEmpty);
+            final outcome = observation.outcome;
+            expect(outcome.disposition, ToolOutcomeDisposition.failure);
+            expect(outcome.failureKind, ToolFailureKind.infrastructure);
+            expect(
+              outcome.effectCertainty,
+              phase == 'setup'
+                  ? EffectCertainty.knownNotOccurred
+                  : EffectCertainty.uncertain,
+            );
+            expect(outcome.hostData['captureState'], 'failed');
+            expect(process.executions, phase == 'setup' ? 0 : 1);
+            expect(settled, phase == 'setup' ? 0 : 1);
+            expect(injected, 1);
+            if (phase == 'complete') {
+              expect(outcome.hostData['termination'], 'exited');
+              expect(outcome.hostData['exitCode'], 23);
+            }
+            expect(transcripts.activeCaptureCount, 0);
+            expect(transcripts.pendingBatchChunks, 0);
+          },
+        );
+      }
+    }
+
+    test(
+      'provider incomplete output retains exit facts but cannot report capture complete',
+      () async {
+        final process = _ProcessFacet(
+          events: () => _eventsThenError(
+            const EnvironmentFailure(
+              code: 'process_output_incomplete',
+              message: 'Drain incomplete.',
+              details: {
+                'outputIncomplete': true,
+                'termination': 'exited',
+                'exitCode': 23,
+              },
+            ),
+          ),
+        );
+        final observation = await _execute(
+          await _tool(process, transcripts: transcripts),
+          {'program': 'fixture'},
+        );
+        expect(observation.progress, isEmpty);
+        expect(observation.outcome.failureKind, ToolFailureKind.infrastructure);
+        expect(observation.outcome.effectCertainty, EffectCertainty.uncertain);
+        expect(observation.outcome.hostData['captureState'], 'failed');
+        expect(observation.outcome.hostData['exitCode'], 23);
+        final state = await transcripts.getState(
+          'session-command',
+          'run-command',
+          'tool-command',
+        );
+        expect(
+          (state.state, state.termination, state.exitCode),
+          ('failed', 'exited', 23),
+        );
+      },
+    );
+  });
 }
 
-Future<MaterializedTool> _tool(_ProcessFacet process) async {
+Future<MaterializedTool> _tool(
+  _ProcessFacet process, {
+  CommandTranscriptStore? transcripts,
+}) async {
   final ExtensionRegistry extensions = ExtensionRegistry();
-  final ExtensionRegistration activation = const CommandToolsPlugin().activate(
-    extensions,
-  );
+  if (transcripts == null) {
+    final storage = CommandTestStorage();
+    final owned = CommandTranscriptStore(storage);
+    transcripts = owned;
+    addTearDown(() async {
+      await owned.close();
+      storage.close();
+    });
+  }
+  final ExtensionRegistration activation = CommandToolsPlugin(
+    transcripts: transcripts,
+  ).activate(extensions);
   addTearDown(activation.close);
   return _materializedTool(extensions, process);
 }
@@ -770,6 +1202,7 @@ Future<ToolExecutionObservation> _execute(
 ToolExecutionContext _executionContext() => ToolExecutionContext(
   runId: RunId('run-command'),
   sessionId: SessionId('session-command'),
+  toolInvocationId: 'tool-command',
 );
 
 Future<ToolInvocation> _resolveInvocation(
@@ -784,7 +1217,8 @@ Future<ToolInvocation> _resolveInvocation(
                 arguments: arguments,
               ),
               tools: MaterializedToolSet(<MaterializedTool>[tool]),
-              context: _executionContext(),
+              runId: RunId('run-command'),
+              sessionId: SessionId('session-command'),
             )
             as ResolvedToolProposal)
         .invocation;

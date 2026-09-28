@@ -89,11 +89,23 @@ native implementations supply their behavior; calling a stub natively throws
 `UnsupportedError`.
 
 - `owning_backend_bridge.dart` supplies `OwningBackendRequestChannel` for generated
-  unary clients. Requests are limited to descriptor-allowlisted services on the
+  unary and server-streaming clients via `AdeleStreamChannel`. Requests are limited
+  to descriptor-allowlisted services on the
   exact sibling backend connection and configuration context captured by the host.
   There is no PluginId selection, arbitrary backend lookup, or retargeting after
   retirement. `owningBackend` strategy affinity requires exact host-verified
   registration origin and pins execution to that same strategy binding.
+  Streams open only on listen, with pause/resume/cancel propagated to native
+  transport. Retirement cancels observation and fences queued eval callbacks;
+  it does not cancel independently owned backend work. Native stream errors use
+  fixed safe text, and malformed generated items terminate only that observation.
+  The pinned evaluator misdeclares `Stream.listen`'s return type; interpreted
+  consumers retain the subscription as `dynamic` for pause/resume/cancel. The
+  native adapter corrects error/done callback dispatch locally, without a plugin
+  codec or SDK/dependency patch. Runtime null callbacks are supported, but the pin's
+  SDK declarations still reject literal null callback arguments at compilation;
+  omit unused callbacks or use the tested dynamic-null shape. `PreparedFrontend` can host this bridge independently
+  of Session/strategy presentation.
 - `session_execution_bridge.dart` supplies current Session identity, immutable
   execution snapshots and subscriptions, asynchronous `startSessionRun`, retained
   activity reads, and inspect/build operations over emitted opaque handles.

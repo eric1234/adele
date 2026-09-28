@@ -10,6 +10,8 @@ import 'package:command_tools_backend/command_tools_backend.dart';
 import 'package:command_tools_plugin/command_tools_plugin.dart';
 import 'package:test/test.dart';
 
+import '../../../test/support/command_storage.dart';
+
 void main() {
   late _Fixture fixture;
   setUp(() => fixture = _Fixture());
@@ -55,13 +57,18 @@ void main() {
         });
         final description = await local.describe(
           canonical,
-          ToolExecutionContext(sessionId: facet.sessionId, runId: RunId('run')),
+          ToolExecutionContext(
+            sessionId: facet.sessionId,
+            runId: RunId('run'),
+            toolInvocationId: 'invocation',
+          ),
         );
         final remote = await fixture.client.describe(
           runCommandToolId.value,
           arguments,
           'session',
           'run',
+          'invocation',
           environment,
         );
         expect(remote.effects, [RemoteToolEffect.processExecution]);
@@ -97,22 +104,13 @@ void main() {
   );
 
   test(
-    'operation-bound generated process preserves ordered progress and nonzero outcome',
+    'operation-bound process emits only bounded terminal outcome and captures output',
     () async {
       final events = await fixture.execute();
       expect(events.map((event) => event.kind), [
-        RemoteToolExecutionEventKind.progress,
-        RemoteToolExecutionEventKind.progress,
         RemoteToolExecutionEventKind.terminal,
       ]);
-      expect(events.take(2).map((event) => event.progress!.kind), [
-        RemoteToolProgressKind.stdout,
-        RemoteToolProgressKind.stderr,
-      ]);
-      expect(events.take(2).map((event) => event.progress!.content), [
-        'out\n',
-        'err\n',
-      ]);
+      expect(events.where((event) => event.progress != null), isEmpty);
       final outcome = events.last.outcome!;
       expect(outcome.disposition, RemoteToolOutcomeDisposition.success);
       expect(outcome.effectCertainty, RemoteEffectCertainty.knownOccurred);
@@ -126,11 +124,25 @@ void main() {
         'stderr': 'err\n',
         'termination': 'exited',
         'exitCode': 7,
-        'stdoutTruncated': true,
+        'captureState': 'complete',
+        'stdoutTruncated': false,
         'stderrTruncated': false,
       });
       expect(outcome.modelContent, contains('Exit code: 7'));
       expect(outcome.toLocal().cause, isNull);
+      final page = await fixture.transcripts.readAfter(
+        'session-data',
+        'run-data',
+        'invocation-1',
+        0,
+        16,
+        65536,
+      );
+      expect(page.state.state, 'complete');
+      expect(page.chunks.map((chunk) => (chunk.stream, chunk.text)), [
+        ('stdout', 'out\n'),
+        ('stderr', 'err\n'),
+      ]);
       final open = fixture.messages.singleWhere(
         (message) => message['kind'] == 'hostStreamOpen',
       );
@@ -209,21 +221,36 @@ void main() {
         ['operation', 'second-operation'],
       );
       final before = fixture.process.settled;
+      final listening = Completer<void>();
+      final cancelled = Completer<void>();
+      final producer = StreamController<EnvironmentProcessEvent>(
+        onListen: listening.complete,
+        onCancel: cancelled.complete,
+      );
+      addTearDown(producer.close);
+      fixture.process.producer = producer.stream;
       final arguments = await fixture.client.validateAndNormalize(
         runCommandToolId.value,
         _proposed,
       );
-      await fixture.backend
+      final events = <RemoteToolExecutionEvent>[];
+      final subscription = fixture.backend
           .execute(
             runCommandToolId.value,
             arguments,
             'session',
             'run',
+            'invocation-direct',
             'environment',
             fixture.token,
           )
-          .first;
+          .listen(events.add);
+      await listening.future.timeout(const Duration(seconds: 2));
+      await subscription.cancel().timeout(const Duration(seconds: 2));
+      await cancelled.future.timeout(const Duration(seconds: 2));
+      expect(events, isEmpty);
       expect(fixture.process.settled, before + 1);
+      expect(fixture.transcripts.activeCaptureCount, 0);
       expect(
         fixture.messages.any(
           (message) => message['kind'] == 'hostStreamCancel',
@@ -258,6 +285,7 @@ void main() {
                 arguments,
                 'session',
                 'run',
+                'invocation-invalid',
                 'environment',
                 token,
               )
@@ -271,6 +299,7 @@ void main() {
           arguments,
           'session',
           'run',
+          'invocation',
           null,
         ),
         throwsA(isA<AdeleRemoteFailure>()),
@@ -294,6 +323,7 @@ void main() {
             'arguments': {'snapshot': arguments.snapshot},
             'sessionId': 'session',
             'runId': 'run',
+            'toolInvocationId': 'invocation',
             'environmentId': 'environment',
           },
         ),
@@ -332,6 +362,9 @@ final class _NoEffects implements AuthorizedEnvironmentProcessFacet {
 final class _Fixture {
   final messages = <Map<String, Object?>>[];
   final process = _Process();
+  final storage = CommandTestStorage();
+  late final transcripts = CommandTranscriptStore(storage);
+  int invocations = 0;
   String token = 'operation';
   final routes = <int, AdeleBackendDispatcher>{};
   late final reverse = AuthorizedEnvironmentProcessServiceDispatcher(process);
@@ -341,7 +374,7 @@ final class _Fixture {
       unawaited(Future<void>(() => _respond(message)));
     },
   );
-  late final backend = CommandToolsBackend(host);
+  late final backend = CommandToolsBackend(host, transcripts);
   late final forward = RemoteModelToolServiceDispatcher(backend);
   late final client = RemoteModelToolServiceClient(_Channel(forward));
 
@@ -358,6 +391,7 @@ final class _Fixture {
           arguments,
           'session-data',
           'run-data',
+          'invocation-${++invocations}',
           'environment-data',
           token,
         )
@@ -413,11 +447,14 @@ final class _Fixture {
     host.close();
     await forward.close();
     await reverse.close();
+    await transcripts.close();
+    storage.close();
   }
 }
 
 final class _Process implements AuthorizedEnvironmentProcessService {
   Object? failure;
+  Stream<EnvironmentProcessEvent>? producer;
   bool timedOut = false;
   int settled = 0;
   @override
@@ -425,6 +462,10 @@ final class _Process implements AuthorizedEnvironmentProcessService {
     EnvironmentForegroundProcessRequest request,
   ) async* {
     try {
+      if (producer case final stream?) {
+        yield* stream;
+        return;
+      }
       for (final stream in EnvironmentProcessOutputStream.values) {
         yield EnvironmentProcessEvent(
           kind: EnvironmentProcessEventKind.output,
@@ -446,7 +487,7 @@ final class _Process implements AuthorizedEnvironmentProcessService {
               ? EnvironmentProcessTermination.timedOut
               : EnvironmentProcessTermination.exited,
           exitCode: timedOut ? null : 7,
-          stdoutTruncated: true,
+          stdoutTruncated: false,
           stderrTruncated: false,
         ),
       );

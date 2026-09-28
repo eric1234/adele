@@ -134,7 +134,8 @@ Future<ToolInvocation> testInvocation(
           arguments: const <String, Object?>{'uri': 'file:///tmp/example.dart'},
         ),
         tools: catalog.materialize(),
-        context: testExecutionContext(),
+        runId: RunId('run-1'),
+        sessionId: SessionId('session-1'),
       );
   return (resolution as ResolvedToolProposal).invocation;
 }
@@ -142,4 +143,5 @@ Future<ToolInvocation> testInvocation(
 ToolExecutionContext testExecutionContext() => ToolExecutionContext(
   runId: RunId('run-1'),
   sessionId: SessionId('session-1'),
+  toolInvocationId: 'tool-1',
 );
