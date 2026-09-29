@@ -22,6 +22,21 @@ Widget buildTerminalProjection(String handle) => throw UnsupportedError(
   'Terminal projection access is available only to interpreted frontends.',
 );
 
+/// Hides paint, interaction and semantics without detaching layout or the parser.
+/// Call before reconstructing a prefix, not for ordinary live appends. Cancels a
+/// pending reveal. This is presentation readiness, not output/history authority.
+void hideTerminalProjection(String handle) => throw UnsupportedError(
+  'Terminal projection access is available only to interpreted frontends.',
+);
+
+/// Reveals after mounted layout and the requested follow/local offset settle.
+/// Keep the native view mounted while awaiting this bounded frame settlement.
+/// Returns false on cancellation, retirement or unavailable layout; it never
+/// reveals a stale request after a subsequent hide. Does not fetch any output.
+Future<bool> revealTerminalProjection(String handle) => throw UnsupportedError(
+  'Terminal projection access is available only to interpreted frontends.',
+);
+
 /// Parses an ordered prefix and returns its accepted UTF-16 code-unit count.
 /// At most 1024 units are accepted per call. Feeding stops once downward rendered
 /// row advances reach min([lineBudget], rows), checked between atomic parser
@@ -54,7 +69,7 @@ void resetTerminalProjection(String handle) => throw UnsupportedError(
   'Terminal projection access is available only to interpreted frontends.',
 );
 
-/// Immutable snapshot: following/alwaysFollow/resumeAtEnd (bool), columns/rows/maxLines,
+/// Immutable snapshot: ready/following/alwaysFollow/resumeAtEnd (bool), columns/rows/maxLines,
 /// maxFeedCodeUnits, historyWindowCodeUnits, acceptedCodeUnits, lineAdvances,
 /// firstRetainedLine, retainedLines (int), scrollOffset/maxScrollOffset (double).
 /// Progress starts at zero on reset. Row advances count downward cursor movement

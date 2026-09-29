@@ -943,6 +943,128 @@ void main() {
     },
   );
 
+  for (final duringHydration in [false, true]) {
+    for (final waiting in [false, true]) {
+      testWidgets(
+        'reattach discovers ${waiting ? 'waiting' : 'live'} association ${duringHydration ? 'during' : 'after'} hydration without evidence polling',
+        (tester) async {
+          source.running = true;
+          source.advancing = !waiting;
+          source.entries.add(
+            const ChatEntry(
+              id: 'accepted',
+              role: 'user',
+              content: 'Retained request',
+              runId: null,
+            ),
+          );
+          final gate = Completer<void>();
+          if (duringHydration) source.snapshotGate = gate;
+          await tester.pumpWidget(_host(generation, source));
+          await tester.pumpAndSettle();
+          expect(source.snapshotReads, 1);
+          source.entries[0] = const ChatEntry(
+            id: 'accepted',
+            role: 'user',
+            content: 'Retained request',
+            runId: 'retained-live',
+          );
+          source.historicalHandles['retained-live'] = 'fresh-live-handle';
+          source.activities['fresh-live-handle'] = [
+            _model('retained-model', [_tool('retained-tool', 'read_file')]),
+          ];
+          source.sessionStateRevision++;
+          source.notifyListeners();
+          if (duringHydration) gate.complete();
+          await tester.pumpAndSettle();
+          expect(source.snapshotReads, 2);
+          expect(source.opened, ['retained-live']);
+          expect(find.text('Retained request'), findsOneWidget);
+          expect(find.text('COMPACT retained-tool'), findsOneWidget);
+          expect(
+            tester.widget<TextField>(find.byType(TextField)).enabled,
+            isFalse,
+          );
+          for (var evidence = 0; evidence < 3; evidence++) {
+            source.notifyListeners();
+            await tester.pumpAndSettle();
+          }
+          expect(source.snapshotReads, 2);
+          expect(source.opened, ['retained-live']);
+          await tester.tap(find.text('COMPACT retained-tool'));
+          expect(source.inspected, ['retained-tool']);
+          expect(source.starts, 0);
+          expect(source.writes, isEmpty);
+          expect(source.submitted, isEmpty);
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
+  for (final initialHydration in [false, true]) {
+    testWidgets(
+      'completion during ${initialHydration ? 'initial' : 'association'} hydration publishes final answer exactly once',
+      (tester) async {
+        source.running = true;
+        source.advancing = true;
+        source.entries.add(
+          const ChatEntry(
+            id: 'accepted',
+            role: 'user',
+            content: 'Finishing request',
+            runId: null,
+          ),
+        );
+        final gate = Completer<void>();
+        if (initialHydration) source.snapshotGate = gate;
+        await tester.pumpWidget(_host(generation, source));
+        await tester.pumpAndSettle();
+        if (!initialHydration) source.snapshotGate = gate;
+        source.entries[0] = const ChatEntry(
+          id: 'accepted',
+          role: 'user',
+          content: 'Finishing request',
+          runId: 'finishing-run',
+        );
+        source.historicalHandles['finishing-run'] = 'fresh-finished-handle';
+        source.activities['fresh-finished-handle'] = [
+          _model('finishing-model', [_tool('finishing-tool', 'read_file')]),
+        ];
+        source.sessionStateRevision++;
+        source.notifyListeners();
+        await tester.pumpAndSettle();
+        source.entries.add(
+          const ChatEntry(
+            id: 'final',
+            role: 'assistant',
+            content: 'Final canonical answer',
+            runId: null,
+          ),
+        );
+        source.finish();
+        await tester.pumpAndSettle();
+        gate.complete();
+        await tester.pumpAndSettle();
+        expect(find.text('Finishing request'), findsOneWidget);
+        expect(find.text('Final canonical answer'), findsOneWidget);
+        expect(find.text('COMPACT finishing-tool'), findsOneWidget);
+        expect(source.snapshotReads, initialHydration ? 2 : 3);
+        final reads = source.snapshotReads;
+        source.notifyListeners();
+        await tester.pumpAndSettle();
+        expect(source.snapshotReads, reads);
+        expect(source.starts, 0);
+        expect(source.submitted, isEmpty);
+        expect(
+          tester.getTopLeft(find.text('COMPACT finishing-tool')).dy,
+          lessThan(tester.getTopLeft(find.text('Final canonical answer')).dy),
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   testWidgets(
     'unassociated activity remains presentation-local across follow-up snapshots',
     (tester) async {
@@ -1353,6 +1475,7 @@ class _Source extends ChangeNotifier
   String? failure;
   int starts = 0;
   int snapshotReads = 0;
+  int sessionStateRevision = 0;
   int configurations = 0;
   int inFlightSaves = 0;
   int maxInFlightSaves = 0;
@@ -1460,6 +1583,7 @@ class _Source extends ChangeNotifier
     'running': running,
     'advancing': advancing,
     'failure': failure,
+    'sessionStateRevision': sessionStateRevision,
   };
   @override
   Future<String> startRun() async {
@@ -1482,6 +1606,7 @@ class _Source extends ChangeNotifier
       );
       running = false;
       advancing = false;
+      sessionStateRevision++;
     }
     notifyListeners();
     return handle;
@@ -1490,6 +1615,7 @@ class _Source extends ChangeNotifier
   void finish() {
     running = false;
     advancing = false;
+    sessionStateRevision++;
     notifyListeners();
   }
 

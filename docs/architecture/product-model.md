@@ -434,6 +434,13 @@ activity, approvals, and outcomes do not automatically become canonical strategy
 state. A strategy determines what semantic results it retains across Runs;
 execution observation is not itself a persistence model.
 
+The current window supports independently active Sessions within one open Project,
+while presenting only one Session at a time. Each Session permits at most one
+active Run, including an unresolved approval. Selection does not own execution;
+the [execution model](execution-model.md#session-strategy-and-run) defines retained
+ownership, status, and concurrency boundaries. This introduces no durable status
+or restart recovery for active work.
+
 Exact executable bindings apply during a Run. Retained strategy, model, and tool
 bindings must not silently switch generations on continuation or approval resume.
 Binding retirement does not promise rollback of effects already in flight.

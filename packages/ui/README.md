@@ -137,11 +137,18 @@ native implementations supply their behavior; calling a stub natively throws
 - `session_execution_bridge.dart` supplies current Session identity, immutable
   execution snapshots and subscriptions, asynchronous `startSessionRun`, retained
   activity reads, and inspect/build operations over emitted opaque handles.
-  `String? openSessionRunActivity(String runId)` accepts a semantic Run ID, validates that retained
+  `String? openSessionRunActivity(String runId)` accepts a semantic Run ID, validates that accepted preparing/live/waiting or terminal
   activity belongs to the presented Session, and returns a read-only opaque handle
   for those same activity/Inspection paths, or null when unavailable. It grants no
   execution or approval authority and creates no Run. Run start resolves when
-  scheduled, not when execution completes. Generic
+  scheduled, not when execution completes. A fresh presentation receives fresh
+  handles; retirement never revives prior access. Accepted preparation and startup
+  failure remain readable with their actual state and no invented evidence.
+  A stored terminal record without evidence remains unavailable. Execution snapshots include
+  `sessionStateRevision`, a semantic invalidation after strategy materialization
+  and terminal settlement, distinct from activity/evidence revision. Consumers
+  capture it before hydration and recheck after subscribing and asynchronous reads
+  to discover missed canonical changes without polling. Generic
   `settleSessionOperation(Future)` returns `[true, value]` or `[false, null]` to
   contain native Future rejection that the evaluator cannot reliably unwind;
   it preserves interpreted success values without codecs or exception transport.
@@ -178,7 +185,13 @@ native implementations supply their behavior; calling a stub natively throws
   and explicit copy do not grant input,
   paste, terminal replies, resize, process, signal, or backend authority. Plugin
   readers own fetching and history position; the native projection is not history
-  storage. See the [bridge contract](lib/terminal_projection_bridge.dart) for the
+  storage. `hideTerminalProjection(handle)` suppresses paint and interaction while
+  preserving layout. `revealTerminalProjection(handle)` settles only after the
+  intended viewport has laid out and the first revealed frame has painted; it
+  returns false when the request is revoked or superseded. The `ready` snapshot
+  field exposes presentation readiness, not transcript completeness. Plugins choose
+  finite restore targets and use this gate for reconstruction, not ordinary live
+  pages. See the [bridge contract](lib/terminal_projection_bridge.dart) for the
   exact operations and [app adapter](../../app/README.md#native-terminal-surface)
   for native hosting.
 - `console_bridge.dart` supplies
@@ -232,13 +245,26 @@ native implementations supply their behavior; calling a stub natively throws
 | --- | --- |
 | `project` | `{id, displayName}` |
 | `selectedTaskId` | Task ID or null |
-| `tasks` | List of `{id, title, sessionCount}` |
+| `tasks` | List of `{id, title, sessionCount, executionCounts}` |
+| `tasks[].executionCounts` | `{preparing, running, waiting, terminal, completed, cancelled, failed}` integer Session counts |
 | `selectedTask` | Null, or `{id, title, primaryEnvironment, sessions, sessionCreationOptions}` |
 | `selectedTask.primaryEnvironment` | Null, or `{id, providerId}` |
-| `selectedTask.sessions` | List of `{id, strategyId, presentationName, available}` |
+| `selectedTask.sessions` | List of `{id, strategyId, presentationName, available, executionStatus}` |
 | `selectedTask.sessionCreationOptions` | List of `{opaqueHandle, displayName}` |
 
 IDs and labels are strings, counts are integers, and availability is boolean.
+`executionStatus` is `idle`, `preparing`, `running`, `waitingForApproval`,
+`completed`, `cancelled`, or `failed`. These values project the latest retained
+execution owner's state, independently of presentation availability; no owner is
+allocated just to enumerate or observe a Session. `idle` includes Sessions without
+a retained execution owner. Task counts count Sessions, not historical Runs:
+`waiting` counts `waitingForApproval`, `terminal` sums completed/cancelled/failed,
+and idle Sessions contribute only to `sessionCount`. These are not persisted
+Task states or plugin/tool-specific progress. Generic status changes use the
+existing frame-coalesced browser subscription rather than packet-level workbench
+rebuilds. Waiting is read-only attention; approval remains on the exact Session's
+host-owned surface, never in this bridge.
+
 Unavailable Sessions remain in the snapshot. Availability describes current
 presentation/strategy resolution and required affinity, not a promise that a view
 will render or a Run can execute. The host revalidates exact creation choices and

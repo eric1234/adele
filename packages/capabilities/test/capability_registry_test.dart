@@ -18,6 +18,156 @@ void main() {
   });
 
   test(
+    'changes broadcast asynchronously after registration and retirement',
+    () async {
+      final registry = CapabilityRegistry();
+      final first = <int>[];
+      final second = <int>[];
+      final subscription = registry.changes.listen(
+        (_) => first.add(registry.providersFor(capability).length),
+      );
+      final otherSubscription = registry.changes.listen(
+        (_) => second.add(registry.providersFor(capability).length),
+      );
+      addTearDown(subscription.cancel);
+      addTearDown(otherSubscription.cancel);
+
+      final registration = registry.register(
+        provider: _provider(capability, 'dev.adele.inspector.alpha'),
+        endpoint: _Endpoint(),
+      );
+      expect(first, isEmpty);
+      expect(second, isEmpty);
+      expect(registry.providersFor(capability), hasLength(1));
+      await Future<void>.delayed(Duration.zero);
+      expect(first, [1]);
+      expect(second, [1]);
+
+      final binding = registry.resolve(capability);
+      binding.onRetire(() {
+        expect(first, [1]);
+        expect(second, [1]);
+        expect(registry.providersFor(capability), isEmpty);
+      });
+      final closing = registration.close();
+      expect(first, [1]);
+      expect(second, [1]);
+      await closing;
+      await Future<void>.delayed(Duration.zero);
+      expect(first, [1, 0]);
+      expect(second, [1, 0]);
+    },
+  );
+
+  test(
+    'discovery, rejected registration and repeated retirement do not notify',
+    () async {
+      final registry = CapabilityRegistry();
+      var changes = 0;
+      final subscription = registry.changes.listen((_) => changes++);
+      addTearDown(subscription.cancel);
+      final provider = _provider(capability, 'dev.adele.inspector.alpha');
+      registry.providersFor(capability);
+      expect(
+        () => registry.resolve(capability),
+        throwsA(isA<CapabilityUnavailable>()),
+      );
+      expect(
+        () => registry.register(
+          provider: provider,
+          endpoint: _Endpoint(serviceId: 'wrong'),
+        ),
+        throwsA(isA<CapabilityContractMismatch>()),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(changes, 0);
+
+      final registration = registry.register(
+        provider: provider,
+        endpoint: _Endpoint(),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(changes, 1);
+      registry.providersFor(capability);
+      registry.resolve(capability);
+      expect(
+        () => registry.register(provider: provider, endpoint: _Endpoint()),
+        throwsA(isA<DuplicateProviderRegistration>()),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(changes, 1);
+      await registration.close();
+      await registration.close();
+      await Future<void>.delayed(Duration.zero);
+      expect(changes, 2);
+    },
+  );
+
+  test(
+    'changes do not replay and cancelled listeners receive no queued changes',
+    () async {
+      final registry = CapabilityRegistry();
+      final registration = registry.register(
+        provider: _provider(capability, 'dev.adele.inspector.alpha'),
+        endpoint: _Endpoint(),
+      );
+      var changes = 0;
+      final subscription = registry.changes.listen((_) => changes++);
+      await Future<void>.delayed(Duration.zero);
+      expect(changes, 0);
+      final closing = registration.close();
+      await subscription.cancel();
+      await closing;
+      await Future<void>.delayed(Duration.zero);
+      expect(changes, 0);
+    },
+  );
+
+  test(
+    'retirement invalidates discovery even when a synchronous observer fails',
+    () async {
+      final registry = CapabilityRegistry();
+      final descriptor = _provider(capability, 'dev.adele.inspector.alpha');
+      final registration = registry.register(
+        provider: descriptor,
+        endpoint: _Endpoint(),
+      );
+      final original = registry.resolve(capability);
+      final observed = <List<ProviderDescriptor>>[];
+      final subscription = registry.changes.listen(
+        (_) => observed.add(registry.providersFor(capability)),
+      );
+      addTearDown(subscription.cancel);
+      final failure = StateError('Retirement observer failed');
+      original.onRetire(() => throw failure);
+      await expectLater(registration.close(), throwsA(same(failure)));
+      await Future<void>.delayed(Duration.zero);
+      expect(observed, [isEmpty]);
+      expect(
+        () => original.endpointAs<_Endpoint>(),
+        throwsA(isA<ProviderUnavailable>()),
+      );
+
+      final replacement = registry.register(
+        provider: descriptor,
+        endpoint: _Endpoint(),
+      );
+      await registration.close();
+      await Future<void>.delayed(Duration.zero);
+      expect(observed, [
+        isEmpty,
+        [same(descriptor)],
+      ]);
+      expect(replacement.isClosed, isFalse);
+      expect(
+        original.isSameRegistration(registry.resolve(capability)),
+        isFalse,
+      );
+      await replacement.close();
+    },
+  );
+
+  test(
     'ownership uses exact registrations across discovery and replacement',
     () async {
       final registry = CapabilityRegistry();

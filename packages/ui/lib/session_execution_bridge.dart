@@ -4,6 +4,9 @@ import 'package:flutter/widgets.dart';
 /// Identifiers in snapshots are data; only emitted opaque handles select activity.
 String currentSessionId() => throw UnsupportedError('Interpreted host only.');
 
+/// `sessionStateRevision` changes when strategy materialization or terminal
+/// settlement can change canonical Session state. Capture it before hydration
+/// and compare after subscribing/reading; ordinary activity changes do not bump it.
 Map<String, Object?> readSessionExecution() =>
     throw UnsupportedError('Interpreted host only.');
 
@@ -11,8 +14,10 @@ Map<String, Object?> readSessionExecution() =>
 Future<String> startSessionRun() =>
     throw UnsupportedError('Interpreted host only.');
 
-/// Opens retained terminal evidence belonging to this Session, or returns null
-/// when unavailable. The opaque handle grants presentation access, not execution.
+/// Opens accepted preparing/live/waiting or retained terminal activity belonging
+/// to this canonical Session, or returns null when unavailable. Preparation and
+/// startup failure may have an empty evidence list. Fresh presentations receive fresh
+/// opaque handles, never revived old handles or execution/approval authority.
 String? openSessionRunActivity(String runId) =>
     throw UnsupportedError('Interpreted host only.');
 

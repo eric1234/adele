@@ -8,6 +8,7 @@ import 'prepared_frontend.dart';
 import 'structured_bridge_data.dart';
 
 /// Application-owned projection and mutations for one presented Project.
+/// Execution status is read-only retained-owner evidence, not execution access.
 abstract interface class TaskBrowserSource {
   Map<String, Object?> read();
   Future<void> selectTask(String? taskId);
@@ -230,6 +231,7 @@ final class TaskBrowserBridge extends TaskBrowserDeclarations
 
   void _changed() {
     if (!_available || _scheduled || _listeners.isEmpty) return;
+    // Graph and background execution-status changes share one view-local frame.
     _scheduled = true;
     final queued = Map.of(_listeners);
     final generation = _notificationGeneration;

@@ -49,6 +49,14 @@ merely because streaming supports cancellation. Transport completion and domain
 settlement remain distinct; a domain contract may require an explicit semantic
 terminal result rather than interpreting stream EOF as success.
 
+Native dispatchers serialize ordinary admission by default. A service owner may
+explicitly opt into concurrent admission when it enforces the necessary
+per-Session or per-execution guards. This is a local admission policy, not a wire
+change, general scheduler, or authority grant. Stream credit/cancellation bypass
+ordinary admission in either mode. Dispatcher close fences new admission and
+drains all admitted operations; it does not interrupt unary service work or replace
+the owner's domain shutdown and dependency settlement.
+
 ADELE does not currently provide general symmetric RPC, client streaming,
 bidirectional streaming, ambient arbitrary callbacks, or general transparent remote
 objects. Calls in both directions through explicitly scoped channels do not imply

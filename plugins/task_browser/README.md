@@ -25,8 +25,12 @@ Task, Environment, Session, or Run.
 The current stock flow provides Task list/search/create/select, primary
 Environment identity, and Session list/create/open. Project/Task breadcrumbs are
 host-owned navigation into this presentation. The UI deliberately shows only
-available facts: titles, Session counts, Environment/provider identities, Session
-identities and presentation names, and host-issued creation choices.
+available facts: titles, Session counts, generic preparing/running/waiting/terminal
+counts with failed outcomes visible, Environment/provider identities, Session
+identities and presentation names, and host-issued creation choices. Each Session
+also shows its host-projected execution status independently of whether its
+presentation can currently open. This is passive background observation, not a
+durable Task status store, Command-specific progress, or an approval surface.
 
 Categories/archive, summaries, progress, usage, SCM status, meaningful Session
 titles, child Session browsing, rename/delete, Environment management, and

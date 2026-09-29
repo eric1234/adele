@@ -879,6 +879,169 @@ BEGIN SELECT RAISE(ABORT, 'association rejected'); END;
   );
 
   test(
+    'one Session advancing or waiting never blocks another Session',
+    () async {
+      final store = ChatSessionStore();
+      final service = ChatSessionBackend(store);
+      final firstHost = _Host()
+        ..modelGate = Completer<void>()
+        ..batch = true
+        ..finalAnswer = 'First final';
+      final secondHost = _Host()..finalAnswer = 'Second final';
+      final firstDispatcher = RemoteOrchestrationHostServiceDispatcher(
+        firstHost,
+      );
+      final secondDispatcher = RemoteOrchestrationHostServiceDispatcher(
+        secondHost,
+      );
+      final backend = ChatRemoteOrchestrationBackend(
+        sessions: store,
+        hostChannel: (context) => _DirectHostChannel(
+          context == 'first' ? firstDispatcher : secondDispatcher,
+        ),
+      );
+      addTearDown(() async {
+        if (!firstHost.modelGate!.isCompleted) firstHost.modelGate!.complete();
+        await backend.close();
+        await firstDispatcher.close();
+        await secondDispatcher.close();
+      });
+      Future<String> materialize(String session, String run) =>
+          backend.materialize(
+            chatStrategyRouteId,
+            RemoteOrchestrationSession(
+              sessionId: session,
+              taskId: 'task-$session',
+              strategyId: chatStrategyId.value,
+            ),
+            run,
+          );
+      await service.appendUserMessage('first', 'First prompt');
+      await service.appendUserMessage('second', 'Second prompt');
+      final first = await materialize('first', 'first-run');
+      final advancing = backend.start(first, 'first');
+      await firstHost.modelEntered.future;
+      await expectLater(
+        materialize('first', 'duplicate'),
+        _failure('session_busy'),
+      );
+      await expectLater(
+        service.setDraftRequest('first', 'blocked'),
+        _failure('session_busy'),
+      );
+      final second = await materialize('second', 'second-run');
+      expect(
+        await backend
+            .start(second, 'second')
+            .timeout(const Duration(seconds: 5)),
+        RemoteRunState.completed,
+      );
+      expect(firstHost.modelGate!.isCompleted, isFalse);
+      expect(
+        (await service.snapshot('first')).entries.map((entry) => entry.role),
+        ['user'],
+      );
+      final secondSnapshot = await service.snapshot('second');
+      expect(secondSnapshot.entries.map((entry) => entry.content), [
+        'Second prompt',
+        'Second final',
+      ]);
+      expect(secondSnapshot.entries.first.runId, 'second-run');
+      expect(
+        (await service.snapshot('first')).entries.single.runId,
+        'first-run',
+      );
+      firstHost.modelGate!.complete();
+      expect(await advancing, RemoteRunState.waiting);
+      await expectLater(
+        service.appendUserMessage('first', 'blocked'),
+        _failure('session_busy'),
+      );
+      await service.setDraftRequest('second', 'Next draft');
+      expect((await service.snapshot('second')).draftRequest, 'Next draft');
+      expect(
+        await backend.resolveApproval(
+          first,
+          RemoteApprovalResolution(
+            interruptionId: 'approval',
+            toolInvocationId: 'tool',
+            approved: false,
+          ),
+          'first',
+        ),
+        RemoteRunState.completed,
+      );
+      final firstSnapshot = await service.snapshot('first');
+      expect(firstSnapshot.entries.map((entry) => entry.content), [
+        'First prompt',
+        'First final',
+      ]);
+      expect(firstSnapshot.entries.first.runId, 'first-run');
+      expect(
+        firstHost.events.where((event) => event == 'approval'),
+        hasLength(1),
+      );
+      await service.setDraftRequest('first', 'Released');
+    },
+  );
+
+  test(
+    'entrypoint transport admits a second Session while the first model is blocked',
+    () async {
+      final backend = await _RunningBackend.start();
+      addTearDown(backend.close);
+      backend.host.modelGate = Completer<void>();
+      backend.host.batch = true;
+      final secondHost = _Host()..finalAnswer = 'Independent answer';
+      backend.hostDispatchers['second-token'] =
+          RemoteOrchestrationHostServiceDispatcher(secondHost);
+      await backend.chat.appendUserMessage('session', 'First prompt');
+      final first = await backend.materialize();
+      final advancing = backend.orchestration.start(first, 'first-token');
+      // Observe failures before any bounded assertion, so cleanup can always drain.
+      advancing.ignore();
+      await backend.host.modelEntered.future;
+      await backend.chat.appendUserMessage('other', 'Other prompt');
+      final second = await backend.orchestration.materialize(
+        chatStrategyRouteId,
+        RemoteOrchestrationSession(
+          sessionId: 'other',
+          taskId: 'other-task',
+          strategyId: chatStrategyId.value,
+        ),
+        'other-run',
+      );
+      expect(
+        await backend.orchestration.start(second, 'second-token'),
+        RemoteRunState.completed,
+      );
+      expect(backend.host.modelGate!.isCompleted, isFalse);
+      expect(
+        (await backend.chat.snapshot(
+          'other',
+        )).entries.map((entry) => entry.content),
+        ['Other prompt', 'Independent answer'],
+      );
+      expect(
+        (await backend.chat.snapshot('session')).entries.single.runId,
+        'run',
+      );
+      await backend.expectBusy();
+      backend.host.modelGate!.complete();
+      expect(await advancing, RemoteRunState.waiting);
+      await backend.chat.setDraftRequest('other', 'Still usable while A waits');
+      expect(
+        (await backend.chat.snapshot('other')).draftRequest,
+        'Still usable while A waits',
+      );
+      expect(
+        backend.host.events.where((event) => event == 'approval'),
+        isEmpty,
+      );
+    },
+  );
+
+  test(
     'shutdown settles a blocked reverse call before forward drain',
     () async {
       final backend = await _RunningBackend.start();
@@ -1517,6 +1680,7 @@ final class _RunningBackend {
   final bool _ownsStorage;
   late final storageDispatcher = ProjectStorageServiceDispatcher(storage);
   late final dispatcher = RemoteOrchestrationHostServiceDispatcher(host);
+  final hostDispatchers = <String, RemoteOrchestrationHostServiceDispatcher>{};
   late final chat = ChatSessionServiceClient(
     _Channel(this, chatSessionServiceId),
   );
@@ -1629,7 +1793,8 @@ final class _RunningBackend {
     };
     final response = infrastructure
         ? await storageDispatcher.dispatch(envelope)
-        : await dispatcher.dispatch(envelope);
+        : await (hostDispatchers[request['hostContext']] ?? dispatcher)
+              .dispatch(envelope);
     commands.send({...response, 'kind': 'hostResponse'});
   }
 
@@ -1655,6 +1820,7 @@ final class _RunningBackend {
         gate.complete();
       }
       await dispatcher.close();
+      await Future.wait(hostDispatchers.values.map((value) => value.close()));
       await storageDispatcher.close();
       if (_ownsStorage) storage.close();
     }

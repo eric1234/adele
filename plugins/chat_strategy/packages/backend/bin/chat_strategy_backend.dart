@@ -49,9 +49,11 @@ Future<void> main(List<String> arguments, Object? bootstrapMessage) async {
       defaultConfigurationContext: {
         chatSessionServiceId: ChatSessionServiceDispatcher(
           ChatSessionBackend(sessions),
+          concurrent: true,
         ),
         remoteOrchestrationServiceId: RemoteOrchestrationServiceDispatcher(
           orchestration,
+          concurrent: true,
         ),
       },
     },

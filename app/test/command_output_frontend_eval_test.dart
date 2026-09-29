@@ -157,6 +157,152 @@ void main() {
     expect(tester.takeException(), isNull);
   }
 
+  for (final preview in [false, true]) {
+    testWidgets(
+      '${preview ? 'Inspection' : 'expanded'} restores a finite initial tail before first paint without live flicker',
+      (tester) async {
+        output.publish('capturing');
+        output.append(List.generate(80, (i) => 'initial-$i\r\n').join());
+        final initialUnits = output.units;
+        final first = output.readGate = Completer<void>();
+        await mount(tester, preview: preview);
+        await _until(
+          tester,
+          () => output.activeReads == 1,
+          'initial read held',
+        );
+        await tester.pump();
+        expect(_painted(tester), isFalse);
+        expect(find.byType(TerminalView).hitTestable(), findsNothing);
+        expect(find.text('Replaying output...'), findsOneWidget);
+
+        // Grow the known high-water while replaying, then hold the new suffix.
+        // Initial readiness must not chase that moving producer indefinitely.
+        output.append('newer-than-initial-target\r\n');
+        final next = output.readGate = Completer<void>();
+        first.complete();
+        await _until(tester, () {
+          if (_painted(tester)) {
+            expect(_text(_view(tester).terminal), contains('initial-79'));
+            expect(
+              _text(_view(tester).terminal),
+              isNot(contains('newer-than')),
+            );
+            if (!preview) {
+              expect(
+                content.projection.snapshot['acceptedCodeUnits'],
+                initialUnits,
+              );
+            }
+          }
+          return output.cursors.length == 2 &&
+              output.activeReads == 1 &&
+              find.text('Following output (catching up)').evaluate().isNotEmpty;
+        }, 'finite target revealed before later read settles');
+        expect(_painted(tester), isTrue);
+        expect(find.text('Following output (catching up)'), findsOneWidget);
+        expect(find.text('Replaying output...'), findsNothing);
+        next.complete();
+        await _until(tester, () {
+          expect(_painted(tester), isTrue);
+          expect(find.text('Replaying output...'), findsNothing);
+          return _text(_view(tester).terminal).contains('newer-than-initial');
+        }, 'live suffix appends without closing readiness');
+        expect(output.maximumReads, 1);
+        await unmount(tester);
+      },
+    );
+  }
+
+  testWidgets('historical goal survives repeated hide during partial replay', (
+    tester,
+  ) async {
+    output.publish('capturing');
+    output.append('x' * 120000);
+    await mount(tester);
+    await caughtUp(tester);
+    output.readGateAfterCursor = 4;
+    output.readGate = Completer<void>();
+    await tester.tap(find.text('Middle'));
+    final target = content.state['targetLines']! as int;
+    expect(target, greaterThan(500));
+    for (var attempt = 0; attempt < 2; attempt++) {
+      await _until(
+        tester,
+        () => output.activeReads == 1 && output.cursors.last == 4,
+        'historical replay paused after one bounded page',
+      );
+      expect(_painted(tester), isFalse);
+      expect(content.projection.snapshot['ready'], isFalse);
+      expect(content.projection.snapshot['acceptedCodeUnits'], 16384);
+      expect(content.state['targetLines'], target);
+      expect(content.state['following'], isFalse);
+      expect(content.state['liveTail'], isFalse);
+      await unmount(tester);
+      output.readGate!.complete();
+      await _until(tester, () => output.activeReads == 0, 'old read retired');
+      output.readGate = attempt == 0 ? Completer<void>() : null;
+      await mount(tester);
+    }
+    await _until(tester, () {
+      if (_painted(tester)) {
+        expect(content.projection.snapshot['lineAdvances'], target);
+        expect(content.projection.snapshot['scrollOffset'], 0.0);
+      }
+      return find.text('Reading history').evaluate().isNotEmpty;
+    }, 'original goal, not partial accepted extent, is revealed');
+    expect(content.projection.snapshot['lineAdvances'], target);
+    expect(content.state['targetLines'], -1);
+    expect(content.state['codeUnits']! as int, greaterThan(16384));
+    expect(output.maximumReads, 1);
+    expect(output.maximumPageChunks, lessThanOrEqualTo(4));
+    await unmount(tester);
+  });
+
+  testWidgets(
+    'live feed checkpoints save logical state only at idle or freeze',
+    (tester) async {
+      output.publish('capturing');
+      output.append('initial\r\n');
+      await mount(tester);
+      await caughtUp(tester);
+      final initial = output.units;
+      output.readGateAfterCursor = 5;
+      output.readGate = Completer<void>();
+      output.append('x' * (4096 * 5));
+      await _until(
+        tester,
+        () => output.activeReads == 1 && output.cursors.last == 5,
+        'one live page applied while the next is held',
+      );
+      expect(_painted(tester), isTrue);
+      expect(find.text('Replaying output...'), findsNothing);
+      expect(content.state['codeUnits'], initial);
+      final accepted = content.projection.snapshot['acceptedCodeUnits'];
+      expect(accepted, initial + 16384);
+      final view = _view(tester);
+      view.controller!.setSelection(
+        view.terminal.buffer.createAnchor(0, 0),
+        view.terminal.buffer.createAnchor(4, 0),
+      );
+      await _until(
+        tester,
+        () => content.state['following'] == false,
+        'user freeze saves the exact applied position during the drain',
+      );
+      expect(content.state['codeUnits'], accepted);
+      output.readGate!.complete();
+      await _until(
+        tester,
+        () => output.activeReads == 0,
+        'pending page settled',
+      );
+      expect(content.projection.snapshot['acceptedCodeUnits'], accepted);
+      expect(output.maximumReads, 1);
+      await unmount(tester);
+    },
+  );
+
   testWidgets(
     'generated watch admits after absence and renders split controls',
     (tester) async {
@@ -289,6 +435,9 @@ void main() {
       'codeUnits',
       'knownLines',
       'scrollOffset',
+      'targetLines',
+      'targetUnits',
+      'restoreScroll',
     });
     expect(
       content.state.values.every((value) => value is bool || value is num),
@@ -320,6 +469,8 @@ void main() {
         'newer terminal notification while page is held',
       );
       expect(output.cursors, [0]);
+      expect(_painted(tester), isFalse);
+      expect(content.projection.snapshot['ready'], isFalse);
       expect(output.maximumReads, 1);
       output.readGate!.complete();
       await caughtUp(tester);
@@ -383,11 +534,16 @@ void main() {
       await unmount(tester);
       output.append(lines('while-hidden', 30));
       await mount(tester);
-      await _until(
-        tester,
-        () => find.text('Reading history').evaluate().isNotEmpty,
-        'reconstruction of frozen prefix on remount',
-      );
+      await _until(tester, () {
+        if (_painted(tester)) {
+          expect(_text(_view(tester).terminal), original);
+          expect(
+            _view(tester).scrollController!.offset,
+            closeTo((retained['scrollOffset']! as num).toDouble(), 1),
+          );
+        }
+        return find.text('Reading history').evaluate().isNotEmpty;
+      }, 'reconstruction of frozen prefix on remount');
       expect(_view(tester).terminal, isNot(same(oldTerminal)));
       expect(_text(_view(tester).terminal), original);
       expect(content.state['codeUnits'], retained['codeUnits']);
@@ -436,6 +592,8 @@ void main() {
         '$mode failure',
       );
       expect(output.cursors, [0]);
+      expect(_painted(tester), isFalse);
+      expect(content.projection.snapshot['ready'], isFalse);
       expect(
         _text(_view(tester).terminal),
         isNot(contains('not silently skipped')),
@@ -1206,6 +1364,19 @@ final class _InspectionSource extends ChangeNotifier
 TerminalView _view(WidgetTester tester) =>
     tester.widget<TerminalView>(find.byType(TerminalView));
 
+bool _painted(WidgetTester tester) {
+  if (find.byType(TerminalView).evaluate().isEmpty) return false;
+  return tester
+          .widget<Opacity>(
+            find.ancestor(
+              of: find.byType(TerminalView),
+              matching: find.byType(Opacity),
+            ),
+          )
+          .opacity ==
+      1;
+}
+
 String _text(Terminal terminal) => [
   for (var i = 0; i < terminal.buffer.lines.length; i++)
     terminal.buffer.lines[i].getText().trimRight(),
@@ -1246,6 +1417,7 @@ final class _Output implements CommandOutputService {
   String readMode = '';
   bool emitInitial = true;
   Completer<void>? readGate;
+  int readGateAfterCursor = 0;
 
   CommandCaptureState get state => captureState('session');
 
@@ -1336,7 +1508,7 @@ final class _Output implements CommandOutputService {
       values.fold<int>(0, (sum, chunk) => sum + chunk.text.length),
     );
     try {
-      await readGate?.future;
+      if (afterCursor >= readGateAfterCursor) await readGate?.future;
       if (readMode == 'error' || failOnce) {
         throw StateError('SECRET storage path');
       }

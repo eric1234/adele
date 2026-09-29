@@ -114,12 +114,16 @@ Widget withoutHook() => Text('No pending state');
         session: session,
         providerId: ProviderId('dev.example.model'),
         model: null,
+        strategy: OrchestrationStrategyResolver(
+          runtime.extensions,
+        ).resolve(strategyId),
       );
       addTearDown(controller.close);
       final host = PreparedSessionHost(
         extensions: runtime.extensions,
         backends: runtime.plugins,
         controllerForSession: (_) => controller,
+        lookupControllerForSession: (_) => controller,
         inspectActivity: (_, _) => false,
       );
       addTearDown(host.close);
@@ -214,6 +218,65 @@ Widget withoutHook() => Text('No pending state');
       await tester.pumpWidget(const SizedBox.shrink());
       await host.prepareToDeactivate(session);
       expect(controller.isClosed, isFalse);
+      host.unbind(session);
+      await registration.close();
+      expect(selection.validate, throwsA(isA<StaleExtensionBinding>()));
+      expect(
+        controller.capturedStrategy!.validateBinding,
+        returnsNormally,
+        reason:
+            'Execution affinity does not retain frontend registration authority.',
+      );
+      final freshRegistration = runtime.extensions.register(
+        point: sessionPresentationContributions,
+        id: descriptor.extensionId,
+        value: contribution,
+      );
+      addTearDown(freshRegistration.close);
+      final fresh = host.resolve(
+        SessionPresentationResolver(runtime.extensions).resolve(strategyId),
+        session: session,
+      );
+      fresh.validateController(controller);
+      expect(
+        () => host.resolve(
+          fresh.presentation,
+          session: Session(
+            id: session.id,
+            taskId: session.taskId,
+            strategyId: session.strategyId,
+          ),
+        ),
+        throwsStateError,
+      );
+      host.bind(session, fresh);
+      await tester.pumpWidget(mount());
+      await tester.pumpAndSettle();
+      if (oldAction != null) expect(oldAction, throwsA(anything));
+      await tester.pumpWidget(const SizedBox.shrink());
+      host.unbind(session);
+      await strategy.close();
+      final replacement = runtime.extensions.register(
+        point: orchestrationStrategyContributions,
+        id: ExtensionId('dev.example.strategy'),
+        value: OrchestrationStrategyContribution(
+          strategyId: strategyId,
+          materialize: (_) =>
+              throw StateError('Must not substitute a new backend.'),
+        ),
+      );
+      addTearDown(replacement.close);
+      final substitute = host.resolve(
+        SessionPresentationResolver(runtime.extensions).resolve(strategyId),
+      );
+      expect(
+        () => substitute.validateController(controller),
+        throwsA(isA<StaleExtensionBinding>()),
+      );
+      expect(
+        () => host.resolve(substitute.presentation, session: session),
+        throwsA(isA<StaleExtensionBinding>()),
+      );
       expect(tester.takeException(), isNull);
     });
   }

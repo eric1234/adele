@@ -114,8 +114,10 @@ do not materialize Environments or start Runs. See
 <a id="session-presentation"></a>
 
 Session presentation is optional and does not own Session identity or strategy
-state. Host navigation awaits presentation-local settlement before leaving a
-quiescent Session; it does not cancel active work or resolve pending approvals.
+state. Host navigation awaits presentation-local settlement, but changing the
+presented Session does not close its execution. Multiple Sessions may advance
+independently in one Project/window, with at most one active Run per Session,
+including approval waits. Navigation does not cancel work or resolve approvals.
 Public [`adele_ui`](../../packages/ui/README.md) defines the implemented
 semantic contracts; the [UI extension architecture](plugin-system.md#ui-and-presentation)
 sets the broader boundary. [Product direction](../product/README.md) and the

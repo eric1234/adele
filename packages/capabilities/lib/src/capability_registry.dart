@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 
 import 'capability_error.dart';
@@ -191,6 +193,11 @@ final class CapabilityRegistrationGroup {
 }
 
 final class CapabilityRegistry {
+  final StreamController<void> _changes = StreamController<void>.broadcast();
+
+  /// Asynchronous invalidations after registration or retirement, not replay.
+  Stream<void> get changes => _changes.stream;
+
   final Map<CapabilityKey, Map<ProviderId, _ActiveRegistration>> _providers =
       <CapabilityKey, Map<ProviderId, _ActiveRegistration>>{};
 
@@ -226,6 +233,7 @@ final class CapabilityRegistry {
       endpoint,
     );
     capabilityProviders[provider.id] = registration;
+    _changes.add(null);
     return CapabilityRegistration._(this, registration);
   }
 
@@ -304,6 +312,7 @@ final class CapabilityRegistry {
       }
     }
     final listeners = registration.retirementListeners.values.toList();
+    _changes.add(null);
     registration.retirementListeners.clear();
     Object? firstError;
     StackTrace? firstStack;

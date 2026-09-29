@@ -159,11 +159,11 @@ relative to `app/`; this is a testing map, not an application architecture map.
 | Durable Chat across real backend generations | [`test/core/durable_chat_session_integration_test.dart`](../../app/test/core/durable_chat_session_integration_test.dart) (conversation/configuration/plain-text draft, user-entry Run association, atomic draft submission, fresh-runtime reopen, and completed Run/activity retention despite Chat storage failure; real Local Directory/Git/Chat AOT backends and SQLite with a deterministic native model fixture, no paid provider) |
 | Prepared Chat composer/history | [`test/chat_frontend_eval_test.dart`](../../app/test/chat_frontend_eval_test.dart) (draft saves/submission/retry, latest-save deactivation settlement, recoverable failure/pending-Send refusal, stale snapshot protection, historical activity placement, and preserving live handles during refresh) |
 | Session presentation settlement/rebinding | [`test/session_presentation_lifecycle_bridge_test.dart`](../../app/test/session_presentation_lifecycle_bridge_test.dart), [`test/prepared_session_host_test.dart`](../../app/test/prepared_session_host_test.dart) (async hook acceptance/failure, no-hook behavior, retirement during settlement, and exact action revocation on unbind/reopen) |
-| Session presentation/execution/approval | [`test/session_presentation_host_test.dart`](../../app/test/session_presentation_host_test.dart), [`test/session_execution_test.dart`](../../app/test/session_execution_test.dart), [`test/core/approval_gated_tool_policy_test.dart`](../../app/test/core/approval_gated_tool_policy_test.dart) |
+| Session presentation/execution/approval | [`test/session_presentation_host_test.dart`](../../app/test/session_presentation_host_test.dart), [`test/session_execution_test.dart`](../../app/test/session_execution_test.dart), [`test/core/approval_gated_tool_policy_test.dart`](../../app/test/core/approval_gated_tool_policy_test.dart) (passive retained-owner lookup, independent Session advancement, shared IDs, exact approval isolation, semantic readiness, and all-owner shutdown) |
 | Orchestration/authority adapters | [`test/core/orchestration_host_test.dart`](../../app/test/core/orchestration_host_test.dart), [`test/core/orchestration_authority_test.dart`](../../app/test/core/orchestration_authority_test.dart), [`test/core/model_tool_host_test.dart`](../../app/test/core/model_tool_host_test.dart), [`test/core/remote_inference_context_integration_test.dart`](../../app/test/core/remote_inference_context_integration_test.dart) |
 | Activity/Inspection | [`test/core/run_activity_projection_test.dart`](../../app/test/core/run_activity_projection_test.dart), [`test/inspection_host_test.dart`](../../app/test/inspection_host_test.dart), [`test/inspection_stack_test.dart`](../../app/test/inspection_stack_test.dart), [`test/openai_activity_frontend_eval_test.dart`](../../app/test/openai_activity_frontend_eval_test.dart) |
-| Historical activity access | [`test/session_execution_activity_test.dart`](../../app/test/session_execution_activity_test.dart), [`test/session_execution_bridge_test.dart`](../../app/test/session_execution_bridge_test.dart) (Session validation, read-only opaque handles, unchanged activity/Inspection paths, and no execution authority) |
-| Prepared normal composition, no live model | [`test/core/normal_task_git_integration_test.dart`](../../app/test/core/normal_task_git_integration_test.dart), [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (local fake Responses/credentials and picker; prepared browser navigation across Tasks/Sessions, durable Chat/activity reopen, active/approval navigation refusal, delayed/failed draft settlement, and Inspection clearing; not interactive native-picker proof) |
+| Scoped activity reacquisition | [`test/session_execution_activity_test.dart`](../../app/test/session_execution_activity_test.dart), [`test/session_execution_bridge_test.dart`](../../app/test/session_execution_bridge_test.dart) (live/waiting/preparing and historical Session validation, fresh read-only opaque handles, permanent old-view revocation, unchanged activity/Inspection paths, and no execution authority) |
+| Prepared normal composition, no live model | [`test/core/normal_task_git_integration_test.dart`](../../app/test/core/normal_task_git_integration_test.dart), [`test/core/normal_chatgpt_run_integration_test.dart`](../../app/test/core/normal_chatgpt_run_integration_test.dart) (local fake Responses/credentials and picker; concurrent Session commands in separate Task worktrees through shared AOT hosting, browser running/attention status, live/terminal Chat/activity reentry, stale approval callbacks, delayed/failed draft settlement, Inspection clearing, and hidden-owner shutdown; not interactive native-picker proof) |
 | Deterministic self-hosting | [`test/development/agent/development_self_hosting_test.dart`](../../app/test/development/agent/development_self_hosting_test.dart), [`test/development/agent/environment_read_agent_integration_test.dart`](../../app/test/development/agent/environment_read_agent_integration_test.dart) |
 
 Application dependency-boundary checks belong to
@@ -240,6 +240,10 @@ state-only updates, frozen history, bounded read admission, safe failures, and
 scalar-only remount state. `terminal_projection_bridge_test.dart` separately
 exercises scoped handles and revocation; existing interactive surface regressions
 remain selected alongside it.
+Readiness assertions observe native paint gating and settled viewport position at
+frame boundaries, not only widget presence or the final rendered buffer. The stock
+EVC cases cover finite high-water restoration under continued output, no ordinary
+live-page flicker, and repeated hide/remount while a historical prefix is rebuilding.
 
 The normal-application Command case in `normal_chatgpt_run_integration_test.dart`
 uses the ordinary Chat activity click, stock Inspection/console EVCs, real Command
@@ -382,6 +386,15 @@ analysis/test discovery, frontend compilation, frontend-only installation assemb
 and production app dependency boundaries are tooling concerns, not established by
 a plugin widget test alone. These paths and commands are a validation map, not
 recorded pass results or cross-platform desktop proof.
+
+The concurrent Session case routes deterministic model continuation by each
+Session's own prompt/tool context, not a global call count. Socket handshakes hold
+A's command while B emits real output in a separate worktree; returning to A
+checks retained Run/capture identity, hidden approval, exact resolution, and final
+canonical history. Failed-test cleanup releases the processes before application
+shutdown drains them. For application-wide ownership/navigation changes, follow
+focused checks with the maintained `dart tools/adele.dart test --target
+adele_desktop --ci`; preserve its single Flutter-worker policy.
 
 ### Focused persistence checks
 

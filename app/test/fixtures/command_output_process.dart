@@ -23,6 +23,10 @@ String captureBulk(String stream) {
 
 /// The socket is an external test handshake, never an output transport.
 Future<void> main(List<String> arguments) async {
+  if (arguments.length == 3 && arguments[1] == 'concurrent') {
+    await _concurrent(int.parse(arguments.first), arguments.last);
+    return;
+  }
   if (arguments.length == 2 && arguments.last == 'presentation') {
     await _presentation(int.parse(arguments.first));
     return;
@@ -131,4 +135,40 @@ Future<void> _presentation(int port) async {
   await releases.cancel();
   socket.destroy();
   exitCode = 23;
+}
+
+Future<void> _concurrent(int port, String label) async {
+  final socket = await Socket.connect(InternetAddress.loopbackIPv4, port);
+  final releases = StreamIterator(
+    socket
+        .cast<List<int>>()
+        .transform(utf8.decoder)
+        .transform(const LineSplitter()),
+  );
+  Future<void> gate(String stage, String release) async {
+    socket.writeln('$stage:$pid:${Directory.current.path}');
+    await socket.flush();
+    if (!await releases.moveNext().timeout(const Duration(seconds: 90)) ||
+        releases.current != release) {
+      throw StateError('Expected $release at $stage for $label.');
+    }
+  }
+
+  try {
+    await gate('connected', 'produce');
+    await File('concurrent-$label.txt').writeAsString('$label:$pid\n');
+    stdout.writeln('CONCURRENT_${label}_START pid=$pid');
+    await stdout.flush();
+    await gate('started', 'progress');
+    stdout.writeln('CONCURRENT_${label}_PROGRESS');
+    stderr.writeln('CONCURRENT_${label}_STDERR');
+    await stdout.flush();
+    await stderr.flush();
+    await gate('progress', 'exit');
+    stdout.writeln('CONCURRENT_${label}_END');
+    await stdout.flush();
+  } finally {
+    await releases.cancel();
+    socket.destroy();
+  }
 }

@@ -159,6 +159,22 @@ reconstruction is contained the same way. Recursive JSON maps use identity-based
 active-path cycle detection, allowing shared acyclic references, and a
 conservative maximum container depth of 64.
 
+Generated native dispatchers serialize ordinary requests and stream opening by
+default. A service owner may opt in with `ServiceDispatcher(service, concurrent:
+true)` to admit each independently on a microtask, without waiting for earlier
+ordinary calls to settle. The owner must enforce its own state/execution guards;
+this boolean changes admission only, not argument decoding, invocation authority,
+wire contracts, cancellation, or domain scheduling. Stream producers already
+advance independently after opening; their credit and cancellation controls bypass
+ordinary admission in either mode.
+
+Close synchronously fences new ordinary admission and memoizes its Future. It
+drains every admitted operation, including work not yet started, and cancels all
+stream producers. One failed operation does not skip another operation's drain;
+request/response failures retain their existing per-call reporting. Close is not
+unary cancellation and can wait for blocked service work, so service owners must
+settle or revoke their operation dependencies through their existing lifecycle.
+
 Generated stream clients are lazy and single-subscription. Generated
 dispatchers retain active iterators, encode one item per credit, classify one
 terminal state, propagate cancellation to iterator cancellation, and cancel all

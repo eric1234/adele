@@ -260,7 +260,12 @@ The projection bridge owns disposal, unlike the host-selected interactive surfac
 bridge; a new view reconstructs output through its plugin rather than inheriting
 an emulator cursor. Scoped replay yields check the original view before resuming;
 follow uses painted cursor geometry so short layouts do not follow empty screen
-padding. Native and actual-EVC coverage lives in
+padding. Generic projection hide/reveal readiness suppresses paint while retaining
+native layout, then reveals only after the intended scroll position has settled.
+Command Tools chooses a finite restoration target and keeps the terminal concealed
+during cancellable prefix reconstruction; normal live pages do not toggle readiness.
+Restoration remains O(prefix length), not an instant seek or retained-emulator cache.
+Native and actual-EVC coverage lives in
 `test/native_terminal_surface_test.dart` and `test/terminal_projection_bridge_test.dart`.
 
 ### Environment terminal ownership
@@ -548,6 +553,12 @@ Environment details expose identity/provider only. Unavailable Sessions remain
 visible. The public [UI README](../packages/ui/README.md#task-browser-snapshot)
 owns the snapshot/action shape and safe asynchronous result contract.
 
+Read-only execution status comes from window-owned `SessionExecutionOwners`,
+without creating controllers during enumeration or querying tool transcripts.
+Task rows aggregate preparing/running/approval/terminal Session counts; Session
+rows identify the affected work independently of presentation availability.
+Status invalidations are coalesced and exclude ordinary evidence-only updates.
+
 The source validates current Project/Task membership and the exact browser
 registration. Opaque creation choices retain exact Session presentation/strategy
 bindings and required affinity; submission revalidates them rather than resolving
@@ -557,8 +568,8 @@ selection/navigation. Leaving the browser revokes its presentation-local source,
 subscriptions, and choices.
 
 New and retained Sessions enter the same `AdeleApplication._activateSession` path
-for canonical membership checks, controller creation, exact presentation binding,
-and Inspection setup. Opening an existing Session preserves its identity and
+for canonical membership checks, lazy controller creation/reuse, exact presentation
+binding, and Inspection setup. Opening an existing Session preserves its identity and
 Environment association; browsing/opening does not materialize an Environment or
 start a Run. Missing model configuration does not prevent browsing or opening an
 otherwise available Session.
@@ -633,23 +644,31 @@ Reopen restores semantic Session/Environment associations, not presentations, li
 facets, or executable bindings. Missing strategy resolution fails explicitly while
 the restored identity remains. See [durable Session lifecycle tests](test/core/durable_session_lifecycle_test.dart).
 
-The window presents one Session at a time. Its Task breadcrumb returns to the
-browser with that Task selected; its Project breadcrumb clears the Task selection.
-Both use `AdeleApplication._showBrowser`, which refuses navigation while execution is
-running, advancing, or waiting for an approval. For quiescent Sessions it blocks
-input and awaits `PreparedSessionHost.prepareToDeactivate`, backed by the public
-asynchronous [presentation lifecycle hook](../packages/ui/README.md#interpreted-bridges).
-Hook rejection or failure keeps the live Session view available for correction or
-retry, rather than discarding pending local edits.
+The window presents one Session at a time, with independently active Sessions
+retained by [`SessionExecutionOwners`](lib/ui/execution/session_execution_owners.dart)
+outside the pure-Dart runtime graph. Its Task breadcrumb returns to the browser
+with that Task selected; its Project breadcrumb clears the Task selection.
+Both use `AdeleApplication._showBrowser`, which blocks input and awaits
+`PreparedSessionHost.prepareToDeactivate`, backed by the public asynchronous
+[presentation lifecycle hook](../packages/ui/README.md#interpreted-bridges).
+Failed draft saves or in-flight message acceptance retain the view for retry,
+but preparation, inference, tools, approvals, and history settlement do not block
+navigation for the duration of a Run.
 
-After acceptance, the app rechecks active work, awaits controller close, calls
-`PreparedSessionHost.unbind` to revoke exact presentation actions, and clears
-Session-local Inspection before updating the window selection. Resource-release
-failure after irreversible controller close still leaves the Session and reports
-a cleanup warning; it cannot restore a usable controller. Reopening even the same
-Session creates a fresh presentation binding, never reviving the previous view's
-actions. This is navigation settlement, not Run cancellation, automatic
-resume, or a promise to flush on arbitrary widget disposal/application exit. Follow
+After acceptance, the app unbinds/revokes exact presentation actions, detaches
+selected-view listeners, and clears Inspection/console context. Changing the
+presented Session does not close its execution. Reentry reuses the same owner
+and live Run with a fresh presentation binding; cached native approval callbacks
+and interpreted handles remain inert even when that Session is opened again.
+Only the selected owner updates workbench UI; background work never selects a
+Session or replaces Inspection. Owners remain until shutdown, while settled
+backend executions are released through the existing terminal path.
+`PreparedSessionHost` checks a retained controller's exact captured strategy
+against the new presentation's owning-backend affinity. A compatible frontend
+remount does not replace execution; unavailable or retired backends remain
+unavailable rather than migrating work. This is navigation settlement, not Run
+cancellation, restart recovery, or a promise to flush on arbitrary widget
+disposal/application exit. Follow
 [product semantics](../docs/architecture/product-model.md#session),
 [orchestration](../packages/orchestration/README.md), and [Chat](../plugins/chat_strategy/README.md)
 for the respective owners.
@@ -710,11 +729,18 @@ interruptions. Common host UI offers `Allow once` / `Deny`, rejects stale/duplic
 decisions, and applies display-safety checks without changing executed arguments.
 Approval neither overrides domain preconditions nor supplies an OS sandbox.
 
-Close blocks new actions and drains accepted Task establishment and Run advancement
-before backend teardown. Closing a quiescent waiting Run does not resolve its
-approval, execute the pending invocation, or invent a terminal record. Cleanup
-attempts continue after failure; close is resource cleanup, not general
-cancellation or a bounded deadline.
+Close blocks new owner creation, starts, and decisions and initiates closure of
+all retained controllers before awaiting their collective settlement, including
+hidden Sessions. Accepted Task establishment and Run advancement drain while
+backend/storage services remain available for normal history persistence.
+Closing a waiting Run does not resolve its approval, execute the pending
+invocation, or invent a terminal record. Cleanup attempts continue after failure;
+the memoized close result is stable and UI reports a failure once. This is resource
+cleanup, not general cancellation or a bounded total deadline.
+A failed execution release fences further starts on that owner rather than
+repeatedly accepting work against a failed cleanup future; sibling Sessions remain
+independent. Startup failures before a Run actually starts remain presentation
+failures, not invented durable terminal records.
 This does not restore live Runs/approvals or introduce a Profile system.
 [Durable Chat integration](test/core/durable_chat_session_integration_test.dart)
 exercises the persistence boundary without a paid model.
@@ -768,13 +794,20 @@ The full read model retains opaque native historical evidence, while frontend
 bridges expose narrower safe presentation data, never future continuation input.
 
 The generic `openSessionRunActivity` bridge operation resolves a semantic Run ID
-only within the presented Session and returns an opaque read-only handle, or null
-when retained evidence is unavailable. Restored
+only within the presented Session and returns a fresh opaque read-only handle for
+its retained live/waiting Run or terminal history, or null when unavailable. Restored
 snapshots use the existing activity reads, compact presentation, and Inspection
 paths, not a separate history renderer. Chat supplies its own durable user-entry
 association and fills missing view-local handles; app composition does not query
 Chat tables. A historical lookup starts no Run, resolves no approval, and requires
 no live model/tool provider or Environment materialization.
+
+`SessionExecutionController.sessionStateRevision` separately signals completed
+materialization/association and terminal settlement. Chat compares it across
+initial hydration and later reads, so a late user-entry Run association or a
+completion during hydration triggers canonical refresh without reloading history
+for every evidence packet. Chat alone associates its entries; the host does not
+infer a last-message relationship.
 
 Window-owned `WindowInspection` and `InspectionHost` own selection, card stack,
 collapse/dismiss state, common chrome, and inspect interaction. Generic compact and
@@ -869,8 +902,9 @@ plugin-owned durable state. Environment materialization remains lazy
 and runtime-only.
 Active/waiting Runs, claims, approval restart, live bindings, and native continuation
 recovery are not persisted. Rich Draft Request documents, conversation forks,
-and concurrent editing are unimplemented. The browser supports one presented
-Project and one Session at a time; automatic selection/resume, general settings,
+and concurrent editing are unimplemented. The browser supports one open Project
+and one presented Session with multiple independently active Sessions, not multiple
+active Runs per Session. Automatic selection/resume, general settings,
 Profiles, configured-provider/credential management, and workbench persistence
 remain absent.
 Current model-provider selection is the source-checkout seam above, not finished

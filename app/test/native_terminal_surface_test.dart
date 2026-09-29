@@ -32,6 +32,87 @@ void _expectProjectionRowVisible(WidgetTester tester, int row) {
 }
 
 void main() {
+  for (final following in [false, true]) {
+    testWidgets('reveal paints only settled ${following ? 'tail' : 'offset'}', (
+      tester,
+    ) async {
+      final surface = NativeTerminalSurface.projection(rows: 20, maxLines: 40);
+      addTearDown(surface.dispose);
+      surface.hideProjection();
+      final view = surface.buildView(isActive: () => true);
+      await tester.pumpWidget(_host(view, height: 130));
+      _feedProjection(surface, '${'row\n' * 60}TAIL');
+      if (!following) surface.scrollProjection(120);
+      var revealed = false;
+      final reveal = surface.revealProjection().then(
+        (value) => revealed = value,
+      );
+      final gate = find.ancestor(
+        of: find.byType(TerminalView),
+        matching: find.byType(Opacity),
+      );
+      expect(tester.widget<Opacity>(gate).opacity, 0);
+      expect(surface.readProjection()['ready'], isFalse);
+      expect(find.byType(TerminalView).hitTestable(), findsNothing);
+      var sawPaint = false;
+      for (var frame = 0; frame < 6; frame++) {
+        await tester.pump();
+        if (tester.widget<Opacity>(gate).opacity == 0) {
+          expect(revealed, isFalse);
+          continue;
+        }
+        sawPaint = true;
+        final terminal = _terminal(tester);
+        expect(_text(terminal), contains('TAIL'));
+        if (following) {
+          _expectProjectionRowVisible(tester, terminal.buffer.absoluteCursorY);
+        } else {
+          expect(surface.readProjection()['scrollOffset'], 120.0);
+          final render = tester
+              .state<TerminalViewState>(find.byType(TerminalView))
+              .renderTerminal;
+          expect(
+            render.getOffset(const CellOffset(0, 0)).dy,
+            closeTo(-120, .01),
+          );
+        }
+      }
+      await reveal;
+      expect(sawPaint, isTrue);
+      expect(revealed, isTrue);
+      // Ordinary accepted output does not close the readiness gate again.
+      if (following) {
+        surface.feedProjection('-live', 20);
+        await tester.pump();
+        expect(tester.widget<Opacity>(gate).opacity, 1);
+        expect(surface.readProjection()['ready'], isTrue);
+      }
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
+  testWidgets('hide and detach cancel pending reveal without stale paint', (
+    tester,
+  ) async {
+    final surface = NativeTerminalSurface.projection(rows: 20);
+    addTearDown(surface.dispose);
+    surface.hideProjection();
+    await tester.pumpWidget(_host(surface.buildView(isActive: () => true)));
+    final first = surface.revealProjection();
+    surface.hideProjection();
+    expect(await first, isFalse);
+    await tester.pump();
+    expect(surface.readProjection()['ready'], isFalse);
+    final second = surface.revealProjection();
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(await second, isFalse);
+    expect(surface.readProjection()['ready'], isFalse);
+    final third = surface.revealProjection();
+    surface.dispose();
+    expect(await third, isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('projection retains its last offset after native detach', (
     tester,
   ) async {

@@ -62,8 +62,6 @@ const _localDirectoryProjectPluginId =
     'dev.adele.plugin.local-directory-project';
 const _taskBrowserPluginId = 'dev.adele.plugin.task-browser';
 const _terminalPluginId = 'dev.adele.plugin.terminal';
-const _navigationBlocked =
-    'Finish or resolve the current Run before leaving this Session.';
 const _sourcePath = 'lib/task_answer.dart';
 const _taskText = 'const taskAnswer = "task-worktree-only";\n';
 const _patchedText = 'const taskAnswer = "approved-task-value";\n';
@@ -94,8 +92,642 @@ const _commandArguments = <String, Object?>{
 void main() {
   late _PreparedProduct prepared;
   setUpAll(() async {
-    prepared = await _PreparedProduct.prepare();
+    try {
+      prepared = await _PreparedProduct.prepare();
+    } on PluginBuildFailure catch (error) {
+      fail(
+        '$error\n${error.diagnostic?.stdoutText}\n${error.diagnostic?.stderrText}',
+      );
+    }
   });
+
+  testWidgets(
+    'normal application concurrently runs separate Sessions and retains hidden approvals and output',
+    (tester) => tester.runAsync(() async {
+      await tester.binding.setSurfaceSize(const Size(1600, 1200));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final fixture = await _ProductFixture.create();
+      final processServer = await ServerSocket.bind(
+        InternetAddress.loopbackIPv4,
+        0,
+      );
+      final children = <_PresentationProcess>[];
+      final processSubscription = processServer.listen((socket) {
+        children.add(_PresentationProcess(socket));
+      });
+      Map<String, Object?> arguments(String label) => {
+        'program': prepared.dartaotruntime,
+        'arguments': [
+          prepared.commandProcess.path,
+          '${processServer.port}',
+          'concurrent',
+          label,
+        ],
+        'workingDirectory': '',
+        'timeoutSeconds': 180,
+      };
+      const prompts = {
+        'A':
+            'Session A: run my two controlled commands with separate approvals.',
+        'B': 'Session B: run my controlled command independently of Session A.',
+      };
+      const answers = {
+        'A': 'Session A completed both commands in its own worktree.',
+        'B': 'Session B completed its command in its separate worktree.',
+      };
+      final outbound = <String, List<Map<String, Object?>>>{'A': [], 'B': []};
+      final endpointFailures = <(Object, StackTrace)>[];
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final subscription = server.listen((request) async {
+        try {
+          expect(request.method, 'POST');
+          expect(request.uri.path, '/backend-api/codex/responses');
+          final body =
+              jsonDecode(await utf8.decoder.bind(request).join())
+                  as Map<String, Object?>;
+          final input = (body['input']! as List<Object?>)
+              .cast<Map<String, Object?>>();
+          final users = input.where((item) => item['role'] == 'user').toList();
+          expect(users, hasLength(1));
+          // Route by this Session's own conversation and tool replay. Neither
+          // interleaving nor a global request count selects the response.
+          final prompt =
+              ((users.single['content']! as List).single as Map)['text'];
+          final label = prompts.entries
+              .singleWhere((entry) => entry.value == prompt)
+              .key;
+          final other = label == 'A' ? 'B' : 'A';
+          expect(users.single, _userInput(prompts[label]!));
+          expect(
+            body['instructions'],
+            contains('CONCURRENT_${label}_INSTRUCTIONS'),
+          );
+          expect(
+            body['instructions'],
+            isNot(contains('CONCURRENT_${other}_INSTRUCTIONS')),
+          );
+          expect(jsonEncode(input), isNot(contains('CONCURRENT_${other}1_')));
+          outbound[label]!.add(body);
+          final results = input
+              .where((item) => item['type'] == 'function_call_output')
+              .map((item) => item['call_id'])
+              .toSet();
+          request.response.headers.contentType = ContentType(
+            'text',
+            'event-stream',
+            charset: 'utf-8',
+          );
+          final first = '${label}1';
+          if (!results.contains(first)) {
+            expect(results, isEmpty);
+            _output(
+              request.response,
+              _call(first, 'run_command', arguments(first)),
+            );
+          } else {
+            expect(
+              _toolOutput(body, first),
+              contains('CONCURRENT_${first}_END'),
+            );
+            expect(_toolOutput(body, first), contains('Exit code: 0'));
+            if (label == 'A' && !results.contains('A2')) {
+              expect(results, {'A1'});
+              _output(
+                request.response,
+                _call('A2', 'run_command', arguments('A2')),
+              );
+            } else {
+              expect(results, label == 'A' ? {'A1', 'A2'} : {'B1'});
+              if (label == 'A') {
+                expect(_toolOutput(body, 'A2'), contains('CONCURRENT_A2_END'));
+              }
+              _output(
+                request.response,
+                _message('$label-final', answers[label]!),
+              );
+            }
+          }
+          _sse(request.response, {
+            'type': 'response.completed',
+            'response': {
+              'id': '$label-${results.length}',
+              'model': 'gpt-6-astra',
+            },
+          });
+        } on Object catch (error, stack) {
+          endpointFailures.add((error, stack));
+        } finally {
+          await request.response.close();
+        }
+      });
+      addTearDown(() async {
+        await server.close(force: true);
+        await subscription.cancel();
+        await processSubscription.cancel();
+        await processServer.close();
+      });
+      await fixture.launch(tester, prepared, endpoint: server);
+      // Registered after launch so failed assertions unblock owned Run drainage
+      // before application/backend teardown. Socket EOF also releases an as-yet
+      // unobserved child whose PID has not reached the first handshake.
+      addTearDown(() async {
+        for (final child in children) {
+          if (!child.exited && child.pid != null) {
+            Process.killPid(child.pid!, ProcessSignal.sigterm);
+          }
+          child.socket.destroy();
+          await child.lines.cancel();
+        }
+      });
+      final runtime = fixture.runtime;
+      expect(runtime.plugins.catalog!.issues, isEmpty);
+      expect(runtime.plugins.host, isA<PluginBackendHost>());
+      for (final id in [_chatPluginId, _commandPluginId, _gitPluginId]) {
+        final backend = runtime.plugins.backends.singleWhere(
+          (backend) => backend.installation.metadata.id.value == id,
+        );
+        expect(backend.state, InstalledBackendState.active);
+        expect(
+          backend.installation.backendArtifactUri,
+          prepared.backend(id).uri,
+        );
+      }
+      final chat = _chatClient(
+        runtime.plugins.backends
+            .singleWhere(
+              (backend) =>
+                  backend.installation.metadata.id.value == _chatPluginId,
+            )
+            .connection!,
+      );
+      final commandConnection = runtime.plugins.backends
+          .singleWhere(
+            (backend) =>
+                backend.installation.metadata.id.value == _commandPluginId,
+          )
+          .connection!;
+      final command = CommandOutputServiceClient(
+        commandConnection.channelFor(
+          commandConnection.defaultConfigurationContext,
+          commandOutputServiceId,
+        ),
+      );
+      final inspection = find.byType(ToolActivityInspectionHost).first;
+      final consoleHost = find.byType(WorkbenchConsole);
+
+      Future<void> browse() async {
+        await _breadcrumb(tester, 'project-breadcrumb');
+        await _terminalUntil(
+          tester,
+          () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+          'leave the active Session without draining execution',
+        );
+        expect(fixture.shell(tester).navigationError, isNull);
+        expect(find.byType(InspectionHost), findsNothing);
+        expect(consoleHost, findsNothing);
+      }
+
+      Future<void> open(Task task, Session session) async {
+        await _terminalTap(tester, find.text(task.title));
+        await _terminalTap(tester, _sessionRow(session.id));
+        await _terminalUntil(
+          tester,
+          () => _composer().evaluate().isNotEmpty,
+          'fresh Chat presentation for ${session.id.value}',
+        );
+        expect(_session(tester), same(session));
+      }
+
+      Future<_PresentedCapture> inspect(
+        Session session,
+        RunId runId,
+        int index,
+      ) async {
+        final compact = find.descendant(
+          of: find.byType(SessionPresentationHost),
+          matching: find.textContaining('Run Command:'),
+        );
+        await _terminalUntil(
+          tester,
+          () => compact.evaluate().length > index,
+          'reattached Chat command activity',
+        );
+        await _terminalTap(
+          tester,
+          find
+              .ancestor(
+                of: compact.at(index),
+                matching: find.byType(TextButton),
+              )
+              .first,
+        );
+        await _terminalUntil(
+          tester,
+          () => inspection.evaluate().isNotEmpty,
+          'stock Command Inspection',
+        );
+        final source = tester
+            .widget<ToolActivityInspectionHost>(inspection)
+            .source;
+        expect(source.sessionId, session.id);
+        expect(source.runId, runId);
+        return _PresentedCapture(
+          command,
+          session.id.value,
+          runId.value,
+          source.snapshot.id.value,
+        );
+      }
+
+      Future<void> expand() => _terminalTap(
+        tester,
+        find.descendant(of: inspection, matching: find.text('Show more')),
+      );
+
+      await fixture.openTask(tester);
+      final project = fixture.shell(tester).project!;
+      final taskA = fixture.shell(tester).task!;
+      final environmentA = fixture.shell(tester).environment!;
+      final worktreeA = await Directory(
+        developmentGitWorktreePath(project, environmentA),
+      ).resolveSymbolicLinks();
+      await File(
+        '$worktreeA/AGENTS.md',
+      ).writeAsString('CONCURRENT_A_INSTRUCTIONS\n');
+      await _tap(tester, 'New Chat Session');
+      await _send(tester, prompts['A']!);
+      await _terminalUntil(
+        tester,
+        () => fixture.status(tester).pendingApproval != null,
+        'A first approval',
+      );
+      final sessionA = _session(tester);
+      final runA = fixture.runIds.values.single;
+      final statusA = fixture.status(tester);
+      final approvalA1 = statusA.pendingApproval!;
+      expect(jsonDecode(approvalA1.canonicalArgumentsJson), arguments('A1'));
+      final captureA1 = await inspect(sessionA, runA, 0);
+      expect((await captureA1.state()).state, 'absent');
+      await _terminalTap(tester, find.text('Allow once'));
+      await _terminalUntil(
+        tester,
+        () => children.length == 1,
+        'A command started',
+      );
+      final childA1 = children.single;
+      await childA1.stage('connected');
+      expect(childA1.workingDirectory, worktreeA);
+      childA1.release('produce');
+      await childA1.stage('started');
+      await _projectionText(tester, inspection, 'CONCURRENT_A1_START');
+      await expand();
+      await _projectionText(tester, consoleHost, 'CONCURRENT_A1_START');
+      final console = tester.widget<WorkbenchConsole>(consoleHost).controller;
+      final tabA1 = console.selectedTab!;
+      expect(console.eligibleTabs, [tabA1]);
+      await browse();
+      expect(find.textContaining('1 running'), findsWidgets);
+      expect(await childA1.isAlive(), isTrue);
+      expect((await captureA1.state()).state, 'capturing');
+
+      // A is still blocked in a real process, not an approval or fabricated
+      // controller state, while B establishes a different Environment and runs.
+      await fixture.createTask(tester, 'Concurrent Task B');
+      final taskB = fixture.shell(tester).task!;
+      final environmentB = fixture.shell(tester).environment!;
+      final worktreeB = await Directory(
+        developmentGitWorktreePath(project, environmentB),
+      ).resolveSymbolicLinks();
+      expect(worktreeB, isNot(worktreeA));
+      expect(environmentB.id, isNot(environmentA.id));
+      await File(
+        '$worktreeB/AGENTS.md',
+      ).writeAsString('CONCURRENT_B_INSTRUCTIONS\n');
+      await _tap(tester, 'New Chat Session');
+      await _send(tester, prompts['B']!);
+      await _terminalUntil(
+        tester,
+        () => fixture.status(tester).pendingApproval != null,
+        'B independent approval',
+      );
+      final sessionB = _session(tester);
+      final runB = fixture.runIds.values.last;
+      final statusB = fixture.status(tester);
+      expect(sessionB.id, isNot(sessionA.id));
+      expect(runB, isNot(runA));
+      expect(runtime.lifecycle.databaseForSession(sessionA.id), isNotNull);
+      expect(
+        runtime.lifecycle.databaseForSession(sessionB.id),
+        same(runtime.lifecycle.databaseForSession(sessionA.id)),
+      );
+      expect(console.eligibleTabs, isEmpty);
+      expect(
+        jsonDecode(statusB.pendingApproval!.canonicalArgumentsJson),
+        arguments('B1'),
+      );
+      final captureB1 = await inspect(sessionB, runB, 0);
+      await _terminalTap(tester, find.text('Allow once'));
+      await _terminalUntil(
+        tester,
+        () => children.length == 2,
+        'B command started while A lives',
+      );
+      final childB1 = children.last;
+      await childB1.stage('connected');
+      expect(childB1.workingDirectory, worktreeB);
+      expect(childB1.pid, isNot(childA1.pid));
+      childB1.release('produce');
+      await childB1.stage('started');
+      await _projectionText(tester, inspection, 'CONCURRENT_B1_START');
+      await expand();
+      await _projectionText(tester, consoleHost, 'CONCURRENT_B1_START');
+      final tabB1 = console.selectedTab!;
+      expect(console.eligibleTabs, [tabB1]);
+      childB1.release('progress');
+      await childB1.stage('progress');
+      await _projectionText(tester, consoleHost, 'CONCURRENT_B1_PROGRESS');
+      expect(
+        _terminalBuffer(_projectionEngine(tester, consoleHost)),
+        isNot(contains('CONCURRENT_A')),
+      );
+      childA1.release('progress');
+      await childA1.stage('progress');
+      await _terminalUntil(
+        tester,
+        () async => (await captureA1.tail()).contains('CONCURRENT_A1_PROGRESS'),
+        'hidden A continues capture',
+      );
+      for (final (capture, child, environment) in [
+        (captureA1, childA1, environmentA),
+        (captureB1, childB1, environmentB),
+      ]) {
+        final state = await capture.state();
+        expect(state.state, 'capturing');
+        expect(state.environmentId, environment.id.value);
+        expect(state.totalCodeUnits, greaterThan(0));
+        expect(await child.isAlive(), isTrue);
+        expect(runtime.store.runRecord(RunId(capture.runId)), isNull);
+      }
+      expect(outbound['A'], hasLength(1));
+      expect(outbound['B'], hasLength(1));
+      expect(fixture.runIds.values, [runA, runB]);
+      await expectLater(
+        command.getState(sessionB.id.value, runA.value, captureA1.invocationId),
+        throwsA(
+          isA<CommandOutputFailure>().having(
+            (error) => error.code,
+            'code',
+            'association_mismatch',
+          ),
+        ),
+      );
+
+      await browse();
+      expect(find.textContaining('1 running'), findsNWidgets(2));
+      await open(taskA, sessionA);
+      await _projectionText(tester, consoleHost, 'CONCURRENT_A1_PROGRESS');
+      expect(console.selectedTab, same(tabA1));
+      expect(console.eligibleTabs, [tabA1]);
+      final reattachedA1 = await inspect(sessionA, runA, 0);
+      expect(reattachedA1.invocationId, captureA1.invocationId);
+      await _projectionText(tester, inspection, 'CONCURRENT_A1_PROGRESS');
+      expect(fixture.status(tester).isAdvancing, isTrue);
+      expect(children, hasLength(2));
+      expect(await childA1.isAlive(), isTrue);
+      expect(await childB1.isAlive(), isTrue);
+      expect(
+        _terminalBuffer(_projectionEngine(tester, consoleHost)),
+        isNot(contains('CONCURRENT_B')),
+      );
+      await browse();
+      await open(taskB, sessionB);
+      await _projectionText(tester, consoleHost, 'CONCURRENT_B1_PROGRESS');
+      expect(console.selectedTab, same(tabB1));
+
+      childA1.release('exit');
+      await _terminalUntil(
+        tester,
+        () async =>
+            (await captureA1.state()).state == 'complete' &&
+            outbound['A']!.length == 2,
+        'hidden A finishes its first command and proposes another',
+      );
+      childA1.exited = true;
+      expect(fixture.status(tester).pendingApproval, isNot(same(approvalA1)));
+      expect(fixture.status(tester).isAdvancing, isTrue);
+      expect(
+        children,
+        hasLength(2),
+        reason: 'The second A command has not been approved.',
+      );
+      // B makes independent model/tool/output progress and completes while A is
+      // hidden waiting for its next approval. Its composer remains usable.
+      childB1.release('exit');
+      await _terminalUntil(
+        tester,
+        () => find.text(answers['B']!).evaluate().isNotEmpty,
+        'B finishes while A awaits approval',
+      );
+      childB1.exited = true;
+      await _projectionText(tester, consoleHost, 'CONCURRENT_B1_END');
+      expect(tester.widget<TextField>(_composer()).enabled, isTrue);
+      const draftB = 'B remains usable while A needs attention.';
+      await tester.enterText(_composer(), draftB);
+      await browse();
+      expect(find.textContaining('1 waiting'), findsOneWidget);
+      await _terminalTap(tester, find.text(taskA.title));
+      expect(
+        find.descendant(
+          of: _sessionRow(sessionA.id),
+          matching: find.textContaining('Waiting for approval'),
+        ),
+        findsOneWidget,
+      );
+      await _terminalTap(tester, _sessionRow(sessionA.id));
+      await _terminalUntil(
+        tester,
+        () => fixture.status(tester).pendingApproval != null,
+        'reattached exact second A approval',
+      );
+      final approvalA2 = fixture.status(tester).pendingApproval!;
+      expect(approvalA2, isNot(same(approvalA1)));
+      expect(jsonDecode(approvalA2.canonicalArgumentsJson), arguments('A2'));
+      expect(runtime.store.runRecord(runA), isNull);
+      expect(
+        (await chat.snapshot(
+          sessionA.id.value,
+        )).entries.map((entry) => (entry.role, entry.content, entry.runId)),
+        [('user', prompts['A'], runA.value)],
+      );
+      // Old A and foreign B view callbacks have no current presentation authority.
+      statusA.onDecision(approvalA1, true);
+      statusA.onDecision(approvalA2, true);
+      statusB.onDecision(approvalA2, true);
+      await tester.pump();
+      expect(fixture.status(tester).pendingApproval, same(approvalA2));
+      expect(fixture.status(tester).isAdvancing, isFalse);
+      expect(children, hasLength(2));
+      final captureA2 = await inspect(sessionA, runA, 1);
+      expect(captureA2.invocationId, isNot(captureA1.invocationId));
+      expect((await captureA2.state()).state, 'absent');
+      await _terminalTap(tester, find.text('Allow once'));
+      await _terminalUntil(
+        tester,
+        () => children.length == 3,
+        'only the exact second A command admitted',
+      );
+      final childA2 = children.last;
+      await childA2.stage('connected');
+      expect(childA2.workingDirectory, worktreeA);
+      childA2.release('produce');
+      await childA2.stage('started');
+      await _projectionText(tester, inspection, 'CONCURRENT_A2_START');
+      await expand();
+      await _projectionText(tester, consoleHost, 'CONCURRENT_A2_START');
+      expect(console.eligibleTabs, hasLength(2));
+      final tabA2 = console.selectedTab!;
+      childA2.release('progress');
+      await childA2.stage('progress');
+      await browse();
+      await open(taskB, sessionB);
+      await _projectionText(tester, consoleHost, 'CONCURRENT_B1_END');
+      expect(console.selectedTab, same(tabB1));
+      expect(console.eligibleTabs, [tabB1]);
+      expect(tester.widget<TextField>(_composer()).controller!.text, draftB);
+      childA2.release('exit');
+      await _terminalUntil(
+        tester,
+        () async =>
+            (await chat.snapshot(sessionA.id.value)).entries.last.content ==
+            answers['A'],
+        'hidden A persists canonical final answer',
+      );
+      childA2.exited = true;
+      expect(_session(tester), same(sessionB));
+      expect(find.text(answers['A']!), findsNothing);
+      expect(find.text(answers['B']!), findsOneWidget);
+      _rethrowEndpointFailure(endpointFailures);
+      expect(outbound['A'], hasLength(3));
+      expect(outbound['B'], hasLength(2));
+      expect(fixture.runIds.values, [runA, runB]);
+      expect(children, hasLength(3));
+
+      for (final (session, runId, label, toolCount) in [
+        (sessionA, runA, 'A', 2),
+        (sessionB, runB, 'B', 1),
+      ]) {
+        final canonical = await chat.snapshot(session.id.value);
+        expect(
+          canonical.entries.map(
+            (entry) => (entry.role, entry.content, entry.runId),
+          ),
+          [
+            ('user', prompts[label], runId.value),
+            ('assistant', answers[label], null),
+          ],
+        );
+        final activity = runtime.lifecycle.runActivity(runId)!;
+        expect(activity.sessionId, session.id);
+        expect(activity.state, RunState.completed);
+        expect(activity.tools, hasLength(toolCount));
+        expect(activity.models, hasLength(toolCount + 1));
+        expect(
+          activity.tools.map((tool) => tool.providerCallId),
+          label == 'A' ? ['A1', 'A2'] : ['B1'],
+        );
+        for (final tool in activity.tools) {
+          expect(
+            tool.changes.where(
+              (change) => change.kind == ToolActivityKind.approvalRequested,
+            ),
+            hasLength(1),
+          );
+          expect(
+            tool.changes
+                .where(
+                  (change) => change.kind == ToolActivityKind.approvalResolved,
+                )
+                .map((change) => change.approved),
+            [true],
+          );
+          expect(
+            tool.changes.where(
+              (change) => change.kind == ToolActivityKind.executionStarted,
+            ),
+            hasLength(1),
+          );
+          expect(tool.outcome!.hostData['exitCode'], 0);
+        }
+        expect(runtime.store.runsForSession(session.id).single.id, runId);
+      }
+      for (final (capture, label, worktree, otherWorktree) in [
+        (captureA1, 'A1', worktreeA, worktreeB),
+        (captureA2, 'A2', worktreeA, worktreeB),
+        (captureB1, 'B1', worktreeB, worktreeA),
+      ]) {
+        final state = await capture.state();
+        expect(
+          (state.state, state.exitCode, state.failure),
+          ('complete', 0, null),
+        );
+        final output = await capture.tail();
+        for (final stage in ['START', 'PROGRESS', 'STDERR', 'END']) {
+          expect(output, contains('CONCURRENT_${label}_$stage'));
+        }
+        for (final other in ['A1', 'A2', 'B1']) {
+          if (other != label) {
+            expect(output, isNot(contains('CONCURRENT_${other}_')));
+          }
+        }
+        expect(await File('$worktree/concurrent-$label.txt').exists(), isTrue);
+        expect(
+          await File('$otherWorktree/concurrent-$label.txt').exists(),
+          isFalse,
+        );
+        expect(
+          await File('${fixture.source.path}/concurrent-$label.txt').exists(),
+          isFalse,
+        );
+      }
+      expect(
+        await File('${fixture.source.path}/AGENTS.md').readAsString(),
+        _agentsText,
+      );
+      expect(await _git(fixture.source, ['diff', '--binary', 'HEAD']), '');
+      await browse();
+      expect(find.textContaining('1 waiting'), findsNothing);
+      await open(taskA, sessionA);
+      await _terminalUntil(
+        tester,
+        () => find.text(answers['A']!).evaluate().isNotEmpty,
+        'reopened hidden completion',
+      );
+      expect(find.text(answers['B']!), findsNothing);
+      await _projectionText(tester, consoleHost, 'CONCURRENT_A2_END');
+      expect(console.selectedTab, same(tabA2));
+      final historicalA1 = await inspect(sessionA, runA, 0);
+      expect(historicalA1.invocationId, captureA1.invocationId);
+      await _projectionText(tester, inspection, 'CONCURRENT_A1_END');
+      await expand();
+      expect(console.selectedTab, same(tabA1));
+      expect(console.eligibleTabs, hasLength(2));
+      await _projectionText(tester, consoleHost, 'CONCURRENT_A1_END');
+      expect(fixture.status(tester).pendingApproval, isNull);
+      expect(fixture.status(tester).failureMessage, isNull);
+      expect(tester.widget<TextField>(_composer()).enabled, isTrue);
+      expect(fixture.runIds.values, [runA, runB]);
+      await _terminalReaped(
+        tester,
+        children.map((child) => child.pid!).toList(),
+      );
+      expect(tester.takeException(), isNull);
+      expect(await tester.binding.handleRequestAppExit(), AppExitResponse.exit);
+      expect(commandConnection.isClosed, isTrue);
+      await tester.pumpWidget(const SizedBox.shrink());
+    }),
+    skip: !Platform.isLinux || Abi.current() != Abi.linuxX64,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
 
   testWidgets(
     'T3b normal Chat opens live stock Command Inspection and retained read-only output',
@@ -1602,14 +2234,31 @@ void main() {
         expect(find.text(_narration), findsOneWidget);
         _expectNoSecrets(tester);
 
-        // Both routes must reject leaving without retiring the prepared view or
-        // abandoning the live approval. The original approval remains actionable.
+        // Both routes detach only presentation. Reopening the canonical Session
+        // must expose the exact still-pending approval without another Run.
+        final oldApprovalView = fixture.status(tester);
         for (final breadcrumb in ['task-breadcrumb', 'project-breadcrumb']) {
+          final task = fixture.shell(tester).task!;
           await _breadcrumb(tester, breadcrumb);
-          expect(find.text(_navigationBlocked), findsOneWidget);
+          await _pumpUntil(
+            tester,
+            () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+          );
+          expect(fixture.shell(tester).navigationError, isNull);
+          oldApprovalView.onDecision(patchApproval, true);
+          await tester.pump();
+          if (breadcrumb == 'project-breadcrumb') {
+            await _tap(tester, task.title);
+          }
+          await _openSession(tester, session.id);
+          await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+          oldApprovalView.onDecision(patchApproval, true);
+          oldApprovalView.onDecision(patchApproval, false);
+          await tester.pump();
           expect(_session(tester), same(session));
           expect(fixture.shell(tester).task!.id, session.taskId);
           expect(fixture.status(tester).pendingApproval, same(patchApproval));
+          expect(fixture.status(tester).isAdvancing, isFalse);
           expect(runtime.store.runsForSession(session.id), hasLength(1));
           expect(runtime.store.runRecord(fixture.runIds.values.last), isNull);
           expect(outbound, hasLength(3));
@@ -1651,8 +2300,18 @@ void main() {
         expect(fixture.status(tester).isAdvancing, isTrue);
         expect((await chat.snapshot(session.id.value)).entries, hasLength(3));
         for (final breadcrumb in ['project-breadcrumb', 'task-breadcrumb']) {
+          final task = fixture.shell(tester).task!;
           await _breadcrumb(tester, breadcrumb);
-          expect(find.text(_navigationBlocked), findsOneWidget);
+          await _pumpUntil(
+            tester,
+            () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+          );
+          expect(fixture.shell(tester).navigationError, isNull);
+          if (breadcrumb == 'project-breadcrumb') {
+            await _tap(tester, task.title);
+          }
+          await _openSession(tester, session.id);
+          await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
           expect(_session(tester), same(session));
           expect(fixture.status(tester).isAdvancing, isTrue);
           expect(fixture.status(tester).pendingApproval, same(commandApproval));
@@ -2290,7 +2949,7 @@ void main() {
   // while an unresolved approval must never be silently allowed during disposal.
   for (final waiting in [false, true]) {
     testWidgets(
-      'installed Session ${waiting ? 'disposal abandons waiting approval' : 'exit drains accepted model work before backend shutdown'}',
+      'hidden installed Session ${waiting ? 'disposal abandons waiting approval' : 'exit drains accepted model work before backend shutdown'}',
       (tester) => tester.runAsync(() async {
         final fixture = await _ProductFixture.create();
         final arrived = Completer<void>();
@@ -2375,11 +3034,37 @@ void main() {
             tester,
             () => fixture.status(tester).pendingApproval != null,
           );
-          final status = fixture.status(tester);
-          final approval = status.pendingApproval!;
+        }
+        final hiddenStatus = fixture.status(tester);
+        await _breadcrumb(tester, 'task-breadcrumb');
+        await _pumpUntil(
+          tester,
+          () => find.byType(SessionPresentationHost).evaluate().isEmpty,
+        );
+        // At the default small viewport, the existing Session row can put
+        // creation below the detail ListView's built children. Mount it by
+        // scrolling this pane, rather than polling for an off-screen element.
+        final taskDetail = find.ancestor(
+          of: find.text('Primary Environment'),
+          matching: find.byType(Scrollable),
+        );
+        expect(taskDetail, findsOneWidget);
+        await tester.scrollUntilVisible(
+          find.text('New Chat Session'),
+          120,
+          scrollable: taskDetail,
+          maxScrolls: 8,
+        );
+        await _tap(tester, 'New Chat Session');
+        await _pumpUntil(tester, () => _composer().evaluate().isNotEmpty);
+        expect(_session(tester).id, isNot(session.id));
+        expect(fixture.status(tester).pendingApproval, isNull);
+        expect(fixture.status(tester).isAdvancing, isFalse);
+        if (waiting) {
+          final approval = hiddenStatus.pendingApproval!;
           await tester.pumpWidget(const SizedBox.shrink());
-          status.onDecision(approval, true);
-          status.onDecision(approval, false);
+          hiddenStatus.onDecision(approval, true);
+          hiddenStatus.onDecision(approval, false);
         } else {
           var exited = false;
           final exiting = tester.binding.handleRequestAppExit().then((result) {
@@ -2406,6 +3091,10 @@ void main() {
         _rethrowEndpointFailure(errors);
         expect(requests, 1);
         expect(fixture.runIds.values, hasLength(1));
+        expect(
+          runtime.store.runRecord(fixture.runIds.values.single)?.state,
+          waiting ? isNull : RunTerminalState.completed,
+        );
         expect(connection.isClosed, isTrue);
         expect(
           runtime.extensions.discover(orchestrationStrategyContributions),
@@ -2720,8 +3409,13 @@ Terminal _projectionEngine(WidgetTester tester, Finder parent) =>
             .terminal
         as Terminal;
 
-Future<void> _projectionText(WidgetTester tester, Finder parent, String text) =>
-    _terminalUntil(tester, () {
+Future<void> _projectionText(
+  WidgetTester tester,
+  Finder parent,
+  String text,
+) async {
+  try {
+    await _terminalUntil(tester, () {
       final views = _projectionView(parent).evaluate();
       return views.length == 1 &&
           find
@@ -2733,6 +3427,21 @@ Future<void> _projectionText(WidgetTester tester, Finder parent, String text) =>
               .isEmpty &&
           _terminalBuffer(_projectionEngine(tester, parent)).contains(text);
     }, 'native projection contains $text');
+  } on TestFailure {
+    final labels = tester
+        .widgetList<Text>(
+          find.descendant(of: parent, matching: find.byType(Text)),
+        )
+        .map((widget) => widget.data)
+        .whereType<String>()
+        .join('\n');
+    final views = _projectionView(parent).evaluate();
+    final buffer = views.length == 1
+        ? _terminalBuffer(_projectionEngine(tester, parent))
+        : 'No unique projection';
+    fail('Missing $text. Reader state:\n$labels\nEmulator:\n$buffer');
+  }
+}
 
 final class _PreparedProduct {
   _PreparedProduct(this.directory, this.root, this.dart, this.dartaotruntime);

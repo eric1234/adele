@@ -67,6 +67,22 @@ multiple Runs; one Run can contain multiple model/tool turns and interruptions.
 The strategy determines sequencing and limits, not a universal one-message,
 one-model-call, or fixed-budget definition of Run.
 
+Within the current single-Project window, one Session is presented at a time,
+but multiple Sessions can execute independently. At most one Run is active in
+each Session; a Run awaiting approval still occupies that slot. Changing the
+presented Session does not close its execution. Application-owned controllers
+retain captured context and execution-side observation without a widget or
+evaluator remaining mounted. Enumeration is passive; owners are created lazily
+and retained until window shutdown, while backend executions release at normal
+terminal settlement. All owners use the runtime's shared Run ID source.
+
+Task Browser's transient status is derived from these owners, not another durable
+Run store or a tool-specific transcript. An approval remains an exact interruption
+on its own controller; users return to that Session to decide it. Background work
+cannot change selection, Inspection, or focus. Separate Task Environments provide
+normal filesystem separation; two Sessions sharing one Environment do not gain
+isolated effects or bypass existing revision preconditions.
+
 For each Run, application composition freshly resolves the stored strategy ID,
 or validates a caller's retained exact selection against that ID and the canonical
 registry. It materializes an execution and retains that strategy generation for
@@ -242,6 +258,16 @@ replace rejection with approval. Resume uses the retained invocation and exact
 bindings, not a new proposal or replacement-generation lookup. Rejection supplies
 a semantic outcome without execution. Closing execution resources does not resolve
 an abandoned interruption or imply Run cancellation.
+
+Window shutdown fences owner creation, Run starts, and presentation decisions,
+then initiates close for every retained Session owner before awaiting their
+collective settlement. Active advancement drains through the existing operation
+deadlines to a normal terminal or waiting boundary; hidden waiting executions
+release without a dialog or an invented decision. One cleanup failure cannot
+skip siblings. Backends and Project storage remain available for admitted Run
+and strategy-history settlement before their normal teardown. Repeated close
+observes the same completion or failure. This is graceful resource cleanup,
+not universal process cancellation or a bounded total shutdown deadline.
 
 ## Execution, outcomes, and uncertainty
 
@@ -459,6 +485,9 @@ activity projection, and terminal Run/activity retention. The [product graph and
 terminal records](product-model.md#project-storage), terminal public snapshots,
 and initialized plugin-owned Chat state have durable storage; live execution
 remains in memory.
+Concurrent Sessions do not imply simultaneous Runs within one Session, parallel
+tool proposals within a Run, or a background-command mode. Those remain outside
+the implemented execution policy.
 Persistent active Run recovery, child-Session lifecycle, broader context
 material, general background scheduling, and richer multi-agent execution are not
 established by this foundation.

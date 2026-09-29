@@ -183,11 +183,7 @@ Widget build() => Text('Another frontend');
     await tester.tap(find.text('New Task'));
     await tester.pumpAndSettle();
     await tester.enterText(field('Task title'), '  Keep this draft  ');
-    source.tasks.add({
-      'id': 'task-c',
-      'title': 'Another alpha',
-      'sessionCount': 0,
-    });
+    source.tasks.add(_task('task-c', 'Another alpha'));
     source.selectedId = 'task-a';
     source.notifyListeners();
     await tester.pumpAndSettle();
@@ -199,6 +195,98 @@ Widget build() => Text('Another frontend');
     );
     expect(find.text('alpha'), findsOneWidget);
     expect(source.operations, isEmpty);
+  });
+
+  testWidgets('generic execution status refreshes without granting actions', (
+    tester,
+  ) async {
+    source.selectedId = 'task-a';
+    source.tasks[0] = _task(
+      'task-a',
+      'Alpha task',
+      sessionCount: 7,
+      preparing: 1,
+      running: 1,
+      waiting: 1,
+      completed: 1,
+      cancelled: 1,
+      failed: 1,
+    );
+    for (final status in [
+      'idle',
+      'preparing',
+      'running',
+      'waitingForApproval',
+      'completed',
+      'cancelled',
+      'failed',
+    ]) {
+      source.sessions.add(
+        _session(
+          'session-$status',
+          '$status Session',
+          executionStatus: status,
+          available: status != 'waitingForApproval',
+        ),
+      );
+    }
+    await mount(tester, height: 1800);
+    expect(
+      find.text(
+        '7 Sessions\n1 preparing | 1 running | 1 waiting | 3 terminal (1 failed)',
+      ),
+      findsOneWidget,
+    );
+    for (final label in [
+      'Idle',
+      'Preparing',
+      'Running',
+      'Waiting for approval',
+      'Completed',
+      'Cancelled',
+      'Failed',
+    ]) {
+      expect(find.textContaining('Status: $label'), findsOneWidget);
+    }
+    expect(find.text('Approve'), findsNothing);
+    expect(find.text('Reject'), findsNothing);
+    expect(
+      tester
+          .widget<ListTile>(
+            find.widgetWithText(ListTile, 'waitingForApproval Session'),
+          )
+          .enabled,
+      isFalse,
+    );
+    await tester.tap(find.text('waitingForApproval Session'));
+    expect(source.operations, isEmpty);
+    final reads = source.reads;
+    source.sessions[2]['executionStatus'] = 'completed';
+    source.tasks[0] = _task(
+      'task-a',
+      'Alpha task',
+      sessionCount: 7,
+      preparing: 1,
+      waiting: 1,
+      completed: 2,
+      cancelled: 1,
+      failed: 1,
+    );
+    for (var i = 0; i < 10; i++) {
+      source.notifyListeners();
+    }
+    await tester.pumpAndSettle();
+    expect(source.reads, reads + 1);
+    expect(
+      find.text(
+        '7 Sessions\n1 preparing | 0 running | 1 waiting | 4 terminal (1 failed)',
+      ),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Status: Completed'), findsNWidgets(2));
+    expect(find.textContaining('Status: Running'), findsNothing);
+    expect(source.operations, isEmpty);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets(
@@ -334,7 +422,9 @@ Widget build() => Text('Another frontend');
     ]);
     await mount(tester);
     expect(
-      find.text('Session: session-first\nStrategy: dev.example.chat'),
+      find.text(
+        'Session: session-first\nStrategy: dev.example.chat\nStatus: Idle',
+      ),
       findsOneWidget,
     );
     expect(
@@ -761,6 +851,7 @@ Widget build() => Text('Another frontend');
           'session-b5d48a0c-9a39-480a-aaf5-bfdb40fd4675',
           'A descriptive Chat Session presentation',
           available: false,
+          executionStatus: 'waitingForApproval',
         ),
       );
       await mount(tester, width: width);
@@ -781,17 +872,44 @@ Map<String, Object?> _session(
   String id,
   String name, {
   bool available = true,
+  String executionStatus = 'idle',
 }) => {
   'id': id,
   'strategyId': 'dev.example.chat',
   'presentationName': name,
   'available': available,
+  'executionStatus': executionStatus,
+};
+
+Map<String, Object?> _task(
+  String id,
+  String title, {
+  int sessionCount = 0,
+  int preparing = 0,
+  int running = 0,
+  int waiting = 0,
+  int completed = 0,
+  int cancelled = 0,
+  int failed = 0,
+}) => {
+  'id': id,
+  'title': title,
+  'sessionCount': sessionCount,
+  'executionCounts': {
+    'preparing': preparing,
+    'running': running,
+    'waiting': waiting,
+    'terminal': completed + cancelled + failed,
+    'completed': completed,
+    'cancelled': cancelled,
+    'failed': failed,
+  },
 };
 
 final class _Source extends ChangeNotifier implements TaskBrowserSource {
   final tasks = <Map<String, Object?>>[
-    {'id': 'task-a', 'title': 'Alpha task', 'sessionCount': 0},
-    {'id': 'task-b', 'title': 'Beta task', 'sessionCount': 0},
+    _task('task-a', 'Alpha task'),
+    _task('task-b', 'Beta task'),
   ];
   final sessions = <Map<String, Object?>>[];
   final options = <Map<String, Object?>>[];
@@ -861,7 +979,7 @@ final class _Source extends ChangeNotifier implements TaskBrowserSource {
   @override
   Future<void> createTask(String title) async {
     await settle('createTask', title);
-    tasks.add({'id': 'task-new', 'title': title, 'sessionCount': 0});
+    tasks.add(_task('task-new', title));
     selectedId = 'task-new';
     notifyListeners();
   }

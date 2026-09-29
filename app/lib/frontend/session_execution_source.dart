@@ -47,7 +47,16 @@ final class SessionExecutionPresentationSource
       ? controller.activityForRun(runId)
       : _retainedActivity![runId];
 
-  bool get _available => _active && !controller.isClosed && _isActive();
+  bool get _available {
+    if (!_active) return false;
+    try {
+      if (!controller.isClosed && _isActive()) return true;
+    } on Object {
+      // A retired exact registration is unavailable, never a new presentation.
+    }
+    invalidate();
+    return false;
+  }
 
   void _validate() {
     if (!_available) throw StateError('Session presentation is retired.');
@@ -71,6 +80,7 @@ final class SessionExecutionPresentationSource
       'failure': controller.failureMessage,
       'unavailableReason': controller.unavailableReason,
       'revision': controller.revision,
+      'sessionStateRevision': controller.sessionStateRevision,
     };
   }
 
@@ -93,7 +103,12 @@ final class SessionExecutionPresentationSource
     } on FormatException {
       return null;
     }
-    if (controller.retainedActivityForRun(id) == null) return null;
+    final activity = controller.activityForRun(id);
+    if (activity == null
+        ? !controller.ownsScheduledRun(id)
+        : activity.sessionId != controller.session.id) {
+      return null;
+    }
     for (final entry in _runs.entries) {
       if (entry.value == id) return entry.key;
     }
@@ -341,9 +356,8 @@ final class _SessionActivity extends StatelessWidget {
   final String handle;
 
   @override
-  Widget build(BuildContext context) => ListenableBuilder(
-    listenable: source.controller.activityChanges,
-    builder: (context, _) {
+  Widget build(BuildContext context) {
+    Widget content(BuildContext context, Widget? _) {
       final target = source._target(handle);
       if (target is! ModelOutputInspectionTarget) {
         return const SizedBox.shrink();
@@ -362,6 +376,14 @@ final class _SessionActivity extends StatelessWidget {
           ),
         ),
       );
-    },
-  );
+    }
+
+    // Frozen exit display may mount after execution has disposed its notifier.
+    // It reads the retained snapshot, without recovering live observation/access.
+    if (!source._available) return content(context, null);
+    return ListenableBuilder(
+      listenable: source.controller.activityChanges,
+      builder: content,
+    );
+  }
 }

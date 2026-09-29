@@ -74,6 +74,14 @@ void main() {
       throwsUnsupportedError,
     );
     expect(
+      () => public_bridge.hideTerminalProjection('fake'),
+      throwsUnsupportedError,
+    );
+    expect(
+      () => public_bridge.revealTerminalProjection('fake'),
+      throwsUnsupportedError,
+    );
+    expect(
       () => public_bridge.readTerminalProjection('fake'),
       throwsUnsupportedError,
     );
@@ -454,6 +462,43 @@ void main() {
       () => _invoke(runtime, 'yieldHandle', [$String(handle)]),
       throwsA(anything),
     );
+  });
+
+  testWidgets('EVC readiness is settled, cancellable and exact-view scoped', (
+    tester,
+  ) async {
+    var active = true;
+    final bridge = TerminalProjectionBridge(isActive: () => active);
+    final runtime = bind(bridge);
+    final handle = _invoke(runtime, 'requestRows', [$int(20)]) as String;
+    final args = [$String(handle)];
+    _invoke(runtime, 'hideHandle', args);
+    final view = _invoke(runtime, 'buildHandle', args) as Widget;
+    await tester.pumpWidget(_host(view));
+    final gate = find.ancestor(
+      of: find.byType(TerminalView),
+      matching: find.byType(Opacity),
+    );
+    expect(tester.widget<Opacity>(gate).opacity, 0);
+    _invoke(runtime, 'feedHandle', [...args, $String('restored'), $int(20)]);
+    final ready = _invoke(runtime, 'revealHandle', args) as Future;
+    for (var frame = 0; frame < 4; frame++) {
+      await tester.pump();
+    }
+    expect(await ready, isTrue);
+    expect(tester.widget<Opacity>(gate).opacity, 1);
+    expect(_text(tester), contains('restored'));
+    _invoke(runtime, 'hideHandle', args);
+    final cancelled = _invoke(runtime, 'revealHandle', args) as Future;
+    _invoke(runtime, 'hideHandle', args);
+    expect(await cancelled, isFalse);
+    final revoked = _invoke(runtime, 'revealHandle', args) as Future;
+    active = false;
+    await tester.pump();
+    expect(await revoked, isFalse);
+    expect(tester.widget<Opacity>(gate).opacity, 0);
+    expect(() => _invoke(runtime, 'revealHandle', args), throwsA(anything));
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 
   for (final gesture in ['wheel', 'drag']) {

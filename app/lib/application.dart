@@ -4,6 +4,7 @@ import 'dart:ui' show AppExitResponse;
 import 'package:adele_core_extensions/adele_core_extensions.dart';
 import 'package:adele_desktop/core/application_plugin_bootstrap.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_desktop/core/resource_cleanup.dart';
 import 'package:adele_desktop/core/run_id_source.dart';
 import 'package:adele_desktop/frontend/application_frontend_bootstrap.dart';
 import 'package:adele_desktop/frontend/prepared_console_host.dart';
@@ -17,6 +18,7 @@ import 'package:adele_desktop/ui/console/console_controller.dart';
 import 'package:adele_desktop/ui/console/workbench_console.dart';
 import 'package:adele_desktop/ui/execution/run_execution_status.dart';
 import 'package:adele_desktop/ui/execution/session_execution_controller.dart';
+import 'package:adele_desktop/ui/execution/session_execution_owners.dart';
 import 'package:adele_desktop/ui/inspection/activity_inspection_selection.dart';
 import 'package:adele_desktop/ui/inspection/inspection_host.dart';
 import 'package:adele_desktop/ui/session/session_presentation_host.dart';
@@ -54,7 +56,9 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   late final AppLifecycleListener _lifecycleListener;
   late final StreamSubscription<ApplicationPluginState> _pluginSubscription;
   late final StreamSubscription<void> _extensionSubscription;
+  late final StreamSubscription<void> _providerSubscription;
   Future<void>? _closing;
+  bool _closeFailureReported = false;
   Object? _bootstrapError;
   Project? _project;
   Task? _task;
@@ -66,6 +70,9 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   StockChatGptConfiguration? _chatGptConfiguration;
   bool _modelConfigurationFailed = false;
   SessionExecutionController? _execution;
+  late final SessionExecutionOwners _executions;
+  Object? _presentation;
+  VoidCallback? _validatePresentation;
   Session? _session;
   late final PreparedSessionHost _sessionHost;
   late final ConsoleController _console;
@@ -98,6 +105,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       extensions: _runtime.extensions,
       backends: _runtime.plugins,
       inspectActivity: _inspectActivity,
+      lookupControllerForSession: (session) => _executions.lookup(session),
       controllerForSession: (session) {
         final controller = _execution;
         if (_closing != null ||
@@ -124,6 +132,17 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     } on Object {
       _modelConfigurationFailed = true;
     }
+    _executions = SessionExecutionOwners(
+      runtime: _runtime,
+      providerId: stockChatGptProviderId,
+      model: _chatGptConfiguration?.model,
+      runIds: widget.runIds,
+      configurationUnavailableReason: _modelConfigurationFailed
+          ? 'Model configuration is invalid. Execution is unavailable.'
+          : _chatGptConfiguration == null
+          ? 'Model selection is not configured.'
+          : null,
+    );
     _pluginSubscription = _runtime.plugins.changes.listen((state) {
       debugPrint('ADELE backend plugins: ${state.name}');
       final catalog = _runtime.plugins.catalog;
@@ -131,12 +150,17 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         _frontendsStarted = true;
         unawaited(_frontends.start(catalog));
       }
-      _execution?.refresh();
+      _executions.refresh();
       _refreshBrowsers();
       if (mounted && _closing == null) setState(() {});
     });
     _extensionSubscription = _runtime.extensions.changes.listen((_) {
-      _execution?.refresh();
+      _executions.refresh();
+      _refreshBrowsers();
+      if (mounted && _closing == null) setState(() {});
+    });
+    _providerSubscription = _runtime.registry.changes.listen((_) {
+      _executions.refresh();
       _refreshBrowsers();
       if (mounted && _closing == null) setState(() {});
     });
@@ -145,18 +169,43 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       onExitRequested: () async {
         _retainingPresentations.value = true;
         _frontends.retainPresentations();
-        await _closeRuntime();
+        await _closeAndReport();
         return AppExitResponse.exit;
       },
       onDetach: () {
         _frontends.releasePresentations();
-        unawaited(_closeRuntime());
+        unawaited(_closeAndReport());
       },
     );
   }
 
   void _inspectionChanged() {
     if (mounted && _closing == null) setState(() {});
+  }
+
+  void _executionChanged() {
+    if (mounted && _closing == null) setState(() {});
+  }
+
+  void _activityChanged() {
+    if (_inspection.cards.isNotEmpty) _inspectionChanged();
+  }
+
+  bool _hasPresentationAuthority(Session session, Object? presentation) {
+    if (!mounted ||
+        _closing != null ||
+        _navigating ||
+        presentation == null ||
+        !identical(_presentation, presentation) ||
+        !identical(_session, session)) {
+      return false;
+    }
+    try {
+      _validatePresentation!();
+      return true;
+    } on Object {
+      return false;
+    }
   }
 
   bool _inspectActivity(Session session, InspectionTarget target) {
@@ -188,12 +237,12 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
 
   void _inspectOutput(
     Session session,
+    Object? presentation,
     InspectionCardId originCardId,
     ModelOutputInspectionTarget target,
   ) {
     final execution = _execution;
-    if (!mounted ||
-        _closing != null ||
+    if (!_hasPresentationAuthority(session, presentation) ||
         execution == null ||
         execution.isClosed ||
         !identical(_session, session) ||
@@ -221,7 +270,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     } on Object catch (error) {
       if (mounted && _closing == null) _bootstrapError = error;
     } finally {
-      _execution?.refresh();
+      _executions.refresh();
       if (mounted && _closing == null) setState(() {});
     }
   }
@@ -246,6 +295,8 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       establishTask: _createTask,
       activateSession: _activateSession,
       onDispose: () => _browsers.remove(source),
+      executionStatusFor: _executions.statusFor,
+      executionChanges: _executions,
     );
     _browsers.add(source);
     return source;
@@ -294,34 +345,23 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
       throw StateError('Session is not in the currently selected Task.');
     }
     selection.validate();
-    final StockChatGptConfiguration? configuration = _chatGptConfiguration;
-    _sessionHost.bind(session, selection);
     final SessionExecutionController controller;
     try {
-      controller = SessionExecutionController(
-        runtime: _runtime,
-        session: session,
-        providerId: stockChatGptProviderId,
-        model: configuration?.model,
+      controller = _executions.getOrCreate(
+        session,
         strategy: selection.pinStrategy ? selection.strategy : null,
-        runIds: widget.runIds,
-        configurationUnavailableReason: _modelConfigurationFailed
-            ? 'Model configuration is invalid. Execution is unavailable.'
-            : configuration == null
-            ? 'Model selection is not configured.'
-            : null,
-        onChanged: () {
-          if (mounted && _closing == null) setState(() {});
-        },
-        onActivityChanged: () {
-          if (_inspection.cards.isNotEmpty) _inspectionChanged();
-        },
       );
+      selection.validateController(controller);
+      _sessionHost.bind(session, selection);
     } on Object {
       _sessionHost.unbind(session);
       rethrow;
     }
+    controller.addListener(_executionChanged);
+    controller.activityChanges.addListener(_activityChanged);
     setState(() {
+      _presentation = Object();
+      _validatePresentation = selection.validate;
       _session = session;
       _environment = _consoleHost.environmentForSession(session);
       _execution = controller;
@@ -387,12 +427,6 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     }
   }
 
-  bool get _activeRun =>
-      _execution != null &&
-      (_execution!.isRunning ||
-          _execution!.isAdvancing ||
-          _execution!.pendingApproval != null);
-
   Future<void> _showBrowser({required bool keepTask}) async {
     if (!mounted ||
         _closing != null ||
@@ -408,13 +442,6 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
             !identical(_runtime.store.task(task.id), task))) {
       return;
     }
-    if (_activeRun) {
-      setState(
-        () => _navigationError =
-            'Finish or resolve the current Run before leaving this Session.',
-      );
-      return;
-    }
     if (session == null) {
       _selectTask(task);
       return;
@@ -427,29 +454,18 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     try {
       await _sessionHost.prepareToDeactivate(session);
       if (!mounted || _closing != null || !identical(_session, session)) return;
-      if (_activeRun) {
-        throw StateError(
-          'Finish or resolve the current Run before leaving this Session.',
-        );
-      }
-      String? cleanupError;
-      try {
-        await execution.close();
-      } on Object {
-        // Close is irreversible. Do not leave a closed controller presented as
-        // an active Session when resource release reports a failure.
-        cleanupError =
-            'Session closed, but some resources could not be released.';
-      }
-      if (!mounted || _closing != null || !identical(_session, session)) return;
+      _presentation = null;
+      _validatePresentation = null;
       _sessionHost.unbind(session);
+      execution.removeListener(_executionChanged);
+      execution.activityChanges.removeListener(_activityChanged);
       _console.setSession(null);
       _inspection.presentSession(null);
       setState(() {
         _execution = null;
         _session = null;
         _sessionLabel = null;
-        _navigationError = cleanupError;
+        _navigationError = null;
         _task = task;
         _environment = task == null
             ? null
@@ -458,9 +474,8 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     } on Object {
       if (mounted && _closing == null) {
         setState(
-          () => _navigationError = _activeRun
-              ? 'Finish or resolve the current Run before leaving this Session.'
-              : 'Could not leave this Session. Save pending changes and try again.',
+          () => _navigationError =
+              'Could not leave this Session. Save pending changes and try again.',
         );
       }
     } finally {
@@ -468,38 +483,39 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     }
   }
 
-  Future<void> _closeRuntime() => _closing ??= () async {
+  Future<void> _closeRuntime() => _closing ??= () {
+    _presentation = null;
+    _validatePresentation = null;
     _frontends.stopStarting();
+    _execution?.removeListener(_executionChanged);
+    _execution?.activityChanges.removeListener(_activityChanged);
+    final settlingRuns = _executions.close();
     final closingConsole = _console.close();
-    unawaited(_consoleHost.close());
+    final closingConsoleHost = _consoleHost.close();
     _inspection.removeListener(_inspectionChanged);
     if (!_retainingPresentations.value) _inspection.clear();
-    final Future<void>? settlingRun = _execution?.close();
+    // All owners are fenced before waiting. Storage/backends remain available
+    // for normal admitted settlement, including hidden Session history writes.
+    final draining = Future.wait<void>([
+      settlingRuns,
+      closingConsole,
+      closingConsoleHost,
+      if (_taskCreation case final creating?)
+        creating.then<void>((_) {}, onError: (Object _) {}),
+    ]);
+    return closeResources([
+      () async => await draining,
+      _runtime.close,
+      _frontends.close,
+    ]);
+  }();
+
+  Future<void> _closeAndReport() async {
     try {
-      try {
-        // Establishment owns real external work. Let it settle before bounded
-        // backend shutdown; closing already prevents further window updates.
-        await _taskCreation;
-      } on Object {
-        // Task failure does not prevent runtime/provider cleanup.
-      }
-      try {
-        await settlingRun;
-      } on Object {
-        // Run failure must not bypass backend/runtime cleanup.
-      }
-      try {
-        try {
-          await closingConsole;
-        } finally {
-          await _runtime.close();
-        }
-      } finally {
-        // Registrations and actions retire now; exit-retained display subtrees
-        // are released only on detach/dispose, not in Flutter's async exit loop.
-        await _frontends.close();
-      }
+      await _closeRuntime();
     } on Object catch (error, stackTrace) {
+      if (_closeFailureReported) return;
+      _closeFailureReported = true;
       FlutterError.reportError(
         FlutterErrorDetails(
           exception: error,
@@ -509,7 +525,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
         ),
       );
     }
-  }();
+  }
 
   Future<void> _openProject(
     ExtensionBinding<ProjectSelectorContribution> selector,
@@ -566,7 +582,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   @override
   void didUpdateWidget(covariant AdeleApplication oldWidget) {
     super.didUpdateWidget(oldWidget);
-    _execution?.refresh();
+    _executions.refresh();
   }
 
   @override
@@ -574,9 +590,10 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
     _lifecycleListener.dispose();
     unawaited(_pluginSubscription.cancel());
     unawaited(_extensionSubscription.cancel());
+    unawaited(_providerSubscription.cancel());
     _frontends.releasePresentations();
     // Flutter disposal cannot await; graceful desktop exit awaits above.
-    unawaited(_closeRuntime());
+    unawaited(_closeAndReport());
     _console.dispose();
     _inspection.dispose();
     _retainingPresentations.dispose();
@@ -586,6 +603,7 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
   @override
   Widget build(BuildContext context) {
     final session = _session;
+    final presentation = _presentation;
     return ValueListenableBuilder<bool>(
       valueListenable: _retainingPresentations,
       builder: (context, retaining, child) => PreparedFrontendRetention(
@@ -620,7 +638,12 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
                     onDismiss: () => _inspection.dismiss(card.id),
                     onInspectOutput: session == null
                         ? (_) {}
-                        : (target) => _inspectOutput(session, card.id, target),
+                        : (target) => _inspectOutput(
+                            session,
+                            presentation,
+                            card.id,
+                            target,
+                          ),
                   ),
                 ),
           taskBrowser: _project == null || session != null
@@ -646,12 +669,28 @@ final class _AdeleApplicationState extends State<AdeleApplication> {
                           RunExecutionStatus(
                             pendingApproval: controller.pendingApproval,
                             enabled:
-                                !controller.isAdvancing && !controller.isClosed,
+                                !controller.isAdvancing &&
+                                !controller.isClosed &&
+                                controller.unavailableReason == null &&
+                                _hasPresentationAuthority(
+                                  session,
+                                  presentation,
+                                ),
                             isAdvancing: controller.isAdvancing,
                             failureMessage: controller.failureMessage,
                             unavailableReason: controller.unavailableReason,
-                            onDecision: (approval, approved) => controller
-                                .resolveApproval(approval, approved: approved),
+                            onDecision: (approval, approved) {
+                              if (_hasPresentationAuthority(
+                                    session,
+                                    presentation,
+                                  ) &&
+                                  controller.unavailableReason == null) {
+                                controller.resolveApproval(
+                                  approval,
+                                  approved: approved,
+                                );
+                              }
+                            },
                           ),
                       ],
                     ),

@@ -139,26 +139,6 @@ class _RunCommandInspectionState extends State<RunCommandInspection> {
         Text('Failure code: ${inspectionDisplayText("${data['code']}")}'),
       );
     }
-    children.add(Text('Bounded model result (not the stored transcript):'));
-    for (final String stream in <String>['stdout', 'stderr']) {
-      children.add(
-        Text(
-          '$stream truncated: ${inspectionDisplayText("${data['${stream}Truncated'] ?? 'Not reported'}")}',
-        ),
-      );
-      final dynamic output = data[stream];
-      if (output is String) {
-        final String preview = output.length > 4096
-            ? output.substring(0, 4096)
-            : output;
-        children.add(
-          Text('$stream preview: ${inspectionDisplayText(preview)}'),
-        );
-        if (output.length > 4096) {
-          children.add(Text('$stream preview truncated.'));
-        }
-      }
-    }
     if (snapshot.failureKind != null && snapshot.modelContent.isNotEmpty) {
       final String content = snapshot.modelContent;
       children.add(

@@ -63,7 +63,7 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
   SessionOrchestrationRun._(this._host, this._execution, this._lifecycle);
 
   final KernelOrchestrationHost _host;
-  final OrchestrationExecution _execution;
+  OrchestrationExecution? _execution;
   final ProductLifecycleCoordinator _lifecycle;
   bool _busy = false;
   bool _closed = false;
@@ -122,9 +122,9 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
       _host._executionEnabled = true;
       _host.validateBinding();
       if (resolution == null) {
-        await _execution.start();
+        await _execution!.start();
       } else {
-        await _host._resume(_execution, resolution);
+        await _host._resume(_execution!, resolution);
       }
       if (run.state == RunState.created ||
           run.state == RunState.running ||
@@ -202,9 +202,12 @@ final class SessionOrchestrationRun implements OrchestrationExecution {
         rethrow;
       } finally {
         try {
-          await _execution.close();
+          await _execution?.close();
         } on Object {
           if (!recordingFailed) rethrow;
+        } finally {
+          // Retained evidence may outlive settlement, not the backend execution.
+          _execution = null;
         }
       }
     });

@@ -223,10 +223,12 @@ composer, without another submission. History refresh cannot overwrite a newer
 local draft. See the [frontend map](packages/frontend/README.md) for save/retry
 and presentation-lifetime details.
 The accepted entry ID anchors view-local activity to that exact occurrence. On
-hydration, a persisted user entry's `runId` can reopen retained terminal activity
+hydration, a persisted user entry's `runId` can reopen retained live/waiting or terminal activity
 through `openSessionRunActivity` where no live handle is already present. The host
 validates Session scope and issues a fresh read-only handle; Chat stores no handle
 or execution authority in canonical history.
+Semantic Session-state revisions around hydration and subscription discover late
+Run associations and terminal commits without an activity-driven history reload.
 No canonical store, native Chat controller, or execution object is shared by
 identity with the frontend. The owning channel is generation-bound; it does not
 resolve a replacement backend or silently substitute local Chat state.

@@ -29,6 +29,7 @@ void subscribeFailing() { subscribeTaskBrowser(failing); }
 void unsubscribe() { unsubscribeTaskBrowser(listener); }
 int count() => changes;
 Map<String, dynamic> read() => readTaskBrowser();
+String executionStatus() => readTaskBrowser()['selectedTask']['sessions'][0]['executionStatus'] as String;
 bool active() => isTaskBrowserActive();
 String nested() {
   final entries = readTaskBrowser()['entries'] as List<dynamic>;
@@ -226,6 +227,65 @@ Future<List<dynamic>> open() => openSession('session');
   );
 
   testWidgets(
+    'execution status is read-only, frame-coalesced, and revoked with the view',
+    (tester) async {
+      final counts = {
+        'preparing': 0,
+        'running': 1,
+        'waiting': 0,
+        'terminal': 0,
+        'completed': 0,
+        'cancelled': 0,
+        'failed': 0,
+      };
+      final session = <String, Object?>{'executionStatus': 'running'};
+      final source = _Source()
+        ..snapshot = {
+          'tasks': [
+            {'executionCounts': counts},
+          ],
+          'selectedTask': {
+            'sessions': [session],
+          },
+        };
+      final bridge = TaskBrowserBridge(source: source, isActive: () => true);
+      addTearDown(() {
+        bridge.invalidate();
+        source.dispose();
+      });
+      final runtime = Runtime.ofProgram(program)..addPlugin(bridge);
+      Object? invoke(String entry) =>
+          copyStructuredBridgeData(runtime.executeLib(_library, entry));
+      invoke('subscribe');
+      expect(invoke('executionStatus'), 'running');
+      session['executionStatus'] = 'waitingForApproval';
+      counts['running'] = 0;
+      counts['waiting'] = 1;
+      for (var i = 0; i < 20; i++) {
+        source.notifyListeners();
+      }
+      expect(invoke('count'), 0);
+      await tester.pump();
+      expect(invoke('count'), 1);
+      expect(invoke('executionStatus'), 'waitingForApproval');
+      expect(invoke('read'), source.snapshot);
+      expect(source.calls, isEmpty);
+      bridge.retainPresentation();
+      session['executionStatus'] = 'completed';
+      counts['waiting'] = 0;
+      counts['terminal'] = 1;
+      counts['completed'] = 1;
+      source.notifyListeners();
+      await tester.pump();
+      expect(invoke('active'), false);
+      expect(invoke('count'), 1);
+      expect(invoke('executionStatus'), 'waitingForApproval');
+      expect(source.listening, isFalse);
+      expect(source.calls, isEmpty);
+    },
+  );
+
+  testWidgets(
     'listener failure revokes the bridge and reports view failure once',
     (tester) async {
       final source = _Source();
@@ -286,16 +346,19 @@ class _Source extends ChangeNotifier implements TaskBrowserSource {
   final List<String> calls = [];
   Object? failure;
   Completer<void>? pending;
+  Map<String, Object?>? snapshot;
 
   @override
-  Map<String, Object?> read() => {
-    if (entries)
-      'entries': [
-        {'title': 'nested title'},
-      ],
-    'title': 'safe',
-    'nested': [1, null],
-  };
+  Map<String, Object?> read() =>
+      snapshot ??
+      {
+        if (entries)
+          'entries': [
+            {'title': 'nested title'},
+          ],
+        'title': 'safe',
+        'nested': [1, null],
+      };
   Future<void> _act(String value) {
     calls.add(value);
     if (failure case final error?) throw error;

@@ -23,9 +23,14 @@ newly selected Task's details even when its title does not match the search.
 Cancel discards the unsubmitted title without clearing search. These are local
 presentation values, not durable Project data.
 
-The detail shows primary Environment ID and provider ID without interpreting
-provider state. Session rows show their presentation name and secondary Session
-and strategy identities; unavailable rows are disabled. Exactly one creation
+Task rows show host-supplied preparing/running/waiting/terminal Session counts,
+including the failed subset of terminal outcomes. The detail shows primary
+Environment ID and provider ID without interpreting provider state. Session rows
+show their presentation name, secondary Session and strategy identities, and the
+generic execution status from the public snapshot; unavailable rows are disabled
+without hiding their retained status. Waiting is an attention label only: approval
+requires opening the exact Session's host-owned surface. No Command-specific status
+or execution authority is exposed here. Exactly one creation
 option gets a direct `New <displayName> Session` action; multiple options get a
 small choice list headed `New Session: choose a strategy`. Only the host-issued
 opaque handle is sent back, never a strategy ID
@@ -109,6 +114,7 @@ Browser source with the production declarations. They load its artifact through
 composition with a deterministic Task Browser source rather than a custom eval
 runtime. They exercise empty states, search, exact row and choice dispatch,
 notification-safe form state, failed and delayed actions, Session availability,
+read-only background status and coalesced status refresh,
 responsive navigation and selected-Task reopening, discarded titles, and
 unsubscribe/late-settlement handling. They do not
 prove real Environment establishment, persistence, strategy activation, native
