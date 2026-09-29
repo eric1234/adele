@@ -427,7 +427,8 @@ final class KernelOrchestrationHost implements OrchestrationExecutionHost {
       ),
       proposal: proposal,
       tools: tools._tools,
-      context: ToolExecutionContext(runId: id, sessionId: sessionId),
+      runId: id,
+      sessionId: sessionId,
     );
     validateBinding();
     switch (resolution) {

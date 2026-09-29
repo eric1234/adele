@@ -3,7 +3,7 @@
 `adele_project_storage` is the pure-Dart public contract for host-mediated,
 Session-scoped relational storage. It depends only on `adele_contract`; it exposes
 neither SQLite objects nor database paths, filesystem operations, or execution
-authority. The application and the stock Chat backend are its concrete consumers.
+authority. The application and plugin backends are its concrete consumers.
 
 This service has a separate package because persistence is neither an immutable
 product value, an orchestration operation, a provider-selection extension point,
@@ -29,9 +29,25 @@ Project without resolving a strategy or materializing an Environment.
 | `queryForSession` | Execute one read-only `SELECT` statement and return immutable `RelationalRow.values` maps. |
 | `transactionForSession` | Commit a host-owned transaction of `INSERT`, `UPDATE`, or `DELETE` statements; an unsupported statement, SQL error, or `expectedRows` mismatch rolls back the batch. |
 
-The latter three methods require a durable Project. Explicit volatility is not a
-fallback after failure. State initialization is separate from core Session
-creation; a plugin may lazily create its own rows on first actual state access.
+The latter three methods take a final required positional
+`ProjectStorageAccessMode accessMode`. `durable` preserves durable-only access:
+volatile Projects are rejected. `durableOrTemporary` explicitly opts into a
+host-owned temporary on-disk SQLite database for an already volatile Project;
+durable Projects still use their existing durable database, and failures never
+switch backing or fall back to memory. `isDurableSession` remains false for a
+volatile Project even after temporary storage is initialized. The generated wire
+requires the mode on each storage operation; it does not accept old omitted keys.
+
+Temporary backing is retained once per Project in the live product lifecycle,
+independent of command, frontend, and backend generations. The host selects its
+private temporary directory and initializes the existing v1 schema with published
+Project/Task/Environment/Session identities, so plugin foreign keys work unchanged.
+Subsequent core identity changes are committed to that temporary store before live
+publication. This does not make the Project reopenable or change volatile terminal
+Run/activity retention. Orderly lifecycle close closes the connection and removes
+its directory and SQLite sidecars; process-crash cleanup/recovery is not promised.
+State initialization is separate from core Session creation; a plugin may lazily
+create its own rows on first actual state access.
 
 Named SQL parameters include the SQLite parameter prefix, for example SQL
 `WHERE session_id = :session` with parameters `{':session': sessionId}`. Parameters
@@ -81,7 +97,13 @@ plugin relational contracts remain deferred.
 
 The host revalidates generation access when a queued service method actually runs.
 Generation retirement revokes access; a replacement needs a fresh context and
-loads durable state anew. Grant tokens are transient transport authority, never
+loads retained state anew, including temporary state in the same live lifecycle.
+Storage work is synchronous after service-entry grant and lifecycle validation:
+accepted SQL cannot interleave connection disposal. Queued requests that have not
+entered the service are rejected after revocation or lifecycle close, not allowed
+to prolong a grant. Backend shutdown and pending Project-open settlement remain
+concurrent; storage introduces no extra drain dependency. Grant tokens are transient
+transport authority, never
 persisted state. Normal writes commit before successful responses, but loss of a
 transport acknowledgment after commit can leave an uncertain caller outcome. There
 is no automatic retry, operation deduplication, or distributed transaction with

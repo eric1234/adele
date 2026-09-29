@@ -7,6 +7,7 @@ import 'package:adele_desktop/frontend/prepared_frontend.dart';
 import 'package:adele_desktop/frontend/session_execution_bridge.dart';
 import 'package:adele_desktop/frontend/structured_bridge_data.dart';
 import 'package:adele_ui/session_execution_bridge.dart' as public_bridge;
+import 'package:contract_codegen/contract_codegen.dart';
 import 'package:dart_eval/dart_eval.dart';
 import 'package:dart_eval/dart_eval_bridge.dart';
 import 'package:dart_eval/stdlib/core.dart';
@@ -164,13 +165,7 @@ Future<List<dynamic>> settleBadDecode() => settleSessionOperation(badDecode());
             '${Directory.current.parent.path}/packages/ui/lib/$name',
           ).readAsStringSync(),
       },
-      'adele_contract': {
-        'adele_contract.dart': '''
-abstract class AdeleRequestChannel {
-  Future<Object?> request(String method, Map<String, Object?> payload);
-}
-''',
-      },
+      'adele_contract': {'adele_contract.dart': evalContractSupportSource},
     });
   });
 

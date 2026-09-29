@@ -111,6 +111,7 @@ void main() {
           arguments,
           'session',
           'run',
+          'tool-invocation',
           environmentId,
         );
         expect(channel.method, 'modelTool.describe');
@@ -121,12 +122,14 @@ void main() {
           },
           'sessionId': 'session',
           'runId': 'run',
+          'toolInvocationId': 'tool-invocation',
           'environmentId': environmentId,
         });
         expect(service.invocation, (
           'route',
           'session',
           'run',
+          'tool-invocation',
           environmentId,
           null,
         ));
@@ -149,6 +152,7 @@ void main() {
         RemoteCanonicalToolArguments(snapshot: {}),
         'session',
         'run',
+        'tool-invocation',
         'captured-environment',
         'context',
       );
@@ -161,6 +165,7 @@ void main() {
         'arguments': {'snapshot': <String, Object?>{}},
         'sessionId': 'session',
         'runId': 'run',
+        'toolInvocationId': 'tool-invocation',
         'environmentId': 'captured-environment',
         'hostInvocationContext': 'context',
       });
@@ -168,6 +173,7 @@ void main() {
         'route',
         'session',
         'run',
+        'tool-invocation',
         'captured-environment',
         'context',
       ));
@@ -227,6 +233,7 @@ void main() {
             RemoteCanonicalToolArguments(snapshot: {}),
             'session',
             'run',
+            'tool-invocation',
             null,
             null,
           )
@@ -361,6 +368,43 @@ void main() {
     );
     expect(service.executions, 0);
   });
+
+  test(
+    'describe and execute require a non-null invocation identity on the wire',
+    () async {
+      final payload = <String, Object?>{
+        'routeId': 'route',
+        'arguments': {'snapshot': <String, Object?>{}},
+        'sessionId': 'session',
+        'runId': 'run',
+        'environmentId': null,
+      };
+      for (final invalid in [
+        payload,
+        {...payload, 'toolInvocationId': null},
+      ]) {
+        final response = await dispatcher.dispatch(
+          _request(remoteModelToolServiceDescribeId, invalid),
+        );
+        expect((response['error']! as Map)['code'], 'invalid_request');
+        await expectLater(
+          channel.stream(remoteModelToolServiceExecuteId, {
+            ...invalid,
+            'hostInvocationContext': null,
+          }).toList(),
+          throwsA(
+            isA<AdeleRemoteFailure>().having(
+              (error) => error.code,
+              'code',
+              'invalid_request',
+            ),
+          ),
+        );
+      }
+      expect(service.invocation, isNull);
+      expect(service.executions, 0);
+    },
+  );
 
   test(
     'all structured DTO maps snapshot deeply and reject invalid JSON graphs',
@@ -620,6 +664,7 @@ void main() {
             RemoteCanonicalToolArguments(snapshot: {}),
             'session',
             'run',
+            'tool-invocation',
             null,
             null,
           )
@@ -664,6 +709,7 @@ void main() {
                 RemoteCanonicalToolArguments(snapshot: {}),
                 'session',
                 'run',
+                'tool-invocation',
                 null,
                 null,
               )
@@ -707,7 +753,7 @@ final class _Service implements RemoteModelToolService {
   final descriptor = _descriptor();
   String? materialization;
   String? validationRoute;
-  (String, String, String, String?, String?)? invocation;
+  (String, String, String, String, String?, String?)? invocation;
   RemoteCanonicalToolArguments? arguments;
   Object? failure;
   int executions = 0;
@@ -760,9 +806,17 @@ final class _Service implements RemoteModelToolService {
     RemoteCanonicalToolArguments arguments,
     String sessionId,
     String runId,
+    String toolInvocationId,
     String? environmentId,
   ) async {
-    invocation = (routeId, sessionId, runId, environmentId, null);
+    invocation = (
+      routeId,
+      sessionId,
+      runId,
+      toolInvocationId,
+      environmentId,
+      null,
+    );
     this.arguments = arguments;
     return RemoteEffectDescription(
       effects: RemoteToolEffect.values,
@@ -778,6 +832,7 @@ final class _Service implements RemoteModelToolService {
     RemoteCanonicalToolArguments arguments,
     String sessionId,
     String runId,
+    String toolInvocationId,
     String? environmentId,
     String? hostInvocationContext,
   ) {
@@ -786,6 +841,7 @@ final class _Service implements RemoteModelToolService {
       routeId,
       sessionId,
       runId,
+      toolInvocationId,
       environmentId,
       hostInvocationContext,
     );

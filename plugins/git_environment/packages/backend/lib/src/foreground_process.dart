@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
@@ -8,14 +9,14 @@ import 'package:adele_product/adele_product.dart';
 
 import 'worktree_environment.dart';
 
-const int maximumEnvironmentProcessOutputCharacters = 1024 * 1024;
-const int _processOutputHeadCharacters =
-    maximumEnvironmentProcessOutputCharacters ~/ 2;
-const int _processOutputTailCharacters =
-    maximumEnvironmentProcessOutputCharacters - _processOutputHeadCharacters;
-const int _maximumProcessEventCharacters = 16 * 1024;
+// The pinned Dart Process pipe stream aggregates up to 4 MiB plus one native
+// read. This bounds full decoded Strings owned by our queue across both pipes,
+// not SDK byte/conversion buffers or emitted message copies. Two maximum SDK
+// reads need not fit; excess decoded admission fails rather than being queued.
+const int _maximumPendingOutputCharacters = 8 * 1024 * 1024;
 const Duration _processTerminationGrace = Duration(milliseconds: 250);
 const Duration _processPipeCloseGrace = Duration(seconds: 1);
+const Duration _processMaximumDrain = Duration(seconds: 10);
 const int _atCurrentWorkingDirectory = -100;
 const int _executeAccess = 1;
 const int _atEffectiveAccess = 0x200;
@@ -47,10 +48,34 @@ const Set<String> _retainedEnvironmentVariables = <String>{
 };
 
 final class GitForegroundProcessSupervisor {
+  GitForegroundProcessSupervisor({
+    this.maximumPendingOutputCharacters = _maximumPendingOutputCharacters,
+    this.maximumEventCharacters = environmentProcessTextLimit,
+    this.drainClock,
+  }) {
+    if (maximumPendingOutputCharacters < 1 ||
+        maximumPendingOutputCharacters > _maximumPendingOutputCharacters) {
+      throw ArgumentError.value(maximumPendingOutputCharacters);
+    }
+    if (maximumEventCharacters < 2 ||
+        maximumEventCharacters > environmentProcessTextLimit) {
+      throw ArgumentError.value(maximumEventCharacters);
+    }
+  }
+
+  final int maximumPendingOutputCharacters;
+  final int maximumEventCharacters;
+  final GitForegroundProcessDrainClock? drainClock;
   final Set<_ForegroundProcessExecution> _active =
       <_ForegroundProcessExecution>{};
   bool _closing = false;
   Future<void>? _closeFuture;
+
+  /// Full decoded Strings retained across active executions, including prefixes.
+  int get pendingOutputCharacters => _active.fold(
+    0,
+    (total, execution) => total + execution._pendingCharacters,
+  );
 
   Stream<EnvironmentProcessEvent> run({
     required EnvironmentId environmentId,
@@ -62,6 +87,9 @@ final class GitForegroundProcessSupervisor {
       environmentId: environmentId,
       environment: environment,
       request: request,
+      maximumPendingOutputCharacters: maximumPendingOutputCharacters,
+      maximumEventCharacters: maximumEventCharacters,
+      drainClock: drainClock ?? GitForegroundProcessDrainClock(),
       canStart: () => !_closing,
       onStarted: () => _active.add(execution),
       onFinished: () => _active.remove(execution),
@@ -82,6 +110,16 @@ final class GitForegroundProcessSupervisor {
           ),
     );
   }
+}
+
+/// Supervisor-local monotonic clock seam; not an Environment request setting.
+class GitForegroundProcessDrainClock {
+  final Stopwatch _watch = Stopwatch()..start();
+
+  Duration get elapsed => _watch.elapsed;
+
+  Timer schedule(Duration delay, void Function() callback) =>
+      Timer(delay, callback);
 }
 
 final class _LinuxEffectiveAccess {
@@ -128,26 +166,23 @@ final class _ForegroundProcessExecution {
     required this.environmentId,
     required this.environment,
     required this.request,
+    required this.maximumPendingOutputCharacters,
+    required this.maximumEventCharacters,
+    required this.drainClock,
     required bool Function() canStart,
     required void Function() onStarted,
     required void Function() onFinished,
   }) : _canStart = canStart,
        _onStarted = onStarted,
        _onFinished = onFinished {
-    _stdoutOutput = _BoundedTextOutput(
-      stream: EnvironmentProcessOutputStream.stdout,
-      emit: _emitOutput,
-    );
-    _stderrOutput = _BoundedTextOutput(
-      stream: EnvironmentProcessOutputStream.stderr,
-      emit: _emitOutput,
-    );
     _controller = StreamController<EnvironmentProcessEvent>(
       sync: true,
       onListen: () {
         if (_canStart()) _onStarted();
         unawaited(_run());
       },
+      onPause: _pauseOutputSubscriptions,
+      onResume: _scheduleOutput,
       onCancel: () => _producerClosing ? null : cancel(),
     );
   }
@@ -155,26 +190,41 @@ final class _ForegroundProcessExecution {
   final EnvironmentId environmentId;
   final WorktreeEnvironment environment;
   final EnvironmentForegroundProcessRequest request;
+  final int maximumPendingOutputCharacters;
+  final int maximumEventCharacters;
+  final GitForegroundProcessDrainClock drainClock;
   final bool Function() _canStart;
   final void Function() _onStarted;
   final void Function() _onFinished;
   final Completer<void> _finished = Completer<void>();
   final Completer<void> _stdoutDone = Completer<void>();
   final Completer<void> _stderrDone = Completer<void>();
+  final Completer<void> _outputDelivered = Completer<void>();
   late final StreamController<EnvironmentProcessEvent> _controller;
-  late final _BoundedTextOutput _stdoutOutput;
-  late final _BoundedTextOutput _stderrOutput;
+  final Queue<_PendingOutput> _pendingOutput = Queue<_PendingOutput>();
+  // Emitted prefixes remain charged until their entire String leaves the queue.
+  int _pendingCharacters = 0;
+  EnvironmentProcessOutputStream? _lastReadStream;
   Process? _process;
   StreamSubscription<String>? _stdoutSubscription;
   StreamSubscription<String>? _stderrSubscription;
   Future<int>? _exitCode;
   Timer? _timeout;
+  Timer? _outputPump;
+  Timer? _drainTimer;
+  Duration? _drainActiveSince;
+  Duration _drainIdleRemaining = _processPipeCloseGrace;
+  Duration _drainHardRemaining = _processMaximumDrain;
+  bool _draining = false;
+  Future<void>? _outputCancellation;
   Future<void>? _terminationFuture;
   bool _cancelled = false;
   bool _timedOut = false;
   bool _leaderExited = false;
   bool _producerClosing = false;
-  Object? _outputError;
+  String? _outputFailure;
+  bool _stdoutTruncated = false;
+  bool _stderrTruncated = false;
 
   Stream<EnvironmentProcessEvent> get stream => _controller.stream;
 
@@ -256,6 +306,9 @@ final class _ForegroundProcessExecution {
       _timeout = Timer(Duration(seconds: request.timeoutSeconds), () {
         if (_cancelled || _producerClosing) return;
         _timedOut = true;
+        if (_controller.isPaused && !_outputDelivered.isCompleted) {
+          _failOutput('process_output_incomplete');
+        }
         unawaited(_terminateProcessGroup());
       });
       if (_cancelled || !_canStart()) {
@@ -272,17 +325,21 @@ final class _ForegroundProcessExecution {
         return;
       }
       await _settleOutputSubscriptions();
-      if (_outputError case final Object error) {
+      if (_cancelled) return;
+      if (_outputFailure case final String code) {
         throw _failure(
-          'process_output_failed',
-          'The foreground process output could not be read.',
-          details: <String, Object?>{'reason': error.toString()},
+          code,
+          'The foreground process output is incomplete.',
+          details: <String, Object?>{
+            'outputIncomplete': true,
+            'termination': _timedOut ? 'timedOut' : 'exited',
+            'exitCode': _timedOut ? null : exitCode,
+            'stdoutTruncated': _stdoutTruncated,
+            'stderrTruncated': _stderrTruncated,
+          },
         );
       }
-      if (_cancelled) return;
 
-      _stdoutOutput.flushTail();
-      _stderrOutput.flushTail();
       _controller.add(
         EnvironmentProcessEvent(
           kind: EnvironmentProcessEventKind.completed,
@@ -292,8 +349,8 @@ final class _ForegroundProcessExecution {
                 ? EnvironmentProcessTermination.timedOut
                 : EnvironmentProcessTermination.exited,
             exitCode: _timedOut ? null : exitCode,
-            stdoutTruncated: _stdoutOutput.truncated,
-            stderrTruncated: _stderrOutput.truncated,
+            stdoutTruncated: _stdoutTruncated,
+            stderrTruncated: _stderrTruncated,
           ),
         ),
       );
@@ -326,42 +383,147 @@ final class _ForegroundProcessExecution {
     _stdoutSubscription = process.stdout
         .transform(const Utf8Decoder(allowMalformed: true))
         .listen(
-          _stdoutOutput.add,
+          (String text) =>
+              _enqueueOutput(EnvironmentProcessOutputStream.stdout, text),
           onError: (Object error, StackTrace _) {
-            _outputError ??= error;
-            if (!_stdoutDone.isCompleted) _stdoutDone.complete();
-            unawaited(_terminateProcessGroup());
+            _failOutput('process_output_failed');
           },
           onDone: () {
             if (!_stdoutDone.isCompleted) _stdoutDone.complete();
+            _noteOutputProgress();
+            _scheduleOutput();
           },
           cancelOnError: true,
         );
     _stderrSubscription = process.stderr
         .transform(const Utf8Decoder(allowMalformed: true))
         .listen(
-          _stderrOutput.add,
+          (String text) =>
+              _enqueueOutput(EnvironmentProcessOutputStream.stderr, text),
           onError: (Object error, StackTrace _) {
-            _outputError ??= error;
-            if (!_stderrDone.isCompleted) _stderrDone.complete();
-            unawaited(_terminateProcessGroup());
+            _failOutput('process_output_failed');
           },
           onDone: () {
             if (!_stderrDone.isCompleted) _stderrDone.complete();
+            _noteOutputProgress();
+            _scheduleOutput();
           },
           cancelOnError: true,
         );
+    if (_controller.isPaused) _pauseOutputSubscriptions();
   }
 
-  void _emitOutput(EnvironmentProcessOutputStream stream, String text) {
-    if (_cancelled || _producerClosing || text.isEmpty) return;
-    _controller.add(
-      EnvironmentProcessEvent(
-        kind: EnvironmentProcessEventKind.output,
-        output: EnvironmentProcessOutput(stream: stream, text: text),
-        completed: null,
-      ),
-    );
+  void _enqueueOutput(EnvironmentProcessOutputStream stream, String text) {
+    if (_cancelled ||
+        _producerClosing ||
+        _outputFailure != null ||
+        text.isEmpty) {
+      return;
+    }
+    // One admitted OS read can span several transport messages. Hold its
+    // remainder here, not in the controller's otherwise unbounded paused queue.
+    _pauseOutputSubscriptions();
+    if (_cancelled || _outputFailure != null) return;
+    if (text.length > maximumPendingOutputCharacters - _pendingCharacters) {
+      _failOutput('process_output_overflow');
+      return;
+    }
+    _pendingOutput.add(_PendingOutput(stream, text));
+    _pendingCharacters += text.length;
+    _lastReadStream = stream;
+    _noteOutputProgress();
+    _scheduleOutput();
+  }
+
+  void _pauseOutputSubscriptions() {
+    for (final subscription in [_stdoutSubscription, _stderrSubscription]) {
+      if (subscription != null && !subscription.isPaused) subscription.pause();
+    }
+    if (_timedOut && _controller.isPaused && !_outputDelivered.isCompleted) {
+      _failOutput('process_output_incomplete');
+    }
+    _updateDrainDeadline();
+  }
+
+  void _scheduleOutput() {
+    if (_cancelled || _producerClosing || _outputFailure != null) return;
+    if (_pendingOutput.isEmpty &&
+        _stdoutDone.isCompleted &&
+        _stderrDone.isCompleted) {
+      if (!_outputDelivered.isCompleted) _outputDelivered.complete();
+      return;
+    }
+    if (_controller.isPaused || _outputPump != null) return;
+    // Yield to the event queue between messages: both pipes and termination
+    // timers must progress even when one pipe is continuously readable.
+    _outputPump = Timer(Duration.zero, _pumpOutput);
+  }
+
+  void _pumpOutput() {
+    _outputPump = null;
+    if (_cancelled ||
+        _producerClosing ||
+        _outputFailure != null ||
+        _controller.isPaused) {
+      return;
+    }
+    if (_pendingOutput.isNotEmpty) {
+      final _PendingOutput pending = _pendingOutput.first;
+      final int end = _safeBoundary(
+        pending.text,
+        pending.offset,
+        maximumEventCharacters,
+      );
+      final String text = pending.text.substring(pending.offset, end);
+      pending.offset = end;
+      if (end == pending.text.length) {
+        _pendingOutput.removeFirst();
+        _pendingCharacters -= pending.text.length;
+      }
+      _controller.add(
+        EnvironmentProcessEvent(
+          kind: EnvironmentProcessEventKind.output,
+          output: EnvironmentProcessOutput(stream: pending.stream, text: text),
+          completed: null,
+        ),
+      );
+      if (_cancelled || _producerClosing || _outputFailure != null) return;
+    }
+    if (_pendingOutput.isEmpty && !_controller.isPaused) {
+      // Give the other pipe first opportunity after an admitted read. A busy
+      // stdout must not repeatedly pause stderr before it can be observed.
+      final subscriptions =
+          _lastReadStream == EnvironmentProcessOutputStream.stdout
+          ? [_stderrSubscription, _stdoutSubscription]
+          : [_stdoutSubscription, _stderrSubscription];
+      for (final subscription in subscriptions) {
+        if (subscription != null && subscription.isPaused) {
+          subscription.resume();
+        }
+      }
+      _updateDrainDeadline();
+    }
+    if (_pendingOutput.isNotEmpty ||
+        (_stdoutDone.isCompleted && _stderrDone.isCompleted)) {
+      _scheduleOutput();
+    }
+  }
+
+  void _failOutput(String code) {
+    if (_outputFailure != null || _cancelled) return;
+    _outputFailure = code;
+    _stdoutTruncated =
+        !_stdoutDone.isCompleted ||
+        _pendingOutput.any(
+          (pending) => pending.stream == EnvironmentProcessOutputStream.stdout,
+        );
+    _stderrTruncated =
+        !_stderrDone.isCompleted ||
+        _pendingOutput.any(
+          (pending) => pending.stream == EnvironmentProcessOutputStream.stderr,
+        );
+    unawaited(_cancelOutputSubscriptions());
+    unawaited(_terminateProcessGroup());
   }
 
   Future<void> _terminateProcessGroup() {
@@ -394,28 +556,84 @@ final class _ForegroundProcessExecution {
   }
 
   Future<void> _settleOutputSubscriptions() async {
+    if (_outputDelivered.isCompleted) return;
+    _draining = true;
+    _updateDrainDeadline();
     try {
-      await Future.wait<void>(<Future<void>>[
-        _stdoutDone.future,
-        _stderrDone.future,
-      ]).timeout(_processPipeCloseGrace);
-    } on TimeoutException {
-      await _cancelOutputSubscriptions();
+      await _outputDelivered.future;
+    } finally {
+      _draining = false;
+      _drainTimer?.cancel();
+      _drainTimer = null;
     }
   }
 
-  Future<void> _cancelOutputSubscriptions() async {
-    final List<Future<void>> cancellations = <Future<void>>[];
-    for (final StreamSubscription<String>? subscription
-        in <StreamSubscription<String>?>[
-          _stdoutSubscription,
-          _stderrSubscription,
-        ]) {
-      if (subscription != null) {
-        cancellations.add(subscription.cancel().catchError((Object _) {}));
-      }
+  void _noteOutputProgress() => _updateDrainDeadline(pipeProgress: true);
+
+  void _updateDrainDeadline({bool pipeProgress = false}) {
+    if (!_draining) return;
+    final Duration now = drainClock.elapsed;
+    if (_drainActiveSince case final Duration since) {
+      final Duration elapsed = now - since;
+      _drainIdleRemaining -= elapsed;
+      _drainHardRemaining -= elapsed;
+      _drainActiveSince = null;
     }
-    await Future.wait<void>(cancellations);
+    _drainTimer?.cancel();
+    _drainTimer = null;
+    if (pipeProgress) _drainIdleRemaining = _processPipeCloseGrace;
+    if (_cancelled ||
+        _outputFailure != null ||
+        (_stdoutDone.isCompleted && _stderrDone.isCompleted)) {
+      return;
+    }
+    if (_drainIdleRemaining <= Duration.zero ||
+        _drainHardRemaining <= Duration.zero) {
+      _failOutput('process_output_incomplete');
+      return;
+    }
+    // These budgets measure upstream liveness, not downstream delivery. Actual
+    // reads are paused while credit or an admitted String's remainder is pending.
+    // Keep the remaining hard budget across pauses so an escaped writer cannot
+    // reset it with each read. EOF ends both clocks, but not queued delivery.
+    final bool reading =
+        (!_stdoutDone.isCompleted && _stdoutSubscription?.isPaused == false) ||
+        (!_stderrDone.isCompleted && _stderrSubscription?.isPaused == false);
+    if (!reading) return;
+    _drainActiveSince = now;
+    _drainTimer = drainClock.schedule(
+      _drainIdleRemaining < _drainHardRemaining
+          ? _drainIdleRemaining
+          : _drainHardRemaining,
+      _updateDrainDeadline,
+    );
+  }
+
+  Future<void> _cancelOutputSubscriptions() {
+    // Cancellation can race Process.start; do not memoize before pipes exist.
+    if (_stdoutSubscription == null && _stderrSubscription == null) {
+      return Future<void>.value();
+    }
+    return _outputCancellation ??= () async {
+      _drainTimer?.cancel();
+      _drainTimer = null;
+      _outputPump?.cancel();
+      _outputPump = null;
+      _pendingOutput.clear();
+      _pendingCharacters = 0;
+      final List<Future<void>> cancellations = <Future<void>>[];
+      for (final StreamSubscription<String>? subscription
+          in <StreamSubscription<String>?>[
+            _stdoutSubscription,
+            _stderrSubscription,
+          ]) {
+        if (subscription != null) {
+          cancellations.add(subscription.cancel().catchError((Object _) {}));
+        }
+      }
+      await Future.wait<void>(cancellations);
+      if (!_outputDelivered.isCompleted) _outputDelivered.complete();
+    }();
   }
 
   void _closeController() {
@@ -438,69 +656,12 @@ final class _ForegroundProcessExecution {
   );
 }
 
-final class _BoundedTextOutput {
-  _BoundedTextOutput({required this.stream, required this.emit});
+final class _PendingOutput {
+  _PendingOutput(this.stream, this.text);
 
   final EnvironmentProcessOutputStream stream;
-  final void Function(EnvironmentProcessOutputStream stream, String text) emit;
-  int _headRemaining = _processOutputHeadCharacters;
-  int _observed = 0;
-  String _tail = '';
-
-  bool get truncated => _observed > maximumEnvironmentProcessOutputCharacters;
-
-  void add(String text) {
-    if (text.isEmpty) return;
-    _observed =
-        _observed > maximumEnvironmentProcessOutputCharacters - text.length
-        ? maximumEnvironmentProcessOutputCharacters + 1
-        : _observed + text.length;
-    int offset = 0;
-    if (_headRemaining > 0) {
-      final int requestedEnd = text.length < _headRemaining
-          ? text.length
-          : _headRemaining;
-      final int end = _safeBoundary(text, 0, _headRemaining);
-      _emitChunks(text.substring(0, end));
-      offset = end;
-      _headRemaining = end < requestedEnd ? 0 : _headRemaining - end;
-    }
-    if (offset < text.length) _retainTail(text.substring(offset));
-  }
-
-  void flushTail() {
-    _emitChunks(_tail);
-    _tail = '';
-  }
-
-  void _retainTail(String text) {
-    if (text.length >= _processOutputTailCharacters) {
-      int start = text.length - _processOutputTailCharacters;
-      if (_isLowSurrogate(text.codeUnitAt(start))) start++;
-      _tail = text.substring(start);
-      return;
-    }
-    final String combined = '$_tail$text';
-    if (combined.length <= _processOutputTailCharacters) {
-      _tail = combined;
-      return;
-    }
-    int start = combined.length - _processOutputTailCharacters;
-    if (_isLowSurrogate(combined.codeUnitAt(start))) start++;
-    _tail = combined.substring(start);
-  }
-
-  void _emitChunks(String text) {
-    for (int offset = 0; offset < text.length;) {
-      final int end = _safeBoundary(
-        text,
-        offset,
-        _maximumProcessEventCharacters,
-      );
-      emit(stream, text.substring(offset, end));
-      offset = end;
-    }
-  }
+  final String text;
+  int offset = 0;
 }
 
 int _safeBoundary(String text, int start, int maximumLength) {
@@ -511,8 +672,6 @@ int _safeBoundary(String text, int start, int maximumLength) {
 }
 
 bool _isHighSurrogate(int codeUnit) => codeUnit >= 0xd800 && codeUnit <= 0xdbff;
-
-bool _isLowSurrogate(int codeUnit) => codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
 
 void _requireSupportedPlatform() {
   if (!Platform.isLinux || Abi.current() != Abi.linuxX64) {

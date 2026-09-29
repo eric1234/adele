@@ -230,6 +230,7 @@ final class _RemoteToolExecutable implements ToolExecutable {
         RemoteCanonicalToolArguments(snapshot: arguments.snapshot),
         context.sessionId.value,
         context.runId.value,
+        context.toolInvocationId,
         binding.environmentId?.value,
       );
       return result.toLocal();
@@ -255,6 +256,7 @@ final class _RemoteToolExecutable implements ToolExecutable {
                 RemoteCanonicalToolArguments(snapshot: arguments.snapshot),
                 context.sessionId.value,
                 context.runId.value,
+                context.toolInvocationId,
                 binding.environmentId?.value,
                 descriptor.executionHostServices.isEmpty ? null : invocation.id,
               )

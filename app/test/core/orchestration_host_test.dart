@@ -13,6 +13,53 @@ import '../support/orchestration_test_lifecycle.dart';
 
 void main() {
   test(
+    'identical calls retain distinct host identities through approval, execution and activity',
+    () async {
+      final fixture = await _BatchFixture.create(
+        decisions: {1: ToolPolicyDecision.ask},
+        proposalCount: 0,
+      );
+      fixture.model.output
+        ..clear()
+        ..addAll([
+          for (var index = 0; index < 2; index++)
+            ModelToolProposalOutput(
+              ProviderToolProposal(
+                providerCallId: 'identical-provider-call',
+                alias: 'step_1',
+                arguments: {'step': 1},
+              ),
+            ),
+        ]);
+      await fixture.strategy.start();
+      expect(fixture.run.state, RunState.waiting);
+      expect(fixture.executable.executionContexts, isEmpty);
+      await fixture.resolveApproval(true);
+      expect(fixture.run.state, RunState.waiting);
+      expect(fixture.executable.executionContexts, hasLength(1));
+      await fixture.resolveApproval(true);
+      expect(fixture.run.state, RunState.completed);
+
+      final tools = fixture.strategy.activity.snapshot.tools;
+      expect(tools, hasLength(2));
+      expect(tools.map((tool) => tool.id).toSet(), hasLength(2));
+      expect(
+        tools.map((tool) => tool.canonicalArguments),
+        everyElement({'step': 1}),
+      );
+      for (var index = 0; index < tools.length; index++) {
+        final described = fixture.executable.descriptionContexts[index];
+        final executed = fixture.executable.executionContexts[index];
+        expect(executed, same(described));
+        expect(executed.toolInvocationId, tools[index].id.value);
+        expect(executed.toolInvocationId, isNot('identical-provider-call'));
+        expect(executed.runId, fixture.run.id);
+        expect(executed.sessionId, fixture.run.sessionId);
+      }
+    },
+  );
+
+  test(
     'async validation settles before preparation, policy and approval',
     () async {
       final _StrategyFixture fixture = await _fixture(ToolPolicyDecision.ask);
@@ -3316,6 +3363,8 @@ final class _BatchExecutable implements ToolExecutable {
   final _InfrastructureFailure? infrastructureFailure;
   final List<int> completed = <int>[];
   final List<String> timeline = <String>[];
+  final List<ToolExecutionContext> descriptionContexts = [];
+  final List<ToolExecutionContext> executionContexts = [];
   Future<void> Function(int step)? beforeTerminal;
   bool stale = false;
 
@@ -3345,6 +3394,7 @@ final class _BatchExecutable implements ToolExecutable {
         infrastructureFailure == _InfrastructureFailure.effectDescription) {
       throw StateError('Effect description failed.');
     }
+    descriptionContexts.add(context);
     return EffectDescription(
       effects: const <ToolEffect>[ToolEffect.sourceMutation],
       targets: const <EffectTarget>[],
@@ -3358,6 +3408,7 @@ final class _BatchExecutable implements ToolExecutable {
     ToolExecutionContext context,
   ) async* {
     final int step = arguments.snapshot['step']! as int;
+    executionContexts.add(context);
     timeline.add('start-$step');
     if (step == 2) {
       if (infrastructureFailure == _InfrastructureFailure.execution) {

@@ -244,6 +244,7 @@ void main() {
                         ToolExecutionContext(
                           runId: RunId('run-1'),
                           sessionId: fixture.sessionId,
+                          toolInvocationId: 'tool-1',
                         ),
                       )
                       .single

@@ -1,11 +1,17 @@
 /// Stock foreground command tool for Session-authorized Environments.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_model_tool/adele_model_tool.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
+
+import 'src/command_transcripts.dart';
+import 'src/process_outcome.dart';
+
+export 'src/command_transcripts.dart';
 
 final PluginId commandToolsPluginId = PluginId(
   'dev.adele.plugin.command-tools',
@@ -21,22 +27,28 @@ final ExtensionId commandToolsExtensionId = ExtensionId(
 
 /// Shared semantic registration for in-process and remote Command Tools.
 ToolRegistration commandToolRegistration(
-  AuthorizedEnvironmentProcessFacet process,
-) => _RunCommandExecutable(process).registration;
+  AuthorizedEnvironmentProcessFacet process, {
+  CommandTranscriptStore? transcripts,
+}) => _RunCommandExecutable(process, transcripts).registration;
 
 final class CommandToolsPlugin {
-  const CommandToolsPlugin();
+  const CommandToolsPlugin({this.transcripts});
+
+  /// Required for execution; description/validation never allocate capture.
+  final CommandTranscriptStore? transcripts;
 
   ExtensionRegistration activate(ExtensionRegistry extensions) =>
       extensions.register(
         point: modelToolContributions,
         id: commandToolsExtensionId,
-        value: const _CommandModelTools(),
+        value: _CommandModelTools(transcripts),
       );
 }
 
 final class _CommandModelTools implements ModelToolContribution {
-  const _CommandModelTools();
+  const _CommandModelTools(this.transcripts);
+
+  final CommandTranscriptStore? transcripts;
 
   @override
   Future<Iterable<ToolRegistration>> materialize(
@@ -47,16 +59,19 @@ final class _CommandModelTools implements ModelToolContribution {
     if (process.sessionId != context.sessionId) {
       throw StateError('The process authority belongs to another Session.');
     }
-    return <ToolRegistration>[commandToolRegistration(process)];
+    return <ToolRegistration>[
+      commandToolRegistration(process, transcripts: transcripts),
+    ];
   }
 }
 
 final class _RunCommandExecutable implements ToolExecutable {
-  const _RunCommandExecutable(this._process);
+  const _RunCommandExecutable(this._process, this._transcripts);
 
   static const int _defaultTimeoutSeconds = 120;
 
   final AuthorizedEnvironmentProcessFacet _process;
+  final CommandTranscriptStore? _transcripts;
 
   ToolRegistration get registration => ToolRegistration(
     definition: ToolDefinition(
@@ -219,110 +234,189 @@ final class _RunCommandExecutable implements ToolExecutable {
   Stream<ToolExecutionEvent> execute(
     CanonicalToolArguments arguments,
     ToolExecutionContext context,
-  ) async* {
-    final EnvironmentForegroundProcessRequest request = _requestFromCanonical(
-      arguments,
-    );
-    final _BoundedCommandOutput stdout = _BoundedCommandOutput();
-    final _BoundedCommandOutput stderr = _BoundedCommandOutput();
-    try {
-      _requireAuthorizedSession(context);
+  ) {
+    StreamIterator<EnvironmentProcessEvent>? producer;
+    bool cancelled = false;
+    Future<void>? work;
+    Future<void>? cancellation;
+    Future<void> stopProducer() =>
+        cancellation ??= producer?.cancel() ?? Future<void>.value();
+    late final StreamController<ToolExecutionEvent> controller;
+    Future<ToolOutcome> run() async {
+      final EnvironmentForegroundProcessRequest request = _requestFromCanonical(
+        arguments,
+      );
+      final _BoundedCommandOutput stdout = _BoundedCommandOutput();
+      final _BoundedCommandOutput stderr = _BoundedCommandOutput();
+      CommandCaptureWriter? capture;
       EnvironmentProcessCompleted? completed;
-      await for (final EnvironmentProcessEvent event
-          in _process.runForegroundProcess(request)) {
-        if (completed != null) {
-          throw const _ProcessStreamContractViolation(
-            'The Environment process stream emitted an event after completion.',
+      bool executionAdmitted = false;
+      try {
+        _requireAuthorizedSession(context);
+        final transcripts = _transcripts;
+        if (transcripts == null) {
+          throw StateError(
+            'Command execution requires a transcript storage service.',
           );
         }
-        switch (event.kind) {
-          case EnvironmentProcessEventKind.output:
-            final EnvironmentProcessOutput output = event.output!;
-            final ToolProgressKind kind;
-            switch (output.stream) {
-              case EnvironmentProcessOutputStream.stdout:
-                stdout.add(output.text);
-                kind = ToolProgressKind.stdout;
-              case EnvironmentProcessOutputStream.stderr:
-                stderr.add(output.text);
-                kind = ToolProgressKind.stderr;
-            }
-            yield ToolExecutionProgress(
-              ToolProgress(kind: kind, content: output.text),
+        capture = await transcripts.begin(
+          context: context,
+          environmentId: _process.environmentId.value,
+          request: request,
+        );
+        if (cancelled) throw StateError('Command execution was cancelled.');
+        // Storage and the unique header commit precede listening to the lazy
+        // process stream. Invocation identity does not grant process authority.
+        executionAdmitted = true;
+        producer = StreamIterator(_process.runForegroundProcess(request));
+        capture.cancelProducer = stopProducer;
+        while (!cancelled && await producer!.moveNext()) {
+          final event = producer!.current;
+          if (completed != null) {
+            throw const _ProcessStreamContractViolation(
+              'The Environment process stream emitted an event after completion.',
             );
-          case EnvironmentProcessEventKind.completed:
-            completed = event.completed!;
+          }
+          switch (event.kind) {
+            case EnvironmentProcessEventKind.output:
+              final EnvironmentProcessOutput output = event.output!;
+              switch (output.stream) {
+                case EnvironmentProcessOutputStream.stdout:
+                  stdout.add(output.text);
+                case EnvironmentProcessOutputStream.stderr:
+                  stderr.add(output.text);
+              }
+              await capture.append(output);
+            case EnvironmentProcessEventKind.completed:
+              completed = event.completed!;
+          }
+        }
+        if (completed == null) {
+          throw const _ProcessStreamContractViolation(
+            'The Environment process stream ended without completion.',
+          );
+        }
+        await stopProducer();
+        await capture.seal(completed);
+        if (completed.stdoutTruncated || completed.stderrTruncated) {
+          throw StateError('The Environment did not deliver complete output.');
+        }
+        return _success(request, completed, stdout, stderr);
+      } on Object catch (error) {
+        Object? cleanupFailure;
+        try {
+          await stopProducer();
+        } on Object catch (cleanupError) {
+          cleanupFailure = cleanupError;
+        }
+        final details = error is EnvironmentFailure
+            ? error.details
+            : const <String, Object?>{};
+        // Typed completion is one coherent fact, including a null timeout exit
+        // code. Optional diagnostics may supply only a valid complete pair.
+        final processOutcome = completed == null
+            ? parseCommandProcessOutcome(
+                details['termination'],
+                details['exitCode'],
+              )
+            : (
+                termination: completed.termination.name,
+                exitCode: completed.exitCode,
+              );
+        final termination = processOutcome?.termination;
+        final exitCode = processOutcome?.exitCode;
+        await capture?.fail(
+          'Command execution or capture failed; effects may have occurred.',
+          termination: termination,
+          exitCode: exitCode,
+        );
+        return _failure(
+          request,
+          stdout,
+          stderr,
+          modelContent: error is _SessionAuthorityViolation
+              ? 'The Run Command tool is not authorized for this Session.'
+              : error is EnvironmentFailure
+              ? 'Environment command failed: ${error.message}'
+              : 'Command execution or transcript capture failed.',
+          kind: error is AuthorizedEnvironmentBindingStale
+              ? ToolFailureKind.staleBinding
+              : error is EnvironmentFailure &&
+                    details['outputIncomplete'] != true
+              ? ToolFailureKind.domain
+              : ToolFailureKind.infrastructure,
+          cause: error,
+          certainty: executionAdmitted
+              ? EffectCertainty.uncertain
+              : EffectCertainty.knownNotOccurred,
+          diagnostics: {
+            'captureState': 'failed',
+            'stdoutTruncated':
+                stdout.truncated ||
+                completed?.stdoutTruncated == true ||
+                details['stdoutTruncated'] == true,
+            'stderrTruncated':
+                stderr.truncated ||
+                completed?.stderrTruncated == true ||
+                details['stderrTruncated'] == true,
+            if (cleanupFailure != null) 'cleanupFailed': true,
+            'termination': ?termination,
+            'exitCode': ?exitCode,
+            if (error is EnvironmentFailure) ...{
+              'code': error.code,
+              'message': error.message,
+              // Outcome facts are exposed only in the validated fields above;
+              // malformed optional values must not break structured diagnostics.
+              'details': {
+                for (final entry in error.details.entries)
+                  if (entry.key != 'termination' && entry.key != 'exitCode')
+                    entry.key: entry.value,
+              },
+            },
+          },
+        );
+      } finally {
+        try {
+          await stopProducer();
+        } on Object {
+          // The primary outcome already carries the failure. Cleanup cannot
+          // replace it or prevent capture from becoming honestly non-complete.
+        } finally {
+          await capture?.fail(
+            'Capture interrupted before acknowledged completion.',
+            termination: completed?.termination.name,
+            exitCode: completed?.exitCode,
+          );
         }
       }
-      if (completed == null) {
-        throw const _ProcessStreamContractViolation(
-          'The Environment process stream ended without completion.',
-        );
-      }
-      yield ToolExecutionTerminal(_success(request, completed, stdout, stderr));
-    } on AuthorizedEnvironmentBindingStale catch (error) {
-      yield ToolExecutionTerminal(
-        _failure(
-          request,
-          stdout,
-          stderr,
-          modelContent: 'The authorized Environment binding became stale.',
-          kind: ToolFailureKind.staleBinding,
-          cause: error,
-        ),
-      );
-    } on AuthorizedEnvironmentBindingUnavailable catch (error) {
-      yield ToolExecutionTerminal(
-        _failure(
-          request,
-          stdout,
-          stderr,
-          modelContent: 'The authorized Environment provider is unavailable.',
-          kind: ToolFailureKind.infrastructure,
-          cause: error,
-        ),
-      );
-    } on EnvironmentFailure catch (error) {
-      yield ToolExecutionTerminal(
-        _failure(
-          request,
-          stdout,
-          stderr,
-          modelContent: 'Environment command failed: ${error.message}',
-          kind: ToolFailureKind.domain,
-          cause: error,
-          diagnostics: <String, Object?>{
-            'code': error.code,
-            'message': error.message,
-            'details': error.details,
-          },
-        ),
-      );
-    } on _SessionAuthorityViolation catch (error) {
-      yield ToolExecutionTerminal(
-        _failure(
-          request,
-          stdout,
-          stderr,
-          modelContent:
-              'The Run Command tool is not authorized for this Session.',
-          kind: ToolFailureKind.infrastructure,
-          cause: error,
-          certainty: EffectCertainty.knownNotOccurred,
-        ),
-      );
-    } on Object catch (error) {
-      yield ToolExecutionTerminal(
-        _failure(
-          request,
-          stdout,
-          stderr,
-          modelContent: 'Environment command execution failed.',
-          kind: ToolFailureKind.infrastructure,
-          cause: error,
-        ),
-      );
     }
+
+    controller = StreamController<ToolExecutionEvent>(
+      onListen: () {
+        work = run()
+            .then<void>(
+              (outcome) {
+                if (!cancelled) controller.add(ToolExecutionTerminal(outcome));
+              },
+              onError: (Object error, StackTrace stack) {
+                if (!cancelled) controller.addError(error, stack);
+              },
+            )
+            .whenComplete(() => unawaited(controller.close()));
+      },
+      onCancel: () async {
+        cancelled = true;
+        // Unlike an async generator suspended on moveNext, this directly
+        // interrupts a silent producer without waiting for another event.
+        try {
+          await stopProducer();
+        } on Object {
+          // run() reports cleanup failure without letting it strand its writer.
+        }
+        await work;
+      },
+    );
+    return controller.stream;
   }
 
   EnvironmentForegroundProcessRequest _requestFromCanonical(
@@ -360,6 +454,7 @@ final class _RunCommandExecutable implements ToolExecutable {
         ..._baseHostData(request, stdout, stderr),
         'termination': completed.termination.name,
         'exitCode': completed.exitCode,
+        'captureState': 'complete',
         'stdoutTruncated': stdoutTruncated,
         'stderrTruncated': stderrTruncated,
       },
@@ -381,6 +476,9 @@ final class _RunCommandExecutable implements ToolExecutable {
     effectCertainty: certainty,
     modelContent:
         '$modelContent\n\n'
+        '${certainty == EffectCertainty.knownNotOccurred ? 'The process was not launched.' : 'External effects may have occurred; capture completeness is unconfirmed.'}\n'
+        '${diagnostics['termination'] == null ? '' : 'Known termination: ${diagnostics['termination']}\n'}'
+        '${diagnostics['exitCode'] == null ? '' : 'Known exit code: ${diagnostics['exitCode']}\n'}'
         'Retained partial STDOUT:\n${stdout.value}\n\n'
         'Retained partial STDERR:\n${stderr.value}',
     hostData: <String, Object?>{

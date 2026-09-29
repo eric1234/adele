@@ -5,11 +5,13 @@ import 'package:adele_capabilities/adele_capabilities.dart';
 import 'package:adele_desktop/core/model_tool_host.dart';
 import 'package:adele_desktop/core/orchestration_host.dart';
 import 'package:adele_desktop/core/product_lifecycle.dart';
+import 'package:adele_desktop/core/project_storage_host.dart';
 import 'package:adele_desktop/core/remote_inference_context_host.dart';
 import 'package:adele_environment/adele_environment.dart';
 import 'package:adele_orchestration/adele_orchestration.dart';
 import 'package:adele_plugin_api/adele_plugin_api.dart';
 import 'package:adele_product/adele_product.dart';
+import 'package:adele_project_storage/adele_project_storage.dart';
 import 'package:agent_kernel/agent_kernel.dart';
 import 'package:chat_strategy_backend/chat_strategy_backend.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -682,6 +684,13 @@ void main() {
             extensions: extensions,
             ids: const _IntegrationIds('session-environment-patch'),
           );
+      addTearDown(() async {
+        try {
+          if (!host.isClosed) await host.close(graceful: false);
+        } finally {
+          await lifecycle.close();
+        }
+      });
       final Project project = lifecycle.createProject(source.uri);
       final TaskCreationResult created = await lifecycle.createTask(
         projectId: project.id,
@@ -711,12 +720,22 @@ void main() {
             connection: await host.startPlugin(
               pluginId: 'dev.adele.plugin.command-tools',
               artifactUri: commandToolsArtifact.uri,
+              createInfrastructureServices: (connection) =>
+                  projectStorageServices(lifecycle, connection),
             ),
             capabilities: registry,
             extensions: extensions,
             adapters: createRemoteExtensionAdapters(),
           );
       addTearDown(commandActivation.close);
+      final storage = ProjectStorageHost(
+        lifecycle: lifecycle,
+        owner: PluginId(commandActivation.connection.pluginId),
+        validateAccess:
+            commandActivation.connection.validateInfrastructureContext,
+      );
+      expect(await storage.isDurableSession(sessionId.value), isFalse);
+      expect(lifecycle.databaseForSession(sessionId), isNull);
       final ToolCatalog catalog = await buildModelToolCatalogForSession(
         sessionId: sessionId,
         environmentRuntime: lifecycle.environmentRuntime,
@@ -762,7 +781,14 @@ void main() {
 
       await strategy.start();
 
-      expect(run.state, RunState.completed);
+      expect(
+        run.state,
+        RunState.completed,
+        reason:
+            '${run.failure}\n'
+            '${strategy.lastToolOutcome?.hostDiagnostic}\n'
+            'Last tool outcome: ${strategy.lastToolOutcome?.hostData}',
+      );
       expect(model.invocations, 4);
       expect(model.observedPath, _sourceRelativePath);
       expect(
@@ -860,6 +886,7 @@ void main() {
       );
       expect(completed.last.outcome.hostData['termination'], 'exited');
       expect(completed.last.outcome.hostData['exitCode'], 0);
+      expect(completed.last.outcome.hostData['captureState'], 'complete');
       expect(completed.last.outcome.hostData['program'], 'git');
       expect(completed.last.outcome.hostData['arguments'], <Object?>[
         'diff',
@@ -973,8 +1000,28 @@ void main() {
         isNot(contains('_maxModelInvocations = 9')),
       );
 
+      expect(await storage.isDurableSession(sessionId.value), isFalse);
+      expect(lifecycle.databaseForSession(sessionId), isNull);
+      final database = lifecycle.databaseForSession(
+        sessionId,
+        accessMode: ProjectStorageAccessMode.durableOrTemporary,
+      )!;
+      final temporaryDatabase = File(database.path);
+      expect(temporaryDatabase.existsSync(), isTrue);
+      expect(database.path, isNot(startsWith(container.path)));
+
+      await strategy.close();
+      await commandActivation.close();
+      await expectLater(
+        storage.isDurableSession(sessionId.value),
+        throwsA(isA<PluginConnectionClosed>()),
+      );
       await environmentActivation.close();
       await host.close();
+      expect(temporaryDatabase.existsSync(), isTrue);
+      await lifecycle.close();
+      expect(temporaryDatabase.parent.existsSync(), isFalse);
+      expect(() => database.queryPluginRows('SELECT 1', {}), throwsStateError);
     },
     timeout: const Timeout(Duration(minutes: 4)),
   );
@@ -1782,6 +1829,7 @@ Future<ToolOutcome> _executeSearch(
                 ToolExecutionContext(
                   runId: RunId('run-generation-search'),
                   sessionId: sessionId,
+                  toolInvocationId: 'search-invocation',
                 ),
               )
               .single

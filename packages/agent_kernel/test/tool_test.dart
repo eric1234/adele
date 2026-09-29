@@ -167,7 +167,8 @@ void main() {
                   ),
                   tools: (ToolCatalog()..register(testRegistration(executable)))
                       .materialize(),
-                  context: testExecutionContext(),
+                  runId: RunId('run-1'),
+                  sessionId: SessionId('session-1'),
                 );
             final ToolProposalFailure failure =
                 (resolution as RejectedToolProposal).failure;
@@ -227,7 +228,8 @@ void main() {
               arguments: {},
             ),
             tools: tools,
-            context: testExecutionContext(),
+            runId: RunId('run-1'),
+            sessionId: SessionId('session-1'),
           );
       expect(
         (resolution as RejectedToolProposal).failure.kind,
@@ -252,6 +254,7 @@ void main() {
       expect(invocation.tool.executable, same(executable));
       expect(invocation.context.runId, RunId('run-1'));
       expect(invocation.context.sessionId, SessionId('session-1'));
+      expect(invocation.context.toolInvocationId, invocation.id.value);
       expect(
         () => invocation.arguments.snapshot['uri'] = 'file:///tmp/changed.dart',
         throwsUnsupportedError,
@@ -269,7 +272,8 @@ void main() {
             ),
             tools: (ToolCatalog()..register(testRegistration(TestExecutable())))
                 .materialize(),
-            context: testExecutionContext(),
+            runId: RunId('run-1'),
+            sessionId: SessionId('session-1'),
           );
 
       expect(resolution, isA<RejectedToolProposal>());
@@ -291,7 +295,8 @@ void main() {
             ),
             tools: (ToolCatalog()..register(testRegistration(executable)))
                 .materialize(),
-            context: testExecutionContext(),
+            runId: RunId('run-1'),
+            sessionId: SessionId('session-1'),
           );
 
       expect(resolution, isA<RejectedToolProposal>());
@@ -321,7 +326,8 @@ void main() {
               ),
               tools: (ToolCatalog()..register(testRegistration(executable)))
                   .materialize(),
-              context: testExecutionContext(),
+              runId: RunId('run-1'),
+              sessionId: SessionId('session-1'),
             );
 
         expect(
@@ -369,7 +375,8 @@ void main() {
                   (ToolCatalog()
                         ..register(_throwingRegistration(fixture.error)))
                       .materialize(),
-              context: testExecutionContext(),
+              runId: RunId('run-1'),
+              sessionId: SessionId('session-1'),
             );
         final ToolProposalFailure failure =
             (resolution as RejectedToolProposal).failure;
@@ -407,7 +414,8 @@ void main() {
                   (ToolCatalog()
                         ..register(_throwingRegistration(fixture.error)))
                       .materialize(),
-              context: testExecutionContext(),
+              runId: RunId('run-1'),
+              sessionId: SessionId('session-1'),
             );
 
         expect(resolution, isA<RejectedToolProposal>());
@@ -664,7 +672,8 @@ void main() {
                   arguments: {},
                 ),
                 tools: tools,
-                context: testExecutionContext(),
+                runId: RunId('run-1'),
+                sessionId: SessionId('session-1'),
               );
           await validating.future;
           if (retire) {
@@ -770,6 +779,7 @@ void main() {
         ToolExecutionContext(
           runId: RunId('run-context'),
           sessionId: SessionId('session-context'),
+          toolInvocationId: 'tool-context',
         ),
       );
 

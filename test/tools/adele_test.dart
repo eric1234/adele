@@ -242,7 +242,7 @@ void main() {
           for (final TestTarget target in testTargets)
             target.name: switch (target.name) {
               'contract_codegen' => 4,
-              'git_environment_backend' => 1,
+              'git_environment_backend' || 'adele_desktop' => 1,
               _ => null,
             },
         },
@@ -251,6 +251,16 @@ void main() {
   });
 
   group('target lookup', () {
+    test(
+      'desktop CI serializes compiler-heavy fixtures without changing local defaults',
+      () {
+        final target = lookupTestTarget('adele_desktop');
+        expect(target.argumentsFor(), ['test']);
+        expect(target.argumentsFor(ci: true), ['test', '--concurrency', '1']);
+        expect(target.ciTestConcurrency, 1);
+      },
+    );
+
     test('returns the exact target', () {
       expect(lookupTestTarget('contract_codegen').name, 'contract_codegen');
     });
@@ -611,6 +621,7 @@ void main() {
       'chat_strategy_backend',
       'filesystem_tools_plugin',
       'command_tools_plugin',
+      'command_tools_contract',
       'openai_contract',
     ]) {
       expect(
@@ -862,6 +873,7 @@ void main() {
         'search_tools_backend|dart|plugins/search_tools/packages/backend|test',
         'command_tools_plugin|dart|plugins/command_tools|test',
         'command_tools_backend|dart|plugins/command_tools/packages/backend|test',
+        'command_tools_contract|dart|plugins/command_tools/packages/contract|test',
         'agents_md_plugin|dart|plugins/agents_md|test',
         'agents_md_backend|dart|plugins/agents_md/packages/backend|test',
         'chat_strategy_contract|dart|plugins/chat_strategy/packages/contract|test',

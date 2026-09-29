@@ -33,27 +33,40 @@ final class ProjectStorageHost implements ProjectStorageService {
   final PluginId owner;
   final void Function() validateAccess;
 
-  ProjectDatabase? _database(String sessionId) {
+  ProjectDatabase? _database(
+    String sessionId,
+    ProjectStorageAccessMode accessMode,
+  ) {
     // A generated dispatcher can queue requests. Revalidate at service entry,
     // immediately before synchronous storage, not just on transport admission.
     validateAccess();
-    return lifecycle.databaseForSession(SessionId(sessionId));
+    return lifecycle.databaseForSession(
+      SessionId(sessionId),
+      accessMode: accessMode,
+    );
   }
 
-  ProjectDatabase _durableDatabase(String sessionId) =>
-      _database(sessionId) ??
+  ProjectDatabase _requireDatabase(
+    String sessionId,
+    ProjectStorageAccessMode accessMode,
+  ) =>
+      _database(sessionId, accessMode) ??
       (throw StateError('This Session belongs to a volatile Project.'));
 
   @override
   Future<bool> isDurableSession(String sessionId) async =>
-      _database(sessionId) != null;
+      _database(sessionId, ProjectStorageAccessMode.durable) != null;
 
   @override
   Future<void> ensureSchemaForSession(
     String sessionId,
     List<String> migrations,
+    ProjectStorageAccessMode accessMode,
   ) async {
-    _durableDatabase(sessionId).ensurePluginSchema(owner.value, migrations);
+    _requireDatabase(
+      sessionId,
+      accessMode,
+    ).ensurePluginSchema(owner.value, migrations);
   }
 
   @override
@@ -61,13 +74,19 @@ final class ProjectStorageHost implements ProjectStorageService {
     String sessionId,
     String sql,
     Map<String, Object?> parameters,
-  ) async => _durableDatabase(sessionId).queryPluginRows(sql, parameters);
+    ProjectStorageAccessMode accessMode,
+  ) async =>
+      _requireDatabase(sessionId, accessMode).queryPluginRows(sql, parameters);
 
   @override
   Future<void> transactionForSession(
     String sessionId,
     List<RelationalStatement> statements,
+    ProjectStorageAccessMode accessMode,
   ) async {
-    _durableDatabase(sessionId).executePluginTransaction(statements);
+    _requireDatabase(
+      sessionId,
+      accessMode,
+    ).executePluginTransaction(statements);
   }
 }

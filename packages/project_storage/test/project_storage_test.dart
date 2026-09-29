@@ -55,20 +55,23 @@ void main() {
       expect(await client.isDurableSession('session'), isTrue);
       await client.ensureSchemaForSession('session', [
         'CREATE TABLE owned (id TEXT)',
-      ]);
+      ], ProjectStorageAccessMode.durable);
       expect(service.migrations, ['CREATE TABLE owned (id TEXT)']);
+      expect(service.accessMode, ProjectStorageAccessMode.durable);
       await client.transactionForSession('session', [
         RelationalStatement(
           sql: 'INSERT INTO owned VALUES (:id)',
           parameters: {':id': 'entry'},
           expectedRows: 1,
         ),
-      ]);
+      ], ProjectStorageAccessMode.durableOrTemporary);
       expect(service.statements.single.parameters, {':id': 'entry'});
       expect(service.statements.single.expectedRows, 1);
+      expect(service.accessMode, ProjectStorageAccessMode.durableOrTemporary);
       final rows = await client.queryForSession('session', 'SELECT :value', {
         ':value': 3,
-      });
+      }, ProjectStorageAccessMode.durableOrTemporary);
+      expect(service.accessMode, ProjectStorageAccessMode.durableOrTemporary);
       expect(rows.single.values, {
         'text': 'retained',
         'integer': 3,
@@ -79,6 +82,11 @@ void main() {
         expect(payload.keys, isNot(contains('ownerId')));
         expect(payload.keys, isNot(contains('path')));
       }
+      expect(channel.payloads.skip(1).map((payload) => payload['accessMode']), [
+        'durable',
+        'durableOrTemporary',
+        'durableOrTemporary',
+      ]);
     },
   );
 
@@ -93,6 +101,7 @@ void main() {
         'method': projectStorageServiceTransactionForSessionId,
         'payload': {
           'sessionId': 'session',
+          'accessMode': 'durable',
           'statements': [
             {
               'sql': 'INSERT',
@@ -116,6 +125,7 @@ void main() {
       'method': projectStorageServiceEnsureSchemaForSessionId,
       'payload': {
         'sessionId': 'session',
+        'accessMode': 'durable',
         'migrations': ['CREATE TABLE forbidden (id TEXT)'],
         'ownerId': 'dev.some.other.plugin',
       },
@@ -124,11 +134,42 @@ void main() {
     expect((response['error']! as Map)['code'], 'invalid_request');
     expect(service.migrations, isEmpty);
   });
+
+  test(
+    'access mode is explicit and unknown modes fail before service use',
+    () async {
+      final service = _Storage();
+      final dispatcher = ProjectStorageServiceDispatcher(service);
+      addTearDown(dispatcher.close);
+      for (final extra in <Map<String, Object?>>[
+        {},
+        {'accessMode': null},
+        {'accessMode': 'memory'},
+        {'accessMode': 1},
+      ]) {
+        final response = await dispatcher.dispatch({
+          'kind': 'request',
+          'requestId': 1,
+          'method': projectStorageServiceEnsureSchemaForSessionId,
+          'payload': {
+            'sessionId': 'session',
+            'migrations': ['CREATE TABLE owned (id TEXT)'],
+            ...extra,
+          },
+        });
+        expect(response['ok'], isFalse);
+        expect((response['error']! as Map)['code'], 'invalid_request');
+      }
+      expect(service.migrations, isEmpty);
+      expect(service.accessMode, isNull);
+    },
+  );
 }
 
 final class _Storage implements ProjectStorageService {
   List<String> migrations = [];
   List<RelationalStatement> statements = [];
+  ProjectStorageAccessMode? accessMode;
 
   @override
   Future<bool> isDurableSession(String sessionId) async => true;
@@ -137,8 +178,10 @@ final class _Storage implements ProjectStorageService {
   Future<void> ensureSchemaForSession(
     String sessionId,
     List<String> migrations,
+    ProjectStorageAccessMode accessMode,
   ) async {
     this.migrations = migrations;
+    this.accessMode = accessMode;
   }
 
   @override
@@ -146,22 +189,28 @@ final class _Storage implements ProjectStorageService {
     String sessionId,
     String sql,
     Map<String, Object?> parameters,
-  ) async => [
-    RelationalRow(
-      values: {
-        'text': 'retained',
-        'integer': parameters[':value'],
-        'nil': null,
-      },
-    ),
-  ];
+    ProjectStorageAccessMode accessMode,
+  ) async {
+    this.accessMode = accessMode;
+    return [
+      RelationalRow(
+        values: {
+          'text': 'retained',
+          'integer': parameters[':value'],
+          'nil': null,
+        },
+      ),
+    ];
+  }
 
   @override
   Future<void> transactionForSession(
     String sessionId,
     List<RelationalStatement> statements,
+    ProjectStorageAccessMode accessMode,
   ) async {
     this.statements = statements;
+    this.accessMode = accessMode;
   }
 }
 

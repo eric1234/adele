@@ -67,8 +67,9 @@ authored contract declaration
 Declaration and generated implementation are separate concerns. Native generated
 parts are derived, ignored local artifacts, not authoritative or committed source.
 Frontend eval clients can be derived from the same declarations without creating
-a second semantic contract; the current eval projection supports a narrower,
-unary-only surface rather than all native transport shapes.
+a second semantic contract. The bounded eval projection supports unary and server
+streaming operations with scalar, nullable, JSON, list, and value DTO transport,
+not every native contract shape.
 
 Exact bootstrap, generation, checking, cleaning, and filesystem procedures belong
 to [`contract_codegen`](../../packages/contract_codegen/README.md) and the
@@ -199,14 +200,21 @@ management are not established by these live routes. See
 
 ## Own-backend frontend requests
 
-Prepared frontends can use generated unary clients to call explicitly allowlisted
-services on their captured owning backend. This is direct routing to one exact
+Prepared frontends can use generated unary and server-streaming clients to call
+explicitly allowlisted services on their captured owning backend. This is direct routing to one exact
 backend generation and configuration context, not Capability provider discovery.
 The prepared descriptor constrains allowed services; interpreted frontend code
 cannot select an arbitrary PluginId, configuration context, or service.
 
 The host validates captured ownership and presentation lifetime before dispatch
-and after settlement. Where owning-backend strategy affinity is required, it must
+and after settlement. Streams admit on listen, validate each delivered item, and
+propagate pause/resume/cancellation through the existing transport. Owner retirement
+cancels active observations, including idle/paused ones; presentation retirement
+fences queued callbacks and cancels subscriptions without stopping independent
+backend work. Malformed stream items and safe eval error/done delivery affect the
+observation, not the producer's domain outcome. Generic prepared hosting does not
+require Session or strategy presentation. Where owning-backend strategy affinity
+is required, it must
 prove the strategy's exact registration origin, not merely matching semantic IDs.
 Missing, retired, or mismatched ownership fails explicitly, without retargeting or
 native/in-process fallback. Same-plugin identity alone grants no arbitrary service
@@ -391,9 +399,19 @@ Capability. Its narrow surface is:
 | Operation | Boundary |
 | --- | --- |
 | `isDurableSession(sessionId)` | Resolve Session -> Task -> currently open Project. False only for a published Session in an explicitly volatile Project; missing/closed/error cases throw. |
-| `ensureSchemaForSession(sessionId, List<String> migrations)` | Validate all script statements as supported `CREATE TABLE` forms before execution, then coordinate the connection-owned plugin's schema transactionally; version is the migration list length. The [storage contract](../../packages/project_storage/README.md#service) defines the restricted script syntax. |
-| `queryForSession(sessionId, sql, Map<String, Object?> parameters)` | One read-only `SELECT` statement with named parameters and bounded `RelationalRow.values` results. |
-| `transactionForSession(sessionId, List<RelationalStatement> statements)` | Commit a host-owned transaction of `INSERT`, `UPDATE`, or `DELETE` statements; statements carry `sql`, named `parameters`, and nullable `expectedRows`, whose mismatch rolls back the batch. |
+| `ensureSchemaForSession(sessionId, migrations, accessMode)` | Validate all script statements as supported `CREATE TABLE` forms before execution, then coordinate the connection-owned plugin's schema transactionally; version is the migration list length. The [storage contract](../../packages/project_storage/README.md#service) defines the restricted script syntax. |
+| `queryForSession(sessionId, sql, parameters, accessMode)` | One read-only `SELECT` statement with named parameters and bounded `RelationalRow.values` results. |
+| `transactionForSession(sessionId, statements, accessMode)` | Commit a host-owned transaction of `INSERT`, `UPDATE`, or `DELETE` statements; statements carry `sql`, named `parameters`, and nullable `expectedRows`, whose mismatch rolls back the batch. |
+
+Storage operations require an explicit `ProjectStorageAccessMode`: `durable`
+retains durable-only access and rejects volatile Projects; `durableOrTemporary`
+permits [host-retained temporary backing](product-model.md#project-storage) for an
+already volatile Project. It does not change `isDurableSession`, replace durable
+backing after failure, or extend infrastructure authority. The same exact-generation
+validation and service-entry lifecycle check govern both modes. SQLite work after
+those checks is synchronous, so accepted operations finish before connection
+disposal; queued work not yet admitted fails after retirement or close. No grant is
+kept alive for storage draining and no extra backend-shutdown dependency is added.
 
 Parameters and row maps admit only strings, integers, and null, not arbitrary JSON
 or SQLite objects. Query responses are bounded to 1000 rows and 1 MiB; excess fails

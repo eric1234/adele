@@ -946,6 +946,7 @@ void main() {
         configurationContext: origin.configurationContext,
         backendServices: ['testService'],
         validateOwner: origin.validate,
+        observeOwnerRetirement: activation.onRetire,
         validatePresentation: () {
           if (!presentationLive) throw StateError('Presentation retired.');
         },
@@ -1101,7 +1102,174 @@ void main() {
         expect(replacement.isClosed, isFalse);
       },
     );
+
+    test(
+      'stream listen is lazy and preserves exact route and snapshot',
+      () async {
+        final payload = <String, Object?>{'count': 2, 'value': 'before'};
+        final stream = channel.stream('testService', 'owningEcho', payload);
+        expect(await connection.request('streamStats', {}), {
+          'opens': 0,
+          'credits': 0,
+          'cancels': 0,
+        });
+        payload['value'] = 'at-listen';
+        final items = await stream.toList();
+        expect(items, [
+          {
+            'value': 'at-listen',
+            'configurationContext': 'configured',
+            'serviceId': 'testService',
+          },
+          {
+            'value': 'at-listen',
+            'configurationContext': 'configured',
+            'serviceId': 'testService',
+          },
+        ]);
+        expect(() => (items.first as Map).clear(), throwsUnsupportedError);
+        await expectLater(
+          channel.stream('unlisted', 'owningEcho', {'count': 1}),
+          emitsError(isA<StateError>()),
+        );
+        await expectLater(
+          channel.stream('testService', 'owningEcho', {
+            'count': 1,
+            'value': Object(),
+          }),
+          emitsError(isA<FormatException>()),
+        );
+      },
+    );
+
+    test(
+      'stream pause and cancel propagate existing transport credit',
+      () async {
+        final first = Completer<void>();
+        late StreamSubscription<Object?> subscription;
+        var count = 0;
+        subscription = channel
+            .stream('testService', 'owningEcho', {
+              'count': 100,
+              'value': 'item',
+            })
+            .listen((_) {
+              count++;
+              subscription.pause();
+              if (!first.isCompleted) first.complete();
+            });
+        await first.future;
+        final paused = await connection.request('streamStats', {}) as Map;
+        expect(paused['credits'], 1);
+        expect(count, 1);
+        final resumed = Completer<void>();
+        subscription.onData((_) {
+          count++;
+          subscription.pause();
+          resumed.complete();
+        });
+        subscription.resume();
+        await resumed.future;
+        expect(count, 2);
+        await subscription.cancel();
+        final cancelled = await connection.request('streamStats', {}) as Map;
+        expect(cancelled['cancels'], 1);
+      },
+    );
+
+    for (final paused in [false, true]) {
+      test(
+        'owner retirement cancels ${paused ? 'paused' : 'idle'} stream without retargeting',
+        () async {
+          final errors = <Object>[];
+          final done = Completer<void>();
+          final subscription = channel
+              .stream('testService', 'owningIdle', {'count': 10})
+              .listen(
+                (_) => fail('Late item'),
+                onError: errors.add,
+                onDone: done.complete,
+              );
+          if (paused) subscription.pause();
+          await connection.request('streamStats', {});
+          await activation.retire();
+          await activate(connection);
+          final stats = await connection.request('streamStats', {}) as Map;
+          expect(stats['cancels'], 1);
+          if (paused) subscription.resume();
+          await done.future;
+          expect(errors, hasLength(1));
+          expect(errors.single, isA<PluginConnectionClosed>());
+          await expectLater(
+            channel.stream('testService', 'owningEcho', {'count': 1}),
+            emitsError(isA<StaleExtensionBinding>()),
+          );
+        },
+      );
+    }
+
+    test(
+      'presentation liveness is validated on each stream delivery',
+      () async {
+        final first = Completer<void>();
+        final errors = <Object>[];
+        final done = Completer<void>();
+        late StreamSubscription<Object?> subscription;
+        subscription = channel
+            .stream('testService', 'owningEcho', {'count': 3})
+            .listen(
+              (_) {
+                subscription.pause();
+                first.complete();
+              },
+              onError: errors.add,
+              onDone: done.complete,
+            );
+        await first.future;
+        presentationLive = false;
+        subscription.resume();
+        await done.future;
+        expect(errors, hasLength(1));
+        expect(errors.single, isA<StateError>());
+        expect(
+          (await connection.request('streamStats', {}) as Map)['cancels'],
+          1,
+        );
+      },
+    );
   });
+
+  test(
+    'owning stream retirement inside onData defers terminal delivery',
+    () async {
+      final connection = await connect({});
+      final activation = await activate(connection);
+      final channel = OwningBackendChannel(
+        connection: connection,
+        configurationContext: connection.defaultConfigurationContext,
+        backendServices: ['testService'],
+        validateOwner: activation.validate,
+        validatePresentation: () {},
+        observeOwnerRetirement: activation.onRetire,
+      );
+      final errors = <Object>[];
+      var items = 0;
+      final done = Completer<void>();
+      channel
+          .stream('testService', 'owningEcho', {'count': 3})
+          .listen(
+            (_) {
+              items++;
+              unawaited(activation.retire());
+            },
+            onError: errors.add,
+            onDone: done.complete,
+          );
+      await done.future;
+      expect(items, 1);
+      expect(errors, [isA<PluginConnectionClosed>()]);
+    },
+  );
 
   test(
     'retirement revokes authority before draining adapter cleanup',
@@ -1826,6 +1994,9 @@ void main() {
   final streams = <int, Map<String, dynamic>>{};
   var nextHostRequest = 0;
   var hostResponses = 0;
+  var streamOpens = 0;
+  var streamCredits = 0;
+  var streamCancels = 0;
   void reverse(Map<String, dynamic> message) {
     final id = nextHostRequest++;
     pending[id] = message;
@@ -1862,7 +2033,9 @@ void main() {
             send({'kind': 'pluginStopped', ...route});
           }
         case 'request':
-          if (message['method'] == 'reverse') {
+          if (message['method'] == 'streamStats') {
+            send({'kind': 'response', ...route, 'ok': true, 'payload': {'opens': streamOpens, 'credits': streamCredits, 'cancels': streamCancels}});
+          } else if (message['method'] == 'reverse') {
             reverse(message);
           } else if (message['method'] == 'infrastructureContext') {
             send({'kind': 'response', ...route, 'ok': true, 'payload': infrastructure[message['pluginId']]});
@@ -1874,19 +2047,26 @@ void main() {
             send({'kind': 'response', ...route, 'ok': true, 'payload': message['method'] == 'hostResponseCount' ? hostResponses : {'configurationContext': message['configurationContext'], 'serviceId': message['serviceId']}});
           }
         case 'streamOpen':
+          streamOpens++;
           streams[message['requestId']] = message..['remaining'] = message['payload']['count'];
         case 'streamCredit':
+          streamCredits++;
           final stream = streams[message['requestId']];
           if (stream == null || stream['cancelled'] == true) continue;
+          if (stream['method'] == 'owningIdle') continue;
           if (stream['remaining'] == 0) {
             streams.remove(message['requestId']);
             send({'kind': 'streamDone', 'requestId': message['requestId'], 'pluginId': message['pluginId']});
+          } else if (stream['method'] == 'owningEcho') {
+            stream['remaining']--;
+            send({'kind': 'streamItem', 'requestId': stream['requestId'], 'pluginId': stream['pluginId'], 'payload': {'value': stream['payload']['value'], 'configurationContext': stream['configurationContext'], 'serviceId': stream['serviceId']}});
           } else {
             stream['remaining']--;
             stream['pending'] = true;
             reverse(stream);
           }
         case 'streamCancel':
+          streamCancels++;
           send({'kind': 'streamCancelForwarded', 'requestId': message['requestId'], 'pluginId': message['pluginId']});
           final stream = streams[message['requestId']];
           if (stream != null) {

@@ -6,6 +6,10 @@ part 'adele_project_storage.g.dart';
 const int relationalQueryRowLimit = 1000;
 const int relationalQueryByteLimit = 1024 * 1024;
 
+/// Temporary backing is an explicit opt-in for an already volatile Project,
+/// never a fallback after durable storage fails.
+enum ProjectStorageAccessMode { durable, durableOrTemporary }
+
 /// One parameterized statement inside a host-owned transaction.
 @AdeleValue('project.storage.statement')
 final class RelationalStatement {
@@ -63,6 +67,7 @@ abstract interface class ProjectStorageService {
   Future<void> ensureSchemaForSession(
     String sessionId,
     List<String> migrations,
+    ProjectStorageAccessMode accessMode,
   );
 
   /// A single read-only query. Oversized results fail, never silently truncate.
@@ -71,6 +76,7 @@ abstract interface class ProjectStorageService {
     String sessionId,
     String sql,
     Map<String, Object?> parameters,
+    ProjectStorageAccessMode accessMode,
   );
 
   /// Executes all statements in one transaction before reporting success.
@@ -78,5 +84,6 @@ abstract interface class ProjectStorageService {
   Future<void> transactionForSession(
     String sessionId,
     List<RelationalStatement> statements,
+    ProjectStorageAccessMode accessMode,
   );
 }

@@ -294,7 +294,16 @@ final class PluginBackendActivation {
   final PluginBackendConnection connection;
   final PluginCapabilityActivation _capabilities;
   final PluginExtensionActivation _extensions;
+  final Set<void Function()> _retirementObservers = {};
   Future<void>? _retiring;
+  bool _retired = false;
+
+  /// Observes exact-generation retirement without retaining inactive consumers.
+  void Function() onRetire(void Function() observer) {
+    validate();
+    _retirementObservers.add(observer);
+    return () => _retirementObservers.remove(observer);
+  }
 
   RemoteExtensionContext? extensionOrigin(ExtensionBinding<Object> binding) =>
       _extensions.originFor(binding);
@@ -305,7 +314,7 @@ final class PluginBackendActivation {
   }
 
   void validate() {
-    if (_retiring != null || connection.isClosed) {
+    if (_retired || connection.isClosed) {
       throw const PluginConnectionClosed('The backend activation is retired.');
     }
   }
@@ -361,9 +370,26 @@ final class PluginBackendActivation {
 
   Future<void> retire() {
     connection.revokeInfrastructureContext();
+    Object? observerError;
+    StackTrace? observerStack;
+    if (!_retired) {
+      _retired = true;
+      final observers = _retirementObservers.toList();
+      _retirementObservers.clear();
+      for (final observer in observers) {
+        try {
+          observer();
+        } on Object catch (error, stack) {
+          observerError ??= error;
+          observerStack ??= stack;
+        }
+      }
+    }
     return _retiring ??= Future.wait<void>([
       _extensions.retire(),
       _capabilities.retire(),
+      if (observerError != null)
+        Future<void>.error(observerError, observerStack),
     ]);
   }
 

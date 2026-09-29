@@ -103,6 +103,39 @@ final class SessionFailure implements Exception {
   );
 
   test(
+    'eval streams derive DTO codecs while preserving unary methods',
+    () async {
+      final fixture = await createFixture('''
+import 'package:adele_contract/adele_contract.dart';
+part 'fixture.g.dart';
+@AdeleValue('fixture.item')
+final class Item {
+  const Item({required this.sequence, required this.text});
+  final int sequence;
+  final String? text;
+}
+@AdeleService('fixture.observation')
+abstract interface class ObservationService {
+  @AdeleMethod('watch') Stream<Item> watch(String scope);
+  @AdeleMethod('read') Future<Item> read(String scope);
+}
+''');
+      final output = await const ContractGenerator().generateEvalClient(
+        fixture.source,
+      );
+      expect(parseString(content: output).errors, isEmpty);
+      expect(output, contains('Stream<Item> watch(String scope)'));
+      expect(output, contains('as AdeleStreamChannel'));
+      expect(output, contains("'fixture.observation.watch'"));
+      expect(output, contains('.map((Object? _adeleResponse)'));
+      expect(output, contains('Future<Item> read(String scope)'));
+      expect(output, contains('Missing Item field.'));
+      expect(output, contains('Unknown Item field.'));
+      expect(output, isNot(contains('Dispatcher')));
+    },
+  );
+
+  test(
     'real EVC round trips generated nested encoders and strict JSON',
     () async {
       final fixture = await createFixture('''

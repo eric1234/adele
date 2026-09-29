@@ -53,6 +53,7 @@ void main() {
     context = ToolExecutionContext(
       runId: RunId('approval-gated-run'),
       sessionId: session.id,
+      toolInvocationId: 'policy-invocation',
     );
     catalog = await buildModelToolCatalogForSession(
       sessionId: session.id,
@@ -191,7 +192,8 @@ Future<ToolInvocation> _resolve(
           arguments: arguments,
         ),
         tools: tools,
-        context: context,
+        runId: context.runId,
+        sessionId: context.sessionId,
       );
   expect(resolution, isA<ResolvedToolProposal>());
   return (resolution as ResolvedToolProposal).invocation;

@@ -18,6 +18,9 @@ const String environmentTerminalUnavailableCode = 'terminal_unavailable';
 /// Per-message bounds, independent of provider buffering and emulator scrollback.
 const int environmentTerminalTextLimit = 8192;
 
+/// Foreground output message bound in UTF-16 code units, not a transcript limit.
+const int environmentProcessTextLimit = 16 * 1024;
+
 final capabilities.CapabilityKey environmentProviderCapability =
     capabilities.CapabilityKey(
       id: capabilities.CapabilityId('dev.adele.environment.provider'),
@@ -280,8 +283,10 @@ final class EnvironmentForegroundProcessRequest {
 @AdeleValue('environment.processOutput')
 final class EnvironmentProcessOutput {
   EnvironmentProcessOutput({required this.stream, required this.text}) {
-    if (text.isEmpty) {
-      throw const FormatException('Process output must not be empty.');
+    if (text.isEmpty || text.length > environmentProcessTextLimit) {
+      throw const FormatException(
+        'Process output must contain 1..16384 UTF-16 code units.',
+      );
     }
     _requireWellFormedUnicode('Process output', text);
   }

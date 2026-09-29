@@ -385,6 +385,33 @@ object. See the [product model](product-model.md) and
 [profiles and configuration](profiles-and-configuration.md) for their ownership
 and persistence boundaries.
 
+### Command Tools participation
+
+Command Tools owns its invocation-associated command headers, ordered decoded
+stdout/stderr chunks, incremental capture/completeness, bounded model result,
+historical reads, and live availability service. Its future Inspection and console
+presentations consume its generated own-backend contract, not a core transcript
+repository or native Command codec. The Environment provider owns direct process
+execution, decoding, bounded producer delivery, and cleanup. Core owns canonical
+identities, storage/backing lifetime, exact-generation transport/authority, and
+presentation hosting only.
+
+The existing host-allocated tool-invocation identity is carried as opaque data in
+native/remote tool context. It preserves Session/Run association before terminal
+Run publication without manufacturing core records. Plugin append transactions
+advance committed positions with their chunks; capture seals independently before
+tool success, not inside the later generic Run transaction. Full transcript data
+does not enter generic tool progress, RunJournal, or activity snapshots. Ordinary
+bounded terminal evidence is not the authoritative transcript.
+
+Plugin disablement does not delete these tables or activate a native reader.
+History remains readable by a later compatible backend without Environment
+materialization or old execution authority. Abandoned capturing rows are
+interrupted/unconfirmed, not active or recoverable processes. Explicitly volatile
+Projects use opt-in temporary on-disk plugin storage rather than unbounded memory;
+that does not change their durability. Command schema, cursor/failure semantics,
+and exact working limits belong to the [plugin map](../../plugins/command_tools/README.md).
+
 ### Chat participation
 
 Chat is the concrete strategy consumer, not the owner of the shared service. Its

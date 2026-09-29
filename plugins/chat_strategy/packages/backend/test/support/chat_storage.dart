@@ -49,6 +49,7 @@ final class ChatTestStorage implements ProjectStorageService {
   Future<void> ensureSchemaForSession(
     String sessionId,
     List<String> migrations,
+    ProjectStorageAccessMode accessMode,
   ) async {
     schemaChecks++;
     _check(sessionId);
@@ -63,6 +64,7 @@ final class ChatTestStorage implements ProjectStorageService {
     String sessionId,
     String sql,
     Map<String, Object?> parameters,
+    ProjectStorageAccessMode accessMode,
   ) async {
     queries++;
     querySql.add(sql);
@@ -93,6 +95,7 @@ final class ChatTestStorage implements ProjectStorageService {
   Future<void> transactionForSession(
     String sessionId,
     List<RelationalStatement> statements,
+    ProjectStorageAccessMode accessMode,
   ) async {
     transactions++;
     await beforeTransaction?.call();

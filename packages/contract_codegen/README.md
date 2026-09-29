@@ -64,19 +64,24 @@ combined with `--check` or `--source`. Regeneration recreates configured outputs
 
 Frontend build tooling can call `ContractGenerator.generateEvalClient` to derive
 a client-only wire view from the same annotated contract. This bounded projection
-supports unary methods, scalar/nullable values, JSON maps, lists, value DTOs, and
-strict field validation using syntax supported by the pinned evaluator. Unsupported
+supports unary and server-streaming methods, scalar/nullable values, JSON maps,
+lists, value DTOs, and strict field validation using syntax supported by the pinned evaluator. Unsupported
 contract shapes fail generation; there is no native plugin-specific codec fallback.
 The projection is generated during EVC compilation rather than maintained as a
 second contract source or hand-written application adapter.
 
-`evalContractSupportSource` supplies the minimal interpreted request-channel and
-protocol-error types. A frontend combines its generated client with `adele_ui`'s
+`evalContractSupportSource` supplies the minimal interpreted request/stream-channel
+and protocol-error types. A frontend combines its generated client with `adele_ui`'s
 owning-backend channel. Generic native hosting still enforces the prepared role's
 service allowlist, bounded structured data, exact backend generation, and
 presentation liveness. Native backend dispatchers continue using the normal
 generated part file. Channel failures remain failed Futures across the bounded
 eval client path; native generated clients retain declared-failure reconstruction.
+Generated stream methods use the same strict DTO decoder for each item. The
+owning-backend bridge supplies the pin-local generic stream callback adapter;
+neither generator nor app imports a plugin-specific native client. The prepared
+EVC fixture in `app/test/owning_backend_stream_bridge_test.dart` exercises actual
+generation, compilation, loading, data/error/done, and subscription control.
 
 The generated part owns stable identifiers, codecs, typed clients, and backend
 dispatcher interfaces/implementations. Supported values are strings, booleans,

@@ -443,6 +443,8 @@ final class DevelopmentSelfHostingTopology {
             .startPlugin(
               pluginId: 'dev.adele.plugin.command-tools',
               artifactUri: artifacts.commandToolsArtifact.uri,
+              createInfrastructureServices: (connection) =>
+                  projectStorageServices(lifecycle, connection),
             );
         commandToolsActivation =
             await PluginBackendActivation.registerAdvertised(

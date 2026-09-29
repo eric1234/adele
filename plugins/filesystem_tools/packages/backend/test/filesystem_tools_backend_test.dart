@@ -126,6 +126,7 @@ void main() {
             ToolExecutionContext(
               sessionId: facets.sessionId,
               runId: RunId('run'),
+              toolInvocationId: 'tool-invocation',
             ),
           );
           final remote = await fixture.client.describe(
@@ -133,6 +134,7 @@ void main() {
             RemoteCanonicalToolArguments.fromLocal(arguments),
             'session',
             'run',
+            'tool-invocation',
             environment,
           );
           expect(
@@ -443,6 +445,7 @@ void main() {
             RemoteCanonicalToolArguments(snapshot: {}),
             'session',
             'run',
+            'tool-invocation',
             'environment',
           ),
           throwsA(isA<AdeleRemoteFailure>()),
@@ -453,6 +456,7 @@ void main() {
             RemoteCanonicalToolArguments(snapshot: {}),
             'session',
             'run',
+            'tool-invocation',
             'environment',
             'token',
           ),
@@ -493,6 +497,7 @@ void main() {
           arguments,
           'session',
           'run',
+          'tool-invocation',
           null,
         ),
         throwsA(isA<AdeleRemoteFailure>()),
@@ -504,6 +509,7 @@ void main() {
             arguments,
             'session',
             'run',
+            'tool-invocation',
             'environment',
             token,
           ),
@@ -516,6 +522,7 @@ void main() {
           arguments,
           'session',
           'run',
+          'tool-invocation',
           null,
           'token',
         ),
@@ -610,6 +617,7 @@ final class _Fixture {
           arguments,
           'session-data',
           'run-data',
+          'tool-invocation-data',
           'environment-data',
           token,
         )

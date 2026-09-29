@@ -214,7 +214,8 @@ final class ToolInvocationResolver {
     required ToolInvocationId invocationId,
     required ProviderToolProposal proposal,
     required MaterializedToolSet tools,
-    required ToolExecutionContext context,
+    required RunId runId,
+    required SessionId sessionId,
   }) async {
     final MaterializedTool? tool = tools.byAlias(proposal.alias);
     if (tool == null) {
@@ -239,7 +240,11 @@ final class ToolInvocationResolver {
           proposal: proposal,
           tool: tool,
           arguments: arguments,
-          context: context,
+          context: ToolExecutionContext(
+            runId: runId,
+            sessionId: sessionId,
+            toolInvocationId: invocationId.value,
+          ),
         ),
       );
     } on StaleToolBindingException catch (error) {

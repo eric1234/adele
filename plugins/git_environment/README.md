@@ -111,9 +111,56 @@ required timeouts from 1 through 600 seconds, and a resolved cwd confined to the
 Environment root. A cwd may use an in-Environment directory symlink when its
 resolved target remains confined. stdout and stderr are incrementally decoded
 as UTF-8 with malformed sequences replaced and are emitted as separately tagged
-text chunks. Each stream retains/emits at most 1 MiB using an immediate head and
-a bounded tail; discarded middle output is still drained, and independent
-truncation flags accompany completion.
+partial text chunks without waiting for newlines or process exit. ANSI sequences,
+carriage returns, NUL, and line endings remain intact. Messages carry at most
+16384 UTF-16 code units without splitting a surrogate pair. Per-pipe order and
+the provider-observed combined read order are preserved; this is not a claim of
+recovering a total order between independent OS pipes. There is no transcript
+head/tail limit or replayed tail.
+
+Generated transport uses one-item credit across the Git backend to host and the
+authorized process service to Command backend. Pausing the consumer stops both
+real pipe subscriptions; an admitted read is split only as demand resumes. The
+provider's queue owns at most 8 Mi UTF-16 code units of decoded strings across
+both pipes. Each complete string remains charged until its queue entry is
+removed, including already-emitted prefixes; advancing its offset does not free
+the retained string or admission budget. It pauses reads while draining queued
+text, yields between messages, and gives the other pipe first opportunity on
+resume, without repeatedly copying the remaining suffix.
+
+This is a queue bound, not a total heap or RSS bound. The pinned Dart runtime can
+aggregate 4 MiB plus one native read into each pipe callback. SDK raw-byte buffers,
+UTF-8 conversion temporaries, bounded emitted-message copies, OS pipe buffers,
+and child memory are outside the decoded queue allowance. Pausing prevents new
+reads but cannot undo bytes already admitted by the SDK. Two maximum SDK reads
+are not promised to fit within 8 Mi: every decoded admission checks the combined
+full-string charge and fails explicitly on excess rather than growing a
+controller queue. Supervisor-local pending and message budgets can be reduced
+for focused overflow/drain tests; they are not Environment request settings.
+
+Completion requires both pipe EOFs and delivery of all admitted text. After
+process-group cleanup, upstream liveness has a one-second idle budget and a
+ten-second cumulative hard budget. Both clocks advance only while at least one
+unfinished real pipe subscription is unpaused. Pausing for downstream credit or
+to split an admitted string suspends both clocks without resetting their remaining
+budgets. A pipe read or EOF refreshes only the idle budget; delivery does not
+refresh either budget. Both EOFs stop these clocks, not the remaining delivery.
+Consequently, finite buffered output can drain beyond either former wall-clock
+interval, and a temporary downstream pause does not discard admitted text. A
+genuinely unfinished escaped pipe holder still fails after one idle or ten total
+readable seconds, including a writer that keeps making progress. These are not
+wall-clock limits on an observer that indefinitely withholds credit: its bounded
+queue remains owned until demand resumes or execution is interrupted.
+`process_output_overflow`, `process_output_failed`, and
+`process_output_incomplete` are declared `EnvironmentFailure` codes, not successful
+completed events. Their details retain `outputIncomplete: true`, known
+`termination`/`exitCode`, and per-pipe `stdoutTruncated`/`stderrTruncated` evidence.
+Cancellation and provider shutdown release output independently of credit. The
+execution timeout runs on wall time while the leader is alive; if it expires with
+blocked delivery (or delivery pauses after timeout), output fails explicitly and
+pipe cleanup does not wait for credit. Normal leader exit stops that execution
+timer, not the upstream drain budgets. A paused observer sees
+the bounded queued failure only when it resumes; cleanup does not depend on that.
 
 Foreground execution uses the trusted system `setsid` supplied by util-linux.
 The provider owns the resulting process group and uses SIGTERM followed by a
@@ -162,6 +209,13 @@ processes, Environment release/destruction, and remote cloning remain absent. Th
 separate stock Command Tools plugin projects this provider-neutral foreground
 surface as model-facing `run_command`; that does not move tool or policy
 semantics into this provider.
+
+Focused foreground checks live in `git_worktree_environment_provider_test.dart`
+(partial text, Unicode/control preservation, multi-megabyte output, pipe fairness,
+backpressure, timeout/cancellation, overflow, and truthful final drain) and
+`backend_host_integration_test.dart` (the actual shared-host/generated provider
+path). Run those files directly from `packages/backend` after maintained contract
+generation when validating foreground changes without unrelated PTY tests.
 
 Path canonicalization, direct-component symlink rejection for file access,
 resolved-directory confinement for process cwd, and post-resolution validation

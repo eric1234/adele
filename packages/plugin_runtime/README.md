@@ -227,8 +227,8 @@ management, version solving, watching, and hot upgrade remain deferred.
 
 ## Own-Backend Requests
 
-`OwningBackendChannel` is a presentation-local unary channel over one captured
-`PluginBackendConnection`, `ConfigurationContextId`, and explicit `backendServices`
+`OwningBackendChannel` is a presentation-local unary/server-streaming channel over
+one captured `PluginBackendConnection`, `ConfigurationContextId`, and explicit `backendServices`
 allowlist. It validates the presentation and owning activation before dispatch
 and after asynchronous settlement, snapshots request/response data, and rejects
 undeclared services. It exposes no PluginId or configuration selector and never
@@ -248,6 +248,14 @@ generated plugin clients use it without importing this internal package. Fronten
 startup remains independent of backend startup. Registration availability does not
 promise that a view's own-backend service is ready, and failure has no native or
 in-process fallback.
+
+`stream` is lazy and single-subscription, snapshots data, revalidates on delivery,
+and forwards pause/resume/cancel to the captured transport. Owners with a lifetime
+narrower than the connection supply `observeOwnerRetirement`; composite backend
+activation provides detachable `onRetire` observation. Retirement cancels even an
+idle or paused stream before awaiting bounded cancellation. The app bridge owns
+presentation-local cancellation/fencing, independently of backend work. Capturing
+a channel does not require a Session strategy or create execution authority.
 
 ## Operation-Scoped Host Calls
 

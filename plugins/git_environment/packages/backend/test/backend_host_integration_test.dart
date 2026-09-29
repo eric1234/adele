@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:adele_capabilities/adele_capabilities.dart';
@@ -38,6 +39,125 @@ void main() {
       ),
     ]);
   });
+
+  test(
+    'AOT foreground paused transport retains output across normal exit',
+    () async {
+      final fixture = await _createRepository();
+      addTearDown(() => fixture.container.delete(recursive: true));
+      final host = await PluginBackendHost.start(
+        dartaotruntimeExecutable: dartaotruntime,
+        hostArtifactPath: hostArtifact.path,
+      );
+      addTearDown(() async {
+        if (!host.isClosed) await host.close(graceful: false);
+      });
+      final registry = CapabilityRegistry();
+      final providerId = ProviderId(gitWorktreeEnvironmentProviderId);
+      final activation = await _register(
+        await host.startPlugin(
+          pluginId: gitEnvironmentPluginId,
+          artifactUri: pluginArtifact.uri,
+        ),
+        registry,
+      );
+      final provider = GeneratedEnvironmentProvider(
+        providerId: providerId,
+        service: EnvironmentProviderServiceClient(
+          registry
+              .resolve(environmentProviderCapability, providerId: providerId)
+              .requestChannel,
+        ),
+      );
+      final project = Project(
+        id: ProjectId('paused-project'),
+        sourceLocation: fixture.projectSourceA.uri,
+      );
+      final task = Task(
+        id: TaskId('paused-task'),
+        projectId: project.id,
+        title: 'Paused output',
+      );
+      final environment = Environment(
+        id: EnvironmentId('paused-environment'),
+        taskId: task.id,
+        role: EnvironmentRole.primary,
+        providerId: providerId,
+        providerState: null,
+      );
+      await provider.establish(
+        LocalEnvironment(project: project, task: task, value: environment),
+      );
+      final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(server.close);
+      final connection = server.first;
+      final paused = Completer<void>();
+      final done = Completer<void>();
+      final events = <EnvironmentProcessEvent>[];
+      final failures = <Object>[];
+      late StreamSubscription<EnvironmentProcessEvent> subscription;
+      subscription = provider
+          .runForegroundProcess(
+            environment.id,
+            EnvironmentForegroundProcessRequest(
+              program: '/bin/bash',
+              arguments: [
+                '-c',
+                'exec 3<>/dev/tcp/127.0.0.1/${server.port}; '
+                    r'''printf '%s' "$1"; printf '%s' "$2" >&2; exit 23''',
+                'probe',
+                'O' * 4096,
+                'E' * 4096,
+              ],
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 10,
+            ),
+          )
+          .listen(
+            (event) {
+              events.add(event);
+              if (!paused.isCompleted) {
+                subscription.pause();
+                paused.complete();
+              }
+            },
+            onError: failures.add,
+            onDone: done.complete,
+          );
+      addTearDown(subscription.cancel);
+      final socket = await connection.timeout(const Duration(seconds: 5));
+      addTearDown(socket.destroy);
+      final exited = socket.drain<void>();
+      await paused.future.timeout(const Duration(seconds: 5));
+      await exited.timeout(const Duration(seconds: 5));
+      expect(done.isCompleted, isFalse);
+      expect(events, hasLength(1));
+      expect(
+        (await provider.readFile(environment.id, 'README.md')).text,
+        'AOT Git fixture A\n',
+      );
+      subscription.resume();
+      await done.future.timeout(const Duration(seconds: 5));
+      expect(failures, isEmpty);
+      expect(_stdoutText(events), 'O' * 4096);
+      expect(
+        events
+            .where(
+              (event) =>
+                  event.output?.stream == EnvironmentProcessOutputStream.stderr,
+            )
+            .map((event) => event.output!.text)
+            .join(),
+        'E' * 4096,
+      );
+      expect(events.last.completed!.exitCode, 23);
+      expect(events.last.completed!.stdoutTruncated, isFalse);
+      expect(events.last.completed!.stderrTruncated, isFalse);
+      await activation.close();
+      await host.close();
+    },
+    timeout: const Timeout(Duration(minutes: 4)),
+  );
 
   test(
     'AOT generations ignore inherited Git routing/discovery and restore state',
@@ -272,6 +392,29 @@ void main() {
         '${Platform.pathSeparator}project-source',
       );
       expect(relativePathProcess.last.completed!.exitCode, 0);
+      final continuousOutput = await providerA
+          .runForegroundProcess(
+            durable.id,
+            EnvironmentForegroundProcessRequest(
+              program: '/usr/bin/head',
+              arguments: ['-c', '2097152', '/dev/zero'],
+              relativeWorkingDirectory: '',
+              timeoutSeconds: 10,
+            ),
+          )
+          .toList();
+      expect(_stdoutText(continuousOutput), '\x00' * 2097152);
+      expect(continuousOutput.last.completed!.exitCode, 0);
+      expect(continuousOutput.last.completed!.stdoutTruncated, isFalse);
+      expect(
+        continuousOutput
+            .where((event) => event.output != null)
+            .every(
+              (event) =>
+                  event.output!.text.length <= environmentProcessTextLimit,
+            ),
+        isTrue,
+      );
       final Stream<EnvironmentProcessEvent> deferredGenerationA = providerA
           .runForegroundProcess(
             durable.id,

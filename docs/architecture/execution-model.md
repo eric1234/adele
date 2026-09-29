@@ -432,6 +432,14 @@ actionable approvals. Native data is retained as historical evidence only, never
 future continuation input; interpreted presentation still receives only the safe
 presentation projection through existing activity/Inspection paths.
 
+Generic execution evidence is not an authoritative command transcript. Command
+Tools retains full decoded process output in its own incremental relational store
+and supplies its own passive read/watch service; it does not forward the raw text
+into generic progress. Its bounded final preview/model result remains ordinary
+outcome evidence. Other tools keep their own progress semantics, and do not acquire
+process stdout/stderr merely because Command Tools supports it. See
+[Command Tools ownership](plugin-system.md#command-tools-participation).
+
 This is terminal history, not event sourcing or recovery. It retains no live
 `AgentRun`, bindings, authority tokens, active/waiting Run state, Session claims,
 approval restart state, or workbench state. There are no timestamps, cross-Run
